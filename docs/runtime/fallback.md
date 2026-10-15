@@ -137,7 +137,12 @@ pre-response requests per router attempt: 3 with the default, or 6 across
 `primaryAttempts: 2` before advancing the chain. **Codex differs:**
 `openai-codex` uses its own retry classification and exponential backoff, and can
 fall back from websocket to SSE independently of this retry budget. The shared
-policy's classification and request-count bound do not cover that fallback.
+policy's classification and request-count bound do not cover that fallback. Codex websocket
+turns can also re-send once when the server rejects a cached continuation with
+`previous_response_not_found`; that rejection carries no generated output.
+**Bedrock differs too:** `amazon-bedrock` builds its AWS client without this
+budget, so the AWS SDK's own retries apply to every Bedrock request: three
+attempts by default, or `AWS_MAX_ATTEMPTS` / the profile's `max_attempts`.
 
 The driver never retries a settled response; failed-response journaling and
 reported usage are preserved. A response that fails after streaming starts is
@@ -146,7 +151,9 @@ still apply to failed turns. Durable native Web turns are primary-only, without
 router fallback or re-attempt. SDK retries do not replay tools or whole turns;
 several assistant requests can exceed a per-request budget. Provider checks,
 compaction summaries and handoff summaries force SSE with zero retries, avoiding
-Codex websocket-to-SSE re-sends and keeping each generation single-request.
+Codex websocket-to-SSE re-sends and keeping each generation single-request on
+every provider except Bedrock, whose AWS SDK retries still apply (set
+`AWS_MAX_ATTEMPTS=1` to make Bedrock single-request).
 The harness's one-shot session-resume retry is disjoint: it
 fires on `session_not_found` / `session_busy`, which never retry at the router.
 
