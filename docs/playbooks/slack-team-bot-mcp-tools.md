@@ -77,7 +77,7 @@ Mention `@agent` in the allowed channel; verify the seen reaction, a final answe
 - [Tool policy](/tools/policy/)
 - [MCP servers](/tools/mcp/)
 - [Sessions, concurrency & Pi-native tuning](/runtime/sessions-concurrency/)
-- [Composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [Composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/app/skills/mono-agent-composer/SKILL.md)
 
 For real-turn cache measurements and tool-definition changes, enable
 `providers.piNative.promptCacheDiagnostics` and use the offline

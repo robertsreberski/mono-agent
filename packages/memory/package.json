@@ -37,7 +37,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.25.1",
+    "@mono-agent/contracts": "workspace:0.25.1",
     "better-sqlite3": "^11.8.1",
     "sqlite-vec": "^0.1.7-alpha.2"
   },

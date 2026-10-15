@@ -2,13 +2,13 @@
 // Provider transport is fictional; recovery must never enter it or register a tool.
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { digestTurnInput } from "@mono-agent/agent-runtime/engine";
-import { createTurnBinding } from "../../../../agent-runtime/src/engine/turn-evidence.js";
-import { JsonlSessionRepo } from "../../../../agent-runtime/src/engine/session-store.js";
-import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
-import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
-import { createAgentHarness, createDurableHistoryStore } from "../../../../agent-harness/dist/index.js";
-import { startInteractionBridge } from "../../../../agent-app/dist/interaction-bridge.js";
+import { digestTurnInput } from "@mono-agent/turn/engine";
+import { createTurnBinding } from "../../../../turn/src/engine/turn-evidence.js";
+import { JsonlSessionRepo } from "../../../../turn/src/engine/session-store.js";
+import { createMonoRuntime } from "@mono-agent/turn/host";
+import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import { createAgentHarness, createDurableHistoryStore } from "../../../../conversation/dist/index.js";
+import { startInteractionBridge } from "../../../../app/dist/interaction-bridge.js";
 import { WebStore } from "../../../dist/store.js";
 
 const [root, mode] = process.argv.slice(2), timestamp = "2000-01-01T00:00:00.000Z";

@@ -53,7 +53,7 @@ export async function runVerifyConsumers(options = {}) {
   }
 
   if (!parsed.skipBuild) {
-    const buildResult = await runCommand("pnpm", ["--filter", "@mono-agent/agent-app...", "--sort", "run", "build"], { cwd });
+    const buildResult = await runCommand("pnpm", ["--filter", "@mono-agent/app...", "--sort", "run", "build"], { cwd });
     if (buildResult !== 0) {
       const results = defaultConsumerNames.map((name) => ({
         label: `${name} contract`,
@@ -85,7 +85,7 @@ export async function runVerifyConsumers(options = {}) {
   }
 
   const results = [];
-  const fixtureRoot = join(cwd, "packages", "agent-app", "src", "__tests__", "fixtures", "consumers");
+  const fixtureRoot = join(cwd, "packages", "app", "src", "__tests__", "fixtures", "consumers");
   for (const name of dependencies.consumerContractNames) {
     const result = await dependencies.validateConsumerContractFixture({
       name,
@@ -208,7 +208,7 @@ function statusByLabel(results) {
 
 async function loadRuntimeDependencies() {
   const importPackage = Function("specifier", "return import(specifier)");
-  const agentApp = await importPackage("@mono-agent/agent-app");
+  const agentApp = await importPackage("@mono-agent/app");
   const observability = await importPackage("@mono-agent/observability");
   return {
     consumerContractNames: agentApp.consumerContractNames,

@@ -32,7 +32,7 @@ An explicit empty list is still expressible and still meaningful: `"allowedTools
 In guided init, **Allow all tools** remains the default product choice. The flow explicitly names the resulting code-execution, file, web, and enabled channel-send surface before accepting it. If no enforceable sandbox constrains the runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default.
 
 :::note
-Allow-all is the **config** default, not a programmatic one. For code-defined agents built directly on `@mono-agent/agent-harness`, the no-config safety net is the opposite: `failClosedToolPolicy()` returns `{ allowedTools: [], disallowedTools: [] }` — an empty, fail-closed policy — so a harness constructed with no policy starts with zero tools until you pass one. The allow-all default lives in the config loader, not the harness.
+Allow-all is the **config** default, not a programmatic one. For code-defined agents built directly on `@mono-agent/conversation`, the no-config safety net is the opposite: `failClosedToolPolicy()` returns `{ allowedTools: [], disallowedTools: [] }` — an empty, fail-closed policy — so a harness constructed with no policy starts with zero tools until you pass one. The allow-all default lives in the config loader, not the harness.
 :::
 
 :::caution
@@ -217,7 +217,7 @@ canonical [deprecation tracker](/reference/deprecations/).
 
 ## Programmatic use
 
-The policy is also available as a library for code-defined agents: `createToolPolicy()`, `failClosedToolPolicy()`, `loadToolPolicyFromJsonFile()`, and `toolPolicyToRuntimeOptions()` from `@mono-agent/agent-harness`. Errors are thrown as `ToolPolicyError` with codes `invalid_tool_policy` and `tool_policy_read_failed`. See [Programmatic API](/programmatic/).
+The policy is also available as a library for code-defined agents: `createToolPolicy()`, `failClosedToolPolicy()`, `loadToolPolicyFromJsonFile()`, and `toolPolicyToRuntimeOptions()` from `@mono-agent/conversation`. Errors are thrown as `ToolPolicyError` with codes `invalid_tool_policy` and `tool_policy_read_failed`. See [Programmatic API](/programmatic/).
 
 
 ## ProviderUsage

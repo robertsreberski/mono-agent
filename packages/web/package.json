@@ -32,10 +32,10 @@
     "test": "vitest run src/__tests__ && pnpm --dir webapp run test"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.25.1",
+    "@mono-agent/contracts": "workspace:0.25.1",
     "@mono-agent/config": "workspace:0.25.1",
     "@mono-agent/observability": "workspace:0.25.1",
-    "@mono-agent/operator-adapter": "workspace:0.25.1",
+    "@mono-agent/channel-operator": "workspace:0.25.1",
     "compression": "1.8.2",
     "cron-parser": "5.5.0",
     "express": "^5.1.0",

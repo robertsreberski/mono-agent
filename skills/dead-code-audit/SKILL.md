@@ -44,7 +44,7 @@ grep -rn "<protocol literal>" <instance-dir> <other-instance-dirs> \
   | grep -v node_modules | grep -v "/dist/"
 ```
 
-`packages/telegram-adapter/src/ask.ts` had zero in-repo callers when #527
+`packages/channel-telegram/src/ask.ts` had zero in-repo callers when #527
 retired it, and the Personal Agent heartbeat helper was still emitting its
 `ask:<index>` payload — every heartbeat button silently stopped working.
 `verify-green` §1a owns the change side of this rule.
@@ -76,7 +76,7 @@ into the lifecycle or remove it.
 Every time a refactor introduces a shared/pooled/cached version of an existing
 per-request mechanism, grep for the **old** mechanism's exports in the same pass
 and either remove or justify each. This shape recurs (runtime live-sessions
-redesign, agent-runtime kernel redesign); dead `createMemoryRecallRuntimeExtension`
+redesign, turn kernel redesign); dead `createMemoryRecallRuntimeExtension`
 survived it.
 
 ```bash

@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-The WhatsApp channel connects your agent to a personal WhatsApp account over a [Baileys](https://github.com/WhiskeySockets/Baileys) socket, authenticated by scanning a QR code at first start. It is provided by the external `@mono-agent/whatsapp-adapter` package and loaded through `channels.plugins[]`. The plugin config gates which chats can trigger the agent and lets you choose whether group messages require an @mention. Coverage: **config** — see [feature-registry](/reference/feature-matrix/) row `whatsapp.baileys`.
+The WhatsApp channel connects your agent to a personal WhatsApp account over a [Baileys](https://github.com/WhiskeySockets/Baileys) socket, authenticated by scanning a QR code at first start. It is provided by the external `@mono-agent/channel-whatsapp` package and loaded through `channels.plugins[]`. The plugin config gates which chats can trigger the agent and lets you choose whether group messages require an @mention. Coverage: **config** — see [feature-registry](/reference/feature-matrix/) row `whatsapp.baileys`.
 
 ## Quick start
 
@@ -16,7 +16,7 @@ Declare the plugin package, enable the channel, and allow one or more chats:
   "channels": {
     "plugins": [
       {
-        "package": "@mono-agent/whatsapp-adapter",
+        "package": "@mono-agent/channel-whatsapp",
         "id": "whatsapp",
         "config": {
           "enabled": true,
@@ -53,7 +53,7 @@ Full annotated example:
   "channels": {
     "plugins": [
       {
-        "package": "@mono-agent/whatsapp-adapter",
+        "package": "@mono-agent/channel-whatsapp",
         "id": "whatsapp",
         "config": {
           "enabled": true,
@@ -77,7 +77,7 @@ To allow every chat instead of an explicit allowlist, set `allowAllChats` and dr
   "channels": {
     "plugins": [
       {
-        "package": "@mono-agent/whatsapp-adapter",
+        "package": "@mono-agent/channel-whatsapp",
         "id": "whatsapp",
         "config": { "enabled": true, "allowAllChats": true, "groupMode": "any" }
       }
@@ -135,4 +135,4 @@ WhatsApp has **no notify path of its own**. Native cron/webhook notification (`n
 
 ## Related
 
-There is no WhatsApp-specific playbook yet. The closest end-to-end recipes are the [Telegram personal-assistant playbook](/playbooks/telegram-personal-assistant-bujo/) and the [Slack team-bot playbook](/playbooks/slack-team-bot-mcp-tools/); both translate directly — add an `@mono-agent/whatsapp-adapter` entry under `channels.plugins[]` and put the WhatsApp settings under that entry's `config`. See also the [Telegram](/channels/telegram/) and [Slack](/channels/slack/) channel pages for the shared mention/allowlist model, and the [Channels overview](/channels/).
+There is no WhatsApp-specific playbook yet. The closest end-to-end recipes are the [Telegram personal-assistant playbook](/playbooks/telegram-personal-assistant-bujo/) and the [Slack team-bot playbook](/playbooks/slack-team-bot-mcp-tools/); both translate directly — add an `@mono-agent/channel-whatsapp` entry under `channels.plugins[]` and put the WhatsApp settings under that entry's `config`. See also the [Telegram](/channels/telegram/) and [Slack](/channels/slack/) channel pages for the shared mention/allowlist model, and the [Channels overview](/channels/).

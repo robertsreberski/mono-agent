@@ -1,0 +1,1055 @@
+# `@mono-agent/turn` — Migration Guide
+
+Breaking and behavioral changes for consumers upgrading from `0.3.x` to the
+current pre-1.0 contract. `createRuntime()` remains the package entry point;
+`createMonoRuntime()` is the typed host constructor in
+`@mono-agent/turn/host`. Provider-session input/output uses
+`providerSessionId`, with `disposeSession()` and `disposeAllSessions()` retained.
+
+Review every section that matches your usage. As of `0.21.0` the package runs
+exactly one runtime — Pi — behind an explicit exports map, with typed policy
+objects, stricter sandbox behavior, and revised provider-session semantics.
+
+Migration policy: every newly introduced fail-closed validation belongs in the
+first affected version section, even when it tightens behavior without changing
+the configuration schema.
+
+---
+
+## Unreleased package rename
+
+- Remove the old workspace package names in a breaking rename, with no aliases.
+  Update imports, dependencies, and plugin configuration using the table below.
+  Old names in `channels.plugins[].package` fail validation with an explicit
+  `was renamed to` error naming the replacement, before package loading.
+  CLI bins, symbols, config keys, channel IDs, and persisted formats stay unchanged.
+
+| Old package | New package |
+| --- | --- |
+| `@mono-agent/agent-app` | `@mono-agent/app` |
+| `@mono-agent/agent-harness` | `@mono-agent/conversation` |
+| `@mono-agent/agent-runtime` | `@mono-agent/turn` |
+| `@mono-agent/agent-contracts` | `@mono-agent/contracts` |
+| `@mono-agent/slack-adapter` | `@mono-agent/channel-slack` |
+| `@mono-agent/telegram-adapter` | `@mono-agent/channel-telegram` |
+| `@mono-agent/openai-api-adapter` | `@mono-agent/channel-openai-api` |
+| `@mono-agent/operator-adapter` | `@mono-agent/channel-operator` |
+| `@mono-agent/cron-adapter` | `@mono-agent/trigger-cron` |
+| `@mono-agent/webhook-adapter` | `@mono-agent/trigger-webhook` |
+| `@mono-agent/whatsapp-adapter` | `@mono-agent/channel-whatsapp` |
+| `@mono-agent/messenger-adapter` | `@mono-agent/channel-messenger` |
+| `@mono-agent/a2a-adapter` | `@mono-agent/channel-a2a` |
+| `@mono-agent/agent-orchestrator` | `@mono-agent/orchestrator` |
+
+
+## Unreleased mono-agent engine
+
+### Breaking host import consolidation
+
+`@mono-agent/runtime-adapter` is removed, with no forwarding package, shim,
+or import alias. Keep `@mono-agent/config` installed separately; it now depends
+directly on agent-runtime. Use these exact imports (symbol names are unchanged):
+
+| Old import and symbols | New import |
+| --- | --- |
+| `@mono-agent/runtime-adapter`: `digestNativeTurnInput`, `formatLiveInputGuidance` | `@mono-agent/turn/ai/live-input-prompt.js` |
+| `@mono-agent/runtime-adapter`: `assertParsedRuntimeModelReference`, `MODEL_REFERENCE_ECHO_MAX_BYTES`, `MODEL_REFERENCE_REASON_MAX_BYTES`, `modelReferenceKey`, `parseMonoRuntimeModelReference`, `RuntimeAdapterError`, `sanitizeModelReferenceText`, `isPlainObject`, `isValidMcpServerName`, `parseMcpServers`, `isAutodiscoverableProviderId`, `isPrivateBaseUrl`, `isPiBuiltinProvider`, `localProviderDefinitionFor`, `resolveModelEffortLevels`, `runtimeOptionsForLocalProvider`, `validateLocalProviderDefinition`, `validateProviderBaseUrl`, `validateProviderDefinition` | `@mono-agent/turn/host/config` |
+| `@mono-agent/runtime-adapter`: `createMonoRuntime`, `describeMonoRuntimeSupport`, `listMonoRuntimeBackends`, `monoRuntimeSupportsLiveInput`, `monoRuntimeSupportsMcpApps`, `monoRuntimeSupportsSessionResume`, `runtimeBackendForModel`, `bridgeProcessJobsController`, `discoverLocalProviderModels`, `discoverLocalProviders`, `bridgeOwnedForegroundProcesses` | `@mono-agent/turn/host` |
+| `@mono-agent/runtime-adapter`: `createPiOAuthApiKeyResolver`, `CONTEXT_1M_TOKENS`, `supportsPiContext1M`, `describePiBuiltinProvider`, `listPiBuiltinProviders`, `NativeEvidenceCapacityError`, `createManagedNativeJournalStorage` | `@mono-agent/turn` |
+| `@mono-agent/runtime-adapter`: `CreateMonoRuntimeOptions`, `MonoRuntimeAttemptContext`, `MonoRuntimeAttemptResolution`, `MonoRuntimeAttemptResolver`, `MonoRuntimeFallbackChainEntry`, `MonoRuntimeRetryPolicy`, `RuntimeAdapterErrorCode`, `RuntimeAdapterErrorDetails`, `NormalizedMcpServer`, `NormalizedMcpTransport`, `ProcessJobLaunchOptions`, `ProcessJobProcessHandle`, `ProcessJobProcessResult`, `ProcessJobsController`, `ProcessJobStartRequest`, `ProcessJobStartResult`, `PI_TRANSPORTS`, `isRuntimeSubagentActivityEvent`, `PreparedSandboxCommand`, `PrepareSandboxedCommandInput`, `SandboxCommandSpec`, `SandboxEffectiveMode`, `SandboxEffectiveState`, `SandboxEngine`, `SandboxEngineId`, `SandboxErrorCode`, `SandboxFallback`, `SandboxMode`, `SandboxNetworkMode`, `SandboxNetworkPolicy`, `SandboxNetworkPolicyInput`, `SandboxPolicy`, `SandboxPolicyInput`, `SandboxPolicyRuntimeOptions`, `SrtFilesystemSettings`, `SrtNetworkSettings`, `SrtSandboxEngineOptions`, `SrtSettings`, `AgentRuntimeCustomModel`, `AgentRuntimeCustomProvider`, `DiscoverLocalProviderModelsOptions`, `DiscoveredLocalModel`, `LocalProviderCapabilities`, `LocalProviderDefinition`, `LocalProviderModelDefinition`, `LocalProviderPricing`, `LocalProviderRuntimeOptions`, `LocalProviderType`, `ModelEffortLevels`, `ProviderDefinition`, `DiscoveredProvider`, `DiscoverLocalProvidersInput`, `MonoRuntimeApprovalDecision`, `MonoRuntimeApprovalRequest`, `MonoRuntimeBackendCapabilities`, `MonoRuntimeBackendDescriptor`, `MonoRuntimeCompactionRecord`, `MonoRuntimeHostOptions`, `MonoRuntimeLike`, `RuntimeNativeJournalAuthority`, `RuntimeNativeJournalDescriptor`, `RuntimeNativeJournalRef`, `RuntimeNativeEpochContext`, `RuntimeNativeJournalStorage`, `RuntimeNativeJournalDeletion`, `DurableSessionSalvage`, `MonoRuntimeParsedPricingModel`, `MonoRuntimePricing`, `MonoRuntimeSandboxEngine`, `MonoRuntimeSupportDescription`, `RuntimeCompactionPolicy`, `RuntimeEventLike`, `RuntimeLiveInputCallbackDisposition`, `RuntimeLiveInputEvidence`, `RuntimeLiveInputMessage`, `RuntimeLiveInputUncertainty`, `RuntimeMessage`, `RuntimeMcpAppConnection`, `RuntimeMcpAppHost`, `RuntimeMcpAppRegistration`, `RuntimeModelReference`, `PiTransport`, `RuntimePromptOverrides`, `RuntimeDispatchProgress`, `RuntimeResult`, `RuntimeRunOptions`, `RuntimeSessionTurnDescriptor`, `RuntimeNativeSessionAuthority`, `RuntimeNativeSessionProjection`, `RuntimeNativeDispatchSnapshot`, `RuntimeNativeDispatchBinding`, `RuntimeNativePreparedDispatch`, `RuntimeNativeEvidenceView`, `RuntimeNativePreparationStorage`, `RuntimePreparedHandoff`, `RuntimeHandoffBudget`, `RuntimeHandoffSummary`, `RuntimeHandoffProducerRequest`, `RuntimeHandoffProducerResult`, `RuntimeHandoffFit`, `RuntimeHandoffOptions`, `RuntimeHandoffProposal`, `RuntimeSessionTurnReconciliationRequest`, `RuntimeSessionTurnReconciliationResult`, `RuntimeSessionTurnResultSeal`, `RuntimeSessionTurnDetachedAttempt`, `RuntimeSubagentActivityEvent`, `RuntimeSubagentActivityPhase`, `RuntimeSubagentIdentity`, `RuntimeSubagentRouteAttribution`, `RuntimeSubagentRouteExecution`, `RuntimeSubagentRouteRetry`, `RuntimeSubagentRouteSelection`, `RuntimeSubagentRouteTransition`, `RuntimeToolLifecycleEvent`, `RuntimeToolLifecyclePersistence`, `RuntimeToolLifecycleSink`, `RuntimeToolLifecycleTerminalState`, `RuntimeToolLimits`, `RuntimeToolOptions`, `OwnedForegroundProcessRequest`, `OwnedForegroundProcessController`, `OwnedForegroundProcesses` | `@mono-agent/turn/host/types` |
+| `@mono-agent/runtime-adapter`: `inspectCodexSubscriptionSearch` | `@mono-agent/turn/agent/tools/index.js` |
+| `@mono-agent/runtime-adapter`: `CodedError`, `isCodedError` | `@mono-agent/contracts` |
+| `@mono-agent/runtime-adapter`: `DEFAULT_DENY_WRITE`, `SANDBOX_FALLBACKS`, `SANDBOX_MODES`, `SANDBOX_NETWORK_MODES`, `SandboxPolicyError`, `SandboxUnavailableError`, `createSandboxPolicy`, `createSrtSandboxEngine`, `describeSandboxEffectiveState`, `failClosedSandboxPolicy`, `mergeSandboxPolicies`, `networkPolicyAllowsUrl`, `prepareSandboxedCommand`, `protectSandboxRoots`, `resolveSandboxEffectiveState`, `sandboxEffectiveStateWarning`, `sandboxPolicyToRuntimeOptions`, `sandboxRequired`, `srtSettingsForPolicy`, `MANAGED_SRT_TREE_SHA256`, `managedSrtInstallRoot` | `@mono-agent/turn/host/sandbox` |
+
+The four host subpaths are narrow structural entrypoints, not a new umbrella
+facade: `host` constructs runtimes, discovers providers and bridges host process
+controllers; `host/config` owns validation and configuration helpers;
+`host/types` owns contracts and event guards; `host/sandbox` owns sandbox policy
+and process wrapping. Config's existing catalog/context helpers still use the
+runtime catalog. Session paths, data formats, sandbox injection, process ownership
+and protected request/attempt overrides are unchanged.
+
+The deprecated adapter aliases are also removed everywhere, including the root,
+`/ai`, and the exported registry subpath:
+
+| Old name | Canonical name (same owning entrypoint) |
+| --- | --- |
+| `resolveRuntimeBridge` | `resolveEngineTurnAdapter` |
+| `generatePiNativeResponse` | `generateEngineTurnResponse` |
+| `piNativeRuntimeBridge` | `engineTurnAdapter` |
+
+
+### Breaking sessions configuration and storage rename
+
+Move `providers.piNative.piSessionsRoot` to `runtime.session.root` (paths remain
+relative to the agent root). The old key fails config validation with
+`providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there`.
+For programmatic runtime and harness options, replace `piSessionsRoot` with
+`sessionsRoot`; the old option fails with
+`piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead`.
+There are no deprecated aliases, even when the replacement is also present.
+Other `providers.piNative` transport/retry settings stay where they are.
+
+```json
+{
+  "runtime": {
+    "session": { "root": ".mono-agent/sessions" }
+  }
+}
+```
+
+The root now contains `journals/`, `locks/` and `aliases/` directly. A root
+containing `mono-v2/` from a pre-release build is refused before any permissions,
+locks or evidence are changed. The error names that path and asks you to restore
+a backup or remove it after checking nothing in it is needed. No automatic
+migration is performed. Legacy sessions from earlier versions still import;
+reserved `journals`, `locks` and `aliases` directories are never scanned as
+legacy sources. The warning kind is now `sessions_root_permissions_tightened`.
+
+Stop all writers and back up canonical history and the sessions root together
+before the one-way upgrade. Rollback requires restoring that consistent backup
+and its matching old configuration; do not run mixed binaries on one root.
+
+
+The canonical adapter API is `resolveEngineTurnAdapter`,
+`generateEngineTurnResponse` and `engineTurnAdapter`. The retired names are removed; use the canonical names in the table above. Runtime dispatch lazily loads the adapter directly;
+the optional resolver shares the same malformed-reference validation. Config,
+wire identifiers and the `"pi"` adapter id are unchanged.
+
+The runtime exact-pins Pi AI and Pi Agent Core at `1.2.0` (the terminal TUI
+renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
+harness. The Pi provider glue uses the runtime-owned engine for model-run admission,
+steering, journal/storage and compaction over upstream `runAgentLoop`; provider
+code remains Pi-owned. The existing `@mono-agent/conversation` package still
+owns host conversation/history orchestration.
+
+The engine ships through `@mono-agent/turn/engine`,
+`@mono-agent/turn/engine/sessions.js` and
+`@mono-agent/turn/engine/owned-fs.js`. Its symbols, session paths and
+journal formats are unchanged. The standalone engine package was never released.
+
+### Current deep JavaScript entrypoints
+
+This generated inventory describes the Unreleased package; inventories in
+released sections below remain historical snapshots.
+
+<!-- public-api-js-subpaths:start -->
+<!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
+
+The package exposes **16 named deep `.js` subpaths**:
+
+```text
+@mono-agent/turn/agent/allowlists.js
+@mono-agent/turn/agent/compaction.js
+@mono-agent/turn/agent/prompt/skill-index.js
+@mono-agent/turn/agent/tools/index.js
+@mono-agent/turn/agent/tools/shared/ripgrep.js
+@mono-agent/turn/agent/tools/shared/tool-context.js
+@mono-agent/turn/agent/transcript.js
+@mono-agent/turn/ai/cost.js
+@mono-agent/turn/ai/failure.js
+@mono-agent/turn/ai/file-change-stats.js
+@mono-agent/turn/ai/live-input-prompt.js
+@mono-agent/turn/ai/providers/codex/app-server-client.js
+@mono-agent/turn/ai/runtime/model-refs.js
+@mono-agent/turn/ai/runtime/registry.js
+@mono-agent/turn/engine/owned-fs.js
+@mono-agent/turn/engine/sessions.js
+```
+<!-- public-api-js-subpaths:end -->
+
+Pi 1.2.0 compatibility notes:
+
+- Use `azure:<model>` instead of `azure-openai-responses:<model>` for built-in
+  Azure routes. The `azure-openai-responses` API id and `AZURE_OPENAI_*`
+  environment variables are unchanged; Azure now also supports Foundry Chat
+  Completions, including DeepSeek V4 Pro.
+- Claude Haiku 5.5 and other refreshed catalog rows are available without local
+  backfills. Effort levels and long-prompt cost tiers follow Pi's catalog.
+- Provider output-limit estimation is more conservative (3.5 characters/token).
+  Session storage, historical imports and the engine compaction estimator stay
+  unchanged. New Pi response/tool timings are normalized out of message envelopes
+  before hooks and persistence, not added to the stored session format.
+- Provider checks, compaction summaries and handoff summaries remain single-shot
+  SSE with zero transport retries. Anthropic can downgrade preferred strict tools
+  once after a definite schema-limit rejection; connection failures and started
+  responses do not enter that fallback. Runtime assistant-level retries remain
+  disabled, including the new transient upstream-provider error patterns.
+
+Native transcripts use `journals/<journalId>.jsonl` under `sessionsRoot`.
+The immutable journal ID is independent of the epoch-bound provider handle;
+logical ownership remains explicitly unbound until a host descriptor binds it. Idle
+legacy v3/v4 files import their effective main-branch context only. After the
+new store and publication directories are fsynced, the source is identity-checked
+and renamed to `*.jsonl.migrated`, then its directory/root are synced. Source
+fingerprints and import IDs make valid staging/publication/archive phases
+restartable. A synced completion record makes a successful import independent of
+its optional archive thereafter (including archive deletion/touch or a copied root).
+Exact-handle retirement removes matching archives as well as the owned journal.
+Archival failures preserve the published destination; duplicate IDs,
+source replacement and corrupt complete records fail closed. Other branches
+and upstream operation internals are not imported. Files with open operations
+remain untouched and start a new native transcript using the host's cold replay.
+That preserves canonical chat history, not exact interrupted native context.
+Never exercise import/archival against live session directories during testing.
+
+Journal records separate one logical turn from its prompt/compaction operations.
+Reopening deterministically seals old unsealed work as interrupted, without
+running a model/tool; missing results are prompt-only accounts and observed
+returned outcomes remain evidence. Repeated repair is idempotent. Deferred
+suspension is accounted as suspended, not resumed, with no fabricated completion. Streamed non-durable drafts may be lost.
+This native repair is not host crash adoption or a successful terminal receipt.
+Logical input/assistant/tool admission/outcome barriers fail terminally on journal
+storage errors, preventing retry/fallback effects. Exact compaction checkpoints
+are synced before completion and replayed on reopen without another summary call. Model-change retirement
+still deletes native evidence. The additive protected runtime-adapter `sessionTurn` descriptor binds known host
+or instance ownership append-only, separately from the existing `sessionRecovery`
+capability. Resolver overrides/private evaluation refuse it; backup/retry attempts
+strip it. P2-P6 host reconciliation, model-switch/handoffs, queue/delegation work
+remain pending.
+
+An existing current-uid-owned Pi 0.99 root such as 0755 is tightened to 0700
+through a pinned no-follow descriptor before creating session data. Group/other-writable
+roots are rejected, not adopted. The runtime emits one bounded, path-free
+`runtime_warning` with kind `sessions_root_permissions_tightened` when access
+is tightened, including if later session setup fails. Session directories, journals and locks remain
+strictly owner-private;
+symlinked/replaced components and complete corrupt records fail closed. Native
+headers publish through synced `.creating` files; incomplete unpublished creations
+do not block unrelated sessions and import can rebuild them under source/writer
+ownership. Incomplete
+owned final records are repaired under a kernel-backed writer lock and fsynced
+before reuse. Large native records and journals use incremental validation and
+offset-backed lookup rather than fixed 2 MiB/32 MiB limits.
+
+**Rollback:** old binaries cannot read these journals, and cannot reliably retire orphaned
+journals. They may cold-replay canonical history after a legacy source has been
+archived. Stop all writers and preserve a consistent backup before cleanup under
+the new storage protocol or an approved offline cleanup. Restore legacy sources
+only from that backup; never blindly rename `.migrated` files back or run mixed
+binaries against the same root.
+
+## Unreleased framework simplification
+
+- `runtime.permissionMode` / `RuntimeRunOptions.permissionMode` are removed.
+  They did not enforce Pi permissions. Retain real sandbox policy, approval
+  callbacks, and tool allow/deny lists.
+- `runOptions.settings` is rejected before provider execution. Pass typed
+  `toolLimits` and `compaction` objects instead. `resolveRuntimePolicies` and
+  its `RuntimePolicies` return type are removed from `runtime-adapter`.
+- `resolveAgentCompactionPolicy` now takes `({ toolLimits, compaction }, model)`.
+  It reads camelCase policy fields directly, preserving clamping and adaptive
+  model-window defaults. `resolveRuntimePolicyInputs`,
+  `deprecatedSettingsWarning`, and `DEPRECATED_SETTINGS_WARNING_KIND` are removed.
+- Root exports `configureToolRuntime`, `readToolRuntime`, `readRuntimeBrand`,
+  and `resetToolRuntime`, plus the `agent/tools/shared/runtime-context.js`
+  subpath, are removed. `createRuntime(host)` and `runtime.configureTools(next)`
+  bind and update only that runtime's context. Direct tool callers import
+  `createToolContext` / `updateToolContext` from
+  `@mono-agent/turn/agent/tools/shared/tool-context.js` and pass `{ ctx }`
+  on every filesystem, shell, web, or MCP call. Missing execution context fails
+  closed. Read brand fields from your context or pass `runtimeBrand` explicitly
+  to stateless formatting helpers.
+- `resolveEngineTurnAdapter(model)` validates before lazily loading the adapter. The optional
+  unused resolver-options parameter and internal `BridgeSpec` type are removed;
+  `listRuntimeBridges()` retains the sole Pi descriptor.
+
+```js
+import { createRuntime } from "@mono-agent/turn";
+import { createToolContext } from "@mono-agent/turn/agent/tools/shared/tool-context.js";
+import { readToolImpl } from "@mono-agent/turn/agent/tools/index.js";
+
+const runtime = createRuntime({ workspace: process.cwd() });
+const policies = {
+  toolLimits: { toolTextLimitChars: 16_000, mcpCallTimeoutMs: 90_000 },
+  compaction: { triggerRatio: 0.9, fixedOverheadEnabled: true },
+};
+// Pass ...policies to runtime.run(...). Omit unspecified scalar budgets so
+// they are derived against the model that actually serves the request.
+const ctx = createToolContext({ workspace: process.cwd() });
+await readToolImpl({ file_path: "README.md" }, { ctx });
+```
+
+External hosts such as Worklab must migrate these imports and flat policy keys
+before adopting this release. Existing installed consumers are not migrated by
+publishing this source change. Versioned sections below describe their
+historical migrations; this section supersedes the removed compatibility paths.
+
+## 0.21.0
+
+**This is the largest breaking change since `0.3.x`.** mono-agent shipped six
+runtime bridges behind a dispatch table; it now runs only its Pi implementation.
+Read the whole section before upgrading a live agent, and migrate its config
+before restarting one.
+
+### Deleted runtime bridges
+
+`claude-sdk`, `claude-code-cli`, `codex-app-cli`, `opencode-app-cli` and
+`acp-stdio` are gone. `pi-sdk` remains and is no longer *a* backend — it is the
+runtime. The backend descriptor table, the selection table and
+`MonoRuntimeBackendId` are removed with them.
+
+### What is NOT deleted
+
+Four surfaces share names with the deleted bridges and are unaffected. If you
+use any of them, nothing changes:
+
+- **The ACP *server* bridge** (`mono-agent bridge acp`) — mono-agent still
+  serves ACP to clients. Only the ACP *client* backend was removed.
+- **`install-skill --target claude|codex`** — writes skills into those tools'
+  directories.
+- **`docs-mcp-pairing`** — pairs the docs MCP with Claude Code and Codex.
+- **The Codex web-search backend** (`tools.web.search.backend: "codex"`) — it
+  drives a real Codex app-server through an extracted client.
+
+Note also that `openai-codex` and `opencode-go` are **Pi provider ids**, not
+references to the deleted bridges. Routes naming them keep working.
+
+### Web research configuration
+
+SearXNG remains supported in strict mode and as the first configured `auto`
+route. Its canonical JSON setting is now provider-scoped:
+
+```json
+{ "tools": { "web": { "search": {
+  "backend": "searxng",
+  "searxng": { "endpoint": "http://127.0.0.1:8088" }
+} } } }
+```
+
+The former `tools.web.search.endpoint` and
+`MONO_AGENT_WEB_SEARCH_ENDPOINT` spellings remain compatibility aliases; no
+immediate migration is required. Prefer `tools.web.search.searxng.endpoint` or
+`MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` when editing config. If both spellings
+are present they must normalize to the same URL.
+
+Ollama Web Search is additive and explicit-only: select `backend: "ollama"`.
+It never joins `auto`. Local mode defaults to `http://127.0.0.1:11434`; hosted
+`https://ollama.com` additionally requires `ollama.apiKeyEnv`. A hosted key is
+never sent to a local or custom origin.
+
+### Model reference grammar
+
+Old: `<sdk>:[<provider>:]<model>`. New: **`<provider>:<model>`**, split at the
+first colon only.
+
+| before | after |
+| --- | --- |
+| `pi:openai-codex:gpt-5.6-sol` | `openai-codex:gpt-5.6-sol` |
+| `pi:anthropic:claude-opus-5` | `anthropic:claude-opus-5` |
+| `ollama:llama3.1:8b` | unchanged — only the first colon splits |
+| `codex:gpt-5.6-terra` | **rejected**; no mechanical replacement |
+
+A leading `pi:` is canonicalized away automatically, so those refs keep working
+and stripping the prefix is optional tidying rather than a migration step.
+`codex:`, `claude:`, `claude-code:`, `codex-cli:`, `acp:` and `vercel:` are
+rejected at load with the replacement named in the message `doctor`,
+`mono-agent validate`, `mono-agent config` and the startup error all print. They
+are **not** migrated automatically: `codex:gpt-5.6-terra` →
+`openai-codex:gpt-5.6-terra` looks mechanical but changes which auth store the
+agent reads, and refs paired with `executionMode: "cli"` have no Pi equivalent
+at all. A human has to choose.
+
+### Retired configuration keys
+
+Each has an environment twin, and both now fail at load with the repair for the
+surface they were set on, instead of a generic unknown-key error. A single load
+is exhaustive *within one class*: every retired key present is named in one
+message, and every retired variable set is named in one message — not one per
+run. It is not exhaustive *across* classes. A config carrying both a retired key
+and a retired variable stops at the key, and names the variable only on the next
+run; see [Migrating a config](#migrating-a-config) for the order the classes are
+checked in. An empty assignment (`KEY=`) is treated as unset and does not fail.
+
+| key | environment twin | replacement |
+| --- | --- | --- |
+| `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | delete it — only the Pi runtime remains |
+| `memory.llm.executionMode` | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | delete it, same reason |
+| `runtime.routeSafety` | `MONO_AGENT_ROUTE_SAFETY` | delete it — every route is Pi-native, so `per-route-native` has no meaning |
+| `runtime.fallbackModels` | `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbacks: [{ "model": "..." }]` for the key, `MONO_AGENT_FALLBACKS_JSON` for the variable |
+
+`runtime.fallbacks` stays uncapped: `runtime.model` plus its fallbacks are the
+default route and its backups, nothing more.
+
+### New: `providers`
+
+`providers` declares which providers the agent supports, and widens what is
+*selectable* to those providers' full catalogs — previously you could only pick
+`runtime.model` or a declared fallback, so trying a new model meant editing
+config and restarting. `ollama` and `lmstudio` are zero-config autodiscovered on
+`localhost:11434` and `localhost:1234`; an explicit entry only overrides
+endpoint or credentials. `providers.local[]` migrates on load.
+
+Agents advertise the catalog additively: a slim `providers` array on `/v1/info`
+plus a lazy `GET /v1/models`. `TUI_WIRE_SCHEMA` is **not** bumped, so existing
+consoles keep working.
+
+### Removed deep exports
+
+Subpath exports went from 26 to 17. The removed subpaths all belonged to deleted
+bridges; import the Pi equivalents from the package root.
+
+### Removed host options
+
+Three `createRuntime()` host options went with the ACP *client* backend that was
+their only consumer: `resolveAcpProfile`, `onAcpInteractionRequest` and
+`acpSessionTokenKey`. The `0.18.0` and `0.18.1` sections below still describe
+them as required — that is a correct record of what those releases needed, and
+those sections are deliberately unchanged. As of `0.21.0` the runtime no longer
+binds them, and passing them is inert.
+
+This does **not** affect the ACP *server* bridge (`mono-agent bridge acp`),
+which never used them; see [What is NOT deleted](#what-is-not-deleted).
+
+### Web console store
+
+Schema v10 → v12, in two guarded steps: v11 adds per-thread `run_model` /
+`run_effort`, and v12 adds `agents.providers_json`, the persisted summary of the
+providers an agent advertises. Each step is guarded on `PRAGMA table_info` and
+re-runnable, and adds columns only — no rows are rewritten. Per-conversation
+model and effort overrides now persist server-side, so they roam between devices
+instead of living in one browser's localStorage.
+
+### Migrating a config
+
+There is no codemod. `mono-agent migrate-config` was written for this release and
+then removed before it shipped: it rewrote a live agent's config while the agent
+itself could be writing the same file, and that race could not be closed — only
+narrowed. Migrating by hand is a few minutes per agent and cannot lose data.
+
+The loader does the finding for you. Every retired key, retired environment
+variable and rejected model reference fails at load naming its own repair, so an
+unmigrated agent refuses to start and tells you what to change:
+
+```text
+MonoAgentConfigError: invalid_json
+`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK).
+Delete the key.
+
+MonoAgentConfigError: invalid_env
+`MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON`, a JSON
+array of `{ "model": "..." }` objects. Remove the variable and re-express the
+chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.
+
+MonoAgentConfigError: invalid_model_reference
+runtime.model `codex:gpt-5.6-terra` is not a valid runtime model reference:
+codex is no longer a runtime backend; use openai-codex:gpt-5.6-terra
+```
+
+A model supplied through the environment is attributed to the variable
+(`MONO_AGENT_MODEL ...`) rather than the JSON path, so the message always names
+the place you edit to fix it.
+
+What it does *not* do is report everything at once. Within a class it is
+exhaustive — all retired JSON keys in one message, all retired environment
+variables in one message, all unknown keys in one message — but the load stops at
+the first failing class, in this order: retired JSON keys, unknown JSON keys,
+retired environment variables, model references, then the remaining shape checks.
+Expect to run `mono-agent validate` a few times per agent, not once.
+
+#### Required — the load fails until each of these is done
+
+In `mono-agent.config.json`:
+
+1. Delete `runtime.executionMode`, `memory.llm.executionMode` and
+   `runtime.routeSafety`.
+2. Convert `runtime.fallbackModels: ["a", "b"]` to
+   `runtime.fallbacks: [{ "model": "a" }, { "model": "b" }]`.
+3. Replace every `codex:`, `claude:`, `claude-code:`, `codex-cli:`, `acp:`,
+   `vercel:<provider>:<model>` and nested `opencode:<provider>:<model>` reference
+   — in `runtime.model`, every `runtime.fallbacks[].model`, every
+   `subagents.definitions[].model`, an `agent-host` `memory.llm.model`, and every
+   per-trigger `model` override. The `vercel:`/`opencode:` wrappers unwrap to the
+   inner pair; the rest do not — `codex:gpt-5.6-terra` becomes
+   `openai-codex:gpt-5.6-terra`, which is a different auth store, so that
+   substitution is a decision, not a rename. The load error names the exact
+   replacement for each form.
+
+In the environment — the shell, the `.env` the agent is started with, and any
+`EnvironmentVariables` block in its launchd plist:
+
+4. Remove `MONO_AGENT_EXECUTION_MODE`, `MONO_AGENT_ROUTE_SAFETY` and
+   `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`. There is no replacement variable.
+5. Remove `MONO_AGENT_FALLBACK_MODELS` and re-express the chain as
+   `MONO_AGENT_FALLBACKS_JSON` (a JSON array of `{ "model": "..." }` objects), or
+   move it into `runtime.fallbacks` in the config file. Pointing this one at the
+   JSON key alone is not a repair: an operator whose chain lives only in `.env`
+   has no `runtime.fallbackModels` key to rewrite.
+6. Apply step 3 to any model reference carried in `MONO_AGENT_MODEL`,
+   `MONO_AGENT_FALLBACKS_JSON`, `MONO_AGENT_SUBAGENTS_JSON` or
+   `MONO_AGENT_MEMORY_LLM_MODEL`.
+
+And in trigger frontmatter:
+
+7. The same step-3 fix to `model:` in every `*.md` under the cron and webhook
+   trigger folders (`cron.dir` / `webhook.dir` if renamed, resolved from the
+   agent root).
+
+An empty assignment (`KEY=`) is *not* a migration item: every reader here treats
+an empty environment value as unset, so an inert leftover line in a deployed
+`.env` neither configured anything before nor fails the load now.
+
+#### Optional — accepted either way
+
+8. A leading `pi:` on a runtime reference is canonicalized away at load, so
+   `pi:openai-codex:gpt-5.6-terra` loads today and resolves to
+   `openai-codex:gpt-5.6-terra`. Stripping it from `runtime.model` and
+   `runtime.fallbacks[].model` is cosmetic — do it if you want the file to match
+   what `mono-agent config` prints. `pi:codex:...` is still rejected: the inner
+   pair is checked after the wrapper comes off.
+9. Strip `pi:` from `memory.llm.model` **only** when `memory.llm.provider` is
+   `agent-host`. Under the default `ollama` provider that field is a raw service
+   model string, where the colon in `qwen3:8b` is a tag separator — rewriting it
+   would repoint memory at a model that does not exist.
+
+#### `configVersion: 1` files are not covered by this checklist
+
+`configVersion` belonged to an experimental schema (`runtimes`, `routing`,
+`policy`, `state`, `$use` dependency injection) that the shipped loader has never
+accepted. None of steps 1–9 apply, because none of those keys exist in such a
+file; it is rejected whole, as unknown keys:
+
+```text
+mono-agent.config.json contains unknown keys: agent.id, agent.instructions,
+agent.workspace, channels.operator, configVersion, context.skills, policy,
+routing, runtimes, session, state. Remove or correct them; unknown keys are not
+ignored.
+```
+
+Re-author such a config against the current schema (or `mono-agent init` a fresh
+one and port the values across); there is no `configVersion: 1` upgrade path.
+
+### Deployment order
+
+```text
+merge → release 0.21.0 → per agent: stop it, edit the config, mono-agent validate
+      → mono-agent start
+```
+
+Edit with the agent stopped. `mono-agent validate` runs the same load as startup
+without starting a turn or spending a model call, so it finds these problems for
+free — but it reports one failing class per run (see above), so re-run it after
+each edit until it comes back clean.
+
+---
+
+## 0.19.0
+
+- **Oversized `Read` images:** raster image results with an edge above 8,000
+  pixels are now normalized before provider embedding. Source files are never
+  modified; safe images retain their exact bytes, resized GIF/WebP input keeps
+  its animation, and resized BMP input becomes PNG. Undecodable image data now
+  fails before the runtime creates an image content block.
+
+## 0.18.2
+
+- **Normalized native-subagent activity:** Claude SDK/CLI and Codex app-server
+  children now emit the exact `subagent_activity` lifecycle. Treat
+  `subagent.id` as the parent attachment key, `nativeId` only as provider
+  correlation metadata, and `phase: "message"` as child prose rather than
+  parent answer text or a completed tool call.
+- **Explicit native configuration trust:** Claude SDK filesystem settings stay
+  disabled unless `settingSources` opts into `user`, `project`, or `local`.
+  Those sources may execute hooks and plugins, not only load agents. Codex
+  repository instructions remain disabled unless `codexLoadProjectDocs` is
+  true; explicit app-server arguments remain authoritative.
+- **Provider-owned Codex agents:** non-empty caller-defined `nativeSubagents`
+  teammates now fail direct Codex startup with `skipped_capability_mismatch` so
+  a router may continue to Claude. Do not synthesize `collaborationMode` or
+  assume Claude profile definitions are portable to Codex.
+- **Per-attempt policy projection:** `resolveAttempt().policyOptions` may replace
+  only `allowedTools` and `disallowedTools` for the active
+  route. General resolver `options` still cannot replace protected request
+  fields.
+- **Pi inline helper ceiling:** the runtime-owned `general-purpose` profile is
+  limited to its read-only defaults intersected with `subagents.inline.allowedTools`.
+  An empty intersection disables that fallback profile rather than restoring
+  wider defaults.
+
+## 0.15.2
+
+- **Tool-policy capability discovery:** built-in bridge capabilities now report
+  `tool_policy: "projected" | "allow_all_only"`. Pi, Claude SDK, and Claude Code
+  report `projected`; direct Codex and direct OpenCode report
+  `allow_all_only`. Custom structural bridges that omit the field have unknown
+  capability.
+- **Wildcard normalization:** any `allowedTools` list containing `"*"` is
+  semantically allow-all. Direct Codex, direct OpenCode, and the public legacy
+  Codex CLI export now accept forms such as `["*", "Read"]` when
+  `disallowedTools` is empty. Named-only lists, `[]`, and every non-empty
+  denylist still fail closed on those non-projecting routes. The guided Codex
+  readiness probe retains its exact no-tool contract.
+- **Telemetry compatibility:** the route-safety value
+  `tools: "exact-allow-all"` is unchanged. It now explicitly denotes the
+  effective unrestricted contract rather than requiring a literal one-element
+  `["*"]` array.
+
+## 0.15.1
+
+- **Runtime-owned Pi interoperability:** consumers that directly import
+  `@earendil-works/pi-ai` only for catalog, reasoning, or OAuth behavior should
+  switch to `listPiBuiltinModels`, `getPiBuiltinModel`,
+  `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` from
+  `@mono-agent/agent-runtime/ai`. The runtime exact-pins Pi AI at `0.84.3` and Pi Agent Core at `0.83.0`;
+  the façade returns cloned model and credential
+  snapshots rather than exposing upstream provider objects.
+- **Claude test seam:** downstream tests should pass
+  `RuntimeRunOptions.claudeAgentQuery` instead of mocking
+  `@anthropic-ai/claude-agent-sdk` by package name. Normal runs omit this option
+  and use the runtime-owned SDK. Pi AI's `@anthropic-ai/sdk@0.91.1` pin and the
+  Claude Agent SDK's `@anthropic-ai/sdk>=0.93.0` requirement intentionally
+  remain as two isolated SDK versions.
+- **Compaction policy cleanup:** the inert
+  `toolPayloadCompactionTriggerChars` and `toolPruneTriggerTokens` properties
+  were removed from `AgentCompactionPolicy`, policy resolution, defaults, and
+  declarations. They had no supported typed/config path and did not activate
+  runtime pruning, so no replacement is required.
+- **Codex live-input teardown:** a Codex app-server transport death now also
+  terminates a pending live-input read. Runs settle with the existing
+  `provider_unavailable` / `codex_app_server_closed` classification instead of
+  waiting forever for the input iterator. If a host `acknowledge` or `reject`
+  callback throws, the already-decided native steering result remains
+  authoritative and the runtime emits a bounded
+  `live_input_callback_failed` warning.
+
+## 0.18.1
+
+- ACP provider-session ids and session-list cursors are now confidential,
+  authenticated v2 handles. Hosts must persist one exact 32-byte binary
+  `acpSessionTokenKey` and pass it to ACP task runs, list/delete helpers, and
+  `validateAcpProviderSessionId(value, expectedProfileId, key)`. A changed or
+  missing key fails before profile resolution or process spawn. Existing v1
+  handles are rejected; discard them and obtain fresh v2 handles. Preserve the
+  complete returned value for resume, pagination, validation, and delete, but
+  do not compare ciphertexts for equality or parse/substitute the remote
+  agent's raw session id or cursor.
+- Payload-bearing diagnostics from the pinned ACP SDK are scoped to the owned
+  ACP receive loop and reduced to content-free labels. Malformed or hostile
+  agent notifications cannot copy elicitation values or URL secrets into
+  process-wide console diagnostics.
+
+## 0.18.0
+
+- `acp:<profile-id>` is now a canonical runtime model reference when paired
+  with `executionMode: "acp"`. Hosts must provide `resolveAcpProfile`; profiles
+  define direct argv/environment values, client-versus-agent ownership,
+  capability policy, session configuration, and bounded process policy.
+- `onAcpInteractionRequest` is the host rendezvous for ACP permission and
+  elicitation requests. Hosts must echo only advertised permission option ids,
+  keep submitted form values out of durable logs, and fail closed on abort.
+- ACP profile callbacks never receive raw protocol `sessionId`, `_meta`, or
+  copied raw-id strings. Use the optional opaque
+  `AcpCallbackContext.providerSessionId` for safe session correlation.
+- ACP provider-session ids and session-list cursors are opaque, profile-bound
+  runtime handles. Preserve the complete value returned by the runtime for
+  resume, pagination, validation, and delete operations; do not parse or
+  substitute the remote agent's raw session id or cursor. Raw ACP transport
+  connections are internal; use the high-level management helpers.
+- The stable ACP update stream is preserved as typed `acp_session_update`
+  events and normalized assistant, thought, tool, plan, and cumulative usage
+  events. Stable usage comes from `usage_update`, not experimental prompt
+  response fields.
+- ACP management helpers (`probeAcpProfile`, `authenticateAcpProfile`,
+  `logoutAcpProfile`, `listAcpSessions`, and `deleteAcpSession`) use the same
+  resolver and callback boundary as turns. Authentication always requires an
+  explicitly selected advertised method id.
+
+## 0.17.x baseline
+
+This prior baseline carries the 0.16.x contract forward
+and adds a host-only, request-scoped `toolEnvironment` boundary. Hosts may pass
+validated values and PATH prefixes through the request, harness, and runtime;
+the runtime applies them only when Bash, Exec, or a nested subagent process is
+spawned. It does not mutate `process.env` or persist the values in prompts,
+metadata, history, traces, or long-lived tool context.
+
+- **0.17.1 Pi auth classification:** Pi 0.83 may report a missing credential as
+  `Provider is not configured: <provider>`. The runtime now classifies that
+  exact signature as `provider_auth`, allowing a configured fallback route to
+  run while avoiding a same-route retry that cannot repair absent credentials.
+
+## 0.16.x
+
+This baseline carries the whole 0.15.x contract forward and adds:
+
+- `skills` and `skillsRoot` on the run options. `skills` is the disclosed
+  `{name, description}` set for a run; a non-empty value makes `supports_skills`
+  a routing requirement, so a chain entry lacking it is skipped. `skillsRoot`
+  names the directory holding `<name>/SKILL.md` and is required alongside
+  `skills` for `ReadSkill` to exist. A subagent run now inherits both from its
+  parent unless a host-supplied `run` withholds them, so a child no longer has
+  to rediscover by trial and error what its parent could look up.
+- Provider failover detail reaches whoever is watching the run rather than being
+  flattened at the boundary.
+- Pi AI 0.84.3 with Pi Agent Core 0.83.0.
+
+## 0.15.x
+
+- The explicit exports map, the five-bridge lazy registry, typed runtime
+  policies, runtime-owned provider dependencies, and the public-surface cleanup
+  described in this guide.
+
+## 0.12.x
+
+- Persistent provider context overflow is classified as `context_limit`, which
+  lets a fallback router try its next model without conflating context capacity
+  with quota, output, or max-turn `usage_limit` failures.
+- Omitted Pi compaction values resolve from effective context window `W`:
+  trigger ratio `0.90`, retained context `10%`, summary output `4%`, and minimum
+  proactive savings `10%`, subject to the documented scalar clamps. Numeric
+  provider limits and generic overflow evidence may lower a learned
+  process-local ceiling; `contextWindowOverride` remains the persistent
+  correction.
+
+## 0.10.x
+
+- Direct Codex normal runs introduced a fail-closed tool-policy gate: omitted
+  `allowedTools` or the explicit `["*"]` sentinel was accepted with no denied
+  tools, while named-only allowlists, `[]`, and deny lists were rejected before
+  provider startup. Version 0.15.2 preserves that safety boundary while
+  normalizing every wildcard-containing allowlist to the same effective
+  allow-all meaning.
+- `ReadSkill` returns complete skill instructions by default, including content
+  beyond the former 12,000-character boundary. Programmatic callers of
+  `formatSkillBodyWithPathNote()` opt into truncation by passing a positive
+  `maxChars`; omitting it means no helper-level cap. The standard 256 KiB
+  tool-payload guard remains in effect.
+
+## 0.7.x
+
+- Omitting Claude SDK effort now preserves the provider default instead of
+  deriving a `thinking` option. Supported effort values are forwarded exactly;
+  explicit `none` is unsupported (`skipped_capability_mismatch` through the
+  bridge, while direct `claudeEffortOptions("none")` calls throw).
+- Cancellation uses a private abort controller and closes the active Claude SDK
+  `Query` with `Query.close()`. Test doubles must honor both boundaries rather
+  than implementing only iterator `return()`.
+- `Glob` and `Grep` prefer an explicit `ripgrepPath`, then the packaged
+  `@vscode/ripgrep` binary on supported platforms, and finally `PATH`.
+
+## 0.6.2
+
+- Codex file edits use a flat top-level `file_change` event instead of synthetic
+  assistant/user `file_edit` tool-use/tool-result pairs.
+- The synthetic `createClaudeFileEditHooks`,
+  `createFileEditToolUseEvent`, and `createFileEditToolResultEvent` exports were
+  removed. Consumers should observe normalized runtime events or use the
+  remaining file-change statistics helpers rather than recreating provider hook
+  behavior.
+
+---
+
+## Detailed pre-1.0 reference
+
+### Pre-1.0 public-surface cleanup
+
+The compatibility entrypoints `./ai/backend.js` and `./ai/registry.js` were
+removed after repository-wide reachability checks found no supported caller.
+The old `findProviderForModel` / `listProviders` aliases and provider/backend
+constant objects were removed at the same time. Import `resolveRuntimeBridge`
+(now `resolveEngineTurnAdapter`)
+or `listRuntimeBridges` from `@mono-agent/agent-runtime` (or its `./ai` barrel)
+instead. Runtime behavior and the canonical bridge descriptors are unchanged.
+
+---
+
+### 1. Pi is now native-only (`pi-sdk.js` → `pi-native.js`)
+
+The hand-rolled Pi bridge that drove the low-level `Agent` was replaced by a
+bridge then built on Pi's high-level `AgentHarness`. The
+registry resolves `pi` → the native bridge unconditionally; there is no
+`piEngine` flag.
+
+- **Public runtime API** (`createRuntime`, model reference `"pi:<provider>:<model>"`)
+  is unchanged — `pi:openai:gpt-5.5` etc. still work.
+- **Deep imports** of `@mono-agent/agent-runtime/ai/providers/pi-sdk.js` **no
+  longer resolve**: the compatibility shim was removed and the explicit exports
+  map has no provider wildcard. **Action:** import
+  `generatePiNativeResponse` (now `generateEngineTurnResponse`) /
+  `piNativeRuntimeBridge` (now `engineTurnAdapter`) from
+  `@mono-agent/agent-runtime/ai`, or select Pi through the public runtime
+  registry. `pi-errors.js` is internal and is not an exported replacement; use
+  the normalized `RuntimeResult.failureKind` or the public failure helpers at
+  `@mono-agent/agent-runtime/ai/failure.js`. The `pi*Backend` aliases are gone —
+  all Pi routes through the native bridge.
+
+### 2. Removed run options: `piReasoningSummary`, `piCodexTransport`
+
+These were Pi-bridge knobs the native path does not consume.
+
+- `piReasoningSummary` is **no longer read** and was removed from the run-options
+  type. Pi-native derives reasoning from `effort` (`thinkingLevel`); the
+  Codex and Claude CLI bridges emit their own reasoning events. **Action:**
+  remove `piReasoningSummary` from call sites. The former
+  `runtime.reasoningSummary` config field has also been removed.
+- `piCodexTransport` was doc-only and is removed. No replacement is needed.
+
+### 3. Pi context compaction: guarded pre-turn, mid-run and overflow recovery
+
+`AgentHarness` supported automatic checkpoint and overflow compaction. The pi
+bridge arms checkpoints for the main prompt with its guarded
+`session_before_compact` hook, while keeping native overflow recovery disabled
+in favor of bridge-owned recovery (the legacy low-level `transformContext` /
+`afterToolCall` hooks and `createAgentCompactionManager` were removed):
+
+- Before each turn the bridge estimates the running model's context usage and
+  calls `AgentHarness.compact()` when near the window (proactive). During the
+  prompt, Pi checkpoints run the same guards between completed model/tool rounds
+  without starting a second agent run. Summaries remain separate paid provider
+  requests. If a turn still overflows, the bridge compacts and re-prompts at most
+  once after verified reduction (reactive recovery). A fresh compaction suppresses
+  recovery; meaningful growth after a mid-run cut restores eligibility.
+- Runs report **`capabilitiesUsed.context_compaction_applied`** as `true` (a
+  compaction fired), `false` (enabled but not needed), or `null` (disabled via
+  `runtime.compaction.enabled: false`). If you assert on this value, expect this
+  tristate on the Pi path.
+- The host **`onCompactionRecorded`** callback now **fires on each automatic
+  compaction** on the Pi path (previously inert).
+- The trigger and omitted budgets adapt to the model actually serving the
+  request (`harness.getModel()`). Numeric overflow limits and generic failed
+  request estimates lower a learned process-local ceiling; use
+  `runtime.compaction.contextWindowOverride` for a persistent metadata
+  correction. Pass typed `compaction` fields to `resolveAgentCompactionPolicy`.
+
+### 4. Durable Pi session resume: create-on-miss semantics
+
+When a run supplies a `providerSessionId` (or the legacy `sessionId` alias) **and**
+durable storage is configured (`piSessionsRoot`), Pi-native now **creates the
+session with that id if no on-disk JSONL exists** (create-on-miss), instead of returning
+`session_not_found`. An existing JSONL is reopened and resumed as before.
+
+This makes a **stable, conversation-derived session id resume across process
+restarts** (the on-disk transcript is the durable history; the in-memory
+conversation→session map is no longer required to resume). **Action:** if you
+passed an arbitrary `providerSessionId` to a durable run expecting a hard
+`session_not_found` on first use, note it now succeeds by creating that session.
+The in-memory (non-durable) resume path still fast-fails `session_not_found` on a
+miss.
+
+### 5. Fallback router enforces requested native-subagent capability
+
+Pi advertises `supports_native_subagents: false`. The fallback router now infers
+a `supports_native_subagents` requirement when a run passes
+`options.nativeSubagents.teammates` (non-empty), the same way it already infers
+`structured_output` from `outputSchema`. A chain entry that cannot satisfy it
+(e.g. a Pi fallback behind a Claude primary that was handed native teammates) is
+**skipped** (`skipped_capability_mismatch`) rather than silently succeeding with
+`nativeSubagentsUsed: []`. **Action:** if you configure fallback chains for
+native-subagent runs, ensure at least one entry supports native subagents, or the
+run reports exhausted instead of degrading silently.
+
+Caller-defined `nativeSubagents.teammates` are a Claude-only projection. Codex
+still advertises and reports its provider-owned native collaboration surface,
+but a direct Codex attempt now rejects configured teammate/profile definitions
+with `codex_native_subagent_definitions_unsupported` before transport; a router
+may then continue to Claude. Use `codexLoadProjectDocs: true` to enable Codex's
+repository instructions, not to define Codex collaboration profiles.
+
+### 6. Diagnostics & internal behavior changes (no API change)
+
+- **Pi multimodal**: image inputs are delivered to the model as image content
+  blocks (internal fix; affects behavior, not the call shape).
+- **Tool-output limits**: settings-driven clamps (`agent_tool_text_limit_chars`,
+  `agent_search_result_limit`, `toolPayloadMaxBytes`, …) are honored again on the
+  Pi path (built-ins + MCP). The 256 KB tool-payload ceiling is unchanged.
+- **WebFetch** retries transient network errors (timeout / ECONNRESET / 5xx)
+  in-tool with backoff before returning an error.
+- **Claude CLI**: the temporary `mcp.json` written for a CLI run is now created
+  with `0600` (owner-only) permissions.
+- Pi session lifecycle is hardened: aborts during setup are honored before the
+  provider call, fresh durable sessions are deleted on setup/abort failure, and
+  resumed sessions roll back to their pre-turn leaf on host-side (outer-catch)
+  failures. These are correctness fixes with no API surface change.
+
+### 7. Sandbox enforcement is now an injectable seam (agent-runtime has zero workspace-package dependencies)
+
+`@mono-agent/agent-runtime` does not depend on `@mono-agent/runtime-adapter`. Sandbox
+enforcement (command sandboxing, network-policy checks, and monotonic policy
+merging) is now driven through an injectable `RuntimeSandbox` seam
+(`agent/sandbox-seam.js`): `createRuntime({sandbox})` / `createRouterRuntime({host: {sandbox}})`
+accept an implementation. `@mono-agent/runtime-adapter` injects the real
+sandbox implementation automatically for every
+`createMonoRuntime(...)` call, so behavior is **byte-identical** for existing
+mono-agent hosts — no action needed if you build your runtime through
+`@mono-agent/runtime-adapter`.
+
+- **No sandbox policy configured, no implementation injected:** unchanged —
+  every tool runs unsandboxed, exactly as before.
+- **A sandbox policy IS configured, but no `RuntimeSandbox` implementation is
+  injected** (only possible if you call `@mono-agent/agent-runtime`'s
+  `createRuntime` directly, bypassing `@mono-agent/runtime-adapter`): **this
+  now fails closed** with a `sandbox_unavailable` error instead of silently
+  running the command unsandboxed. Previously `@mono-agent/agent-runtime`
+  always bundled the real sandbox implementation and always enforced the policy; a
+  host that built on `createRuntime` directly and relied on that implicit
+  availability must now also inject a `RuntimeSandbox` implementation (the
+  real one from `@mono-agent/runtime-adapter`, or a custom one) to keep policies
+  enforced. **Action:** if you configure `sandboxPolicy` and call
+  `createRuntime`/`createRouterRuntime` directly instead of going through
+  `@mono-agent/runtime-adapter`, also pass a `sandbox` implementation, or drop
+  the policy.
+
+### 8. Typed per-run tool limits and compaction
+
+The former flat `options.settings` bag and its compatibility translators are
+removed. Use `options.toolLimits` (`RuntimeToolLimits`) for output budgets and
+MCP/Bash timeouts, and `options.compaction` (`RuntimeCompactionPolicy`) for
+compaction toggles, ratios, scalar budgets, and context-window overrides.
+`resolveAgentCompactionPolicy({ toolLimits, compaction }, model)` applies the
+same clamps directly to those typed inputs. Omitted scalar budgets remain
+adaptive to the live model window. See the unreleased migration above.
+
+### 9. New per-run overrides: `sandbox`, `sandboxPolicy`, `prompts`
+
+Beyond `toolLimits` / `compaction`, `RuntimeRunOptions` gained:
+
+- **`sandbox`** — a per-run `RuntimeSandbox` implementation override. Precedence
+  is run > host > passthrough; it overrides only the *enforcing code*, while the
+  policy **data** still merges monotonically (I13, section 7).
+- **`sandboxPolicy`** — per-run policy data, merged monotonically with the host
+  policy (it can **tighten**, never weaken or disable).
+- **`prompts`** (`RuntimePromptOverrides`) — per-run overrides of the kernel's
+  built-in prompt fragments: `structuredOutputInstruction(systemPrompt)`,
+  `structuredOutputFinalization()`, `liveInputGuidance(body)`. Run wins over the
+  host-level `prompts` default; an absent field keeps the built-in string
+  (byte-identical default). These are also accepted on `AgentRuntimeHostOptions`
+  as the host-level default.
+
+### 10. Pi 0.80 auth: `Models` credential store (`resolvePiApiKey` semantics preserved)
+
+Pi 0.80 removed the harness `getApiKeyAndHeaders` hook; request auth now resolves
+through a `Models` collection's `CredentialStore`. The bridge's **per-run
+key-resolution contract is unchanged**: an `apiKeys` map entry wins, else the host
+`resolvePiApiKey(provider)` callback is consulted; a callback failure emits a
+`pi_auth_failed` runtime warning and proceeds keyless (a builtin provider then
+falls back to its own env vars, exactly as returning `undefined` from the old hook
+did). **No host action needed** — `resolvePiApiKey` behaves as before.
+
+Current dependency pins: **`@earendil-works/pi-ai` and
+`@earendil-works/pi-agent-core` are both `1.2.0`** (the initial Pi 0.80
+migration landed at `0.80.5`, from `^0.79.1`). Pi 0.85's durable lane harness is
+adapted behind the runtime's existing public API. Pi 0.86 folds request prompts
+and tool declarations into the transcript's leading system message (providers
+read them back with `getCurrentSystemPrompt()`/`getCurrentTools()`), ships
+`opencode-go:deepseek-v4.1-flash` natively (retiring the mono-agent catalog
+backfill), and adds static `meta` and `radius` provider catalogs. Compaction
+remains owned by mono-agent policy, and model-native `max` reasoning plus Pi's
+request-wide pricing tiers are preserved.
+
+Packed npm consumers resolve the runtime-owned exact Pi AI 1.2.0 copy for both
+the runtime and Agent Core's `^1.2.0` dependency. The release guard verifies
+both resolution paths independently.
+
+Pi 0.87.0 removes `shouldStopAfterTurn` from the low-level loop config,
+replaced by `finishTurn` alongside `prepareRequest` — but none of the new loop
+hooks is surfaced on `AgentHarnessOptions`, so the engine-turn adapter keeps its
+local maxTurns ceiling and no host action is needed. Unknown OpenAI-compatible
+endpoints no longer receive strict tool schemas unless they advertise support;
+capable built-ins keep strict tools, and mono-agent's custom-provider path never
+advertised strict support, so wire behaviour there only loses a schema strictness
+those endpoints were never required to honour.
+
+The 0.83 upgrade carries two upstream removals, both absorbed inside the runtime
+so hosts need no action:
+
+- `@earendil-works/pi-ai/oauth` became a type-only entry point. The generic
+  registry (`getOAuthApiKey`, `getOAuthProvider`, `getOAuthProviders`) is gone,
+  and the per-provider flows are not importable. `src/ai/pi-oauth-compat.js`
+  rebuilds the same contracts over `provider.auth.oauth`, so `resolvePiApiKey`,
+  `resolvePiOAuthApiKey`, and `loginPiOAuth` keep their existing signatures and
+  behaviour, including the refresh-on-expiry trigger.
+- `AgentHarnessOptions.env` was removed in favour of a per-turn `toolContext`.
+  The runtime passes neither: it uses none of Pi's built-in file/shell tools.
+
+### 11. Exports map: wildcards removed (explicit deep-path map)
+
+The package's `./ai/*` and `./agent/*` **wildcard exports were replaced by an
+explicit `exports` map**: 3 barrels (`.`, `./ai`, `./agent`) plus the generated
+deep-path inventory below, with every entry carrying its own `types` condition.
+A deep import that is not on the map **no longer resolves** — a wildcard used to
+silently resolve anything under `src/`, so a moved/renamed/mistyped subpath is
+now a loud failure (guarded by `scripts/verify-deep-imports.mjs`).
+
+<!-- public-api-js-subpaths:start -->
+<!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
+
+The package exposes **14 named deep `.js` subpaths**:
+
+```text
+@mono-agent/agent-runtime/agent/allowlists.js
+@mono-agent/agent-runtime/agent/compaction.js
+@mono-agent/agent-runtime/agent/prompt/skill-index.js
+@mono-agent/agent-runtime/agent/tools/index.js
+@mono-agent/agent-runtime/agent/tools/shared/ripgrep.js
+@mono-agent/agent-runtime/agent/tools/shared/tool-context.js
+@mono-agent/agent-runtime/agent/transcript.js
+@mono-agent/agent-runtime/ai/cost.js
+@mono-agent/agent-runtime/ai/failure.js
+@mono-agent/agent-runtime/ai/file-change-stats.js
+@mono-agent/agent-runtime/ai/live-input-prompt.js
+@mono-agent/agent-runtime/ai/providers/codex/app-server-client.js
+@mono-agent/agent-runtime/ai/runtime/model-refs.js
+@mono-agent/agent-runtime/ai/runtime/registry.js
+```
+<!-- public-api-js-subpaths:end -->
+
+**Action:** if you deep-import a subpath not in this list, switch to the closest
+supported one, a barrel (`./ai` / `./agent`), or the public runtime registry.
+`pi-sdk.js` is gone and remains intentionally unexported (section 1). Import
+`generatePiNativeResponse` (now `generateEngineTurnResponse`) from `@mono-agent/agent-runtime/ai` instead of adding
+a compatibility subpath.
+
+---
+
+## Version
+
+This guide describes the published `0.25.x` package contract. Keep
+`@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
+`@mono-agent/*` packages on the same lockstep version when upgrading. The paired
+runtime adapter no longer exposes `piReasoningSummary` in its run-options type.
+
+---
+
+## Appendix — Worklab shared-kernel adoption
+
+Worklab should consume the published `@mono-agent/agent-runtime` package rather
+than vendor or rename its source. The products remain separate, but provider
+execution has one owner. Apply this downstream checklist when removing
+Worklab's runtime fork:
+
+1. **Install the lockstep runtime package.** Keep the `@mono-agent/*` packages a
+   Worklab release uses on the same published version. Preserve the shared
+   kernel's `GPL-3.0-only` distribution boundary.
+2. **Remove direct provider ownership.** Delete Worklab production imports from
+   `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
+   of provider bridge code. Move tests off Pi's faux-provider helpers too; until
+   that is complete, isolate the fixture or pin its development-only dependencies
+  to the exact Pi AI `1.2.0` and Pi Agent Core `1.2.0` compatibility pins
+   rather than floating ranges. Do not restore the
+   removed `pi-sdk.js` subpath.
+3. **Use the public Pi surfaces.** Run models through
+   `generatePiNativeResponse` (now `generateEngineTurnResponse`) or the runtime registry. Use
+   `listPiBuiltinModels`, `getPiBuiltinModel`,
+   `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
+   catalog and OAuth integration. Those façades keep Pi provider objects and the
+   exact Pi AI `1.2.0` and Pi Agent Core `1.2.0` compatibility pins inside the
+   runtime and its engine dependency. OAuth login adapters
+   must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
+   rejects an incomplete callback contract before starting provider login.
+4. **Inject Claude tests.** Replace package-level mocks of
+   `@anthropic-ai/claude-agent-sdk` with
+   `RuntimeRunOptions.claudeAgentQuery`. Production calls omit the seam. Expect
+   the runtime installation to retain Pi's Anthropic SDK `0.91.1` beside the
+   newer Anthropic SDK required by Claude; do not force-deduplicate them.
+5. **Preserve the sandbox boundary.** A direct runtime consumer that supplies
+   `sandboxPolicy` must also inject a `RuntimeSandbox`; otherwise the runtime
+   intentionally fails closed. With neither a policy nor an implementation,
+   passthrough behavior remains unchanged.
+6. **Use supported contracts.** Keep host callbacks within
+   `AgentRuntimeHostOptions`, tool state within the exported tool-runtime
+   context, and reads within `RuntimeResult`. Replace deprecated
+   `options.settings` with typed `toolLimits` and `compaction` objects.
+7. **Verify the installed package.** Run Worklab's provider and worker tests
+   against the packed or published package, assert that no production import
+   resolves Pi directly, and prove the injected Claude query performs no
+   network call.

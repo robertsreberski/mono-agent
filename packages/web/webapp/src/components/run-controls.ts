@@ -1,4 +1,4 @@
-import { isProviderUsageId } from "@mono-agent/agent-contracts/provider-usage";
+import { isProviderUsageId } from "@mono-agent/contracts/provider-usage";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useConsoleStore } from "../console-store";
 import { runningManualCompaction } from "../manual-compaction";

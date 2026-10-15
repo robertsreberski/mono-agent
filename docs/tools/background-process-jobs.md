@@ -111,7 +111,7 @@ does not consume the runtime budget.
 ## Durable root registry and request barrier
 
 Before mono-agent creates an enabled `stateDir`, opens its store, or writes a
-store secret, `@mono-agent/agent-app` securely publishes that root to
+store secret, `@mono-agent/app` securely publishes that root to
 `.mono-agent/process-jobs-roots-v1/registry.json`. Opening the service requires
 the exact registration proof. The v1 manifest is absent exactly while no root
 has ever been registered for the agent. It stores sorted agent-root-relative
@@ -215,7 +215,7 @@ harness/responder, app-owned operator endpoint, the lazy-run wrapper returned by
 `createConfiguredAgentRuntime`, configured named children, and direct configured
 memory LLM/embedding calls. Web and ACP clients are thin clients of an
 already owned host and do not invoke a provider themselves. Lower-level
-`@mono-agent/agent-runtime/host` and `@mono-agent/agent-runtime` factories are
+`@mono-agent/turn/host` and `@mono-agent/turn` factories are
 root-agnostic unless an app-owned caller supplies the protection policy and
 route gate.
 

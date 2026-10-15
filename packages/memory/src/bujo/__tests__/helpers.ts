@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { MemoryCompletedTurnResult } from "@mono-agent/agent-contracts";
+import type { MemoryCompletedTurnResult } from "@mono-agent/contracts";
 import type { BujoMemoryStore } from "../store.js";
 import type { EmbeddingProvider } from "../../search/index.js";
 import type { LlmComplete } from "../llm.js";

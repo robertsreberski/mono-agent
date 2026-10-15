@@ -7,7 +7,7 @@ sidebar:
 
 This page covers the recommended way to install the `mono-agent` CLI, what the browser console needs, and how to run an unreleased build straight from a clone of the repo.
 
-The shipped command line lives in `@mono-agent/agent-app`: the config-first host that reads one `mono-agent.config.json` and hosts every channel. The always-on browser console lives in `@mono-agent/web`. For convenience there is an unscoped **`create-mono-agent`** installer that puts the natural `mono-agent` command on your `PATH`; both installer bins delegate to `@mono-agent/agent-app`, and only the `create-mono-agent` name adds the npm-init routing described below. All publish under the `@mono-agent/*` scope on npm.
+The shipped command line lives in `@mono-agent/app`: the config-first host that reads one `mono-agent.config.json` and hosts every channel. The always-on browser console lives in `@mono-agent/web`. For convenience there is an unscoped **`create-mono-agent`** installer that puts the natural `mono-agent` command on your `PATH`; both installer bins delegate to `@mono-agent/app`, and only the `create-mono-agent` name adds the npm-init routing described below. All publish under the `@mono-agent/*` scope on npm.
 
 :::note
 The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to an unrelated `monoagent` package — so the installer follows npm's `create-*` convention (`create-mono-agent`), which `npm create mono-agent` resolves natively.
@@ -47,12 +47,12 @@ Install the `create-mono-agent` installer globally to get the `mono-agent` comma
 npm i -g create-mono-agent
 ```
 
-`create-mono-agent` ships both a `create-mono-agent` and a `mono-agent` bin. The persistent `mono-agent` name forwards arguments unchanged to `@mono-agent/agent-app` (installed alongside it). The installer name treats a bare invocation or any invocation whose first argument is a flag as `init`, except that singleton `--help`/`-h` prints the `init` help topic and singleton `--version`/`-v` prints the shared `mono-agent <version>` identity. Explicit subcommands pass through.
+`create-mono-agent` ships both a `create-mono-agent` and a `mono-agent` bin. The persistent `mono-agent` name forwards arguments unchanged to `@mono-agent/app` (installed alongside it). The installer name treats a bare invocation or any invocation whose first argument is a flag as `init`, except that singleton `--help`/`-h` prints the `init` help topic and singleton `--version`/`-v` prints the shared `mono-agent <version>` identity. Explicit subcommands pass through.
 
 Prefer the scoped host directly? It also puts `mono-agent` on your `PATH`; the memory recall tool is provided directly by the host:
 
 ```bash
-npm i -g @mono-agent/agent-app
+npm i -g @mono-agent/app
 ```
 
 ### Without a global install
@@ -166,17 +166,17 @@ old and new setup or repair must never overlap.
 Update global installs with npm:
 
 ```bash
-npm update -g create-mono-agent     # (or @mono-agent/agent-app)
+npm update -g create-mono-agent     # (or @mono-agent/app)
 ```
 
-The `create-mono-agent` installer, `@mono-agent/agent-app`, `@mono-agent/web`, and every other `@mono-agent/*` package release in lockstep at one version — keep any pinned references (scoped or the installer) on the same version. To see what the current npm release actually contains relative to these docs, read [Release status](/reference/release-status/).
+The `create-mono-agent` installer, `@mono-agent/app`, `@mono-agent/web`, and every other `@mono-agent/*` package release in lockstep at one version — keep any pinned references (scoped or the installer) on the same version. To see what the current npm release actually contains relative to these docs, read [Release status](/reference/release-status/).
 
-For reproducible installs or one-shot scaffolds, pin the version explicitly to a published release — use the same version across every `@mono-agent/*` package (pick one from the [published npm versions](https://www.npmjs.com/package/@mono-agent/agent-app?activeTab=versions)):
+For reproducible installs or one-shot scaffolds, pin the version explicitly to a published release — use the same version across every `@mono-agent/*` package (pick one from the [published npm versions](https://www.npmjs.com/package/@mono-agent/app?activeTab=versions)):
 
 ```bash
 version='<published-version>' # Replace with the published version you want to install.
-npm i -g "@mono-agent/agent-app@$version"
-npm exec --package "@mono-agent/agent-app@$version" -- mono-agent init
+npm i -g "@mono-agent/app@$version"
+npm exec --package "@mono-agent/app@$version" -- mono-agent init
 ```
 
 Source collaborators can review each version's notes in the repository
@@ -219,21 +219,21 @@ canonical ancestors above that root are separately required to remain owner-priv
 process must start after the conservative finalized-runtime boundary.
 
 After the build, the source CLI entry point is
-`packages/agent-app/dist/cli.js`. For a literal source-build smoke test from a clean folder, call that
+`packages/app/dist/cli.js`. For a literal source-build smoke test from a clean folder, call that
 entry directly:
 
 ```bash
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model openai-codex:gpt-5.6-terra
-node "$repo/packages/agent-app/dist/cli.js" validate
+node "$repo/packages/app/dist/cli.js" init --model openai-codex:gpt-5.6-terra
+node "$repo/packages/app/dist/cli.js" validate
 ```
 
 You can also alias `mono-agent` to the built entry so you can run the local build from anywhere:
 
 ```bash
-alias mono-agent="node /absolute/path/to/mono-agent/packages/agent-app/dist/cli.js"
+alias mono-agent="node /absolute/path/to/mono-agent/packages/app/dist/cli.js"
 mono-agent --help
 ```
 
@@ -244,5 +244,5 @@ A source build is an evaluation path, not a published artifact: other agents tha
 :::
 
 :::tip
-Editable global link instead of an alias? After `pnpm run build`, run `npm link` from `packages/agent-app` to put the local bin on your `PATH`. You still rebuild after each change.
+Editable global link instead of an alias? After `pnpm run build`, run `npm link` from `packages/app` to put the local bin on your `PATH`. You still rebuild after each change.
 :::

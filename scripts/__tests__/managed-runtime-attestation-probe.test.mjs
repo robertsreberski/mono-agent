@@ -61,7 +61,7 @@ describe("managed runtime attestation probe", () => {
 
 it("compares current inputs with effective console approval instead of the raw argv anchor", async () => {
   const repo = await mkdtemp(join(tmpdir(), "attestation-approval-"));
-  const dist = join(repo, "packages", "agent-app", "dist");
+  const dist = join(repo, "packages", "app", "dist");
   await mkdir(dist, { recursive: true });
   await writeFile(join(repo, "package.json"), JSON.stringify({ type: "module" }));
   const files = {

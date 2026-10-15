@@ -48,7 +48,7 @@ installation so it discovers both the skill and server.
 
 ## Manual registration
 
-Use the version matching the installed `@mono-agent/agent-app` package:
+Use the version matching the installed `@mono-agent/app` package:
 
 ```bash
 MONO_AGENT_VERSION="$(mono-agent --version)"

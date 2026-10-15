@@ -15,7 +15,7 @@ Catalog responsibility: Provides offline hybrid search and guided reading over v
 <!-- package-metadata:end -->
 
 Plugin tier: this package releases in the mono-agent lockstep but stays outside
-the default `@mono-agent/agent-app` dependency closure.
+the default `@mono-agent/app` dependency closure.
 
 ## Responsibility
 
@@ -25,7 +25,7 @@ guided reading over the canonical mono-agent documentation and the authoritative
 
 ## Install / Usage
 
-Pair the exact version matching `@mono-agent/agent-app`:
+Pair the exact version matching `@mono-agent/app`:
 
 ```bash
 MONO_AGENT_VERSION="$(mono-agent --version)"

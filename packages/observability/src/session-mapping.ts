@@ -1,4 +1,4 @@
-import { suppressesNotification } from "@mono-agent/agent-contracts";
+import { suppressesNotification } from "@mono-agent/contracts";
 
 import { compactString } from "./content.js";
 import { isRecord } from "./guards.js";

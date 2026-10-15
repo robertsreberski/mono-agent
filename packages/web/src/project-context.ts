@@ -10,7 +10,7 @@ import type { WebConversationMarkerPart, WebRouteSelection } from "./contracts.j
  * part of the user's message.
  *
  * The envelope technique mirrors the harness's `composeHostTurnEnvelope`
- * (packages/agent-harness/src/context/turn-envelope.ts), which this package
+ * (packages/conversation/src/context/turn-envelope.ts), which this package
  * must not modify: reserved delimiters are neutralised in prompt copies, never
  * in canonical storage.
  */

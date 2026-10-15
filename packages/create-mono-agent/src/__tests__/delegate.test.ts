@@ -137,7 +137,7 @@ describe("delegateSignals", () => {
     const { child, proc } = wire();
     child.emitError(new Error("ENOENT"));
     expect(proc.exitCode).toBe(1);
-    expect(proc.stderrChunks.join("")).toContain("failed to launch the @mono-agent/agent-app CLI: ENOENT");
+    expect(proc.stderrChunks.join("")).toContain("failed to launch the @mono-agent/app CLI: ENOENT");
   });
 
   it("keeps the SIGINT handler installed until an exit removes nothing on a clean code exit", () => {

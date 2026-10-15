@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { formatProviderUsageLead, projectProviderUsageWindow } from "@mono-agent/agent-contracts/provider-usage";
+import { formatProviderUsageLead, projectProviderUsageWindow } from "@mono-agent/contracts/provider-usage";
 import { api } from "../api";
 import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 

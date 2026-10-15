@@ -3,14 +3,14 @@ import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createConfiguredAgentHarness, createConfiguredAgentRuntime } from "@mono-agent/agent-app";
+import { createConfiguredAgentHarness, createConfiguredAgentRuntime } from "@mono-agent/app";
 
 const WORKTREE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCENARIOS = new Set(["multi-turn", "durable-reopen", "stateless", "concurrent", "recall-changing", "capability-change"]);
 const TRANSPORTS = new Set(["auto", "sse", "websocket", "websocket-cached"]);
 const MAX_REPORT_EVENTS = 1_024;
 
-const piAiPackageRoot = () => resolve(dirname(fileURLToPath(import.meta.resolve("@mono-agent/agent-app"))), "..", "node_modules", "@earendil-works", "pi-ai");
+const piAiPackageRoot = () => resolve(dirname(fileURLToPath(import.meta.resolve("@mono-agent/app"))), "..", "node_modules", "@earendil-works", "pi-ai");
 
 function parseArgs(argv) {
   const result = {};

@@ -35,7 +35,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.25.1"
+    "@mono-agent/contracts": "workspace:0.25.1"
   },
   "publishConfig": {
     "access": "public"

@@ -1,0 +1,280 @@
+import type {
+  ProviderAuthCheckSessionSnapshot,
+  ProviderAuthOperator,
+  ProviderAuthSessionSnapshot,
+  ProviderAuthStatusSnapshot,
+} from "@mono-agent/contracts";
+import { ProviderAuthOperationError } from "@mono-agent/contracts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { startTuiAdapter, type TuiAdapterStartResult } from "../index.js";
+
+const servers: TuiAdapterStartResult[] = [];
+afterEach(async () => await Promise.all(servers.splice(0).map(async (server) => await server.stop())));
+
+const status: ProviderAuthStatusSnapshot = {
+  schema: "mono-agent.provider-auth.v1",
+  generatedAt: "2026-09-06T12:00:00.000Z",
+  providers: [{
+    providerId: "opencode-go",
+    label: "OpenCode Go",
+    usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+    state: "missing",
+    verification: "not_verified",
+    methods: [{ authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true }],
+  }],
+};
+const session: ProviderAuthSessionSnapshot = {
+  schema: "mono-agent.provider-auth-session.v1",
+  id: "session-1",
+  providerId: "opencode-go",
+  authType: "api_key",
+  strategy: "api_key_prompt",
+  state: "awaiting_input",
+  createdAt: "2026-09-06T12:00:00.000Z",
+  updatedAt: "2026-09-06T12:00:00.000Z",
+  expiresAt: "2026-09-06T12:20:00.000Z",
+  prompt: { id: "prompt-1", type: "secret", message: "OpenCode API key" },
+};
+const check: ProviderAuthCheckSessionSnapshot = {
+  schema: "mono-agent.provider-auth-check.v1",
+  id: "check-1",
+  state: "completed",
+  createdAt: "2026-09-06T12:00:00.000Z",
+  updatedAt: "2026-09-06T12:00:01.000Z",
+  expiresAt: "2026-09-06T12:10:01.000Z",
+  results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "passed", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing", checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded." }],
+};
+
+describe("provider auth routes", () => {
+  it("keeps every route bearer-protected when the operator endpoint has an API key", async () => {
+    const operator: ProviderAuthOperator = {
+      status: vi.fn(async () => status),
+      start: vi.fn()
+        .mockResolvedValueOnce(session)
+        .mockResolvedValueOnce({ ...session, id: "session-2", prompt: { ...session.prompt!, id: "prompt-2" } }),
+      get: vi.fn(async () => session),
+      submit: vi.fn(async () => ({ ...session, state: "succeeded", prompt: undefined } as never)),
+      cancel: vi.fn(async () => undefined),
+      checks: {
+        start: vi.fn(async () => check),
+        get: vi.fn(async () => check),
+        cancel: vi.fn(async () => undefined),
+      },
+      stop: vi.fn(async () => undefined),
+    };
+    const server = await startTuiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      apiKey: "owner-key",
+      providerAuth: operator,
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
+    const headers = { authorization: "Bearer owner-key" };
+    const info = await fetch(`${server.baseUrl}/v1/info`, { headers });
+    expect(await info.json()).toMatchObject({ capabilities: { providerAuth: { version: 1, checks: { version: 1 } } } });
+    const denied = await fetch(`${server.baseUrl}/v1/provider-auth`);
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get("cache-control")).toContain("no-store");
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
+    })).status).toBe(401);
+    const invalid = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt", extra: true }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(operator.start).not.toHaveBeenCalled();
+    const listed = await fetch(`${server.baseUrl}/v1/provider-auth`, { headers });
+    expect(listed.status).toBe(200);
+    expect(listed.headers.get("cache-control")).toContain("no-store");
+    expect(await listed.json()).toEqual(status);
+
+    const created = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
+    });
+    expect(created.status).toBe(201);
+    expect(created.headers.get("cache-control")).toContain("no-store");
+    expect(await created.json()).toEqual(session);
+    const replacement = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
+    });
+    expect(replacement.status).toBe(201);
+    expect(await replacement.json()).toMatchObject({ id: "session-2", prompt: { id: "prompt-2" } });
+    expect(operator.start).toHaveBeenCalledTimes(2);
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, {
+      headers: { authorization: "Bearer wrong" },
+    })).status).toBe(401);
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, { headers })).json()).toEqual(session);
+
+    const secret = "PROVIDER_AUTH_SECRET_SENTINEL";
+    const submitted = await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1/input`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ promptId: "prompt-1", value: secret }),
+    });
+    const submittedText = await submitted.text();
+    expect(submitted.status).toBe(200);
+    expect(submittedText).not.toContain(secret);
+    expect(operator.submit).toHaveBeenCalledWith("session-1", { promptId: "prompt-1", value: secret });
+
+    const cancelled = await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, { method: "DELETE", headers });
+    expect(cancelled.status).toBe(204);
+    expect(cancelled.headers.get("cache-control")).toContain("no-store");
+    expect(operator.cancel).toHaveBeenCalledWith("session-1");
+
+    const checkCreated = await fetch(`${server.baseUrl}/v1/provider-auth/checks`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "click-one" }),
+    });
+    expect(checkCreated.status).toBe(201);
+    expect(checkCreated.headers.get("cache-control")).toContain("no-store");
+    expect(await checkCreated.json()).toEqual(check);
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth/checks/check-1`, { headers })).json()).toEqual(check);
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/checks/check-1`, { method: "DELETE", headers })).status).toBe(204);
+    expect(operator.checks?.cancel).toHaveBeenCalledWith("check-1");
+  });
+
+  it("returns a bounded cooldown with Retry-After", async () => {
+    const operator: ProviderAuthOperator = {
+      status: async () => status,
+      start: async () => session,
+      get: async () => session,
+      submit: async () => session,
+      cancel: async () => undefined,
+      checks: {
+        start: async () => { throw new ProviderAuthOperationError("provider_auth_rate_limited", "Wait before running provider checks again.", 429, 37); },
+        get: async () => undefined,
+        cancel: async () => undefined,
+      },
+      stop: async () => undefined,
+    };
+    const server = await startTuiAdapter({
+      host: "127.0.0.1", port: 0, apiKey: "owner-key", providerAuth: operator,
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
+    const response = await fetch(`${server.baseUrl}/v1/provider-auth/checks`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-key", "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "click-two" }),
+    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("37");
+    expect(await response.json()).toMatchObject({ error: { code: "provider_auth_rate_limited" } });
+  });
+
+  it("returns the closed not-found code for expired login and check sessions", async () => {
+    const operator: ProviderAuthOperator = {
+      status: async () => status,
+      start: async () => session,
+      get: async () => undefined,
+      submit: async () => session,
+      cancel: async () => undefined,
+      checks: {
+        start: async () => check,
+        get: async () => undefined,
+        cancel: async () => undefined,
+      },
+      stop: async () => undefined,
+    };
+    const server = await startTuiAdapter({
+      host: "127.0.0.1", port: 0, providerAuth: operator,
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
+
+    for (const path of [
+      "/v1/provider-auth/sessions/expired-session",
+      "/v1/provider-auth/checks/expired-check",
+    ]) {
+      const response = await fetch(`${server.baseUrl}${path}`);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: { code: "provider_auth_not_found" } });
+    }
+  });
+
+  it("advertises and serves the full login lifecycle when the operator endpoint has no API key", async () => {
+    const operator: ProviderAuthOperator = {
+      status: vi.fn(async () => status),
+      start: vi.fn(async () => session),
+      get: vi.fn(async () => session),
+      submit: vi.fn(async () => ({ ...session, state: "succeeded", prompt: undefined } as never)),
+      cancel: vi.fn(async () => undefined),
+      checks: {
+        start: vi.fn(async () => check),
+        get: vi.fn(async () => check),
+        cancel: vi.fn(async () => undefined),
+      },
+      stop: vi.fn(async () => undefined),
+    };
+    const server = await startTuiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      providerAuth: operator,
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
+
+    expect(await (await fetch(`${server.baseUrl}/v1/info`)).json())
+      .toMatchObject({ capabilities: { providerAuth: { version: 1, checks: { version: 1 } } } });
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth`)).json()).toEqual(status);
+
+    const created = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
+    });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual(session);
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`)).json()).toEqual(session);
+
+    const secret = "KEYLESS_PROVIDER_AUTH_SECRET_SENTINEL";
+    const submitted = await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1/input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ promptId: "prompt-1", value: secret }),
+    });
+    const submittedText = await submitted.text();
+    expect(submitted.status).toBe(200);
+    expect(submittedText).not.toContain(secret);
+    expect(operator.submit).toHaveBeenCalledWith("session-1", { promptId: "prompt-1", value: secret });
+
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, { method: "DELETE" })).status)
+      .toBe(204);
+    expect(operator.cancel).toHaveBeenCalledWith("session-1");
+
+    const checkCreated = await fetch(`${server.baseUrl}/v1/provider-auth/checks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "keyless-click" }),
+    });
+    expect(checkCreated.status).toBe(201);
+    expect(await checkCreated.json()).toEqual(check);
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth/checks/check-1`)).json()).toEqual(check);
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/checks/check-1`, { method: "DELETE" })).status)
+      .toBe(204);
+    expect(operator.checks?.cancel).toHaveBeenCalledWith("check-1");
+  });
+
+  it("keeps the capability and routes unavailable without a provider-auth operator", async () => {
+    const server = await startTuiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
+    expect(await (await fetch(`${server.baseUrl}/v1/info`)).json()).not.toHaveProperty("capabilities.providerAuth");
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth`)).status).toBe(404);
+  });
+
+});

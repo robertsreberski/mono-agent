@@ -2,11 +2,11 @@ import { type ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 
-import type { AgentReplyPart, ProcessJobProjection } from "@mono-agent/agent-contracts";
+import type { AgentReplyPart, ProcessJobProjection } from "@mono-agent/contracts";
 
 import type { WebThreadNotificationTriggerKind } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
-import { fetchLongLivedHostWake } from "@mono-agent/operator-adapter/client";
+import { fetchLongLivedHostWake } from "@mono-agent/channel-operator/client";
 import { resolveWebStatePaths, type WebStatePathOptions } from "./state-paths.js";
 
 const NOTIFICATION_INGRESS_SCHEMA = 1;

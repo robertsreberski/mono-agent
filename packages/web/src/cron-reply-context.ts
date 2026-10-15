@@ -1,4 +1,4 @@
-import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } from "@mono-agent/agent-contracts";
+import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } from "@mono-agent/contracts";
 
 import type {
   WebCronReplyContextPart,

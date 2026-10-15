@@ -1,4 +1,4 @@
-import { parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
+import { parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/contracts";
 import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   AGENT_CONTEXT_IMPORT_VERSION,
@@ -37,7 +37,7 @@ import {
   type ProviderAuthStatusSnapshot,
   type ProviderAuthCheckSessionSnapshot,
   type ProviderAuthCheckStartInput,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 import type {
   WebChannelConfigView,
@@ -61,7 +61,7 @@ import {
   operatorResponseFromFinishFrame,
   OperatorStreamFrameTooLargeError,
   readOperatorStreamFrames,
-} from "@mono-agent/operator-adapter/client";
+} from "@mono-agent/channel-operator/client";
 
 const OPERATOR_WIRE_SCHEMA = 1;
 // Align with the ten-minute agent/wake budget, with room for provider cleanup.
@@ -110,7 +110,7 @@ const PRESERVED_CONTEXT_IMPORT_ERRORS = new Map<string, number>([
 // oversized summary must cost the summary, never the whole response (which
 // shows the agent OFFLINE).
 //
-// Its bounds come from `@mono-agent/agent-contracts`, NOT from numbers chosen
+// Its bounds come from `@mono-agent/contracts`, NOT from numbers chosen
 // here. Chosen here, they drifted from the producer's in both directions and
 // each drift silently cost the operator a provider: a 129-byte id the catalog
 // published was dropped, and the route provider the producer deliberately

@@ -229,7 +229,7 @@ function runIsolatedPackedConsumers({
     const reachableNames = declaredInternalPackageClosure(pkg.name, packedManifestsByName);
     run("npm", ["install", "--no-audit", "--no-fund", "--package-lock=false"], isolatedDir, spawn);
     assertIsolatedInstallLayout(isolatedDir, pkg.name, reachableNames, allPackageNames);
-    if (reachableNames.includes("@mono-agent/agent-runtime")) verifyPackedHostTypes(isolatedDir, spawn);
+    if (reachableNames.includes("@mono-agent/turn")) verifyPackedHostTypes(isolatedDir, spawn);
     run("npm", ["run", "smoke", "--", "--target", pkg.name], isolatedDir, spawn);
     fs.rmSync(isolatedDir, { recursive: true, force: true });
   }

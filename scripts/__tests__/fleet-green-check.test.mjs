@@ -39,7 +39,7 @@ import {
   shortSha,
   MANAGED_BACKGROUND_ENV_NAMES,
 } from "../fleet-green-check.mjs";
-import { BACKGROUND_OPERATIONAL_ENV_NAMES } from "../../packages/agent-app/src/background-environment.ts";
+import { BACKGROUND_OPERATIONAL_ENV_NAMES } from "../../packages/app/src/background-environment.ts";
 import { managedPlistTopologyFingerprint } from "../fleet-green-check/probes.mjs";
 
 const DATE = "2026-07-07";
@@ -47,7 +47,7 @@ const SHA = "0e35c86d1122334455667788990011223344abcd";
 const NODE = "/opt/node-24.15.0/bin/node";
 const NODE_DEVICE = "16777234";
 const NODE_INODE = "424242";
-const CLI = "/Users/example/mono-agent/packages/agent-app/dist/cli.js";
+const CLI = "/Users/example/mono-agent/packages/app/dist/cli.js";
 const MEMORY_CHECKED_AT = "2026-07-12T08:00:00.000Z";
 const BUILD_COMPLETED_AT = "2026-07-12T10:00:00.000Z";
 const RUNTIME_INSTALLED_AT = "2026-07-12T09:00:00.000Z";
@@ -348,8 +348,8 @@ describe("parseLaunchctlPrint", () => {
 });
 
 describe("deriveRepoFromCliPath", () => {
-  it("strips the packages/agent-app suffix", () => {
-    expect(deriveRepoFromCliPath("/Users/example/mono-agent/packages/agent-app/dist/cli.js")).toBe("/Users/example/mono-agent");
+  it("strips the packages/app suffix", () => {
+    expect(deriveRepoFromCliPath("/Users/example/mono-agent/packages/app/dist/cli.js")).toBe("/Users/example/mono-agent");
   });
 
   it("returns null for non-matching paths", () => {
@@ -1344,7 +1344,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
   });
 
   it("binds a hardened cached runtime to the explicit deploy checkout", async () => {
-    const runtimeCli = "/Users/example/.mono-agent/runtimes/agent-app/0.9.2/runtime/node_modules/@mono-agent/agent-app/dist/cli.js";
+    const runtimeCli = "/Users/example/.mono-agent/runtimes/agent-app/0.9.2/runtime/node_modules/@mono-agent/app/dist/cli.js";
     const workerArguments = [
       NODE,
       runtimeCli,
@@ -1446,7 +1446,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
   });
 
   it("fails an arbitrary managed cache path when read-only runtime attestation rejects it", async () => {
-    const runtimeCli = "/attacker/stale-cache/node_modules/@mono-agent/agent-app/dist/cli.js";
+    const runtimeCli = "/attacker/stale-cache/node_modules/@mono-agent/app/dist/cli.js";
     const launchdProgramArguments = [
       "/usr/bin/env",
       "-i",
@@ -1603,7 +1603,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
     const secondDir = "/Users/example/private-second-agent";
     const secondConfigPath = `${secondDir}/custom.config.json`;
     const secondLabel = deriveLaunchdLabel(secondConfigPath);
-    const secondCli = "/Users/example/private-second-checkout/packages/agent-app/dist/cli.js";
+    const secondCli = "/Users/example/private-second-checkout/packages/app/dist/cli.js";
     const secondArguments = [NODE, secondCli, "start", "--foreground", "--config", secondConfigPath, "--env-file", envFile];
     const secondPlist = exactLegacyPlist({ label: secondLabel, dir: secondDir, programArguments: secondArguments });
     const base = fakeRunner();
@@ -2210,7 +2210,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
     const secondDir = "/Users/example/agents/example-instance";
     const secondConfigPath = `${secondDir}/custom.config.json`;
     const secondLabel = deriveLaunchdLabel(secondConfigPath);
-    const secondCli = `${secondRepo}/packages/agent-app/dist/cli.js`;
+    const secondCli = `${secondRepo}/packages/app/dist/cli.js`;
     const secondArguments = [NODE, secondCli, "start", "--foreground", "--config", secondConfigPath, "--env-file", envFile];
     const secondPlist = exactLegacyPlist({ label: secondLabel, dir: secondDir, programArguments: secondArguments });
     const base = fakeRunner();

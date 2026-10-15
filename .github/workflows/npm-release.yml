@@ -111,7 +111,7 @@ jobs:
           TMP_ROOT="$(mktemp -d)"
           trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
-          retry npm install -g --prefix "$TMP_ROOT/app" --prefer-online "@mono-agent/agent-app@${VERSION}"
+          retry npm install -g --prefix "$TMP_ROOT/app" --prefer-online "@mono-agent/app@${VERSION}"
           "$TMP_ROOT/app/bin/mono-agent" --help
 
           retry npm install -g --prefix "$TMP_ROOT/create" --prefer-online "create-mono-agent@${VERSION}"

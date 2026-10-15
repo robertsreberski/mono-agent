@@ -1,7 +1,7 @@
 "use client";
 
-import { isProviderUsageId, PROVIDER_USAGE_LABELS } from "@mono-agent/agent-contracts/provider-usage";
-import type { AgentManualCompactionResult } from "@mono-agent/agent-contracts";
+import { isProviderUsageId, PROVIDER_USAGE_LABELS } from "@mono-agent/contracts/provider-usage";
+import type { AgentManualCompactionResult } from "@mono-agent/contracts";
 import { Popover } from "@base-ui/react/popover";
 import { useId, useRef, useState } from "react";
 import type { WebThreadUsage, WebUsageSlice } from "../../../../src/contracts.js";

@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
  * Getting-started install docs used to carry literal `@mono-agent/<pkg>@X.Y.Z`
  * pins that silently rotted one release behind (goal #164 E-evidence: docs pinned
  * `0.4.0` while the packages had already shipped `0.4.1`). This check reads the
- * lockstep version from `packages/agent-app/package.json` and fails whenever any
+ * lockstep version from `packages/app/package.json` and fails whenever any
  * version pin in the getting-started docs disagrees with it — so a pin is either
  * current or the docs go versionless (the preferred, un-rottable form). A shell
- * placeholder like `@mono-agent/agent-app@$version` is NOT a pin and is ignored.
+ * placeholder like `@mono-agent/app@$version` is NOT a pin and is ignored.
  *
  * Covers the scoped `@mono-agent/<pkg>@X.Y.Z` pins, the unscoped
  * `create-mono-agent@X.Y.Z` installer, and (still) the bare `mono-agent@X.Y.Z`
@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
  */
 
 const GETTING_STARTED_DIR = join("docs", "getting-started");
-const AGENT_APP_PACKAGE_JSON = join("packages", "agent-app", "package.json");
+const AGENT_APP_PACKAGE_JSON = join("packages", "app", "package.json");
 const PUBLISHED_BASELINE_PATHS = [
   "README.md",
   join("docs", "index.md"),
@@ -69,7 +69,7 @@ export async function checkGettingStartedVersionPins(options = {}) {
       if (version !== agentAppVersion) {
         issues.push(
           `${record.path}:${line}: version pin \`${match[0]}\` disagrees with the lockstep ` +
-            `@mono-agent/agent-app version \`${agentAppVersion}\`. Update the pin or make the docs versionless.`,
+            `@mono-agent/app version \`${agentAppVersion}\`. Update the pin or make the docs versionless.`,
         );
       }
     }
@@ -174,7 +174,7 @@ async function main() {
   }
   process.stdout.write(
     `Getting-started version pins OK: ${pinResult.pins.length} pin(s) checked against ` +
-      `@mono-agent/agent-app@${pinResult.agentAppVersion}; ` +
+      `@mono-agent/app@${pinResult.agentAppVersion}; ` +
       `${baselineResult.references.length} published-baseline reference(s) agree.\n`,
   );
 }

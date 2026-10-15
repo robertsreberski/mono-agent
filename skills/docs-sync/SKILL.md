@@ -39,7 +39,7 @@ site.
   structure, while `## Public API` starts with a curated entry-point map and
   keeps its generated inventory in parity with the real export map
 - Root `README.md`, `PACKAGES.md`
-- `packages/agent-app/skills/mono-agent-composer/references/*.md` — the composer
+- `packages/app/skills/mono-agent-composer/references/*.md` — the composer
   skill's knowledge base; fold it into the "after any user-facing feature lands"
   pass. It silently drifted out of the loop for ≥3 PRs (native-notify #98,
   per-trigger-model-effort, external-memory-backends #52), and because that
@@ -79,7 +79,7 @@ classified MIGRATION subpath inventory and its package export map.
 
 This check caught the observability README drift, stale `*FieldGroup` names,
 the missing `toCronJobs` export, the phantom `AgentMessageStreamResult`, and the
-agent-runtime deep-subpath count drift.
+turn deep-subpath count drift.
 
 **Catalog metadata and package navigation are generated.** After changing a
 catalog entry, workspace dependency, or package README, refresh metadata,
@@ -108,7 +108,7 @@ left the README samples stale.
 
 **Behavior-prose drift on a new opt-in mode.** When a PR adds a new opt-in
 mode/enum, grep the package README prose for a stale absolute claim ("does not …
-X", "always Y, never Z") the new code just falsified. cron-adapter README line 87
+X", "always Y, never Z") the new code just falsified. trigger-cron README line 87
 "does not … queue overlapping jobs" survived the arrival of the new
 `overlap:"queue"`.
 
@@ -119,12 +119,12 @@ enumerates "what does X reset/purge/survive" — not just the prose.
 v0.11.0 durable conversation-history.
 
 **`config-reference.ts` ⇒ `feature-registry.md` row + prose page.** If a PR
-touches `packages/agent-app/src/config-reference.ts`, grep the new `jsonPath`
+touches `packages/app/src/config-reference.ts`, grep the new `jsonPath`
 against the registry and its prose page before calling the PR doc-complete:
 
 ```bash
 comm -23 \
-  <(grep -oE '"[a-z]+\.[a-zA-Z]+"' packages/agent-app/src/config-reference.ts | sort -u) \
+  <(grep -oE '"[a-z]+\.[a-zA-Z]+"' packages/app/src/config-reference.ts | sort -u) \
   <(grep -oE '`[a-z]+\.[a-zA-Z]+`' docs/reference/feature-registry.md | tr -d '`' | sort -u)
 ```
 

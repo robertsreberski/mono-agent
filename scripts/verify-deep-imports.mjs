@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Verifies that every subpath declared in @mono-agent/agent-runtime's `exports`
+// Verifies that every subpath declared in @mono-agent/turn's `exports`
 // map actually resolves and loads. Phase 6 replaced the package's `./ai/*` /
 // `./agent/*` wildcard exports with an EXPLICIT map (root, ./ai, ./agent, plus a
 // fixed set of deep `.js` subpaths). A wildcard silently resolved anything under
@@ -18,17 +18,17 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
-const PACKAGE_NAME = "@mono-agent/agent-runtime";
+const PACKAGE_NAME = "@mono-agent/turn";
 
 function packageJsonUrl(repoRoot) {
-  return pathToFileURL(join(repoRoot, "packages", "agent-runtime", "package.json")).href;
+  return pathToFileURL(join(repoRoot, "packages", "turn", "package.json")).href;
 }
 
 /**
  * Default import step: resolve each bare specifier through Node's exports
  * resolution (createRequire anchored at agent-runtime's OWN package.json, so the
  * package self-references its own name — this works whether or not the workspace
- * root has an `@mono-agent/agent-runtime` symlink, e.g. inside a git worktree),
+ * root has an `@mono-agent/turn` symlink, e.g. inside a git worktree),
  * then actually load the resolved module. Resolution exercises the exports map;
  * the import proves the target loads.
  */
@@ -42,9 +42,9 @@ function realImporter(repoRoot) {
 
 /**
  * Map an `exports` key to the bare specifier a consumer imports.
- *   "."      -> "@mono-agent/agent-runtime"
- *   "./ai"   -> "@mono-agent/agent-runtime/ai"
- *   "./x.js" -> "@mono-agent/agent-runtime/x.js"
+ *   "."      -> "@mono-agent/turn"
+ *   "./ai"   -> "@mono-agent/turn/ai"
+ *   "./x.js" -> "@mono-agent/turn/x.js"
  */
 function specifierForExportKey(key) {
   if (key === ".") return PACKAGE_NAME;
@@ -52,7 +52,7 @@ function specifierForExportKey(key) {
 }
 
 function packageDir(repoRoot) {
-  return join(repoRoot, "packages", "agent-runtime");
+  return join(repoRoot, "packages", "turn");
 }
 
 /**
@@ -89,7 +89,7 @@ function sink() {
 
 /**
  * @param {Object} [options]
- * @param {string} [options.repoRoot] Repo root holding packages/agent-runtime.
+ * @param {string} [options.repoRoot] Repo root holding packages/turn.
  * @param {(specifier: string) => Promise<unknown>} [options.importFn] Injectable for tests.
  * @param {(path: string) => boolean} [options.fileExists] Injectable for tests (types-target existence).
  * @param {{write: (text: string) => void}} [options.stdout]

@@ -15,7 +15,7 @@ import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   isChannelUserCancelReason,
   type AgentReplyPart,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 import type { WebEvent, WebMessage, WebMessageDelta, WebMessagePart } from "../contracts.js";
 import { WEB_MAX_TURN_TEXT_CHARACTERS } from "../contracts.js";

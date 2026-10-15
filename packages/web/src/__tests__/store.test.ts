@@ -10,7 +10,7 @@ import {
   type AgentReplyPart,
   type AgentStreamWireFrame,
   type ProcessJobProjection,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 import type {
   WebAgentSummary,

@@ -17,8 +17,8 @@ workspace range.
 **Lockstep set:** all **20 `publishable: true` packages** in
 `scripts/package-catalog.mjs` release together: 14 core packages (entries without
 a `tier`), 1 `tier: "alias"` package (`create-mono-agent` under `packages/*`), and
-5 `tier: "plugin"` extras under `extras/*` (a2a-adapter, agent-orchestrator,
-docs-mcp, messenger-adapter, and whatsapp-adapter). Plugin
+5 `tier: "plugin"` extras under `extras/*` (channel-a2a, orchestrator,
+docs-mcp, channel-messenger, and channel-whatsapp). Plugin
 extras are version-bumped and published alongside core.
 
 ## 1. File the release notes
@@ -127,7 +127,7 @@ or blank user config:
 
 ```bash
 NPM_CONFIG_USERCONFIG=/dev/null pnpm run release:verify -- --tag vX.Y.Z
-npm view @mono-agent/agent-app version --registry https://registry.npmjs.org/
+npm view @mono-agent/app version --registry https://registry.npmjs.org/
 ```
 
 The release verifier covers the whole lockstep set; the single `npm view` is a

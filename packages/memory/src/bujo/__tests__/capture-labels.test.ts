@@ -3,7 +3,7 @@ import { neutralCaptureReview } from "./capture-review-fake.js";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MemoryCaptureEvidence } from "@mono-agent/agent-contracts";
+import type { MemoryCaptureEvidence } from "@mono-agent/contracts";
 import { describe, expect, it } from "vitest";
 import { openMemoryDb } from "../../store/index.js";
 import { extractCapturePlanStrict } from "../capture-batch.js";

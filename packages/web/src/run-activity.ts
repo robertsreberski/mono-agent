@@ -1,4 +1,4 @@
-import { toolNameLeaf } from "@mono-agent/agent-contracts";
+import { toolNameLeaf } from "@mono-agent/contracts";
 
 import type { WebMessagePart, WebRunActivity } from "./contracts.js";
 

@@ -1,4 +1,4 @@
-import { isProviderUsageId } from "@mono-agent/agent-contracts";
+import { isProviderUsageId } from "@mono-agent/contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
@@ -25,7 +25,7 @@ import {
   parseProviderAuthSessionStartInput,
   parseProviderAuthCheckStartInput,
   type ChannelAskAnswer,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 import compression from "compression";
 import express, { type NextFunction, type Request, type Response } from "express";
 

@@ -15,7 +15,7 @@ import {
   type CronOperatorRunTruncatedField,
   type SessionToolHistoryEventMetadata,
   type ProcessJobProjection,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 /** Machine-readable discovery contract consumed by local ACP clients such as Worklab. */
 export const ACP_BRIDGE_DISCOVERY_SCHEMA = "mono-agent.acp-discovery.v1" as const;
@@ -253,7 +253,7 @@ export type {
   ProviderAuthSessionStartInput,
   ProviderAuthStatusSnapshot,
   ProviderAuthUsage,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 export type WebSkillAvailability = "inlined" | "on-demand" | "unavailable";
 export type WebSkillUnavailableReason = "not-selected" | "read-skill-disabled" | "unsupported-name";
 

@@ -40,15 +40,15 @@ afterEach(async () => {
 describe("clean-dist", () => {
   it("removes build output across every workspace parent, including nested webapp bundles", async () => {
     const repoRoot = await fixtureRepo([
-      "packages/telegram-adapter/dist",
-      "packages/telegram-adapter/src",
+      "packages/channel-telegram/dist",
+      "packages/channel-telegram/src",
       "packages/web/webapp/dist",
-      "extras/whatsapp-adapter/dist",
+      "extras/channel-whatsapp/dist",
       "demos/final-agent/dist",
       "demos/generic-fixture/dist",
     ]);
-    await writeFile(join(repoRoot, "packages/telegram-adapter/dist/ask.js"), "");
-    await writeFile(join(repoRoot, "packages/telegram-adapter/src/index.ts"), "");
+    await writeFile(join(repoRoot, "packages/channel-telegram/dist/ask.js"), "");
+    await writeFile(join(repoRoot, "packages/channel-telegram/src/index.ts"), "");
     await writeFile(join(repoRoot, "demos/final-agent/dist/cli.js"), "runnable legacy demo");
     await writeFile(join(repoRoot, "demos/generic-fixture/dist/index.js"), "fixture");
 
@@ -56,38 +56,38 @@ describe("clean-dist", () => {
 
     expect(removed.sort()).toEqual([
       "demos/final-agent/dist",
-      "extras/whatsapp-adapter/dist",
-      "packages/telegram-adapter/dist",
+      "extras/channel-whatsapp/dist",
+      "packages/channel-telegram/dist",
       "packages/web/webapp/dist",
     ]);
-    expect(existsSync(join(repoRoot, "packages/telegram-adapter/dist"))).toBe(false);
+    expect(existsSync(join(repoRoot, "packages/channel-telegram/dist"))).toBe(false);
     expect(existsSync(join(repoRoot, "demos/final-agent/dist/cli.js"))).toBe(false);
     expect((await readdir(join(repoRoot, "demos/final-agent"))).some(
       (entry) => entry.startsWith(".dist.cleaning-"),
     )).toBe(false);
     // Sources are never touched — only generated output is removed.
-    expect(existsSync(join(repoRoot, "packages/telegram-adapter/src/index.ts"))).toBe(true);
+    expect(existsSync(join(repoRoot, "packages/channel-telegram/src/index.ts"))).toBe(true);
     // Generic demo-named fixtures are outside the exact retired output contract.
     expect(existsSync(join(repoRoot, "demos/generic-fixture/dist/index.js"))).toBe(true);
   });
 
   it("removes declaration output without requiring every package to emit types", async () => {
     const repoRoot = await fixtureRepo([
-      "packages/agent-runtime/types",
+      "packages/turn/types",
       "packages/config/src",
     ]);
-    await writeFile(join(repoRoot, "packages/agent-runtime/types/x.d.ts"), "");
+    await writeFile(join(repoRoot, "packages/turn/types/x.d.ts"), "");
     await writeFile(join(repoRoot, "packages/config/src/index.ts"), "");
     const logs = [];
 
     expect(cleanBuildOutputs({ repoRoot, log: (message) => logs.push(message) })).toEqual([
-      "packages/agent-runtime/types",
+      "packages/turn/types",
     ]);
     expect(logs).toEqual([
-      "removed packages/agent-runtime/types",
+      "removed packages/turn/types",
       "clean: removed 1 build output directory",
     ]);
-    expect(existsSync(join(repoRoot, "packages/agent-runtime/types/x.d.ts"))).toBe(false);
+    expect(existsSync(join(repoRoot, "packages/turn/types/x.d.ts"))).toBe(false);
     // A package that has no declaration-only output is traversed without changing its sources.
     expect(existsSync(join(repoRoot, "packages/config/src/index.ts"))).toBe(true);
   });

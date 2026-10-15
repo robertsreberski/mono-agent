@@ -1,17 +1,17 @@
 ---
 title: "Worklab shared kernel decision"
-description: "Record why mono-agent and Worklab share agent-runtime as a kernel while remaining separate products."
+description: "Record why mono-agent and Worklab share turn as a kernel while remaining separate products."
 sidebar:
   order: 60
 ---
 
-Mono-agent and Worklab should share one runtime kernel: `@mono-agent/agent-runtime`.
+Mono-agent and Worklab should share one runtime kernel: `@mono-agent/turn`.
 Worklab should consume the published runtime package instead of carrying a
 vendored runtime fork.
 
 This is an ecosystem decision, not a repository merge. The intended shape is:
 
-- **One shared kernel:** `@mono-agent/agent-runtime` owns provider execution,
+- **One shared kernel:** `@mono-agent/turn` owns provider execution,
   provider sessions, runtime events, engine-turn response generation, and the
   narrow runtime surfaces both products can reuse.
 - **Two products:** mono-agent remains the always-on personal-agent framework
@@ -20,26 +20,26 @@ This is an ecosystem decision, not a repository merge. The intended shape is:
   teams.
 
 The runtime also owns the isolated execution/storage engine under `src/engine/`.
-Its public entrypoints are `@mono-agent/agent-runtime/engine`,
-`@mono-agent/agent-runtime/engine/sessions.js` and
-`@mono-agent/agent-runtime/engine/owned-fs.js`; the engine never imports provider,
+Its public entrypoints are `@mono-agent/turn/engine`,
+`@mono-agent/turn/engine/sessions.js` and
+`@mono-agent/turn/engine/owned-fs.js`; the engine never imports provider,
 tool or host glue. Vendored compaction attribution ships in the runtime notices.
 
 ## Decision
 
 Kill Worklab's runtime fork by moving provider execution onto
-`@mono-agent/agent-runtime`. Keep the products separate above that shared
+`@mono-agent/turn`. Keep the products separate above that shared
 kernel.
 
-Mono-agent can add narrow, additive exports to `@mono-agent/agent-runtime` when
+Mono-agent can add narrow, additive exports to `@mono-agent/turn` when
 Worklab needs an existing runtime surface that is already part of the package.
 For engine-turn response generation, Worklab should use
-`generateEngineTurnResponse` from `@mono-agent/agent-runtime/ai` rather than a
+`generateEngineTurnResponse` from `@mono-agent/turn/ai` rather than a
 separate provider subpath or a `pi-sdk` compatibility export.
 
 Provider-package ownership follows the same rule. Worklab should remove
 production imports from `@earendil-works/pi-ai` and use the runtime-owned façade
-from `@mono-agent/agent-runtime/ai`:
+from `@mono-agent/turn/ai`:
 
 - `listPiBuiltinModels()` and `getPiBuiltinModel()` for cloned model snapshots
 - `reasoningLevelsForPiModel()` for mono-agent reasoning levels
@@ -50,7 +50,7 @@ The login façade requires Pi's `onAuth`, `onDeviceCode`, `onPrompt`, and
 selection handling instead of carrying forward the older partial callback
 shape.
 
-Provider execution is Pi-only: agent-runtime exact-pins Pi AI, and engine
+Provider execution is Pi-only: turn exact-pins Pi AI, and engine
 exact-pins Pi AI and Pi Agent Core. Worklab should test through the runtime's
 public API or stub its own runtime interface, not mock provider SDK packages.
 Fixtures using Pi's faux-provider helpers must align any development-only Pi
@@ -89,7 +89,7 @@ separate product. The operating lesson transfers; the runtime fork does not.
 
 ## Consequences
 
-- Worklab depends on `@mono-agent/agent-runtime` for provider execution.
+- Worklab depends on `@mono-agent/turn` for provider execution.
 - The shared kernel remains `GPL-3.0-only`, matching the rest of mono-agent's
   publishable package graph and the repository-level `LICENSE`.
 - Mono-agent keeps the runtime package as the ecosystem kernel and avoids

@@ -124,7 +124,7 @@ describe("packed consumer verification", () => {
   });
 
   test("ships four concrete host entrypoints without a forwarding package", () => {
-    const runtime = JSON.parse(fs.readFileSync(new URL("../../../packages/agent-runtime/package.json", import.meta.url), "utf8"));
+    const runtime = JSON.parse(fs.readFileSync(new URL("../../../packages/turn/package.json", import.meta.url), "utf8"));
     for (const [subpath, file] of [["host", "index"], ["host/config", "config"], ["host/types", "types"], ["host/sandbox", "sandbox"]]) {
       expect(runtime.exports[`./${subpath}`]).toEqual({ types: `./types/host/${file}.d.ts`, default: `./dist/host/${file}.js` });
       expect(Object.keys(runtime.exports[`./${subpath}`])).toEqual(["types", "default"]);
@@ -135,7 +135,7 @@ describe("packed consumer verification", () => {
   });
 
   test("ships exactly three engine entrypoints from runtime, excluding engine tests", () => {
-    const runtime = JSON.parse(fs.readFileSync(new URL("../../../packages/agent-runtime/package.json", import.meta.url), "utf8"));
+    const runtime = JSON.parse(fs.readFileSync(new URL("../../../packages/turn/package.json", import.meta.url), "utf8"));
     const expected = ["./engine", "./engine/sessions.js", "./engine/owned-fs.js"];
     expect(Object.keys(runtime.exports).filter((key) => key.startsWith("./engine"))).toEqual(expected);
     for (const [subpath, file] of [["engine", "index"], ["engine/sessions.js", "sessions"], ["engine/owned-fs.js", "owned-fs"]]) {
@@ -147,7 +147,7 @@ describe("packed consumer verification", () => {
 
   test("keeps provider interoperability on the runtime-owned public boundary", async () => {
     const runtimeManifestUrl = new URL(
-      "../../../packages/agent-runtime/package.json",
+      "../../../packages/turn/package.json",
       import.meta.url,
     );
     const runtime = JSON.parse(fs.readFileSync(runtimeManifestUrl, "utf8"));
@@ -168,7 +168,7 @@ describe("packed consumer verification", () => {
     );
 
     expect(consumer.dependencies).toEqual({
-      "@mono-agent/agent-runtime": "file:/tmp/mono-agent-agent-runtime.tgz",
+      "@mono-agent/turn": "file:/tmp/mono-agent-agent-runtime.tgz",
     });
     expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-ai");
     expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-agent-core");
@@ -181,11 +181,11 @@ describe("packed consumer verification", () => {
 
     const packedImports = publicExportSpecifiers(runtime.name, runtime);
     expect(packedImports).toEqual(expect.arrayContaining([
-      "@mono-agent/agent-runtime",
-      "@mono-agent/agent-runtime/ai",
+      "@mono-agent/turn",
+      "@mono-agent/turn/ai",
       // The Codex app-server client survives the runtime-bridge removal: it
       // backs `tools.web.search.backend: "codex"` and must stay published.
-      "@mono-agent/agent-runtime/ai/providers/codex/app-server-client.js",
+      "@mono-agent/turn/ai/providers/codex/app-server-client.js",
     ]));
 
     const ai = await import(publicRuntimeExportUrl(runtimeManifestUrl, runtime, "./ai"));
@@ -336,7 +336,7 @@ describe("packed consumer verification", () => {
       nestedRuntimePiVersion: "1.2.0",
     });
     const runtimePackages = fixture.packages.filter(
-      (pkg) => pkg.name === "@mono-agent/agent-runtime",
+      (pkg) => pkg.name === "@mono-agent/turn",
     );
 
     expect(runtimePackages).toHaveLength(1);
@@ -353,7 +353,7 @@ describe("packed consumer verification", () => {
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /Packed @mono-agent\/agent-app dependencies\.@earendil-works\/pi-ai must remain 1\.2\.0; found \^1\.2\.0/u,
+      /Packed @mono-agent\/app dependencies\.@earendil-works\/pi-ai must remain 1\.2\.0; found \^1\.2\.0/u,
     );
   });
 
@@ -380,12 +380,12 @@ function packedDependencyFixture({
   const modulesDir = path.join(consumerDir, "node_modules");
 
   writePackage(modulesDir, {
-    name: "@mono-agent/agent-app",
+    name: "@mono-agent/app",
     version: "1.2.3",
     dependencies: { "@earendil-works/pi-ai": appPiRange },
   });
   const runtimeDir = writePackage(modulesDir, {
-    name: "@mono-agent/agent-runtime",
+    name: "@mono-agent/turn",
     version: "1.2.3",
     dependencies: {
       "@earendil-works/pi-agent-core": "1.2.0",
@@ -418,13 +418,13 @@ function packedDependencyFixture({
     consumerDir,
     packages: [
       {
-        name: "@mono-agent/agent-app",
+        name: "@mono-agent/app",
         packageJson: {
           dependencies: { "@earendil-works/pi-ai": "1.2.0" },
         },
       },
       {
-        name: "@mono-agent/agent-runtime",
+        name: "@mono-agent/turn",
         packageJson: {
           dependencies: {
             "@earendil-works/pi-agent-core": "1.2.0",

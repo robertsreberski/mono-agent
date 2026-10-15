@@ -6,7 +6,12 @@ export function retiredHostImports(file, text) {
   if (!/\.[cm]?[jt]sx?$/u.test(file)) return [];
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const imports = [];
-  const retired = ["runtime-adapter", "engine"].map((name) => `@mono-agent/${name}`);
+  const retired = [
+    "runtime-adapter", "engine", "agent-app", "agent-harness", "agent-runtime",
+    "agent-contracts", "slack-adapter", "telegram-adapter", "openai-api-adapter",
+    "operator-adapter", "cron-adapter", "webhook-adapter", "whatsapp-adapter",
+    "messenger-adapter", "a2a-adapter", "agent-orchestrator",
+  ].map((name) => `@mono-agent/${name}`);
   function record(node) {
     if (node && ts.isStringLiteralLike(node)
       && retired.some((name) => node.text === name || node.text.startsWith(`${name}/`))) imports.push(node.text);

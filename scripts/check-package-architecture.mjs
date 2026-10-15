@@ -136,7 +136,7 @@ for (const catalogEntry of packageCatalog) {
     // Operator surfaces share the operator adapter's public client transport.
     // Other communication adapters still belong exclusively to app composition.
     const isOperatorClient = catalogEntry.category === "operator-surface"
-      && depName === "@mono-agent/operator-adapter";
+      && depName === "@mono-agent/channel-operator";
     if (depEntry.category === "communication" && catalogEntry.category !== "app" && !isOperatorClient) {
       errors.push(`${packagePath} may not depend on communication adapter ${depName}; compose adapters only in app hosts.`);
     }
@@ -194,7 +194,7 @@ for (const file of walkTextFiles(root)) {
   }
 }
 
-for (const file of walkTextFiles(join(root, "packages/agent-runtime/src/engine"))) {
+for (const file of walkTextFiles(join(root, "packages/turn/src/engine"))) {
   if (file.includes("/__tests__/")) continue;
   for (const specifier of engineRuntimeImports(root, file, readFileSync(file, "utf8"))) {
     errors.push(`${relative(root, file)} must stay self-contained; disallowed import ${specifier}.`);
@@ -212,7 +212,7 @@ const controllerOperationModules = [
   "app-controller-traceability.ts",
 ];
 for (const file of controllerOperationModules) {
-  const relativePath = join("packages", "agent-app", "src", file);
+  const relativePath = join("packages", "app", "src", file);
   const text = readFileSync(join(root, relativePath), "utf8");
   if (/from\s+["']\.\/app-controller\.js["']/u.test(text)) {
     errors.push(`${relativePath} must depend on a narrow controller port, not MonoAgentAppController.`);
@@ -221,42 +221,42 @@ for (const file of controllerOperationModules) {
 
 const extractedResponsibilityDeclarations = [
   {
-    file: join("packages", "agent-app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "web-command.ts"),
     declaration: "function startManagedWebLogMonitor",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "agent-app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "web-command.ts"),
     declaration: "function inspectLegacyManagedWebLogArtifacts",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "agent-app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "web-command.ts"),
     declaration: "function maintainLegacyManagedWebLogArtifacts",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "agent-app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "web-command.ts"),
     declaration: "function runWebLogMaintenanceCommand",
     owner: "web-log-maintenance.ts",
   },
   {
-    file: join("packages", "agent-app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "web-command.ts"),
     declaration: "function writeWebLogMaintenanceStatus",
     owner: "web-log-maintenance-status.ts",
   },
   {
-    file: join("packages", "agent-app", "src", "background.ts"),
+    file: join("packages", "app", "src", "background.ts"),
     declaration: "function maintainLaunchdLogsWithSharedLockOperation",
     owner: "background-log-maintenance.ts",
   },
   {
-    file: join("packages", "agent-app", "src", "background.ts"),
+    file: join("packages", "app", "src", "background.ts"),
     declaration: "function maintainLaunchdLogsOperation",
     owner: "background-log-maintenance.ts",
   },
   {
-    file: join("packages", "slack-adapter", "src", "adapter.ts"),
+    file: join("packages", "channel-slack", "src", "adapter.ts"),
     declaration: "function buildSlackRuntimeControlCatalog",
     owner: "runtime-controls.ts",
   },

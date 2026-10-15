@@ -70,8 +70,8 @@ function createOutputs(root, order = "forward") {
     ["packages/example/package.json", '{"name":"example"}\n'],
     ["packages/example/dist/index.js", "export const example = 1;\n"],
     ["packages/example/dist/nested/value.txt", "nested\n"],
-    ["packages/agent-app/package.json", '{"name":"agent-app"}\n'],
-    ["packages/agent-app/dist/cli.js", "#!/usr/bin/env node\n"],
+    ["packages/app/package.json", '{"name":"agent-app"}\n'],
+    ["packages/app/dist/cli.js", "#!/usr/bin/env node\n"],
     ["packages/web/package.json", '{"name":"web"}\n'],
     ["packages/web/dist/index.js", "export const server = true;\n"],
     ["packages/web/webapp/dist/index.html", "<!doctype html>\n"],
@@ -707,7 +707,7 @@ describe("provenance build lifecycle", () => {
     (condition) => {
       const root = tempRoot();
       createOutputs(root);
-      const cli = join(root, "packages/agent-app/dist/cli.js");
+      const cli = join(root, "packages/app/dist/cli.js");
       rmSync(cli);
       if (condition === "symlink") {
         symlinkSync("../../web/dist/index.js", cli);
@@ -886,7 +886,7 @@ describe("provenance build lifecycle", () => {
     expect(result).toEqual({ exitCode: 0 });
     const dependencyDigest = computeRuntimeDependencyDigest(root);
     expect(computeBuildOutputDigest(root)).toBe(outputDigest);
-    expect(lstatSync(join(root, "packages/agent-app/dist/cli.js")).mode & 0o100).toBe(0o100);
+    expect(lstatSync(join(root, "packages/app/dist/cli.js")).mode & 0o100).toBe(0o100);
     expect(readBuildMarker(root)).toMatchObject({
       status: "ok",
       marker: marker({

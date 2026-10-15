@@ -9,7 +9,7 @@ import type {
   ChannelAskSnapshot,
   ChannelAskSubmissionResult,
   SessionToolHistoryEventMetadata,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 export type {
   ProcessJobState,
@@ -21,7 +21,7 @@ export type {
   ProviderAuthSessionSnapshot,
   ProviderAuthCheckResult,
   ProviderAuthCheckSessionSnapshot,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 export const API_VERSION: typeof Wire.WEB_API_VERSION = 1;
 
@@ -164,4 +164,4 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
 };
 
 // Provider usage meters read the producer's own subpath (types only; no runtime import).
-export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/agent-contracts/provider-usage";
+export type { ProviderUsage, ProviderUsageSnapshot, ProviderUsageId } from "@mono-agent/contracts/provider-usage";

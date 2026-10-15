@@ -25,7 +25,7 @@ durable completed-turn workflow.
 This package deliberately has **no root export**. Importing from
 `@mono-agent/memory` is unsupported; choose `/store`, `/search`, or `/bujo` so
 the dependency and runtime cost are visible at the call site. Shared memory
-contracts remain authoritative in `@mono-agent/agent-contracts`; `/store`
+contracts remain authoritative in `@mono-agent/contracts`; `/store`
 re-exports the common read/write types for local-store consumers.
 
 ## Install / Usage
@@ -83,7 +83,7 @@ classification requires a known transport code in a bounded `Error` cause graph,
 including aggregate failures; unstructured `TypeError` and other adapter failures
 retain their identity.
 The config-first guided wizard and provider-native model discovery/probe live in
-`@mono-agent/agent-app`, not this package.
+`@mono-agent/app`, not this package.
 
 ## Architecture
 
@@ -394,7 +394,7 @@ const health = auditBujoMemoryHealth({
 });
 ```
 
-Recall and index maintenance are config-aware and owned by `@mono-agent/agent-app`:
+Recall and index maintenance are config-aware and owned by `@mono-agent/app`:
 
 ```bash
 mono-agent stop
@@ -864,7 +864,7 @@ This package may depend on core contracts and local persistence/search dependenc
 It does not own host configuration, backend selection, app-owned `MemoryRecall`
 or `MemoryJournal` MCP wiring, external custom-store implementations, model
 runtime execution, communication channels, or run artifact persistence.
-`@mono-agent/agent-app` chooses the local tier to build and wires eligible tools;
+`@mono-agent/app` chooses the local tier to build and wires eligible tools;
 programmatic hosts may inject a separate structural `MemoryStore`.
 
 ## Related Documentation

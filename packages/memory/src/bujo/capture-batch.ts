@@ -8,7 +8,7 @@ import type { ExtractedEntity, ExtractedRelation } from "./entities.js";
 import { OWNER_ENTITY_ID, renderKnownEntityHints } from "./entity-reuse.js";
 import { MAX_MODEL_JSON_CHARS, parseJsonExact } from "./json.js";
 import type { LlmComplete } from "./llm.js";
-import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
+import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/contracts";
 import {
   CAPTURE_SOURCES, boundedCaptureSource, captureLabels, deriveCoarseFactLabels, verifiedOutcomeCount,
   type CaptureLabelContext, type CaptureSource,

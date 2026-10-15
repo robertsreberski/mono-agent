@@ -149,7 +149,7 @@ The structured Slack interaction fields are configured only in `mono-agent.confi
 
 ### WhatsApp
 
-WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/whatsapp-adapter"`. These env vars override that plugin entry's `config` fields.
+WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/channel-whatsapp"`. These env vars override that plugin entry's `config` fields.
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
@@ -163,7 +163,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 
 ### Messenger
 
-Messenger is loaded through `channels.plugins[]` with `package: "@mono-agent/messenger-adapter"`. These env vars override that plugin entry's `config` fields, except the three credentials, which are environment-only: `pageAccessToken`, `appSecret`, and `verifyToken` are rejected in JSON config with a typed `invalid_config` error.
+Messenger is loaded through `channels.plugins[]` with `package: "@mono-agent/channel-messenger"`. These env vars override that plugin entry's `config` fields, except the three credentials, which are environment-only: `pageAccessToken`, `appSecret`, and `verifyToken` are rejected in JSON config with a typed `invalid_config` error.
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
@@ -238,7 +238,7 @@ Messenger is loaded through `channels.plugins[]` with `package: "@mono-agent/mes
 
 ### A2A
 
-The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-agent/a2a-adapter"`. These env vars override that plugin entry's `config` fields.
+The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-agent/channel-a2a"`. These env vars override that plugin entry's `config` fields.
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |

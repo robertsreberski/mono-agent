@@ -1,5 +1,5 @@
 import { relative } from "node:path";
-import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
+import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/contracts";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 

@@ -29,7 +29,7 @@ sed -n '1,60p' "$PIAI/dist/types.d.ts"
 D=$(dirname $(find node_modules/.pnpm -name "agent-harness.d.ts" -path "*pi-agent-core*" | head -1))
 grep -rn "<symbol>" "$D"
 # packages also nest their own copy:
-grep -rn "<symbol>" packages/agent-runtime/node_modules/@earendil-works/pi-agent-core
+grep -rn "<symbol>" packages/turn/node_modules/@earendil-works/pi-agent-core
 ```
 
 Check what upstream has published:
@@ -41,13 +41,13 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (keep them exact)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core`
+- `packages/turn`: `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core`
   at `1.2.0`.
   Pi 1.x removed the experimental upstream harness and session repository.
   The mono-agent engine owns admission, steering and storage over the installed
   `runAgentLoop`; the runtime adapter owns provider and tool integration.
   Future updates require exact-pin and packed-consumer resolution checks, plus
-  the real-loop contract in `packages/agent-runtime/src/engine/__tests__/loop-contract.test.js`.
+  the real-loop contract in `packages/turn/src/engine/__tests__/loop-contract.test.js`.
   Pi 0.86 folds request prompts and tool declarations into the transcript's
   leading system message: provider-facing code (including faux response
   factories in tests) sees a `TranscriptContext` and must replay tools/prompt
@@ -101,12 +101,12 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   New assistant-error retry patterns must not enable response-level retries in
   the runtime: checks, compaction and handoffs keep SSE and `maxRetries: 0`.
 - Pi's standalone OAuth registry remains unavailable at runtime.
-  `packages/agent-runtime/src/ai/pi-oauth-compat.js` owns the compatibility
+  `packages/turn/src/ai/pi-oauth-compat.js` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream
   imports.
 - Importing projects should not add their own Pi dependency merely to read
   built-in models, reasoning levels, or OAuth helpers. Use the
-  runtime-owned façade exported from `@mono-agent/agent-runtime/ai`:
+  runtime-owned façade exported from `@mono-agent/turn/ai`:
   `listPiBuiltinModels`, `getPiBuiltinModel`, `reasoningLevelsForPiModel`,
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
@@ -118,7 +118,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 - Pi Core 1.0 removes AgentHarness and SessionRepo. The Pi-native adapter now
   uses the mono-agent engine over the pinned `runAgentLoop`, not a fork of that loop.
   Compaction helpers retain the attributed old cut/estimator for parity.
-  The mono-agent engine in `@mono-agent/agent-runtime/engine` uses `journals`: import
+  The mono-agent engine in `@mono-agent/turn/engine` uses `journals`: import
   idle legacy v3/v4 main context with source-bound restartable staging, fsync the
   new transcript/publication before archiving the source, and cold-replay legacy files
   with open operations. Never test migration against real session directories.
@@ -141,7 +141,7 @@ by hand.
 3. Targeted tests first:
 
 ```bash
-pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/engine-turn.test.js \
+pnpm --filter @mono-agent/turn test -- src/__tests__/ai/engine-turn.test.js \
   src/__tests__/pi-auth.test.js src/__tests__/ai/failure.test.js \
   src/__tests__/ai/router.test.js --runInBand
 ```
@@ -151,7 +151,7 @@ pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/engine-turn.tes
 
 ## Vendoring & pin guards
 
-- **License consistency across the vendoring boundary.** `agent-runtime` is
+- **License consistency across the vendoring boundary.** `turn` is
   designed to be vendored-as-source into a second host (worklab). Mono-agent's
   root and all publishable workspace packages are deliberately aligned on
   `GPL-3.0-only`; keep that alignment explicit when auditing or porting across
@@ -160,7 +160,7 @@ pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/engine-turn.tes
 
 ```bash
 pnpm run check:licenses
-grep -H '"license"' packages/agent-runtime/package.json packages/agent-app/package.json
+grep -H '"license"' packages/turn/package.json packages/app/package.json
 # both => GPL-3.0-only
 ```
 
@@ -189,7 +189,7 @@ pnpm config get minimumReleaseAgeExclude   # `undefined` while no exclusions are
 - When behavior differs from types, read the shipped implementation:
 
 ```bash
-sed -n '1,200p' packages/agent-runtime/node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js
+sed -n '1,200p' packages/turn/node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js
 ```
 
 - Record any new gotcha in a memory note; pi surprises recur.

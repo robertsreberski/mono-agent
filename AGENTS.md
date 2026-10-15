@@ -2,13 +2,13 @@
 
 ## Project
 
-This repository is a config-first agent framework built from npm packages under the `@mono-agent` scope. The v1 shape centers on `@mono-agent/agent-app` composing the consolidated `@mono-agent/agent-runtime` (including its isolated `src/engine`), modular built-in channel adapters, config-loaded extras, skills/MCP/harness integration, observability, and optional memory.
+This repository is a config-first agent framework built from npm packages under the `@mono-agent` scope. The v1 shape centers on `@mono-agent/app` composing the consolidated `@mono-agent/turn` (including its isolated `src/engine`), modular built-in channel adapters, config-loaded extras, skills/MCP/harness integration, observability, and optional memory.
 
 ## Repository shape
 
 - Treat this repository as a pnpm workspace monorepo.
 - Publishable packages live under `packages/<package-name>/`.
-- Optional plugin-tier extras live under `extras/<package-name>/` when cataloged with `publishable: true` and `tier: "plugin"` (published in the npm lockstep but outside the core `@mono-agent/agent-app` closure, loaded via `channels.plugins[]`, as a request-scoped runtime extension, through an explicitly selected plugin backend, or as an explicitly paired companion MCP server); the current extras are `@mono-agent/a2a-adapter`, `@mono-agent/agent-orchestrator`, `@mono-agent/docs-mcp`, `@mono-agent/messenger-adapter`, and `@mono-agent/whatsapp-adapter`.
+- Optional plugin-tier extras live under `extras/<package-name>/` when cataloged with `publishable: true` and `tier: "plugin"` (published in the npm lockstep but outside the core `@mono-agent/app` closure, loaded via `channels.plugins[]`, as a request-scoped runtime extension, through an explicitly selected plugin backend, or as an explicitly paired companion MCP server); the current extras are `@mono-agent/channel-a2a`, `@mono-agent/orchestrator`, `@mono-agent/docs-mcp`, `@mono-agent/channel-messenger`, and `@mono-agent/channel-whatsapp`.
 - Published package names should use the `@mono-agent/<package-name>` scope.
 - Package categories live in `scripts/package-catalog.mjs` and README docs; keep the physical workspace layout flat unless a task explicitly asks for a mechanical migration.
 - Root instructions apply to every package unless a package-local `AGENTS.md` narrows them.
@@ -61,4 +61,4 @@ Choose the lowest rung that satisfies the capability; see [docs/reference/capabi
 2. Config field or selected skill. Cost: new user-facing option or loaded instruction surface. Gate: typed config/validation/docs for config; selected skills stay under `context.selectedSkills` without host glue.
 3. New adapter/package in the correct package category. Cost: new package ownership, README, tests, and catalog metadata. Gate: add `category`, `responsibility`, and `allowedDependencyCategories` to `scripts/package-catalog.mjs`; `scripts/check-package-architecture.mjs` must pass.
 4. MCP server / auto-provisioned MCP tool. Cost: runtime-visible tool lifecycle, policy/security/docs, and tool-result behavior. Gate: use when the model needs an explicit callable tool boundary; the canonical app-owned example is `MemoryRecall`.
-5. Shared core contract change in `@mono-agent/agent-contracts`. Cost: highest blast radius and likely semver/release coordination. Gate: last resort for adapter-neutral shared structure; `scripts/check-package-architecture.mjs` enforces adapter-neutrality.
+5. Shared core contract change in `@mono-agent/contracts`. Cost: highest blast radius and likely semver/release coordination. Gate: last resort for adapter-neutral shared structure; `scripts/check-package-architecture.mjs` enforces adapter-neutrality.

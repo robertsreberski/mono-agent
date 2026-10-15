@@ -9,7 +9,7 @@ For a fresh/stateless turn, mono-agent builds one prompt from several ordered se
 
 ## Section order
 
-The context builder in `@mono-agent/agent-harness` concatenates sections in a fixed order. Empty optional sections are skipped, but present sections always appear in this sequence:
+The context builder in `@mono-agent/conversation` concatenates sections in a fixed order. Empty optional sections are skipped, but present sections always appear in this sequence:
 
 | # | Section | Source | Always present? |
 |---|---------|--------|-----------------|
@@ -30,7 +30,7 @@ Conversation History is a system-prompt section on fresh/stateless runs and on t
 :::
 
 :::note
-Recalled long-term memory used to be section 3 of this prompt. It is no longer assembled into the system-prompt sections above — it now rides the user message each turn (see [Memory recall](#memory-recall)). The `@mono-agent/agent-harness` context API still exposes a `memory` section for custom/programmatic callers that pass `memory` directly, but the standard agent appends recall to the user message.
+Recalled long-term memory used to be section 3 of this prompt. It is no longer assembled into the system-prompt sections above — it now rides the user message each turn (see [Memory recall](#memory-recall)). The `@mono-agent/conversation` context API still exposes a `memory` section for custom/programmatic callers that pass `memory` directly, but the standard agent appends recall to the user message.
 :::
 
 ## Configuring the inputs

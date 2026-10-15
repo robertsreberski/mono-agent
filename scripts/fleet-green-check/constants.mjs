@@ -5,7 +5,7 @@ export const REPO = "robertsreberski/mono-agent";
 export const LABEL_PREFIX = "com.mono-agent.";
 export const LABEL_PATTERN = /^com\.mono-agent\.[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/u;
 export const MAX_LABEL_FOLDER_SEGMENT = 40;
-export const CLI_MARKER = "/packages/agent-app/";
+export const CLI_MARKER = "/packages/app/";
 export const DEFAULT_EXPECT_NODE = "24.15.0";
 export const DEFAULT_EXPECT_ABI = "137";
 export const BUILD_PROVENANCE_PROBE = fileURLToPath(new URL("../build-provenance-probe.mjs", import.meta.url));
@@ -174,7 +174,7 @@ export const LAUNCHCTL = "/bin/launchctl";
 export const ENV = "/usr/bin/env";
 export const MANAGED_BACKGROUND_WORKER_ENV = "MONO_AGENT_MANAGED_WORKER";
 // Keep this fail-closed list aligned with BACKGROUND_OPERATIONAL_ENV_NAMES in
-// packages/agent-app/src/background-environment.ts. The lifecycle marker is
+// packages/app/src/background-environment.ts. The lifecycle marker is
 // added by managedBackgroundEnvironment rather than the public allowlist.
 export const MANAGED_BACKGROUND_ENV_NAMES = new Set([
   "APPDATA",

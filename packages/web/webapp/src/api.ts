@@ -1,4 +1,4 @@
-import { parseProviderUsageSnapshot } from "@mono-agent/agent-contracts/provider-usage";
+import { parseProviderUsageSnapshot } from "@mono-agent/contracts/provider-usage";
 import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
 import type {
@@ -452,7 +452,7 @@ export const api = {
   },
 
   /** Promptless manual compaction of one idle conversation; returns counts only. */
-  compactThread: (threadId: string) => request<import("@mono-agent/agent-contracts").AgentManualCompactionResult>(
+  compactThread: (threadId: string) => request<import("@mono-agent/contracts").AgentManualCompactionResult>(
     `/api/v1/threads/${encodeURIComponent(threadId)}/compact`,
     { method: "POST", body: JSON.stringify({}) },
   ),

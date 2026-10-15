@@ -20,7 +20,7 @@ describe("check-oss-hygiene", () => {
   it("reports non-synthetic consumer fixture names without printing the raw name", () => {
     const records = [
       {
-        path: "packages/agent-app/src/__tests__/fixtures/consumers/legacy-agent/mono-agent.config.json",
+        path: "packages/app/src/__tests__/fixtures/consumers/legacy-agent/mono-agent.config.json",
         text: "projectName: legacy-agent\n",
       },
     ];
@@ -30,13 +30,13 @@ describe("check-oss-hygiene", () => {
     expect(findings).toEqual([
       {
         column: 1,
-        file: "packages/agent-app/src/__tests__/fixtures/consumers/[non-synthetic-consumer]/mono-agent.config.json",
+        file: "packages/app/src/__tests__/fixtures/consumers/[non-synthetic-consumer]/mono-agent.config.json",
         label: "non-synthetic-consumer-fixture-name",
         line: 0,
       },
       {
         column: 14,
-        file: "packages/agent-app/src/__tests__/fixtures/consumers/[non-synthetic-consumer]/mono-agent.config.json",
+        file: "packages/app/src/__tests__/fixtures/consumers/[non-synthetic-consumer]/mono-agent.config.json",
         label: "non-synthetic-consumer-fixture-reference",
         line: 1,
       },
@@ -76,11 +76,11 @@ describe("check-oss-hygiene", () => {
   it("allows the public synthetic fixture names and example home paths", () => {
     const records = [
       {
-        path: "packages/agent-app/src/__tests__/fixtures/consumers/local-agent-alpha/mono-agent.config.json",
+        path: "packages/app/src/__tests__/fixtures/consumers/local-agent-alpha/mono-agent.config.json",
         text: "Use /Users/example/local-agent-alpha and /home/example/local-agent-beta.\n",
       },
       {
-        path: "packages/agent-app/src/__tests__/fixtures/consumers/local-agent-beta/mono-agent.config.json",
+        path: "packages/app/src/__tests__/fixtures/consumers/local-agent-beta/mono-agent.config.json",
         text: "Fixture for local-agent-beta.\n",
       },
     ];

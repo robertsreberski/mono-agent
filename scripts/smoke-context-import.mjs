@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import {
   createAgentHarness,
   createDurableHistoryStore,
-} from "../packages/agent-harness/dist/index.js";
+} from "../packages/conversation/dist/index.js";
 
 const root = await mkdtemp(join(tmpdir(), "mono-context-import-smoke-"));
 let runtimeCalls = 0;
@@ -18,7 +18,7 @@ try {
   await writeFile(identityPath, "You are the context import smoke fixture.\n", "utf8");
   const historyStore = createDurableHistoryStore({ root: join(root, "history") });
 
-  const harnessModule = pathToFileURL(join(process.cwd(), "packages/agent-harness/dist/index.js")).href;
+  const harnessModule = pathToFileURL(join(process.cwd(), "packages/conversation/dist/index.js")).href;
   const childCode = [
     `import { createDurableHistoryStore } from ${JSON.stringify(harnessModule)};`,
     "const store = createDurableHistoryStore({ root: process.argv[1] });",

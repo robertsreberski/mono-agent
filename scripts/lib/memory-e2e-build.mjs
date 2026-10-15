@@ -4,7 +4,7 @@ import { lstat, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 export const BUILD_POLICY = "fresh-clean-head-agent-app-closure-v1";
-const FILTER = "@mono-agent/agent-app...";
+const FILTER = "@mono-agent/app...";
 const BUILD_ARGS = ["--filter", FILTER, "run", "build"];
 
 export function sourceState(root, exec = execFileSync) {
@@ -36,13 +36,13 @@ export async function prepareRealBuild(root, head, { exec = execFileSync } = {})
   assertSource(root, head, exec);
   const listed = JSON.parse(exec("pnpm", ["--filter", FILTER, "list", "--depth", "-1", "--json"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
   const packages = listed.map((entry) => relative(root, entry.path)).sort();
-  if (!packages.includes("packages/agent-app") || new Set(packages).size !== packages.length) throw new Error("invalid_build_closure");
+  if (!packages.includes("packages/app") || new Set(packages).size !== packages.length) throw new Error("invalid_build_closure");
   for (const path of packages) {
     if (!/^(packages|extras)\/[a-z0-9-]+$/u.test(path) || await realpath(join(root, path)) !== join(root, path)) throw new Error("unsafe_build_closure");
   }
   // agent-runtime ships tracked JavaScript and generates declarations in types/;
   // the other app-closure packages compile to dist/. Source HEAD pins that JS.
-  const outputRoots = packages.map((path) => `${path}/${path === "packages/agent-runtime" ? "types" : "dist"}`);
+  const outputRoots = packages.map((path) => `${path}/${path === "packages/turn" ? "types" : "dist"}`);
   assertSource(root, head, exec);
   // tsc does not remove deleted-source outputs. Clean only this dependency closure's
   // generated dist/types, never benchmark artifacts or unrelated workspace outputs.

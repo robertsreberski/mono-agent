@@ -789,7 +789,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
   });
   it("necessarily removes stale dist and rebuilds the source-pinned closure before attesting outputs", async () => {
     const directory = await mkdtemp(join(await ownedParent(root), "build-test-")); dirs.push(directory);
-    const path = join(directory, "packages/agent-app"); await mkdir(join(path, "dist"), { recursive: true });
+    const path = join(directory, "packages/app"); await mkdir(join(path, "dist"), { recursive: true });
     await writeFile(join(path, "dist/stale.js"), "stale source");
     const calls = [];
     const exec = (command, args) => {
@@ -797,7 +797,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       if (command === "git") return args.includes("rev-parse") ? "HEAD_A" : "";
       if (args.includes("list")) return JSON.stringify([{ path }]);
       // The synchronous production build is replaced only by a local synthetic writer.
-      expect(args).toEqual(["--filter", "@mono-agent/agent-app...", "run", "build"]);
+      expect(args).toEqual(["--filter", "@mono-agent/app...", "run", "build"]);
       return "";
     };
     // No output from a purported successful build must fail, not certify stale bytes.
@@ -808,14 +808,14 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
   });
   it("records fresh output/source identity after a successful synthetic closure build", async () => {
     const directory = await mkdtemp(join(await ownedParent(root), "build-good-")); dirs.push(directory);
-    const path = join(directory, "packages/agent-app"); await mkdir(path, { recursive: true });
+    const path = join(directory, "packages/app"); await mkdir(path, { recursive: true });
     const exec = (command, args) => {
       if (command === "git") return args.includes("rev-parse") ? "HEAD_A" : "";
       if (args.includes("list")) return JSON.stringify([{ path }]);
       mkdirSync(join(path, "dist")); writeFileSync(join(path, "dist/index.js"), "fresh output"); return "";
     };
     const build = await prepareRealBuild(directory, "HEAD_A", { exec });
-    expect(build).toMatchObject({ policy: BUILD_POLICY, sourceHead: "HEAD_A", packages: ["packages/agent-app"] });
+    expect(build).toMatchObject({ policy: BUILD_POLICY, sourceHead: "HEAD_A", packages: ["packages/app"] });
     expect(build.outputSha256).toMatch(/^[0-9a-f]{64}$/u);
     expect((await setup()).plan.realBuildPolicy).toBe(BUILD_POLICY);
     await verifyRealBuild(directory, build, { exec });
@@ -825,7 +825,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
   });
   it("handles the source-JavaScript runtime's generated declarations without requiring dist", async () => {
     const directory = await mkdtemp(join(await ownedParent(root), "build-runtime-")); dirs.push(directory);
-    const app = join(directory, "packages/agent-app"); const runtime = join(directory, "packages/agent-runtime");
+    const app = join(directory, "packages/app"); const runtime = join(directory, "packages/turn");
     await mkdir(app, { recursive: true }); await mkdir(join(runtime, "src"), { recursive: true });
     await mkdir(join(runtime, "types")); await writeFile(join(runtime, "types/stale.d.ts"), "stale");
     await writeFile(join(runtime, "src/index.js"), "tracked source");
@@ -836,14 +836,14 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
       mkdirSync(join(runtime, "types")); writeFileSync(join(runtime, "types/index.d.ts"), "fresh types"); return "";
     };
     const build = await prepareRealBuild(directory, "HEAD_A", { exec });
-    expect(build.outputRoots).toEqual(["packages/agent-app/dist", "packages/agent-runtime/types"]);
+    expect(build.outputRoots).toEqual(["packages/app/dist", "packages/turn/types"]);
     await expect(readFile(join(runtime, "types/stale.d.ts"))).rejects.toThrow();
     expect(await readFile(join(runtime, "src/index.js"), "utf8")).toBe("tracked source");
     await verifyRealBuild(directory, build, { exec });
   });
   it.each(["head", "dirt"])("rejects source %s drift during build before provider admission", async (mode) => {
     const directory = await mkdtemp(join(await ownedParent(root), "build-drift-")); dirs.push(directory);
-    const path = join(directory, "packages/agent-app"); await mkdir(path, { recursive: true });
+    const path = join(directory, "packages/app"); await mkdir(path, { recursive: true });
     let built = false;
     const exec = (command, args) => {
       if (command === "git") return args.includes("rev-parse") ? (built && mode === "head" ? "HEAD_B" : "HEAD_A") : (built && mode === "dirt" ? " M source" : "");
@@ -858,7 +858,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     const llm = captureLlm({ run }, { model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {} });
     await llm.complete("STRICT_PROMPT", { label: "capture:extract" });
     expect(run.mock.calls[0][1]).toMatchObject({ messages: [{ role: "user", content: "STRICT_PROMPT" }], allowedTools: [], mcpServers: {}, maxTurns: 1, providerCheckMaxTokens: 2048, compaction: { enabled: false }, piTransport: "sse", piMaxRetries: 0 });
-    const production = await readFile(new URL("../../packages/agent-app/src/configured-agent.ts", import.meta.url), "utf8");
+    const production = await readFile(new URL("../../packages/app/src/configured-agent.ts", import.meta.url), "utf8");
     for (const phrase of run.mock.calls[0][0].split(/(?<=\.) /u)) expect(production).toContain(phrase);
     await expect(meteredRuntime({ run: async () => ({ error: "secret error", text: "" }) }, { budget, stage: "reader", tag: {} }).run("s", { messages: [], abortSignal: new AbortController().signal })).rejects.toThrow("provider_failed");
   });

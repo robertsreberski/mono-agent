@@ -1,4 +1,4 @@
-import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
+import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/contracts";
 import { createHash } from "node:crypto";
 import { encodeMemoryLabel, isStructuredFact, validateMemoryLabel, type FactMemoryLabel, type MemoryLabel } from "./labels.js";
 

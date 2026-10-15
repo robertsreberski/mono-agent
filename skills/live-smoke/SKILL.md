@@ -30,7 +30,7 @@ Smoke runs built `dist`, so build the touched dependency closure first:
 ```bash
 REPO=$(git rev-parse --show-toplevel)
 SMOKE=$(mktemp -d /tmp/mono-agent-smoke.XXXX) && cd "$SMOKE"
-CLI="$REPO/packages/agent-app/dist/cli.js"
+CLI="$REPO/packages/app/dist/cli.js"
 node $CLI init --model claude:claude-sonnet-4-6 --fallback pi:ollama:gemma4:31b
 # or hand-write a minimal IDENTITY.md + mono-agent.config.json with a real pi model
 # (e.g. pi:openai-codex:gpt-5.5), sandbox {"mode":"native","network":{"mode":"none"}},
@@ -47,14 +47,14 @@ sqlite3 .mono-agent/memory/memory.db '.tables'   # when memory is under test
 Cleanup — ALWAYS:
 
 ```bash
-pkill -f "agent-app/dist/cli.js start"; sleep 1
+pkill -f "app/dist/cli.js start"; sleep 1
 rm -rf "$(cat /tmp/mono-agent-smoke-dir)" /tmp/mono-agent-smoke-dir
 ```
 
 ## C. Web PWA smoke (web console)
 
 ```bash
-node packages/agent-app/dist/cli.js web run --loopback --port 5050 &
+node packages/app/dist/cli.js web run --loopback --port 5050 &
 for i in $(seq 1 25); do curl -fsS --max-time 3 http://127.0.0.1:5050/healthz >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS http://127.0.0.1:5050/api/v1/bootstrap    # assert on the JSON body
 # LAN variant: web run --host 0.0.0.0 --port 5050
@@ -62,7 +62,7 @@ curl -fsS http://127.0.0.1:5050/api/v1/bootstrap    # assert on the JSON body
 
 ## D. Readiness-probe worker (real Worker vs a fake provider)
 
-`packages/agent-app/dist/readiness-probe-worker.js` runs each model route's live
+`packages/app/dist/readiness-probe-worker.js` runs each model route's live
 probe turn in an isolated `worker_threads.Worker`; the unit suite only reaches it
 through a synthetic `run`/`workerUrl` seam, so the real file is smoke-only.
 `mono-agent init` spawns it as its route probe — point the primary model's local
@@ -77,7 +77,7 @@ node -e 'require("http").createServer((q,s)=>{let b="";q.on("data",c=>b+=c);q.on
 # 2. Init a throwaway agent whose ollama-compat route resolves to the fake (ollama base -> <root>/v1).
 SMOKE=$(mktemp -d /tmp/mono-agent-smoke.XXXX) && cd "$SMOKE"
 MONO_AGENT_LOCAL_PROVIDER_TYPE=ollama MONO_AGENT_LOCAL_PROVIDER_BASE_URL=http://127.0.0.1:11499 \
-  node "$REPO/packages/agent-app/dist/cli.js" init --model pi:ollama:probe-model 2>&1 | tail -25
+  node "$REPO/packages/app/dist/cli.js" init --model pi:ollama:probe-model 2>&1 | tail -25
 # init's route probe forks the REAL readiness-probe-worker.js; a "verified"/route-ready line
 # (not a timeout) proves the worker spawned, ran a turn, and posted a result back.
 

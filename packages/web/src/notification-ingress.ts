@@ -25,7 +25,7 @@ import {
   readAuthorizationBearer,
   type AgentReplyPart,
   type ProcessJobProjection,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { WEB_MAX_TURN_TEXT_CHARACTERS, type WebThreadNotificationTriggerKind } from "./contracts.js";

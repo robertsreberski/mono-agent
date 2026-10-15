@@ -21,7 +21,7 @@ Use this section when you need to confirm an exact config key, env var, or cover
 | [Feature registry](/reference/feature-registry/) | Authoritative, long-form checklist — the source of truth a new capability row is added to when a package ships a feature. |
 | [Deprecations & compatibility decisions](/reference/deprecations/) | Canonical removal versions and explicit permanent-compatibility decisions for legacy surfaces. |
 | [Setup security and managed runtime](/reference/setup-security/) | Low-level guided-secret, managed-runtime, single-instance, and snapshot-integrity guarantees kept out of the runnable Quickstart. |
-| [Worklab shared kernel decision](/reference/worklab-shared-kernel/) | ADR-style ecosystem decision: mono-agent and Worklab share `@mono-agent/agent-runtime` without merging product repositories. |
+| [Worklab shared kernel decision](/reference/worklab-shared-kernel/) | ADR-style ecosystem decision: mono-agent and Worklab share `@mono-agent/turn` without merging product repositories. |
 
 ## Coverage types
 
