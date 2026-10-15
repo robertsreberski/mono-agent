@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Name `runtime.session.root` when `validate`, `config` or startup meets the old
+  `providers.piNative.piSessionsRoot` key, instead of reporting a generic
+  unknown key.
+
 - Remove the old workspace package names in a breaking rename, with no aliases.
   Update imports, dependencies, and plugin configuration using the table below.
   Old names in `channels.plugins[].package` fail validation with an explicit

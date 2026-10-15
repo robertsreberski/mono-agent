@@ -20,7 +20,7 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
   isProcessIncarnationLive: () => true,
 }));
 
-import { resolveAppSessionsRoot } from "../app-config.js";
+import { loadAppCoreConfig, resolveAppSessionsRoot } from "../app-config.js";
 import { acquireAgentRootOwnership, agentRootLeasePath } from "../agent-root-coordinator.js";
 import {
   loadProcessJobsRootRegistryProtection,
@@ -85,6 +85,14 @@ describe("resolveAppSessionsRoot", () => {
       runtime: { session: { root: replacement } } });
     await expect(resolveAppSessionsRoot(inputFor(configPath))).rejects.toThrow(
       "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there");
+  });
+
+  it("names the replacement key when validate and startup load the old key", async () => {
+    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } });
+    const load = loadAppCoreConfig({ cwd: dir, configPath, env: {} });
+    await expect(load).rejects.toThrow(
+      "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there");
+    await expect(loadAppCoreConfig({ cwd: dir, configPath, env: {} })).rejects.not.toThrow("unknown key");
   });
 
   it("returns undefined (does not throw) when the config file is malformed", async () => {
