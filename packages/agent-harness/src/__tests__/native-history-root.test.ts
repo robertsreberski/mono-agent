@@ -17,11 +17,15 @@ async function fixture() {
   return { root, path, retire, store };
 }
 
-it("requires drained host ownership only for authority bootstrap", async () => {
+it("bootstraps while an unrelated turn is active and lets it commit with its original binding", async () => {
   const f = await fixture(), before = await readFile(f.path);
   const active = await f.store.beginProviderSessionTurn("fictional-active", "fictional-active-turn", { modelKey });
-  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("Another conversation is still running");
-  expect(await readdir(f.root)).not.toContain(NATIVE_HISTORY_ROOT_FILE); expect(await readFile(f.path)).toEqual(before); await active.abort();
+  const lease = await f.store.acquireNativeHistoryAuthority(bucket);
+  expect(lease.status).toBe("owned"); if (lease.status === "owned") await lease.release();
+  expect(await readFile(f.path)).toEqual(before);
+  await (await active.prepareCommit([{ role: "assistant", content: "Fictional active result" }], { providerSessionSynced: true })).commit();
+  expect(await f.store.load("fictional-active")).toHaveLength(1);
+  expect(f.retire).not.toHaveBeenCalled();
 });
 
 it("issues immutable bounded root authority without migrating canonical history or native files", async () => {
@@ -182,7 +186,7 @@ it("publishes each root phase once and never resumes an unpublished valid propos
 });
 
 
-it.each(["truncated", "permissions", "identity"])("bootstrap preserves %s pending recovery damage and asks for repair, not another send", async (damage) => {
+it.each(["truncated", "permissions", "identity"])("bootstrap isolates unrelated %s pending recovery damage without deleting it", async (damage) => {
   const f = await fixture(), id = "fictional-damaged-pending";
   const owner = createDurableHistoryStore({ root: f.root, retireProviderSession: f.retire, reconcileProviderSessionTurn: async () => ({ status: "absent" }) });
   const turn = await owner.beginProviderSessionTurn(id, "fictional-damaged-turn", { modelKey, reconciliation: { purpose: "execution", ownerKey: id, initial: { persistText: "Fictional input", timestamp: "2000-01-01T00:00:00.000Z" } } });
@@ -194,6 +198,7 @@ it.each(["truncated", "permissions", "identity"])("bootstrap preserves %s pendin
   if (damage === "truncated") await writeFile(path, '{"version":', { mode: 0o600 });
   if (damage === "permissions") await chmod(path, 0o644);
   const bytes = await readFile(path);
-  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow(/recovery data is damaged \(.+\); repair or restore/);
-  expect(await readFile(path)).toEqual(bytes); expect(await readdir(f.root)).not.toContain(NATIVE_HISTORY_ROOT_FILE); expect(f.retire).not.toHaveBeenCalled();
+  const lease = await f.store.acquireNativeHistoryAuthority(bucket);
+  expect(lease.status).toBe("owned"); if (lease.status === "owned") await lease.release();
+  expect(await readFile(path)).toEqual(bytes); expect(await readdir(f.root)).toContain(NATIVE_HISTORY_ROOT_FILE); expect(f.retire).not.toHaveBeenCalled();
 });

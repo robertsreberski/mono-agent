@@ -15,12 +15,12 @@ const model = { provider: "fictional", id: "summary", api: "fictional-api", cont
 const response = (content = JSON.stringify(summary), stopReason = "stop") => ({ content: [{ type: "text", text: content }], stopReason, usage: { input: 20, output: 10, cost: { total: 0 } } });
 it("uses exactly one selected no-tools completion and returns accounting without retry/fallback", async () => {
   const completeSimple = vi.fn(async (..._args) => response());
-  expect(await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000, completionOptions: { maxRetries: 9 } })).toMatchObject({ status: "ready", summary, usage: { input: 20, output: 10 } });
+  expect(await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000, completionOptions: { transport: "websocket", maxRetries: 9 } })).toMatchObject({ status: "ready", summary, usage: { input: 20, output: 10 } });
   expect(completeSimple).toHaveBeenCalledTimes(1);
   expect(completeSimple.mock.calls[0][0]).toBe(model);
   expect(completeSimple.mock.calls[0][1].tools).toEqual([]);
   expect(completeSimple.mock.calls[0][2].maxTokens).toBe(1000);
-  expect(completeSimple.mock.calls[0][2].maxRetries).toBe(0);
+  expect(completeSimple.mock.calls[0][2]).toMatchObject({ transport: "sse", maxRetries: 0 });
 });
 it.each([["", "stop"], ["{}", "stop"], [JSON.stringify(summary), "length"], [JSON.stringify(summary), "aborted"], [JSON.stringify(summary), "error"]])("rejects malformed/empty/truncated/aborted/error summaries without repeat (%s, %s)", async (content, stopReason) => {
   const completeSimple = vi.fn(async () => response(content, stopReason));
@@ -72,7 +72,7 @@ it("accepts a successful non-truncated summary even when bytes/3 exceeds the com
   const completeSimple = vi.fn(async (..._args) => response(JSON.stringify(large)));
   const result = await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000 });
   expect(result).toMatchObject({ status: "ready", summary: large });
-  expect(completeSimple.mock.calls[0][2]).toMatchObject({ maxTokens: 1000, maxRetries: 0 });
+  expect(completeSimple.mock.calls[0][2]).toMatchObject({ maxTokens: 1000, transport: "sse", maxRetries: 0 });
 });
 it.each(["find", "create"])("refuses detach during in-flight cold %s before an idle handle exists", async (phase) => {
   const root = await mkdtemp(join(tmpdir(), "native-detach-cold-fixture-")); roots.push(root);

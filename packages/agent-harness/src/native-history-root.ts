@@ -23,7 +23,7 @@ function validate(value: unknown): asserts value is NativeHistoryRootMarker {
   switchHash(value.rootId);
 }
 /** Immutable host format marker, not a native catalogue or dispatch capability.
- * Issuance is administrative only and borrows the caller's drained root transaction. */
+ * Issuance is administrative only and borrows the caller's root transaction; other conversations need not drain. */
 export class NativeHistoryRootStore {
   private rootId: string | undefined;
   constructor(private readonly root: string, private readonly identity: Identity) {

@@ -425,7 +425,7 @@ export class JsonlSessionRepo {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
         if (this.openSessions.has(id) || !await absent(join(this.directory, `${metadata.journalId}.jsonl`))) throw new Error("Harness session already exists");
-        this.assertNotDamaged((await listLegacySessions(this.root)).unattributed, id);
+        this.assertNotDamaged((await listLegacySessions(this.root, { id })).unattributed, id);
         if (!await absent(`${join(this.directory, `${metadata.journalId}.jsonl`)}.importing`)) this.assertNotDamaged([{ id }], id);
         if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
         if (hostAuthority !== undefined) await assertOwned();
@@ -522,7 +522,7 @@ export class JsonlSessionRepo {
     }, { signal: contextSignal(context) });
     // A creator may have published while this missing-path lookup waited.
     if (published) return this.find(id, context);
-    const legacy = await listLegacySessions(this.root);
+    const legacy = await listLegacySessions(this.root, { id });
     this.assertNotDamaged(legacy.unattributed, id);
     const matches = legacy.sessions.filter((entry) => entry.id === id);
     if (matches.length > 1) fail();
@@ -761,7 +761,7 @@ export class JsonlSessionRepo {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
         // Native ownership is deterministic; only legacy source discovery walks.
-        const legacy = await listLegacySessions(this.root);
+        const legacy = await listLegacySessions(this.root, { id: metadata.id });
         this.assertNotDamaged(legacy.unattributed, metadata.id);
         if (!await absent(`${publishedPath}.upgrading`)) this.assertNotDamaged([{ id: metadata.id }], metadata.id);
         const sources = legacy.sessions.filter((m) => m.id === metadata.id);
@@ -1030,7 +1030,7 @@ export class JsonlSessionRepo {
       const locks = await this.ensureDirectory();
       const matches = await locks.withCatalog(async () => {
         const { owned, unattributed } = await this.catalogueUnlocked(true);
-        const legacy = await listLegacySessions(this.root, { includeArchives: true });
+        const legacy = await listLegacySessions(this.root, { id, includeArchives: true });
         // Attributable damage (native or legacy, including a damaged exact-name
         // legacy candidate) is never treated as retired or unlinked. Damage of
         // unknown ownership is not reclaimable either: it is left untouched.

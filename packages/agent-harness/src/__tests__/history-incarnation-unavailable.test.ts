@@ -9,9 +9,9 @@ import { currentHistoryProcessIncarnation, historyOwnerLiveness } from "../histo
 
 vi.mock("../process-incarnation.js", async (original) => ({
   ...await original<typeof import("../process-incarnation.js")>(),
-  readHistoryProcessIncarnation: vi.fn(async () => { throw Object.assign(new Error("Fictional unavailable OS identity"), { code: "EACCES" }); }),
+  readHistoryProcessIncarnation: vi.fn(async () => undefined),
 }));
-it("unavailable self identity is captured once, emits PID-only evidence and never steals a live PID", async () => {
+it("unavailable self identity respects the cooldown, emits PID-only evidence and never steals a live PID", async () => {
   const root = await mkdtemp(join(tmpdir(), "history-identity-unavailable-"));
   try {
     const store = createDurableHistoryStore({ root }), owner = await store.beginProviderSessionPreparation("fictional-owner", "fictional-turn");
@@ -24,9 +24,10 @@ it("unavailable self identity is captured once, emits PID-only evidence and neve
           for (const row of db.prepare("SELECT incarnation FROM session_claims").all()) expect(row.incarnation).toBeNull();
         } } finally { db.close(); }
       }
+      const beforeProbes = vi.mocked(readHistoryProcessIncarnation).mock.calls.length;
       expect(await currentHistoryProcessIncarnation()).toBeUndefined();
       expect(await historyOwnerLiveness()(process.pid, { schema: HISTORY_PROCESS_INCARNATION_SCHEMA, bootSessionId: "fictional-boot", processStartId: "fictional-start" })).toBe(true);
-      expect(readHistoryProcessIncarnation).toHaveBeenCalledTimes(1);
+      expect(readHistoryProcessIncarnation).toHaveBeenCalledTimes(beforeProbes);
       await store.stats();
     } finally { await owner.abort(); }
   } finally { await rm(root, { recursive: true, force: true }); }

@@ -329,7 +329,7 @@ it.each([false, true])("one typed prepared producer uses ordinary auth, no tools
   expect(lease.checkHandoffSummary(input)).toEqual({ status: "ready" }); expect(await readdir(f.root)).toEqual([]);
   f.faux.setResponses([fauxAssistantMessage([fauxText(summaryText())]), fauxAssistantMessage([fauxText("Incoming dispatch")])]);
   const result = await lease.produceHandoffSummary(input); expect(result.status).toBe("ready");
-  expect(requests[0].context.messages[0].toolsAdded ?? []).toEqual([]); expect(requests[0].options.maxRetries).toBe(0); expect(requests[0].options.transport).toBe("auto");
+  expect(requests[0].context.messages[0].toolsAdded ?? []).toEqual([]); expect(requests[0].options.maxRetries).toBe(0); expect(requests[0].options.transport).toBe("sse");
   expect(requests[0].options.apiKey).toBe("fictional-ordinary-producer"); expect(resolve).toHaveBeenCalledTimes(2);
   expect(await readdir(f.root)).toEqual([]); await expect(lease.produceHandoffSummary(input)).rejects.toThrow("no longer available");
   expect((await lease.run()).text).toBe("Incoming dispatch"); expect(requests).toHaveLength(2); expect(resolve).toHaveBeenCalledTimes(3);

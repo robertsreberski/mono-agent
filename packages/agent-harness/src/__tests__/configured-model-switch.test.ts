@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { createManagedNativeJournalStorage, createMonoRuntime, NativeEvidenceCapacityError, type MonoRuntimeLike, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import { MonoAgentHarness } from "../harness.js";
-import { createDurableHistoryStore, NativeHistoryAuthorityBusyError } from "../durable-history.js";
+import { createDurableHistoryStore } from "../durable-history.js";
 import { switchConversationKey } from "../durable-model-switch-contract.js";
 import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
 
@@ -244,17 +244,17 @@ it.each(["incoming", "pending"])("unavailable outgoing auth advances unbilled to
     expect(await f.changes()).toHaveLength(1);
   }
 });
-it("root authority contention is typed/retryable, preserves evidence and publishes no intent; explicit retry after drain succeeds", async () => {
-  const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
+it("the first switch succeeds while an unrelated preparation still owns its conversation", async () => {
+  const f = await fixture(); await f.seed();
   const other = await f.store.beginProviderSessionPreparation("other-fictional", "other-owner");
   const owner = await f.store.beginProviderSessionPreparation("fictional", "authority-check");
-  await expect(owner.acquireNativeHistoryAuthority()).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_BUSY", retryable: true });
-  await expect(owner.acquireNativeHistoryAuthority()).rejects.toBeInstanceOf(NativeHistoryAuthorityBusyError); await owner.abort();
-  const result = await f.makeHarness("B", true).run(f.request("busy-delivery"));
-  expect(result.failure).toMatchObject({ kind: "native_switch_busy", details: { retryable: true } });
-  expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before); expect(await f.changes()).toHaveLength(0);
-  await other.abort(); f.faux.setResponses([text(summary), text("Fictional serialized retry")]);
-  expect((await f.makeHarness("B", true).run(f.request("busy-delivery"))).failure).toBeUndefined(); expect(f.transport).toHaveBeenCalledTimes(3);
+  const lease = await owner.acquireNativeHistoryAuthority();
+  expect(lease.status).toBe("owned"); if (lease.status === "owned") await lease.release(); await owner.abort();
+  f.faux.setResponses([text(summary), text("Fictional switched answer")]);
+  const result = await f.makeHarness("B", true).run(f.request("active-sibling-delivery"));
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional switched answer");
+  expect(f.transport).toHaveBeenCalledTimes(3); expect(await f.changes()).toHaveLength(1);
+  await other.assertOwned(); await other.abort();
 });
 
 it("an interrupted turn on a legacy-only handle settles as interrupted without rerun, and the next turn runs", async () => {
@@ -285,15 +285,17 @@ it("an unreadable sibling canonical record on an unmarked root does not block th
   expect(await readFile(sibling, "utf8")).toBe("{");
 });
 
-it("another conversation's damaged recovery data refuses bootstrap as non-retryable damage, not busy", async () => {
-  const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
+it("the first switch preserves another conversation's damaged recovery data without refusing", async () => {
+  const f = await fixture(); await f.seed();
   const other = await f.store.beginProviderSessionTurn!("other-fictional", "other-damaged-run", { modelKey: "faux:A",
     reconciliation: { purpose: "execution", ownerKey: "other-fictional", initial: { persistText: "Fictional other input", timestamp: "2000-01-01T00:00:00.000Z" } } });
   await other.abort(); await rm(join(f.historyRoot, ".locks", `${switchConversationKey("other-fictional")}.dirty.json`));
   const [name] = await readdir(join(f.historyRoot, ".pending-turns")); await writeFile(join(f.historyRoot, ".pending-turns", name!), '{"version":', { mode: 0o600 });
+  f.faux.setResponses([text(summary), text("Fictional switched answer")]);
   const result = await f.makeHarness("B", true).run(f.request("damaged-delivery"));
-  expect(result.failure).toMatchObject({ kind: "native_switch_damaged", message: expect.stringContaining("Another conversation's saved recovery data is damaged"), details: { retryable: false } });
-  expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before); expect(await f.changes()).toHaveLength(0);
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional switched answer");
+  expect(f.transport).toHaveBeenCalledTimes(3); expect(await f.changes()).toHaveLength(1);
+  expect(await readFile(join(f.historyRoot, ".pending-turns", name!), "utf8")).toBe('{"version":');
 });
 
 it("unguarded default and unguarded prepared turns emit no nativeProvenance; prepare-time flags/values are ignored", async () => {

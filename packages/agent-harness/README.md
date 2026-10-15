@@ -149,8 +149,8 @@ prove PID reuse with v2 identity. Linux and macOS use stable incarnation;
 other platforms and unavailable reads are PID-only, treating a live PID as live. Stop every older binary
 before the upgraded writer runs: new marker contents are not old-reader compatible.
 Operational filesystem errors propagate rather than becoming damage. First
-native-root bootstrap still refuses damaged recovery evidence anywhere in the
-root when it cannot prove those owners drained. Shared root and
+native-root bootstrap settles only the requesting conversation; unrelated
+active turns and damaged recovery evidence remain protected and charged. Shared root and
 logical-session coordination damage remains root-fatal. Redundant conversation
 shard locks are no longer created or validated; older writers' files stay intact.
 
@@ -215,9 +215,10 @@ inside a custom store's `load`. Publication waits for acquisition to settle even
 when cancellation fires synchronously inside a coordinator.
 Once a transaction or publication
 starts it finishes or rolls back: cancellation does not interrupt the publication
-barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
-(including an admission-triggered drain) remain deliberately non-cancellable;
-this signal is not a transaction deadline.
+barriers, storage-only recovery, or ownership cleanup. Admission-triggered
+draining honours cancellation while waiting for pre-mutation locks and between
+owners. Reset and administrative drain waits remain non-cancellable; the
+admission signal is not a transaction deadline.
 
 Explicit reset is not online repair. Damaged canonical records (including
 truncated JSON), coordination/recovery files, enrolled native journals and

@@ -1,6 +1,7 @@
 import { mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import type {
   ProcessJobProjection,
@@ -319,4 +320,14 @@ export function operatorFetch(options: {
     }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
+}
+
+/** Read interruption obligations without exposing a test-only production API. */
+export function pendingParentInterruptions(store: { readonly paths: { readonly database: string } }, sourceId: string): Array<{ sourceId: string; threadId: string; turnId: string }> {
+  const database = new DatabaseSync(store.paths.database, { readOnly: true });
+  try {
+    return database.prepare(`SELECT source_id AS sourceId, thread_id AS threadId, turn_id AS turnId
+      FROM parent_turn_interruptions WHERE source_id = ? AND state IN ('pending', 'expired') ORDER BY created_at`).all(sourceId) as
+      Array<{ sourceId: string; threadId: string; turnId: string }>;
+  } finally { database.close(); }
 }
