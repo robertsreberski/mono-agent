@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const consumerFixturePrefix = "packages/agent-app/src/__tests__/fixtures/consumers/";
+const consumerFixturePrefix = "packages/app/src/__tests__/fixtures/consumers/";
 const publicConsumerFixtureNames = new Set(["local-agent-alpha", "local-agent-beta"]);
 const publicHomePathNames = new Set(["example", "me", "runner", "u", "user"]);
 const homePathPattern = /\/(?:Users|home)\/([^/\s"'`<>]+)/gu;

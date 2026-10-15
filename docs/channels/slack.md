@@ -481,7 +481,7 @@ The heartbeat watchdog and reconnect loop work out of the box, but every thresho
 
 Use the highest abstraction that fits the host:
 
-1. The config-first `@mono-agent/agent-app` driver is the normal product path.
+1. The config-first `@mono-agent/app` driver is the normal product path.
    It loads `slack.*`, supplies runtime controls and history hooks, and reports
    channel lifecycle state.
 2. `startSlackAdapter(options)` is the normal standalone path. It creates the
@@ -498,7 +498,7 @@ Use the highest abstraction that fits the host:
    boundary conversion; they do not open Socket Mode or admit events.
 
 See the
-[`@mono-agent/slack-adapter` package guide](https://github.com/robertsreberski/mono-agent/tree/main/packages/slack-adapter)
+[`@mono-agent/channel-slack` package guide](https://github.com/robertsreberski/mono-agent/tree/main/packages/channel-slack)
 for a standalone example and its source-module map.
 
 ## Slack app setup

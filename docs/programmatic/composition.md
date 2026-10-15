@@ -5,24 +5,24 @@ sidebar:
   order: 1
 ---
 
-This page covers the three programmatic entry points that the `mono-agent` CLI itself is built on — `startMonoAgentApp` (full host with channels), `createConfiguredAgentResponder` (bare responder, no transports), and the lower-level `@mono-agent/agent-harness` — plus how to inject a custom runtime, add a channel driver, and scope runtime options per request. Reach for these only when `mono-agent.config.json` cannot express your host; the config covers nearly everything (see [feature coverage](/reference/feature-matrix/)). This whole surface is **code**-coverage: it is not reachable from config or the CLI.
+This page covers the three programmatic entry points that the `mono-agent` CLI itself is built on — `startMonoAgentApp` (full host with channels), `createConfiguredAgentResponder` (bare responder, no transports), and the lower-level `@mono-agent/conversation` — plus how to inject a custom runtime, add a channel driver, and scope runtime options per request. Reach for these only when `mono-agent.config.json` cannot express your host; the config covers nearly everything (see [feature coverage](/reference/feature-matrix/)). This whole surface is **code**-coverage: it is not reachable from config or the CLI.
 
 ## Choosing an entry point
 
 | Entry point | Package | You get | Use when |
 | --- | --- | --- | --- |
-| `startMonoAgentApp` | `@mono-agent/agent-app` | Config load + responder + every configured channel + traceability + exporters | You want a CLI-equivalent host, optionally with extra channel drivers or a shared runtime |
-| `createConfiguredAgentResponder` | `@mono-agent/agent-app` | A transport-free `AgentResponder` with config-driven runtime, harness, memory, per-run JSONL recording, and configured exporters | You embed the responder in your own server, test harness, or custom transport |
-| `createAgentHarness` / `createAgentResponder` | `@mono-agent/agent-harness` | Full manual control of identity, skills, memory, history, recorder, runtime | Config-driven composition is not enough and you assemble every dependency yourself |
+| `startMonoAgentApp` | `@mono-agent/app` | Config load + responder + every configured channel + traceability + exporters | You want a CLI-equivalent host, optionally with extra channel drivers or a shared runtime |
+| `createConfiguredAgentResponder` | `@mono-agent/app` | A transport-free `AgentResponder` with config-driven runtime, harness, memory, per-run JSONL recording, and configured exporters | You embed the responder in your own server, test harness, or custom transport |
+| `createAgentHarness` / `createAgentResponder` | `@mono-agent/conversation` | Full manual control of identity, skills, memory, history, recorder, runtime | Config-driven composition is not enough and you assemble every dependency yourself |
 
-The layering is strict: `agent-app` owns config-driven composition and delegates turn execution to `agent-harness`. Drop down only one level at a time. See [package map](/programmatic/) and the [programmatic index](/programmatic/) for the broader package set.
+The layering is strict: `app` owns config-driven composition and delegates turn execution to `conversation`. Drop down only one level at a time. See [package map](/programmatic/) and the [programmatic index](/programmatic/) for the broader package set.
 
 ## The full host: `startMonoAgentApp`
 
 `startMonoAgentApp` is what the CLI's `mono-agent start` runs. It loads `mono-agent.config.json` from `cwd`, builds the responder through app-owned configured composition, and starts traceability, observability exporters, every configured channel, and memory consolidation.
 
 ```ts
-import { startMonoAgentApp } from "@mono-agent/agent-app";
+import { startMonoAgentApp } from "@mono-agent/app";
 
 const app = await startMonoAgentApp({ cwd: process.cwd() });
 // ... later
@@ -47,7 +47,7 @@ The host runs headless and does not watch the config file. After an edit, either
 `defaultChannelDrivers()` returns the core built-in channel drivers (Telegram, Slack, webhook, OpenAI API, cron, and TUI) in startup/status order. The CLI-equivalent default uses `resolveChannelDrivers(...)`, which appends external packages declared under `channels.plugins[]` such as WhatsApp or A2A. Spread `defaultChannelDrivers()` and append your own driver for a code-only host — or expose a package-level `createChannelDriver()` and load it from config.
 
 ```ts
-import { startMonoAgentApp, defaultChannelDrivers } from "@mono-agent/agent-app";
+import { startMonoAgentApp, defaultChannelDrivers } from "@mono-agent/app";
 import { myCustomDriver } from "./my-driver.js";
 
 const app = await startMonoAgentApp({
@@ -60,11 +60,11 @@ For building the driver itself, see [Write your own channel adapter](/programmat
 
 ## The bare responder: `createConfiguredAgentResponder`
 
-When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/agent-app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It starts no channel, trace-registry, service, retention, or consolidation-scheduler lifecycle, but each turn still uses the configured JSONL recorder and per-run exporters. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): local memory modules are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack.
+When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It starts no channel, trace-registry, service, retention, or consolidation-scheduler lifecycle, but each turn still uses the configured JSONL recorder and per-run exporters. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): local memory modules are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack.
 
 ```ts
 import { loadMonoAgentConfig } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+import { createConfiguredAgentResponder } from "@mono-agent/app";
 
 const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
@@ -121,11 +121,11 @@ owned membership/header checks as the physical backstop.
 
 ## Injecting a custom runtime (`MonoRuntimeLike`)
 
-Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/agent-runtime/host`. Pass one to share a single runtime across hosts or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` plus canonical `runtime.fallbacks`.
+Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/turn/host`. Pass one to share a single runtime across hosts or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` plus canonical `runtime.fallbacks`.
 
 ```ts
-import { startMonoAgentApp } from "@mono-agent/agent-app";
-import type { MonoRuntimeLike } from "@mono-agent/agent-runtime/host/types";
+import { startMonoAgentApp } from "@mono-agent/app";
+import type { MonoRuntimeLike } from "@mono-agent/turn/host/types";
 
 const myRuntime: MonoRuntimeLike = createMyRuntime();
 
@@ -141,16 +141,16 @@ Notes:
 - The configured fallback chain is applied by the built-in runtime's router. An injected runtime bypasses that wiring, so your runtime owns retry and failover behavior.
 - The BuJo memory LLM is separate from the channel runtime. `createConfiguredMemory(config, { memoryRuntime })` is the seam for tests or custom memory LLM execution; otherwise memory builds its own fallback-free runtime from `memory.llm`.
 - Model overrides use a cached `runtimeForModel(model)` owner when supplied; without it, the injected runtime receives the effective per-run model directly. Provide the factory when separate runtimes are needed, such as routers with a fixed primary. Session cleanup resolves the same owner, including after a restart.
-- `createSessionRuntimeResolver` from `@mono-agent/agent-harness` caches runtime identity by canonical model key. Durable-history retirement callbacks receive `(providerSessionId, modelKey?)`; absent keys identify legacy unbound records. The configured app wires retirement to the owning runtime.
+- `createSessionRuntimeResolver` from `@mono-agent/conversation` caches runtime identity by canonical model key. Durable-history retirement callbacks receive `(providerSessionId, modelKey?)`; absent keys identify legacy unbound records. The configured app wires retirement to the owning runtime.
 - A custom history coordinator opts into durable alternate-model sessions by implementing `readProviderSessionBinding`. Its `beginProviderSessionTurn(conversationId, runId, { modelKey })` must persist and acknowledge the binding, rotate on changes, and return `previousModelKey` for a known change. Legacy coordinators retain their default-model path; alternate-model sessions remain process-local until the coordinator supports binding.
 
 ## Custom memory stores
 
-The built-in memory tiers are config-driven through `memory.mode: "lite" | "journal" | "bujo"` for local storage. Other memory implementations remain a code capability: implement the structural `MemoryStore` contract from `@mono-agent/agent-contracts` and inject it into the configured composition layer.
+The built-in memory tiers are config-driven through `memory.mode: "lite" | "journal" | "bujo"` for local storage. Other memory implementations remain a code capability: implement the structural `MemoryStore` contract from `@mono-agent/contracts` and inject it into the configured composition layer.
 
 ```ts
-import type { MemoryStore } from "@mono-agent/agent-contracts";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+import type { MemoryStore } from "@mono-agent/contracts";
+import { createConfiguredAgentResponder } from "@mono-agent/app";
 
 const memory: MemoryStore = createMyMemoryStore();
 
@@ -167,11 +167,11 @@ The injected store wins over anything `config.memory` would otherwise build, and
 `runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. Configured memory attaches the per-turn `MemoryRecall` endpoint at the shared configured-harness boundary and composes it with your callback; supplying custom tools does not replace the default recall tool. The full app uses the same composition path for adapter send tools and request overrides.
 
 ```ts
-import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+import { createConfiguredAgentResponder } from "@mono-agent/app";
 import type {
   AgentHarnessRuntimeOptionsInput,
   AgentHarnessRuntimeOptionsExtension,
-} from "@mono-agent/agent-harness";
+} from "@mono-agent/conversation";
 
 const responder = await createConfiguredAgentResponder({
   config,
@@ -195,8 +195,8 @@ Request-scoped options apply at the harness **run boundary**: they are resolved 
 
 ## Dropping to the harness
 
-`createConfiguredAgentResponder` will not cover hosts that need a custom recorder, a non-config identity/skill loading scheme, or hand-assembled memory and history. In those cases call `@mono-agent/agent-harness` directly. The harness owns loading identity/SOUL and selected skill bodies, reading memory blocks, invoking the runtime, recording run events, appending conversation history, and returning explicit failure objects instead of fake success.
+`createConfiguredAgentResponder` will not cover hosts that need a custom recorder, a non-config identity/skill loading scheme, or hand-assembled memory and history. In those cases call `@mono-agent/conversation` directly. The harness owns loading identity/SOUL and selected skill bodies, reading memory blocks, invoking the runtime, recording run events, appending conversation history, and returning explicit failure objects instead of fake success.
 
-Selected skills are never auto-selected by description — the host passes `selectedSkills` (or `config.context.selectedSkills`) and the harness loads exactly those bodies. For tool/MCP policy, build a policy with `@mono-agent/agent-harness` (`createToolPolicy`) and pass exactly the surface you want — `["*"]` for all, a specific list to narrow, or `[]` for none; `failClosedToolPolicy()` is the no-policy safety net (the config loader's allow-all default lives in `@mono-agent/config`, not here). See [tool policy](/tools/policy/) and [MCP](/tools/mcp/).
+Selected skills are never auto-selected by description — the host passes `selectedSkills` (or `config.context.selectedSkills`) and the harness loads exactly those bodies. For tool/MCP policy, build a policy with `@mono-agent/conversation` (`createToolPolicy`) and pass exactly the surface you want — `["*"]` for all, a specific list to narrow, or `[]` for none; `failClosedToolPolicy()` is the no-policy safety net (the config loader's allow-all default lives in `@mono-agent/config`, not here). See [tool policy](/tools/policy/) and [MCP](/tools/mcp/).
 
 For multi-agent orchestration on top of these primitives, see [multi-agent](/programmatic/multi-agent/); for consuming a remote agent over A2A, see [A2A consumer](/programmatic/a2a-consumer/).

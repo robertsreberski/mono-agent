@@ -256,15 +256,15 @@ Source-build validation from a separate clean folder should use the worktree CLI
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model openai-codex:gpt-5.6-terra
-node "$repo/packages/agent-app/dist/cli.js" validate
+node "$repo/packages/app/dist/cli.js" init --model openai-codex:gpt-5.6-terra
+node "$repo/packages/app/dist/cli.js" validate
 ```
 :::
 
 If you are testing unreleased source from a clone, replace `mono-agent` in every command above with the built CLI entry:
 
 ```bash
-node /absolute/path/to/mono-agent/packages/agent-app/dist/cli.js
+node /absolute/path/to/mono-agent/packages/app/dist/cli.js
 ```
 
 ## Where to next

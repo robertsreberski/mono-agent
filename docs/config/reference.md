@@ -7,7 +7,7 @@ sidebar:
 
 This page is generated from the same config field registries that power `mono-agent config`, recipe output, and the JSON Schema. Do not edit this table by hand; run `pnpm run generate:config-reference`.
 
-Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/agent-app/schema/mono-agent.config.schema.json`
+Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/app/schema/mono-agent.config.schema.json`
 
 | JSON key | Type | Env override | Default | Example | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -21,7 +21,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `artifacts.retention.dryRun` | `boolean` | `--` | false | `true` | Configures retention.dryRun for the artifacts section. |
 | `artifacts.retention.maxAgeDays` | `integer` | `--` | 365 | `365` | Configures retention.maxAgeDays for the artifacts section. |
 | `artifacts.retention.maxCount` | `integer` | `--` | 50000 | `50000` | Configures retention.maxCount for the artifacts section. |
-| `channels.plugins` | `array` | `--` | [] | `[{"package":"@mono-agent/whatsapp-adapter","config":{"enabled":true}}]` | External channel plugin envelopes loaded by package name. |
+| `channels.plugins` | `array` | `--` | [] | `[{"package":"@mono-agent/channel-whatsapp","config":{"enabled":true}}]` | External channel plugin envelopes loaded by package name. |
 | `concurrency.maxConcurrentRuns` | `integer` | `--` | unset | `1` | Configures maxConcurrentRuns for the concurrency section. |
 | `concurrency.maxPendingRuns` | `integer` | `--` | unset | `1` | Configures maxPendingRuns for the concurrency section. |
 | `context.identityPath` | `string` | `--` | required | `./IDENTITY.md` | Configures identityPath for the context section. |

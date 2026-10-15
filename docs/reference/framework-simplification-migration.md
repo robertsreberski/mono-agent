@@ -22,7 +22,7 @@ Retired config fields produce migration errors. Real sandbox enforcement, tool a
 
 Pass typed `toolLimits` and `compaction` inputs to runtime calls. The flat `runOptions.settings` bag and the `resolveRuntimePolicies` migration helper have been removed. The policy resolver accepts typed policy groups directly and retains model-derived defaults and bounded values.
 
-Use `createRuntime` and its per-instance `configureTools` method for tool configuration. The process-global `configureToolRuntime`, `readToolRuntime`, `resetToolRuntime`, and `readRuntimeBrand` API has been removed. Direct calls through `@mono-agent/agent-runtime/agent/tools/index.js`, including its path guards, must pass `{ ctx: createToolContext(...) }` using `@mono-agent/agent-runtime/agent/tools/shared/tool-context.js`. Immutable default branding does not provide a shared mutable tool environment.
+Use `createRuntime` and its per-instance `configureTools` method for tool configuration. The process-global `configureToolRuntime`, `readToolRuntime`, `resetToolRuntime`, and `readRuntimeBrand` API has been removed. Direct calls through `@mono-agent/turn/agent/tools/index.js`, including its path guards, must pass `{ ctx: createToolContext(...) }` using `@mono-agent/turn/agent/tools/shared/tool-context.js`. Immutable default branding does not provide a shared mutable tool environment.
 
 The runtime has one Pi bridge. Public bridge listing/resolution remains available; provider and model fallback still operate through the router.
 
@@ -100,7 +100,7 @@ network.
 
 An earlier source revision extracted Phoenix transport into an optional package,
 but that extraction is not a published `@mono-agent/observability-phoenix@0.22.0`
-plugin. Static inspection of the published `@mono-agent/agent-app@0.22.0` and
+plugin. Static inspection of the published `@mono-agent/app@0.22.0` and
 `@mono-agent/observability@0.22.0` tarballs shows the older built-in
 observability implementation, while the public plugin lookup returned no package.
 Do not add a new plugin dependency or mix the retired source package with a newer
@@ -158,6 +158,6 @@ compatibility identifiers. Validate the updated consumer before restarting it.
 
 ## Operator integrations
 
-The shared Node client transport is available at `@mono-agent/operator-adapter/client`. Web and ACP clients reuse its stream parsing and long-lived fetch implementation while retaining their own endpoint/authentication rules and frame ceilings. Multipart terminal replies and bounded final frames without a trailing newline are handled consistently.
+The shared Node client transport is available at `@mono-agent/channel-operator/client`. Web and ACP clients reuse its stream parsing and long-lived fetch implementation while retaining their own endpoint/authentication rules and frame ceilings. Multipart terminal replies and bounded final frames without a trailing newline are handled consistently.
 
 Browser wire types use canonical type-only imports. UI-only types stay in the frontend, and server runtime code is not imported into browser bundles. Notification previews and channel log sanitizers share their respective generic implementations while preserving channel-specific credential handling.

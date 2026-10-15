@@ -18,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
+import type { MemoryCompletedTurn } from "@mono-agent/contracts";
 import { retainCapturePlan, listRetainedCapturePlanKeys } from "../capture-plan-cache.js";
 import { describe, expect, it, vi } from "vitest";
 

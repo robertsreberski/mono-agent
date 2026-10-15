@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parseEnv } from "node:util";
 
-import { isLoopbackHost } from "@mono-agent/agent-contracts";
+import { isLoopbackHost } from "@mono-agent/contracts";
 import { listTraceSources, mergeTraceSources, type TraceSourceListItem } from "@mono-agent/observability";
 
 import {

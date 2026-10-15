@@ -30,7 +30,7 @@ programmatic surfaces are simply no longer exported.
 
 | Removed surface | Replacement |
 | --- | --- |
-| `@mono-agent/runtime-adapter` | `@mono-agent/agent-runtime/host` subpaths; see the runtime migration guide |
+| `@mono-agent/runtime-adapter` | `@mono-agent/turn/host` subpaths; see the runtime migration guide |
 | `resolveRuntimeBridge` | `resolveEngineTurnAdapter` |
 | `generatePiNativeResponse` | `generateEngineTurnResponse` |
 | `piNativeRuntimeBridge` | `engineTurnAdapter` |
@@ -110,7 +110,7 @@ A rejected model reference names its concrete replacement in the message
 print — for example `` runtime.model `codex:gpt-5.6-terra` is not a valid
 runtime model reference: codex is no longer a runtime backend; use
 openai-codex:gpt-5.6-terra ``. See
-[the runtime migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/MIGRATION.md)
+[the runtime migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/turn/MIGRATION.md)
 for the full per-agent checklist.
 
 ## Permanent compatibility

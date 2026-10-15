@@ -1,12 +1,12 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
-import { supportsPiContext1M } from "@mono-agent/agent-runtime/host/config";
-import { isAutodiscoverableProviderId, isPrivateBaseUrl, isPiBuiltinProvider, localProviderDefinitionFor, MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, modelReferenceKey, parseMonoRuntimeModelReference, RuntimeAdapterError, sanitizeModelReferenceText, validateLocalProviderDefinition, validateProviderDefinition } from "@mono-agent/agent-runtime/host/config";
-import { PI_TRANSPORTS } from "@mono-agent/agent-runtime/host/types";
-import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport, ProviderDefinition, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
-import { SANDBOX_FALLBACKS, SANDBOX_MODES, SANDBOX_NETWORK_MODES, SandboxPolicyError, createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
-import type { SandboxFallback, SandboxMode, SandboxNetworkMode } from "@mono-agent/agent-runtime/host/types";
+import { supportsPiContext1M } from "@mono-agent/turn/host/config";
+import { isAutodiscoverableProviderId, isPrivateBaseUrl, isPiBuiltinProvider, localProviderDefinitionFor, MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, modelReferenceKey, parseMonoRuntimeModelReference, RuntimeAdapterError, sanitizeModelReferenceText, validateLocalProviderDefinition, validateProviderDefinition } from "@mono-agent/turn/host/config";
+import { PI_TRANSPORTS } from "@mono-agent/turn/host/types";
+import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport, ProviderDefinition, RuntimeModelReference } from "@mono-agent/turn/host/types";
+import { SANDBOX_FALLBACKS, SANDBOX_MODES, SANDBOX_NETWORK_MODES, SandboxPolicyError, createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
+import type { SandboxFallback, SandboxMode, SandboxNetworkMode } from "@mono-agent/turn/host/types";
 import {
   normalizeOptionalString,
   readBoolean,
@@ -14,8 +14,8 @@ import {
   readCsv,
   readInteger,
   redactedSecret,
-} from "@mono-agent/agent-contracts";
-import type { ConfigErrorFactory } from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
+import type { ConfigErrorFactory } from "@mono-agent/contracts";
 
 import {
   ALLOW_ALL_TOOLS,
@@ -91,7 +91,7 @@ export class MonoAgentConfigError extends Error {
 
 /**
  * Error factory bound to the `invalid_json` code, handed to the shared
- * `@mono-agent/agent-contracts` coercers so their fail-closed throws keep config's
+ * `@mono-agent/contracts` coercers so their fail-closed throws keep config's
  * typed error shape. The coercers report the field name under `details.env`;
  * every name handed to them is a JSON path (never an environment variable), so
  * it is re-attributed to `details.path` here -- the single translation point
@@ -256,7 +256,7 @@ export const MAX_AGENT_NAME_LENGTH = 80;
 /**
  * JSON scalar coercion for direct `mono-agent.config.json` parsing.
  *
- * The shared `@mono-agent/agent-contracts` coercers operate on strings, so a
+ * The shared `@mono-agent/contracts` coercers operate on strings, so a
  * JSON scalar is rendered to its string form before validation. Numbers and
  * booleans stringify exactly the way the previous JSON-to-string projection
  * rendered them, which keeps every range, enum and choice diagnostic identical

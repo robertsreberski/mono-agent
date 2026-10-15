@@ -24,9 +24,9 @@ install that version if you need to match CI byte for byte.
 Run focused package commands while iterating:
 
 ```bash
-pnpm --filter @mono-agent/agent-app run typecheck
-pnpm --filter @mono-agent/agent-app run test
-pnpm --filter @mono-agent/agent-app run build
+pnpm --filter @mono-agent/app run typecheck
+pnpm --filter @mono-agent/app run test
+pnpm --filter @mono-agent/app run build
 ```
 
 Replace the filter with the package that owns the change. Before opening a PR, run the risk-based lane documented in `skills/verify-green/SKILL.md`; `pnpm run verify:all` is the repository-wide verdict.
@@ -86,12 +86,12 @@ git diff --check
 For package-level work:
 
 ```bash
-pnpm --filter @mono-agent/agent-runtime run build
-pnpm --filter @mono-agent/agent-runtime run typecheck
-pnpm --filter @mono-agent/agent-runtime run test
+pnpm --filter @mono-agent/turn run build
+pnpm --filter @mono-agent/turn run typecheck
+pnpm --filter @mono-agent/turn run test
 ```
 
-Replace `@mono-agent/agent-runtime` with the package under test.
+Replace `@mono-agent/turn` with the package under test.
 
 ## Generated documentation
 

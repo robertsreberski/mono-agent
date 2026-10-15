@@ -4,8 +4,8 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const webapp = process.cwd();
-const specifier = "@mono-agent/agent-contracts/provider-usage";
-const canonical = resolve(webapp, "../../agent-contracts/src/provider-usage.ts");
+const specifier = "@mono-agent/contracts/provider-usage";
+const canonical = resolve(webapp, "../../contracts/src/provider-usage.ts");
 
 describe("standalone browser contract resolution", () => {
   it.each(["vite.config.ts", "vitest.browser.config.ts"])("maps the exact pure contract source in %s", async (configFile) => {
@@ -17,7 +17,7 @@ describe("standalone browser contract resolution", () => {
       const alias = config.resolve.alias.find(({ find }) => find instanceof RegExp && find.test(${JSON.stringify(specifier)}));
       console.log(JSON.stringify(alias ? {
         replacement: alias.replacement,
-        matchesBarrel: alias.find.test("@mono-agent/agent-contracts"),
+        matchesBarrel: alias.find.test("@mono-agent/contracts"),
         matchesNested: alias.find.test(${JSON.stringify(`${specifier}/other`)}),
       } : null));
     `], { cwd: webapp, encoding: "utf8", timeout: 30_000 });

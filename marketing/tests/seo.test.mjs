@@ -321,7 +321,7 @@ describe("marketing built output", () => {
     assert.ok(renderedConfig.split("\n").length <= 25, "configuration stays compact");
     const config = JSON.parse(renderedConfig);
     const schema = JSON.parse(readFileSync(
-      join(REPO_ROOT, "packages/agent-app/schema/mono-agent.config.schema.json"),
+      join(REPO_ROOT, "packages/app/schema/mono-agent.config.schema.json"),
       "utf8",
     ));
     assertMatchesGeneratedSchema(config, schema);
@@ -399,7 +399,7 @@ describe("marketing built output", () => {
     mustContain(html, "releases/tag/v0.22.0", "verified release notes");
     assert.ok(!text.includes("subagents and console projects/tags require the current source build"), "no obsolete source-only claim");
     assert.ok(!/every (?:UI|interface) action/i.test(text), "no universal UI/tool parity claim");
-    const appExports = readFileSync(join(REPO_ROOT, "packages/agent-app/src/index.ts"), "utf8");
+    const appExports = readFileSync(join(REPO_ROOT, "packages/app/src/index.ts"), "utf8");
     assert.ok(appExports.includes("createConfiguredAgentResponder"), "composition excerpt uses a package-root export");
   });
 

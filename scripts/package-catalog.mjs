@@ -16,7 +16,7 @@ export const PACKAGE_CATEGORIES = [
 //     as request-scoped runtime extensions, or through an explicitly selected
 //     plugin backend or companion MCP pairing, living under `extras/`);
 //   - `tier: "alias"` — the unscoped `create-mono-agent` npm-init installer whose
-//     `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/agent-app`;
+//     `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/app`;
 //     carries no responsibility of its own and is exempt from the `@mono-agent/`
 //     scope rule in the arch and release checks (the bare `mono-agent` npm name is
 //     unavailable — npm blocks it as too similar to an unrelated `monoagent`);
@@ -24,9 +24,9 @@ export const PACKAGE_CATEGORIES = [
 // All three counts are guarded by scripts/release/__tests__/package-count-drift.test.mjs.
 export const packageCatalog = [
   {
-    dir: "a2a-adapter",
-    name: "@mono-agent/a2a-adapter",
-    path: "extras/a2a-adapter",
+    dir: "channel-a2a",
+    name: "@mono-agent/channel-a2a",
+    path: "extras/channel-a2a",
     category: "communication",
     channelIds: ["a2a"],
     responsibility: "Exposes agent responders over A2A and consumes remote A2A agents through direct discovery.",
@@ -35,8 +35,8 @@ export const packageCatalog = [
     tier: "plugin",
   },
   {
-    dir: "agent-app",
-    name: "@mono-agent/agent-app",
+    dir: "app",
+    name: "@mono-agent/app",
     category: "app",
     responsibility: "Runs a config-first agent host: loads mono-agent.config.json, owns configured responder/harness/runtime/memory composition, and starts every configured channel and traceability.",
     allowedDependencyCategories: [
@@ -51,25 +51,25 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "agent-contracts",
-    name: "@mono-agent/agent-contracts",
+    dir: "contracts",
+    name: "@mono-agent/contracts",
     category: "core",
     responsibility: "Defines shared structural request/response contracts plus adapter-neutral settings JSON, env, safe-bind, and bearer helpers.",
     allowedDependencyCategories: ["core"],
     publishable: true,
   },
   {
-    dir: "agent-harness",
-    name: "@mono-agent/agent-harness",
+    dir: "conversation",
+    name: "@mono-agent/conversation",
     category: "execution",
     responsibility: "Composes prompt context, selected skills, runtime, memory, history, tool policy, and observability for one request.",
     allowedDependencyCategories: ["core", "context", "runtime", "observability"],
     publishable: true,
   },
   {
-    dir: "agent-orchestrator",
-    name: "@mono-agent/agent-orchestrator",
-    path: "extras/agent-orchestrator",
+    dir: "orchestrator",
+    name: "@mono-agent/orchestrator",
+    path: "extras/orchestrator",
     category: "execution",
     responsibility: "Exposes named collaborator responders to an orchestrator runtime through a bounded MCP tool.",
     allowedDependencyCategories: ["core"],
@@ -77,8 +77,8 @@ export const packageCatalog = [
     tier: "plugin",
   },
   {
-    dir: "agent-runtime",
-    name: "@mono-agent/agent-runtime",
+    dir: "turn",
+    name: "@mono-agent/turn",
     category: "runtime",
     responsibility: "Owns the Pi model-run loop, native journals/storage and compaction, typed host integration, sandbox/process protection, native tools and MCP.",
     allowedDependencyCategories: ["core", "runtime"],
@@ -93,8 +93,8 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "cron-adapter",
-    name: "@mono-agent/cron-adapter",
+    dir: "trigger-cron",
+    name: "@mono-agent/trigger-cron",
     category: "communication",
     channelIds: ["cron"],
     responsibility: "Invokes agent responders from cron schedules with configurable skip, queue, or replace overlap policies.",
@@ -123,7 +123,7 @@ export const packageCatalog = [
     dir: "create-mono-agent",
     name: "create-mono-agent",
     category: "app",
-    responsibility: "Unscoped npm-init installer (`npm create mono-agent`) shipping `create-mono-agent` and `mono-agent` bins that forward every command to @mono-agent/agent-app's CLI.",
+    responsibility: "Unscoped npm-init installer (`npm create mono-agent`) shipping `create-mono-agent` and `mono-agent` bins that forward every command to @mono-agent/app's CLI.",
     allowedDependencyCategories: ["app"],
     publishable: true,
     tier: "alias",
@@ -137,8 +137,8 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "openai-api-adapter",
-    name: "@mono-agent/openai-api-adapter",
+    dir: "channel-openai-api",
+    name: "@mono-agent/channel-openai-api",
     category: "communication",
     channelIds: ["openai-api"],
     responsibility: "Exposes agent responders through OpenAI-compatible model discovery and Chat Completions endpoints.",
@@ -146,8 +146,8 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "operator-adapter",
-    name: "@mono-agent/operator-adapter",
+    dir: "channel-operator",
+    name: "@mono-agent/channel-operator",
     category: "communication",
     channelIds: ["tui"],
     responsibility: "Exposes the structured local operator NDJSON endpoint used by the browser console, ACP bridge, and jobs client.",
@@ -155,8 +155,8 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "slack-adapter",
-    name: "@mono-agent/slack-adapter",
+    dir: "channel-slack",
+    name: "@mono-agent/channel-slack",
     category: "communication",
     channelIds: ["slack"],
     responsibility: "Adapts Slack Socket Mode events to structural agent requests and streamed replies.",
@@ -164,8 +164,8 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "telegram-adapter",
-    name: "@mono-agent/telegram-adapter",
+    dir: "channel-telegram",
+    name: "@mono-agent/channel-telegram",
     category: "communication",
     channelIds: ["telegram"],
     responsibility: "Adapts Telegram updates to structural agent requests and streamed replies.",
@@ -182,9 +182,9 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "messenger-adapter",
-    name: "@mono-agent/messenger-adapter",
-    path: "extras/messenger-adapter",
+    dir: "channel-messenger",
+    name: "@mono-agent/channel-messenger",
+    path: "extras/channel-messenger",
     category: "communication",
     channelIds: ["messenger"],
     responsibility: "Adapts Facebook Messenger webhook events to structural agent requests and delivers final-only replies through the Send API.",
@@ -193,9 +193,9 @@ export const packageCatalog = [
     tier: "plugin",
   },
   {
-    dir: "whatsapp-adapter",
-    name: "@mono-agent/whatsapp-adapter",
-    path: "extras/whatsapp-adapter",
+    dir: "channel-whatsapp",
+    name: "@mono-agent/channel-whatsapp",
+    path: "extras/channel-whatsapp",
     category: "communication",
     channelIds: ["whatsapp"],
     responsibility: "Adapts WhatsApp messages to structural agent requests and buffered final-only replies.",
@@ -204,8 +204,8 @@ export const packageCatalog = [
     tier: "plugin",
   },
   {
-    dir: "webhook-adapter",
-    name: "@mono-agent/webhook-adapter",
+    dir: "trigger-webhook",
+    name: "@mono-agent/trigger-webhook",
     category: "communication",
     channelIds: ["webhook"],
     responsibility: "Invokes agent responders from HTTP webhook requests with sync and async modes.",

@@ -1,4 +1,4 @@
-import type { MemoryBlock } from "@mono-agent/agent-contracts";
+import type { MemoryBlock } from "@mono-agent/contracts";
 import type { MemoryDb } from "../store/index.js";
 
 import { MARKER_FOR } from "./grammar.js";

@@ -1,0 +1,4492 @@
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { createChannelUserCancelReason } from "@mono-agent/contracts";
+import { buildSuccessfulTurn, composeUserMemoryText, memoryUserText, persistSuccessfulMemory } from "../harness/memory-persistence.js";
+import type {
+  AgentContinuationOriginContext,
+  MemoryCompletedTurn,
+  MemoryCompletedTurnResult,
+  MemoryStore,
+} from "@mono-agent/contracts";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
+import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
+import type { RunExporter, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
+import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
+import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+
+import {
+  AgentHarnessFailureError,
+  createAgentHarness,
+  createAgentResponder,
+  createDurableHistoryStore,
+  createInMemoryHistoryStore,
+} from "../index.js";
+import type { ConversationHistoryStore, ExternalRunSummary, HistoryMessage } from "../index.js";
+
+type ExternalRunSummaryOmitsSystemPrompt =
+  "systemPrompt" extends keyof ExternalRunSummary ? false : true;
+const externalRunSummaryOmitsSystemPrompt: ExternalRunSummaryOmitsSystemPrompt = true;
+
+const tempDirs: string[] = [];
+const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "agent-harness-test-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+class FakeRecorder implements RunRecorder {
+  readonly events: RuntimeEventLike[] = [];
+  startCount = 0;
+  summaryStatus?: string;
+  systemPrompt?: string;
+
+  constructor(
+    private readonly runId: string,
+    private readonly conversationId: string,
+    private readonly forcedSystemPrompt?: string,
+  ) {}
+
+  onEvent(event: RuntimeEventLike): void {
+    this.events.push(event);
+  }
+
+  async start(): Promise<RunSummary> {
+    this.startCount += 1;
+    return {
+      runId: this.runId,
+      conversationId: this.conversationId,
+      status: "running",
+      durationMs: 0,
+      eventCount: this.events.length,
+      artifactPaths: [],
+    };
+  }
+
+  async finish(result: RuntimeResultLike): Promise<RunSummary> {
+    const systemPrompt = result.systemPrompt ?? this.forcedSystemPrompt;
+    if (systemPrompt !== undefined) {
+      this.systemPrompt = systemPrompt;
+    }
+    const status = result.cancelled === true ? "cancelled" : result.failureKind !== undefined || result.error !== undefined ? "failed" : "succeeded";
+    this.summaryStatus = status;
+    return {
+      runId: this.runId,
+      conversationId: this.conversationId,
+      status,
+      ...(result.failureKind === undefined || result.failureKind === null ? {} : { failureKind: result.failureKind }),
+      durationMs: 1,
+      ...(result.cost === undefined ? {} : { cost: result.cost }),
+      eventCount: this.events.length,
+      artifactPaths: [],
+      ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: result.capabilitiesUsed }),
+      ...(systemPrompt === undefined ? {} : { systemPrompt }),
+    };
+  }
+
+  async fail(error: unknown): Promise<RunSummary> {
+    this.summaryStatus = "failed";
+    return {
+      runId: this.runId,
+      conversationId: this.conversationId,
+      status: "failed",
+      failureKind: error instanceof Error ? error.name : "exception",
+      durationMs: 1,
+      eventCount: this.events.length,
+      artifactPaths: [],
+    };
+  }
+}
+
+function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>) {
+  const calls: Array<{ prompt: string; options: RuntimeRunOptions }> = [];
+  return {
+    calls,
+    runtime: {
+      async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push({ prompt, options });
+        return await run(prompt, options);
+      },
+    },
+  };
+}
+
+describe("AgentHarness", () => {
+  it("imports canonical context without invoking the runtime and enforces direct byte limits", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const historyStore = createDurableHistoryStore({ root: join(dir, "history") });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+
+    expect(harness.importContext).toBeTypeOf("function");
+    await expect(harness.importContext!("web:cron:job-1", {
+      text: "  summary with 東京  ",
+      idempotencyKey: " agent/source:job-1:run-1 ",
+    })).resolves.toEqual({ status: "appended" });
+    await expect(harness.importContext!("web:cron:job-1", {
+      text: "  summary with 東京  ",
+      idempotencyKey: " agent/source:job-1:run-1 ",
+    })).resolves.toEqual({ status: "duplicate" });
+    expect((await historyStore.load("web:cron:job-1"))[1]).toMatchObject({
+      content: "  summary with 東京  ",
+      idempotencyKey: " agent/source:job-1:run-1 ",
+    });
+    expect(fake.calls).toEqual([]);
+    await expect(harness.importContext!("c", { text: " \t\n", idempotencyKey: "k" }))
+      .rejects.toThrow("text must be a non-empty string");
+    await expect(harness.importContext!("c", { text: "x", idempotencyKey: " \t\n" }))
+      .rejects.toThrow("idempotencyKey must be a non-empty string");
+    await expect(harness.importContext!("x".repeat(4_097), { text: "x", idempotencyKey: "k" }))
+      .rejects.toThrow("conversationId must not exceed 4096 UTF-8 bytes");
+    await expect(harness.importContext!("c", { text: "x", idempotencyKey: "é".repeat(257) }))
+      .rejects.toThrow("idempotencyKey must not exceed 512 UTF-8 bytes");
+  });
+
+  it.each([
+    { label: "successful", rejectImport: false },
+    { label: "failed", rejectImport: true },
+  ])("drains a $label admitted context import before disposing session resources", async ({ rejectImport }) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let history: readonly HistoryMessage[] = [];
+    let version = 0;
+    let releaseImport!: () => void;
+    const importReleased = new Promise<void>((resolve) => { releaseImport = resolve; });
+    let markImportPrepared!: () => void;
+    const importPrepared = new Promise<void>((resolve) => { markImportPrepared = resolve; });
+    const disposedSessions: string[] = [];
+    const store: ConversationHistoryStore = {
+      load: async () => history,
+      append: async (_conversationId, messages) => { history = [...history, ...messages]; },
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        async beginExclusiveTurn() {
+          const capturedVersion = `revision-${String(version)}`;
+          return {
+            history,
+            historyVersion: capturedVersion,
+            async prepareCommit(messages) {
+              const committedHistoryVersion = `revision-${String(version + 1)}`;
+              return {
+                append: {
+                  async commit() {
+                    history = [...history, ...messages];
+                    version += 1;
+                  },
+                  async abort() {},
+                },
+                committedHistoryVersion,
+              };
+            },
+            async abort() {},
+          };
+        },
+        async prepareImport() {
+          markImportPrepared();
+          await importReleased;
+          if (rejectImport) throw new Error("import preparation failed");
+          return {
+            result: { status: "appended" },
+            append: { commit: async () => undefined, abort: async () => undefined },
+          };
+        },
+      },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run() { return { text: "seed", providerSessionId: "provider-session" }; },
+        async disposeSession(providerSessionId: string) {
+          disposedSessions.push(providerSessionId);
+          return true;
+        },
+      },
+      model,
+      historyStore: store,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+    await harness.run({ conversationId: "c", userMessage: "seed", abortSignal: new AbortController().signal });
+
+    const importing = harness.importContext!("c", { text: "snapshot", idempotencyKey: "run:1" });
+    await importPrepared;
+    let disposeSettled = false;
+    const disposing = harness.dispose!().then(() => { disposeSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disposeSettled).toBe(false);
+    expect(disposedSessions).toEqual([]);
+
+    releaseImport();
+    if (rejectImport) await expect(importing).rejects.toThrow("import preparation failed");
+    else await expect(importing).resolves.toEqual({ status: "appended" });
+    await expect(disposing).resolves.toBeUndefined();
+    expect(disposeSettled).toBe(true);
+    expect(disposedSessions).toEqual(["provider-session"]);
+  });
+
+  it("fails capability discovery closed for provider-ineligible and legacy stores", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const durableWithoutRetirement = createDurableHistoryStore({ root: join(dir, "history") });
+    expect(createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: durableWithoutRetirement,
+      sessionsRoot: join(dir, "pi-sessions"),
+    }).importContext).toBeUndefined();
+    expect(createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: createInMemoryHistoryStore(),
+    }).importContext).toBeUndefined();
+  });
+
+  it("does not run or fall back to an unlocked append when the advertised lease fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const append = vi.fn(async () => undefined);
+    const prepareAppend = vi.fn(async () => ({ commit: async () => undefined, abort: async () => undefined }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: {
+        load: async () => [],
+        append,
+        prepareAppend,
+        contextImport: {
+          version: 1,
+          maxTextBytes: 32_768,
+          providerState: "absent",
+          beginExclusiveTurn: async () => { throw new Error("lease unavailable"); },
+          prepareImport: async () => ({ result: { status: "conflict", reason: "conversation_not_empty" } }),
+        },
+      },
+    });
+    const response = await harness.run({
+      conversationId: "c",
+      userMessage: "hello",
+      abortSignal: new AbortController().signal,
+    });
+    expect(response.failure).toBeDefined();
+    expect(fake.calls).toEqual([]);
+    expect(append).not.toHaveBeenCalled();
+    expect(prepareAppend).not.toHaveBeenCalled();
+  });
+
+  it("cold-replays imported context when a stale warm handle observes a reset/import version", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const historyRoot = join(dir, "history");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: RuntimeRunOptions[] = [];
+    const retired: string[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        return { text: `answer-${String(calls.length)}`, providerSessionId: "warm-provider-id" };
+      },
+      async disposeSession(id: string) { retired.push(id); return true; },
+    };
+    const storeA = createDurableHistoryStore({ root: historyRoot });
+    const harnessA = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      historyStore: storeA,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+    await harnessA.run({ conversationId: "c", userMessage: "first", abortSignal: new AbortController().signal });
+    expect(calls[0]?.sessionId).toBeUndefined();
+
+    const storeB = createDurableHistoryStore({ root: historyRoot });
+    await storeB.reset("c");
+    const imported = await storeB.contextImport!.prepareImport("c", {
+      text: "background result",
+      idempotencyKey: "agent/source:job:run-2",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    });
+    await imported.append!.commit();
+
+    await harnessA.run({ conversationId: "c", userMessage: "second", abortSignal: new AbortController().signal });
+    expect(retired).toContain("warm-provider-id");
+    expect(calls[1]?.sessionId).toBeUndefined();
+    expect(calls[1]?.messages?.map((message) => String(message.content)).join("\n"))
+      .toContain("background result");
+    await harnessA.dispose?.();
+  });
+
+  it("keeps a warm provider session after a retained duplicate import retry", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "warm-provider-id" }));
+    const historyStore = createDurableHistoryStore({ root: join(dir, "history") });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+    const request = { text: "background result", idempotencyKey: "agent/source:job:run-1" };
+
+    await expect(harness.importContext!("c", request)).resolves.toEqual({ status: "appended" });
+    await harness.run({ conversationId: "c", userMessage: "first", abortSignal: new AbortController().signal });
+    await expect(harness.importContext!("c", request)).resolves.toEqual({ status: "duplicate" });
+    await harness.run({ conversationId: "c", userMessage: "second", abortSignal: new AbortController().signal });
+
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[0]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[1]?.options.sessionId).toBe("warm-provider-id");
+    await harness.dispose?.();
+  });
+
+  it("round-trips bounded opaque history versions from a custom capable store", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let history: readonly HistoryMessage[] = [];
+    let version = "revision-1";
+    const store: ConversationHistoryStore = {
+      load: async () => history,
+      append: async (_conversationId, messages) => { history = [...history, ...messages]; },
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        async beginExclusiveTurn() {
+          const capturedVersion = version;
+          return {
+            history,
+            historyVersion: capturedVersion,
+            async prepareCommit(messages) {
+              const committedHistoryVersion = capturedVersion === "revision-1" ? "revision-2" : "revision-3";
+              return {
+                append: {
+                  async commit() {
+                    history = [...history, ...messages];
+                    version = committedHistoryVersion;
+                  },
+                  async abort() {},
+                },
+                committedHistoryVersion,
+              };
+            },
+            async abort() {},
+          };
+        },
+        async prepareImport() {
+          return { result: { status: "conflict", reason: "conversation_not_empty" } };
+        },
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "custom-provider" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: store,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+
+    await expect(harness.run({ conversationId: "c", userMessage: "first", abortSignal: new AbortController().signal }))
+      .resolves.toMatchObject({ text: "answer" });
+    await expect(harness.run({ conversationId: "c", userMessage: "second", abortSignal: new AbortController().signal }))
+      .resolves.toMatchObject({ text: "answer" });
+    expect(fake.calls[1]?.options.sessionId).toBe("custom-provider");
+    expect(version).toBe("revision-3");
+    await harness.dispose?.();
+  });
+
+  it("rejects oversized custom history versions before trusting a lease or staged append", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const leaseAbort = vi.fn(async () => undefined);
+    const leaseRuntime = createFakeRuntime(async () => ({ text: "must not run" }));
+    const leaseHarness = createAgentHarness({
+      identityPath,
+      runtime: leaseRuntime.runtime,
+      model,
+      historyStore: {
+        load: async () => [],
+        append: async () => undefined,
+        contextImport: {
+          version: 1,
+          maxTextBytes: 32_768,
+          providerState: "absent",
+          beginExclusiveTurn: async () => ({
+            history: [],
+            historyVersion: "x".repeat(513),
+            prepareCommit: async () => { throw new Error("must not prepare"); },
+            abort: leaseAbort,
+          }),
+          prepareImport: async () => ({ result: { status: "conflict", reason: "conversation_not_empty" } }),
+        },
+      },
+    });
+    const leaseResponse = await leaseHarness.run({
+      conversationId: "lease",
+      userMessage: "hello",
+      abortSignal: new AbortController().signal,
+    });
+    expect(leaseResponse.failure?.message).toContain("historyVersion must not exceed 512 UTF-8 bytes");
+    expect(leaseRuntime.calls).toEqual([]);
+    expect(leaseAbort).toHaveBeenCalledOnce();
+
+    const appendAbort = vi.fn(async () => undefined);
+    const appendRuntime = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "provider" }));
+    const appendHarness = createAgentHarness({
+      identityPath,
+      runtime: appendRuntime.runtime,
+      model,
+      historyStore: {
+        load: async () => [],
+        append: async () => undefined,
+        contextImport: {
+          version: 1,
+          maxTextBytes: 32_768,
+          providerState: "absent",
+          beginExclusiveTurn: async () => ({
+            history: [],
+            historyVersion: "revision-1",
+            prepareCommit: async () => ({
+              append: { commit: async () => undefined, abort: appendAbort },
+              committedHistoryVersion: "é".repeat(257),
+            }),
+            abort: async () => undefined,
+          }),
+          prepareImport: async () => ({ result: { status: "conflict", reason: "conversation_not_empty" } }),
+        },
+      },
+    });
+    const appendResponse = await appendHarness.run({
+      conversationId: "append",
+      userMessage: "hello",
+      abortSignal: new AbortController().signal,
+    });
+    expect(appendResponse.failure?.message).toContain("historyVersion must not exceed 512 UTF-8 bytes");
+    expect(appendRuntime.calls).toHaveLength(1);
+    expect(appendAbort).toHaveBeenCalledOnce();
+    await leaseHarness.dispose?.();
+    await appendHarness.dispose?.();
+  });
+
+  it("feeds live follow-ups into the active runtime and commits them into durable history", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    let runtimeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { runtimeStarted = resolve; });
+    const seen: string[] = [];
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      runtimeStarted();
+      const iterator = options.liveInput?.[Symbol.asyncIterator]();
+      if (iterator === undefined) throw new Error("Expected live input for the Pi runtime.");
+      const next = await iterator.next();
+      if (next.done) throw new Error("Live input closed before delivery.");
+      seen.push(next.value.body);
+      next.value.acknowledge?.();
+      return { text: "Updated answer" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      historyStore,
+      createRunId: () => "run-live",
+    });
+    const ownership: Array<{ status: string; runId?: string; reason?: string }> = [];
+    expect(harness.liveInputOwnership).toEqual({ version: 1 });
+    const running = harness.run({
+      conversationId: "telegram:42",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+      onLiveInputOwnership: (event) => ownership.push(event),
+    });
+    await started;
+    expect(ownership).toEqual([{ status: "ready", runId: "run-live" }]);
+
+    const offered = harness.offerLiveInput?.({
+      conversationId: "telegram:42",
+      id: "input-1",
+      text: "Use the new constraint",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    });
+    expect(offered?.status).toBe("accepted");
+    await expect(running).resolves.toMatchObject({ text: "Updated answer" });
+    if (offered?.status === "accepted") {
+      await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-live" });
+    }
+    expect(seen).toEqual(["Use the new constraint"]);
+    expect(ownership).toEqual([
+      { status: "ready", runId: "run-live" },
+      { status: "closed", reason: "closed" },
+    ]);
+    expect(await historyStore.load("telegram:42")).toMatchObject([
+      { role: "user", content: "Initial request", runId: "run-live" },
+      { role: "user", content: "Use the new constraint", timestamp: "2026-07-21T09:00:00.000Z", runId: "run-live" },
+      { role: "assistant", content: "Updated answer", runId: "run-live" },
+    ]);
+  });
+
+  it("revokes mailbox ownership and fails the request when the host observer rejects readiness", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let runtimeCalls = 0;
+    const observerError = new Error("ownership observer failed");
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          return { text: "must not run" };
+        },
+      },
+      model,
+      cwd: dir,
+      createRunId: () => "run-observer-failure",
+      recorderFactory: (input) => createJsonlRunRecorder({ ...input, artifactDir }),
+    });
+    const ownership: string[] = [];
+
+    const running = harness.run({
+      conversationId: "web:observer-failure",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "ready") throw observerError;
+      },
+    });
+    await expect(running).rejects.toBe(observerError);
+    expect(runtimeCalls).toBe(0);
+    expect(ownership).toEqual(["ready", "closed"]);
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:observer-failure",
+      id: "late-input",
+      text: "Do not accept",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+    const persisted = JSON.parse(await readFile(join(artifactDir, "run-observer-failure.summary.json"), "utf8")) as RunSummary;
+    expect(persisted).toMatchObject({
+      runId: "run-observer-failure",
+      conversationId: "web:observer-failure",
+      status: "failed",
+      failureKind: "Error",
+      diagnostics: { error: { message: observerError.message } },
+    });
+    await expect(harness.dispose!()).resolves.toBeUndefined();
+  });
+
+  it("preserves an already-aborted outcome when the terminal ownership observer throws", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let runtimeCalls = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          return { text: "must not run" };
+        },
+      },
+      model,
+      cwd: dir,
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("cancel before admission"));
+    const ownership: string[] = [];
+
+    const response = await harness.run({
+      conversationId: "web:cancelled-observer",
+      userMessage: "Do not start",
+      abortSignal: controller.signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(runtimeCalls).toBe(0);
+    expect(ownership).toEqual(["closed"]);
+    await expect(harness.dispose!()).resolves.toBeUndefined();
+  });
+
+  it("runs an ownership-ineligible turn when its terminal observer throws", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "scheduled result" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      session: {
+        mode: "continuous",
+        idleTimeoutMs: 60_000,
+        supportsResume: false,
+        isolateProactive: true,
+      },
+    });
+    const ownership: Array<{ status: string; reason?: string }> = [];
+
+    const response = await harness.run({
+      conversationId: "cron:ownership-ineligible",
+      userMessage: "Run the schedule",
+      abortSignal: new AbortController().signal,
+      metadata: { cron: { jobId: "ownership-ineligible" } },
+      onLiveInputOwnership(event) {
+        ownership.push(event);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    expect(response).toMatchObject({ text: "scheduled result" });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.options.liveInput).toBeUndefined();
+    expect(ownership).toEqual([{ status: "closed", reason: "unsupported" }]);
+    await expect(harness.dispose!()).resolves.toBeUndefined();
+  });
+
+  it("releases mailbox ownership when the host observer throws on terminal closure", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const runIds = ["run-terminal-one", "run-terminal-two"];
+    const ownership: string[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          return { text: "completed" };
+        },
+      },
+      model,
+      cwd: dir,
+      createRunId: () => runIds.shift() ?? "unexpected-run",
+    });
+    const request = () => harness.run({
+      conversationId: "web:terminal-observer",
+      userMessage: "Complete this run",
+      abortSignal: new AbortController().signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    await expect(request()).resolves.toMatchObject({ text: "completed" });
+    await expect(request()).resolves.toMatchObject({ text: "completed" });
+    expect(ownership).toEqual(["ready", "closed", "ready", "closed"]);
+  });
+
+  it("keeps a concurrent non-owner abort or failure from removing an isolated interactive mailbox", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const overrideModel = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
+    let ownerStarted!: () => void;
+    let abortStarted!: () => void;
+    let failureStarted!: () => void;
+    let laterStarted!: () => void;
+    let releaseOwner!: () => void;
+    const ownerReady = new Promise<void>((resolve) => { ownerStarted = resolve; });
+    const abortReady = new Promise<void>((resolve) => { abortStarted = resolve; });
+    const failureReady = new Promise<void>((resolve) => { failureStarted = resolve; });
+    const laterReady = new Promise<void>((resolve) => { laterStarted = resolve; });
+    const ownerRelease = new Promise<void>((resolve) => { releaseOwner = resolve; });
+    const consumed: Array<{ readonly run: string; readonly id: string | undefined }> = [];
+    let runtimeCall = 0;
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCall += 1;
+        if (runtimeCall === 1) {
+          ownerStarted();
+          const iterator = options.liveInput?.[Symbol.asyncIterator]();
+          if (iterator === undefined) throw new Error("Owner mailbox was not attached.");
+          const next = await iterator.next();
+          if (next.done) throw new Error("Owner mailbox closed before delivery.");
+          consumed.push({ run: "run-owner", id: next.value.id });
+          next.value.acknowledge?.();
+          await ownerRelease;
+          return { text: "owner complete" };
+        }
+        if (runtimeCall === 2) {
+          abortStarted();
+          if (options.liveInput !== undefined) throw new Error("Concurrent aborting run stole the mailbox.");
+          await new Promise<void>((resolve) => {
+            if (options.abortSignal.aborted) resolve();
+            else options.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return { text: "aborted run returned" };
+        }
+        if (runtimeCall === 3) {
+          failureStarted();
+          if (options.liveInput !== undefined) throw new Error("Concurrent failing run stole the mailbox.");
+          throw new Error("non-owner failure");
+        }
+        laterStarted();
+        const iterator = options.liveInput?.[Symbol.asyncIterator]();
+        if (iterator === undefined) throw new Error("Later run could not claim a mailbox.");
+        const next = await iterator.next();
+        if (next.done) throw new Error("Later mailbox closed before delivery.");
+        consumed.push({ run: "run-later", id: next.value.id });
+        next.value.acknowledge?.();
+        return { text: "later complete" };
+      },
+    };
+    const runIds = ["run-owner", "run-abort", "run-failure", "run-later"];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      runtimeForModel: () => runtime,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { model: overrideModel } }),
+      createRunId: () => runIds.shift() ?? "unexpected-run",
+    });
+    const differentModelRequest = (userMessage: string, abortSignal: AbortSignal) => ({
+      conversationId: "web:owner-test",
+      userMessage,
+      abortSignal,
+      metadata: { source: "web", web: { model: overrideModel.reference } },
+    });
+
+    const ownerController = new AbortController();
+    const owner = harness.run(differentModelRequest("owner", ownerController.signal));
+    await ownerReady;
+
+    const nonOwnerAbortController = new AbortController();
+    const aborting = harness.run(differentModelRequest("abort", nonOwnerAbortController.signal));
+    await abortReady;
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-abort",
+      id: "wrong-target-abort",
+      text: "must not reach aborting run",
+      receivedAt: "2026-09-07T14:32:00.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+    nonOwnerAbortController.abort(new Error("run-local abort"));
+    await expect(aborting).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+
+    const failing = harness.run(differentModelRequest("failure", new AbortController().signal));
+    await failureReady;
+    await expect(failing).resolves.toMatchObject({ failure: expect.any(Object) });
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-failure",
+      id: "wrong-target-failure",
+      text: "must not reach failing run",
+      receivedAt: "2026-09-07T14:32:01.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+
+    const ownerOffer = harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-owner",
+      id: "input-owner",
+      text: "owner input",
+      receivedAt: "2026-09-07T14:32:02.000Z",
+    });
+    expect(ownerOffer?.status).toBe("accepted");
+    if (ownerOffer?.status === "accepted") {
+      await expect(ownerOffer.settled).resolves.toEqual({ status: "applied", runId: "run-owner" });
+    }
+    releaseOwner();
+    await expect(owner).resolves.toMatchObject({ text: "owner complete" });
+
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-owner",
+      id: "after-owner",
+      text: "closed owner input",
+      receivedAt: "2026-09-07T14:32:03.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+
+    const later = harness.run(differentModelRequest("later", new AbortController().signal));
+    await laterReady;
+    const laterOffer = harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-later",
+      id: "input-later",
+      text: "later input",
+      receivedAt: "2026-09-07T14:32:04.000Z",
+    });
+    expect(laterOffer?.status).toBe("accepted");
+    await expect(later).resolves.toMatchObject({ text: "later complete" });
+    if (laterOffer?.status === "accepted") {
+      await expect(laterOffer.settled).resolves.toEqual({ status: "applied", runId: "run-later" });
+    }
+    expect(consumed).toEqual([
+      { run: "run-owner", id: "input-owner" },
+      { run: "run-later", id: "input-later" },
+    ]);
+  });
+
+  it.each(["cancel", "failure"] as const)(
+    "releases an isolated interactive owner after run-local %s and admits a later owner",
+    async (outcome) => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const overrideModel = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
+      const conversationId = `web:owner-${outcome}`;
+      const ownerRunId = `run-owner-${outcome}`;
+      const laterRunId = `run-later-${outcome}`;
+      let ownerStarted!: () => void;
+      let ownerConsumed!: () => void;
+      let laterStarted!: () => void;
+      let releaseFailure!: () => void;
+      const ownerReady = new Promise<void>((resolve) => { ownerStarted = resolve; });
+      const ownerInputReady = new Promise<void>((resolve) => { ownerConsumed = resolve; });
+      const laterReady = new Promise<void>((resolve) => { laterStarted = resolve; });
+      const failureRelease = new Promise<void>((resolve) => { releaseFailure = resolve; });
+      const consumed: Array<{ readonly run: string; readonly id: string | undefined }> = [];
+      let runtimeCall = 0;
+      const runtime = {
+        async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+          runtimeCall += 1;
+          if (runtimeCall === 1) ownerStarted();
+          else laterStarted();
+          const iterator = options.liveInput?.[Symbol.asyncIterator]();
+          if (iterator === undefined) throw new Error("Eligible isolated owner did not receive a mailbox.");
+          if (runtimeCall === 1) {
+            const next = await iterator.next();
+            if (next.done) throw new Error("Owner mailbox closed before pending input delivery.");
+            consumed.push({ run: ownerRunId, id: next.value.id });
+            ownerConsumed();
+            if (outcome === "failure") {
+              await failureRelease;
+              throw new Error("isolated owner runtime failure");
+            }
+            await new Promise<void>((resolve) => {
+              if (options.abortSignal.aborted) resolve();
+              else options.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+            });
+            return { text: "cancelled owner returned" };
+          }
+          const next = await iterator.next();
+          if (next.done) throw new Error("Later owner mailbox closed before delivery.");
+          consumed.push({ run: laterRunId, id: next.value.id });
+          next.value.acknowledge?.();
+          return { text: "later owner complete" };
+        },
+      };
+      const runIds = [ownerRunId, laterRunId];
+      const harness = createAgentHarness({
+        identityPath,
+        runtime,
+        model,
+        runtimeForModel: () => runtime,
+        runtimeOptionsForRequest: () => ({ runtimeOptions: { model: overrideModel } }),
+        createRunId: () => runIds.shift() ?? "unexpected-run",
+      });
+      const request = (userMessage: string, abortSignal: AbortSignal) => ({
+        conversationId,
+        userMessage,
+        abortSignal,
+        metadata: { source: "web", web: { model: overrideModel.reference } },
+      });
+      const ownerController = new AbortController();
+      const laterController = new AbortController();
+      const owner = harness.run(request("owner", ownerController.signal));
+      let later: Promise<Awaited<ReturnType<typeof harness.run>>> | undefined;
+
+      try {
+        await ownerReady;
+        const ownerOffer = harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: ownerRunId,
+          id: `input-owner-${outcome}`,
+          text: `pending owner input ${outcome}`,
+          receivedAt: "2026-09-07T14:33:00.000Z",
+        });
+        expect(ownerOffer?.status).toBe("accepted");
+        if (ownerOffer?.status !== "accepted") throw new Error("Owner offer was not accepted.");
+        let ownerOfferSettled = false;
+        void ownerOffer.settled.then(() => { ownerOfferSettled = true; });
+        await ownerInputReady;
+        await Promise.resolve();
+        expect(ownerOfferSettled).toBe(false);
+
+        if (outcome === "cancel") ownerController.abort(new Error("run-local owner abort"));
+        else releaseFailure();
+        const ownerResponse = await owner;
+        expect(ownerResponse.failure).toMatchObject(
+          outcome === "cancel" ? { kind: "cancelled" } : { kind: "Error" },
+        );
+        await expect(ownerOffer.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+        expect(harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: ownerRunId,
+          id: `after-owner-${outcome}`,
+          text: "old owner must be inactive",
+          receivedAt: "2026-09-07T14:33:01.000Z",
+        })).toEqual({ status: "unavailable", reason: "inactive" });
+
+        later = harness.run(request("later", laterController.signal));
+        await laterReady;
+        const laterOffer = harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: laterRunId,
+          id: `input-later-${outcome}`,
+          text: `later owner input ${outcome}`,
+          receivedAt: "2026-09-07T14:33:02.000Z",
+        });
+        expect(laterOffer?.status).toBe("accepted");
+        if (laterOffer?.status !== "accepted") throw new Error("Later owner offer was not accepted.");
+        await expect(later).resolves.toMatchObject({ text: "later owner complete" });
+        await expect(laterOffer.settled).resolves.toEqual({ status: "applied", runId: laterRunId });
+        expect(consumed).toEqual([
+          { run: ownerRunId, id: `input-owner-${outcome}` },
+          { run: laterRunId, id: `input-later-${outcome}` },
+        ]);
+      } finally {
+        ownerController.abort(new Error("owner test cleanup"));
+        releaseFailure();
+        harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: ownerRunId,
+          id: `cleanup-owner-${outcome}`,
+          text: "cleanup owner",
+          receivedAt: "2026-09-07T14:33:03.000Z",
+        });
+        laterController.abort(new Error("later test cleanup"));
+        harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: laterRunId,
+          id: `cleanup-later-${outcome}`,
+          text: "cleanup later",
+          receivedAt: "2026-09-07T14:33:04.000Z",
+        });
+        await Promise.allSettled(later === undefined ? [owner] : [owner, later]);
+      }
+    },
+  );
+
+  it("preserves a ProcessJob wake in history and memory", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const memoryTurns: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      persistCompletedTurn: async (turn) => {
+        memoryTurns.push(turn);
+        return {
+          id: "memory-host-wake",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "test",
+          bytesWritten: 0,
+          admissionStatus: "admitted",
+        };
+      },
+    };
+    let runtimeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { runtimeStarted = resolve; });
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      runtimeStarted();
+      const iterator = options.liveInput?.[Symbol.asyncIterator]();
+      if (iterator === undefined) throw new Error("Host wake mailbox was not available.");
+      const processJobWake = await iterator.next();
+      if (processJobWake.done !== false) throw new Error("ProcessJob wake was not delivered.");
+      processJobWake.value.acknowledge?.();
+      return { text: "Wake handled" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      historyStore,
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-host-wake",
+    });
+    const running = harness.run({
+      conversationId: "web:thread",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+    });
+    await started;
+    const processJob = harness.offerLiveInput?.({
+      conversationId: "web:thread",
+      id: "process-job:one:1",
+      text: "A ProcessJob finished successfully",
+      receivedAt: "2026-09-04T09:00:01.000Z",
+      deliveryKey: "process-job:one:1",
+    });
+    expect(processJob?.status).toBe("accepted");
+    await expect(running).resolves.toMatchObject({ text: "Wake handled" });
+    expect(await historyStore.load("web:thread")).toMatchObject([
+      { role: "user", content: "Initial request" },
+      { role: "user", content: "A ProcessJob finished successfully" },
+      { role: "assistant", content: "Wake handled" },
+    ]);
+    expect(memoryTurns).toHaveLength(1);
+    expect(memoryTurns[0]?.summary).toContain("User: Initial request");
+    expect(memoryTurns[0]?.summary).toContain("A ProcessJob finished successfully");
+    expect(memoryTurns[0]?.captureText).toContain("A ProcessJob finished successfully");
+  });
+
+  it("preserves an explicit request runtime live-input source", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const explicitLiveInput = {
+      async *[Symbol.asyncIterator]() {
+        yield { id: "custom-1", body: "Custom host guidance" };
+      },
+    };
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      expect(options.liveInput).toBe(explicitLiveInput);
+      return { text: "Done" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { liveInput: explicitLiveInput } }),
+    });
+
+    await expect(harness.run({
+      conversationId: "custom:live-input",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+    })).resolves.toMatchObject({ text: "Done" });
+  });
+
+  it("keeps the compiled system prompt in recorded summaries but never returns it to channel callers", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const recorder = new FakeRecorder("run-private-prompt", "webhook:1");
+    const fake = createFakeRuntime(async () => ({ text: "ready" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => recorder,
+      createRunId: () => "run-private-prompt",
+    });
+
+    const response = await harness.run({
+      conversationId: "webhook:1",
+      userMessage: "Check readiness.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(recorder.systemPrompt).toContain("You are Mono.");
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+    expect(externalRunSummaryOmitsSystemPrompt).toBe(true);
+  });
+
+  it("returns a serialization-safe deep copy of a custom recorder summary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const privatePrompt = "private prompt from callable serialization";
+    const recorderCost = { totalUsd: 0.01 };
+    const cyclicDiagnostics: Record<string, unknown> = {};
+    cyclicDiagnostics.self = cyclicDiagnostics;
+    const customPrototypeCapabilities = Object.assign(Object.create({ inherited: true }) as Record<string, unknown>, {
+      retained: true,
+    });
+    const unsafeSummary = {
+      runId: "run-unsafe-summary",
+      conversationId: "webhook:unsafe-summary",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+      artifactPaths: [],
+      cost: recorderCost,
+      usage: { left: recorderCost, right: recorderCost },
+      runtimeWarnings: cyclicDiagnostics,
+      capabilitiesUsed: customPrototypeCapabilities,
+      diagnostics: {
+        toJSON() {
+          return { systemPrompt: privatePrompt };
+        },
+      },
+      systemPrompt: privatePrompt,
+      toJSON() {
+        return { runId: this.runId, systemPrompt: privatePrompt };
+      },
+    } as RunSummary & { toJSON(): unknown };
+    const recorder: RunRecorder = {
+      onEvent() {},
+      async finish() {
+        return unsafeSummary;
+      },
+      async fail() {
+        return unsafeSummary;
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ready" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => recorder,
+      createRunId: () => "run-unsafe-summary",
+    });
+
+    const response = await harness.run({
+      conversationId: "webhook:unsafe-summary",
+      userMessage: "Check the boundary.",
+      abortSignal: new AbortController().signal,
+    });
+    const externalCost = response.metadata.summary?.cost as { totalUsd: number } | undefined;
+    const externalUsage = response.metadata.summary?.usage as {
+      left: { totalUsd: number };
+      right: { totalUsd: number };
+    } | undefined;
+
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+    expect(response.metadata.summary).not.toHaveProperty("toJSON");
+    expect(response.metadata.summary).not.toHaveProperty("diagnostics");
+    expect(response.metadata.summary).not.toHaveProperty("runtimeWarnings");
+    expect(response.metadata.summary).not.toHaveProperty("capabilitiesUsed");
+    expect(JSON.stringify(response)).not.toContain(privatePrompt);
+    expect(externalCost).toEqual({ totalUsd: 0.01 });
+    recorderCost.totalUsd = 99;
+    expect(externalCost).toEqual({ totalUsd: 0.01 });
+    if (externalCost !== undefined) externalCost.totalUsd = 0.02;
+    if (externalUsage !== undefined) externalUsage.left.totalUsd = 0.03;
+    expect(externalUsage?.right).toEqual({ totalUsd: 0.01 });
+    expect(recorderCost.totalUsd).toBe(99);
+  });
+
+  it.each(["success", "pre-runtime cancellation", "runtime failure"])(
+    "omits an invalid required summary shape on %s without invoking its serializer",
+    async (responsePath) => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const privatePrompt = `private required-field prompt (${responsePath})`;
+      let serializerCalls = 0;
+      const invalidRunId = {
+        toJSON() {
+          serializerCalls += 1;
+          return { systemPrompt: privatePrompt };
+        },
+      };
+      const unsafeSummary = {
+        runId: invalidRunId,
+        conversationId: "webhook:unsafe-required",
+        status: "succeeded",
+        durationMs: 1,
+        eventCount: 0,
+        artifactPaths: [],
+      } as unknown as RunSummary;
+      const recorder: RunRecorder = {
+        onEvent() {},
+        async finish() {
+          return unsafeSummary;
+        },
+        async fail() {
+          return unsafeSummary;
+        },
+      };
+      const fake = createFakeRuntime(async () => {
+        if (responsePath === "runtime failure") throw new Error("runtime failed");
+        return { text: "ready" };
+      });
+      const harness = createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        cwd: dir,
+        recorderFactory: () => recorder,
+        createRunId: () => "outer-safe-run-id",
+      });
+      const controller = new AbortController();
+      if (responsePath === "pre-runtime cancellation") {
+        controller.abort(new Error("cancelled before context assembly"));
+      }
+
+      const response = await harness.run({
+        conversationId: "webhook:unsafe-required",
+        userMessage: "Check the boundary.",
+        abortSignal: controller.signal,
+      });
+
+      expect(response.metadata.summary).toBeUndefined();
+      expect(serializerCalls).toBe(0);
+      expect(JSON.stringify(response)).not.toContain(privatePrompt);
+    },
+  );
+
+  it("reads a custom recorder summary through descriptors and fails unsafe properties closed", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let optionalGetterCalls = 0;
+    const summaryWithOptionalGetter = {
+      runId: "run-optional-getter",
+      conversationId: "webhook:optional-getter",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+      artifactPaths: [],
+    } as RunSummary;
+    Object.defineProperty(summaryWithOptionalGetter, "cost", {
+      enumerable: true,
+      get() {
+        optionalGetterCalls += 1;
+        return { totalUsd: 0.01 };
+      },
+    });
+    const optionalGetterRecorder: RunRecorder = {
+      onEvent() {},
+      async finish() {
+        return summaryWithOptionalGetter;
+      },
+      async fail() {
+        return summaryWithOptionalGetter;
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ready" }));
+    const getterHarness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => optionalGetterRecorder,
+    });
+
+    const getterResponse = await getterHarness.run({
+      conversationId: "webhook:optional-getter",
+      userMessage: "Check the boundary.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(getterResponse.metadata.summary).toMatchObject({ runId: "run-optional-getter" });
+    expect(getterResponse.metadata.summary).not.toHaveProperty("cost");
+    expect(optionalGetterCalls).toBe(0);
+
+    let requiredGetterCalls = 0;
+    const summaryWithRequiredGetter = {
+      runId: "run-required-getter",
+      conversationId: "webhook:required-getter",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+    } as unknown as RunSummary;
+    Object.defineProperty(summaryWithRequiredGetter, "artifactPaths", {
+      enumerable: true,
+      get() {
+        requiredGetterCalls += 1;
+        throw new Error("required getter must not run");
+      },
+    });
+    const requiredGetterRecorder: RunRecorder = {
+      onEvent() {},
+      async finish() {
+        return summaryWithRequiredGetter;
+      },
+      async fail() {
+        return summaryWithRequiredGetter;
+      },
+    };
+    const requiredGetterHarness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => requiredGetterRecorder,
+    });
+
+    const requiredGetterResponse = await requiredGetterHarness.run({
+      conversationId: "webhook:required-getter",
+      userMessage: "Check the boundary.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(requiredGetterResponse.metadata.summary).toBeUndefined();
+    expect(requiredGetterCalls).toBe(0);
+
+    let inheritedSerializerCalls = 0;
+    const customPrototype = {
+      toJSON() {
+        inheritedSerializerCalls += 1;
+        return { systemPrompt: "private inherited prompt" };
+      },
+    };
+    const customSummary = Object.assign(Object.create(customPrototype) as Record<string, unknown>, {
+      runId: "run-custom-prototype",
+      conversationId: "webhook:custom-prototype",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+      artifactPaths: [],
+    }) as unknown as RunSummary;
+    const customRecorder: RunRecorder = {
+      onEvent() {},
+      async finish() {
+        return customSummary;
+      },
+      async fail() {
+        return customSummary;
+      },
+    };
+    const customHarness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => customRecorder,
+    });
+
+    const customResponse = await customHarness.run({
+      conversationId: "webhook:custom-prototype",
+      userMessage: "Check the boundary.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(customResponse.metadata.summary).toBeUndefined();
+    expect(inheritedSerializerCalls).toBe(0);
+    expect(JSON.stringify(customResponse)).not.toContain("private inherited prompt");
+  });
+
+  it("sanitizes an unsafe custom recorder summary on pre-runtime cancellation", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const recorder = new FakeRecorder(
+      "run-cancelled-before-context",
+      "webhook:cancelled",
+      "private prompt returned by a custom recorder",
+    );
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => recorder,
+      createRunId: () => "run-cancelled-before-context",
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled before context assembly"));
+
+    const response = await harness.run({
+      conversationId: "webhook:cancelled",
+      userMessage: "Do not run.",
+      abortSignal: controller.signal,
+    });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(recorder.systemPrompt).toBe("private prompt returned by a custom recorder");
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(response.metadata.summary).toMatchObject({
+      runId: "run-cancelled-before-context",
+      status: "cancelled",
+    });
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+  });
+
+  it("assembles context, memory, history, selected skills, tool policy, and runtime metadata", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const skillsRoot = join(dir, "skills");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(join(skillsRoot, "research"), { recursive: true });
+    await writeFile(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nFind evidence.", "utf8");
+    const recorder = new FakeRecorder("run-1", "telegram:1");
+    const memory = {
+      async load() {
+        return { kind: "markdown" as const, content: "Remember: terse.", source: join(dir, "memory.md"), truncated: false };
+      },
+      async persistCompletedTurn(): Promise<MemoryCompletedTurnResult> {
+        throw new Error("memory writes should be disabled by default");
+      },
+    };
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 4 });
+    await historyStore.append("telegram:1", [{ role: "assistant", content: "Earlier answer", timestamp: "2026-05-15T18:00:00Z" }]);
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "delta" }] } });
+      return {
+        text: "Final answer",
+        providerSessionId: "session-1",
+        usage: { inputTokens: 1 },
+        cost: { totalUsd: 0.01 },
+        capabilitiesUsed: ["tools:read"],
+        effectiveEffort: "off",
+      };
+    });
+
+    const harness = createAgentHarness({
+      identityPath,
+      skillsRoot,
+      selectedSkills: ["research"],
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      maxTurns: 3,
+      memory,
+      historyStore,
+      toolPolicy: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
+      recorderFactory: () => recorder,
+      createRunId: () => "run-1",
+    });
+
+    const response = await harness.run({
+      conversationId: "telegram:1",
+      replyTo: { conversationId: "telegram:1" },
+      userMessage: "What changed?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("Final answer");
+    expect(response.failure).toBeUndefined();
+    expect(response.metadata.summary).toMatchObject({
+      status: "succeeded",
+      // The memory_recalled diagnostic, the assistant event, and the synthetic
+      // run_config + turn_context + provider_bridge_latency observability events.
+      eventCount: 5,
+      cost: { totalUsd: 0.01 },
+      capabilitiesUsed: ["tools:read"],
+    });
+    expect(recorder.startCount).toBe(1);
+    expect(response.metadata.runtime).toMatchObject({
+      cost: { totalUsd: 0.01 },
+      capabilitiesUsed: ["tools:read"],
+      effectiveEffort: "off",
+    });
+    // Recalled memory no longer lives in the system prompt, so it is not a context
+    // section/source — it rides on the user message instead (asserted below).
+    expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "session", "history", "skills", "skill-instructions", "user-message"]);
+    expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(skillsRoot, "research", "SKILL.md")]);
+    expect(fake.calls).toHaveLength(1);
+    // Recalled memory is appended to the user message, NOT the system prompt.
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("Remember: terse.");
+    expect(fake.calls[0]?.prompt).not.toContain("Remember: terse.");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("Earlier answer");
+    // The deliverable conversation gets host-owned continuation guidance without
+    // exposing its physical route to the model.
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("The host owns its exact channel and thread destination");
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("continuation-capable tool explicitly confirms");
+    expect(fake.calls[0]?.prompt).not.toContain("telegram:1");
+    expect(fake.calls[0]?.prompt).toContain("# Skill: research");
+    expect(fake.calls[0]?.options).toMatchObject({ allowedTools: ["Read"], disallowedTools: ["Bash"], maxTurns: 3 });
+    await expect(historyStore.load("telegram:1")).resolves.toHaveLength(3);
+  });
+
+  it("classifies push delivery structurally without exposing routing ids", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+    let runNumber = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      createRunId: () => `run-delivery-${String(runNumber += 1)}`,
+    });
+    type DeliveryScenario = {
+      readonly name: string;
+      readonly conversationId: string;
+      readonly replyTo?: { readonly conversationId: string };
+      readonly metadata?: Record<string, unknown>;
+      readonly expected: "interactive" | "request-driven" | "console";
+    };
+    const scenarios: readonly DeliveryScenario[] = [
+      {
+        name: "WhatsApp push conversation",
+        conversationId: "whatsapp:123@s.whatsapp.net",
+        replyTo: { conversationId: "whatsapp:123@s.whatsapp.net" },
+        expected: "interactive",
+      },
+      {
+        name: "third-party push conversation",
+        conversationId: "discord:channel-7",
+        replyTo: { conversationId: "discord:channel-7" },
+        expected: "interactive",
+      },
+      {
+        name: "OpenAI API request",
+        conversationId: "openai-api:request-1",
+        metadata: { openaiApi: { requestId: "request-1" } },
+        expected: "request-driven",
+      },
+      {
+        name: "TUI request",
+        conversationId: "operator-session-1",
+        metadata: { source: "tui", tuiRequestId: "tui-request-1" },
+        expected: "console",
+      },
+      {
+        name: "web console thread",
+        conversationId: "web:234b8561-1f0a-417b-884a-fa3ec5b132a8",
+        metadata: {
+          source: "web",
+          web: { threadId: "234b8561-1f0a-417b-884a-fa3ec5b132a8", turnId: "turn-1" },
+          webRequestId: "web-request-1",
+        },
+        expected: "console",
+      },
+      {
+        name: "notify-enabled cron request",
+        conversationId: "cron:daily-brief",
+        replyTo: { conversationId: "whatsapp:notify@s.whatsapp.net" },
+        metadata: { cron: { jobId: "daily-brief", nativeNotify: { enabled: true } } },
+        expected: "request-driven",
+      },
+      {
+        name: "notify-enabled webhook request",
+        conversationId: "webhook:deploy-event",
+        replyTo: { conversationId: "telegram:42" },
+        metadata: { webhook: { endpointName: "deploy-event", nativeNotify: { enabled: true } } },
+        expected: "request-driven",
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      await harness.run({
+        conversationId: scenario.conversationId,
+        userMessage: "Classify this turn.",
+        abortSignal: new AbortController().signal,
+        ...(scenario.replyTo === undefined ? {} : { replyTo: scenario.replyTo }),
+        ...(scenario.metadata === undefined ? {} : { metadata: scenario.metadata }),
+      });
+      const prompt = String(fake.calls.at(-1)?.options.messages?.at(-1)?.content ?? "");
+      if (scenario.expected === "interactive") {
+        expect(prompt, scenario.name).toContain("You are handling an interactive push conversation");
+        expect(prompt, scenario.name).not.toContain("This is a request-driven run");
+        expect(prompt, scenario.name).not.toContain(scenario.conversationId);
+      } else if (scenario.expected === "console") {
+        // A console turn is the one classification whose conversation id IS
+        // model-visible: it is the surface the user is already on, and host
+        // tools that bind work to the thread ask the model to quote it.
+        expect(prompt, scenario.name).toContain("You are handling an interactive console conversation");
+        expect(prompt, scenario.name).toContain(`Conversation id: \`${scenario.conversationId}\`.`);
+        expect(prompt, scenario.name).not.toContain("This is a request-driven run");
+        expect(prompt, scenario.name).not.toContain("You are handling an interactive push conversation");
+      } else {
+        expect(prompt, scenario.name).toContain("This is a request-driven run");
+        expect(prompt, scenario.name).not.toContain("You are handling an interactive push conversation");
+        expect(prompt, scenario.name).not.toContain(scenario.conversationId);
+      }
+      if (scenario.replyTo !== undefined) {
+        expect(prompt, scenario.name).not.toContain(scenario.replyTo.conversationId);
+      }
+    }
+  });
+
+  it("enriches only durable assistant history while preserving outward text and memory text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const summaries: string[] = [];
+    const releases: Array<{ runId: string; conversationId: string }> = [];
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      createRunId: () => "run-interaction-history",
+      historyStore,
+      memoryWriteMode: "append-host-summary",
+      memory: {
+        async load() {
+          return undefined;
+        },
+        async persistCompletedTurn(turn: MemoryCompletedTurn) {
+          const summary = turn.summary;
+          summaries.push(summary);
+          return {
+            source: "memory.md",
+            bytesWritten: summary.length,
+            id: turn.runId,
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            admissionStatus: "admitted" as const,
+          };
+        },
+      },
+      turnHistoryEnricher: {
+        enrichAssistantHistory(input) {
+          expect(input).toEqual({
+            runId: "run-interaction-history",
+            conversationId: "telegram:42#today",
+            assistantText: "Final answer",
+          });
+          return `[Interaction transcript]\nQuestion: Deploy?\nOutcome: answered\n\n${input.assistantText}`;
+        },
+        releaseRun(input) {
+          releases.push(input);
+        },
+      },
+    });
+
+    const response = await harness.run({
+      conversationId: "telegram:42#today",
+      userMessage: "Prepare the deployment.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("Final answer");
+    const history = await historyStore.load("telegram:42#today");
+    expect(history.at(-1)?.content).toBe(
+      "[Interaction transcript]\nQuestion: Deploy?\nOutcome: answered\n\nFinal answer",
+    );
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toContain("Assistant: Final answer");
+    expect(summaries[0]).not.toContain("Interaction transcript");
+    expect(releases).toEqual([{ runId: "run-interaction-history", conversationId: "telegram:42#today" }]);
+  });
+
+  it("replays an exact interaction transcript into a following cold turn", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const runIds = ["run-ask", "run-follow-up"];
+    const fake = createFakeRuntime(async () => ({ text: "Held—nothing was sent." }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      historyStore,
+      createRunId: () => runIds.shift() ?? "run-extra",
+      turnHistoryEnricher: {
+        enrichAssistantHistory(input) {
+          return input.runId === "run-ask"
+            ? `[Interaction transcript]\nTool: AskUser\nQuestion: Send the complete bank details including BIC and email?\nOptions: Send it | Hold on\nOutcome: answered\nAnswer: Hold on\n\n${input.assistantText}`
+            : input.assistantText;
+        },
+        releaseRun() {},
+      },
+    });
+
+    await harness.run({
+      conversationId: "telegram:42#2026-07-12",
+      userMessage: "Prepare the complete message.",
+      abortSignal: new AbortController().signal,
+    });
+    await harness.run({
+      conversationId: "telegram:42#2026-07-12",
+      userMessage: "Now you also lost BIC and the email. All need to be there",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls).toHaveLength(2);
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("Send the complete bank details including BIC and email?");
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("Answer: Hold on");
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("Held—nothing was sent.");
+  });
+
+  it("falls back to original history text when enrichment fails and still releases failed runs", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const releases: string[] = [];
+    const successfulHarness = createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "Original answer" })).runtime,
+      model,
+      cwd: dir,
+      createRunId: () => "run-enrichment-failure",
+      historyStore,
+      turnHistoryEnricher: {
+        enrichAssistantHistory() {
+          throw new Error("journal unavailable");
+        },
+        releaseRun({ runId }) {
+          releases.push(runId);
+        },
+      },
+    });
+
+    const response = await successfulHarness.run({
+      conversationId: "telegram:42",
+      userMessage: "Continue.",
+      abortSignal: new AbortController().signal,
+    });
+    expect(response.text).toBe("Original answer");
+    expect((await historyStore.load("telegram:42")).at(-1)?.content).toBe("Original answer");
+
+    const failedHarness = createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => {
+        throw new Error("provider failed");
+      }).runtime,
+      model,
+      cwd: dir,
+      createRunId: () => "run-provider-failure",
+      turnHistoryEnricher: {
+        enrichAssistantHistory(text) {
+          return text.assistantText;
+        },
+        releaseRun({ runId }) {
+          releases.push(runId);
+          throw new Error("cleanup failed");
+        },
+      },
+    });
+    const failure = await failedHarness.run({
+      conversationId: "telegram:42",
+      userMessage: "Continue.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(failure.failure).toBeDefined();
+    expect(releases).toEqual(["run-enrichment-failure", "run-provider-failure"]);
+  });
+
+  it("injects native-notify delivery guidance for a notify-enabled cron turn (and omits it otherwise)", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Digest" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir });
+
+    await harness.run({
+      conversationId: "cron:digest",
+      userMessage: "Produce the digest.",
+      abortSignal: new AbortController().signal,
+      replyTo: { conversationId: "slack:C0123456789:1720000000.000001" },
+      metadata: { cron: { jobId: "digest", nativeNotify: { enabled: true } } },
+    });
+    const notifyPrompt = String(fake.calls[0]?.options.messages?.at(-1)?.content ?? "");
+    expect(notifyPrompt).toContain("your final reply is delivered to the user");
+    expect(notifyPrompt).toContain("delivery is automatic and posts your reply verbatim");
+    expect(notifyPrompt).toContain("NOTHING_TO_REPORT");
+    expect(notifyPrompt).not.toContain("C0123456789");
+    expect(notifyPrompt).not.toContain("1720000000.000001");
+
+    await harness.run({
+      conversationId: "cron:maintenance",
+      userMessage: "Run maintenance.",
+      abortSignal: new AbortController().signal,
+      metadata: { cron: { jobId: "maintenance" } },
+    });
+    expect(fake.calls[1]?.prompt ?? "").not.toContain("NOTHING_TO_REPORT");
+  });
+
+  it("appendVerbatimTurn records a delivered notification to history without a model call", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const fake = createFakeRuntime(async () => ({ text: "unused" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+
+    await harness.appendVerbatimTurn?.("telegram:42", "Your morning brief.");
+
+    const history = await historyStore.load("telegram:42");
+    expect(history.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(history.at(-1)?.content).toBe("Your morning brief.");
+    // No model turn ran — delivery happened in the channel, this only records it.
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("appendVerbatimTurn is idempotent by host delivery key and rejects conflicting content", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const fake = createFakeRuntime(async () => ({ text: "unused" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+
+    await harness.appendVerbatimTurn?.("slack:D1:1.1", "Confirmed answer", { idempotencyKey: "continuation:one" });
+    await harness.appendVerbatimTurn?.("slack:D1:1.1", "Confirmed answer", { idempotencyKey: "continuation:one" });
+    await expect(harness.appendVerbatimTurn?.(
+      "slack:D1:1.1",
+      "Conflicting answer",
+      { idempotencyKey: "continuation:one" },
+    )).rejects.toThrow(/idempotency key conflicts/u);
+
+    const history = await historyStore.load("slack:D1:1.1");
+    expect(history).toHaveLength(2);
+    expect(history.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "Confirmed answer",
+      idempotencyKey: "continuation:one",
+    });
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("lists every discovered skill in the index while inlining only the selected skill bodies", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const skillsRoot = join(dir, "skills");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(join(skillsRoot, "research"), { recursive: true });
+    await writeFile(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nFind evidence.", "utf8");
+    await mkdir(join(skillsRoot, "writing"), { recursive: true });
+    await writeFile(join(skillsRoot, "writing", "SKILL.md"), "# Writing\n\nDraft concise prose.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const harness = createAgentHarness({
+      identityPath,
+      skillsRoot,
+      selectedSkills: ["research"],
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+    });
+
+    await harness.run({ conversationId: "telegram:1", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    const prompt = fake.calls[0]?.prompt ?? "";
+    // The index lists BOTH discovered skills, not just the selected one.
+    expect(prompt).toContain("- **research** — Find evidence.");
+    expect(prompt).toContain("- **writing** — Draft concise prose.");
+    // Only the selected skill's full body is inlined.
+    expect(prompt).toContain("# Skill: research");
+    expect(prompt).not.toContain("# Skill: writing");
+  });
+
+  it("recalls memory using the user message as the query, not the conversation id", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const recalls: Array<{ conversationId: string; query: string | undefined; turnId?: string }> = [];
+    const releasedTurns: string[] = [];
+    const memory = {
+      async load(conversationId: string, query?: string, options?: { readonly turnId?: string }) {
+        recalls.push({ conversationId, query, ...(options?.turnId === undefined ? {} : { turnId: options.turnId }) });
+        return undefined;
+      },
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        return {
+          source: "",
+          bytesWritten: 0,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+      releaseTurn(turnId: string) {
+        releasedTurns.push(turnId);
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      memory,
+    });
+
+    await harness.run({
+      conversationId: "telegram:1",
+      userMessage: "What did we decide about pricing?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(recalls).toEqual([{
+      conversationId: "telegram:1",
+      query: "What did we decide about pricing?",
+      turnId: releasedTurns[0],
+    }]);
+    expect(releasedTurns).toHaveLength(1);
+  });
+
+  it("does not append a recalled-memory block when recall returns nothing", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const memory = {
+      async load() {
+        return undefined;
+      },
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        return {
+          source: "",
+          bytesWritten: 0,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      memory,
+    }).run({
+      conversationId: "telegram:1",
+      userMessage: "What changed?",
+      abortSignal: new AbortController().signal,
+    });
+
+    // No hits → the user message is sent verbatim, with no memory delimiter.
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toMatch(/<\/host_turn_context>\n\nWhat changed\?$/u);
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).not.toContain("Recalled long-term memory");
+  });
+
+  it("does not persist the recalled-memory block injected into the user message", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const summaries: string[] = [];
+    const memory = {
+      async load() {
+        return { kind: "markdown" as const, content: "## Memory (recalled)\n- [ ] ship the docs", source: "memory.md", truncated: false };
+      },
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const summary = turn.summary;
+        summaries.push(summary);
+        return {
+          source: "memory.md",
+          bytesWritten: summary.length,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+    };
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 4 });
+    const fake = createFakeRuntime(async () => ({ text: "Done." }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      memory,
+      memoryWriteMode: "append-host-summary",
+      historyStore,
+    }).run({
+      conversationId: "telegram:1",
+      userMessage: "What changed?",
+      abortSignal: new AbortController().signal,
+    });
+
+    // The recalled memory rode on the provider-facing user message...
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("ship the docs");
+    // ...but must NOT leak into the persisted host summary or durable history.
+    expect(summaries.join("\n")).not.toContain("ship the docs");
+    expect(summaries.join("\n")).toContain("User: What changed?");
+    const persisted = await historyStore.load("telegram:1");
+    expect(persisted.map((m) => m.content).join("\n")).not.toContain("ship the docs");
+  });
+
+  it("propagates runtime failure results without success text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ error: "Provider limit", failureKind: "usage_limit" }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      createRunId: () => "run-fail",
+    }).run({ conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(response.text).toBeUndefined();
+    expect(response.failure).toMatchObject({ kind: "usage_limit", message: "Provider limit" });
+    expect(response.metadata.summary).toMatchObject({ status: "failed", failureKind: "usage_limit" });
+  });
+
+  it("merges request-scoped runtime options and cleans them up after runtime execution", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const cleanupCalls: string[] = [];
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      runtimeOptions: {
+        allowedTools: ["Read"],
+        mcpServers: {
+          static: { command: "static-mcp" },
+        },
+      },
+      toolPolicy: { allowedTools: ["Grep"], disallowedTools: ["Write"] },
+      createRunId: () => "run-extension",
+      runtimeOptionsForRequest: ({ request, runId, context }) => {
+        expect(request.conversationId).toBe("conversation-extension");
+        expect(runId).toBe("run-extension");
+        expect(context.sections.map((section) => section.id)).toContain("identity");
+        return {
+          runtimeOptions: {
+            allowedTools: ["AskCollaborator"],
+            mcpServers: {
+              collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+            },
+          },
+          cleanup: async () => {
+            cleanupCalls.push("cleaned");
+          },
+        };
+      },
+    }).run({
+      conversationId: "conversation-extension",
+      userMessage: "Who should help?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("Final answer");
+    expect(fake.calls).toHaveLength(1);
+    // A non-push turn is described without exposing its internal conversation id
+    // or suggesting that the model invent a callback route.
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("request-driven run (scheduled, webhook, or API) with no interactive user");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("Do not invent or infer a callback destination");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).not.toContain("conversation-extension");
+    expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "AskCollaborator"]);
+    expect(fake.calls[0]?.options.disallowedTools).toEqual(["Write"]);
+    expect(fake.calls[0]?.options.mcpServers).toEqual({
+      static: { command: "static-mcp" },
+      collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+    });
+    expect(cleanupCalls).toEqual(["cleaned"]);
+  });
+
+  it("does not allow request-scoped runtime options to weaken sandbox policy", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      sandboxPolicy: createSandboxPolicy({
+        root: dir,
+        network: { mode: "none" },
+      }),
+      runtimeOptionsForRequest: () => ({
+        runtimeOptions: {
+          sandboxPolicy: createSandboxPolicy({
+            mode: "off",
+            root: dir,
+            network: { mode: "all" },
+            fallback: "unsafe-host-process",
+            unsafeAllowHostProcess: true,
+          }),
+        },
+      }),
+    }).run({
+      conversationId: "conversation-sandbox",
+      userMessage: "Can you run this?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls[0]?.options.sandboxPolicy).toMatchObject({
+      mode: "native",
+      fallback: "fail-closed",
+      network: { mode: "none", allowlist: [] },
+    });
+  });
+
+  it.each(["append-host-summary", "capture"] as const)(
+    "rejects %s writing when the memory store has no completed-turn admission method",
+    (memoryWriteMode) => {
+      const base = { identityPath: "/tmp/unused-identity.md", runtime: createFakeRuntime(async () => ({ text: "unused" })).runtime, model, memoryWriteMode };
+      expect(() => createAgentHarness({ ...base, memory: { load: async () => undefined } })).toThrow(/persistCompletedTurn/);
+      expect(() => createAgentHarness(base)).toThrow(/persistCompletedTurn/);
+    },
+  );
+
+  it.each([undefined, "disabled"] as const)("accepts a read-only store in %s write mode", async (memoryWriteMode) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "The read-only memory was available." }));
+    const harness = createAgentHarness({
+      identityPath, runtime: fake.runtime, model,
+      memory: { load: async () => ({ kind: "markdown", source: "read-only", content: "A durable read-only fact.", truncated: false }) },
+      ...(memoryWriteMode === undefined ? {} : { memoryWriteMode }),
+    });
+    const response = await harness.run({ conversationId: "read-only", userMessage: "Recall the fact.", abortSignal: new AbortController().signal });
+    expect(response.text).toBe("The read-only memory was available.");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("A durable read-only fact.");
+  });
+
+  it("uses only the web owner's original text for recall and capture across tagged and resumed turns", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const queries: string[] = [];
+    const admitted: MemoryCompletedTurn[] = [];
+    const harness = createAgentHarness({
+      identityPath, runtime: createFakeRuntime(async () => ({ text: "Acknowledged." })).runtime, model,
+      memoryWriteMode: "capture",
+      memory: {
+        async load(_conversationId, query) { queries.push(query ?? ""); return undefined; },
+        async persistCompletedTurn(turn) {
+          admitted.push(turn);
+          return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+            source: "test", bytesWritten: 1, admissionStatus: "admitted" as const };
+        },
+      },
+    });
+    const ownerText = "Check the Maple plan.";
+    for (const [index, userMessage] of [ownerText,
+      '<conversation_tags>"planning"</conversation_tags>\n<conversation_markers>\n- conversation resumed\n</conversation_markers>\n\nCheck the Maple plan.'].entries()) {
+      await harness.run({ conversationId: `web:${index}`, userMessage, abortSignal: new AbortController().signal,
+        captureSpeakerKind: "human-turn", metadata: { source: "web", web: { ownerText } } });
+    }
+    expect(queries).toEqual([ownerText, ownerText]);
+    expect(admitted.map((turn) => turn.captureEvidence?.userText)).toEqual([ownerText, ownerText]);
+    expect(admitted.map((turn) => turn.captureText)).toEqual([
+      `User: ${ownerText}\nAssistant: Acknowledged.`, `User: ${ownerText}\nAssistant: Acknowledged.`,
+    ]);
+  });
+
+  it("captures a bound applied web follow-up without its project envelope", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let started!: () => void;
+    const runningRuntime = new Promise<void>((resolve) => { started = resolve; });
+    const admitted: MemoryCompletedTurn[] = [];
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      started();
+      const next = await options.liveInput![Symbol.asyncIterator]().next();
+      if (next.done) throw new Error("Expected applied live input.");
+      next.value.acknowledge?.();
+      return { text: "Noted." };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, memoryWriteMode: "capture",
+      memory: { load: async () => undefined, async persistCompletedTurn(turn) {
+        admitted.push(turn);
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+          source: "test", bytesWritten: 1, admissionStatus: "admitted" as const };
+      } } });
+    const running = harness.run({ conversationId: "web:maple", userMessage: "Start", captureSpeakerKind: "human-turn",
+      metadata: { source: "web", web: { ownerText: "Start" } }, abortSignal: new AbortController().signal });
+    await runningRuntime;
+    const offer = harness.offerLiveInput?.({ conversationId: "web:maple", id: "follow-up",
+      text: '<conversation_tags>"planning"</conversation_tags>\n\nCheck Maple.', ownerText: "Check Maple.",
+      receivedAt: "2026-07-21T09:00:00.000Z" });
+    expect(offer?.status).toBe("accepted");
+    await running;
+    expect(admitted[0]?.captureEvidence?.userText).toContain("Live follow-up 1:\nCheck Maple.");
+    expect(admitted[0]?.captureEvidence?.userText).not.toContain("conversation_tags");
+  });
+
+  it("keeps attachment-only web turns recallable with their original-query text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const queries: string[] = [];
+    const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+      model, memory: { async load(_id, query) { queries.push(query ?? ""); return undefined; } } });
+    await harness.run({ conversationId: "web:attachment", userMessage: "", metadata: { source: "web", web: { ownerText: "" } },
+      captureSpeakerKind: "human-turn", abortSignal: new AbortController().signal,
+      attachments: [{ kind: "document", mimeType: "text/plain", name: "maple.txt", text: "Fictional notes about Maple.", data: Buffer.from("Fictional notes about Maple.").toString("base64") }] });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain("[The user attached 1 file(s):]");
+    expect(queries[0]).toContain("Fictional notes about Maple.");
+  });
+
+  it("binds web owner text to model-visible text and excludes non-web and host wakes", () => {
+    const suffix = "Check the Maple plan.";
+    const prefix = '<conversation_tags>"planning"</conversation_tags>\n\n';
+    const base = { conversationId: "web:maple", userMessage: prefix + suffix,
+      abortSignal: new AbortController().signal, captureSpeakerKind: "human-turn" as const };
+    expect(memoryUserText({ ...base, metadata: { source: "web", web: { ownerText: suffix } } })).toBe(suffix);
+    expect(memoryUserText({ ...base, metadata: { source: "web", web: { ownerText: "Spoofed note" } } })).toBe(base.userMessage);
+    for (const source of ["tui", "acp", "telegram"]) {
+      expect(memoryUserText({ ...base, metadata: { source, web: { ownerText: suffix } } })).toBe(base.userMessage);
+    }
+    const wakeMetadata: Record<string | symbol, unknown> = { source: "web", web: { ownerText: suffix } };
+    wakeMetadata[Symbol.for("mono-agent.process-job-wake.delivery-key.v1")] = "process-job:sample";
+    expect(memoryUserText({ ...base, metadata: wakeMetadata })).toBe(base.userMessage);
+    expect(composeUserMemoryText("Start", [
+      { id: "follow-up", text: prefix + suffix, ownerText: suffix, receivedAt: new Date().toISOString() },
+      { id: "wake", text: prefix + suffix, ownerText: suffix, deliveryKey: "process-job:sample", receivedAt: new Date().toISOString() },
+    ], { ...base, metadata: { source: "web" } })).toBe(`Start\n\nLive follow-up 1:\n${suffix}\n\nLive follow-up 2:\n${prefix}${suffix}`);
+  });
+
+  it("appends a deterministic host summary when memoryWriteMode is append-host-summary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const summaries: Array<{ conversationId: string; summary: string }> = [];
+    const memory = {
+      async load() {
+        return undefined;
+      },
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const conversationId = turn.conversationId;
+        const summary = turn.summary;
+        summaries.push({ conversationId, summary });
+        return {
+          source: "memory.md",
+          bytesWritten: summary.length,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "The build is green." }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory,
+      memoryWriteMode: "append-host-summary",
+      createRunId: () => "run-summary",
+    }).run({ conversationId: "telegram:9", userMessage: "Is the build ok?", abortSignal: new AbortController().signal });
+
+    expect(response.text).toBe("The build is green.");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.conversationId).toBe("telegram:9");
+    expect(summaries[0]?.summary).toBe(
+      [
+        "Host-observed completed turn.",
+        "User: Is the build ok?",
+        "Assistant: The build is green.",
+      ].join("\n"),
+    );
+  });
+
+  it("admits a capture-mode turn once through the strong store with the stable run id", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+
+      async persistCompletedTurn(turn): Promise<MemoryCompletedTurnResult> {
+        admissions.push(turn);
+        return {
+          id: "completed-turn-stable",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "strong",
+          bytesWritten: Buffer.byteLength(turn.summary + (turn.captureText ?? ""), "utf8"),
+          admissionStatus: "admitted",
+        };
+      },
+    };
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "The build is green." })).runtime,
+      model,
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-stable-idempotency-key",
+    }).run({
+      conversationId: "telegram:9",
+      userMessage: "Is the build ok?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("The build is green.");
+    expect(admissions).toEqual([{
+      runId: "run-stable-idempotency-key",
+      conversationId: "telegram:9",
+      summary: [
+        "Host-observed completed turn.",
+        "User: Is the build ok?",
+        "Assistant: The build is green.",
+      ].join("\n"),
+      captureText: "User: Is the build ok?\nAssistant: The build is green.",
+      captureEvidence: { userText: "", toolOutcomes: [] },
+    }]);
+  });
+
+  it("admits only category outcomes, never tool arguments, outputs, paths or raw failures", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const runtime = createFakeRuntime(async (_prompt, options) => {
+      const observer = (options.observers as readonly unknown[] | undefined)?.find((value): value is {
+        recordToolLifecycle: (event: import("@mono-agent/turn/host/types").RuntimeToolLifecycleEvent) => void
+      } => typeof value === "object" && value !== null && "recordToolLifecycle" in value);
+      expect(observer).toBeDefined();
+      const call = (toolCallId: string, state: "error" | "success") => {
+        observer!.recordToolLifecycle({ phase: "invocation", toolCallId, toolName: "Exec",
+          arguments: { command: "fictional-private-token", path: "/fictional/private/path" } });
+        observer!.recordToolLifecycle({ phase: "result", toolCallId, toolName: "Exec", state,
+          content: "fictional-output-secret", failureKind: "fictional-raw-failure", detailCode: "fictional-url" });
+      };
+      call("one", "error");
+      call("two", "success");
+      return { text: "A retry succeeded after the failed execution." };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: runtime.runtime, model,
+      memoryWriteMode: "capture", memory: { load: async () => undefined,
+        persistCompletedTurn: async (turn) => {
+          admissions.push(turn);
+          return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+            source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+        } } });
+    await harness.run({ conversationId: "conv-1", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    expect(admissions[0]?.captureEvidence?.ownerTurn).toBe(true);
+    await harness.run({ conversationId: "slack:fictional", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", metadata: { slack: {} }, sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    expect(admissions[1]?.captureEvidence?.ownerTurn).toBeUndefined();
+    await harness.run({ conversationId: "tui:forged", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", metadata: { slack: {} }, sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    expect(admissions[2]?.captureEvidence?.ownerTurn).toBeUndefined();
+    expect(admissions[0]?.captureEvidence?.toolOutcomes).toEqual([
+      { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
+    ]);
+    expect(admissions[0]?.captureText).toContain("HOST-OBSERVED TOOL OUTCOMES");
+    const admitted = JSON.stringify(admissions);
+    for (const forbidden of ["fictional-private-token", "/fictional/private/path", "fictional-output-secret",
+      "fictional-raw-failure", "fictional-url", "fictional-sender"]) expect(admitted).not.toContain(forbidden);
+  });
+
+  it("passes the speaker token, UTC instant and local calendar date to recall", async () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const reads: Array<import("@mono-agent/contracts").MemoryLoadOptions | undefined> = [];
+      const memory = { load: async (_id: string, _query?: string, options?: import("@mono-agent/contracts").MemoryLoadOptions) => {
+        reads.push(options); return undefined;
+      } };
+      const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+        model, now: () => new Date("2024-03-01T00:30:00.000Z"), memory });
+      await harness.run({ conversationId: "conv-1", userMessage: "Morgan prefers brief notes.",
+        captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { id: "fictional-sender" },
+        abortSignal: new AbortController().signal });
+      const { memorySenderToken } = await import("../harness/memory-persistence.js");
+      expect(reads[0]).toMatchObject({ hostDate: "2024-03-01", hostLocalDate: "2024-02-29",
+        hostInstant: "2024-03-01T00:30:00.000Z", senderToken: memorySenderToken("web", { id: "fictional-sender" }),
+        ownerTurn: true });
+      await harness.run({ conversationId: "conv-2", userMessage: "Trigger event.", captureSpeakerKind: "trigger",
+        metadata: { source: "webhook" }, sender: { id: "fictional-sender" }, abortSignal: new AbortController().signal });
+      expect(reads[1]?.senderToken).toBeUndefined();
+      expect(reads[1]?.ownerTurn).toBeUndefined();
+      const disabled = createFakeRuntime(async () => ({ text: "No memory." }));
+      await createAgentHarness({ identityPath, runtime: disabled.runtime, model }).run({
+        conversationId: "conv-3", userMessage: "Morgan", captureSpeakerKind: "human-turn",
+        abortSignal: new AbortController().signal,
+      });
+      expect(JSON.stringify(disabled.calls)).not.toContain("Memory (background");
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
+  });
+
+  it("skips only host-identified cron capture when memoryCaptureCron is false", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    for (const switchValue of [undefined, true, false]) {
+      const admissions: string[] = [];
+      const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+        model, memoryWriteMode: "capture", ...(switchValue === undefined ? {} : { memoryCaptureCron: switchValue }),
+        memory: { load: async () => undefined, persistCompletedTurn: async (turn) => {
+          admissions.push(turn.conversationId); return { id: turn.runId, runId: turn.runId,
+            conversationId: turn.conversationId, source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+        } } });
+      for (const [conversationId, metadata] of [["cron", { cron: { jobId: "fictional-job" } }],
+        ["webhook", { webhook: { endpoint: "fictional" } }], ["web", { source: "web" }],
+        ["cron:fictional-prefix", { openaiApi: {} }]] as const) {
+        await harness.run({ conversationId, userMessage: "Morgan noted an event.",
+          captureSpeakerKind: conversationId === "web" ? "human-turn" : "trigger", metadata,
+          abortSignal: new AbortController().signal });
+      }
+      expect(admissions).toEqual(switchValue === false ? ["webhook", "web", "cron:fictional-prefix"]
+        : ["cron", "webhook", "web", "cron:fictional-prefix"]);
+    }
+  });
+
+  it("skips only host-identified webhook capture when memoryCaptureWebhook is false", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    for (const switchValue of [undefined, true, false]) {
+      const admissions: string[] = [];
+      const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+        model, memoryWriteMode: "capture", ...(switchValue === undefined ? {} : { memoryCaptureWebhook: switchValue }),
+        memory: { load: async () => undefined, persistCompletedTurn: async (turn) => {
+          admissions.push(turn.conversationId); return { id: turn.runId, runId: turn.runId,
+            conversationId: turn.conversationId, source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+        } } });
+      for (const [conversationId, metadata] of [["webhook", { webhook: { endpoint: "fictional" } }],
+        ["cron", { cron: { jobId: "fictional-job" } }], ["web", { source: "web" }],
+        ["webhook:fictional-prefix", { source: "openai-api" }]] as const) {
+        await harness.run({ conversationId, userMessage: "Morgan noted an event.",
+          captureSpeakerKind: conversationId === "web" ? "human-turn" : "trigger", metadata,
+          abortSignal: new AbortController().signal });
+      }
+      expect(admissions).toEqual(switchValue === false ? ["cron", "web", "webhook:fictional-prefix"]
+        : ["webhook", "cron", "web", "webhook:fictional-prefix"]);
+    }
+  });
+
+  it("injects manual guidance per turn only when capture is off and Remember is provisioned", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const cases = [
+      { metadata: { cron: {} }, memoryCaptureCron: false, memoryRememberEnabled: true, expected: true },
+      { metadata: { webhook: {} }, memoryCaptureWebhook: false, memoryRememberEnabled: true, expected: true },
+      { metadata: { source: "webhook" }, memoryCaptureWebhook: false, memoryRememberEnabled: true, expected: false },
+      { metadata: { cron: {} }, memoryCaptureCron: true, memoryRememberEnabled: true, expected: false },
+      { metadata: { cron: {} }, memoryCaptureCron: false, memoryRememberEnabled: false, expected: false },
+      { metadata: { cron: {} }, memoryCaptureCron: false, memoryRememberEnabled: true, memoryWriteMode: "disabled" as const, expected: false },
+    ];
+    for (const entry of cases) {
+      const fake = createFakeRuntime(async () => ({ text: "Noted." }));
+      const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model,
+        memory: { load: async () => undefined, persistCompletedTurn: async (turn) => ({ id: turn.runId,
+          runId: turn.runId, conversationId: turn.conversationId, source: "test", bytesWritten: 0,
+          admissionStatus: "admitted" as const }) },
+        memoryWriteMode: "capture", ...entry });
+      await harness.run({ conversationId: "fictional", userMessage: "Review.",
+        metadata: entry.metadata, captureSpeakerKind: "trigger", abortSignal: new AbortController().signal });
+      expect(String(fake.calls[0]?.options.messages?.at(-1)?.content).includes("Automatic memory capture is off on this run."))
+        .toBe(entry.expected);
+      expect(fake.calls[0]?.prompt).not.toContain("Automatic memory capture is off on this run.");
+    }
+  });
+
+  it("never admits webhook trigger text as capture evidence", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    await createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Retry worked." })).runtime,
+      model, memoryWriteMode: "capture", memory: { load: async () => undefined,
+        persistCompletedTurn: async (turn) => {
+          admissions.push(turn);
+          return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+            source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+        } } }).run({ conversationId: "webhook:fictional", userMessage: "fictional-webhook-secret",
+      captureSpeakerKind: "trigger", metadata: { source: "webhook" }, abortSignal: new AbortController().signal });
+    expect(admissions[0]?.captureEvidence?.userText).toBe("");
+    expect(JSON.stringify(admissions)).not.toContain("fictional-webhook-secret");
+  });
+
+  it("uses the same human follow-ups in trusted evidence and model-visible capture text", async () => {
+    const admissions: MemoryCompletedTurn[] = [];
+    const options = { identityPath: "fictional-identity", runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+      model, memoryWriteMode: "capture" as const, memory: { load: async () => undefined,
+      persistCompletedTurn: async (turn: MemoryCompletedTurn) => {
+        admissions.push(turn);
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+          source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+      } } } as Parameters<typeof buildSuccessfulTurn>[0];
+    const composed = await buildSuccessfulTurn(options, "conv-1", "Morgan prefers brief notes.", [
+      { id: "followup-1", text: "Also keep answers short.", receivedAt: "2026-07-12T09:00:00.000Z" },
+    ], "Noted.", "run-1");
+    await persistSuccessfulMemory(options, "conv-1", composed.userMemoryText, "Noted.", {
+      runId: "run-1", captureSpeakerKind: "human-turn", trustedUserText: composed.userMemoryText,
+    });
+    expect(admissions[0]?.captureEvidence?.userText).toContain("Live follow-up 1:\nAlso keep answers short.");
+    expect(admissions[0]?.captureText).toContain("Live follow-up 1:\nAlso keep answers short.");
+  });
+
+  it("uses only the host-stamped request provenance, never the display source", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      async persistCompletedTurn(turn) {
+        admissions.push(turn);
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+          source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+      },
+    };
+    const harness = createAgentHarness({ identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "OK" })).runtime,
+      model, memory, memoryWriteMode: "capture" });
+    for (const [conversationId, metadata, captureSpeakerKind] of [
+      ["a2a:peer", { source: "web", captureSpeakerKind: "human-turn" }, undefined],
+      ["openai-api:caller", { source: "webhook", captureSpeakerKind: "human-turn" }, undefined],
+      ["web:operator", { source: "web" }, "human-turn"],
+      ["webhook:attempt", { webhook: { payloadMetadata: { source: "web", captureSpeakerKind: "human-turn" } } }, "trigger"],
+      ["web:spoofed-trigger", { source: "web" }, "trigger"],
+    ] as const) {
+      await harness.run({ conversationId, userMessage: "Remember me", abortSignal: new AbortController().signal,
+        metadata, ...(captureSpeakerKind === undefined ? {} : { captureSpeakerKind }) });
+    }
+    expect(admissions.map((turn) => turn.captureSpeakerKind ?? "unknown"))
+      .toEqual(["unknown", "unknown", "human-turn", "trigger", "trigger"]);
+    expect(admissions.at(-1)?.captureText).toBe("Automated trigger (not a user message; trigger text omitted):\nAssistant: OK");
+  });
+
+  // Recall is already global across conversations, so attributing the captured
+  // turn is the only missing link for carrying group context into a 1:1 DM.
+  it("attributes a captured turn to its speaker without leaking the host-only id", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      async persistCompletedTurn(turn): Promise<MemoryCompletedTurnResult> {
+        admissions.push(turn);
+        return {
+          id: "completed-turn-attributed",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "strong",
+          bytesWritten: 0,
+          admissionStatus: "admitted",
+        };
+      },
+    };
+
+    await createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "The build is green." })).runtime,
+      model,
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-attributed",
+    }).run({
+      conversationId: "slack:C1:1.1",
+      userMessage: "Is the build ok?",
+      sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(admissions[0]?.captureText).toBe(
+      "User (Alice Chen (@alice)): Is the build ok?\nAssistant: The build is green.",
+    );
+    expect(admissions[0]?.summary).toContain("User (Alice Chen (@alice)): Is the build ok?");
+    expect(JSON.stringify(admissions)).not.toContain("U08ABC");
+  });
+
+  it("persists the speaker as history name, keeping it out of the message content", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore();
+
+    await createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "green" })).runtime,
+      model,
+      historyStore,
+    }).run({
+      conversationId: "slack:C1:1.1",
+      userMessage: "status?",
+      sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
+      precedingMessages: [{ sender: { id: "U2", displayName: "Bob" }, text: "background chatter" }],
+      abortSignal: new AbortController().signal,
+    });
+
+    const history = await historyStore.load("slack:C1:1.1");
+    const user = history.find((message) => message.role === "user");
+    expect(user?.name).toBe("Alice Chen (@alice)");
+    expect(user?.content).toBe("status?");
+    // The transcript is turn-local: persisting it would compound with whatever
+    // the adapter re-fetches on the next turn.
+    expect(JSON.stringify(history)).not.toContain("background chatter");
+    expect(history.find((message) => message.role === "assistant")?.name).toBeUndefined();
+  });
+
+  it("decorates only the prompt copy of the user message with host standing context", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore();
+    const fake = createFakeRuntime(async () => ({ text: "booked" }));
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore,
+      runtimeOptionsForRequest: () => ({
+        decorateUserMessage: (message) => `<project_context name="Trips › Flights">\nPrefer aisle seats.\n</project_context>\n\n${message}`,
+      }),
+    }).run({
+      conversationId: "telegram:-1001:77",
+      userMessage: "book the flight",
+      sender: { id: "7", displayName: "Alice" },
+      abortSignal: new AbortController().signal,
+    });
+
+    const prompt = fake.calls[0]!.options.messages.at(-1)!.content as string;
+    expect(prompt.match(/Prefer aisle seats\./gu)).toHaveLength(1);
+    // The standing context precedes the speaker-wrapped words.
+    expect(prompt.indexOf("<project_context")).toBeLessThan(prompt.indexOf("book the flight"));
+    const history = await historyStore.load("telegram:-1001:77");
+    expect(history.find((message) => message.role === "user")?.content).toBe("book the flight");
+    expect(JSON.stringify(history)).not.toContain("Prefer aisle seats");
+  });
+
+  it("omits history name entirely for a whitespace-only display name", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore();
+
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "green" })).runtime,
+      model,
+      historyStore,
+    });
+    await harness.run({
+      conversationId: "slack:C1:1.1",
+      userMessage: "first",
+      sender: { id: "U08ABC", displayName: "   " },
+      abortSignal: new AbortController().signal,
+    });
+
+    const history = await historyStore.load("slack:C1:1.1");
+    expect(history.find((message) => message.role === "user")).not.toHaveProperty("name");
+    // An empty-string name would throw invalid_history when the NEXT turn builds
+    // its context, so prove the follow-up turn actually succeeds.
+    const second = await harness.run({
+      conversationId: "slack:C1:1.1",
+      userMessage: "second",
+      abortSignal: new AbortController().signal,
+    });
+    expect(second.text).toBe("green");
+  });
+
+  it("omits capture text from a strong append-host-summary admission", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+
+      async persistCompletedTurn(turn) {
+        admissions.push(turn);
+        return {
+          id: "completed-turn-summary",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "strong",
+          bytesWritten: Buffer.byteLength(turn.summary, "utf8"),
+          admissionStatus: "admitted",
+        };
+      },
+    };
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "Done." })).runtime,
+      model,
+      memory,
+      memoryWriteMode: "append-host-summary",
+      createRunId: () => "run-summary-admission",
+    }).run({ conversationId: "c1", userMessage: "Summarize build status", abortSignal: new AbortController().signal });
+
+    expect(response.failure).toBeUndefined();
+    expect(admissions).toHaveLength(1);
+    expect(admissions[0]).not.toHaveProperty("captureText");
+  });
+
+  it("waits for strong admission before returning the successful provider answer", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let enterAdmission!: () => void;
+    const admissionEntered = new Promise<void>((resolve) => { enterAdmission = resolve; });
+    let finishAdmission!: () => void;
+    const admissionPending = new Promise<void>((resolve) => { finishAdmission = resolve; });
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      persistCompletedTurn: async (turn) => {
+        enterAdmission();
+        await admissionPending;
+        return {
+          id: "completed-turn-awaited",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "strong",
+          bytesWritten: 1,
+          admissionStatus: "admitted" as const,
+        };
+      },
+    };
+    const responsePending = createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "Provider answer." })).runtime,
+      model,
+      memory,
+      memoryWriteMode: "append-host-summary",
+      createRunId: () => "run-awaited",
+    }).run({ conversationId: "c-awaited", userMessage: "Remember this", abortSignal: new AbortController().signal });
+    let settled = false;
+    void responsePending.then(() => { settled = true; });
+
+    await admissionEntered;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finishAdmission();
+    const response = await responsePending;
+    expect(response.text).toBe("Provider answer.");
+    expect(response.failure).toBeUndefined();
+  });
+
+  for (const [label, userMessage, assistantText] of [
+    ["nothing sentinel", "Run scan", "NOTHING_TO_REPORT"],
+  ] as const) {
+    it(`keeps the strong admission boundary untouched for a skipped ${label}`, async () => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      let admissions = 0;
+      const memory: MemoryStore = {
+        load: async () => undefined,
+        persistCompletedTurn: async (turn) => {
+          admissions += 1;
+          return {
+            id: "unexpected",
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            source: "strong",
+            bytesWritten: 0,
+            admissionStatus: "admitted",
+          };
+        },
+      };
+
+      const response = await createAgentHarness({
+        identityPath,
+        runtime: createFakeRuntime(async () => ({ text: assistantText })).runtime,
+        model,
+        memory,
+        memoryWriteMode: "capture",
+        createRunId: () => `run-skip-${label}`,
+      }).run({ conversationId: "c-skip", userMessage, abortSignal: new AbortController().signal });
+
+      expect(response.text).toBe(assistantText);
+      expect(admissions).toBe(0);
+    });
+  }
+
+  it("keeps empty_response when plain-text finalization still returns no text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are a concise assistant.", "utf8");
+    const response = await createAgentHarness({
+      identityPath, model,
+      runtime: createFakeRuntime(async () => ({ text: "", error: null,
+        runtimeWarnings: [{ warning_kind: "empty_reply_retry", attempt: 1, outcome: "empty" }],
+      })).runtime,
+    }).run({ conversationId: "empty-reply", userMessage: "Draft an email", abortSignal: new AbortController().signal });
+    expect(response.failure).toMatchObject({ kind: "empty_response", message: "Runtime completed without assistant text." });
+  });
+
+  it("commits certified textless silence without empty_response or memory capture", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const memoryCapture = vi.fn();
+    const history = createInMemoryHistoryStore();
+    const harness = createAgentHarness({
+      identityPath, model, historyStore: history,
+      runtime: createFakeRuntime(async () => ({ text: "", turnDisposition: "silent", error: null })).runtime,
+      memory: { load: async () => undefined, persistCompletedTurn: memoryCapture },
+      memoryWriteMode: "capture",
+    });
+    const response = await harness.run({ conversationId: "c-silent", userMessage: "Check", abortSignal: new AbortController().signal });
+    expect(response.failure).toBeUndefined();
+    expect(response.metadata.summary?.status).toBe("succeeded");
+    expect(response).toMatchObject({ text: "", metadata: { turnDisposition: "silent" } });
+    expect(memoryCapture).not.toHaveBeenCalled();
+    expect(await history.load("c-silent")).toContainEqual(expect.objectContaining({
+      role: "assistant", content: "[Host: silent completion]",
+    }));
+  });
+
+  it("retains certified silence when the best-effort recorder export fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const response = await createAgentHarness({
+      identityPath, model,
+      runtime: createFakeRuntime(async () => ({ text: "", turnDisposition: "silent", error: null })).runtime,
+      recorderFactory: () => ({
+        onEvent() {},
+        async finish(): Promise<never> { throw new Error("export unavailable"); },
+        async fail(): Promise<never> { throw new Error("export unavailable"); },
+      }),
+    }).run({ conversationId: "c-export", userMessage: "Check", abortSignal: new AbortController().signal });
+    expect(response).toMatchObject({ text: "", metadata: { turnDisposition: "silent" } });
+    expect(response.failure).toBeUndefined();
+  });
+
+  it("does not write a host summary when memoryWriteMode is omitted", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let appendCount = 0;
+    const memory = {
+      async load() {
+        return undefined;
+      },
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        appendCount += 1;
+        return {
+          source: "memory.md",
+          bytesWritten: 0,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "Done." }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory,
+      createRunId: () => "run-no-summary",
+    }).run({ conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(appendCount).toBe(0);
+  });
+
+  it("writeMode 'capture' admits the summary and full capture text together", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
+        calls.push(`append:${id}`);
+        if (turn.captureText !== undefined) {
+          const id = turn.conversationId;
+          const text = turn.captureText;
+          calls.push(`schedule:${id}:${text.includes("Assistant") ? "turn" : "?"}`);
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "All good." }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-capture",
+    }).run({ conversationId: "c1", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(response.text).toBe("All good.");
+    expect(calls).toContain("append:c1");
+    expect(calls.some((c) => c.startsWith("schedule:c1"))).toBe(true);
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("Long-term memory state is owned by the host");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("never edit memory Markdown, SQLite databases, indexes, manifests");
+  });
+
+  for (const [label, metadata] of [
+    ["cron", { cron: { jobId: "focus-scan", scheduledAt: "2026-07-05T08:00:00.000Z" } }],
+    ["webhook", { webhook: { endpointName: "focus-scan", requestId: "req-1", mode: "sync" } }],
+  ] as const) {
+    it(`writeMode 'capture' labels the source without exposing the trigger prompt for ${label} turns`, async () => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const summaries: string[] = [];
+      const captures: string[] = [];
+      const memory = {
+        load: async () => undefined,
+        async persistCompletedTurn(turn: MemoryCompletedTurn) {
+          const summary = turn.summary;
+          summaries.push(summary);
+          if (turn.captureText !== undefined) {
+            const text = turn.captureText;
+            captures.push(text);
+          }
+          return {
+            source: "memory.md",
+            bytesWritten: summary.length,
+            id: turn.runId,
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            admissionStatus: "admitted" as const,
+          };
+        },
+        flush: async () => {},
+      };
+      const prompt = "Run the hourly focus scan. Do not run a broad project scan.";
+      const answer = "No focus changes need your attention.";
+      const fake = createFakeRuntime(async () => ({ text: answer }));
+
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        memory,
+        memoryWriteMode: "capture",
+        createRunId: () => `run-${label}-capture`,
+      }).run({ conversationId: `${label}:focus-scan`, userMessage: prompt, metadata, abortSignal: new AbortController().signal });
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toContain(answer);
+      expect(summaries[0]).not.toContain(prompt);
+      expect(captures).toEqual([`${label === "cron" ? "Scheduled task trigger" : "Webhook trigger"} (not a user message; trigger text omitted):\nAssistant: ${answer}`]);
+      expect(captures[0]).not.toContain(prompt);
+    });
+  }
+
+  const memoryWriteModes = ["append-host-summary", "capture"] as const;
+
+  for (const mode of memoryWriteModes) {
+    // Both shapes of "nothing to report": the sentinel alone, and a model that
+    // narrated its assessment before emitting the marker on the last line. The
+    // second reached a shared channel in production; it is not a report either,
+    // so it must not be memorized as one.
+    for (const [slug, label, finalText] of [
+      ["alone", "the sentinel alone", "  nothing_to_report  "],
+      ["narrated", "prose then the sentinel", "Checked every topic.\n\n- No active rows.\n\nNOTHING_TO_REPORT"],
+    ] as const) {
+      it(`writeMode '${mode}' skips memory writes when the assistant returns ${label}`, async () => {
+        const dir = await tempDir();
+        const identityPath = join(dir, "IDENTITY.md");
+        await writeFile(identityPath, "You are Mono.", "utf8");
+        const calls: string[] = [];
+        const memory = {
+          load: async () => undefined,
+          async persistCompletedTurn(turn: MemoryCompletedTurn) {
+            const id = turn.conversationId;
+            calls.push(`append:${id}`);
+            if (turn.captureText !== undefined) {
+              const id = turn.conversationId;
+              calls.push(`schedule:${id}`);
+            }
+            return {
+              source: "memory.md",
+              bytesWritten: 1,
+              id: turn.runId,
+              runId: turn.runId,
+              conversationId: turn.conversationId,
+              admissionStatus: "admitted" as const,
+            };
+          },
+          flush: async () => {},
+        };
+        const fake = createFakeRuntime(async () => ({ text: finalText }));
+
+        const response = await createAgentHarness({
+          identityPath,
+          runtime: fake.runtime,
+          model,
+          memory,
+          memoryWriteMode: mode,
+          createRunId: () => `run-nothing-to-report-${mode}-${slug}`,
+        }).run({
+          conversationId: "cron:focus-scan",
+          userMessage: "Run the hourly focus scan.",
+          metadata: { cron: { jobId: "focus-scan" } },
+          abortSignal: new AbortController().signal,
+        });
+
+        expect(response.text).toBe(finalText);
+        expect(calls).toEqual([]);
+      });
+    }
+
+    for (const [probe, answer] of [["test", "test ok"], ["ping", "pong"]] as const) {
+      it(`writeMode '${mode}' hands tiny ${probe} turns to memory without a host word list`, async () => {
+        const dir = await tempDir();
+        const identityPath = join(dir, "IDENTITY.md");
+        await writeFile(identityPath, "You are Mono.", "utf8");
+        const calls: string[] = [];
+        const memory = {
+          load: async () => undefined,
+          async persistCompletedTurn(turn: MemoryCompletedTurn) {
+            const id = turn.conversationId;
+            calls.push(`append:${id}`);
+            if (turn.captureText !== undefined) {
+              const id = turn.conversationId;
+              calls.push(`schedule:${id}`);
+            }
+            return {
+              source: "memory.md",
+              bytesWritten: 1,
+              id: turn.runId,
+              runId: turn.runId,
+              conversationId: turn.conversationId,
+              admissionStatus: "admitted" as const,
+            };
+          },
+          flush: async () => {},
+        };
+        const fake = createFakeRuntime(async () => ({ text: answer }));
+
+        await createAgentHarness({
+          identityPath,
+          runtime: fake.runtime,
+          model,
+          memory,
+          memoryWriteMode: mode,
+          createRunId: () => `run-trivial-${mode}-${probe}`,
+        }).run({ conversationId: "telegram:9", userMessage: probe, abortSignal: new AbortController().signal });
+
+        // Extraction may return an empty plan; the host no longer skips by vocabulary.
+        expect(calls[0]).toBe("append:telegram:9");
+      });
+    }
+
+    it(`writeMode '${mode}' hands prefixed trigger probes to memory without a host word list`, async () => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const calls: string[] = [];
+      const memory = {
+        load: async () => undefined,
+        async persistCompletedTurn(turn: MemoryCompletedTurn) {
+          const id = turn.conversationId;
+          calls.push(`append:${id}`);
+          if (turn.captureText !== undefined) {
+            const id = turn.conversationId;
+            calls.push(`schedule:${id}`);
+          }
+          return {
+            source: "memory.md",
+            bytesWritten: 1,
+            id: turn.runId,
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            admissionStatus: "admitted" as const,
+          };
+        },
+        flush: async () => {},
+      };
+      const fake = createFakeRuntime(async () => ({ text: "test ok" }));
+
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        memory,
+        memoryWriteMode: mode,
+        createRunId: () => `run-prefixed-trivial-${mode}`,
+      }).run({
+        conversationId: "webhook:probe",
+        userMessage: "Pre-instructions: answer tersely.\n\nRequest body:\ntest",
+        metadata: { webhook: { endpointName: "probe", requestId: "req-1", mode: "sync" } },
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(calls[0]).toBe("append:webhook:probe");
+    });
+  }
+
+  it("still writes memory for short non-trivial turns", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
+        calls.push(`append:${id}`);
+        if (turn.captureText !== undefined) {
+          const id = turn.conversationId;
+          const text = turn.captureText;
+          calls.push(`schedule:${id}:${text}`);
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-short-meaningful",
+    }).run({ conversationId: "telegram:9", userMessage: "call Robin", abortSignal: new AbortController().signal });
+
+    expect(calls).toContain("append:telegram:9");
+    expect(calls).toContain("schedule:telegram:9:User: call Robin\nAssistant: ok");
+  });
+
+  it("still writes memory for short contextual acknowledgements", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
+        calls.push(`append:${id}`);
+        if (turn.captureText !== undefined) {
+          const id = turn.conversationId;
+          const text = turn.captureText;
+          calls.push(`schedule:${id}:${text}`);
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "done" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-short-ack",
+    }).run({ conversationId: "telegram:9", userMessage: "yes", abortSignal: new AbortController().signal });
+
+    expect(calls).toContain("append:telegram:9");
+    expect(calls).toContain("schedule:telegram:9:User: yes\nAssistant: done");
+  });
+
+  it("still writes memory when a test-like word appears in a meaningful turn", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
+        calls.push(`append:${id}`);
+        if (turn.captureText !== undefined) {
+          const id = turn.conversationId;
+          const text = turn.captureText;
+          calls.push(`schedule:${id}:${text}`);
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "works" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-test-meaningful",
+    }).run({ conversationId: "telegram:9", userMessage: "test deploy", abortSignal: new AbortController().signal });
+
+    expect(calls).toContain("append:telegram:9");
+    expect(calls).toContain("schedule:telegram:9:User: test deploy\nAssistant: works");
+  });
+
+  it("writeMode 'append-host-summary' omits capture text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const id = turn.conversationId;
+        calls.push(`append:${id}`);
+        if (turn.captureText !== undefined) {
+          calls.push("schedule");
+        }
+        return {
+          source: "memory.md",
+          bytesWritten: 1,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "Done." }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory,
+      memoryWriteMode: "append-host-summary",
+      createRunId: () => "run-no-capture",
+    }).run({ conversationId: "c1", userMessage: "Summarize build status", abortSignal: new AbortController().signal });
+
+    expect(calls).toContain("append:c1");
+    expect(calls).not.toContain("schedule");
+  });
+
+  it("resolves scalar and mcpServers precedence collisions last-wins across merge layers", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      // tool policy (first merge layer) seeds mcpServers + allowedTools
+      toolPolicy: {
+        allowedTools: ["Read"],
+        disallowedTools: [],
+        mcpServers: { shared: { url: "policy" }, policyOnly: { url: "p" } },
+      },
+      // static runtimeOptions (second layer) sets a scalar + overrides one server
+      runtimeOptions: {
+        mcpConfigPath: "/from-static",
+        mcpServers: { shared: { url: "static" }, staticOnly: { url: "s" } },
+      },
+      createRunId: () => "run-merge",
+      // request extension (last layer) wins scalar + the shared server key
+      runtimeOptionsForRequest: () => ({
+        runtimeOptions: {
+          mcpConfigPath: "/from-request",
+          allowedTools: ["Grep"],
+          mcpServers: { shared: { url: "request" }, requestOnly: { url: "r" } },
+        },
+      }),
+    }).run({ conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(response.text).toBe("ok");
+    const options = fake.calls[0]?.options;
+    // scalar: last layer wins
+    expect(options?.mcpConfigPath).toBe("/from-request");
+    // allowedTools: list-merged + de-duplicated across layers
+    expect(options?.allowedTools).toEqual(["Read", "Grep"]);
+    // mcpServers: shallow merge per key, last layer wins on the shared key
+    expect(options?.mcpServers).toEqual({
+      shared: { url: "request" },
+      policyOnly: { url: "p" },
+      staticOnly: { url: "s" },
+      requestOnly: { url: "r" },
+    });
+  });
+
+  it("lets an authenticated request replace host/static tool and MCP authority, including PublishReplyFile", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      toolPolicy: {
+        allowedTools: ["*"],
+        disallowedTools: [],
+        mcpServers: { configuredMutator: { command: "mutate" } },
+        mcpConfigPath: "/configured/mcp.json",
+      },
+      runtimeOptions: {
+        allowedTools: ["Write"],
+        mcpServers: { staticMutator: { command: "mutate-static" } },
+      },
+      runtimeOptionsForRequest: () => ({
+        toolPolicyOverride: {
+          allowedTools: ["ReadSkill", "CustomProposalTool"],
+          disallowedTools: [],
+          mcpServers: { authenticated_request: { command: "request-only" } },
+        },
+        runtimeOptions: {
+          effort: "low",
+          // Tool-shaped fields in the same extension cannot escape the
+          // authoritative request boundary.
+          allowedTools: ["Bash"],
+          mcpServers: {
+            requestMutator: { command: "mutate-request" },
+            "mono-agent-reply-artifacts": { command: "publish-reply-file" },
+          },
+        },
+      }),
+    }).run({ conversationId: "c", userMessage: "continue", abortSignal: new AbortController().signal });
+
+    expect(fake.calls[0]?.options).toMatchObject({
+      allowedTools: ["ReadSkill", "CustomProposalTool"],
+      disallowedTools: [],
+      effort: "low",
+      mcpServers: { authenticated_request: { command: "request-only" } },
+    });
+    expect(fake.calls[0]?.options.mcpConfigPath).toBeUndefined();
+  });
+
+  it("injects trusted context into opted-in stdio MCPs after authoritative merging without mutating shared state", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const target = {
+      type: "stdio",
+      command: "transcribe-mcp",
+      env: {
+        KEEP_ME: "yes",
+        MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID: "spoofed",
+        MONO_AGENT_INTERACTION_PROGRESS_TOKEN: "spoofed-token",
+        MONO_AGENT_INTERACTION_BRIDGE_TOKEN: "master-must-not-leak",
+        MONO_AGENT_MCP_ATTACHMENTS_ROOT: "/spoofed/root",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS: '["/spoofed/file"]',
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES: '[{"path":"/spoofed/file","dev":1,"ino":2}]',
+      },
+    };
+    const untouched = { command: "other-mcp", env: { STATIC: "unchanged" } };
+    const remote = { type: "http", url: "https://mcp.example.test" };
+    const releases: string[] = [];
+    const ambientBefore = process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN;
+    process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN = "ambient-master";
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    try {
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        createRunId: () => "run-trusted-context",
+        runtimeOptionsForRequest: () => ({
+          toolPolicyOverride: {
+            allowedTools: ["*"],
+            disallowedTools: [],
+            mcpServers: { target, untouched, remote },
+          },
+        }),
+        mcpRequestContext: {
+          serverNames: ["target", "remote"],
+          runOutputRoot: join(dir, "outbound"),
+          progressCapabilityIssuer: {
+            issueProgressCapability: ({ conversationId, runId }) => ({
+              url: "http://127.0.0.1:43123",
+              token: `${conversationId}:${runId}:scoped`,
+              release: () => { releases.push(runId); },
+            }),
+          },
+        },
+      }).run({
+        conversationId: "telegram:42#2026-07-12",
+        userMessage: "refine it",
+        abortSignal: new AbortController().signal,
+      });
+
+      const servers = fake.calls[0]?.options.mcpServers as Record<string, Record<string, unknown>>;
+      const injected = servers.target?.env as Record<string, string>;
+      expect(servers.target).not.toBe(target);
+      expect(injected).toMatchObject({
+        KEEP_ME: "yes",
+        MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID: "telegram:42#2026-07-12",
+        MONO_AGENT_MCP_PRODUCING_RUN_ID: "run-trusted-context",
+        MONO_AGENT_MCP_RUN_OUTPUT_DIR: join(dir, "outbound", "run-trusted-context"),
+        MONO_AGENT_INTERACTION_PROGRESS_URL: "http://127.0.0.1:43123",
+        MONO_AGENT_INTERACTION_PROGRESS_TOKEN: "telegram:42#2026-07-12:run-trusted-context:scoped",
+        MONO_AGENT_MCP_ATTACHMENTS_ROOT: "",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS: "[]",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES: "[]",
+        MONO_AGENT_INTERACTION_BRIDGE_URL: "",
+        MONO_AGENT_INTERACTION_BRIDGE_TOKEN: "",
+      });
+      expect(servers.untouched).toBe(untouched);
+      expect(servers.remote).toBe(remote);
+      expect(target.env.MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID).toBe("spoofed");
+      expect(target.env.MONO_AGENT_INTERACTION_PROGRESS_TOKEN).toBe("spoofed-token");
+      expect(process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBe("ambient-master");
+      expect(releases).toEqual(["run-trusted-context"]);
+      await expect(lstat(join(dir, "outbound", "run-trusted-context"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (ambientBefore === undefined) delete process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN;
+      else process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN = ambientBefore;
+    }
+  });
+
+  it("injects destination-bound continuation claims into selected stdio and loopback HTTP servers", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const stdio = {
+      type: "stdio",
+      command: "ops-control-stdio",
+      env: {
+        KEEP_ME: "yes",
+        MONO_AGENT_CONTINUATION_CLAIM_TOKEN: "spoofed",
+      },
+    };
+    const loopback = {
+      type: "http",
+      url: "http://127.0.0.1:43124/mcp",
+      headers: {
+        Authorization: "Bearer configured",
+        "X-Mono-Agent-Continuation-Claim-Token": "spoofed-case-insensitive",
+      },
+    };
+    const remote = { type: "http", url: "https://mcp.example.test", headers: { STATIC: "untouched" } };
+    const issued: Array<Record<string, unknown>> = [];
+    const released: string[] = [];
+    const fake = createFakeRuntime(async () => ({ text: "accepted" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      createRunId: () => "run-continuation-claim",
+      runtimeOptions: { mcpServers: { stdio, loopback, remote } },
+      continuationContext: {
+        serverNames: ["stdio", "loopback"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability(input) {
+            issued.push(input);
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: `token-${input.serverName}`,
+              fingerprint: `fingerprint-${input.serverName}`,
+              mode: "reply",
+              requiresOriginContext: async () => false,
+              finalizeOriginContext: async () => {},
+              activateOriginContext: async () => {},
+              abandonOriginContext: async () => {},
+              release: () => { released.push(input.serverName); },
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "slack:C1:thread#2026-07-14",
+      replyTo: { conversationId: "slack:C1:thread" },
+      userMessage: "delegate this",
+      abortSignal: new AbortController().signal,
+    });
+
+    const servers = fake.calls[0]?.options.mcpServers as Record<string, Record<string, unknown>>;
+    expect(servers.stdio?.env).toMatchObject({
+      KEEP_ME: "yes",
+      MONO_AGENT_CONTINUATION_CLAIM_URL: "http://127.0.0.1:43125/continuations/claim",
+      MONO_AGENT_CONTINUATION_CLAIM_TOKEN: "token-stdio",
+      MONO_AGENT_CONTINUATION_CLAIM_FINGERPRINT: "fingerprint-stdio",
+      MONO_AGENT_CONTINUATION_CLAIM_MODE: "reply",
+    });
+    expect(servers.loopback?.headers).toEqual({
+      Authorization: "Bearer configured",
+      "x-mono-agent-continuation-claim-url": "http://127.0.0.1:43125/continuations/claim",
+      "x-mono-agent-continuation-claim-token": "token-loopback",
+      "x-mono-agent-continuation-claim-fingerprint": "fingerprint-loopback",
+      "x-mono-agent-continuation-claim-mode": "reply",
+    });
+    expect(servers.remote).toBe(remote);
+    expect(JSON.stringify(servers)).not.toContain("slack:C1:thread");
+    expect(issued).toEqual([
+      {
+        runId: "run-continuation-claim",
+        serverName: "stdio",
+        conversationId: "slack:C1:thread#2026-07-14",
+        replyTo: { conversationId: "slack:C1:thread" },
+        historyBoundary: "run-continuation-claim",
+      },
+      {
+        runId: "run-continuation-claim",
+        serverName: "loopback",
+        conversationId: "slack:C1:thread#2026-07-14",
+        replyTo: { conversationId: "slack:C1:thread" },
+        historyBoundary: "run-continuation-claim",
+      },
+    ]);
+    expect(released).toEqual(["stdio", "loopback"]);
+    expect(stdio.env.MONO_AGENT_CONTINUATION_CLAIM_TOKEN).toBe("spoofed");
+    expect(loopback.headers["X-Mono-Agent-Continuation-Claim-Token"]).toBe("spoofed-case-insensitive");
+  });
+
+  it("pins the exact redacted completed origin turn before activating continuation work", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 20 });
+    await history.append("slack:C1:thread#2026-07-14", [
+      { role: "user", content: "Earlier question", timestamp: "2026-07-14T08:00:00.000Z", runId: "run-earlier" },
+      { role: "assistant", content: "Earlier answer", timestamp: "2026-07-14T08:00:00.000Z", runId: "run-earlier" },
+    ]);
+    const lifecycle: string[] = [];
+    let snapshot: AgentContinuationOriginContext | undefined;
+    const recorder = new class extends FakeRecorder {
+      override async finish(result: RuntimeResultLike): Promise<RunSummary> {
+        lifecycle.push("recorder_finish");
+        return await super.finish(result);
+      }
+    }("run-origin-snapshot", "slack:C1:thread#2026-07-14");
+    const fake = createFakeRuntime(async () => ({ text: "Origin acknowledgement" }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      attachmentsDir: join(dir, "attachments"),
+      createRunId: () => "run-origin-snapshot",
+      now: () => new Date("2026-07-14T09:00:00.000Z"),
+      recorderFactory: () => recorder,
+      runtimeOptions: { mcpServers: { control: { command: "ops-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability() {
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "origin-token",
+              fingerprint: "origin-fingerprint",
+              mode: "reply" as const,
+              async requiresOriginContext() { return true; },
+              async finalizeOriginContext(value) {
+                lifecycle.push("finalize");
+                snapshot = structuredClone(value);
+              },
+              async activateOriginContext() { lifecycle.push("activate"); },
+              async abandonOriginContext() { lifecycle.push("abandon"); },
+              release() { lifecycle.push("release"); },
+            };
+          },
+        },
+      },
+      turnHistoryEnricher: {
+        enrichAssistantHistory({ assistantText }) {
+          return `[Verified interaction]\n${assistantText}`;
+        },
+        releaseRun() {},
+      },
+    }).run({
+      conversationId: "slack:C1:thread#2026-07-14",
+      replyTo: { conversationId: "slack:C1:thread" },
+      userMessage: "Safe caption",
+      attachments: [{
+        kind: "document",
+        mimeType: "text/plain",
+        name: "private.txt",
+        data: Buffer.from("PRIVATE RAW BYTES", "utf8").toString("base64"),
+        text: "PRIVATE EXPANDED DOCUMENT TEXT",
+      }],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response).toMatchObject({ text: "Origin acknowledgement" });
+    expect(lifecycle).toEqual(["release", "finalize", "recorder_finish", "activate"]);
+    expect(snapshot).toBeDefined();
+    expect(snapshot).toMatchObject({
+      conversationId: "slack:C1:thread#2026-07-14",
+      originRunId: "run-origin-snapshot",
+      historyBoundary: "run-origin-snapshot",
+      capturedAt: "2026-07-14T09:00:00.000Z",
+    });
+    expect(snapshot?.messages.slice(0, 2)).toEqual([
+      { role: "user", content: "Earlier question", timestamp: "2026-07-14T08:00:00.000Z", runId: "run-earlier" },
+      { role: "assistant", content: "Earlier answer", timestamp: "2026-07-14T08:00:00.000Z", runId: "run-earlier" },
+    ]);
+    expect(snapshot?.messages.at(-2)?.content).toContain("Safe caption");
+    expect(snapshot?.messages.at(-2)?.content).toContain("private.txt");
+    expect(snapshot?.messages.at(-1)?.content).toBe("[Verified interaction]\nOrigin acknowledgement");
+    expect(JSON.stringify(snapshot)).not.toContain("PRIVATE EXPANDED DOCUMENT TEXT");
+    expect(JSON.stringify(snapshot)).not.toContain("PRIVATE RAW BYTES");
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("PRIVATE EXPANDED DOCUMENT TEXT");
+    await expect(history.load("slack:C1:thread#2026-07-14")).resolves.toEqual(snapshot?.messages);
+  });
+
+  it("does not build a bounded origin snapshot when no continuation was claimed", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 64 });
+    const oversized = "x".repeat(64 * 1024 + 1);
+    let finalized = 0;
+    const fake = createFakeRuntime(async () => ({ text: oversized }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      runtimeOptions: { mcpServers: { control: { command: "ops-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability() {
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "unused-token",
+              fingerprint: "unused-fingerprint",
+              mode: "reply" as const,
+              requiresOriginContext: async () => false,
+              finalizeOriginContext: async () => { finalized += 1; },
+              activateOriginContext: async () => {},
+              abandonOriginContext: async () => {},
+              release: async () => {},
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "slack:C1:thread#2026-07-14",
+      replyTo: { conversationId: "slack:C1:thread" },
+      userMessage: "ordinary request",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.failure).toBeUndefined();
+    expect(response.text).toBe(oversized);
+    expect(finalized).toBe(0);
+    expect((await history.load("slack:C1:thread#2026-07-14")).at(-1)?.content).toBe(oversized);
+  });
+
+  it("keeps recorder success authoritative when origin activation fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const lifecycle: string[] = [];
+    const fake = createFakeRuntime(async () => ({ text: "accepted" }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      runtimeOptions: { mcpServers: { control: { command: "ops-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability() {
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "claimed-token",
+              fingerprint: "claimed-fingerprint",
+              mode: "reply" as const,
+              requiresOriginContext: async () => true,
+              finalizeOriginContext: async () => { lifecycle.push("finalize"); },
+              activateOriginContext: async () => {
+                lifecycle.push("activate");
+                throw new Error("durable activation unavailable");
+              },
+              abandonOriginContext: async () => { lifecycle.push("abandon"); },
+              release: async () => { lifecycle.push("release"); },
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "slack:C1:thread#2026-07-14",
+      replyTo: { conversationId: "slack:C1:thread" },
+      userMessage: "delegate this",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response).toMatchObject({ text: "accepted" });
+    expect(response.failure).toBeUndefined();
+    expect(lifecycle).toEqual(["release", "finalize", "activate", "abandon"]);
+  });
+
+  it("preserves a committed answer and activates its continuation when recorder publication fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 20 });
+    const lifecycle: string[] = [];
+    const fake = createFakeRuntime(async () => ({ text: "durably accepted" }));
+    const recorder: RunRecorder = {
+      onEvent() {},
+      async prepareFinish() {},
+      async commitFinish() {
+        lifecycle.push("recorder");
+        throw new Error("recorder export unavailable");
+      },
+      async finish() {
+        throw new Error("legacy recorder export unavailable");
+      },
+      async fail() {
+        lifecycle.push("fail");
+        throw new Error("must not report a committed answer as failed");
+      },
+    };
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      recorderFactory: () => recorder,
+      runtimeOptions: { mcpServers: { control: { command: "ops-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability() {
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "recorder-token",
+              fingerprint: "recorder-fingerprint",
+              mode: "reply" as const,
+              async requiresOriginContext() { return true; },
+              async finalizeOriginContext() { lifecycle.push("finalize"); },
+              async activateOriginContext() { lifecycle.push("activate"); },
+              async abandonOriginContext() { lifecycle.push("abandon"); },
+              async release() { lifecycle.push("release"); },
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "slack:C1:recorder#2026-07-14",
+      replyTo: { conversationId: "slack:C1:recorder" },
+      userMessage: "delegate this",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response).toMatchObject({ text: "durably accepted" });
+    expect(response.failure).toBeUndefined();
+    expect(response.metadata.summary).toBeUndefined();
+    expect(lifecycle).toEqual(["release", "finalize", "recorder", "activate"]);
+    expect((await history.load("slack:C1:recorder#2026-07-14")).at(-1)?.content).toBe("durably accepted");
+  });
+
+  it("rejects a selected non-loopback HTTP continuation server before provider execution", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      runtimeOptions: { mcpServers: { remote: { type: "http", url: "https://mcp.example.test" } } },
+      continuationContext: {
+        serverNames: ["remote"],
+        capabilityIssuer: { issueContinuationClaimCapability: () => undefined },
+      },
+    }).run({ conversationId: "c", userMessage: "delegate", abortSignal: new AbortController().signal });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(response.failure).toMatchObject({ kind: "unsupported_continuation_server" });
+  });
+
+  it.each([
+    ["stdio without a command", "worker", { worker: { type: "stdio" } }],
+    ["stdio with a blank command", "worker", { worker: { type: "stdio", command: "   " } }],
+    ["conflicting stdio URL", "worker", {
+      worker: { type: "stdio", command: "local-worker", url: "https://mcp.example.test" },
+    }],
+    ["conflicting HTTP command", "worker", {
+      worker: { type: "http", command: "local-worker", url: "http://127.0.0.1:43124/mcp" },
+    }],
+    ["runtime-invalid server name", "bad name", { "bad name": { command: "local-worker" } }],
+  ])("rejects a selected %s before provider execution", async (_label, serverName, mcpServers) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      runtimeOptions: { mcpServers },
+      continuationContext: {
+        serverNames: [serverName],
+        capabilityIssuer: { issueContinuationClaimCapability: () => undefined },
+      },
+    }).run({ conversationId: "c", userMessage: "delegate", abortSignal: new AbortController().signal });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(response.failure).toMatchObject({ kind: "unsupported_continuation_server" });
+  });
+
+  it("issues detached named-route claims without an interactive history boundary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let issued: Record<string, unknown> | undefined;
+    const fake = createFakeRuntime(async () => ({ text: "scheduled" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      createRunId: () => "run-proactive",
+      runtimeOptions: { mcpServers: { control: { command: "ops-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability(input) {
+            issued = input;
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "detached-token",
+              fingerprint: "detached-fingerprint",
+              mode: "notify_if_actionable",
+              requiresOriginContext: async () => false,
+              finalizeOriginContext: async () => {},
+              activateOriginContext: async () => {},
+              abandonOriginContext: async () => {},
+              release: () => {},
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "cron:attention",
+      userMessage: "collect attention",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(issued).toEqual({
+      runId: "run-proactive",
+      serverName: "control",
+      conversationId: "cron:attention",
+    });
+  });
+
+  it("runs continuation synthesis through the origin boundary with no tools and no history commit", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 20 });
+    const runIds = ["run-origin", "run-later", "run-continuation"];
+    const answers = ["origin answer", "later answer", "synthesized final"];
+    const fake = createFakeRuntime(async () => ({ text: answers.shift() ?? null }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      createRunId: () => runIds.shift() ?? "run-extra",
+      runtimeOptions: {
+        allowedTools: ["Bash"],
+        disallowedTools: [],
+        mcpConfigPath: join(dir, "mcp.json"),
+        mcpServers: { dangerous: { command: "dangerous" } },
+      },
+    });
+
+    await harness.run({ conversationId: "slack:C1", userMessage: "origin question", abortSignal: new AbortController().signal });
+    const originHistory = await history.load("slack:C1");
+    await harness.run({ conversationId: "slack:C1", userMessage: "later question", abortSignal: new AbortController().signal });
+    const before = await history.load("slack:C1");
+    const response = await harness.run({
+      conversationId: "slack:C1",
+      userMessage: "untrusted specialist result",
+      abortSignal: new AbortController().signal,
+      continuation: {
+        continuationId: "continuation-1",
+        originRunId: "run-origin",
+        originContextPolicy: "pinned",
+        historyBoundary: "run-origin",
+        originContext: {
+          schemaVersion: 1,
+          conversationId: "slack:C1",
+          originRunId: "run-origin",
+          historyBoundary: "run-origin",
+          capturedAt: originHistory[1]?.timestamp ?? "",
+          messages: originHistory,
+        },
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    });
+
+    expect(response.text).toBe("synthesized final");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("origin question");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("origin answer");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).not.toContain("later question");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).not.toContain("later answer");
+    expect(fake.calls[2]?.options.allowedTools).toEqual([]);
+    expect(fake.calls[2]?.options.disallowedTools).toEqual(["*"]);
+    expect(fake.calls[2]?.options.mcpServers).toEqual({});
+    expect(fake.calls[2]?.options.mcpConfigPath).toBeUndefined();
+    expect(await history.load("slack:C1")).toEqual(before);
+  });
+
+  it("uses latest conversation history when a detached continuation has no explicit boundary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 20 });
+    const runIds = ["run-first", "run-latest", "run-detached"];
+    const answers = ["first answer", "latest answer", "detached final"];
+    const fake = createFakeRuntime(async () => ({ text: answers.shift() ?? null }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      createRunId: () => runIds.shift() ?? "run-extra",
+    });
+
+    await harness.run({ conversationId: "slack:C2", userMessage: "first question", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "slack:C2", userMessage: "latest question", abortSignal: new AbortController().signal });
+    const before = await history.load("slack:C2");
+    const response = await harness.run({
+      conversationId: "slack:C2",
+      userMessage: "detached proactive payload",
+      abortSignal: new AbortController().signal,
+      continuation: {
+        continuationId: "continuation-detached",
+        originRunId: "proactive-origin-for-trace-only",
+        originContextPolicy: "detached_latest",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    });
+
+    expect(response.text).toBe("detached final");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("first answer");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("latest question");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("latest answer");
+    expect(fake.calls[2]?.options.allowedTools).toEqual([]);
+    expect(fake.calls[2]?.options.mcpServers).toEqual({});
+    expect(await history.load("slack:C2")).toEqual(before);
+  });
+
+  it.each(["pinned", "detached_latest"] as const)(
+    "decorates a %s continuation's prompt copy once and never its canonical history",
+    async (policy) => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const history = createInMemoryHistoryStore({ maxMessages: 20 });
+      const runIds = ["run-origin", "run-continuation"];
+      const fake = createFakeRuntime(async () => ({ text: "answer" }));
+      const decorateUserMessage = vi.fn((message: string) => `<project_context name="Trips › Flights">\nPrefer aisle seats.\n</project_context>\n\n${message}`);
+      const harness = createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        historyStore: history,
+        createRunId: () => runIds.shift() ?? "run-extra",
+        runtimeOptionsForRequest: () => ({ decorateUserMessage }),
+      });
+      await harness.run({ conversationId: "telegram:-1001:77", userMessage: "origin question", abortSignal: new AbortController().signal });
+      const originHistory = await history.load("telegram:-1001:77");
+      const before = await history.load("telegram:-1001:77");
+      await harness.run({
+        conversationId: "telegram:-1001:77",
+        userMessage: "untrusted specialist result",
+        abortSignal: new AbortController().signal,
+        continuation: policy === "pinned"
+          ? {
+              continuationId: "continuation-pinned", originRunId: "run-origin", originContextPolicy: "pinned", historyBoundary: "run-origin",
+              originContext: { schemaVersion: 1, conversationId: "telegram:-1001:77", originRunId: "run-origin", historyBoundary: "run-origin",
+                capturedAt: originHistory[1]?.timestamp ?? "", messages: originHistory },
+              toolsDisabled: true, deferHistoryCommit: true,
+            }
+          : { continuationId: "continuation-detached", originRunId: "run-origin", originContextPolicy: "detached_latest", toolsDisabled: true, deferHistoryCommit: true },
+      });
+      // The replayed origin history carries the canonical text; only the new prompt copy is decorated.
+      const messages = JSON.stringify(fake.calls[1]?.options.messages);
+      expect(messages.match(/Prefer aisle seats\./gu)).toHaveLength(1);
+      const last = fake.calls[1]!.options.messages.at(-1)!.content as string;
+      expect(last).toContain("Prefer aisle seats.");
+      expect(last).toContain("untrusted specialist result");
+      expect(decorateUserMessage).toHaveBeenLastCalledWith("untrusted specialist result");
+      expect(await history.load("telegram:-1001:77")).toEqual(before);
+      expect(JSON.stringify(await history.load("telegram:-1001:77"))).not.toContain("Prefer aisle seats");
+    },
+  );
+
+  it.each(["success", "failure", "cancel"] as const)(
+    "deletes request MCP output after runtime settlement on %s",
+    async (outcome) => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const runId = `run-output-${outcome}`;
+      const outputPath = join(dir, "outbound", runId);
+      const controller = new AbortController();
+      const lifecycle: string[] = [];
+      const fake = createFakeRuntime(async () => {
+        expect((await lstat(outputPath)).isDirectory()).toBe(true);
+        lifecycle.push("runtime");
+        if (outcome === "cancel") controller.abort(new Error("cancelled"));
+        if (outcome === "failure") return { text: "", error: "provider failed" };
+        return { text: "ok" };
+      });
+
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        createRunId: () => runId,
+        runtimeOptions: { mcpServers: { target: { type: "stdio", command: "target" } } },
+        runtimeOptionsForRequest: () => ({
+          settleCleanup: () => { lifecycle.push("settlement"); },
+        }),
+        mcpRequestContext: { serverNames: ["target"], runOutputRoot: join(dir, "outbound") },
+      }).run({
+        conversationId: "telegram:42",
+        userMessage: "go",
+        abortSignal: controller.signal,
+      });
+
+      expect(lifecycle).toEqual(["runtime", "settlement"]);
+      await expect(lstat(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it("handles cancellation before runtime execution", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const controller = new AbortController();
+    controller.abort();
+    const fake = createFakeRuntime(async () => {
+      throw new Error("runtime should not run");
+    });
+
+    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model }).run({
+      conversationId: "c",
+      userMessage: "hi",
+      abortSignal: controller.signal,
+    });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(response.metadata.summary).toMatchObject({ status: "cancelled", failureKind: "cancelled" });
+  });
+
+  it("records an explicit channel-user cancellation as cancelled_user", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const controller = new AbortController();
+    controller.abort(createChannelUserCancelReason("Telegram"));
+    const fake = createFakeRuntime(async () => {
+      throw new Error("runtime should not run");
+    });
+
+    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model }).run({
+      conversationId: "telegram:42",
+      userMessage: "cancel me",
+      abortSignal: controller.signal,
+    });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(response.metadata.summary).toMatchObject({
+      status: "cancelled",
+      failureKind: "cancelled_user",
+    });
+  });
+
+  it("trusts only an own cancellation-brand data property at the harness boundary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let accessorReads = 0;
+    let proxyTraps = 0;
+    const accessor = Object.defineProperty({}, "channelUserCancel", {
+      get() {
+        accessorReads += 1;
+        return true;
+      },
+    });
+    const inherited = Object.create({ channelUserCancel: true }) as object;
+    const proxy = new Proxy({ channelUserCancel: true }, {
+      getOwnPropertyDescriptor(target, property) {
+        proxyTraps += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    const revoked = Proxy.revocable({ channelUserCancel: true }, {});
+    revoked.revoke();
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly reason: unknown;
+      readonly failureKind: "cancelled" | "cancelled_user";
+    }> = [
+      {
+        name: "cross-package own data brand",
+        reason: { channelUserCancel: true, channel: "Web" },
+        failureKind: "cancelled_user",
+      },
+      { name: "accessor", reason: accessor, failureKind: "cancelled" },
+      { name: "proxy", reason: proxy, failureKind: "cancelled" },
+      { name: "revoked proxy", reason: revoked.proxy, failureKind: "cancelled" },
+      { name: "inherited brand", reason: inherited, failureKind: "cancelled" },
+      {
+        name: "structured impostor",
+        reason: { channelUserCancel: "true", channel: "Web", kind: "cancelled_user", code: "cancelled_user" },
+        failureKind: "cancelled",
+      },
+      {
+        name: "prose and class-name impostor",
+        reason: Object.assign(new Error("Cancelled by Web user."), { name: "ChannelUserCancelReason" }),
+        failureKind: "cancelled",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const controller = new AbortController();
+      controller.abort(testCase.reason);
+      const fake = createFakeRuntime(async () => {
+        throw new Error("runtime should not run");
+      });
+      const response = await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+      }).run({
+        conversationId: `cancel:${testCase.name}`,
+        userMessage: "cancel me",
+        abortSignal: controller.signal,
+      });
+
+      expect(fake.calls, testCase.name).toHaveLength(0);
+      expect(response.metadata.summary, testCase.name).toMatchObject({
+        status: "cancelled",
+        failureKind: testCase.failureKind,
+      });
+    }
+    expect(accessorReads).toBe(0);
+    expect(proxyTraps).toBe(0);
+  });
+
+  it("exposes harness failures through the structural responder and streams runtime deltas", async () => {
+    const harness = {
+      async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "hello " }] } });
+        return {
+          text: "done",
+          metadata: {
+            runId: "run",
+            conversationId: "c",
+            contextSources: [],
+            contextSectionIds: [],
+          },
+        };
+      },
+    };
+    const streamText: string[] = [];
+    const response = await createAgentResponder({ harness }).respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async (delta) => { streamText.push(delta); } },
+    );
+
+    expect(streamText).toEqual(["hello "]);
+    expect(response.text).toBe("done");
+  });
+
+  it("forwards each runtime text delta to the stream immediately, in order (no batching)", async () => {
+    const harness = {
+      async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "hel" }] } });
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "lo" }] } });
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "!" }] } });
+        return {
+          text: "hello!",
+          metadata: {
+            runId: "run",
+            conversationId: "c",
+            contextSources: [],
+            contextSectionIds: [],
+          },
+        };
+      },
+    };
+    const streamText: string[] = [];
+    const response = await createAgentResponder({ harness }).respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async (delta) => { streamText.push(delta); } },
+    );
+
+    // Each delta is flushed immediately (no microtask coalescing), so streaming
+    // consumers like the OpenAI SSE adapter emit tokens as they arrive.
+    expect(streamText).toEqual(["hel", "lo", "!"]);
+    expect(response.text).toBe("hello!");
+  });
+
+  it("forwards thoughts and internal tool activity as stream events without appending them to answer text", async () => {
+    const harness = {
+      async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "thinking", text: "checking tools" }] } });
+        request.onEvent?.({
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-1",
+                name: "mcp__context_example__search",
+                input: { query: "release plan" },
+              },
+            ],
+          },
+        });
+        request.onEvent?.({
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-1",
+                content: { matches: 2 },
+                is_error: false,
+              },
+            ],
+          },
+        });
+        request.onEvent?.({ type: "runtime_warning", warning_kind: "config_warning", message: "minor config warning" });
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "final " }] } });
+        return {
+          text: "final answer",
+          metadata: {
+            runId: "run",
+            conversationId: "c",
+            contextSources: [],
+            contextSectionIds: [],
+          },
+        };
+      },
+    };
+    const streamText: string[] = [];
+    const streamEvents: unknown[] = [];
+    const response = await createAgentResponder({ harness }).respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      {
+        append: async (delta) => { streamText.push(delta); },
+        event: async (event) => { streamEvents.push(event); },
+      },
+    );
+
+    expect(streamText).toEqual(["final "]);
+    expect(streamEvents).toEqual([
+      { type: "assistant_thought", text: "checking tools" },
+      {
+        type: "tool_call_started",
+        id: "tool-1",
+        name: "mcp__context_example__search",
+        arguments: { query: "release plan" },
+      },
+      {
+        type: "tool_call_completed",
+        id: "tool-1",
+        name: "mcp__context_example__search",
+        content: { matches: 2 },
+        isError: false,
+      },
+      {
+        type: "runtime_warning",
+        warningKind: "config_warning",
+        message: "minor config warning",
+      },
+    ]);
+    expect(response.text).toBe("final answer");
+  });
+
+  it("throws AgentHarnessFailureError from the structural responder", async () => {
+    const harness = {
+      async run() {
+        return {
+          metadata: {
+            runId: "run",
+            conversationId: "c",
+            contextSources: [],
+            contextSectionIds: [],
+          },
+          failure: { kind: "usage_limit", message: "No quota" },
+        };
+      },
+    };
+
+    await expect(createAgentResponder({ harness }).respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => undefined },
+    )).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  });
+});
+
+describe('recorded provider projection', () => {
+  it.each(['success', 'failure-result', 'cancel'] as const)('records dispatched system instructions on %s', async (outcome) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, 'IDENTITY.md');
+    await writeFile(identityPath, 'Recording identity.');
+    const recorder = new FakeRecorder('recorded', 'web:recorded');
+    const fake = createFakeRuntime(async () => {
+      if (outcome === 'failure-result') return { error: 'fixture failure', failureKind: 'provider_unavailable' };
+      if (outcome === 'cancel') return { cancelled: true };
+      return { text: 'answer' };
+    });
+    await createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder })
+      .run({ conversationId: 'web:recorded', userMessage: 'current-question-marker', metadata: { source: 'web' }, abortSignal: new AbortController().signal });
+    expect(recorder.systemPrompt).toBe(fake.calls[0]?.prompt);
+    expect(recorder.systemPrompt).toContain('Recording identity.');
+    expect(recorder.systemPrompt).not.toContain('current-question-marker');
+    expect(recorder.systemPrompt).not.toContain('Conversation id:');
+    expect(recorder.summaryStatus).toBe(outcome === 'success' ? 'succeeded' : outcome === 'cancel' ? 'cancelled' : 'failed');
+  });
+});
+
+// Thrown failures need the real composite lifecycle: a FakeRecorder cannot
+// distinguish exporter.finish from exporter.fail or retain a rejected preflight.
+describe("composite failure recording", () => {
+  it.each(["success", "runtime-throw", "prepare-rejection"] as const)("records %s through its original terminal lifecycle", async (outcome) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "Stable recording identity.");
+    const originalError = new TypeError(`fixture ${outcome}`);
+    const primary = createJsonlRunRecorder({
+      runId: "composite-recording", conversationId: "web:recorded", artifactDir: dir,
+      systemPrompt: "stale constructor prompt",
+    });
+    const primaryFail = vi.spyOn(primary, "fail");
+    const primaryFinish = vi.spyOn(primary, "finish");
+    const prepare = vi.fn(primary.prepareFinish!.bind(primary));
+    primary.prepareFinish = prepare;
+    if (outcome === "prepare-rejection") prepare.mockRejectedValue(originalError);
+    const exporter = {
+      finish: vi.fn<NonNullable<RunExporter["finish"]>>(),
+      fail: vi.fn<NonNullable<RunExporter["fail"]>>(),
+      flush: vi.fn(),
+    };
+    const exportContext = { runId: "composite-recording", conversationId: "web:recorded", includeSensitiveData: false };
+    const recorder = createCompositeRunRecorder({ recorder: primary, exporter, context: exportContext, timeoutMs: 1000 });
+    const fake = createFakeRuntime(async () => {
+      if (outcome === "runtime-throw") throw originalError;
+      return { text: "answer" };
+    });
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 64 });
+    const response = await createAgentHarness({
+      identityPath, runtime: fake.runtime, model, historyStore,
+      createRunId: () => "composite-recording", recorderFactory: () => recorder,
+    }).run({
+      conversationId: "web:recorded", userMessage: "current-question-marker",
+      metadata: { source: "web" }, abortSignal: new AbortController().signal,
+    });
+    expect(fake.calls).toHaveLength(1);
+    const dispatched = fake.calls[0]!.prompt;
+    expect(dispatched).toContain("Stable recording identity.");
+    expect(dispatched).not.toContain("current-question-marker");
+    expect(dispatched).not.toContain("Conversation id:");
+    expect(response.metadata.summary?.status).toBe(outcome === "success" ? "succeeded" : "failed");
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+    const persisted = JSON.parse(await readFile(response.metadata.summary!.artifactPaths[1]!, "utf8")) as RunSummary;
+    expect(persisted.systemPrompt).toBe(dispatched);
+    expect(primaryFinish).not.toHaveBeenCalled();
+    expect(exporter.flush).toHaveBeenCalledTimes(1);
+    if (outcome === "success") {
+      expect(response.failure).toBeUndefined();
+      expect(primaryFail).not.toHaveBeenCalled();
+      expect(exporter.fail).not.toHaveBeenCalled();
+      expect(exporter.finish).toHaveBeenCalledExactlyOnceWith(persisted, exportContext);
+      expect(prepare).toHaveBeenCalledTimes(1);
+    } else {
+      expect(response.failure).toMatchObject({ kind: "TypeError", message: originalError.message });
+      expect(primaryFail).toHaveBeenCalledTimes(1);
+      expect(primaryFail.mock.calls[0]?.[0]).toBe(originalError);
+      expect(primaryFail.mock.calls[0]?.[1]).toEqual({ systemPrompt: dispatched });
+      expect(exporter.finish).not.toHaveBeenCalled();
+      expect(exporter.fail).toHaveBeenCalledExactlyOnceWith(persisted, originalError, exportContext);
+      expect(exporter.fail.mock.calls[0]?.[1]).toBe(originalError);
+      expect(persisted).toMatchObject({ status: "failed", failureKind: "TypeError", diagnostics: { error: { message: originalError.message } } });
+      expect(prepare).toHaveBeenCalledTimes(outcome === "prepare-rejection" ? 1 : 0);
+      const failedHistory = await historyStore.load("web:recorded");
+      expect(failedHistory).toHaveLength(2);
+      expect(failedHistory[0]).toMatchObject({ role: "user", content: "current-question-marker" });
+      expect(failedHistory[1]).toMatchObject({
+        role: "assistant",
+        idempotencyKey: "failed-turn:v1:composite-recording",
+      });
+      expect(failedHistory[1]?.content).toContain('<failed_turn_history version="1">');
+      // Failure bypasses the composite's memoized rejected preparePromise and
+      // remains terminal/idempotent; another fail cannot export a second frame.
+      expect(await recorder.fail(new Error("later"))).toEqual(persisted);
+      expect(exporter.fail).toHaveBeenCalledTimes(1);
+      expect(primaryFail).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
+it.each([false, true])("does not admit P2 evidence for an uncertified selected session owner (alternate=%s)", async (alternate) => {
+  const dir = await tempDir(), identityPath = join(dir, "IDENTITY.md"); await writeFile(identityPath, "You are Mono.");
+  const inspect = vi.fn(async () => ({ status: "absent" as const })), matcher = vi.fn(async () => ({ status: "absent" as const }));
+  const historyStore = createDurableHistoryStore({ root: join(dir, "history"), retireProviderSession: async () => {}, reconcileProviderSessionTurn: inspect });
+  const fake = createFakeRuntime(async () => ({ text: "Fictional custom owner answer." }));
+  const uncertified = { ...fake.runtime, reconcileSessionTurn: matcher, async refreshSession() {}, async syncSession() { return true; } };
+  const harness = createAgentHarness({ identityPath, model, cwd: dir, sessionsRoot: join(dir, "pi"), session: { mode: "continuous", idleTimeoutMs: 60_000 }, historyStore,
+    runtime: alternate ? { ...uncertified, sessionTurnReconciliation: "v1" } : uncertified, runtimeForModel: () => uncertified,
+    ...(alternate ? { runtimeOptionsForRequest: () => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("openai:fictional-alternate") } }) } : {}) });
+  expect(await harness.run({ conversationId: "fictional-owner", userMessage: "Fictional input.", abortSignal: new AbortController().signal,
+    ...(alternate ? { metadata: { web: { model: "openai:fictional-alternate" } } } : {}) })).toMatchObject({ text: "Fictional custom owner answer." });
+  expect(fake.calls[0]!.options.sessionTurn?.kind).toBe("host");
+  expect(fake.calls[0]!.options.sessionTurn?.reconciliation).toBeUndefined();
+  expect(inspect).not.toHaveBeenCalled(); expect(matcher).not.toHaveBeenCalled();
+  expect((await historyStore.load("fictional-owner")).at(-1)?.content).toBe("Fictional custom owner answer."); await harness.dispose?.();
+});
+
+it("rejects the renamed harness root option before construction", () => {
+  expect(() => createAgentHarness({ piSessionsRoot: "/fictional/old", sessionsRoot: "/fictional/new" } as never))
+    .toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+});
+
+it("rejects the old sessions root nested in runtime options at construction", () => {
+  expect(() => createAgentHarness({ runtimeOptions: { piSessionsRoot: "/fictional/old" } } as never))
+    .toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+});

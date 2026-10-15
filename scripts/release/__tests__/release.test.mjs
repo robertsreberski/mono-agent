@@ -104,11 +104,11 @@ describe("release tag validation", () => {
 
 describe("release graph validation", () => {
   test("validates exact versions and returns dependency-first publish order", () => {
-    const contracts = packageRecord({ name: "@mono-agent/agent-contracts" });
+    const contracts = packageRecord({ name: "@mono-agent/contracts" });
     const adapter = packageRecord({
-      name: "@mono-agent/slack-adapter",
+      name: "@mono-agent/channel-slack",
       dependencies: {
-        "@mono-agent/agent-contracts": "workspace:1.2.3",
+        "@mono-agent/contracts": "workspace:1.2.3",
       },
     });
 
@@ -121,19 +121,19 @@ describe("release graph validation", () => {
 
     expect(result.version).toBe("1.2.3");
     expect(result.publishablePackages.map((pkg) => pkg.name)).toEqual([
-      "@mono-agent/agent-contracts",
-      "@mono-agent/slack-adapter",
+      "@mono-agent/contracts",
+      "@mono-agent/channel-slack",
     ]);
   });
 
   test("requires exact lockstep ranges in every root internal dependency section", () => {
-    const contracts = packageRecord({ name: "@mono-agent/agent-contracts" });
+    const contracts = packageRecord({ name: "@mono-agent/contracts" });
     const exactRootPackageJson = rootPackageRecord({
-      dependencies: { "@mono-agent/agent-contracts": "workspace:1.2.3" },
-      optionalDependencies: { "@mono-agent/agent-contracts": "workspace:1.2.3" },
-      peerDependencies: { "@mono-agent/agent-contracts": "workspace:1.2.3" },
+      dependencies: { "@mono-agent/contracts": "workspace:1.2.3" },
+      optionalDependencies: { "@mono-agent/contracts": "workspace:1.2.3" },
+      peerDependencies: { "@mono-agent/contracts": "workspace:1.2.3" },
       devDependencies: {
-        "@mono-agent/agent-contracts": "workspace:1.2.3",
+        "@mono-agent/contracts": "workspace:1.2.3",
         vitest: "^3.1.4",
       },
     });
@@ -147,7 +147,7 @@ describe("release graph validation", () => {
 
     for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
       const staleRootPackageJson = structuredClone(exactRootPackageJson);
-      staleRootPackageJson[section]["@mono-agent/agent-contracts"] = "workspace:1.2.2";
+      staleRootPackageJson[section]["@mono-agent/contracts"] = "workspace:1.2.2";
 
       try {
         validateRelease({
@@ -159,17 +159,17 @@ describe("release graph validation", () => {
         throw new Error(`validateRelease did not reject the stale root ${section} reference`);
       } catch (error) {
         expect(error.issues).toEqual([
-          `root package.json ${section}.@mono-agent/agent-contracts must be workspace:1.2.3; found workspace:1.2.2`,
+          `root package.json ${section}.@mono-agent/contracts must be workspace:1.2.3; found workspace:1.2.2`,
         ]);
       }
     }
   });
 
   test("requires exact lockstep ranges in package-local devDependencies", () => {
-    const contracts = packageRecord({ name: "@mono-agent/agent-contracts" });
+    const contracts = packageRecord({ name: "@mono-agent/contracts" });
     const web = packageRecord({
       name: "@mono-agent/web",
-      devDependencies: { "@mono-agent/agent-contracts": "workspace:1.2.2" },
+      devDependencies: { "@mono-agent/contracts": "workspace:1.2.2" },
     });
 
     try {
@@ -182,24 +182,24 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject the stale package devDependency");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/web devDependencies.@mono-agent/agent-contracts must be workspace:1.2.3; found workspace:1.2.2",
+        "@mono-agent/web devDependencies.@mono-agent/contracts must be workspace:1.2.3; found workspace:1.2.2",
       ]);
     }
   });
 
   test("rejects packages that are not launch-ready", () => {
     const contracts = packageRecord({
-      name: "@mono-agent/agent-contracts",
+      name: "@mono-agent/contracts",
       publishConfig: null,
     });
     const adapter = packageRecord({
-      name: "@mono-agent/slack-adapter",
+      name: "@mono-agent/channel-slack",
       dependencies: {
-        "@mono-agent/agent-contracts": "workspace:*",
+        "@mono-agent/contracts": "workspace:*",
       },
     });
     const runtime = packageRecord({
-      name: "@mono-agent/agent-runtime",
+      name: "@mono-agent/turn",
       version: "1.2.4",
     });
 
@@ -211,17 +211,17 @@ describe("release graph validation", () => {
         silent: true,
       }),
     ).toThrow(
-      /@mono-agent\/agent-contracts publishConfig\.access must be public[\s\S]*@mono-agent\/agent-runtime version must be 1\.2\.3[\s\S]*@mono-agent\/slack-adapter dependencies\.@mono-agent\/agent-contracts must be workspace:1\.2\.3/,
+      /@mono-agent\/contracts publishConfig\.access must be public[\s\S]*@mono-agent\/turn version must be 1\.2\.3[\s\S]*@mono-agent\/channel-slack dependencies\.@mono-agent\/contracts must be workspace:1\.2\.3/,
     );
   });
 
   test("rejects root or publishable manifests outside the supported Node floor", () => {
     const missing = packageRecord({
-      name: "@mono-agent/agent-contracts",
+      name: "@mono-agent/contracts",
       nodeEngine: null,
     });
     const stale = packageRecord({
-      name: "@mono-agent/agent-runtime",
+      name: "@mono-agent/turn",
       nodeEngine: ">=20",
     });
 
@@ -238,19 +238,19 @@ describe("release graph validation", () => {
       expect(error.issues).toEqual([
         "root package.json engines.node must be >=24.15.0; found >=20",
         ".nvmrc must be 24.15.0; found 22.18.0",
-        "@mono-agent/agent-contracts engines.node must be >=24.15.0; found (missing)",
-        "@mono-agent/agent-runtime engines.node must be >=24.15.0; found >=20",
+        "@mono-agent/contracts engines.node must be >=24.15.0; found (missing)",
+        "@mono-agent/turn engines.node must be >=24.15.0; found >=20",
       ]);
     }
   });
 
   test("requires exact public repository metadata for every publishable package", () => {
     const missing = packageRecord({
-      name: "@mono-agent/agent-contracts",
+      name: "@mono-agent/contracts",
       repository: null,
     });
     const wrongDirectory = packageRecord({
-      name: "@mono-agent/agent-runtime",
+      name: "@mono-agent/turn",
       repository: { ...RELEASE_REPOSITORY, directory: "packages/wrong" },
     });
 
@@ -264,41 +264,41 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject stale repository metadata");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-contracts repository must be git git+https://github.com/robertsreberski/mono-agent.git at packages/agent-contracts",
-        "@mono-agent/agent-runtime repository must be git git+https://github.com/robertsreberski/mono-agent.git at packages/agent-runtime",
+        "@mono-agent/contracts repository must be git git+https://github.com/robertsreberski/mono-agent.git at packages/contracts",
+        "@mono-agent/turn repository must be git git+https://github.com/robertsreberski/mono-agent.git at packages/turn",
       ]);
     }
   });
 
   test("rejects publishable packages that depend on nonpublishable workspace packages", () => {
     const a2a = packageRecord({
-      name: "@mono-agent/a2a-adapter",
+      name: "@mono-agent/channel-a2a",
       publishable: false,
       privatePackage: true,
       publishConfig: null,
     });
     const orchestrator = packageRecord({
-      name: "@mono-agent/agent-orchestrator",
+      name: "@mono-agent/orchestrator",
       publishable: false,
       privatePackage: true,
       publishConfig: null,
     });
     const whatsapp = packageRecord({
-      name: "@mono-agent/whatsapp-adapter",
+      name: "@mono-agent/channel-whatsapp",
       publishable: false,
       privatePackage: true,
       publishConfig: null,
     });
     const app = packageRecord({
-      name: "@mono-agent/agent-app",
+      name: "@mono-agent/app",
       dependencies: {
-        "@mono-agent/a2a-adapter": "workspace:1.2.3",
+        "@mono-agent/channel-a2a": "workspace:1.2.3",
       },
       optionalDependencies: {
-        "@mono-agent/agent-orchestrator": "workspace:1.2.3",
+        "@mono-agent/orchestrator": "workspace:1.2.3",
       },
       peerDependencies: {
-        "@mono-agent/whatsapp-adapter": "workspace:1.2.3",
+        "@mono-agent/channel-whatsapp": "workspace:1.2.3",
       },
     });
 
@@ -312,20 +312,20 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject the nonpublishable workspace dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-app dependencies.@mono-agent/a2a-adapter points at nonpublishable workspace package @mono-agent/a2a-adapter",
-        "@mono-agent/agent-app optionalDependencies.@mono-agent/agent-orchestrator points at nonpublishable workspace package @mono-agent/agent-orchestrator",
-        "@mono-agent/agent-app peerDependencies.@mono-agent/whatsapp-adapter points at nonpublishable workspace package @mono-agent/whatsapp-adapter",
+        "@mono-agent/app dependencies.@mono-agent/channel-a2a points at nonpublishable workspace package @mono-agent/channel-a2a",
+        "@mono-agent/app optionalDependencies.@mono-agent/orchestrator points at nonpublishable workspace package @mono-agent/orchestrator",
+        "@mono-agent/app peerDependencies.@mono-agent/channel-whatsapp points at nonpublishable workspace package @mono-agent/channel-whatsapp",
       ]);
     }
   });
 
   test("rejects floating Pi dependencies in every publishable consumer", () => {
     const app = packageRecord({
-      name: "@mono-agent/agent-app",
+      name: "@mono-agent/app",
       dependencies: { "@earendil-works/pi-ai": "^0.80.6" },
     });
     const runtime = packageRecord({
-      name: "@mono-agent/agent-runtime",
+      name: "@mono-agent/turn",
       dependencies: {
         "@earendil-works/pi-agent-core": "~0.80.6",
         "@earendil-works/pi-ai": "0.80.8",
@@ -341,9 +341,9 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 1.2.0 exactly; found ^0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 1.2.0 exactly; found ~0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 1.2.0 exactly; found 0.80.8",
+        "@mono-agent/app dependencies.@earendil-works/pi-ai must pin known-compatible version 1.2.0 exactly; found ^0.80.6",
+        "@mono-agent/turn dependencies.@earendil-works/pi-agent-core must pin known-compatible version 1.2.0 exactly; found ~0.80.6",
+        "@mono-agent/turn dependencies.@earendil-works/pi-ai must pin known-compatible version 1.2.0 exactly; found 0.80.8",
       ]);
     }
   });
@@ -585,10 +585,10 @@ describe("current launch manifest", () => {
     expect(publishableNames).not.toContain(`@mono-agent/${"sandbox"}`);
     expect(publishableNames).not.toContain(`@mono-agent/${"tui"}-${"adapter"}`);
     expect(publishableNames).not.toContain(`@mono-agent/${"live"}-${"adapter"}`);
-    expect(publishableNames).toContain("@mono-agent/operator-adapter");
-    expect(publishableNames).toContain("@mono-agent/agent-runtime");
+    expect(publishableNames).toContain("@mono-agent/channel-operator");
+    expect(publishableNames).toContain("@mono-agent/turn");
     expect(publishableNames).not.toContain("@mono-agent/runtime-adapter");
-    expect(publishableNames).toContain("@mono-agent/agent-app");
+    expect(publishableNames).toContain("@mono-agent/app");
     expect(publishableNames).toContain("@mono-agent/observability");
   });
 
@@ -596,7 +596,7 @@ describe("current launch manifest", () => {
     // Derive the version from a workspace manifest so this test keeps
     // validating the real repository state across version bumps.
     const { readFileSync } = await import("node:fs");
-    const { version } = JSON.parse(readFileSync(new URL("../../../packages/agent-app/package.json", import.meta.url), "utf8"));
+    const { version } = JSON.parse(readFileSync(new URL("../../../packages/app/package.json", import.meta.url), "utf8"));
 
     const result = validateRelease({ tag: `v${version}`, silent: true });
 
@@ -607,11 +607,11 @@ describe("current launch manifest", () => {
 
   test("keeps the runtime migration baseline aligned with the package version", () => {
     const runtime = JSON.parse(fs.readFileSync(
-      new URL("../../../packages/agent-runtime/package.json", import.meta.url),
+      new URL("../../../packages/turn/package.json", import.meta.url),
       "utf8",
     ));
     const migration = fs.readFileSync(
-      new URL("../../../packages/agent-runtime/MIGRATION.md", import.meta.url),
+      new URL("../../../packages/turn/MIGRATION.md", import.meta.url),
       "utf8",
     );
     const version = /^(\d+)\.(\d+)\.\d+(?:[-+].*)?$/u.exec(runtime.version);
@@ -632,7 +632,7 @@ describe("current launch manifest", () => {
       "utf8",
     ).replace(/\s+/gu, " ");
     const migration = fs.readFileSync(
-      new URL("../../../packages/agent-runtime/MIGRATION.md", import.meta.url),
+      new URL("../../../packages/turn/MIGRATION.md", import.meta.url),
       "utf8",
     ).replace(/\s+/gu, " ");
     const piAi = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"];
@@ -640,7 +640,7 @@ describe("current launch manifest", () => {
 
     expect(piCore).toBe("1.2.0");
     expect(guidance).toContain(
-      `packages/agent-runtime\`: \`@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` at \`${piCore}\``,
+      `packages/turn\`: \`@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` at \`${piCore}\``,
     );
     expect(guidance).not.toContain("pi-tui");
     expect(migration).toContain(

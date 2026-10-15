@@ -14,7 +14,7 @@ real surfaces, never by reading code and asserting it "should work".
    `validate` (check exit code) → background `start > start.log` → grep the log
    for channel-up/error lines → inspect `.mono-agent/artifacts`,
    `.mono-agent/trace-sources`, and memory state as relevant.
-2. **Web/API**: start `node packages/agent-app/dist/cli.js web run --loopback`
+2. **Web/API**: start `node packages/app/dist/cli.js web run --loopback`
    on an unused throwaway port, curl-poll `/healthz`, and assert the relevant
    bounded JSON responses such as `/api/v1/bootstrap`.
 3. **Readiness worker or cross-process contract**: use the exact local protocol

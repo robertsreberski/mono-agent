@@ -1,0 +1,242 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import { afterEach, describe, expect, it } from "vitest";
+
+import type { ChannelDriver } from "../channels.js";
+import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import { collectUsedProviderReferences, providerAuthStatusSnapshot } from "../provider-auth-status.js";
+
+const tempDirs: string[] = [];
+afterEach(async () => await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true }))));
+
+describe("provider auth status", () => {
+  it("projects account acceptance, live precedence and account rejection without a model", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-account-status-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, JSON.stringify({ "opencode-go": { type: "api_key", key: "fixture-key" } }), { mode: 0o600 });
+    let now = Date.parse("2026-09-14T12:00:00.000Z");
+    const observations = createProviderAuthObservationTracker(() => now);
+    const status = async () => (await providerAuthStatusSnapshot({
+      config: configWith(authPath), env: {}, drivers: [],
+      input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations,
+    })).providers.find((provider) => provider.providerId === "opencode-go");
+    observations.recordAccountSuccess("opencode-go", observations.generation());
+    expect(await status()).toMatchObject({ verification: "verified_by_account_request", verifiedAt: new Date(now).toISOString() });
+    now += 1_000;
+    observations.recordSuccess("opencode-go", "opencode-go:model");
+    const liveAt = new Date(now).toISOString();
+    now += 1_000;
+    observations.recordAccountSuccess("opencode-go", observations.generation());
+    expect(await status()).toMatchObject({ verification: "verified_by_live_request", verifiedAt: liveAt });
+    now += 1_000;
+    observations.recordAccountFailure("opencode-go", observations.generation());
+    const rejected = await status();
+    expect(rejected).toMatchObject({ verification: "not_verified", lastFailure: { kind: "provider_auth" } });
+    expect(rejected?.lastFailure).not.toHaveProperty("model");
+    expect(rejected).not.toHaveProperty("verifiedAt");
+    observations.credentialPersisted("opencode-go");
+    expect(await status()).not.toHaveProperty("lastFailure");
+  });
+
+  it("collects effective routes and excludes disabled static entries", async () => {
+    const config = configWith("/missing");
+    const drivers = [{
+      id: "cron", label: "Cron", loadConfig: async () => ({ jobs: [
+        { model: "anthropic:claude-sonnet-4-5" },
+        { model: "openai:gpt-5.5", enabled: false },
+      ] }),
+    }] as unknown as readonly ChannelDriver[];
+    const refs = await collectUsedProviderReferences(config, drivers, { cwd: "/tmp", configPath: "/tmp/config.json", env: {} });
+    expect(refs.map(({ usage }) => [usage.kind, usage.model])).toEqual([
+      ["primary", "opencode-go:kimi-k2.6"],
+      ["fallback", "openai-codex:gpt-5.6-terra"],
+      ["memory_llm", "anthropic:claude-sonnet-4-5"],
+      ["cron", "anthropic:claude-sonnet-4-5"],
+    ]);
+  });
+
+  it("offers both OpenAI methods in provider settings while retaining Codex OAuth", async () => {
+    const config = { ...configWith("/missing"), runtime: {
+      model: parseMonoRuntimeModelReference("openai:gpt-5.5"),
+      fallbacks: [{ model: parseMonoRuntimeModelReference("openai-codex:gpt-5.5") }],
+    } } as unknown as MonoAgentConfig;
+    const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [],
+      input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai")?.methods.map((method) => method.authType))
+      .toEqual(["oauth", "api_key"]);
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai-codex")?.methods.map((method) => method.authType))
+      .toContain("oauth");
+  });
+
+  it("marks a stored OpenAI OAuth credential without clientId unusable", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-openai-status-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, JSON.stringify({ openai: { type: "oauth", access: "fake", refresh: "fake", expires: 4_200_000_000_000 } }), { mode: 0o600 });
+    const snapshot = await providerAuthStatusSnapshot({
+      config: { ...configWith(authPath), runtime: { model: parseMonoRuntimeModelReference("openai:gpt-5.5") } } as unknown as MonoAgentConfig,
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers[0]).toMatchObject({ state: "missing", credentialType: "oauth", unavailableReason: expect.stringContaining("client ID") });
+  });
+
+  it("tracks classifier credentials as a separate memory usage", async () => {
+    const base = configWith("/missing");
+    const config = { ...base, memory: { ...base.memory,
+      capture: { reconcileModel: "openai-codex:gpt-5.5" } } } as MonoAgentConfig;
+    const refs = await collectUsedProviderReferences(config, [], { cwd: "/tmp", configPath: "/tmp/config.json", env: {} });
+    expect(refs.map(({ usage }) => [usage.kind, usage.label, usage.model])).toContainEqual([
+      "memory_llm", "Capture reconcile model", "openai-codex:gpt-5.5",
+    ]);
+    const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [],
+      input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai-codex")?.usages)
+      .toContainEqual({ kind: "memory_llm", label: "Capture reconcile model", model: "openai-codex:gpt-5.5" });
+  });
+
+  it("reports stored, expired, and keyless local states separately from live verification", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-status-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, `${JSON.stringify({
+      "opencode-go": { type: "api_key", key: "secret-not-projected" },
+      "openai-codex": { type: "oauth", access: "access", refresh: "refresh", expires: 1 },
+    })}\n`, { mode: 0o600 });
+    await chmod(authPath, 0o600);
+    const config = {
+      ...configWith(authPath),
+      providers: {
+        piAuthPath: authPath,
+        local: [{ id: "anthropic", type: "openai_compat", baseUrl: "http://127.0.0.1:9999", enabled: true }],
+      },
+    } as unknown as MonoAgentConfig;
+    const tracker = createProviderAuthObservationTracker(() => Date.parse("2026-09-06T12:00:00.000Z"));
+    tracker.runStarted("r");
+    tracker.observe({ runId: "r", conversationId: "c", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [], model: "opencode-go:kimi-k2.6" });
+    const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker });
+    expect(snapshot.providers.find((item) => item.providerId === "opencode-go")).toMatchObject({ state: "present", source: "stored", verification: "verified_by_live_request" });
+    expect(snapshot.providers.find((item) => item.providerId === "openai-codex")).toMatchObject({ state: "present", credentialType: "oauth", verification: "not_verified" });
+    expect(snapshot.providers.find((item) => item.providerId === "anthropic")).toMatchObject({ state: "not_applicable", methods: [] });
+    expect(JSON.stringify(snapshot)).not.toContain("secret-not-projected");
+  });
+
+  it("fails malformed OAuth expiry closed and detects an ambient API key without projecting it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-status-invalid-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, `${JSON.stringify({
+      "openai-codex": { type: "oauth", access: "access", refresh: "refresh", expires: 1e100 },
+    })}\n`, { mode: 0o600 });
+    const tracker = createProviderAuthObservationTracker();
+    const openAi = await providerAuthStatusSnapshot({
+      config: { ...configWith(authPath), runtime: { model: parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra") } } as unknown as MonoAgentConfig,
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker,
+    });
+    expect(openAi.providers[0]).toMatchObject({
+      state: "missing",
+      credentialType: "oauth",
+      unavailableReason: "Stored OAuth credential has an invalid expiry.",
+    });
+
+    const ambientSecret = "OPENCODE_AMBIENT_SENTINEL";
+    const openCode = await providerAuthStatusSnapshot({
+      config: { ...configWith(join(dir, "missing.json")), runtime: { model: parseMonoRuntimeModelReference("opencode-go:kimi-k2.6") } } as unknown as MonoAgentConfig,
+      env: { OPENCODE_API_KEY: ambientSecret }, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker,
+    });
+    expect(openCode.providers[0]).toMatchObject({ state: "present", credentialType: "api_key", source: "environment" });
+    expect(JSON.stringify(openCode)).not.toContain(ambientSecret);
+
+    await writeFile(join(dir, "unsafe.json"), "{}\n", { mode: 0o644 });
+    await chmod(join(dir, "unsafe.json"), 0o644);
+    const withUnsafeStore = await providerAuthStatusSnapshot({
+      config: { ...configWith(join(dir, "unsafe.json")), runtime: { model: parseMonoRuntimeModelReference("opencode-go:kimi-k2.6") } } as unknown as MonoAgentConfig,
+      env: { OPENCODE_API_KEY: ambientSecret }, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker,
+    });
+    expect(withUnsafeStore.providers[0]).toMatchObject({
+      state: "missing",
+      unavailableReason: expect.stringContaining("unsafe"),
+    });
+    expect(withUnsafeStore.providers[0]).not.toHaveProperty("source");
+
+    const wrongTypePath = join(dir, "wrong-type.json");
+    await writeFile(wrongTypePath, `${JSON.stringify({
+      "opencode-go": { type: "oauth", access: "wrong-type", refresh: "wrong-type", expires: Date.now() + 60_000 },
+    })}\n`, { mode: 0o600 });
+    const wrongType = await providerAuthStatusSnapshot({
+      config: { ...configWith(wrongTypePath), runtime: { model: parseMonoRuntimeModelReference("opencode-go:kimi-k2.6") } } as unknown as MonoAgentConfig,
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker,
+    });
+    expect(wrongType.providers[0]).toMatchObject({
+      state: "missing", credentialType: "oauth", unavailableReason: "Stored credential type is not supported by this provider.",
+    });
+    expect(wrongType.providers[0]).not.toHaveProperty("source");
+
+    const profilePath = join(dir, "profile.json");
+    await writeFile(profilePath, `${JSON.stringify({
+      "amazon-bedrock": { type: "api_key", env: { AWS_PROFILE: "stored-profile" } },
+    })}\n`, { mode: 0o600 });
+    const profile = await providerAuthStatusSnapshot({
+      config: { ...configWith(profilePath), runtime: { model: parseMonoRuntimeModelReference("amazon-bedrock:global.anthropic.claude-sonnet-4-5-v1:0") } } as unknown as MonoAgentConfig,
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker,
+    });
+    expect(profile.providers[0]).toMatchObject({ state: "present", credentialType: "api_key", source: "stored" });
+  });
+
+  it("distinguishes refreshable OAuth expiry from expired and empty credentials", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-status-oauth-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    const tracker = createProviderAuthObservationTracker();
+    const readStatus = async (credential: unknown) => {
+      await writeFile(authPath, `${JSON.stringify({ "openai-codex": credential })}\n`, { mode: 0o600 });
+      await chmod(authPath, 0o600);
+      return (await providerAuthStatusSnapshot({
+        config: {
+          ...configWith(authPath),
+          runtime: { model: parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra") },
+        } as unknown as MonoAgentConfig,
+        env: {},
+        drivers: [],
+        input: { cwd: dir, configPath: join(dir, "config.json"), env: {} },
+        observations: tracker,
+      })).providers[0];
+    };
+
+    expect(await readStatus({ type: "oauth", access: "expired", refresh: "usable", expires: 1 }))
+      .toMatchObject({ state: "present", verification: "not_verified" });
+    expect(await readStatus({ type: "oauth", access: "expired", refresh: "", expires: 1 }))
+      .toMatchObject({ state: "expired", verification: "not_verified" });
+    tracker.runStarted("previous-success");
+    tracker.observe({
+      runId: "previous-success", conversationId: "c", status: "succeeded", durationMs: 1,
+      eventCount: 0, artifactPaths: [], model: "openai-codex:gpt-5.6-terra",
+    });
+    expect(await readStatus({ type: "oauth", access: "", refresh: "", expires: 1 }))
+      .toMatchObject({
+        state: "missing",
+        verification: "not_verified",
+        unavailableReason: "Stored OAuth credential is unusable.",
+      });
+  });
+});
+
+function configWith(authPath: string): MonoAgentConfig {
+  return {
+    runtime: {
+      model: parseMonoRuntimeModelReference("opencode-go:kimi-k2.6"),
+      fallbacks: [{ model: parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra") }],
+    },
+    memory: { llm: { provider: "agent-host", model: "anthropic:claude-sonnet-4-5" } },
+    providers: { piAuthPath: authPath },
+  } as unknown as MonoAgentConfig;
+}

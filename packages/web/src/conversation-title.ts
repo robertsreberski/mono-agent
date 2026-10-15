@@ -1,4 +1,4 @@
-import type { AgentStreamWireFrame } from "@mono-agent/agent-contracts";
+import type { AgentStreamWireFrame } from "@mono-agent/contracts";
 
 export const SET_CONVERSATION_TITLE_TOOL_NAME = "SetConversationTitle";
 export const SET_CONVERSATION_TITLE_MAX_CHARACTERS = 80;

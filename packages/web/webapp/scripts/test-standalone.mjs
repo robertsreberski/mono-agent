@@ -55,9 +55,9 @@ try {
   for (const file of ["mcp-app-document.ts", "effort-ladder.ts", "message-cost.ts"]) {
     cpSync(resolve(source, "../src", file), join(fixture, "packages/web/src", file));
   }
-  const contracts = join(fixture, "packages/agent-contracts/src");
+  const contracts = join(fixture, "packages/contracts/src");
   mkdirSync(contracts, { recursive: true });
-  cpSync(resolve(source, "../../agent-contracts/src/provider-usage.ts"), join(contracts, "provider-usage.ts"));
+  cpSync(resolve(source, "../../contracts/src/provider-usage.ts"), join(contracts, "provider-usage.ts"));
   console.log(`[standalone] Fixture: ${fixture}`);
   console.log(`[standalone] Source SHA256: ${sourceDigest(join(fixture, "packages")).digest("hex")}`);
   console.log("[standalone] No ancestor node_modules; only canonical contract source, no contracts manifest or dist.");

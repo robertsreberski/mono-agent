@@ -25,7 +25,7 @@ Put the remote bearer token in `.env` as
   "channels": {
     "plugins": [
       {
-        "package": "@mono-agent/a2a-adapter",
+        "package": "@mono-agent/channel-a2a",
         "id": "a2a",
         "config": {
           "consumer": {
@@ -58,7 +58,7 @@ There is no auto-wired A2A consumer channel. If you set plugin `config.consumer`
 `createA2AConsumerResponder` returns a standard `AgentResponder`, so a remote A2A agent plugs into the same composition machinery as any local agent. It is **lazy**: the Agent Card discovery and client creation happen on the first `respond()` call, then the connected client is reused for subsequent calls.
 
 ```ts
-import { createA2AConsumerResponder } from "@mono-agent/a2a-adapter";
+import { createA2AConsumerResponder } from "@mono-agent/channel-a2a";
 
 const responder = createA2AConsumerResponder({
   agentUrl: "http://127.0.0.1:4202",
@@ -124,7 +124,7 @@ reconcile its terminal state later. It requires an `idempotencyKey` and owns the
 response projection: callers cannot set `returnImmediately` or `stream`.
 
 ```ts
-import { createA2AConsumer } from "@mono-agent/a2a-adapter";
+import { createA2AConsumer } from "@mono-agent/channel-a2a";
 
 const consumer = await createA2AConsumer({ agentUrl });
 const dispatch = await consumer.dispatchMessage({
@@ -208,7 +208,7 @@ business outcome.
 The responder you create from `createA2AConsumerResponder` is bound to a single `agentUrl`. To pick a remote agent **per request**, read plugin `config.consumer.remoteAgentUrls` / `defaultRemoteAgentUrl` from config and construct (or look up a cached) responder for the chosen URL at routing time. A simple pattern is a small map keyed by URL:
 
 ```ts
-import { createA2AConsumerResponder } from "@mono-agent/a2a-adapter";
+import { createA2AConsumerResponder } from "@mono-agent/channel-a2a";
 
 const responders = new Map<string, ReturnType<typeof createA2AConsumerResponder>>();
 

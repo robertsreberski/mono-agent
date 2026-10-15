@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { parseProcessJobProjection } from "@mono-agent/agent-contracts";
+import { parseProcessJobProjection } from "@mono-agent/contracts";
 
 import { WebConsoleError } from "./errors.js";
 

@@ -33,8 +33,8 @@ A machine-level proxy `.npmrc` can break npm against npmjs. Every npm read/write
 pins the registry or blanks the userconfig:
 
 ```bash
-npm view @mono-agent/agent-app version --registry https://registry.npmjs.org/
-npm view @mono-agent/agent-app version --userconfig /dev/null
+npm view @mono-agent/app version --registry https://registry.npmjs.org/
+npm view @mono-agent/app version --userconfig /dev/null
 npm whoami --registry https://registry.npmjs.org/
 ```
 
@@ -42,7 +42,7 @@ npm whoami --registry https://registry.npmjs.org/
 
 ```bash
 pnpm run release:verify -- --tag vX.Y.Z
-TMP=$(mktemp -d); npm install -g --prefix "$TMP" --userconfig /dev/null @mono-agent/agent-app@X.Y.Z
+TMP=$(mktemp -d); npm install -g --prefix "$TMP" --userconfig /dev/null @mono-agent/app@X.Y.Z
 "$TMP/bin/mono-agent" --help
 ```
 

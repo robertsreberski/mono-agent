@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-Channels are how a mono-agent receives input and delivers replies. Core channels use independent JSON sections in `mono-agent.config.json`; external channel packages are declared under `channels.plugins[]` and return the same `ChannelDriver` shape. Most channels opt in through their own `enabled` flag; the loopback operator endpoint retains the compatibility config id `tui`, defaults on, and can be disabled explicitly. `@mono-agent/agent-app` composes the resolved drivers into the running host. This page explains the shared lifecycle, how to pick a channel, and links to every per-channel guide. Coverage: **config** unless a feature is noted otherwise.
+Channels are how a mono-agent receives input and delivers replies. Core channels use independent JSON sections in `mono-agent.config.json`; external channel packages are declared under `channels.plugins[]` and return the same `ChannelDriver` shape. Most channels opt in through their own `enabled` flag; the loopback operator endpoint retains the compatibility config id `tui`, defaults on, and can be disabled explicitly. `@mono-agent/app` composes the resolved drivers into the running host. This page explains the shared lifecycle, how to pick a channel, and links to every per-channel guide. Coverage: **config** unless a feature is noted otherwise.
 
 ## Core channels
 
@@ -22,9 +22,9 @@ Channels are how a mono-agent receives input and delivers replies. Core channels
 
 | Channel | Transport | Plugin package | Guide |
 | --- | --- | --- | --- |
-| WhatsApp | Baileys socket (QR login) | `@mono-agent/whatsapp-adapter` | [WhatsApp](/channels/whatsapp/) |
-| Facebook Messenger | Meta webhook + Send API | `@mono-agent/messenger-adapter` | [Messenger](/channels/messenger/) |
-| A2A | Agent-to-Agent provider/consumer | `@mono-agent/a2a-adapter` | [A2A](/channels/a2a/) |
+| WhatsApp | Baileys socket (QR login) | `@mono-agent/channel-whatsapp` | [WhatsApp](/channels/whatsapp/) |
+| Facebook Messenger | Meta webhook + Send API | `@mono-agent/channel-messenger` | [Messenger](/channels/messenger/) |
+| A2A | Agent-to-Agent provider/consumer | `@mono-agent/channel-a2a` | [A2A](/channels/a2a/) |
 
 Channels are fully independent: enabling one neither requires nor affects another, and a misconfigured channel never blocks the rest of the host from starting.
 
@@ -92,4 +92,4 @@ Replies go back over the same channel that received the request. To send *outbou
 
 ## Custom transports
 
-For a bespoke transport, implement a `ChannelDriver` from `@mono-agent/agent-contracts` and either expose it from a package loaded by `channels.plugins[]` or pass it via `startMonoAgentApp({ drivers })`. See [Write your own channel adapter](/programmatic/custom-channels/).
+For a bespoke transport, implement a `ChannelDriver` from `@mono-agent/contracts` and either expose it from a package loaded by `channels.plugins[]` or pass it via `startMonoAgentApp({ drivers })`. See [Write your own channel adapter](/programmatic/custom-channels/).

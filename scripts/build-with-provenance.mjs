@@ -41,7 +41,7 @@ const WINDOWS_PNPM_ARGUMENTS = new Set([
   JSON.stringify(["-r", "--sort", "run", "build"]),
 ]);
 const REQUIRED_EXECUTABLES = Object.freeze([
-  "packages/agent-app/dist/cli.js",
+  "packages/app/dist/cli.js",
 ]);
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 

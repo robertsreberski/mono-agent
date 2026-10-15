@@ -5,7 +5,7 @@ sidebar:
   order: 6
 ---
 
-This page covers the **provider** side of the A2A channel: how mono-agent serves your agent over the [A2A protocol](https://a2a-protocol.org) so other agents can discover and call it. The channel is provided by the external `@mono-agent/a2a-adapter` package and loaded through `channels.plugins[]`. It publishes an Agent Card, accepts messages over JSON-RPC and REST, and streams responses. Calling *remote* A2A agents (the consumer side) is programmatic — see [A2A consumer](/programmatic/a2a-consumer/).
+This page covers the **provider** side of the A2A channel: how mono-agent serves your agent over the [A2A protocol](https://a2a-protocol.org) so other agents can discover and call it. The channel is provided by the external `@mono-agent/channel-a2a` package and loaded through `channels.plugins[]`. It publishes an Agent Card, accepts messages over JSON-RPC and REST, and streams responses. Calling *remote* A2A agents (the consumer side) is programmatic — see [A2A consumer](/programmatic/a2a-consumer/).
 
 Coverage: **config**. The provider is fully described by the A2A plugin entry's `config.provider`, `config.agent`, and `config.skill` settings in `mono-agent.config.json`.
 
@@ -60,7 +60,7 @@ credential.
   "channels": {
     "plugins": [
       {
-        "package": "@mono-agent/a2a-adapter",
+        "package": "@mono-agent/channel-a2a",
         "id": "a2a",
         "config": {
           "enabled": true,

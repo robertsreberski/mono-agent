@@ -22,63 +22,63 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.31.0
         version: 1.31.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
-      '@mono-agent/a2a-adapter':
+      '@mono-agent/app':
         specifier: workspace:0.25.1
-        version: link:extras/a2a-adapter
-      '@mono-agent/agent-app':
+        version: link:packages/app
+      '@mono-agent/channel-a2a':
         specifier: workspace:0.25.1
-        version: link:packages/agent-app
-      '@mono-agent/agent-contracts':
+        version: link:extras/channel-a2a
+      '@mono-agent/channel-messenger':
         specifier: workspace:0.25.1
-        version: link:packages/agent-contracts
-      '@mono-agent/agent-harness':
+        version: link:extras/channel-messenger
+      '@mono-agent/channel-openai-api':
         specifier: workspace:0.25.1
-        version: link:packages/agent-harness
-      '@mono-agent/agent-orchestrator':
+        version: link:packages/channel-openai-api
+      '@mono-agent/channel-operator':
         specifier: workspace:0.25.1
-        version: link:extras/agent-orchestrator
-      '@mono-agent/agent-runtime':
+        version: link:packages/channel-operator
+      '@mono-agent/channel-slack':
         specifier: workspace:0.25.1
-        version: link:packages/agent-runtime
+        version: link:packages/channel-slack
+      '@mono-agent/channel-telegram':
+        specifier: workspace:0.25.1
+        version: link:packages/channel-telegram
+      '@mono-agent/channel-whatsapp':
+        specifier: workspace:0.25.1
+        version: link:extras/channel-whatsapp
       '@mono-agent/config':
         specifier: workspace:0.25.1
         version: link:packages/config
-      '@mono-agent/cron-adapter':
+      '@mono-agent/contracts':
         specifier: workspace:0.25.1
-        version: link:packages/cron-adapter
+        version: link:packages/contracts
+      '@mono-agent/conversation':
+        specifier: workspace:0.25.1
+        version: link:packages/conversation
       '@mono-agent/docs-mcp':
         specifier: workspace:0.25.1
         version: link:extras/docs-mcp
       '@mono-agent/memory':
         specifier: workspace:0.25.1
         version: link:packages/memory
-      '@mono-agent/messenger-adapter':
-        specifier: workspace:0.25.1
-        version: link:extras/messenger-adapter
       '@mono-agent/observability':
         specifier: workspace:0.25.1
         version: link:packages/observability
-      '@mono-agent/openai-api-adapter':
+      '@mono-agent/orchestrator':
         specifier: workspace:0.25.1
-        version: link:packages/openai-api-adapter
-      '@mono-agent/operator-adapter':
+        version: link:extras/orchestrator
+      '@mono-agent/trigger-cron':
         specifier: workspace:0.25.1
-        version: link:packages/operator-adapter
-      '@mono-agent/slack-adapter':
+        version: link:packages/trigger-cron
+      '@mono-agent/trigger-webhook':
         specifier: workspace:0.25.1
-        version: link:packages/slack-adapter
-      '@mono-agent/telegram-adapter':
+        version: link:packages/trigger-webhook
+      '@mono-agent/turn':
         specifier: workspace:0.25.1
-        version: link:packages/telegram-adapter
+        version: link:packages/turn
       '@mono-agent/web':
         specifier: workspace:0.25.1
         version: link:packages/web
-      '@mono-agent/webhook-adapter':
-        specifier: workspace:0.25.1
-        version: link:packages/webhook-adapter
-      '@mono-agent/whatsapp-adapter':
-        specifier: workspace:0.25.1
-        version: link:extras/whatsapp-adapter
       '@types/node':
         specifier: ^22.15.18
         version: 22.19.19
@@ -98,14 +98,14 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0
 
-  extras/a2a-adapter:
+  extras/channel-a2a:
     dependencies:
       '@a2a-js/sdk':
         specifier: 1.0.0-alpha.0
         version: 1.0.0-alpha.0(express@5.2.1(supports-color@7.2.0))
-      '@mono-agent/agent-contracts':
+      '@mono-agent/contracts':
         specifier: workspace:0.25.1
-        version: link:../../packages/agent-contracts
+        version: link:../../packages/contracts
       express:
         specifier: ^5.1.0
         version: 5.2.1(supports-color@7.2.0)
@@ -114,17 +114,20 @@ importers:
         specifier: ^5.0.2
         version: 5.0.6
 
-  extras/agent-orchestrator:
+  extras/channel-messenger:
     dependencies:
-      '@modelcontextprotocol/sdk':
-        specifier: 1.31.0
-        version: 1.31.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
-      '@mono-agent/agent-contracts':
+      '@mono-agent/contracts':
         specifier: workspace:0.25.1
-        version: link:../../packages/agent-contracts
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        version: link:../../packages/contracts
+
+  extras/channel-whatsapp:
+    dependencies:
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../../packages/contracts
+      '@whiskeysockets/baileys':
+        specifier: ^7.0.0-rc13
+        version: 7.0.0-rc13(sharp@0.35.5(@types/node@22.19.19))(supports-color@7.2.0)
 
   extras/docs-mcp:
     dependencies:
@@ -141,22 +144,19 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
-  extras/messenger-adapter:
+  extras/orchestrator:
     dependencies:
-      '@mono-agent/agent-contracts':
+      '@modelcontextprotocol/sdk':
+        specifier: 1.31.0
+        version: 1.31.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
+      '@mono-agent/contracts':
         specifier: workspace:0.25.1
-        version: link:../../packages/agent-contracts
+        version: link:../../packages/contracts
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
-  extras/whatsapp-adapter:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../../packages/agent-contracts
-      '@whiskeysockets/baileys':
-        specifier: ^7.0.0-rc13
-        version: 7.0.0-rc13(sharp@0.35.5(@types/node@22.19.19))(supports-color@7.2.0)
-
-  packages/agent-app:
+  packages/app:
     dependencies:
       '@agentclientprotocol/sdk':
         specifier: 1.3.0
@@ -170,45 +170,45 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.31.0
         version: 1.31.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
-      '@mono-agent/agent-contracts':
+      '@mono-agent/channel-openai-api':
         specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      '@mono-agent/agent-harness':
+        version: link:../channel-openai-api
+      '@mono-agent/channel-operator':
         specifier: workspace:0.25.1
-        version: link:../agent-harness
-      '@mono-agent/agent-runtime':
+        version: link:../channel-operator
+      '@mono-agent/channel-slack':
         specifier: workspace:0.25.1
-        version: link:../agent-runtime
+        version: link:../channel-slack
+      '@mono-agent/channel-telegram':
+        specifier: workspace:0.25.1
+        version: link:../channel-telegram
       '@mono-agent/config':
         specifier: workspace:0.25.1
         version: link:../config
-      '@mono-agent/cron-adapter':
+      '@mono-agent/contracts':
         specifier: workspace:0.25.1
-        version: link:../cron-adapter
+        version: link:../contracts
+      '@mono-agent/conversation':
+        specifier: workspace:0.25.1
+        version: link:../conversation
       '@mono-agent/memory':
         specifier: workspace:0.25.1
         version: link:../memory
       '@mono-agent/observability':
         specifier: workspace:0.25.1
         version: link:../observability
-      '@mono-agent/openai-api-adapter':
+      '@mono-agent/trigger-cron':
         specifier: workspace:0.25.1
-        version: link:../openai-api-adapter
-      '@mono-agent/operator-adapter':
+        version: link:../trigger-cron
+      '@mono-agent/trigger-webhook':
         specifier: workspace:0.25.1
-        version: link:../operator-adapter
-      '@mono-agent/slack-adapter':
+        version: link:../trigger-webhook
+      '@mono-agent/turn':
         specifier: workspace:0.25.1
-        version: link:../slack-adapter
-      '@mono-agent/telegram-adapter':
-        specifier: workspace:0.25.1
-        version: link:../telegram-adapter
+        version: link:../turn
       '@mono-agent/web':
         specifier: workspace:0.25.1
         version: link:../web
-      '@mono-agent/webhook-adapter':
-        specifier: workspace:0.25.1
-        version: link:../webhook-adapter
       undici:
         specifier: 8.11.2
         version: 8.11.2
@@ -219,25 +219,156 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
-  packages/agent-contracts: {}
-
-  packages/agent-harness:
+  packages/channel-openai-api:
     dependencies:
-      '@mono-agent/agent-contracts':
+      '@mono-agent/contracts':
         specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      '@mono-agent/agent-runtime':
+        version: link:../contracts
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1(supports-color@7.2.0)
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
+
+  packages/channel-operator:
+    dependencies:
+      '@mono-agent/contracts':
         specifier: workspace:0.25.1
-        version: link:../agent-runtime
+        version: link:../contracts
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1(supports-color@7.2.0)
+      undici:
+        specifier: 8.11.2
+        version: 8.11.2
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
+
+  packages/channel-slack:
+    dependencies:
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
+      ws:
+        specifier: 8.21.1
+        version: 8.21.1
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+
+  packages/channel-telegram:
+    dependencies:
+      '@grammyjs/runner':
+        specifier: ^2.0.3
+        version: 2.0.3(grammy@1.44.0(supports-color@7.2.0))
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
+      grammy:
+        specifier: ^1.44.0
+        version: 1.44.0(supports-color@7.2.0)
+      remark-gfm:
+        specifier: ^1.0.0
+        version: 1.0.0(supports-color@7.2.0)
+      remark-parse:
+        specifier: ^9.0.0
+        version: 9.0.0(supports-color@7.2.0)
+      remark-stringify:
+        specifier: ^9.0.1
+        version: 9.0.1
+      string-width:
+        specifier: ^5.1.2
+        version: 5.1.2
+      telegramify-markdown:
+        specifier: ^1.3.3
+        version: 1.3.3(supports-color@7.2.0)
+      unified:
+        specifier: ^9.2.2
+        version: 9.2.2
+
+  packages/config:
+    dependencies:
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
+      '@mono-agent/turn':
+        specifier: workspace:0.25.1
+        version: link:../turn
+
+  packages/contracts: {}
+
+  packages/conversation:
+    dependencies:
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
       '@mono-agent/observability':
         specifier: workspace:0.25.1
         version: link:../observability
+      '@mono-agent/turn':
+        specifier: workspace:0.25.1
+        version: link:../turn
     devDependencies:
       '@earendil-works/pi-ai':
         specifier: 1.2.0
         version: 1.2.0(@aws-sdk/credential-provider-node@3.972.83)(@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(@smithy/signature-v4@5.7.3)(supports-color@7.2.0)(undici@8.11.2)(ws@8.21.1)(zod@4.4.3)
 
-  packages/agent-runtime:
+  packages/create-mono-agent:
+    dependencies:
+      '@mono-agent/app':
+        specifier: workspace:0.25.1
+        version: link:../app
+
+  packages/memory:
+    dependencies:
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
+      better-sqlite3:
+        specifier: ^11.8.1
+        version: 11.10.0
+      sqlite-vec:
+        specifier: ^0.1.7-alpha.2
+        version: 0.1.9
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.12
+        version: 7.6.13
+
+  packages/observability:
+    dependencies:
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
+
+  packages/trigger-cron:
+    dependencies:
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
+      cron-parser:
+        specifier: ^5.5.0
+        version: 5.5.0
+
+  packages/trigger-webhook:
+    dependencies:
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1(supports-color@7.2.0)
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
+
+  packages/turn:
     dependencies:
       '@earendil-works/pi-agent-core':
         specifier: 1.2.0
@@ -248,9 +379,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.31.0
         version: 1.31.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
-      '@mono-agent/agent-contracts':
+      '@mono-agent/contracts':
         specifier: workspace:0.25.1
-        version: link:../agent-contracts
+        version: link:../contracts
       '@mozilla/readability':
         specifier: 0.6.0
         version: 0.6.0
@@ -289,138 +420,20 @@ importers:
         specifier: 5.0.6
         version: 5.0.6
 
-  packages/config:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      '@mono-agent/agent-runtime':
-        specifier: workspace:0.25.1
-        version: link:../agent-runtime
-
-  packages/create-mono-agent:
-    dependencies:
-      '@mono-agent/agent-app':
-        specifier: workspace:0.25.1
-        version: link:../agent-app
-
-  packages/cron-adapter:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      cron-parser:
-        specifier: ^5.5.0
-        version: 5.5.0
-
-  packages/memory:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      better-sqlite3:
-        specifier: ^11.8.1
-        version: 11.10.0
-      sqlite-vec:
-        specifier: ^0.1.7-alpha.2
-        version: 0.1.9
-    devDependencies:
-      '@types/better-sqlite3':
-        specifier: ^7.6.12
-        version: 7.6.13
-
-  packages/observability:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-
-  packages/openai-api-adapter:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      express:
-        specifier: ^5.1.0
-        version: 5.2.1(supports-color@7.2.0)
-    devDependencies:
-      '@types/express':
-        specifier: ^5.0.2
-        version: 5.0.6
-
-  packages/operator-adapter:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      express:
-        specifier: ^5.1.0
-        version: 5.2.1(supports-color@7.2.0)
-      undici:
-        specifier: 8.11.2
-        version: 8.11.2
-    devDependencies:
-      '@types/express':
-        specifier: ^5.0.2
-        version: 5.0.6
-
-  packages/slack-adapter:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      ws:
-        specifier: 8.21.1
-        version: 8.21.1
-    devDependencies:
-      '@types/ws':
-        specifier: ^8.18.1
-        version: 8.18.1
-
-  packages/telegram-adapter:
-    dependencies:
-      '@grammyjs/runner':
-        specifier: ^2.0.3
-        version: 2.0.3(grammy@1.44.0(supports-color@7.2.0))
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      grammy:
-        specifier: ^1.44.0
-        version: 1.44.0(supports-color@7.2.0)
-      remark-gfm:
-        specifier: ^1.0.0
-        version: 1.0.0(supports-color@7.2.0)
-      remark-parse:
-        specifier: ^9.0.0
-        version: 9.0.0(supports-color@7.2.0)
-      remark-stringify:
-        specifier: ^9.0.1
-        version: 9.0.1
-      string-width:
-        specifier: ^5.1.2
-        version: 5.1.2
-      telegramify-markdown:
-        specifier: ^1.3.3
-        version: 1.3.3(supports-color@7.2.0)
-      unified:
-        specifier: ^9.2.2
-        version: 9.2.2
-
   packages/web:
     dependencies:
-      '@mono-agent/agent-contracts':
+      '@mono-agent/channel-operator':
         specifier: workspace:0.25.1
-        version: link:../agent-contracts
+        version: link:../channel-operator
       '@mono-agent/config':
         specifier: workspace:0.25.1
         version: link:../config
+      '@mono-agent/contracts':
+        specifier: workspace:0.25.1
+        version: link:../contracts
       '@mono-agent/observability':
         specifier: workspace:0.25.1
         version: link:../observability
-      '@mono-agent/operator-adapter':
-        specifier: workspace:0.25.1
-        version: link:../operator-adapter
       compression:
         specifier: 1.8.2
         version: 1.8.2(supports-color@7.2.0)
@@ -446,19 +459,6 @@ importers:
       undici:
         specifier: 8.11.2
         version: 8.11.2
-
-  packages/webhook-adapter:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.25.1
-        version: link:../agent-contracts
-      express:
-        specifier: ^5.1.0
-        version: 5.2.1(supports-color@7.2.0)
-    devDependencies:
-      '@types/express':
-        specifier: ^5.0.2
-        version: 5.0.6
 
 packages:
 

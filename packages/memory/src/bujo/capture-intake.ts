@@ -16,7 +16,7 @@ import type {
   MemoryCompletedTurn,
   MemoryCaptureEvidence,
   MemoryCompletedTurnAdmissionStatus,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { acquireMemoryWriterLease } from "./generations.js";

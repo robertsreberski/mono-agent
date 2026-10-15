@@ -108,7 +108,7 @@ async function collectSources() {
       return firstSegment !== "skills" && firstSegment !== "superpowers";
     })
     .map((path) => ({ path, source: "docs" }));
-  const composerRoot = join(repositoryRoot, "packages", "agent-app", "skills", "mono-agent-composer");
+  const composerRoot = join(repositoryRoot, "packages", "app", "skills", "mono-agent-composer");
   const composerFiles = [
     join(composerRoot, "SKILL.md"),
     ...(await walkMarkdown(join(composerRoot, "references"))),

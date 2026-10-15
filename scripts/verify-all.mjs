@@ -175,9 +175,9 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
 }
 
 export function readReleaseSmokeTag(cwd, readFile = readFileSync) {
-  const manifest = JSON.parse(readFile(resolve(cwd, "packages/agent-app/package.json"), "utf8"));
+  const manifest = JSON.parse(readFile(resolve(cwd, "packages/app/package.json"), "utf8"));
   if (typeof manifest.version !== "string" || manifest.version.length === 0) {
-    throw new Error("packages/agent-app/package.json must contain a version for release smoke checks.");
+    throw new Error("packages/app/package.json must contain a version for release smoke checks.");
   }
   return `v${manifest.version}`;
 }

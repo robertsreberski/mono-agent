@@ -44,7 +44,7 @@ export async function runManagedRuntimeAttestationProbe(
   const { repo, runtimeCliPath, cwd, configPath, envFile, expectedSnapshot, nodeAbi, launchProof } = parsed;
 
   try {
-    const dist = join(repo, "packages", "agent-app", "dist");
+    const dist = join(repo, "packages", "app", "dist");
     const [runtimeModule, snapshotModule, snapshotKeyModule, packagesModule, approvalModule, launchdModule] = await Promise.all([
       import(pathToFileURL(join(dist, "background-runtime.js")).href),
       import(pathToFileURL(join(dist, "background-snapshot.js")).href),
@@ -76,10 +76,10 @@ export async function runManagedRuntimeAttestationProbe(
       env: durableInputs.environment,
     });
     const attestation = await runtimeModule.attestManagedBackgroundRuntime({
-      currentCliPath: join(repo, "packages", "agent-app", "dist", "cli.js"),
+      currentCliPath: join(repo, "packages", "app", "dist", "cli.js"),
       runtimeCliPath,
       nodeAbi,
-      packageSource: join(repo, "packages", "agent-app"),
+      packageSource: join(repo, "packages", "app"),
       additionalPackages,
     });
     if (attestation?.schema !== "mono-agent.managed-runtime-attestation.v1"

@@ -1,4 +1,4 @@
-import { classifyNotifySuppression } from "@mono-agent/agent-contracts";
+import { classifyNotifySuppression } from "@mono-agent/contracts";
 import type { WebMessagePart } from "./contracts.js";
 
 /** Call only after the store verifies a host-owned wake delivery association. */

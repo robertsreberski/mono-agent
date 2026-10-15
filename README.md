@@ -110,7 +110,7 @@ For an existing agent folder, a configured responder starts with:
 
 ```ts
 import { loadMonoAgentConfig } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+import { createConfiguredAgentResponder } from "@mono-agent/app";
 
 const config = await loadMonoAgentConfig({
   cwd: process.cwd(),

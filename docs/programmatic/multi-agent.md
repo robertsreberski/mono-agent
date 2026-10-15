@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-This page covers wiring one agent (the *orchestrator*) so its model can delegate to other agents (*collaborators*) at its own discretion, using `createCollaboratorToolRuntimeExtension` from `@mono-agent/agent-orchestrator`. Delegation is model-directed: the extension publishes one `AskCollaborator` MCP tool, bound to loopback by default, and the orchestrator model decides whether, when, and how often to call it before producing the final answer.
+This page covers wiring one agent (the *orchestrator*) so its model can delegate to other agents (*collaborators*) at its own discretion, using `createCollaboratorToolRuntimeExtension` from `@mono-agent/orchestrator`. Delegation is model-directed: the extension publishes one `AskCollaborator` MCP tool, bound to loopback by default, and the orchestrator model decides whether, when, and how often to call it before producing the final answer.
 
 This is a **code**-only capability — there is no config key for it. See the feature row `orchestrator.ask-collaborator` in the [feature matrix](/reference/feature-matrix/) and the [end-to-end orchestration playbook](/playbooks/multi-agent-orchestration/).
 
@@ -25,7 +25,7 @@ The extension is request-scoped. You create it inside `runtimeOptionsForRequest`
 ## API
 
 ```ts
-import { createCollaboratorToolRuntimeExtension } from "@mono-agent/agent-orchestrator";
+import { createCollaboratorToolRuntimeExtension } from "@mono-agent/orchestrator";
 ```
 
 ### `createCollaboratorToolRuntimeExtension(options)`
@@ -54,18 +54,18 @@ The returned `CollaboratorToolRuntimeExtension` has:
 
 ## Wiring into the orchestrator
 
-Build the orchestrator responder with `createConfiguredAgentResponder` (from `@mono-agent/agent-app`; see [programmatic composition](/programmatic/composition/)) and supply `runtimeOptionsForRequest`. This per-request hook — feature row `harness.request-runtime-options` — is where you create the extension and hand back its `runtimeOptions` and `cleanup`:
+Build the orchestrator responder with `createConfiguredAgentResponder` (from `@mono-agent/app`; see [programmatic composition](/programmatic/composition/)) and supply `runtimeOptionsForRequest`. This per-request hook — feature row `harness.request-runtime-options` — is where you create the extension and hand back its `runtimeOptions` and `cleanup`:
 
 The snippet assumes the host has loaded `orchestratorCoreConfig`, selected an
 `orchestratorRuntime`, and resolved `researcherUrl`, `workerUrl`, and `timeoutMs`.
 
 ```ts
-import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+import { createConfiguredAgentResponder } from "@mono-agent/app";
 import {
   createCollaboratorToolRuntimeExtension,
   type OrchestratorCollaborator,
-} from "@mono-agent/agent-orchestrator";
-import { createA2AConsumerResponder } from "@mono-agent/a2a-adapter";
+} from "@mono-agent/orchestrator";
+import { createA2AConsumerResponder } from "@mono-agent/channel-a2a";
 
 const collaborators: readonly OrchestratorCollaborator[] = [
   {
@@ -116,7 +116,7 @@ Do not reuse one extension across requests. A new server is created per turn and
 
 ## Example topology
 
-A typical local setup runs three roles, each built from `@mono-agent/agent-app`, where the orchestrator reaches the other two over **loopback A2A**:
+A typical local setup runs three roles, each built from `@mono-agent/app`, where the orchestrator reaches the other two over **loopback A2A**:
 
 | Role | Transport | Tool policy | Trace name |
 | --- | --- | --- | --- |
@@ -130,7 +130,7 @@ Local Ollama collaborators can take longer than the 60s A2A consumer default whe
 
 ## Related
 
-- [Programmatic composition](/programmatic/composition/) — building responders from config with `@mono-agent/agent-app`.
+- [Programmatic composition](/programmatic/composition/) — building responders from config with `@mono-agent/app`.
 - [A2A consumers](/programmatic/a2a-consumer/) — consuming remote agents as responders or collaborators.
 - [A2A provider channel](/channels/a2a/) — exposing an agent as an A2A provider.
 - [MCP tools](/tools/mcp/) — how loopback collaborator servers are wired.

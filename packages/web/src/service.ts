@@ -1,5 +1,5 @@
 import { type ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
-import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
+import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/contracts";
 import type { WebCancelOrigin, WebExternalConversationChannel } from "./contracts.js";
 import type { ConsoleToolScope, ConsoleToolOperation, ExternalConsoleToolScope } from "./console-tools.js";
 import type { ExternalConversationObservation } from "./external-conversations.js";
@@ -33,7 +33,7 @@ import {
   type ProviderAuthStatusSnapshot,
   type ProviderAuthCheckSessionSnapshot,
   type ProviderAuthCheckStartInput,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
 import {
@@ -2201,7 +2201,7 @@ export class WebService {
     return job;
   }
 
-  async compactThread(threadId: string): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult> {
+  async compactThread(threadId: string): Promise<import("@mono-agent/contracts").AgentManualCompactionResult> {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
@@ -2220,7 +2220,7 @@ export class WebService {
     return this.compactIdleThread(threadId, connection);
   }
 
-  private async compactIdleThread(threadId: string, connection: AgentConnection, drainInputs = true): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult> {
+  private async compactIdleThread(threadId: string, connection: AgentConnection, drainInputs = true): Promise<import("@mono-agent/contracts").AgentManualCompactionResult> {
     // The model the next turn on this thread would declare (see launchTurn metadata).
     const { model, context1M } = this.resolveTurnSelection(threadId);
     const operation = (async () => {

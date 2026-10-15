@@ -1,0 +1,415 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxText,
+} from "@earendil-works/pi-ai";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { createChannelUserCancelReason } from "@mono-agent/contracts";
+import { createDurableHistoryStore, type AgentHarness } from "@mono-agent/conversation";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { createMonoRuntime } from "@mono-agent/turn/host";
+import { type MonoRuntimeLike, type RuntimeRunOptions } from "@mono-agent/turn/host/types";
+
+import { createConfiguredAgentHarness } from "../index.js";
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+interface ObservedRuntimeCall {
+  readonly prompt: string;
+  readonly options: RuntimeRunOptions;
+}
+
+interface PiContextMessage {
+  readonly role?: string;
+  readonly content?: unknown;
+}
+
+interface PiContext {
+  readonly messages?: readonly PiContextMessage[];
+}
+
+function observeRuntime(base: MonoRuntimeLike): {
+  readonly runtime: MonoRuntimeLike;
+  readonly calls: ObservedRuntimeCall[];
+  readonly invalidationErrors: unknown[];
+  readonly retirementErrors: unknown[];
+} {
+  const calls: ObservedRuntimeCall[] = [];
+  const invalidationErrors: unknown[] = [];
+  const retirementErrors: unknown[] = [];
+  return {
+    calls,
+    invalidationErrors,
+    retirementErrors,
+    runtime: {
+      ...base,
+      async run(prompt, options) {
+        calls.push({ prompt, options });
+        return await base.run(prompt, options);
+      },
+      async retireDurableSession(providerSessionId, sessionsRoot) {
+        try {
+          await base.retireDurableSession?.(providerSessionId, sessionsRoot);
+        } catch (error) {
+          retirementErrors.push(error);
+          throw error;
+        }
+      },
+      async invalidateSession(providerSessionId) {
+        try {
+          return await base.invalidateSession?.(providerSessionId) ?? false;
+        } catch (error) {
+          invalidationErrors.push(error);
+          throw error;
+        }
+      },
+    },
+  };
+}
+
+function transcriptOf(context: PiContext | undefined): string[] {
+  return (context?.messages ?? [])
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => {
+      const text = typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content
+              .filter((block): block is { readonly type: "text"; readonly text: string } =>
+                typeof block === "object"
+                && block !== null
+                && "type" in block
+                && block.type === "text"
+                && "text" in block
+                && typeof block.text === "string")
+              .map((block) => block.text)
+              .join("")
+          : "";
+      return `${message.role}:${text}`;
+    });
+}
+
+function contentMessages(options: RuntimeRunOptions): string[] {
+  return options.messages.map((message) => `${message.role}:${String(message.content)}`);
+}
+
+describe("configured durable session history", () => {
+  it("replays canonical history once and retains valid epochs after cancellation and failure", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-app-durable-pi-history-"));
+    tempDirs.push(dir);
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, ".mono-agent", "artifacts");
+    const historyRoot = join(dir, ".mono-agent", "history");
+    const sessionsRoot = join(dir, ".mono-agent", "pi-sessions");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+
+    const faux = fauxProvider({
+      provider: "faux",
+      models: [{ id: "faux-model", reasoning: false }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const piModel = faux.getModel();
+    const model = {
+      provider: "faux",
+      model: "faux-model",
+      reference: "faux:faux-model",
+    } as const;
+    const config: MonoAgentConfig = {
+      runtime: {
+        model,
+        maxTurns: 4,
+        workspace: dir,
+        session: { root: sessionsRoot, mode: "continuous", idleTimeoutMs: 60_000 },
+        compaction: { enabled: false },
+        retry: { primaryAttempts: 1, backoffMs: 1_000, maxBackoffMs: 15_000 },
+      },
+      providers: { piNative: {} },
+      context: { identityPath, selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: {
+        dir: artifactDir,
+        retention: { maxAgeDays: 365, maxCount: 50_000, dryRun: false },
+        memoryRetention: { maxAgeDays: 7, maxCount: 5_000, dryRun: false },
+      },
+      traceability: { registryDir: join(dir, "trace-sources") },
+    };
+    const seedStore = createDurableHistoryStore({
+      root: historyRoot,
+      retireProviderSession: async () => undefined,
+    });
+    await seedStore.append("durable-conversation", [
+      { role: "user", content: "seed-user", timestamp: "2026-07-01T00:00:00.000Z" },
+      { role: "assistant", content: "seed-assistant", timestamp: "2026-07-01T00:00:01.000Z" },
+    ]);
+
+    let createOnMissContext: PiContext | undefined;
+    let warmContext: PiContext | undefined;
+    let cancelledContext: PiContext | undefined;
+    let freshAfterCancellationContext: PiContext | undefined;
+    let failedContext: PiContext | undefined;
+    let freshAfterFailureContext: PiContext | undefined;
+    const cancellation = new AbortController();
+    faux.setResponses([
+      (context) => {
+        createOnMissContext = context as PiContext;
+        return fauxAssistantMessage([fauxText("turn-1-assistant")]);
+      },
+      (context) => {
+        warmContext = context as PiContext;
+        return fauxAssistantMessage([fauxText("turn-2-assistant")]);
+      },
+      (context) => {
+        cancelledContext = context as PiContext;
+        cancellation.abort(createChannelUserCancelReason("Web"));
+        return fauxAssistantMessage([], { stopReason: "aborted" });
+      },
+      (context) => {
+        freshAfterCancellationContext = context as PiContext;
+        return fauxAssistantMessage([fauxText("turn-3-assistant")]);
+      },
+      (context) => {
+        failedContext = context as PiContext;
+        return fauxAssistantMessage([], {
+          stopReason: "error",
+          errorMessage: "invalid_request_error: bad schema",
+        });
+      },
+      (context) => {
+        freshAfterFailureContext = context as PiContext;
+        return fauxAssistantMessage([fauxText("turn-4-assistant")]);
+      },
+    ]);
+
+    let firstHarness: AgentHarness | undefined;
+    let resumedHarness: AgentHarness | undefined;
+    try {
+      const firstRuntime = observeRuntime(createMonoRuntime());
+      firstHarness = await createConfiguredAgentHarness({
+        config,
+        cwd: dir,
+        runtime: firstRuntime.runtime,
+        runtimeOptions: {
+          piResolvedModel: piModel,
+          piResolvedModels: models,
+          effort: "none",
+          piMaxRetries: 0,
+        },
+      });
+
+      const first = await firstHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "turn-1-user",
+        abortSignal: new AbortController().signal,
+      });
+      expect(first.text).toBe("turn-1-assistant");
+      expect(firstRuntime.calls[0]?.prompt).not.toContain("seed-user");
+      expect(firstRuntime.calls[0]?.prompt).not.toContain("seed-assistant");
+      expect(contentMessages(firstRuntime.calls[0]!.options)).toEqual([
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+      ]);
+      expect(transcriptOf(createOnMissContext)).toEqual([
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+      ]);
+
+      const second = await firstHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "turn-2-user",
+        abortSignal: new AbortController().signal,
+      });
+      expect(second.text).toBe("turn-2-assistant");
+      expect(firstRuntime.calls[1]?.prompt).toBe(firstRuntime.calls[0]?.prompt);
+      // Native resume retains the exact earlier provider messages, including
+      // their original envelope, instead of rebuilding canonical text.
+      expect(transcriptOf(warmContext).slice(0, 3)).toEqual(transcriptOf(createOnMissContext));
+      expect(contentMessages(firstRuntime.calls[1]!.options)).toEqual([expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u)]);
+      expect(transcriptOf(warmContext)).toEqual([
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-1-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u),
+      ]);
+
+      const cancelled = await firstHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "cancelled-turn-user",
+        abortSignal: cancellation.signal,
+      });
+      expect(cancelled.failure?.kind).toBe("cancelled");
+      expect(cancelled.metadata.summary).toMatchObject({
+        status: "cancelled",
+        failureKind: "cancelled_user",
+        cancellationReason: { code: "operator", channel: "Web" },
+      });
+      expect({
+        invalidationErrors: firstRuntime.invalidationErrors,
+        retirementErrors: firstRuntime.retirementErrors,
+      }).toEqual({ invalidationErrors: [], retirementErrors: [] });
+      expect(transcriptOf(cancelledContext)).toEqual([
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-1-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-2-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?cancelled-turn-user$/u),
+      ]);
+      const historyAfterCancellation = await seedStore.load("durable-conversation");
+      expect(historyAfterCancellation.at(-2)).toMatchObject({ role: "user", content: "cancelled-turn-user" });
+      expect(historyAfterCancellation.at(-1)).toMatchObject({
+        role: "assistant",
+        content: expect.stringContaining("Run stopped by the operator."),
+      });
+
+      // A new harness must reopen the retained native transcript; canonical
+      // continuity remains available for cold reseeding and history tools.
+      await firstHarness.dispose?.();
+      firstHarness = undefined;
+
+      const resumedRuntime = observeRuntime(createMonoRuntime());
+      resumedHarness = await createConfiguredAgentHarness({
+        config,
+        cwd: dir,
+        runtime: resumedRuntime.runtime,
+        runtimeOptions: {
+          piResolvedModel: piModel,
+          piResolvedModels: models,
+          effort: "none",
+          piMaxRetries: 0,
+        },
+      });
+      const third = await resumedHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "turn-3-user",
+        abortSignal: new AbortController().signal,
+      });
+      expect(third.text).toBe("turn-3-assistant");
+      expect(resumedRuntime.calls[0]?.prompt).not.toContain("seed-user");
+      expect(resumedRuntime.calls[0]?.prompt).not.toContain("turn-1-user");
+      expect(contentMessages(resumedRuntime.calls[0]!.options)).toEqual([
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-1-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-2-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?cancelled-turn-user$/u),
+        expect.stringContaining("<cancelled_turn_history version=\"1\">") as unknown as string,
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-3-user$/u),
+      ]);
+      expect(JSON.stringify(freshAfterCancellationContext?.messages?.slice(0, cancelledContext?.messages?.length)))
+        .toBe(JSON.stringify(cancelledContext?.messages));
+      expect(JSON.stringify(freshAfterCancellationContext)).not.toContain("cancelled_turn_history");
+      expect(resumedRuntime.calls[0]?.options.sessionId).toBe(firstRuntime.calls[0]?.options.sessionId);
+
+      const failed = await resumedHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "failed-turn-user",
+        abortSignal: new AbortController().signal,
+      });
+      expect(failed.failure).toMatchObject({
+        kind: "provider_unavailable",
+        message: expect.stringContaining("invalid_request_error"),
+      });
+      expect(transcriptOf(failedContext).at(-1)).toMatch(/^user:(?:[\s\S]*\n\n)?failed-turn-user$/u);
+      const historyAfterFailure = await seedStore.load("durable-conversation");
+      expect(historyAfterFailure.at(-2)).toMatchObject({ role: "user", content: "failed-turn-user" });
+      expect(historyAfterFailure.at(-1)).toMatchObject({
+        role: "assistant",
+        idempotencyKey: expect.stringMatching(/^failed-turn:v1:/u),
+        content: expect.stringContaining('<failed_turn_history version="1">'),
+      });
+
+      await resumedHarness.dispose?.();
+      resumedHarness = undefined;
+
+      const afterFailureRuntime = observeRuntime(createMonoRuntime());
+      resumedHarness = await createConfiguredAgentHarness({
+        config,
+        cwd: dir,
+        runtime: afterFailureRuntime.runtime,
+        runtimeOptions: {
+          piResolvedModel: piModel,
+          piResolvedModels: models,
+          effort: "none",
+          piMaxRetries: 0,
+        },
+      });
+      const fourth = await resumedHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "turn-4-user",
+        abortSignal: new AbortController().signal,
+      });
+      expect(fourth.text).toBe("turn-4-assistant");
+      const seededAfterFailure = contentMessages(afterFailureRuntime.calls[0]!.options);
+      expect(seededAfterFailure).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?failed-turn-user$/u),
+        expect.stringContaining('<failed_turn_history version="1">') as unknown as string,
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-4-user$/u),
+      ]));
+      expect(JSON.stringify(freshAfterFailureContext?.messages?.slice(0, failedContext?.messages?.length)))
+        .toBe(JSON.stringify(failedContext?.messages));
+      expect(JSON.stringify(freshAfterFailureContext)).not.toContain("failed_turn_history");
+      expect(afterFailureRuntime.calls[0]?.options.sessionId).toBe(resumedRuntime.calls[0]?.options.sessionId);
+    } finally {
+      await resumedHarness?.dispose?.();
+      await firstHarness?.dispose?.();
+    }
+  });
+});
+
+it.each(["normal", "slow-writer"])("reopens a recovered tool-bearing Pi transcript in a second process (%s)", async (writerMode) => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { fileURLToPath } = await import("node:url");
+  const dir = await mkdtemp(join(tmpdir(), "terminal-recovery-process-")); tempDirs.push(dir);
+  const worker = fileURLToPath(new URL("./fixtures/terminal-recovery-worker.mjs", import.meta.url));
+  const run = async (mode: string) => JSON.parse((await promisify(execFile)(process.execPath, [worker, dir, mode, writerMode], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
+  const produced = await run("produce");
+  const consumed = await run("consume");
+  expect(produced.status).toBe("cancelled"); expect(consumed.status).toBe("success");
+  expect(consumed.pid).not.toBe(produced.pid);
+  expect(consumed.requests[0], `Producer providerSession: ${JSON.stringify(produced.records[0]?.providerSession)}; runtimeWarnings: ${JSON.stringify(produced.runtimeWarnings)}`)
+    .toBe(produced.requests[0]);
+  expect(JSON.stringify(consumed.context.slice(0, produced.context.length))).toBe(JSON.stringify(produced.context));
+  expect(consumed.context).toHaveLength(produced.context.length + 2);
+  expect(consumed.context[produced.context.length]).toMatchObject({ role: "user", projectionOnly: true, interruptionCause: "user_interrupted" });
+  expect(JSON.stringify(consumed.context[produced.context.length])).toContain("no tool was replayed");
+  expect(JSON.stringify(consumed.context)).toContain("disk-signature");
+  const producerReadResult = produced.context.find((message: {
+    role?: unknown;
+    toolCallId?: unknown;
+    content?: Array<{ type?: unknown; text?: unknown }>;
+    isError?: unknown;
+  }) => message.role === "toolResult" && message.toolCallId === "disk-read");
+  const producerReadText = producerReadResult?.content
+    ?.filter((part: { type?: unknown; text?: unknown }) => part.type === "text" && typeof part.text === "string")
+    .map((part: { text?: unknown }) => part.text)
+    .join("\n");
+  expect(
+    JSON.stringify(consumed.context),
+    `Producer disk-read toolResult: ${JSON.stringify({ text: producerReadText, isError: producerReadResult?.isError })}; runtimeWarnings: ${JSON.stringify(produced.runtimeWarnings)}`,
+  ).toContain("DURABLE TOOL EVIDENCE");
+  expect(JSON.stringify(consumed.context)).not.toContain("cancelled_turn_history");
+  expect(produced.runtimeWarnings).not.toEqual(expect.arrayContaining([expect.objectContaining({ warning_kind: "terminal_recovery_skipped" })]));
+  expect(produced.records[0].messages.at(-1).content).toContain('"state":"success"');
+  expect(produced.records[0].providerSession.revision).toBe(2);
+  expect(consumed.records[0].providerSession.revision).toBe(3);
+  expect(Object.keys(consumed.records[0].providerSession).sort()).toEqual(["epoch", "modelKey", "revision"]);
+  expect(JSON.stringify(consumed.records[0].messages)).toContain("cancelled_turn_history");
+});

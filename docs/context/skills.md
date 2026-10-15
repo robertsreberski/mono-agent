@@ -125,13 +125,13 @@ If you instead want a running agent to have the composer's knowledge in its own 
 ```json
 {
   "context": {
-    "skillsRoot": "packages/agent-app/skills",
+    "skillsRoot": "packages/app/skills",
     "selectedSkills": ["mono-agent-composer"]
   }
 }
 ```
 
-That loads `packages/agent-app/skills/mono-agent-composer/SKILL.md`. Use the path to wherever the `@mono-agent/agent-app` package is resolved in your project.
+That loads `packages/app/skills/mono-agent-composer/SKILL.md`. Use the path to wherever the `@mono-agent/app` package is resolved in your project.
 
 ## Skills are not tools
 

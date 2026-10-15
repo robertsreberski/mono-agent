@@ -3,7 +3,7 @@ import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
-import { installPromptCacheDiagnostics } from "../../packages/agent-runtime/src/ai/providers/engine-turn/prompt-cache-diagnostics.js";
+import { installPromptCacheDiagnostics } from "../../packages/turn/src/ai/providers/engine-turn/prompt-cache-diagnostics.js";
 import { summarizePromptCache, formatPromptCache } from "../summarize-prompt-cache.mjs";
 
 const artifactsDir = resolve("scripts/__tests__/fixtures/prompt-cache");

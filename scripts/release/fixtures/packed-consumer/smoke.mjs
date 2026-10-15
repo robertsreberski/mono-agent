@@ -30,8 +30,8 @@ for (const specifier of importSpecifiers) {
   }
 }
 
-if (packageNames.includes("@mono-agent/agent-app")) {
-  const appManifest = packageManifests.get("@mono-agent/agent-app");
+if (packageNames.includes("@mono-agent/app")) {
+  const appManifest = packageManifests.get("@mono-agent/app");
   if (typeof appManifest.bin === "object" && appManifest.bin["mono-agent-memory-recall"] !== undefined) {
     throw new Error("Packed app still publishes the retired memory-recall binary.");
   }
@@ -40,7 +40,7 @@ if (packageNames.includes("@mono-agent/agent-app")) {
   }
   await assertRemovedImport("@mono-agent/observability/otel", "ERR_PACKAGE_PATH_NOT_EXPORTED");
   await assertRemovedImport("@mono-agent/observability/run-export", "ERR_PACKAGE_PATH_NOT_EXPORTED");
-  if (target === "@mono-agent/agent-app") {
+  if (target === "@mono-agent/app") {
     await assertRemovedImport("@mono-agent/observability-phoenix", "ERR_MODULE_NOT_FOUND");
     await assertRemovedImport("@opentelemetry/otlp-transformer", "ERR_MODULE_NOT_FOUND");
     await assertRemovedImport("@opentelemetry/sdk-trace-base", "ERR_MODULE_NOT_FOUND");
@@ -50,12 +50,27 @@ if (packageNames.includes("@mono-agent/agent-app")) {
   await verifyRetiredTuiAndRunInspection();
 }
 
-if (packageNames.includes("@mono-agent/agent-runtime")) {
+if (packageNames.includes("@mono-agent/turn")) {
   await assertRemovedImport("@mono-agent/runtime-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/agent-app", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/agent-harness", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/agent-runtime", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/agent-contracts", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/slack-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/telegram-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/openai-api-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/operator-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/cron-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/webhook-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/whatsapp-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/messenger-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/a2a-adapter", "ERR_MODULE_NOT_FOUND");
+  await assertRemovedImport("@mono-agent/agent-orchestrator", "ERR_MODULE_NOT_FOUND");
+
   for (const removed of ["@mono-agent/engine", "@mono-agent/engine/sessions.js", "@mono-agent/engine/owned-fs.js"]) {
     await assertRemovedImport(removed, "ERR_MODULE_NOT_FOUND");
   }
-  for (const entry of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai"]) {
+  for (const entry of ["@mono-agent/turn", "@mono-agent/turn/ai"]) {
     const api = await import(entry);
     assert.equal("resolveRuntimeBridge" in api, false);
     assert.equal("generatePiNativeResponse" in api, false);
@@ -67,12 +82,12 @@ if (packageNames.includes("@mono-agent/agent-runtime")) {
     assert.equal(await api.resolveEngineTurnAdapter({ provider: "fictional", model: "fixture", reference: "fictional:fixture" }), api.engineTurnAdapter);
   }
   await assertRemovedImport(
-    "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js",
+    "@mono-agent/turn/agent/tools/shared/runtime-context.js",
     "ERR_PACKAGE_PATH_NOT_EXPORTED",
   );
 }
 
-if (packageNames.includes("@mono-agent/agent-runtime")) {
+if (packageNames.includes("@mono-agent/turn")) {
   await verifyEngineRoundTrip();
 }
 
@@ -85,9 +100,9 @@ if (packageNames.includes("@mono-agent/config")) {
 }
 
 const cliSmokes = [
-  { packageName: "@mono-agent/agent-app", binName: "mono-agent", args: ["--help"], statuses: [0] },
+  { packageName: "@mono-agent/app", binName: "mono-agent", args: ["--help"], statuses: [0] },
   {
-    packageName: "@mono-agent/agent-app",
+    packageName: "@mono-agent/app",
     binName: "mono-agent",
     args: ["backfill"],
     statuses: [2],
@@ -133,10 +148,10 @@ console.log(
 );
 
 async function verifyRetiredTuiAndRunInspection() {
-  const appManifest = packageManifests.get("@mono-agent/agent-app");
+  const appManifest = packageManifests.get("@mono-agent/app");
   const relativeCli = typeof appManifest.bin === "string" ? appManifest.bin : appManifest.bin?.["mono-agent"];
   if (typeof relativeCli !== "string") throw new Error("Packed app is missing mono-agent bin.");
-  const cli = join(installedPackageDirectory("@mono-agent/agent-app"), relativeCli);
+  const cli = join(installedPackageDirectory("@mono-agent/app"), relativeCli);
   const cwd = await mkdtemp(join(tmpdir(), "mono-agent-packed-retired-tui-"));
   const artifacts = join(cwd, "artifacts");
   const secret = `sk-${"A".repeat(48)}`;
@@ -347,7 +362,7 @@ async function runCapturedCli(command, args, cwd) {
 
 async function verifyEngineRoundTrip() {
   const entrypoints = {
-    "@mono-agent/agent-runtime/engine": [
+    "@mono-agent/turn/engine": [
       "JsonlSessionRepo",
       "MemorySessionRepo",
       "createRunDriver",
@@ -367,7 +382,7 @@ async function verifyEngineRoundTrip() {
       "shouldCompact",
       "generateSummaryWithRequest"
     ],
-    "@mono-agent/agent-runtime/engine/sessions.js": [
+    "@mono-agent/turn/engine/sessions.js": [
       "resolveDurableNativeSessionRepo",
       "resolveSession",
       "discardUncommittedSession",
@@ -391,7 +406,7 @@ async function verifyEngineRoundTrip() {
       "createSessionRegistry",
       "nativeSessionRegistry"
     ],
-    "@mono-agent/agent-runtime/engine/owned-fs.js": [
+    "@mono-agent/turn/engine/owned-fs.js": [
       "OwnedFileDamagedError",
       "assertIdentity",
       "isOwned",
@@ -408,9 +423,9 @@ async function verifyEngineRoundTrip() {
     if (JSON.stringify(actual) !== JSON.stringify(expected.sort())) throw new Error(`Unexpected engine exports from ${specifier}: ${actual}`);
   }
   for (const removed of ["session-store.js", "legacy-import.js", "journal-types.js", "journal-schema.js", "run-driver.js", "retry-stream.js", "session-context.js", "context.js", "compaction-kit/compaction.js", "journal-reader.js"]) {
-    await assertRemovedImport(`@mono-agent/agent-runtime/engine/${removed}`, "ERR_PACKAGE_PATH_NOT_EXPORTED");
+    await assertRemovedImport(`@mono-agent/turn/engine/${removed}`, "ERR_PACKAGE_PATH_NOT_EXPORTED");
   }
-  const { JsonlSessionRepo, projectContext } = await import("@mono-agent/agent-runtime/engine");
+  const { JsonlSessionRepo, projectContext } = await import("@mono-agent/turn/engine");
   const sessionsRoot = await mkdtemp(join(tmpdir(), "engine-packed-"));
   const repo = new JsonlSessionRepo({ sessionsRoot });
   try {

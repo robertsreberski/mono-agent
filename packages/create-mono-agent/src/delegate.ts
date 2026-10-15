@@ -72,7 +72,7 @@ export function delegateSignals(child: Pick<ChildProcess, "on" | "kill">, proc: 
   });
 
   child.on("error", (error: Error) => {
-    proc.stderr.write(`mono-agent: failed to launch the @mono-agent/agent-app CLI: ${error.message}\n`);
+    proc.stderr.write(`mono-agent: failed to launch the @mono-agent/app CLI: ${error.message}\n`);
     proc.exitCode = 1;
   });
 

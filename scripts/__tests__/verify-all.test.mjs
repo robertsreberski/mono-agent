@@ -216,7 +216,7 @@ describe("verify-all", () => {
       return JSON.stringify({ version: "1.2.3-beta.1" });
     })).toBe("v1.2.3-beta.1");
     expect(calls).toEqual([{
-      path: "/repo/packages/agent-app/package.json",
+      path: "/repo/packages/app/package.json",
       encoding: "utf8",
     }]);
   });
@@ -744,7 +744,7 @@ describe("verify-all", () => {
       "        id: release-smoke",
       "        run: |",
       "          set -euo pipefail",
-      "          VERSION=\"$(node -e \"process.stdout.write(require('./packages/agent-app/package.json').version)\")\"",
+      "          VERSION=\"$(node -e \"process.stdout.write(require('./packages/app/package.json').version)\")\"",
       "          echo \"tag=v${VERSION}\" >> \"$GITHUB_OUTPUT\"",
     ].join("\n");
     const releaseValidate = [
@@ -1261,7 +1261,7 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
   }),
   setupRunContract("release-tag derivation", literalScript([
       "set -euo pipefail",
-      "VERSION=\"$(node -e \"process.stdout.write(require('./packages/agent-app/package.json').version)\")\"",
+      "VERSION=\"$(node -e \"process.stdout.write(require('./packages/app/package.json').version)\")\"",
       "echo \"tag=v${VERSION}\" >> \"$GITHUB_OUTPUT\"",
     ]), "literal", "release-smoke"),
   gateRunContract(`pnpm run release:validate -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`, {

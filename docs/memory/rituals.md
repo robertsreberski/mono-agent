@@ -24,7 +24,7 @@ maintenance. For tier selection and the
 
 ## The in-app scheduler
 
-When the configured store tier is `bujo`, `agent-app` starts a consolidation scheduler
+When the configured store tier is `bujo`, `app` starts a consolidation scheduler
 alongside your channels.
 
 | Pass | What it does | Default cron |

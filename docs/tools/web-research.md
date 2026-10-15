@@ -163,7 +163,7 @@ download, MCP transport, browser impersonation, proxies, archive fallback, or
 key rotation. It ports the selected Hound 13.2.0/ddgs DuckDuckGo engine parser,
 snippet merging, canonical deduplication and host diversity, not full upstream
 feature parity. The package ships their licenses and precise source
-attribution (see `THIRD_PARTY_NOTICES.md` in `@mono-agent/agent-runtime`).
+attribution (see `THIRD_PARTY_NOTICES.md` in `@mono-agent/turn`).
 
 ```json
 {
@@ -580,7 +580,7 @@ providers do not grant permission to bypass site policy or access controls.
 
 Static extraction is local and content-aware. Its HTML fallback and link
 classification algorithms adapt Hound's MIT-licensed code (see
-`THIRD_PARTY_NOTICES.md` in `@mono-agent/agent-runtime`) using native Node
+`THIRD_PARTY_NOTICES.md` in `@mono-agent/turn`) using native Node
 parsers, without a Python runtime or external service for the `local` provider.
 This does not add a robots.txt preflight to existing `local` or browser calls:
 
@@ -773,7 +773,7 @@ not an anti-bot or authenticated browsing feature.
 Providers are source-level modules, not dynamically loaded config plugins:
 
 1. Add one module under
-   `packages/agent-runtime/src/agent/tools/web-search-providers/` implementing
+   `packages/turn/src/agent/tools/web-search-providers/` implementing
    the JSDoc `SearchProvider` contract in `registry.js`.
 2. Register it once in that registry. Declare its `name`, `configure`,
    `eligibility`/requirements, `admission` kind/key/process policy,

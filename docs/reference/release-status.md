@@ -50,7 +50,7 @@ The source retirements do not automatically choose a replacement memory backend,
 
 ## Run the source build instead
 
-If you need a source-only capability before the next release, build the workspace from a clone and run that CLI. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/agent-app/dist/cli.js` entry point, and the caveats. Treat a source build as an evaluation path: it is not the published, versioned artifact that other agents pin.
+If you need a source-only capability before the next release, build the workspace from a clone and run that CLI. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. Treat a source build as an evaluation path: it is not the published, versioned artifact that other agents pin.
 
 ## How this page is kept honest
 
@@ -58,8 +58,8 @@ The boundary moves with every release, so registry truth and source truth are ch
 
 ```bash
 npm view create-mono-agent version engines time
-npm view @mono-agent/agent-app@0.22.0 dependencies bin
-npm pack --dry-run --json @mono-agent/agent-app@0.22.0
+npm view @mono-agent/app@0.22.0 dependencies bin
+npm pack --dry-run --json @mono-agent/app@0.22.0
 git log --oneline v0.22.0..main
 ```
 

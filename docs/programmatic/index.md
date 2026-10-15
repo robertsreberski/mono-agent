@@ -13,9 +13,9 @@ Most agents use the CLI host. Embed the app only when you need a custom driver s
 
 | Altitude | Package | Entry point | Use when |
 | --- | --- | --- | --- |
-| App (default) | `@mono-agent/agent-app` | `startMonoAgentApp({ cwd, configPath, drivers, runtime })` | You want the full config-first host but need to override the channel driver set, inject a runtime, or embed it in a larger process. |
-| Responder | `@mono-agent/agent-app` | `createConfiguredAgentResponder({ config, memory, historyStore, runtimeOptions, runtimeOptionsForRequest })` | You want config-driven runtime/harness/memory composition but you own the transport (your own server, queue, or test harness). |
-| Bare | `@mono-agent/agent-app` + `@mono-agent/config` | `loadMonoAgentConfig(...)` → `createConfiguredAgentResponder({ config })` | You want the smallest config-driven responder, without channels or host-level service/scheduler lifecycle. Per-run JSONL recording and configured exporters still apply. |
+| App (default) | `@mono-agent/app` | `startMonoAgentApp({ cwd, configPath, drivers, runtime })` | You want the full config-first host but need to override the channel driver set, inject a runtime, or embed it in a larger process. |
+| Responder | `@mono-agent/app` | `createConfiguredAgentResponder({ config, memory, historyStore, runtimeOptions, runtimeOptionsForRequest })` | You want config-driven runtime/harness/memory composition but you own the transport (your own server, queue, or test harness). |
+| Bare | `@mono-agent/app` + `@mono-agent/config` | `loadMonoAgentConfig(...)` → `createConfiguredAgentResponder({ config })` | You want the smallest config-driven responder, without channels or host-level service/scheduler lifecycle. Per-run JSONL recording and configured exporters still apply. |
 
 All three use the same `MonoAgentConfig`. The escape hatch changes composition and request handling; it does not require you to rebuild runtime, prompt assembly, or memory.
 
@@ -24,7 +24,7 @@ All three use the same `MonoAgentConfig`. The escape hatch changes composition a
 `startMonoAgentApp` is the app host used after the CLI has prepared its environment and managed lifecycle. With no options, the function resolves `mono-agent.config.json` from `cwd`, starts traceability and services, then starts the built-in drivers plus configured `channels.plugins[]` packages in parallel.
 
 ```ts
-import { startMonoAgentApp } from "@mono-agent/agent-app";
+import { startMonoAgentApp } from "@mono-agent/app";
 
 const app = await startMonoAgentApp({ cwd: process.cwd() });
 // ... later
@@ -52,12 +52,12 @@ Channels start independently. Enabled but incomplete channels report `waiting_fo
 
 ## `createConfiguredAgentResponder` — bring your own transport
 
-When you own the transport but still want config-driven runtime, harness, and memory, build a responder directly with `@mono-agent/agent-app`. This is the layer `agent-app` itself calls internally.
+When you own the transport but still want config-driven runtime, harness, and memory, build a responder directly with `@mono-agent/app`. This is the layer `app` itself calls internally.
 
 ```ts
-import { BufferedMessageStream } from "@mono-agent/agent-contracts";
+import { BufferedMessageStream } from "@mono-agent/contracts";
 import { loadMonoAgentConfig } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+import { createConfiguredAgentResponder } from "@mono-agent/app";
 
 // The loader uses only the env record supplied here. Load dotenv yourself first
 // if this process needs one.
@@ -93,7 +93,7 @@ Notable options on `createConfiguredAgentResponder`:
 | `historyStore` | `ConversationHistoryStore` | Replace the owner-only disk-backed 64-message default with a custom store (for example Redis). |
 | `turnHistoryEnricher` | `AgentHarnessTurnHistoryEnricher` | Enrich only the assistant history copy with run-scoped interaction evidence; delivered text and memory capture are unchanged. |
 | `runtimeOptions` | static runtime options | Static per-harness runtime options merged on every turn. |
-| `runtimeOptionsForRequest` | `(input) => extension \| Promise<extension>` | Compute **request-scoped** runtime options (extra tools, metadata) per turn from the request and `runId`. Configured memory adds `MemoryRecall` automatically and composes it with this callback; `agent-app` also uses the callback for adapter send-tools. |
+| `runtimeOptionsForRequest` | `(input) => extension \| Promise<extension>` | Compute **request-scoped** runtime options (extra tools, metadata) per turn from the request and `runId`. Configured memory adds `MemoryRecall` automatically and composes it with this callback; `app` also uses the callback for adapter send-tools. |
 
 :::tip
 `runtimeOptionsForRequest` returns an *extension* that is composed onto the static options — it does not replace them. Use it for per-request decisions (which tools this caller may use, request metadata for proactive notify) rather than for static policy, which belongs in config under [Tool Policy](/tools/policy/).
@@ -101,13 +101,13 @@ Notable options on `createConfiguredAgentResponder`:
 
 The responder also honors warm-session mode and rollover from `runtime.session`. Durable conversation history remains separate from warm provider-session reuse. See [Sessions and concurrency](/runtime/sessions-concurrency/).
 
-## A bare responder — `@mono-agent/agent-app` + `@mono-agent/config`
+## A bare responder — `@mono-agent/app` + `@mono-agent/config`
 
 The minimal local host is just two packages: load a config, build a responder. It starts no channels and owns no host-level trace registry, service, retention, or memory-consolidation scheduler lifecycle. Each turn still uses the config-driven JSONL recorder and any configured per-run exporter.
 
 ```ts
 import { loadMonoAgentConfig } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+import { createConfiguredAgentResponder } from "@mono-agent/app";
 
 const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
@@ -117,7 +117,7 @@ const config = await loadMonoAgentConfig({
 const responder = await createConfiguredAgentResponder({ config });
 ```
 
-This corresponds to the **Core Join** in the package map: `agent-contracts` (request/response shape), `config` (settings), `agent-runtime host integration` (model refs and provider-option validation), and `agent-app` (turns config into a responder). For finer control of runtime, memory, history, recorder, or request-scoped options, drop to `@mono-agent/agent-harness` directly — that is the **Execution Join** and is fully code-only.
+This corresponds to the **Core Join** in the package map: `contracts` (request/response shape), `config` (settings), `turn host integration` (model refs and provider-option validation), and `app` (turns config into a responder). For finer control of runtime, memory, history, recorder, or request-scoped options, drop to `@mono-agent/conversation` directly — that is the **Execution Join** and is fully code-only.
 
 :::note
 The loader reads core settings only from JSON and built-in defaults. Environment remains available separately for referenced credentials and adapter settings.
@@ -127,7 +127,7 @@ The loader reads core settings only from JSON and built-in defaults. Environment
 
 - [Composition](/programmatic/composition/) — package joins, the smallest set per host, and what each layer owns vs. does not own.
 - [Approval and Structured Output](/programmatic/approval-and-structured-output/) — gating tool calls and returning typed results from a responder.
-- [Multi-Agent](/programmatic/multi-agent/) — `@mono-agent/agent-orchestrator`: one runtime calling named collaborator responders through a bounded MCP tool.
-- [A2A Consumer](/programmatic/a2a-consumer/) — calling another agent's Agent Card from your host with `@mono-agent/a2a-adapter`.
+- [Multi-Agent](/programmatic/multi-agent/) — `@mono-agent/orchestrator`: one runtime calling named collaborator responders through a bounded MCP tool.
+- [A2A Consumer](/programmatic/a2a-consumer/) — calling another agent's Agent Card from your host with `@mono-agent/channel-a2a`.
 - [ACP bridge](/programmatic/acp-bridge/) — exposing a running mono-agent to clients such as acpx without transferring configuration, credentials, MCP, or workspace ownership.
 - [Write your own channel adapter](/programmatic/custom-channels/) — writing a `ChannelDriver` package or composing an edge adapter directly to feed your own transport into a responder.

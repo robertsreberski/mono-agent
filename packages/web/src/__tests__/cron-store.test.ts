@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES, AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE } from "@mono-agent/agent-contracts";
+import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES, AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE } from "@mono-agent/contracts";
 
 import type { WebAgentSummary, WebCronRun, WebCronRunSummary } from "../contracts.js";
 import { formatCronReplyContext, parseCronReplyContext } from "../cron-reply-context.js";

@@ -9,11 +9,11 @@ Definitions of the core terms used throughout the mono-agent docs and config. Ea
 
 ## A2A
 
-The Agent-to-Agent protocol: a JSON-RPC + REST wire format (with optional streaming and bearer auth) for one agent to discover and call another over HTTP. mono-agent can act as an A2A **provider** (`config.provider.*` under the `@mono-agent/a2a-adapter` plugin entry) and as an A2A **consumer** (`config.consumer.*` under the same plugin entry). See [A2A channel](/channels/a2a/) and the [A2A consumer (programmatic)](/programmatic/a2a-consumer/).
+The Agent-to-Agent protocol: a JSON-RPC + REST wire format (with optional streaming and bearer auth) for one agent to discover and call another over HTTP. mono-agent can act as an A2A **provider** (`config.provider.*` under the `@mono-agent/channel-a2a` plugin entry) and as an A2A **consumer** (`config.consumer.*` under the same plugin entry). See [A2A channel](/channels/a2a/) and the [A2A consumer (programmatic)](/programmatic/a2a-consumer/).
 
 ## Adapter
 
-A package that bridges one transport (Slack, Telegram, WhatsApp, etc.) to the responder. `@mono-agent/*-adapter` packages are composed by `@mono-agent/agent-app` and own their own per-conversation admission, attachment downloads, and outbound delivery. See [Channels](/channels/).
+A package that bridges one transport (Slack, Telegram, WhatsApp, etc.) to the responder. `@mono-agent/*-adapter` packages are composed by `@mono-agent/app` and own their own per-conversation admission, attachment downloads, and outbound delivery. See [Channels](/channels/).
 
 ## Agent Card
 
@@ -67,7 +67,7 @@ See [Fallback](/runtime/fallback/).
 
 ## Harness
 
-The execution engine (`@mono-agent/agent-harness`) that runs a single turn against a provider, applies tool policy and guards, drives compaction, and returns an explicit result or failure object (it never fakes success). The run path begins at `responder.respond`. See [Tools and guards](/runtime/tools-and-guards/).
+The execution engine (`@mono-agent/conversation`) that runs a single turn against a provider, applies tool policy and guards, drives compaction, and returns an explicit result or failure object (it never fakes success). The run path begins at `responder.respond`. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## Model reference
 

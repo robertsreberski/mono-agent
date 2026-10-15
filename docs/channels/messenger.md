@@ -5,7 +5,7 @@ sidebar:
   order: 9
 ---
 
-The Messenger channel connects your agent to a Facebook Page's Messenger inbox. Meta POSTs each message to a webhook the adapter serves, and replies go out through the Send API. It is provided by the external `@mono-agent/messenger-adapter` package and loaded through `channels.plugins[]`. Coverage: **config** — see [feature-registry](/reference/feature-matrix/) row `messenger.graph`.
+The Messenger channel connects your agent to a Facebook Page's Messenger inbox. Meta POSTs each message to a webhook the adapter serves, and replies go out through the Send API. It is provided by the external `@mono-agent/channel-messenger` package and loaded through `channels.plugins[]`. Coverage: **config** — see [feature-registry](/reference/feature-matrix/) row `messenger.graph`.
 
 ## Quick start
 
@@ -25,7 +25,7 @@ MONO_AGENT_MESSENGER_VERIFY_TOKEN=...
   "channels": {
     "plugins": [
       {
-        "package": "@mono-agent/messenger-adapter",
+        "package": "@mono-agent/channel-messenger",
         "id": "messenger",
         "config": {
           "enabled": true,
@@ -83,4 +83,4 @@ Meta only delivers ordinary messages within 24 hours of the user's last message.
 
 ## Related
 
-The [Telegram personal-assistant playbook](/playbooks/telegram-personal-assistant-bujo/) translates directly: add the `@mono-agent/messenger-adapter` entry under `channels.plugins[]` and point cron `notifyConversationId` values at `messenger:<psid>`. See the [Channels overview](/channels/) for the shared allowlist and status model.
+The [Telegram personal-assistant playbook](/playbooks/telegram-personal-assistant-bujo/) translates directly: add the `@mono-agent/channel-messenger` entry under `channels.plugins[]` and point cron `notifyConversationId` values at `messenger:<psid>`. See the [Channels overview](/channels/) for the shared allowlist and status model.

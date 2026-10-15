@@ -7,7 +7,7 @@ import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   MAX_INFO_PROVIDER_ID_BYTES,
   MAX_INFO_PROVIDER_ITEMS,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 import { OperatorClient } from "../operator-client.js";
 import { fakeProcessJob } from "./helpers.js";

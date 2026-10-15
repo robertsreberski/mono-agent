@@ -79,7 +79,7 @@ supersede or rewrite canonical memories, or create monthly projection files. Cap
 reconciliation and Journal content-hash identities prevent most new duplicates before this
 report is needed.
 
-Consolidation is **auto-scheduled in-app** for the `bujo` tier: the agent-app scheduler
+Consolidation is **auto-scheduled in-app** for the `bujo` tier: the app scheduler
 runs `store.consolidate()` at the configured cron cadence (default `0 */2 * * *`, every
 two hours). No external cron or launchd setup is required. Run `mono-agent validate` to
 confirm whether automatic consolidation will run.
@@ -267,7 +267,7 @@ model reference such as `openai-codex:gpt-5.6-terra`. The old standalone `migrat
 
 ## Auto-Scheduler (bujo tier)
 
-When `memory.mode` is `"bujo"` and `memory.llm` is configured, the agent-app starts an
+When `memory.mode` is `"bujo"` and `memory.llm` is configured, the app starts an
 **in-app consolidation scheduler** alongside the other channels. It runs
 `store.consolidate()` at the UTC `memory.consolidation.cron` cadence (default `0 */2 * * *`,
 every two hours). The schedule accepts shared five-field cron syntax but not hashed `H` fields.
@@ -358,7 +358,7 @@ durable retry rather than being declared captured or lost. Raise the timeout for
 
 ## Liveness Check — `mono-agent validate`
 
-`mono-agent validate` (the agent-app doctor) first dynamically loads the built-in memory
+`mono-agent validate` (the app doctor) first dynamically loads the built-in memory
 implementation and validates managed identity. Journal and BuJo require a valid managed
 `.index/manifest.json`; only Lite may remain unmanaged. Missing/corrupt managed metadata,
 a tier/provider/model/dimension mismatch, or native-module/ABI failure is an `error` with stop,
@@ -394,13 +394,13 @@ cutover (and after pulling models) to confirm the tier is live. For automation,
 
 When composing an agent with `mono-agent-composer`, the composer explains the three
 tiers during the memory strategy step (question 6). See
-`packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md` for
+`packages/app/skills/mono-agent-composer/references/discovery-questions.md` for
 the full question flow and config blocks the composer writes.
 
 ## Explicit memory read tools
 
 The agent gets targeted read-only `MemoryRecall` — FTS search for Lite and hybrid
-keyword/semantic search for Journal/BuJo. `agent-app` auto-provisions it from the
+keyword/semantic search for Journal/BuJo. `app` auto-provisions it from the
 single `config.memory` block for local memory. Local Lite, Journal, and BuJo stores
 also gain the separately policy-gated `MemoryJournal` chronological tool. Injected
 custom stores must affirm chronological support before that tool is offered. Set
@@ -421,7 +421,7 @@ session resume; a `memory_recalled` diagnostic keeps recall visible in run trace
 chronological journal bodies are never automatically injected. See
 [Context assembly → Memory recall](/context/assembly/#memory-recall).
 
-Under the hood `agent-app` exposes a request-scoped loopback MCP endpoint over its **same app-owned retrieval service and store**. Automatic recall and an identical normalized tool query share one per-turn lookup; a materially different query may search again. Recall needs no chat LLM; durable writes stay in-app via per-turn capture (`writeMode: "capture"`). This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture`/`memory_note` — both dropped, since in-app capture already covers durable writes).
+Under the hood `app` exposes a request-scoped loopback MCP endpoint over its **same app-owned retrieval service and store**. Automatic recall and an identical normalized tool query share one per-turn lookup; a materially different query may search again. Recall needs no chat LLM; durable writes stay in-app via per-turn capture (`writeMode: "capture"`). This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture`/`memory_note` — both dropped, since in-app capture already covers durable writes).
 
 **Migrating off `@mono-agent/memory-mcp` (external consumers):** the package is removed from this repo (the published `0.3.0` stays on npm but receives no further updates). If you depended on it directly: (1) **as an MCP server bin / `node .../memory-mcp/dist/main.js` in a `.mcp.json`** — drop that entry and instead set `config.memory.recallTool.enabled: true` so the host auto-provisions the bundled `mono-agent-memory` recall server (no hand-wired entry, no separate LLM); (2) **as a library import (`@mono-agent/memory-mcp`)** — build directly on `@mono-agent/memory/bujo` (`createBujoMemoryStore`) + `@mono-agent/memory/search` (`createEmbeddingProvider`), which is exactly what the recall server does; (3) **the `memory_capture` / `memory_note` write tools have no replacement tool** — durable writes are now host-driven per turn via `memory.writeMode: "capture"` (or `append-host-summary`), so the agent no longer needs an explicit write tool.
 

@@ -97,10 +97,10 @@ describe("Pi dependency update automation", () => {
     // Pi AI devDependency. Folding engine removes its duplicate Pi AI declaration.
     expect(directPiDependencies).toHaveLength(4);
     expect(directPiDependencies.map(({ path, section, name }) => `${path}:${section}:${name}`).sort()).toEqual([
-      "packages/agent-app/package.json:dependencies:@earendil-works/pi-ai",
-      "packages/agent-harness/package.json:devDependencies:@earendil-works/pi-ai",
-      "packages/agent-runtime/package.json:dependencies:@earendil-works/pi-agent-core",
-      "packages/agent-runtime/package.json:dependencies:@earendil-works/pi-ai",
+      "packages/app/package.json:dependencies:@earendil-works/pi-ai",
+      "packages/conversation/package.json:devDependencies:@earendil-works/pi-ai",
+      "packages/turn/package.json:dependencies:@earendil-works/pi-agent-core",
+      "packages/turn/package.json:dependencies:@earendil-works/pi-ai",
     ]);
     expect([...new Set(directPiDependencies.map(({ version }) => version))]).toEqual(["1.2.0"]);
     for (const dependency of directPiDependencies) {

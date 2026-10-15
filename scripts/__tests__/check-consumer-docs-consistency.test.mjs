@@ -84,12 +84,12 @@ describe("check-consumer-docs-consistency", () => {
     const repoRoot = await tempRepo();
     await writeRepoDoc(
       repoRoot,
-      "packages/webhook-adapter/README.md",
+      "packages/trigger-webhook/README.md",
       "Run demo:final from demos/final-agent/dist.\n",
     );
     await writeRepoDoc(
       repoRoot,
-      "extras/a2a-adapter/README.md",
+      "extras/channel-a2a/README.md",
       "Run deploy:final from demos/searxng/settings.yml.\n",
     );
 
@@ -97,8 +97,8 @@ describe("check-consumer-docs-consistency", () => {
 
     expect(result.userDocsChecked).toBe(2);
     expect(result.issues).toHaveLength(4);
-    expect(result.issues.join("\n")).toContain("packages/webhook-adapter/README.md");
-    expect(result.issues.join("\n")).toContain("extras/a2a-adapter/README.md");
+    expect(result.issues.join("\n")).toContain("packages/trigger-webhook/README.md");
+    expect(result.issues.join("\n")).toContain("extras/channel-a2a/README.md");
   });
 
   it("allows near-miss package, path, and root-command names", async () => {
@@ -235,7 +235,7 @@ describe("check-consumer-docs-consistency", () => {
   it("enforces canonical MemoryRecall spelling in current app, memory, and config READMEs", async () => {
     const repoRoot = await tempRepo();
     const readmePaths = [
-      "packages/agent-app/README.md",
+      "packages/app/README.md",
       "packages/config/README.md",
       "packages/memory/README.md",
     ];
@@ -785,14 +785,14 @@ describe("check-consumer-docs-consistency", () => {
       "The full data is always in the run's JSONL artifacts and visible in replay.",
       "Replay opens a full coalesced event timeline.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/operator-adapter/README.md", [
+    await writeRepoDoc(repoRoot, "packages/channel-operator/README.md", [
       "# Operator adapter",
       "The endpoint streams at full `AgentStreamEvent` fidelity.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/constants.ts", [
+    await writeRepoDoc(repoRoot, "packages/channel-operator/src/tui/constants.ts", [
       "// The full data remains in the run's JSONL artifacts.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/server.ts", [
+    await writeRepoDoc(repoRoot, "packages/channel-operator/src/tui/server.ts", [
       "// The full payload stays available in run artifacts.",
     ].join("\n"));
     const result = await checkConsumerDocsConsistency([], { repoRoot });
@@ -807,9 +807,9 @@ describe("check-consumer-docs-consistency", () => {
     for (const relativePath of [
       "docs/channels/tui.md",
       "docs/observability/tui.md",
-      "packages/operator-adapter/README.md",
-      "packages/operator-adapter/src/tui/constants.ts",
-      "packages/operator-adapter/src/tui/server.ts",
+      "packages/channel-operator/README.md",
+      "packages/channel-operator/src/tui/constants.ts",
+      "packages/channel-operator/src/tui/server.ts",
     ]) {
       expect(reported).toContain(relativePath);
     }
@@ -837,40 +837,40 @@ describe("check-consumer-docs-consistency", () => {
       "# Tool guard",
       "When a tool result exceeds the budget it is persisted as an artifact, so nothing is silently lost.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/package-map.md", [
+    await writeRepoDoc(repoRoot, "packages/app/skills/mono-agent-composer/references/package-map.md", [
       "# Package map",
       "live chat with full stream-event insight",
       "Serialized remote event frames are field-reduced to a strict cap.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/playbooks.md", [
+    await writeRepoDoc(repoRoot, "packages/app/skills/mono-agent-composer/references/playbooks.md", [
       "# Playbooks",
       "Retirement of OTLP deletes the retained local run artifacts",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md", [
+    await writeRepoDoc(repoRoot, "packages/app/skills/mono-agent-composer/references/config-blueprint.md", [
       "# Blueprint",
       "JSONL artifacts are always written regardless of exporter state.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", [
+    await writeRepoDoc(repoRoot, "packages/app/skills/mono-agent-composer/references/discovery-questions.md", [
       "# Discovery",
       "Local JSONL artifacts are always written and are the fallback.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/constants.ts", [
+    await writeRepoDoc(repoRoot, "packages/channel-operator/src/tui/constants.ts", [
       "// Upper bound for one serialized NDJSON frame.",
       "// Oversized events are field-reduced until the encoded frame fits.",
       "// Every oversized event is field reduced.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-background-command.ts", [
+    await writeRepoDoc(repoRoot, "packages/app/src/cli-background-command.ts", [
       "function describeExporter() {",
       "  return \"JSONL artifacts are always written locally\";",
       "}",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-help.ts", [
+    await writeRepoDoc(repoRoot, "packages/app/src/cli-help.ts", [
       "const HELP_COMMANDS = [",
       "  \"Open the operator console from any directory: live chat with full\",",
       "  \"thinking/tool/telemetry insight, recorded-run replay, and config view.\",",
       "];",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
+    await writeRepoDoc(repoRoot, "packages/channel-operator/package.json", JSON.stringify({
       description: "Loopback operator adapters: full-fidelity TUI NDJSON turns and live SSE.",
     }));
     await writeRepoDoc(repoRoot, "scripts/package-catalog.mjs", [
@@ -900,7 +900,7 @@ describe("check-consumer-docs-consistency", () => {
     expect(reported).toContain("exporter retirement implies network isolation");
     expect(reported).toContain("always-written JSONL artifacts");
     expect(result.issues).toContain(
-      `${join(repoRoot, "packages/agent-app/src/cli-background-command.ts")}:2:11: ` +
+      `${join(repoRoot, "packages/app/src/cli-background-command.ts")}:2:11: ` +
         "uses absolute observability/replay wording \"always-written JSONL artifacts\". " +
         "Describe transport and string caps, best-effort export, the start snapshot, " +
         "in-memory buffering, terminal replacement, and crash-loss/reconciliation boundaries instead.",
@@ -917,14 +917,14 @@ describe("check-consumer-docs-consistency", () => {
       "docs/reference/framework-simplification-migration.md",
       "docs/config/blueprint.md",
       "docs/runtime/tools-and-guards.md",
-      "packages/agent-app/skills/mono-agent-composer/references/package-map.md",
-      "packages/agent-app/skills/mono-agent-composer/references/playbooks.md",
-      "packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md",
-      "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md",
-      "packages/agent-app/src/cli-background-command.ts",
-      "packages/agent-app/src/cli-help.ts",
-      "packages/operator-adapter/package.json",
-      "packages/operator-adapter/src/tui/constants.ts",
+      "packages/app/skills/mono-agent-composer/references/package-map.md",
+      "packages/app/skills/mono-agent-composer/references/playbooks.md",
+      "packages/app/skills/mono-agent-composer/references/config-blueprint.md",
+      "packages/app/skills/mono-agent-composer/references/discovery-questions.md",
+      "packages/app/src/cli-background-command.ts",
+      "packages/app/src/cli-help.ts",
+      "packages/channel-operator/package.json",
+      "packages/channel-operator/src/tui/constants.ts",
       "scripts/package-catalog.mjs",
       "docs/channels/tui.md",
       "docs/observability/tui.md",
@@ -947,11 +947,11 @@ describe("check-consumer-docs-consistency", () => {
     await writeRepoDoc(repoRoot, "packages/tui/src/ui/components/tool-panel.ts", [
       "const notice = '(payload truncated for streaming; replay may also be bounded)';",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/package-map.md", [
+    await writeRepoDoc(repoRoot, "packages/app/skills/mono-agent-composer/references/package-map.md", [
       "# Package map",
       "Remote event frames have a strict 256 KiB UTF-8 NDJSON cap: assistant-thought/tool-call payload fields are reduced, while other oversized variants become bounded markers; other frame kinds are unaffected.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", [
+    await writeRepoDoc(repoRoot, "packages/app/skills/mono-agent-composer/references/discovery-questions.md", [
       "# Discovery",
       "A caller-supplied exporter is best-effort and cannot change the local run outcome.",
       "JSONL artifacts are not always written to a terminal state; a crash can lose buffered events.",
@@ -960,18 +960,18 @@ describe("check-consumer-docs-consistency", () => {
       "# Tool guard",
       "The guard attempts best-effort persistence; missing or failed sinks leave omitted bytes unavailable.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-background-command.ts", [
+    await writeRepoDoc(repoRoot, "packages/app/src/cli-background-command.ts", [
       "function describeExporter() {",
       "  return \"JSONL artifacts remain local\";",
       "}",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-help.ts", [
+    await writeRepoDoc(repoRoot, "packages/app/src/cli-help.ts", [
       "const HELP_COMMANDS = [",
       "  \"Open the operator console from any directory: live chat with structured\",",
       "  \"thinking/tool/telemetry insight, recorded-run replay, and config view.\",",
       "];",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
+    await writeRepoDoc(repoRoot, "packages/channel-operator/package.json", JSON.stringify({
       description: "Loopback operator adapters: structured TUI NDJSON turns and live SSE.",
     }));
     await writeRepoDoc(repoRoot, "docs/channels/tui.md", [

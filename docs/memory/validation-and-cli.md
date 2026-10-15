@@ -416,7 +416,7 @@ mono-agent start
 
 ## `mono-agent validate` — memory liveness
 
-`mono-agent validate` (the agent-app doctor) checks both the configured identity and liveness. A managed generation whose tier, embeddings provider/model, or dimension differs from the current config is an `error` immediately—before any provider/network probe—with the exact active and configured identities plus the stop/rebuild/validate sequence. Invalid/unavailable native SQLite bindings and malformed or missing managed metadata are also errors. Operational provider failures remain `waiting`, so they do not flip the overall result. Read the Memory section. Downstream validation with `mono-agent validate --consumer <path>` never creates a memory root: a missing Lite root is a warning, while missing Journal/BuJo managed authority is an error.
+`mono-agent validate` (the app doctor) checks both the configured identity and liveness. A managed generation whose tier, embeddings provider/model, or dimension differs from the current config is an `error` immediately—before any provider/network probe—with the exact active and configured identities plus the stop/rebuild/validate sequence. Invalid/unavailable native SQLite bindings and malformed or missing managed metadata are also errors. Operational provider failures remain `waiting`, so they do not flip the overall result. Read the Memory section. Downstream validation with `mono-agent validate --consumer <path>` never creates a memory root: a missing Lite root is a warning, while missing Journal/BuJo managed authority is an error.
 
 Only Lite may remain unmanaged. Journal and BuJo always require the managed `.index/manifest.json` authority; a manifestless, deleted, or corrupt managed identity is an error and never falls back to a legacy `memory.db`. Fresh init creates the empty managed Journal/BuJo generation without indexing content, but interactive guided readiness first proves the selected embeddings service with a fixed non-user request and exact dimension. Flag/non-TTY scaffolding does not perform that probe or claim readiness. Init deliberately leaves every pre-existing memory root untouched. For an existing or damaged root, stop the agent, run `mono-agent memory rebuild`, and validate again to establish or repair the managed generation.
 
@@ -595,13 +595,13 @@ for an existing local agent, with one backend-specific branch in step 6.
 
 2. Stop the old agent before changing its installed packages. Then upgrade the
    package that already owns the global `mono-agent` command and confirm the
-   exact published version. `create-mono-agent` and `@mono-agent/agent-app` both
+   exact published version. `create-mono-agent` and `@mono-agent/app` both
    provide that command, so do not install both globally:
 
    ```bash
    cd /path/to/agent
    mono-agent stop
-   npm ls -g --depth=0 create-mono-agent @mono-agent/agent-app || true
+   npm ls -g --depth=0 create-mono-agent @mono-agent/app || true
    ```
 
    If `create-mono-agent` is listed, upgrade that owner:
@@ -610,10 +610,10 @@ for an existing local agent, with one backend-specific branch in step 6.
    npm i -g "create-mono-agent@0.8.0"
    ```
 
-   Otherwise, if `@mono-agent/agent-app` is listed, upgrade that owner instead:
+   Otherwise, if `@mono-agent/app` is listed, upgrade that owner instead:
 
    ```bash
-   npm i -g "@mono-agent/agent-app@0.8.0"
+   npm i -g "@mono-agent/app@0.8.0"
    ```
 
    Then confirm the command resolves to the new version:

@@ -2,9 +2,34 @@
 
 ## Unreleased
 
+- Remove the old workspace package names in a breaking rename, with no aliases.
+  Update imports, dependencies, and plugin configuration using the table below.
+  Old names in `channels.plugins[].package` fail validation with an explicit
+  `was renamed to` error naming the replacement, before package loading.
+  MCP command/argument package specifiers report the same migration error.
+  CLI bins, symbols, config keys, channel IDs, and persisted formats stay unchanged.
+
+| Old package | New package |
+| --- | --- |
+| `@mono-agent/agent-app` | `@mono-agent/app` |
+| `@mono-agent/agent-harness` | `@mono-agent/conversation` |
+| `@mono-agent/agent-runtime` | `@mono-agent/turn` |
+| `@mono-agent/agent-contracts` | `@mono-agent/contracts` |
+| `@mono-agent/slack-adapter` | `@mono-agent/channel-slack` |
+| `@mono-agent/telegram-adapter` | `@mono-agent/channel-telegram` |
+| `@mono-agent/openai-api-adapter` | `@mono-agent/channel-openai-api` |
+| `@mono-agent/operator-adapter` | `@mono-agent/channel-operator` |
+| `@mono-agent/cron-adapter` | `@mono-agent/trigger-cron` |
+| `@mono-agent/webhook-adapter` | `@mono-agent/trigger-webhook` |
+| `@mono-agent/whatsapp-adapter` | `@mono-agent/channel-whatsapp` |
+| `@mono-agent/messenger-adapter` | `@mono-agent/channel-messenger` |
+| `@mono-agent/a2a-adapter` | `@mono-agent/channel-a2a` |
+| `@mono-agent/agent-orchestrator` | `@mono-agent/orchestrator` |
+
+
 - Remove `@mono-agent/runtime-adapter` (breaking): import host construction,
   config helpers, contracts, and sandbox support from
-  `@mono-agent/agent-runtime/host`, `/host/config`, `/host/types`, and
+  `@mono-agent/turn/host`, `/host/config`, `/host/types`, and
   `/host/sandbox`. Keep direct kernel helpers at their canonical runtime or
   contracts entrypoints; see the exact import table in the runtime migration
   guide. Remove `resolveRuntimeBridge`, `generatePiNativeResponse`, and
@@ -88,12 +113,12 @@
   before rolling back. Hold live owners recorded by older
   macOS binaries by PID, and name the lock path and PID when one blocks.
 
-- Add engine execution and storage to `@mono-agent/agent-runtime` through
+- Add engine execution and storage to `@mono-agent/turn` through
   `/engine`, `/engine/sessions.js` and `/engine/owned-fs.js`. Runtime storage
   capabilities and journal formats stay compatible. Keep Pi AI and Pi Agent
   Core exact-pinned together in the runtime.
 
-- Keep Pi-native execution on Pi 1.x through `@mono-agent/agent-runtime/engine`,
+- Keep Pi-native execution on Pi 1.x through `@mono-agent/turn/engine`,
   with
   versioned native journals and distinct logical turns/execution operations.
   Import idle legacy main-branch context; reopen still aborts old operations

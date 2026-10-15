@@ -1,0 +1,484 @@
+# Config Blueprint
+
+> A prose, per-domain version of this reference (runtime, channels, memory, …)
+> lives on the published docs site:
+> <https://docs.mono-agent.dev/config/>. This annotated JSON
+> stays the offline canonical shape.
+
+One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; config fields may be JSON-only. Environment-variable overrides are optional: only fields with a documented `MONO_AGENT_*` mapping accept one (env > JSON > defaults), so consult the generated config reference's `Env override` column (`--` means none, as for `channels.plugins`) instead of inferring one. Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
+
+## Folder Layout
+
+```text
+my-agent/
+  mono-agent.config.json   # the single declaration below
+  IDENTITY.md              # canonical ## Role body, boundaries, references to existing knowledge
+  skills/                  # optional: <skill-name>/SKILL.md per selected skill
+  cron/                    # optional: <job-id>.md scheduled prompts
+  mcp.json                 # optional: MCP server definitions
+  .env                     # optional: secrets; auto-loaded by the CLI, never committed
+  .mono-agent/
+    artifacts/             # JSONL run summaries + events
+    workspace/             # runtime working directory (if not ".")
+    memory/                # journal memory root (daily notes, graph.jsonl, index/)
+    process-jobs/          # opt-in owner-private Exec/Bash jobs and output
+    whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
+    trace-sources/         # traceability registry (if kept folder-local)
+```
+
+## Annotated Config
+
+Configs use `runtime.fallbacks[]`, where each route owns its optional exact
+effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired in
+0.21.0 and are now rejected at load — never emit them.
+
+```jsonc
+{
+  // Runtime: primary model plus ordered backups tried on retryable provider
+  // failures (failover is reported in run results, never silent).
+  "runtime": {
+    "model": "anthropic:claude-sonnet-4-6", // canonical <provider>:<model>, split at the first colon only
+    "fallbacks": [{ "model": "ollama:gemma4:31b" }],
+    "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
+                                           // Narrowed per model for display; still accepted at turn time.
+                                           // A model advertising no ultra rung simply does not offer it in pickers.
+                                           // Message text never changes effort.
+    "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
+    "compaction": {
+      "enabled": true,                     // default true
+      "triggerRatio": 0.90,                // default 0.90; capped by safety headroom (10% of W, 16k-48k tokens)
+      // Omit these three to derive model-window-aware defaults.
+      "keepRecentTokens": 12800,
+      "summaryMaxTokens": 5120,
+      "minSavingsTokens": 12800,
+      "fixedOverheadEnabled": true,        // include system prompt, tool schemas, and current turn
+      "contextWindowOverride": 128000      // optional persistent correction for bad provider metadata
+    },
+    "workspace": ".",
+    "session": {
+      "root": ".mono-agent/sessions", // durable JSONL sessions; unset = in-memory
+      "mode": "continuous", // or "per-message"
+      "idleTimeoutMs": 1800000
+    }
+  },
+
+  // Per-channel admission/execution bounds. Each enabled channel owns one limiter.
+  "concurrency": {
+    "maxConcurrentRuns": 4,
+    "maxPendingRuns": 100
+  },
+
+  // Providers the agent supports, keyed by canonical provider id. This map
+  // gates what is selectable: a route naming a provider that is neither a Pi
+  // builtin, nor `ollama`/`lmstudio` (zero-config autodiscovered), nor declared
+  // here with a "baseUrl", fails config load. `piAuthPath`, `piNative`, and
+  // `local` are reserved keys, never provider ids.
+  "providers": {
+    "piAuthPath": "~/.pi/agent/auth.json", // Pi OAuth credentials (openai-codex, ...)
+    // Pi-native bridge tuning (all optional).
+    "piNative": {
+      "transport": "auto",                // auto | sse | websocket | websocket-cached
+      // "cacheRetention": "short",      // opt out of default Anthropic 1h; long writes 2× / short 1.25×, reads 0.1×
+      "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
+      "piMaxRetries": 2,                   // 0-8; provider SDK-policy retries before a response starts
+      "maxRetryDelayMs": 60000            // ceiling for provider-requested Retry-After delays (ms); longer requests fail
+    },
+    // One entry per provider id; every field below is optional. Declare an
+    // ollama/lmstudio entry only to override its endpoint or credential.
+    "ollama": {
+      "type": "ollama",                    // ollama | lmstudio | openai_compat; required with a
+                                           // baseUrl unless the id is ollama or lmstudio
+      "baseUrl": "http://localhost:11434",
+      "enabled": true,                     // false keeps the route loadable but unselectable
+      "trustPublicUrl": false,             // explicit opt-in for non-private URLs
+      // Keep the key in .env; config stores only its variable name.
+      // Inline "apiKey" remains schema-compatible for existing consumers.
+      "apiKeyEnv": "MY_PROVIDER_KEY",
+      "maxAdvertisedModels": 100,          // 1-200 catalog cap; default 100
+      "models": [{ "name": "gemma4:31b", "capabilities": { "context_window": 32768 } }]
+    }
+    // Legacy shape, still accepted and migrated on load — do not emit it for a
+    // new agent: "local": [{ "id": "ollama", "type": "ollama", ... }]
+  },
+
+  // Identity, optional soul, and selected skills.
+  "context": {
+    "identityPath": "./IDENTITY.md",
+    "soulPath": "./SOUL.md",
+    "skillsRoot": "./skills",
+    "selectedSkills": ["research"],        // exact names; no auto-selection
+    "skillMaxBytes": 48000                 // per-skill byte cap (256-1,000,000)
+  },
+
+  // Memory strategy. Omit the section for no memory. The "bujo" backend owns
+  // the three local tiers below.
+  // Three tiers over one substrate (@mono-agent/memory store + bujo subpaths):
+  //   lite    — FTS keyword recall + rapid-log; no external deps.
+  //   journal — + hybrid recall (BM25+vector) + static, non-decaying salience; needs embeddings.
+  //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled
+  //             lightweight consolidation; needs embeddings + an app-level memory.llm for capture/tier selection.
+  "memory": {
+    "backend": "bujo",                    // default and only supported config backend
+    "mode": "bujo",                        // lite | journal | bujo
+    "path": "./.mono-agent/memory",        // root directory for all tiers
+    "writeMode": "capture",                // disabled | append-host-summary | capture (bujo tier only)
+    "maxBytes": 64000,
+    "embeddings": {                        // required for journal and bujo
+      "provider": "ollama",                // ollama | lmstudio | openai; exclusive, no fallback
+      "model": "nomic-embed-text:v1.5",   // use exact :v1.5 tag (pull first with ollama pull)
+      "endpoint": "http://localhost:11434", // service root; LM Studio default http://localhost:1234
+      // "apiKeyEnv": "LM_STUDIO_API_KEY", // optional authenticated LM Studio; required for openai
+      "dim": 768                           // nomic-embed-text:v1.5 output dimension
+    },
+    "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
+      // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _ENDPOINT / _TRACE / _TIMEOUT_MS.
+      // `memory.llm.executionMode` and MONO_AGENT_MEMORY_LLM_EXECUTION_MODE were
+      // retired in 0.21.0 and are rejected at load — never emit them.
+      "provider": "ollama",                // ollama | agent-host
+      "model": "qwen3.6:latest",           // ollama: model string; agent-host: canonical <provider>:<model>
+      "endpoint": "http://localhost:11434" // ollama only; invalid for agent-host
+      // For agent-host, use: "model": "openai-codex:gpt-5.6-sol"; omit endpoint.
+      // agent-host also accepts "trace" (default true) and "timeoutMs" (default 60000).
+    },
+    // Optional BuJo capture filters (only with writeMode: capture):
+    // "capture": { "focus": "Keep durable coding preferences; skip CI status.", "only": ["preference", "lesson"] },
+    // focus guides extraction (≤2048 UTF-8 bytes); only keeps host-accepted labels of those kinds.
+    // Unset leaves capture unchanged; neither setting filters explicit Remember writes.
+    // Bujo auto-scheduler — override the default or disable it.
+    // Consolidation runs in-app; no external cron or launchd needed.
+    "consolidation": { "enabled": true, "cron": "0 */2 * * *" }, // default: every two hours
+  },
+
+  // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
+  "tools": {
+    "allowedTools": ["*"],                 // omit or include "*" = all tools; name PublishReplyFile in a restrictive list; [] = none (chat-only)
+    "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
+    "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
+    "web": {
+      "search": {
+        "backend": ["parallel", "ollama"],                 // auto | searxng | ollama | codex | keyless
+        "codex": { "model": "gpt-5.6-luna" },
+        "searxng": { "endpoint": "http://127.0.0.1:8088" }, // optional unauthenticated loopback HTTP
+        "ollama": { "baseUrl": "http://127.0.0.1:11434" }   // used only when backend is ollama
+      },
+      "fetch": {
+        "render": "never",                 // never disables browser capability; auto is static-first; always permits browser-first calls
+        "browserCommand": "agent-browser"  // direct executable name/path
+      }
+    }
+  },
+
+  // Exec is direct argv; use Bash only for shell syntax. NodeRepl shares state
+  // only inside one run. All three use the same sandbox policy.
+
+  // Opt-in Pi-native Exec/Bash background jobs. The host owns the inherited
+  // POSIX process group (commands that daemonize into another group are unsupported),
+  // bounded output, exact Slack/Telegram/web wake, cancellation, and restart
+  // interruption. Unsupported on Windows; unknown keys are rejected.
+  "processJobs": {
+    "enabled": true,                       // default false
+    "unsafeAllowUnprotectedState": false, // JSON-only; true exposes ProcessJobs state + operator secret to the model
+    "stateDir": ".mono-agent/process-jobs", // relative child of the agent root
+    "maxConcurrent": 4,                   // cap 32
+    "maxActivePerConversation": 2,        // cap 8
+    "maxQueued": 8,                       // cap 64
+    "maxRuntimeMs": 1800000,              // 30 min; cap 24 h; use > 14415000 for full four-hour detached child turns
+    "maxQueueAgeMs": 300000,              // 5 min; cap 1 h
+    "maxOutputBytes": 1048576,            // 1 MiB; cap 8 MiB
+    "previewChars": 2000,                 // cap 8000
+    "maxChainDepth": 4,                   // host-owned; cap 64
+    "retention": {
+      "maxRecords": 1000,                 // cap 10000
+      "maxAgeMs": 604800000,              // 7 d; cap 30 d
+      "artifactMaxBytes": 268435456        // 256 MiB; cap 1 GiB
+    }
+  },
+
+  // Optional native child delegation. Both timeout fields accept 1000–14400000 ms.
+  // Detached children stop at min(child timeout, remaining job time less 10%/15s
+  // settlement reserve); the process-job hard deadline stays authoritative.
+  "subagents": {
+    "enabled": true,
+    "timeoutMs": 14400000,
+    "definitions": [{ "name": "researcher", "description": "Research", "prompt": "Read and summarize evidence.", "timeoutMs": 14400000 }]
+  },
+
+  // Human-in-the-loop bridge: structured blocking AskUser plus
+  // run-scoped project-MCP progress. It auto-starts when either ask tool is
+  // allowed, this block or an interaction env override is configured, or
+  // interaction.progress.enabled resolves true while
+  // tools.mcpRequestContextServers names at least one opted project MCP server.
+  "interaction": {
+    "bridge": { "host": "127.0.0.1", "port": 0 },
+    "askUser": { "timeoutMs": 600000 }, // set null to disable automatic expiry
+    "progress": { "enabled": true }
+  },
+
+  // Sandbox for Pi-owned runtime commands. Every route is Pi-native, so this
+  // block applies uniformly across the primary, every fallback, and every
+  // per-trigger override — no route family rejects it any more.
+  "sandbox": {
+    "mode": "native",                      // native (srt-wrapped) | off
+    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards; all = open egress with filesystem still enforced (managed/explicit node+cli SRT launch only)
+    "readableRoots": ["."],                // relative entries resolve against the workspace
+    "writableRoots": ["."],
+    "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], // these are the defaults
+    "fallback": "fail-closed",             // fail-closed | unsafe-host-process
+    "unsafeAllowHostProcess": false        // explicit opt-in required for the unsafe fallback
+  },
+
+  // Observability: the recorder writes empty events + a running summary at start,
+  // buffers sensitive-key-redacted, credential-scanned, capped events in RAM,
+  // then replaces both files at finish/fail.
+  // A pre-terminal crash can lose buffered events. `mono-agent status` reads the
+  // separate trace-source registry.
+  "artifacts": {
+    "dir": "./.mono-agent/artifacts",
+    "retention": { "maxAgeDays": 365, "maxCount": 50000, "dryRun": false },
+    "memoryRetention": { "maxAgeDays": 7, "maxCount": 5000, "dryRun": false }
+  },
+  "traceability": {
+    "registryDir": "./.mono-agent/trace-sources",
+    "sourceId": "my-agent",
+    "sourceLabel": "My Agent",
+    "heartbeatMs": 10000,
+    "staleAfterMs": 30000,
+    // Also mirror this agent's manifest into the global ~/.mono-agent/trace-sources
+    // registry so machine-wide operator clients discover it. Default true;
+    // set false to keep the agent visible only via its own registryDir.
+    "globalDiscovery": true
+  },
+
+  // ----- Channels: one section per channel; all independent. Most channels are
+  // ----- opt-in; the `tui` operator surface defaults on and can opt out.
+  // ----- A waiting/disabled channel never blocks the others.
+
+  "tui": {
+    "enabled": true,                       // default-on loopback operator console endpoint
+    "host": "127.0.0.1",
+    "port": 0,
+    "basePath": "/gui",
+    "allowNonLoopback": false              // set MONO_AGENT_TUI_API_KEY in .env when needed
+  },
+
+  "webhook": {
+    // For bearer auth, put MONO_AGENT_WEBHOOK_API_KEY=<strong-random-secret> in
+    // the owner-only .env file; JSON strings are literal and do not interpolate env: values.
+    "enabled": true,
+    "host": "127.0.0.1",                   // loopback-only unless allowNonLoopback
+    "port": 0,                             // 0 picks a free port
+    "path": "/webhook/invoke",
+    "allowNonLoopback": false,             // a non-loopback bind also requires the .env key
+    "defaultMode": "sync",                 // sync | async (202 + status URL polling)
+    "endpoints": [
+      {
+        "name": "invoke",
+        "path": "/webhook/invoke",
+        "mode": "sync",
+        "prompt": "Respond to this request:",
+        "model": "anthropic:claude-sonnet-4-6", // optional per-trigger override
+        "effort": "high",                  // same eight-level effort enum as runtime
+        "maxRunMs": 3600000,               // endpoint override; 0 disables only this watchdog
+        "notify": true,                     // deliver the successful final answer verbatim
+        // Explicit destination; if omitted, infer only with exactly one candidate.
+        // Zero or multiple candidates skip with a warning.
+        "notifyConversationId": "slack:C0123"
+      }
+    ],
+    "retentionMs": 300000,                 // async status retention
+    "maxStoredRequests": 100,
+    "maxRunMs": 1200000                    // fallback when an endpoint omits maxRunMs
+  },
+
+  "openaiApi": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 4040,
+    "basePath": "/v1",                     // serves /v1/models + /v1/chat/completions (SSE)
+    "allowNonLoopback": false,
+    "modelId": "my-agent"                  // model id advertised to API clients
+  },
+
+  // Telegram & Slack do not stream ANSWER tokens by default. They first show a
+  // working indicator; inbound tool starts then edit one temporary, redacted
+  // activity ledger. Both post the final separately and then best-effort delete
+  // their ledger. Proactive turns suppress the ledger. This is built-in behavior
+  // (not a JSON field); a custom channel
+  // driver can set stream.showHints=false or stream.finalOnly=false. The
+  // OpenAI-compatible endpoint still streams tokens.
+  // Telegram also exposes built-in per-chat /model and /effort menus over the
+  // configured runtime primary + fallbacks. This has no telegram JSON field;
+  // selections reset with the matching `default` command or process restart.
+  "telegram": {
+    "enabled": true,                       // opt-in; defaults to false (off → "disabled")
+    // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.
+    "allowedChatIds": ["123456789"],       // or "allowAllChats": true
+    "allowAllChats": false,
+    "groupMode": "mention",               // mention | listen | any; any is backward-compatible default
+    "stripMentionText": true               // strips the bot's native @mention before the turn
+  },
+
+  "slack": {
+    "enabled": true,                       // opt-in; defaults to false (off → "disabled")
+    // Built-in @agent /model and /effort Block Kit controls use the same runtime
+    // primary + fallbacks and stay thread-local in shared channels. Register
+    // /<bot-username>-model and /<bot-username>-effort in Slack for channel-wide
+    // picker commands; the adapter derives those names from auth.test.user.
+    // Put MONO_AGENT_SLACK_BOT_TOKEN and MONO_AGENT_SLACK_APP_TOKEN in .env.
+    "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
+    "allowAllChannels": false,
+    "botUserIds": ["U0BOT"],               // optional supplemental ID; own ID is auto-discovered
+    "mentionTextAliases": ["@agent"],
+    "stripMentionText": true,
+    "unfurlLinks": false,                   // optional native chat.postMessage override
+    "unfurlMedia": false,                   // omitted preserves Slack's default
+    "shortcuts": [                         // slack.shortcuts: JSON-only; callbackId matches the Slack app
+      {
+        "callbackId": "triage_request",
+        "prompt": "Prepare the daily support triage checklist.",
+        "channelId": "C0123",
+        "ackText": "Triage started…",
+        "threadReply": true
+      }
+    ],
+    "homeTab": {                           // slack.homeTab: JSON-only; enable App Home + app_home_opened
+      "enabled": true,
+      "headerText": "*Quick actions*",
+      "buttons": [
+        {
+          "actionId": "build_digest",
+          "label": "Build digest",
+          "prompt": "Build today's team digest.",
+          "channelId": "C0123"
+        }
+      ]
+    }
+  },
+
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/channel-whatsapp",
+        "id": "whatsapp",
+        "config": {
+          "enabled": true,                 // opt-in; defaults to false (off → "disabled")
+          "allowedChatJids": ["123@s.whatsapp.net"], // or "allowAllChats": true
+          "allowAllChats": false,
+          "groupMode": "mention",          // mention | any (group trigger rule)
+          "botJids": ["456@s.whatsapp.net"],
+          "mentionTextAliases": ["@agent"],
+          "stripMentionText": true
+          // Baileys auth state lives in .mono-agent/whatsapp-auth; the start log
+          // prints a QR code to scan on first login.
+        }
+      },
+      {
+        "package": "@mono-agent/channel-a2a",
+        "id": "a2a",
+        "config": {
+          "enabled": true,
+          "provider": {
+            "host": "127.0.0.1",
+            "port": 4201,
+            "publicBaseUrl": "https://agent.example.com",
+            "allowNonLoopback": true,
+            "requireBearer": false,
+            // Put MONO_AGENT_A2A_BEARER_TOKEN in .env when bearer auth is required.
+            "idempotency": {              // optional; namespace explicitly enables the v1 extension
+              "namespace": "my-agent-production", // stable authenticated-principal boundary
+              "stateDir": ".mono-agent/a2a-my-agent", // optional derived owner-only path when omitted
+              "retentionMs": 2592000000,  // full result replay horizon
+              "maxRecords": 10000         // permanent unique-key capacity
+            }
+          },
+          "agent": { "name": "My Agent", "description": "What it does.", "version": "0.1.0" },
+          "skill": { "id": "main", "name": "Main", "description": "Primary skill.", "tags": ["agent"] },
+          "consumer": {                    // settings for calling remote A2A agents
+            "remoteAgentUrls": ["http://127.0.0.1:4202"],
+            "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
+            // Put MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN in .env when the remote requires auth.
+            "timeoutMs": 30000
+          }
+        }
+      }
+    ]
+  },
+
+  "cron": {
+    "dir": "cron",                         // optional: folder of *.md jobs (frontmatter + prompt body), default "cron"
+    "operatorActions": { "enabled": false }, // opt-in operator API run-now/runtime enable controls; requires tui.apiKey
+    "jobs": [
+      {
+        "id": "daily",
+        "enabled": true,
+        "expression": "0 9 * * *",         // five-field cron
+        "timezone": "UTC",                 // IANA timezone
+        "prompt": "Post the morning summary.",
+        "conversationId": "cron-daily",    // optional: share memory/history across ticks
+        "model": "anthropic:claude-sonnet-4-6", // optional per-trigger override
+        "effort": "high",
+        "notify": true,                     // successful non-empty final answer is delivered verbatim
+        // Explicit destination; if omitted, infer only with exactly one candidate.
+        // Zero or multiple candidates skip with a warning.
+        "notifyConversationId": "slack:C0123",
+        // Model-exhaustion notices require this explicit destination; never infer.
+        "notifyFailureCooldownHours": 6
+      }
+    ]
+    // Jobs here merge with cron/*.md files (duplicate ids error).
+    // Agent-app pins overlap to skip; config exposes no queue/replace controls.
+    // Overlapping ticks of the same configured job are therefore skipped, never queued.
+  }
+}
+```
+
+## Lifecycle
+
+```bash
+mono-agent presets list                 # saved answer-sets (id, risk, description)
+mono-agent presets show <id>            # generated config + .env.example + follow-up checklist
+mono-agent init --preset <id> --yes [--with slack,cron] [--dry-run]   # scaffold from a preset (non-interactive)
+mono-agent init --model anthropic:claude-sonnet-4-6 --fallback ollama:gemma4:31b [--memory lite|journal|bujo]
+mono-agent config       # resolved config field-by-field, each value tagged env/json/default
+mono-agent validate [--preset <id>] [--consumer <path>]     # per-section report; --preset also checks the preset's capabilities
+mono-agent start        # traceability + every configured channel
+mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
+mono-agent restart --clear-sessions  # restart AND purge persisted sessions (fresh start; durable memory kept)
+```
+
+A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the local traceability source and artifact location plus one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
+
+For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a canonical `<provider>:<model>` runtime reference such as `openai-codex:gpt-5.6-sol`. Every route is Pi-native, so there is no SDK-versus-CLI distinction and no reference family is singled out for rejection: any reference the runtime accepts is valid here, including `openai-codex:*`. `endpoint` is Ollama-only and invalid for `agent-host`; `agent-host` additionally accepts `trace` (record each `complete()` as a `mem-*` run; default `true`) and `timeoutMs` (per-`complete()` abort, default 60000, range 1000-600000). The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT`, `MONO_AGENT_MEMORY_LLM_TRACE`, and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`. `memory.llm.executionMode` and `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` were retired in 0.21.0 and now fail config load — delete them, never emit them. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
+
+For operator views, run `mono-agent web run --loopback` from any directory once the agent is started; it discovers running agents via the trace-source registry and chats over the default-on compatibility-named `tui` stream endpoint (`"tui": {"enabled": false}` opts out). Use `mono-agent runs list|show` for bounded recorded-run diagnostics and `mono-agent config` for resolved configuration. Edit `mono-agent.config.json` or `IDENTITY.md`, validate, and restart to apply configuration changes. `mono-agent web` is an always-on service namespace; a fresh install binds `127.0.0.1:5050`, `--host <addr>` widens explicitly, and it has no app login. On macOS, `--share-tailnet` publishes an owned Tailscale route (existing owned routes are re-verified on restart); an installed service keeps its published bind. On `web start`, `restart`, or `run`, `--theme` selects the shell and `--name <label>` replaces the hostname-derived PWA, browser-tab, and rail label; `--name -` restores the hostname default; managed starts persist both selections. Capable agents expose stable read-only cron channels there. Their quiet headers show only cadence and agent-authored next run (viewer-local absolute time), or disabled/removed/unavailable state. Retained web proxy and operator API run-now/runtime enable controls require `tui.apiKey` and explicit `cron.operatorActions.enabled`; every mutation still requires confirmation, is agent-audited, and does not rewrite job config. The former read-only recorder and terminal-renderer surfaces were removed; use `mono-agent runs list|show` for bounded offline diagnostics or `mono-agent web` for live operation.
+
+## Programmatic Escape Hatch
+
+When config cannot express the host (custom runtime, request-scoped runtime extensions, custom channels, tool approval gates, structured output schemas), compose on the same package the CLI uses:
+
+```ts
+import { startMonoAgentApp, defaultChannelDrivers } from "@mono-agent/app";
+
+const app = await startMonoAgentApp({
+  cwd: process.cwd(),
+  runtime: myCustomRuntime,            // any MonoRuntimeLike
+  drivers: [...defaultChannelDrivers(), myCustomDriver],
+});
+```
+
+For a bare responder without channels, use `@mono-agent/config` + `@mono-agent/app` (`createConfiguredAgentResponder` — also takes `memory`, `historyStore`, `runtimeOptions`, `runtimeOptionsForRequest`). For multi-agent orchestration, add `@mono-agent/orchestrator` (`createCollaboratorToolRuntimeExtension`) — see `references/package-map.md`. Channel message texts and stream tuning (welcome/help/error texts, edit debounce) are channel-driver overrides, not config keys.
+
+Anthropic cache retention defaults to long (`providers.piNative.cacheRetention`:
+short/long); short is the opt-out. `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then long. Both the default and explicit values override Pi's ambient
+`PI_CACHE_RETENTION`. One-hour writes cost 2× normal input, reads 0.1×; short
+writes 1.25×. Model support is required, with no guaranteed hit.
+First verify stable tool definitions and admission; separately authorize any
+retention spending experiment using the prompt-cache measurement gates.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.

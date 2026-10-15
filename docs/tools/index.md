@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/agent-runtime/host`) that confines what tools like `Exec`, `Bash`, `NodeRepl`, `Write`, and `Edit` may touch on disk and over the network.
+This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/conversation`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/turn/host`) that confines what tools like `Exec`, `Bash`, `NodeRepl`, `Write`, and `Edit` may touch on disk and over the network.
 
 All three are configured in `mono-agent.config.json`; every route runs the Pi runtime, so enforcement is uniform and unsupported combinations fail closed. The tool policy is **allow-all by default**. When `sandbox.mode` is `native`, SRT confines what tool subprocesses may reach on disk and over the network. With `sandbox.mode: "off"` — or no `sandbox` block at all — when no ProcessJobs roots require protection, `mono-agent validate` reports its Sandbox section as `disabled` (the runtime state is `effective: "off"`) and Bash/stdio MCP subprocesses run unsandboxed. That is a different case from `native` with no usable engine: there the default `sandbox.fallback: "fail-closed"` refuses the **command**, so the tool call fails and the run continues instead of the command running unsandboxed. What the model and the transcript actually see is a `sandbox_prepare_failed` tool outcome reading `Error: Sandbox engine is unavailable and policy is fail-closed.`; `sandbox_unavailable` is the internal sandbox error behind it and the engine state `mono-agent validate` and `mono-agent status` report, not a tool-result code. Only the opt-in `sandbox.fallback: "unsafe-host-process"` (which additionally requires `unsafeAllowHostProcess`) lets that command fall through to the host, and it is loudly warned. Unsupported capabilities are never silently removed.
 
@@ -28,16 +28,16 @@ host fallback, including under off/omitted configuration.
 
 | Concern | Package | Config block | Page |
 | --- | --- | --- | --- |
-| Which tools the model may call | `@mono-agent/agent-harness` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](/tools/policy/) |
-| Searching and fetching the public web | `@mono-agent/agent-runtime` | `tools.web.*` | [Local-first web research](/tools/web-research/) |
-| Letting local Exec/Bash calls finish after the turn | `@mono-agent/agent-app` + Pi runtime | `processJobs.*` | [Background process jobs](/tools/background-process-jobs/) |
-| Attaching external MCP servers | `@mono-agent/agent-harness` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
-| Durably saving facts the user asks you to remember | `@mono-agent/memory` + `@mono-agent/agent-app` | `memory.rememberTool.enabled` + `Remember` tool policy | [MCP Servers](/tools/mcp/#remember-durable-memory-writes) |
-| Maintaining semantic web conversation titles | `@mono-agent/agent-app` + `@mono-agent/web` | `SetConversationTitle` tool policy | [MCP Servers](/tools/mcp/#setconversationtitle-web-conversation-naming) |
-| Publishing files and interactive app replies | `@mono-agent/agent-app` | `tools.allowedTools` + runtime capability | [Reply files and MCP Apps](/tools/rich-replies/) |
+| Which tools the model may call | `@mono-agent/conversation` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](/tools/policy/) |
+| Searching and fetching the public web | `@mono-agent/turn` | `tools.web.*` | [Local-first web research](/tools/web-research/) |
+| Letting local Exec/Bash calls finish after the turn | `@mono-agent/app` + Pi runtime | `processJobs.*` | [Background process jobs](/tools/background-process-jobs/) |
+| Attaching external MCP servers | `@mono-agent/conversation` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
+| Durably saving facts the user asks you to remember | `@mono-agent/memory` + `@mono-agent/app` | `memory.rememberTool.enabled` + `Remember` tool policy | [MCP Servers](/tools/mcp/#remember-durable-memory-writes) |
+| Maintaining semantic web conversation titles | `@mono-agent/app` + `@mono-agent/web` | `SetConversationTitle` tool policy | [MCP Servers](/tools/mcp/#setconversationtitle-web-conversation-naming) |
+| Publishing files and interactive app replies | `@mono-agent/app` | `tools.allowedTools` + runtime capability | [Reply files and MCP Apps](/tools/rich-replies/) |
 | Searching version-matched docs while authoring | `@mono-agent/docs-mcp` | harness MCP entry installed with the composer | [Documentation MCP companion](/tools/documentation-mcp/) |
-| Returning trusted asynchronous results | `@mono-agent/agent-app` + harness | `tools.continuationServers` + `continuations.*` | [Durable continuations](/tools/durable-continuations/) |
-| Confining what tools touch | `@mono-agent/agent-runtime/host` | `sandbox.*` | [Sandbox](/tools/sandbox/) |
+| Returning trusted asynchronous results | `@mono-agent/app` + harness | `tools.continuationServers` + `continuations.*` | [Durable continuations](/tools/durable-continuations/) |
+| Confining what tools touch | `@mono-agent/turn/host` | `sandbox.*` | [Sandbox](/tools/sandbox/) |
 
 ## At a glance
 

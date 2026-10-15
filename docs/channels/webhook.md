@@ -184,7 +184,7 @@ and result callbacks receive separate copies of the same sanitized outcome.
 The status map is adapter-owned, bounded process memory; it is not durable and
 is cleared by restart. Conversation history has a different owner. The adapter
 forwards the exact `conversationId` to its responder, and the config-first
-agent-app responder applies the host's durable history/session policy. A custom
+app responder applies the host's durable history/session policy. A custom
 responder may provide another policy or no persistence at all.
 
 Harness response metadata is an external boundary. `metadata.summary` may include normal run status, model, usage, and failure information, but never the compiled `systemPrompt`. The harness removes it on success and early-failure paths, and the webhook adapter sanitizes untrusted custom responders again for sync responses, async storage/status reads, and result callbacks. Private local recorder artifacts may retain the prompt for operator inspection; it is not serialized onto webhook surfaces.

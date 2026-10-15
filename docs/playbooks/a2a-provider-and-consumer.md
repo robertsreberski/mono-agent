@@ -35,7 +35,7 @@ credentials.
   "channels": {
     "plugins": [
       {
-        "package": "@mono-agent/a2a-adapter",
+        "package": "@mono-agent/channel-a2a",
         "id": "a2a",
         "config": {
           "enabled": true,
@@ -89,7 +89,7 @@ When the provider sits behind a proxy or is reached from another host, set plugi
 
 ## Steps
 
-1. Provider: run `mono-agent init`, add an `@mono-agent/a2a-adapter` entry under `channels.plugins[]` with `config.provider`, `config.agent`, and `config.skill`, set `requireBearer: true` plus `MONO_AGENT_A2A_BEARER_TOKEN` in `.env`, and choose a stable `provider.idempotency.namespace` for paid/non-repeatable work; then `mono-agent validate` and `mono-agent start`.
+1. Provider: run `mono-agent init`, add an `@mono-agent/channel-a2a` entry under `channels.plugins[]` with `config.provider`, `config.agent`, and `config.skill`, set `requireBearer: true` plus `MONO_AGENT_A2A_BEARER_TOKEN` in `.env`, and choose a stable `provider.idempotency.namespace` for paid/non-repeatable work; then `mono-agent validate` and `mono-agent start`.
 2. Confirm the Agent Card is reachable at the provider port (e.g. `http://127.0.0.1:4201`).
 3. Consumer: configure plugin `config.consumer.remoteAgentUrls` (and `defaultRemoteAgentUrl`/`timeoutMs`) plus `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in `.env`, or compose `createA2AConsumerResponder` programmatically — invoking remote agents is code-only, see [the programmatic A2A consumer guide](/programmatic/a2a-consumer/).
 4. From the consumer, send text to the provider's Agent Card URL with the bearer token and the existing logical dispatch id as `idempotencyKey` (or resolve it with `idempotencyKeyForRequest`).
@@ -109,4 +109,4 @@ Send the same keyed message twice to the provider's Agent Card URL (with bearer)
 - [Channels overview & opt-in flags](/channels/)
 - [Environment variables](/config/env-vars/)
 - [Config blueprint](/config/blueprint/)
-- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/app/skills/mono-agent-composer/SKILL.md)

@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   ProcessJobProjection,
   ProcessJobState,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 import type { DiscoveredOperatorAgent } from "../discovery.js";
 import type { WebSkillRegistry } from "../contracts.js";

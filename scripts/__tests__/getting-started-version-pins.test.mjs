@@ -15,12 +15,12 @@ describe("check-getting-started-version-pins", () => {
     const result = await checkGettingStartedVersionPins({
       agentAppVersion: "0.4.1",
       docRecords: [
-        { path: "docs/getting-started/install.md", text: "npm i -g @mono-agent/agent-app@0.4.0" },
+        { path: "docs/getting-started/install.md", text: "npm i -g @mono-agent/app@0.4.0" },
       ],
     });
     expect(result.pins).toHaveLength(1);
     expect(result.issues).toHaveLength(1);
-    expect(result.issues[0]).toContain("@mono-agent/agent-app@0.4.0");
+    expect(result.issues[0]).toContain("@mono-agent/app@0.4.0");
     expect(result.issues[0]).toContain("0.4.1");
   });
 
@@ -30,7 +30,7 @@ describe("check-getting-started-version-pins", () => {
       docRecords: [
         {
           path: "docs/getting-started/install.md",
-          text: "npm i -g @mono-agent/agent-app@0.4.1 @mono-agent/web@0.4.1",
+          text: "npm i -g @mono-agent/app@0.4.1 @mono-agent/web@0.4.1",
         },
       ],
     });
@@ -46,9 +46,9 @@ describe("check-getting-started-version-pins", () => {
           path: "docs/getting-started/install.md",
           text: [
             'version=<published-version>',
-            'npm i -g "@mono-agent/agent-app@$version" "@mono-agent/web@$version"',
+            'npm i -g "@mono-agent/app@$version" "@mono-agent/web@$version"',
             'npm i -g "mono-agent@$version"',
-            "npm i -g @mono-agent/agent-app@latest",
+            "npm i -g @mono-agent/app@latest",
             "npx mono-agent init",
           ].join("\n"),
         },
@@ -76,12 +76,12 @@ describe("check-getting-started-version-pins", () => {
     const result = await checkGettingStartedVersionPins({
       agentAppVersion: "0.5.0",
       docRecords: [
-        { path: "docs/getting-started/install.md", text: "npm i -g @mono-agent/agent-app@0.5.0" },
+        { path: "docs/getting-started/install.md", text: "npm i -g @mono-agent/app@0.5.0" },
       ],
     });
     // Exactly one pin (the scoped name), not an extra spurious `mono-agent@0.5.0`.
     expect(result.pins).toHaveLength(1);
-    expect(result.pins[0].pin).toBe("@mono-agent/agent-app@0.5.0");
+    expect(result.pins[0].pin).toBe("@mono-agent/app@0.5.0");
     expect(result.issues).toEqual([]);
   });
 

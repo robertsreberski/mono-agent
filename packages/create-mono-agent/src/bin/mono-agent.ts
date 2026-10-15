@@ -8,10 +8,10 @@ import { resolveAgentAppCliEntry } from "../resolve-agent-app-cli.js";
  * Delegating bin for the `create-mono-agent` installer. Both of its bin names
  * (`create-mono-agent` and `mono-agent`) point here. It owns no CLI logic of its
  * own beyond basename-aware installer routing: it locates
- * `@mono-agent/agent-app`'s `mono-agent` CLI entry and runs it in a child process
+ * `@mono-agent/app`'s `mono-agent` CLI entry and runs it in a child process
  * with normalized args and inherited stdio. After that routing, behaviour —
  * output, interactive shutdown, and exit status — is byte-identical to calling
- * `@mono-agent/agent-app`'s own bin directly.
+ * `@mono-agent/app`'s own bin directly.
  *
  * Why a child process instead of importing `runCli` in-process: agent-app's
  * `dist/cli.js` auto-runs the CLI when it detects it is the entry module (by

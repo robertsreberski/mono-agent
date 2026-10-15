@@ -5,7 +5,7 @@ import type {
   MemoryCompletedTurn,
   MemoryCompletedTurnResult,
   MemoryStore,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 import type { JournalBrowseInput, JournalBrowseSnapshot, RecallHit, RecallOutcome } from "../store/index.js";
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../store/index.js";
 

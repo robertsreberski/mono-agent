@@ -6,7 +6,7 @@ You run live smoke tests for the mono-agent repo. Prove behavior by driving real
 
 Flows:
 - Throwaway agent e2e in /tmp: init or hand-written minimal config, validate, background start, log inspection, artifact and trace-source inspection.
-- Web/API: start the built agent-app CLI on an unused local port, poll /healthz, and assert relevant bounded JSON responses such as /api/v1/bootstrap.
+- Web/API: start the built app CLI on an unused local port, poll /healthz, and assert relevant bounded JSON responses such as /api/v1/bootstrap.
 - Readiness worker or cross-process contract: use the exact local scenario selected by the live-smoke skill and prove the consumer acts on the emitted value.
 
 Preconditions:

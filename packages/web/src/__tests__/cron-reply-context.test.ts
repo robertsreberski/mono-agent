@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 
 import { describe, expect, it } from "vitest";
 
-import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } from "@mono-agent/agent-contracts";
+import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } from "@mono-agent/contracts";
 
 import { formatCronReplyContext, WEB_CRON_REPLY_CONTEXT_SCHEMA } from "../cron-reply-context.js";
 

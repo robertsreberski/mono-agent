@@ -13,13 +13,13 @@ A new package is rung 3 of 5. Confirm the lower rungs don't satisfy the need:
 2. Config field or selected skill (typed config + validation + docs)
 3. **New adapter/package in the correct category** ← this skill
 4. MCP server / auto-provisioned MCP tool (canonical examples: `MemoryRecall`, the adapter tools such as `AskUser` and `TelegramSendFile`)
-5. Shared contract change in `@mono-agent/agent-contracts` — last resort;
+5. Shared contract change in `@mono-agent/contracts` — last resort;
    adapter-neutrality is enforced by the arch checker
 
 ## Checklist
 
 1. **Manifest** — `packages/<name>/package.json`: name `@mono-agent/<name>`,
-   version = current lockstep version (match `packages/agent-app/package.json`),
+   version = current lockstep version (match `packages/app/package.json`),
    internal deps as `workspace:<version>`, `types`/`exports` pointing at `dist/`
    (NodeNext, no src aliases), and `build`/`test`/`typecheck` scripts matching a
    sibling package in the same category.
@@ -79,7 +79,7 @@ section, adapter-neutrality violation in agent-contracts.
 When the new package is a channel driver, or adds a new `ChannelId`:
 
 - **Adapter-neutrality — grep the ENTIRE core surface, not one package.** The
-  mechanical arch guard only scans `packages/agent-contracts/src` for two literals
+  mechanical arch guard only scans `packages/contracts/src` for two literals
   (`telegram`, `whatsapp`), and that scope/word-list never grew as channels were
   added. Run a standing check of both the contracts AND the harness for a
   hardcoded reference to any shipped channel id, sourced from the channel catalog
@@ -87,7 +87,7 @@ When the new package is a channel driver, or adds a new `ChannelId`:
 
   ```bash
   grep -riE "\b(telegram|whatsapp|slack|discord)\b" \
-    packages/agent-contracts/src packages/agent-harness/src --include=*.ts | grep -v __tests__
+    packages/contracts/src packages/conversation/src --include=*.ts | grep -v __tests__
   ```
 
   `ChannelId` is `string`, open by design (third-party drivers pick their own id),
@@ -96,7 +96,7 @@ When the new package is a channel driver, or adds a new `ChannelId`:
 - **Interactive-channel harness classification.** If the channel produces
   interactive (human-attended) conversations, confirm the harness's per-turn
   model-facing framing recognizes it — `sessionContextBlock` in
-  `packages/agent-harness/src/harness.ts`, plus any sibling logic keyed off the
+  `packages/conversation/src/harness.ts`, plus any sibling logic keyed off the
   `conversationId` shape. Do not assume a hardcoded string-prefix allowlist
   elsewhere already covers the new id.
 
@@ -104,7 +104,7 @@ When the new package is a channel driver, or adds a new `ChannelId`:
 
 - **Singleton lock? Reuse the shared choreography.** If the package needs a
   singleton lock, do not re-derive the mkdir / `owner.json` / incarnation /
-  quarantine dance — reuse `packages/agent-app/src/process-incarnation.ts`, the
+  quarantine dance — reuse `packages/app/src/process-incarnation.ts`, the
   shared liveness primitive. Four current copies (worker lease, CLI lifecycle
   lock, managed-runtime install lock, SRT install lock) already share it and only
   duplicate the directory/rename choreography; don't add a fifth.
@@ -116,7 +116,7 @@ When the new package is a channel driver, or adds a new `ChannelId`:
 - **MCP stateless-HTTP cleanup ordering.** For a rung-4 MCP server/tool using
   `@modelcontextprotocol/sdk`, register the response close listener **before**
   calling `handleRequest`, not after — the SDK examples show this order and
-  `agent-orchestrator` (`extras/agent-orchestrator/src/index.ts`) got it backwards:
+  `orchestrator` (`extras/orchestrator/src/index.ts`) got it backwards:
 
   ```js
   res.on("close", () => { transport.close(); server.close(); });  // wire cleanup first

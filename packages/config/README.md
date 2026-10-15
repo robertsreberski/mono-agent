@@ -1,7 +1,7 @@
 # @mono-agent/config
 
 Typed, adapter-neutral configuration for mono-agent hosts. Most users author
-`mono-agent.config.json` and let `@mono-agent/agent-app` load it; install this
+`mono-agent.config.json` and let `@mono-agent/app` load it; install this
 package directly when building a custom host, config editor, or validator.
 
 ## Category
@@ -47,7 +47,7 @@ last-value-wins result. Agent-app's validate/doctor treats these as errors.
 ### Computer use
 
 `tools.computerUse` is absent by default. Set `{ "backend": "cua-driver" }`
-to register separately installed local desktop control in agent-app; optional
+to register separately installed local desktop control in app; optional
 `command` selects an executable name/path. The block accepts only those two
 keys. Permission modes/manifests are not framework settings. See
 [Computer use](../../docs/tools/computer-use.md) before enabling this external
@@ -270,7 +270,7 @@ relies on that canonical history for context.
 
 ### Sandbox policy
 
-Sandbox config is optional. A configured `sandbox` JSON block builds a fail-closed `@mono-agent/agent-runtime/host` policy rooted at `runtime.workspace`.
+Sandbox config is optional. A configured `sandbox` JSON block builds a fail-closed `@mono-agent/turn/host` policy rooted at `runtime.workspace`.
 
 Enforced network modes are `none`, `localhost`, and `allowlist`. `allowlist` reads domains from `sandbox.network.allowlist`. `all`, bare `*`, and IPv6 literals are rejected because pinned SRT 0.0.64 cannot enforce them exactly. Migrate an existing native `network.mode: "all"` config to `none`, `localhost`, or an explicit allowlist; if unrestricted shell networking is intentional, set `sandbox.mode: "off"` and remove the network policy. Unsafe host-process fallback requires both `sandbox.fallback: "unsafe-host-process"` and `sandbox.unsafeAllowHostProcess: true`.
 
@@ -465,7 +465,7 @@ writeMonoAgentConfigJson
 
 ## Dependency Boundary
 
-`@mono-agent/config` may depend on `@mono-agent/agent-contracts` and `@mono-agent/agent-runtime/host`. It must not depend on communication adapters, agent harness, or UI packages.
+`@mono-agent/config` may depend on `@mono-agent/contracts` and `@mono-agent/turn/host`. It must not depend on communication adapters, agent harness, or UI packages.
 
 ## What This Package Does Not Own
 

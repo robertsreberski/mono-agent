@@ -1,4 +1,4 @@
-import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
+import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/contracts";
 import type { CapturePlan } from "./capture-batch.js";
 import { captureLabels } from "./capture-labels.js";
 import { MAX_MODEL_JSON_CHARS, parseJsonExact } from "./json.js";

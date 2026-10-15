@@ -1,0 +1,192 @@
+import { describe, expect, it } from "vitest";
+
+import { AGENT_LIVE_INPUT_MAX_CHARACTERS } from "@mono-agent/contracts";
+
+import { createLiveInputMailbox } from "../live-input.js";
+
+const request = (id: string, text = id) => ({
+  conversationId: "conversation",
+  id,
+  text,
+  receivedAt: "2026-07-21T10:00:00.000Z",
+});
+
+describe("live input mailbox", () => {
+  it("delivers FIFO input, settles on host acknowledgement, and records applied text", async () => {
+    const mailbox = createLiveInputMailbox("run-1");
+    const first = mailbox.offer(request("one", "First"));
+    const second = mailbox.offer(request("two", "Second"));
+    expect(first.status).toBe("accepted");
+    expect(second.status).toBe("accepted");
+    if (first.status !== "accepted" || second.status !== "accepted") return;
+
+    const iterator = mailbox[Symbol.asyncIterator]();
+    const firstMessage = await iterator.next();
+    const secondMessage = await iterator.next();
+    expect([firstMessage.value?.body, secondMessage.value?.body]).toEqual(["First", "Second"]);
+    firstMessage.value?.acknowledge?.();
+    secondMessage.value?.acknowledge?.();
+
+    await expect(first.settled).resolves.toEqual({ status: "applied", runId: "run-1" });
+    await expect(second.settled).resolves.toEqual({ status: "applied", runId: "run-1" });
+    expect(mailbox.applied()).toEqual([
+      { id: "one", text: "First", receivedAt: "2026-07-21T10:00:00.000Z" },
+      { id: "two", text: "Second", receivedAt: "2026-07-21T10:00:00.000Z" },
+    ]);
+  });
+
+  it("retains a host delivery key only as applied-input metadata", async () => {
+    const mailbox = createLiveInputMailbox("run-host");
+    const offered = mailbox.offer({ ...request("host", "Private wake"), deliveryKey: "process-job:one:1" });
+    expect(offered.status).toBe("accepted");
+    const item = await mailbox[Symbol.asyncIterator]().next();
+    item.value?.acknowledge?.();
+    expect(mailbox.applied()).toEqual([{
+      id: "host",
+      text: "Private wake",
+      receivedAt: "2026-07-21T10:00:00.000Z",
+      deliveryKey: "process-job:one:1",
+    }]);
+  });
+
+  it("replays every message to a replacement provider iterator without duplicating settlement", async () => {
+    const mailbox = createLiveInputMailbox("run-2");
+    const offered = mailbox.offer(request("same", "Steer this"));
+    expect(offered.status).toBe("accepted");
+    if (offered.status !== "accepted") return;
+
+    const attemptOne = mailbox[Symbol.asyncIterator]();
+    const firstAttempt = await attemptOne.next();
+    expect(firstAttempt.value?.body).toBe("Steer this");
+    expect(firstAttempt.value?.reject?.(new Error("retry"))).toBe("recorded");
+    await attemptOne.return?.();
+
+    const attemptTwo = mailbox[Symbol.asyncIterator]();
+    const replay = await attemptTwo.next();
+    expect(replay.value?.acknowledge?.()).toBe("recorded");
+    expect(replay.value?.acknowledge?.()).toBe("ignored");
+    await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-2" });
+
+    const duplicate = mailbox.offer(request("same", "Ignored duplicate body"));
+    expect(duplicate.status).toBe("accepted");
+    if (duplicate.status === "accepted") {
+      await expect(duplicate.settled).resolves.toEqual({ status: "applied", runId: "run-2" });
+    }
+    expect(mailbox.applied()).toHaveLength(1);
+  });
+
+  it("fences every stale custom-runtime callback after a replacement lease begins", async () => {
+    const mailbox = createLiveInputMailbox("run-leases");
+    const offered = mailbox.offer(request("leased", "Retry me safely"));
+    expect(offered.status).toBe("accepted");
+    if (offered.status !== "accepted") return;
+
+    const attemptOne = await mailbox[Symbol.asyncIterator]().next();
+    expect(attemptOne.value?.reject?.({ code: "native_queue_removed" })).toBe("recorded");
+    const attemptTwo = await mailbox[Symbol.asyncIterator]().next();
+
+    expect(attemptOne.value?.accepted?.({ providerEntryId: "stale" })).toBe("ignored");
+    expect(attemptOne.value?.acknowledge?.({ providerEntryId: "stale" })).toBe("ignored");
+    expect(attemptOne.value?.uncertain?.({ reason: "delivery_uncertain" })).toBe("ignored");
+    expect(attemptOne.value?.reject?.({ code: "native_queue_removed" })).toBe("ignored");
+    expect(attemptTwo.value?.acknowledge?.({ providerEntryId: "current" })).toBe("recorded");
+    await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-leases" });
+    expect(mailbox.applied()).toEqual([{
+      id: "leased",
+      text: "Retry me safely",
+      receivedAt: "2026-07-21T10:00:00.000Z",
+    }]);
+  });
+
+  it("settles leased entries uncertain and ignores every late callback", async () => {
+    const mailbox = createLiveInputMailbox("run-late");
+    const offered = mailbox.offer(request("late", "Do this"));
+    expect(offered.status).toBe("accepted");
+    if (offered.status !== "accepted") return;
+    const item = await mailbox[Symbol.asyncIterator]().next();
+    expect(item.value?.accepted?.({ providerEntryId: "entry" })).toBe("recorded");
+
+    mailbox.cancel();
+    await expect(offered.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+    expect(item.value?.acknowledge?.({ providerEntryId: "entry", providerRunId: "run" })).toBe("ignored");
+    expect(item.value?.reject?.({ code: "native_queue_removed" })).toBe("ignored");
+    expect(item.value?.uncertain?.({ reason: "delivery_uncertain" })).toBe("ignored");
+    expect(mailbox.applied()).toEqual([]);
+  });
+
+  it("keeps never-leased cancellation discardable but seals leased close as uncertain", async () => {
+    const mailbox = createLiveInputMailbox("run-close");
+    const queued = mailbox.offer(request("queued"));
+    const leased = mailbox.offer(request("leased"));
+    const iterator = mailbox[Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.next();
+    mailbox.close("failed");
+    if (queued.status === "accepted") {
+      await expect(queued.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+    }
+    if (leased.status === "accepted") {
+      await expect(leased.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+    }
+  });
+
+  it("requeues unacknowledged messages on close and discards them on explicit cancellation", async () => {
+    const closedMailbox = createLiveInputMailbox("run-3");
+    const closed = closedMailbox.offer(request("closed"));
+    closedMailbox.close();
+    expect(closed.status).toBe("accepted");
+    if (closed.status === "accepted") {
+      await expect(closed.settled).resolves.toEqual({ status: "requeue", reason: "closed" });
+    }
+
+    const cancelledMailbox = createLiveInputMailbox("run-4");
+    const cancelled = cancelledMailbox.offer(request("cancelled"));
+    cancelledMailbox.cancel();
+    expect(cancelled.status).toBe("accepted");
+    if (cancelled.status === "accepted") {
+      await expect(cancelled.settled).resolves.toEqual({ status: "discarded", reason: "cancelled" });
+    }
+  });
+
+  it("settles cancellation even when the terminal observer throws", async () => {
+    let closeCalls = 0;
+    const mailbox = createLiveInputMailbox("run-cancel-observer", () => {
+      closeCalls += 1;
+      throw new Error("terminal observer failed");
+    });
+    const offered = mailbox.offer(request("cancel-observer"));
+
+    expect(() => mailbox.cancel()).not.toThrow();
+    expect(closeCalls).toBe(1);
+    expect(offered.status).toBe("accepted");
+    if (offered.status === "accepted") {
+      await expect(offered.settled).resolves.toEqual({ status: "discarded", reason: "cancelled" });
+    }
+  });
+
+  it("rejects malformed and oversized offers before admission", () => {
+    const mailbox = createLiveInputMailbox("run-5");
+    expect(mailbox.offer(request("blank", "   "))).toEqual({ status: "unavailable", reason: "invalid" });
+    expect(mailbox.offer(request("large", "x".repeat(AGENT_LIVE_INPUT_MAX_CHARACTERS + 1))))
+      .toEqual({ status: "unavailable", reason: "too_large" });
+    mailbox.markUnsupported();
+    expect(mailbox.offer(request("late"))).toEqual({ status: "unavailable", reason: "unsupported" });
+  });
+
+  it("admits only the exact target run and rejects a duplicate id retargeted to another run", async () => {
+    const mailbox = createLiveInputMailbox("run-exact");
+    expect(mailbox.offer({ ...request("wrong"), targetRunId: "run-other" }))
+      .toEqual({ status: "unavailable", reason: "inactive" });
+
+    const exact = mailbox.offer({ ...request("same", "Exact"), targetRunId: "run-exact" });
+    expect(exact.status).toBe("accepted");
+    const retargeted = mailbox.offer({ ...request("same", "Exact"), targetRunId: "run-other" });
+    expect(retargeted).toEqual({ status: "unavailable", reason: "invalid" });
+
+    const item = await mailbox[Symbol.asyncIterator]().next();
+    item.value?.acknowledge?.();
+    if (exact.status === "accepted") {
+      await expect(exact.settled).resolves.toEqual({ status: "applied", runId: "run-exact" });
+    }
+  });
+});

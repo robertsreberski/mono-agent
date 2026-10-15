@@ -213,7 +213,7 @@ starts bind to it; the turn's later model outcome remains separate. Job cards
 distinguish an unknown pre-confirmation receipt from failure and explain that
 replay was suppressed.
 
-`@mono-agent/agent-app` provides the normal managed-service lifecycle:
+`@mono-agent/app` provides the normal managed-service lifecycle:
 
 ```bash
 mono-agent web start --theme ocean
@@ -1324,7 +1324,7 @@ back the migration. Schema 34 adds a transaction-local search-write marker so
 settlement indexes already-parsed text once, atomically with the message. Neither
 upgrade prunes history or requires vacuuming. Older binaries refuse these schemas;
 use a compatible pre-upgrade backup to roll back, not a schema-version edit.
-Upgrade the operator-adapter before the Web producer so `liveInputTargeting`
+Upgrade the channel-operator before the Web producer so `liveInputTargeting`
 is available; an older operator is not guessed through and the receipt visibly
 queues `unsupported_targeting`. Deployment remains a separate operation.
 Permanent deletion is limited to archived, inactive conversations. It removes
@@ -1338,9 +1338,9 @@ race.
 
 ## Dependency Boundary
 
-The server depends only on the `core` `@mono-agent/agent-contracts` and
+The server depends only on the `core` `@mono-agent/contracts` and
 `@mono-agent/config` packages, the `observability` trace-source registry, and
-Express. Its Node-side clients use `@mono-agent/operator-adapter/client` for
+Express. Its Node-side clients use `@mono-agent/channel-operator/client` for
 bounded NDJSON decoding and long-lived turn and host-wake fetch mechanics;
 authentication, loopback policy, and lifecycle ownership remain in web.
 Its compiled browser bundle additionally contains the production graph
@@ -1354,7 +1354,7 @@ import another operator surface or start the operator adapter server.
 ## What This Package Does Not Own
 
 - Agent runtime/provider execution or conversation history inside an agent.
-- The operator-adapter HTTP server published by each agent.
+- The channel-operator HTTP server published by each agent.
 - CLI background-process, launchd, or conflict-safe Tailscale Serve lifecycle.
 - Offline run inspection, which belongs to `mono-agent runs list|show`.
 - Authentication. Network reachability is the intentional security boundary.
@@ -1373,7 +1373,7 @@ import another operator surface or start the operator adapter server.
 
 The frontend's standalone install does not depend on ancestor workspace
 `node_modules` or built framework packages. Both Vite configs resolve only
-`@mono-agent/agent-contracts/provider-usage` to its canonical, dependency-free
+`@mono-agent/contracts/provider-usage` to its canonical, dependency-free
 TypeScript source; the app's TypeScript path mapping uses that same file.
 Keep runtime imports off the Node-only contracts barrel. The standalone
 manifest declares the Node types needed by its config/test tooling.

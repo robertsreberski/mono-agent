@@ -44,7 +44,7 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
 };
 
 // Mirror of `canonicalizeAgentAttachmentMimeType` in
-// `@mono-agent/agent-contracts`: the webapp does not depend on that package,
+// `@mono-agent/contracts`: the webapp does not depend on that package,
 // so this local table is the source of truth for the composer only. Keep it in
 // sync with the contract — browsers report vendor aliases (Safari reports a
 // Voice Memo `.m4a` as `audio/x-m4a`) for containers the allowlist already

@@ -10,23 +10,23 @@ const userDocRoots = [
   "README.md",
   "PACKAGES.md",
   "docs",
-  "packages/agent-app/README.md",
+  "packages/app/README.md",
   "packages/config/README.md",
   "packages/memory/README.md",
   "packages/observability/README.md",
-  "packages/operator-adapter/README.md",
-  "packages/agent-app/skills/mono-agent-composer/references",
+  "packages/channel-operator/README.md",
+  "packages/app/skills/mono-agent-composer/references",
 ];
 const catalogDemoOnlyReadmes = packageCatalog
   .map((entry) => `${entry.path ?? `packages/${entry.dir}`}/README.md`)
   .filter((path) => !userDocRoots.includes(path));
 
 const artifactContractSourcePaths = [
-  "packages/agent-app/src/cli-background-command.ts",
-  "packages/agent-app/src/cli-help.ts",
-  "packages/operator-adapter/package.json",
-  "packages/operator-adapter/src/tui/constants.ts",
-  "packages/operator-adapter/src/tui/server.ts",
+  "packages/app/src/cli-background-command.ts",
+  "packages/app/src/cli-help.ts",
+  "packages/channel-operator/package.json",
+  "packages/channel-operator/src/tui/constants.ts",
+  "packages/channel-operator/src/tui/server.ts",
   "scripts/package-catalog.mjs",
 ];
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_AGENT_REPLY_PARTS } from "@mono-agent/agent-contracts";
+import { MAX_AGENT_REPLY_PARTS } from "@mono-agent/contracts";
 
 import { parseNotificationRequest } from "../notification-ingress.js";
 import { fakeProcessJob } from "./helpers.js";

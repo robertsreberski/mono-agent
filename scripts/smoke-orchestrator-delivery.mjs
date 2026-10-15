@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Run after: pnpm --filter @mono-agent/agent-app... build
+// Run after: pnpm --filter @mono-agent/app... build
 // Real built-dist host admission, durable storage, locks, Exec, and Pi subprocess
 // transport. The responder is scripted: no model, external provider, or hosted CI.
 import assert from "node:assert/strict";
@@ -9,16 +9,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../packages/agent-app/dist/agent-root-coordinator.js";
-import { registerProcessJobsRoot } from "../packages/agent-app/dist/process-jobs-root-registry.js";
-import { PROCESS_JOBS_DEFAULTS } from "../packages/agent-app/dist/process-jobs-config.js";
-import { openProcessJobsService } from "../packages/agent-app/dist/process-jobs-service.js";
-import { resolveProcessJobsProtectionPosture } from "../packages/agent-app/dist/process-jobs-protection.js";
-import { createProcessJobsRuntimeExtension } from "../packages/agent-app/dist/process-jobs-runtime.js";
-import { bindProcessJobWakeContextToResponder, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../packages/agent-app/dist/process-jobs-context.js";
+import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../packages/app/dist/agent-root-coordinator.js";
+import { registerProcessJobsRoot } from "../packages/app/dist/process-jobs-root-registry.js";
+import { PROCESS_JOBS_DEFAULTS } from "../packages/app/dist/process-jobs-config.js";
+import { openProcessJobsService } from "../packages/app/dist/process-jobs-service.js";
+import { resolveProcessJobsProtectionPosture } from "../packages/app/dist/process-jobs-protection.js";
+import { createProcessJobsRuntimeExtension } from "../packages/app/dist/process-jobs-runtime.js";
+import { bindProcessJobWakeContextToResponder, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../packages/app/dist/process-jobs-context.js";
 // agent-runtime ships its JavaScript src directly (package.json exports); the
 // TypeScript app/service/runtime admission above must use freshly built dist.
-import { execToolRun } from "../packages/agent-runtime/src/agent/tools/exec.js";
+import { execToolRun } from "../packages/turn/src/agent/tools/exec.js";
 
 const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = await realpath(await mkdtemp(join(tmpdir(), "mono-orchestrator-delivery-")));

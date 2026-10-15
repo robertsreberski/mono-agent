@@ -36,7 +36,7 @@ export const TOGGLE_EFFORT_LEVELS = ["high", "none"] as const;
 /**
  * What one route says about its own reasoning. A `modelOptions` entry (the
  * configured shortlist) and a `/v1/models` catalog row are built from the same
- * `resolveAdvertisedModelEffort` shape in `@mono-agent/agent-app`, so one rule
+ * `resolveAdvertisedModelEffort` shape in `@mono-agent/app`, so one rule
  * reads both.
  */
 export interface EffortAdvertisement {

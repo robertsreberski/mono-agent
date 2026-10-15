@@ -24,7 +24,7 @@ import {
   type AgentStreamWireFrame,
   type ProcessJobProjection,
   type ProcessJobState,
-} from "@mono-agent/agent-contracts";
+} from "@mono-agent/contracts";
 
 import {
   WEB_ACTIVE_THREAD_LIMIT,
@@ -1040,7 +1040,7 @@ export class WebStore {
   }
 
   /** Persist a promptless compaction notice on this thread's last settled answer. */
-  recordManualCompaction(threadId: string, result: import("@mono-agent/agent-contracts").AgentManualCompactionResult): string | undefined {
+  recordManualCompaction(threadId: string, result: import("@mono-agent/contracts").AgentManualCompactionResult): string | undefined {
     return this.transaction(() => {
       this.requireThread(threadId);
       const row = this.database.prepare(`SELECT id, parts_json FROM messages

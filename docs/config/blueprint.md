@@ -386,7 +386,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   "channels": {
     "plugins": [
       {
-        "package": "@mono-agent/whatsapp-adapter",
+        "package": "@mono-agent/channel-whatsapp",
         "id": "whatsapp",
         "config": {
           "enabled": true,                 // opt-in; defaults to false (off -> "disabled")
@@ -401,7 +401,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
         }
       },
       {
-        "package": "@mono-agent/a2a-adapter",
+        "package": "@mono-agent/channel-a2a",
         "id": "a2a",
         "config": {
           "enabled": true,

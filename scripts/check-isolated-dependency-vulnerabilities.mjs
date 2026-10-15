@@ -33,8 +33,8 @@ export const ISOLATED_DEPENDENCY_GRAPHS = Object.freeze([
   Object.freeze({
     kind: "npm-lock",
     label: "managed sandbox runtime",
-    cwd: "packages/agent-app/resources/srt",
-    lockfile: "packages/agent-app/resources/srt/package-lock.json",
+    cwd: "packages/app/resources/srt",
+    lockfile: "packages/app/resources/srt/package-lock.json",
     dispositions: "scripts/managed-srt-dependency-vulnerability-dispositions.json",
   }),
 ]);

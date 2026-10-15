@@ -10,7 +10,7 @@ export const REQUIRED_LICENSE = "GPL-3.0-only";
 export const CANONICAL_GPL3_SHA256 = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986";
 
 const defaultRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const canonicalLicensePaths = ["LICENSE", "packages/agent-runtime/LICENSE"];
+const canonicalLicensePaths = ["LICENSE", "packages/turn/LICENSE"];
 
 export async function checkLicenseConsistency(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? defaultRepoRoot);

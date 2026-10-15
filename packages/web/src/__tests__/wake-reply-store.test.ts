@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { AgentStreamWireFrame } from "@mono-agent/agent-contracts";
+import type { AgentStreamWireFrame } from "@mono-agent/contracts";
 import type { WebMessagePart } from "../contracts.js";
 import { WebStore } from "../store.js";
 import { hasWakeReplyContent, normalizeWakeTerminalReply } from "../wake-reply.js";
