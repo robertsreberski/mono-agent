@@ -182,6 +182,10 @@ export function createRunDriver(store, options) {
     if (event.type === "agent_start" || event.type === "agent_end"
       || ((event.type === "message_start" || event.type === "message_end") && event.message.role === "system")) return;
     if (event.type === "message_end") {
+      // Pi 1.1 adds transport/tool timings. They are not part of our session
+      // envelope: normalize before hooks, persistence and the next projection.
+      // The loop shares this message, so its in-memory context stays identical too.
+      if (event.message.role === "assistant" || event.message.role === "toolResult") delete event.message.durationMs;
       if (event.message.role === "assistant") await hooks("after_response", { message: event.message });
       if (isExecutableAssistant(event.message) && Array.isArray(event.message.content)) {
         const calls = event.message.content.filter((part) => part.type === "toolCall");

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add Pi's refreshed model catalog, including Claude Haiku 5.5 with native effort
+  levels and long-prompt pricing. Use `azure:<model>` for Azure routes, now
+  including Foundry Chat Completions and DeepSeek V4 Pro.
+- Keep stored sessions and single-shot provider checks and summaries unchanged
+  with Pi 1.2.0. Allow Anthropic's preferred strict tools to downgrade only after
+  a definite schema-limit rejection; never repeat a started response that way.
+
 - Fix a parent-stopped background subagent whose late result kept its session
   context staying blocked in recovery, with its process job holding a running
   slot, when registry writes were slow. The late result now settles with its

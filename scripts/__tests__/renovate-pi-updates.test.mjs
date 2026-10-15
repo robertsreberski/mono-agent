@@ -96,7 +96,7 @@ describe("Pi dependency update automation", () => {
     // agent-app (pi-ai), agent-runtime (pi-ai), plus agent-harness's
     // devDependency on pi-ai for its real-Pi session fixtures, and engine (both pins).
     expect(directPiDependencies).toHaveLength(5);
-    expect([...new Set(directPiDependencies.map(({ version }) => version))]).toEqual(["1.0.1"]);
+    expect([...new Set(directPiDependencies.map(({ version }) => version))]).toEqual(["1.2.0"]);
     for (const dependency of directPiDependencies) {
       expect(dependency.version, `${dependency.path} ${dependency.name}`).toMatch(
         /^\d+\.\d+\.\d+$/,

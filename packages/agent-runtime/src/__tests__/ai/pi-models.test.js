@@ -14,10 +14,11 @@ import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/provide
 import { checkPiProviderAuth, describePiProviderAuth, getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
 import { estimateCost } from "../../ai/cost.js";
 
-// Exercise the real pinned 0.99.2 chat catalog, rather than a mock or a copied
-// temporary row: pricing, dispatch, advertised effort and listing must agree.
-describe("Pi 0.99.2 native model integration", () => {
+// Exercise the real pinned chat catalog, not a mock or a copied row:
+// pricing, dispatch, advertised effort and listing must agree.
+describe("Pi 1.2.0 native model integration", () => {
   const rows = [
+    ["anthropic", "claude-haiku-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
     ["anthropic", "claude-opus-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 4, 20],
     ["anthropic", "claude-sonnet-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 2, 10],
     ["openai-codex", "gpt-6-sol", 272_000, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],

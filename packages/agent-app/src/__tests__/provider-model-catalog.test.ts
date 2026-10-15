@@ -117,8 +117,10 @@ describe("provider-model-catalog", () => {
     }
   });
 
-  it("advertises new Pi and supplemented models once with their limits and effort", () => {
+  it("advertises native Pi models once with their limits and effort", () => {
     for (const [provider, model, contextWindow] of [
+      ["anthropic", "claude-haiku-5-5", 1_000_000],
+      ["azure", "deepseek-v4-pro", 1_000_000],
       ["anthropic", "claude-sonnet-5-5", 1_000_000],
       ["anthropic", "claude-opus-5-5", 1_000_000],
       ["openai-codex", "gpt-6-sol", 272_000],

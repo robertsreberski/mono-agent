@@ -15,7 +15,7 @@ describe("GPT 1M context policy", () => {
   it("fails closed outside the inferred built-in long-input catalog", () => {
     expect(supportsPiContext1M(reference)).toBe(true);
     expect(supportsPiContext1M("openai:gpt-6.1-sol")).toBe(true);
-    for (const ref of ["openai-codex:gpt-5.3-codex-spark", "openai-codex:unknown", "anthropic:claude-opus-4-6", "openai:gpt-4.1", " openai:gpt-6.1-sol", "gpt-6.1-sol"]) {
+    for (const ref of ["openai-codex:gpt-5.3-codex-spark", "openai-codex:unknown", "anthropic:claude-opus-4-6", "openai:gpt-4.1", " openai:gpt-6.1-sol", "gpt-6.1-sol", "anthropic:claude-haiku-5-5", "azure:deepseek-v4-pro", "azure:gpt-6.1-sol"]) {
       expect(supportsPiContext1M(ref)).toBe(false);
     }
   });
