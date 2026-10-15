@@ -6,7 +6,10 @@ export { NativeEvidenceCapacityError } from "@mono-agent/engine/sessions.js";
 /** Administrative storage capability; the host owns policy/authority. Keep one
  * factory, including the readonly-input copies and exact-coordinate normalization.
  * @param {Parameters<typeof storage>[0]} options
- * @returns {RuntimeNativePreparationStorage & {checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage['checkInheritedPrefix']>}} */
+ * @returns {RuntimeNativePreparationStorage & {
+ *   checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage['checkInheritedPrefix']>,
+ *   inspectCurrentJournal: NonNullable<RuntimeNativePreparationStorage['inspectCurrentJournal']>
+ * }} */
 export function createManagedNativeJournalStorage(options) {
   const native = storage(options);
   return /** @type {ReturnType<typeof createManagedNativeJournalStorage>} */ ({

@@ -17,6 +17,8 @@ const run: RuntimeRunOptions = { model: parseMonoRuntimeModelReference("fictiona
 const storage: RuntimeNativePreparationStorage = createManagedNativeJournalStorage({ sessionsRoot: "/fictional/sessions" });
 void storage;
 if (false) {
+  void createManagedNativeJournalStorage({ sessionsRoot: "/fictional/sessions" })
+    .inspectCurrentJournal({ handleId: "fixture" });
   // @ts-expect-error host construction owns sandbox enforcement.
   createMonoRuntime({ sandbox: {} });
   // @ts-expect-error requests cannot replace the sandbox implementation.

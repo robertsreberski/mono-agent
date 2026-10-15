@@ -2,8 +2,8 @@
 
 Breaking and behavioral changes for consumers upgrading from `0.3.x` to the
 current pre-1.0 contract. `createRuntime()` remains the package entry point;
-`createMonoRuntime()` remains the typed facade in
-`@mono-agent/runtime-adapter`. Provider-session input/output uses
+`createMonoRuntime()` is the typed host constructor in
+`@mono-agent/agent-runtime/host`. Provider-session input/output uses
 `providerSessionId`, with `disposeSession()` and `disposeAllSessions()` retained.
 
 Review every section that matches your usage. As of `0.21.0` the package runs

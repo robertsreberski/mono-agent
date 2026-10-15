@@ -71,10 +71,8 @@
   bound without rejecting safe atomic replacements as unsafe state.
 
 - Add canonical `resolveEngineTurnAdapter`, `generateEngineTurnResponse` and
-  `engineTurnAdapter` runtime exports. Keep `resolveRuntimeBridge`,
-  `generatePiNativeResponse` and `piNativeRuntimeBridge` as deprecated,
-  identity-preserving aliases without runtime warnings; dispatch stays lazy
-  and retains model-reference validation.
+  `engineTurnAdapter` runtime exports. Keep dispatch lazy and retain
+  model-reference validation.
 
 - Keep live macOS owners of locks, leases, process jobs and subagents after a
   calendar-clock step or a timezone change. Record the boot-session UUID and
