@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } from "@mono-agent/agent-contracts";
-import { createMonoRuntime, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import type { MonoRuntimeLike, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore, ToolHistoryReader, ToolHistoryWriter } from "../index.js";
 import type { ConversationHistoryStore, HistoryMessage } from "../index.js";
 

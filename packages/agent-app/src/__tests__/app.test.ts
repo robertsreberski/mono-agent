@@ -15,14 +15,14 @@ import type {
   ChannelInteractionHub,
   ChannelInteractionSink,
 } from "@mono-agent/agent-contracts";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
-import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import type { SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 import type {
   TelegramAdapterErrorText,
   TelegramAdapterStartOptions,
 } from "@mono-agent/telegram-adapter";
 import type { SlackAdapterStartOptions } from "@mono-agent/slack-adapter";
-import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 import { startMonoAgentApp } from "../app.js";
 import { MonoAgentAppController } from "../app-controller.js";

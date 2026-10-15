@@ -1,11 +1,6 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
-import {
-  describeSandboxEffectiveState,
-  resolveSandboxEffectiveState,
-  type SandboxEffectiveState,
-  type SandboxEngine,
-  type SandboxPolicy,
-} from "@mono-agent/runtime-adapter";
+import { describeSandboxEffectiveState, resolveSandboxEffectiveState } from "@mono-agent/agent-runtime/host/sandbox";
+import { type SandboxEffectiveState, type SandboxEngine, type SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import {

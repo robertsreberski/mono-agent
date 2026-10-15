@@ -1,12 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  discoverLocalProviderModels,
-  parseMonoRuntimeModelReference,
-  resolveModelEffortLevels,
-  runtimeOptionsForLocalProvider,
-  type LocalProviderDefinition,
-} from "../index.js";
+import { discoverLocalProviderModels } from "@mono-agent/agent-runtime/host";
+import { parseMonoRuntimeModelReference, resolveModelEffortLevels, runtimeOptionsForLocalProvider } from "@mono-agent/agent-runtime/host/config";
+import { type LocalProviderDefinition } from "@mono-agent/agent-runtime/host/types";
 
 function jsonResponse(body: unknown, ok = true): Response {
   return {

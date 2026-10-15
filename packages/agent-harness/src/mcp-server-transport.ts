@@ -1,4 +1,4 @@
-import { parseMcpServers } from "@mono-agent/runtime-adapter";
+import { parseMcpServers } from "@mono-agent/agent-runtime/host/config";
 
 export type ContinuationMcpServerTransport = "stdio" | "http" | "unsupported";
 

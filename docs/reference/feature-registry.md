@@ -24,7 +24,7 @@ Core precedence: `mono-agent.config.json` > built-in defaults. Adapter-owned env
 Removal deadlines and permanent legacy-reader decisions live in the canonical
 [deprecation tracker](/reference/deprecations/).
 
-## Runtime (`@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`)
+## Runtime (`@mono-agent/agent-runtime`, `@mono-agent/agent-runtime/host`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ Removal deadlines and permanent legacy-reader decisions live in the canonical
 | `runtime.approval-gates` | Human-in-the-loop tool approval (risk tiers, timeout, always-allow) | `code` | `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` — needs a host UI to answer |
 | `runtime.custom` | Any `MonoRuntimeLike` implementation | `code` | `startMonoAgentApp({ runtime })` or `await createConfiguredAgentResponder({ runtime })` (see [composition](../programmatic/composition.md#injecting-a-custom-runtime-monoruntimelike)) |
 
-## Sandbox (`@mono-agent/runtime-adapter`)
+## Sandbox (`@mono-agent/agent-runtime/host`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |

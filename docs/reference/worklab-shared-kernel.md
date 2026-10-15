@@ -28,8 +28,7 @@ kernel.
 Mono-agent can add narrow, additive exports to `@mono-agent/agent-runtime` when
 Worklab needs an existing runtime surface that is already part of the package.
 For engine-turn response generation, Worklab should use
-`generateEngineTurnResponse` from `@mono-agent/agent-runtime/ai` (its deprecated
-`generatePiNativeResponse` alias is the same function) rather than a
+`generateEngineTurnResponse` from `@mono-agent/agent-runtime/ai` rather than a
 separate provider subpath or a `pi-sdk` compatibility export.
 
 Provider-package ownership follows the same rule. Worklab should remove
@@ -45,21 +44,12 @@ The login façade requires Pi's `onAuth`, `onDeviceCode`, `onPrompt`, and
 selection handling instead of carrying forward the older partial callback
 shape.
 
-The runtime keeps its known-good Pi AI and Pi Agent Core versions exact-pinned.
-This avoids a second host-selected Pi copy and prevents an importing project
-from changing the runtime's OAuth surface. Worklab's Claude tests should also
-stop mocking `@anthropic-ai/claude-agent-sdk` by package name and instead pass
-`RuntimeRunOptions.claudeAgentQuery`. The injected function is a programmatic
-test seam; normal runs omit it and use the runtime-owned Claude Agent SDK.
-Worklab tests that still need Pi's faux-provider helpers should move those
-fixtures behind the runtime boundary; during that transition, keep any
-development-only Pi dependency exact at `0.80.6` or isolate its install rather
-than allowing a host range to float Pi Agent Core's upstream dependency.
-
-The shared kernel intentionally contains two versions of
-`@anthropic-ai/sdk`: Pi AI pins `0.91.1`, while the Claude Agent SDK requires
-`>=0.93.0`. They are separate provider implementation details, not a dependency
-that Worklab should force-deduplicate.
+Provider execution is Pi-only: agent-runtime exact-pins Pi AI, and engine
+exact-pins Pi AI and Pi Agent Core. Worklab should test through the runtime's
+public API or stub its own runtime interface, not mock provider SDK packages.
+Fixtures using Pi's faux-provider helpers must align any development-only Pi
+dependency with the runtime's exact pin or isolate its install; a host range
+must not float the runtime's provider dependencies.
 
 ## Why not merge the repos?
 

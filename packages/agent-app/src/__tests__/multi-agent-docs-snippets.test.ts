@@ -93,7 +93,7 @@ declare const writerResponder: AgentResponder;
     heading: "Wiring into the orchestrator",
     prelude: `
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike } from "@mono-agent/agent-runtime/host/types";
 
 declare const researcherUrl: string;
 declare const workerUrl: string;

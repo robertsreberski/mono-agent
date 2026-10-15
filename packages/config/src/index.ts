@@ -85,6 +85,6 @@ export type {
   ConfigViewSectionStatus,
   RemovedConfigWarningsInput,
 } from "./config-view.js";
-export type { ProviderDefinition } from "@mono-agent/runtime-adapter";
+export type { ProviderDefinition } from "@mono-agent/agent-runtime/host/types";
 
 export { modelReferenceFromConfigJson } from "./json-source.js";

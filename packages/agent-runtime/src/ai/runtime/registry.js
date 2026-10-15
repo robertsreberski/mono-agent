@@ -30,8 +30,5 @@ export async function resolveEngineTurnAdapter(modelRef) {
   return /** @type {RuntimeBridge} */ (engineTurnAdapter);
 }
 
-/** @deprecated Use resolveEngineTurnAdapter.
- * @type {typeof resolveEngineTurnAdapter} */
-export const resolveRuntimeBridge = resolveEngineTurnAdapter;
 
 export { RUNTIME_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";

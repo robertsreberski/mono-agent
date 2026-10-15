@@ -86,13 +86,29 @@
     "./agent/tools/shared/tool-context.js": {
       "types": "./types/agent/tools/shared/tool-context.d.ts",
       "default": "./src/agent/tools/shared/tool-context.js"
+    },
+    "./host": {
+      "types": "./types/host/index.d.ts",
+      "default": "./dist/host/index.js"
+    },
+    "./host/config": {
+      "types": "./types/host/config.d.ts",
+      "default": "./dist/host/config.js"
+    },
+    "./host/types": {
+      "types": "./types/host/types.d.ts",
+      "default": "./dist/host/types.js"
+    },
+    "./host/sandbox": {
+      "types": "./types/host/sandbox.d.ts",
+      "default": "./dist/host/sandbox.js"
     }
   },
   "main": "./src/index.js",
   "types": "./types/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.types.json",
-    "typecheck": "tsc -p tsconfig.types.json --noEmit",
+    "build": "tsc -p tsconfig.types.json && tsc -p tsconfig.host.build.json && node -e \"require('node:fs').copyFileSync('src/host/srt-embed-runner.mjs','dist/host/srt-embed-runner.mjs')\"",
+    "typecheck": "tsc -p tsconfig.types.json --noEmit && tsc -p tsconfig.host.json --noEmit",
     "prepack": "pnpm run build",
     "test": "vitest run"
   },
@@ -104,7 +120,10 @@
     "MIGRATION.md",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "dist/host/**/*.js",
+    "!dist/host/**/__tests__/**",
+    "dist/host/srt-embed-runner.mjs"
   ],
   "engines": {
     "node": ">=24.15.0"
@@ -123,9 +142,24 @@
     "turndown": "7.2.4",
     "unpdf": "1.8.1",
     "zod": "^4.3.6",
-    "@mono-agent/engine": "workspace:0.25.1"
+    "@mono-agent/engine": "workspace:0.25.1",
+    "@mono-agent/agent-contracts": "workspace:0.25.1"
   },
   "devDependencies": {
     "@types/turndown": "5.0.6"
+  },
+  "imports": {
+    "#kernel/types": {
+      "types": "./types/ai/types.d.ts",
+      "default": "./src/ai/types.js"
+    },
+    "#kernel/cost": {
+      "types": "./types/ai/cost.d.ts",
+      "default": "./src/ai/cost.js"
+    },
+    "#kernel/native-journal-types": {
+      "types": "./types/ai/native-journal-types.d.ts",
+      "default": "./src/ai/native-journal-types.js"
+    }
   }
 }

@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 // @ts-expect-error Private kernel tool boundary.
 import { createAgentManageTool } from "../../../agent-runtime/src/agent/tools/agent-manage-tool.js";
 // @ts-expect-error Real native engine; only provider transport is fake.

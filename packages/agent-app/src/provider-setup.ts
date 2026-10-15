@@ -20,7 +20,7 @@ import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 import { isPiOAuthLoginEnabled } from "@mono-agent/agent-runtime/ai";
 
 import { inspectPiAuthStore, MAX_PI_AUTH_STORE_BYTES } from "./pi-auth-store-inspection.js";

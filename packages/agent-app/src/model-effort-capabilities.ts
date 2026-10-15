@@ -4,12 +4,8 @@ import {
   reasoningLevelsForPiModel,
   type PiBuiltinModelSnapshot,
 } from "@mono-agent/agent-runtime";
-import type {
-  LocalProviderDefinition,
-  ModelEffortLevels,
-  RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
-import { resolveModelEffortLevels } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, ModelEffortLevels, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
+import { resolveModelEffortLevels } from "@mono-agent/agent-runtime/host/config";
 
 const KNOWN_EFFORTS = new Set<string>(EFFORT_LEVELS);
 

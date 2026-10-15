@@ -6,7 +6,7 @@ import { startPreparedProcess } from "./process-runner.js";
 
 /**
  * Kernel-local structural controller seam. The typed public interface lives in
- * runtime-adapter; this package deliberately has no workspace dependencies.
+ * the host integration; the kernel seam stays structural.
  *
  * @typedef {Object} ProcessJobsController
  * @property {(request: {

@@ -17,17 +17,9 @@ import type {
   TuiModelOption,
   TuiProviderInfo,
 } from "@mono-agent/operator-adapter";
-import {
-  discoverLocalProviderModels,
-  discoverLocalProviders,
-  modelReferenceKey,
-  parseMonoRuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
-import type {
-  DiscoveredLocalModel,
-  LocalProviderDefinition,
-  RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { discoverLocalProviderModels, discoverLocalProviders } from "@mono-agent/agent-runtime/host";
+import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import type { DiscoveredLocalModel, LocalProviderDefinition, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 import {
   ACP_BRIDGE_SOURCE_SCHEMA,
   ACP_BRIDGE_VERSION,

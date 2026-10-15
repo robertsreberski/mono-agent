@@ -7,7 +7,7 @@ import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
 import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
-import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
+import type { OwnedForegroundProcesses } from "@mono-agent/agent-runtime/host/types";
 import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
@@ -50,27 +50,13 @@ import type {
   RunSummary,
   RuntimeResultLike,
 } from "@mono-agent/observability";
-import {
-  createMonoRuntime,
-  createManagedNativeJournalStorage,
-  createPiOAuthApiKeyResolver,
-  createSrtSandboxEngine,
-  describeMonoRuntimeSupport,
-  modelReferenceKey,
-  monoRuntimeSupportsLiveInput,
-  monoRuntimeSupportsSessionResume,
-  parseMonoRuntimeModelReference,
-  runtimeOptionsForLocalProvider,
-  mergeSandboxPolicies,
-} from "@mono-agent/runtime-adapter";
-import type {
-  MonoRuntimeFallbackChainEntry,
-  MonoRuntimeLike,
-  RuntimeModelReference,
-  RuntimeResult,
-  RuntimeRunOptions,
-} from "@mono-agent/runtime-adapter";
-import type { SandboxEngine, SandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsSessionResume } from "@mono-agent/agent-runtime/host";
+import { createPiOAuthApiKeyResolver } from "@mono-agent/agent-runtime";
+import { createManagedNativeJournalStorage } from "@mono-agent/agent-runtime";
+import { createSrtSandboxEngine, mergeSandboxPolicies } from "@mono-agent/agent-runtime/host/sandbox";
+import { modelReferenceKey, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/agent-runtime/host/config";
+import type { MonoRuntimeFallbackChainEntry, MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
+import type { SandboxEngine, SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import { createToolOutputArtifactsRuntimeExtension } from "./tool-output-artifacts.js";
@@ -505,7 +491,7 @@ const ownedRuntimeKeys = {
 const ownedPreparedKeys = {
   snapshot: true, assertReady: true, checkHandoffSummary: true,
   produceHandoffSummary: true, run: true, close: true,
-} satisfies Record<keyof import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch, true>;
+} satisfies Record<keyof import("@mono-agent/agent-runtime/host/types").RuntimeNativePreparedDispatch, true>;
 void ownedRuntimeKeys; void ownedPreparedKeys;
 
 /** @internal Package-private ownership wrapper test seam; absent from root exports. */
@@ -606,7 +592,7 @@ export function wrapOwnedConfiguredRuntime(
     ...(runtime.prepareNativeDispatch === undefined ? {} : {
       async prepareNativeDispatch(systemPrompt: string, runOptions: RuntimeRunOptions) {
         const secured = await secureOptions(runOptions);
-        let nativeLease: import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch | undefined;
+        let nativeLease: import("@mono-agent/agent-runtime/host/types").RuntimeNativePreparedDispatch | undefined;
         try {
           const prepared = await runtime.prepareNativeDispatch!(systemPrompt, secured.effectiveOptions);
           nativeLease = prepared;
@@ -628,7 +614,7 @@ export function wrapOwnedConfiguredRuntime(
               try { await prepared.close(); }
               finally { release(); }
             },
-          } satisfies import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch;
+          } satisfies import("@mono-agent/agent-runtime/host/types").RuntimeNativePreparedDispatch;
         } catch (error) {
           try { await nativeLease?.close(); } catch { /* Preserve preparation failure. */ }
           finally { secured.release(); }

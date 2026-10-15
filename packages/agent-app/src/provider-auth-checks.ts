@@ -11,13 +11,9 @@ import {
 } from "@mono-agent/agent-contracts";
 import { resolveConfiguredProviders } from "@mono-agent/config";
 import { runPiProviderCheck } from "@mono-agent/agent-runtime/ai";
-import {
-  createPiOAuthApiKeyResolver,
-  parseMonoRuntimeModelReference,
-  runtimeOptionsForLocalProvider,
-  type LocalProviderDefinition,
-  type RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { createPiOAuthApiKeyResolver } from "@mono-agent/agent-runtime";
+import { parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/agent-runtime/host/config";
+import { type LocalProviderDefinition, type RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 import { selectProviderAuthCheckModel } from "./provider-model-catalog.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";

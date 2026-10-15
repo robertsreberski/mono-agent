@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createDurableHistoryStore } from "../../../dist/index.js";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 
 const [root, mode] = process.argv.slice(2);
 const bucket = "fictional-conversation", modelKey = "openai-codex:fictional-primary";

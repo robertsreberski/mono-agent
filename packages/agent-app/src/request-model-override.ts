@@ -1,20 +1,7 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
-import {
-  supportsPiContext1M,
-  assertParsedRuntimeModelReference,
-  MODEL_REFERENCE_ECHO_MAX_BYTES,
-  MODEL_REFERENCE_REASON_MAX_BYTES,
-  modelReferenceKey,
-  parseMonoRuntimeModelReference,
-  RuntimeAdapterError,
-  runtimeOptionsForLocalProvider,
-  sanitizeModelReferenceText,
-} from "@mono-agent/runtime-adapter";
-import type {
-  LocalProviderDefinition,
-  LocalProviderRuntimeOptions,
-  RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { supportsPiContext1M } from "@mono-agent/agent-runtime";
+import { assertParsedRuntimeModelReference, MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, modelReferenceKey, parseMonoRuntimeModelReference, RuntimeAdapterError, runtimeOptionsForLocalProvider, sanitizeModelReferenceText } from "@mono-agent/agent-runtime/host/config";
+import type { LocalProviderDefinition, LocalProviderRuntimeOptions, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
 

@@ -1,11 +1,5 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
-import {
-  MODEL_REFERENCE_ECHO_MAX_BYTES,
-  MODEL_REFERENCE_REASON_MAX_BYTES,
-  parseMonoRuntimeModelReference,
-  RuntimeAdapterError,
-  sanitizeModelReferenceText,
-} from "@mono-agent/runtime-adapter";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/agent-runtime/host/config";
 
 /** One enabled trigger (cron job / webhook endpoint) carrying override strings. */
 export interface TriggerOverrideEntry {

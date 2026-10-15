@@ -13,13 +13,9 @@ import {
   listPiBuiltinProviders,
   type PiBuiltinModelSnapshot,
 } from "@mono-agent/agent-runtime";
-import { CONTEXT_1M_TOKENS, supportsPiContext1M, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
-import type {
-  DiscoveredLocalModel,
-  LocalProviderDefinition,
-  ProviderDefinition,
-  RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { CONTEXT_1M_TOKENS, supportsPiContext1M } from "@mono-agent/agent-runtime";
+import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import type { DiscoveredLocalModel, LocalProviderDefinition, ProviderDefinition, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 import {
   resolveAdvertisedModelEffort,

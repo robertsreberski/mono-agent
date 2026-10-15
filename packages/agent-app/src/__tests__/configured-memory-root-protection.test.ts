@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
 
 const memoryState = vi.hoisted(() => ({
   complete: vi.fn(async () => "[]"),

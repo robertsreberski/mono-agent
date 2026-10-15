@@ -121,11 +121,11 @@ owned membership/header checks as the physical backstop.
 
 ## Injecting a custom runtime (`MonoRuntimeLike`)
 
-Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/runtime-adapter`. Pass one to share a single runtime across hosts or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` plus canonical `runtime.fallbacks`.
+Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/agent-runtime/host`. Pass one to share a single runtime across hosts or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` plus canonical `runtime.fallbacks`.
 
 ```ts
 import { startMonoAgentApp } from "@mono-agent/agent-app";
-import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike } from "@mono-agent/agent-runtime/host/types";
 
 const myRuntime: MonoRuntimeLike = createMyRuntime();
 

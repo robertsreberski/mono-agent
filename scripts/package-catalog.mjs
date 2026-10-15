@@ -80,8 +80,8 @@ export const packageCatalog = [
     dir: "agent-runtime",
     name: "@mono-agent/agent-runtime",
     category: "runtime",
-    responsibility: "Provides the Pi SDK runtime bridge with native tools, MCP, sessions, compaction, and provider-catalog integration.",
-    allowedDependencyCategories: ["runtime"],
+    responsibility: "Provides the Pi SDK runtime, typed host integration, sandbox/process protection, native tools, MCP, sessions, and compaction.",
+    allowedDependencyCategories: ["core", "runtime"],
     publishable: true,
   },
   {
@@ -160,14 +160,6 @@ export const packageCatalog = [
     channelIds: ["tui"],
     responsibility: "Exposes the structured local operator NDJSON endpoint used by the browser console, ACP bridge, and jobs client.",
     allowedDependencyCategories: ["core"],
-    publishable: true,
-  },
-  {
-    dir: "runtime-adapter",
-    name: "@mono-agent/runtime-adapter",
-    category: "runtime",
-    responsibility: "Wraps @mono-agent/agent-runtime behind runtime contracts and owns sandbox policy/process wrapping.",
-    allowedDependencyCategories: ["core", "runtime"],
     publishable: true,
   },
   {

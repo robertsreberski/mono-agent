@@ -1,8 +1,4 @@
-import {
-  MODEL_REFERENCE_ECHO_MAX_BYTES,
-  MODEL_REFERENCE_REASON_MAX_BYTES,
-  sanitizeModelReferenceText,
-} from "@mono-agent/runtime-adapter";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, sanitizeModelReferenceText } from "@mono-agent/agent-runtime/host/config";
 import { describe, expect, it } from "vitest";
 
 import { findTriggerOverrideIssues } from "../trigger-overrides.js";

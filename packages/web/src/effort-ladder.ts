@@ -88,7 +88,7 @@ export function effectiveModelForAgent(
  * nothing at all and the caller's floor applies.
  *
  * Read the producer's vocabulary (`agent-app/src/model-effort-capabilities.ts`,
- * `runtime-adapter/src/local-providers.ts`) rather than the field names:
+ * `agent-runtime/src/host/local-providers.ts`) rather than the field names:
  *
  *   - `reasoning: false` / `reasoningMode: "none"` — takes no grade at all.
  *   - `reasoningMode: "toggle"` — binary thinking; graded levels would lie.

@@ -587,7 +587,7 @@ describe("current launch manifest", () => {
     expect(publishableNames).not.toContain(`@mono-agent/${"live"}-${"adapter"}`);
     expect(publishableNames).toContain("@mono-agent/operator-adapter");
     expect(publishableNames).toContain("@mono-agent/agent-runtime");
-    expect(publishableNames).toContain("@mono-agent/runtime-adapter");
+    expect(publishableNames).not.toContain("@mono-agent/runtime-adapter");
     expect(publishableNames).toContain("@mono-agent/agent-app");
     expect(publishableNames).toContain("@mono-agent/observability");
   });

@@ -2,8 +2,8 @@
 
 Breaking and behavioral changes for consumers upgrading from `0.3.x` to the
 current pre-1.0 contract. `createRuntime()` remains the package entry point;
-`createMonoRuntime()` remains the typed facade in
-`@mono-agent/runtime-adapter`. Provider-session input/output uses
+`createMonoRuntime()` is the typed host constructor in
+`@mono-agent/agent-runtime/host`. Provider-session input/output uses
 `providerSessionId`, with `disposeSession()` and `disposeAllSessions()` retained.
 
 Review every section that matches your usage. As of `0.21.0` the package runs
@@ -17,6 +17,41 @@ the configuration schema.
 ---
 
 ## Unreleased mono-agent engine
+
+### Breaking host import consolidation
+
+`@mono-agent/runtime-adapter` is removed, with no forwarding package, shim,
+or import alias. Keep `@mono-agent/config` installed separately; it now depends
+directly on agent-runtime. Use these exact imports (symbol names are unchanged):
+
+| Old import and symbols | New import |
+| --- | --- |
+| `@mono-agent/runtime-adapter`: `digestNativeTurnInput`, `formatLiveInputGuidance` | `@mono-agent/agent-runtime/ai/live-input-prompt.js` |
+| `@mono-agent/runtime-adapter`: `assertParsedRuntimeModelReference`, `MODEL_REFERENCE_ECHO_MAX_BYTES`, `MODEL_REFERENCE_REASON_MAX_BYTES`, `modelReferenceKey`, `parseMonoRuntimeModelReference`, `RuntimeAdapterError`, `sanitizeModelReferenceText`, `isPlainObject`, `isValidMcpServerName`, `parseMcpServers`, `isAutodiscoverableProviderId`, `isPrivateBaseUrl`, `isPiBuiltinProvider`, `localProviderDefinitionFor`, `resolveModelEffortLevels`, `runtimeOptionsForLocalProvider`, `validateLocalProviderDefinition`, `validateProviderBaseUrl`, `validateProviderDefinition` | `@mono-agent/agent-runtime/host/config` |
+| `@mono-agent/runtime-adapter`: `createMonoRuntime`, `describeMonoRuntimeSupport`, `listMonoRuntimeBackends`, `monoRuntimeSupportsLiveInput`, `monoRuntimeSupportsMcpApps`, `monoRuntimeSupportsSessionResume`, `runtimeBackendForModel`, `bridgeProcessJobsController`, `discoverLocalProviderModels`, `discoverLocalProviders`, `bridgeOwnedForegroundProcesses` | `@mono-agent/agent-runtime/host` |
+| `@mono-agent/runtime-adapter`: `createPiOAuthApiKeyResolver`, `CONTEXT_1M_TOKENS`, `supportsPiContext1M`, `describePiBuiltinProvider`, `listPiBuiltinProviders`, `NativeEvidenceCapacityError`, `createManagedNativeJournalStorage` | `@mono-agent/agent-runtime` |
+| `@mono-agent/runtime-adapter`: `CreateMonoRuntimeOptions`, `MonoRuntimeAttemptContext`, `MonoRuntimeAttemptResolution`, `MonoRuntimeAttemptResolver`, `MonoRuntimeFallbackChainEntry`, `MonoRuntimeRetryPolicy`, `RuntimeAdapterErrorCode`, `RuntimeAdapterErrorDetails`, `NormalizedMcpServer`, `NormalizedMcpTransport`, `ProcessJobLaunchOptions`, `ProcessJobProcessHandle`, `ProcessJobProcessResult`, `ProcessJobsController`, `ProcessJobStartRequest`, `ProcessJobStartResult`, `PI_TRANSPORTS`, `isRuntimeSubagentActivityEvent`, `PreparedSandboxCommand`, `PrepareSandboxedCommandInput`, `SandboxCommandSpec`, `SandboxEffectiveMode`, `SandboxEffectiveState`, `SandboxEngine`, `SandboxEngineId`, `SandboxErrorCode`, `SandboxFallback`, `SandboxMode`, `SandboxNetworkMode`, `SandboxNetworkPolicy`, `SandboxNetworkPolicyInput`, `SandboxPolicy`, `SandboxPolicyInput`, `SandboxPolicyRuntimeOptions`, `SrtFilesystemSettings`, `SrtNetworkSettings`, `SrtSandboxEngineOptions`, `SrtSettings`, `AgentRuntimeCustomModel`, `AgentRuntimeCustomProvider`, `DiscoverLocalProviderModelsOptions`, `DiscoveredLocalModel`, `LocalProviderCapabilities`, `LocalProviderDefinition`, `LocalProviderModelDefinition`, `LocalProviderPricing`, `LocalProviderRuntimeOptions`, `LocalProviderType`, `ModelEffortLevels`, `ProviderDefinition`, `DiscoveredProvider`, `DiscoverLocalProvidersInput`, `MonoRuntimeApprovalDecision`, `MonoRuntimeApprovalRequest`, `MonoRuntimeBackendCapabilities`, `MonoRuntimeBackendDescriptor`, `MonoRuntimeCompactionRecord`, `MonoRuntimeHostOptions`, `MonoRuntimeLike`, `RuntimeNativeJournalAuthority`, `RuntimeNativeJournalDescriptor`, `RuntimeNativeJournalRef`, `RuntimeNativeEpochContext`, `RuntimeNativeJournalStorage`, `RuntimeNativeJournalDeletion`, `DurableSessionSalvage`, `MonoRuntimeParsedPricingModel`, `MonoRuntimePricing`, `MonoRuntimeSandboxEngine`, `MonoRuntimeSupportDescription`, `RuntimeCompactionPolicy`, `RuntimeEventLike`, `RuntimeLiveInputCallbackDisposition`, `RuntimeLiveInputEvidence`, `RuntimeLiveInputMessage`, `RuntimeLiveInputUncertainty`, `RuntimeMessage`, `RuntimeMcpAppConnection`, `RuntimeMcpAppHost`, `RuntimeMcpAppRegistration`, `RuntimeModelReference`, `PiTransport`, `RuntimePromptOverrides`, `RuntimeDispatchProgress`, `RuntimeResult`, `RuntimeRunOptions`, `RuntimeSessionTurnDescriptor`, `RuntimeNativeSessionAuthority`, `RuntimeNativeSessionProjection`, `RuntimeNativeDispatchSnapshot`, `RuntimeNativeDispatchBinding`, `RuntimeNativePreparedDispatch`, `RuntimeNativeEvidenceView`, `RuntimeNativePreparationStorage`, `RuntimePreparedHandoff`, `RuntimeHandoffBudget`, `RuntimeHandoffSummary`, `RuntimeHandoffProducerRequest`, `RuntimeHandoffProducerResult`, `RuntimeHandoffFit`, `RuntimeHandoffOptions`, `RuntimeHandoffProposal`, `RuntimeSessionTurnReconciliationRequest`, `RuntimeSessionTurnReconciliationResult`, `RuntimeSessionTurnResultSeal`, `RuntimeSessionTurnDetachedAttempt`, `RuntimeSubagentActivityEvent`, `RuntimeSubagentActivityPhase`, `RuntimeSubagentIdentity`, `RuntimeSubagentRouteAttribution`, `RuntimeSubagentRouteExecution`, `RuntimeSubagentRouteRetry`, `RuntimeSubagentRouteSelection`, `RuntimeSubagentRouteTransition`, `RuntimeToolLifecycleEvent`, `RuntimeToolLifecyclePersistence`, `RuntimeToolLifecycleSink`, `RuntimeToolLifecycleTerminalState`, `RuntimeToolLimits`, `RuntimeToolOptions`, `OwnedForegroundProcessRequest`, `OwnedForegroundProcessController`, `OwnedForegroundProcesses` | `@mono-agent/agent-runtime/host/types` |
+| `@mono-agent/runtime-adapter`: `inspectCodexSubscriptionSearch` | `@mono-agent/agent-runtime/agent/tools/index.js` |
+| `@mono-agent/runtime-adapter`: `CodedError`, `isCodedError` | `@mono-agent/agent-contracts` |
+| `@mono-agent/runtime-adapter`: `DEFAULT_DENY_WRITE`, `SANDBOX_FALLBACKS`, `SANDBOX_MODES`, `SANDBOX_NETWORK_MODES`, `SandboxPolicyError`, `SandboxUnavailableError`, `createSandboxPolicy`, `createSrtSandboxEngine`, `describeSandboxEffectiveState`, `failClosedSandboxPolicy`, `mergeSandboxPolicies`, `networkPolicyAllowsUrl`, `prepareSandboxedCommand`, `protectSandboxRoots`, `resolveSandboxEffectiveState`, `sandboxEffectiveStateWarning`, `sandboxPolicyToRuntimeOptions`, `sandboxRequired`, `srtSettingsForPolicy`, `MANAGED_SRT_TREE_SHA256`, `managedSrtInstallRoot` | `@mono-agent/agent-runtime/host/sandbox` |
+
+The four host subpaths are narrow structural entrypoints, not a new umbrella
+facade: `host` constructs runtimes, discovers providers and bridges host process
+controllers; `host/config` owns validation and configuration helpers;
+`host/types` owns contracts and event guards; `host/sandbox` owns sandbox policy
+and process wrapping. Config's existing catalog/context helpers still use the
+runtime catalog. Session paths, data formats, sandbox injection, process ownership
+and protected request/attempt overrides are unchanged.
+
+The deprecated adapter aliases are also removed everywhere, including the root,
+`/ai`, and the exported registry subpath:
+
+| Old name | Canonical name (same owning entrypoint) |
+| --- | --- |
+| `resolveRuntimeBridge` | `resolveEngineTurnAdapter` |
+| `generatePiNativeResponse` | `generateEngineTurnResponse` |
+| `piNativeRuntimeBridge` | `engineTurnAdapter` |
+
 
 ### Breaking sessions configuration and storage rename
 
@@ -51,10 +86,7 @@ and its matching old configuration; do not run mixed binaries on one root.
 
 
 The canonical adapter API is `resolveEngineTurnAdapter`,
-`generateEngineTurnResponse` and `engineTurnAdapter`. The old exports
-`resolveRuntimeBridge`, `generatePiNativeResponse` and `piNativeRuntimeBridge`
-remain identity-preserving deprecated aliases at the root and AI entrypoints,
-without runtime warnings. Runtime dispatch lazily loads the adapter directly;
+`generateEngineTurnResponse` and `engineTurnAdapter`. The retired names are removed; use the canonical names in the table above. Runtime dispatch lazily loads the adapter directly;
 the optional resolver shares the same malformed-reference validation. Config,
 wire identifiers and the `"pi"` adapter id are unchanged.
 

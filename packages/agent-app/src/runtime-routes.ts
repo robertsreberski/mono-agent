@@ -1,10 +1,6 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
-import {
-  assertParsedRuntimeModelReference,
-  modelReferenceKey,
-  parseMonoRuntimeModelReference,
-  type RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { assertParsedRuntimeModelReference, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import { type RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 type RuntimeConfig = MonoAgentConfig["runtime"];
 

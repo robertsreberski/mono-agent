@@ -3,7 +3,7 @@ import { assertSessionModelKey } from "./session-runtime.js";
 import { validateTurnHistoryV3 } from "./durable-turn-history.js";
 import type { TurnHistoryV3 } from "./durable-turn-history.js";
 import type { HistoryMessage } from "./context/index.js";
-import type { RuntimeNativeJournalAuthority, RuntimeHandoffBudget } from "@mono-agent/runtime-adapter";
+import type { RuntimeNativeJournalAuthority, RuntimeHandoffBudget } from "@mono-agent/agent-runtime/host/types";
 
 export class ModelSwitchCapacityError extends Error {
   readonly code = "ERR_MODEL_SWITCH_CAPACITY";

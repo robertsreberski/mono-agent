@@ -1,5 +1,5 @@
 import type { createDurableHistoryStore, DurableHistoryStoreOptions } from "../../durable-history.js";
-import type { RuntimeNativePreparationStorage } from "@mono-agent/runtime-adapter";
+import type { RuntimeNativePreparationStorage } from "@mono-agent/agent-runtime/host/types";
 import type { ModelSwitchState, HandoffReference } from "../../durable-model-switch-contract.js";
 export const bucket: string;
 export function openStore(base: string, nativePhase?: (phase: string) => Promise<void>, limits?: Partial<DurableHistoryStoreOptions>): {

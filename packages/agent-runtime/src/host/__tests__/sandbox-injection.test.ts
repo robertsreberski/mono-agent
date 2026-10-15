@@ -17,12 +17,8 @@ vi.mock("@mono-agent/agent-runtime", () => ({
   createRouterRuntime: kernelMocks.createRouterRuntime,
 }));
 
-import { createMonoRuntime } from "../runtime-adapter.js";
-import type {
-  CreateMonoRuntimeOptions,
-  MonoRuntimeAttemptContext,
-  MonoRuntimeAttemptResolution,
-} from "../runtime-adapter.js";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution } from "@mono-agent/agent-runtime/host/types";
 import type { RuntimeRunOptions, RuntimeToolOptions } from "../types.js";
 import { monoSandboxImpl } from "../sandbox-impl.js";
 

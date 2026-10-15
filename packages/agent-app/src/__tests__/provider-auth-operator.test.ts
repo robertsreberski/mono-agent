@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { ProviderAuthStatusSnapshot } from "@mono-agent/agent-contracts";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";

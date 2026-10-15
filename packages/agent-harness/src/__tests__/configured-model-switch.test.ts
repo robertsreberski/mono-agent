@@ -3,7 +3,10 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { createManagedNativeJournalStorage, createMonoRuntime, NativeEvidenceCapacityError, type MonoRuntimeLike, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "@mono-agent/agent-runtime";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { type MonoRuntimeLike } from "@mono-agent/agent-runtime/host/types";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 import { MonoAgentHarness } from "../harness.js";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { switchConversationKey } from "../durable-model-switch-contract.js";
@@ -26,7 +29,7 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
   const retire = vi.fn(async (id: string) => { await inspector.retireDurableSession!(id, nativeRoot); });
   const makeStore = () => createDurableHistoryStore({ root: historyRoot, nativeJournalStorage: native, reconcileProviderSessionTurn: inspect, retireProviderSession: retire, ...limits });
   const store = makeStore(), runtimes: MonoRuntimeLike[] = [];
-  const prepareCalls: Array<{ id: string; options: import("@mono-agent/runtime-adapter").RuntimeRunOptions }> = [];
+  const prepareCalls: Array<{ id: string; options: import("@mono-agent/agent-runtime/host/types").RuntimeRunOptions }> = [];
   const runtimeFor = (id: string) => {
     const runtime = createMonoRuntime({ workspace: base }), run = runtime.run.bind(runtime), prepare = runtime.prepareNativeDispatch!.bind(runtime);
     // Fixture catalog injection only; real preparation, native storage, P2 and
@@ -439,7 +442,7 @@ it("a redelivered message whose abandoned switch already billed it makes no paid
 
 it("unreadable capture during a pending switch is typed and bills nothing", async () => {
   const f = await fixture(); await f.seed(); await pendingSwitch(f); const billed = f.transport.mock.calls.length;
-  const inspect = vi.spyOn(f.native as Required<Pick<import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage, "inspectCurrentJournal">>, "inspectCurrentJournal").mockResolvedValue({ status: "unreadable", reason: "fictional-damage" });
+  const inspect = vi.spyOn(f.native as Required<Pick<import("@mono-agent/agent-runtime/host/types").RuntimeNativePreparationStorage, "inspectCurrentJournal">>, "inspectCurrentJournal").mockResolvedValue({ status: "unreadable", reason: "fictional-damage" });
   const result = await f.makeHarness("B", true).run(f.request("fictional-retry"));
   expect(result.failure?.kind).toBe("native_journal_unreadable"); expect(f.transport).toHaveBeenCalledTimes(billed); inspect.mockRestore();
 });

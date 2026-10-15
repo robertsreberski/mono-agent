@@ -5,7 +5,7 @@ import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, truncate, ut
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/agent-runtime/host/types";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { PendingTurnPayloadStore, pendingCoordinates } from "../durable-turn-payloads.js";
 import { createPendingInitialInput, createPendingTurnPayload, pendingPayloadName } from "../durable-turn-contract.js";

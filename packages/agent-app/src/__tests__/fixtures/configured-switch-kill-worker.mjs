@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../../../dist/configured-agent.js";
 import { createRequestModelOverrideRuntimeExtension } from "../../../dist/request-model-override.js";
 import { loadAppCoreConfig } from "../../../dist/app-config.js";

@@ -4,16 +4,9 @@ import { dirname, join, relative, resolve } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import {
-  createMonoRuntime,
-  parseMonoRuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
-import type {
-  MonoRuntimeLike,
-  RuntimeModelReference,
-  RuntimeResult,
-  RuntimeRunOptions,
-} from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadAppCoreConfig } from "../app-config.js";

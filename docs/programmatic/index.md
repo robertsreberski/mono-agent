@@ -117,7 +117,7 @@ const config = await loadMonoAgentConfig({
 const responder = await createConfiguredAgentResponder({ config });
 ```
 
-This corresponds to the **Core Join** in the package map: `agent-contracts` (request/response shape), `config` (settings), `runtime-adapter` (model refs and provider-option validation), and `agent-app` (turns config into a responder). For finer control of runtime, memory, history, recorder, or request-scoped options, drop to `@mono-agent/agent-harness` directly — that is the **Execution Join** and is fully code-only.
+This corresponds to the **Core Join** in the package map: `agent-contracts` (request/response shape), `config` (settings), `agent-runtime host integration` (model refs and provider-option validation), and `agent-app` (turns config into a responder). For finer control of runtime, memory, history, recorder, or request-scoped options, drop to `@mono-agent/agent-harness` directly — that is the **Execution Join** and is fully code-only.
 
 :::note
 The loader reads core settings only from JSON and built-in defaults. Environment remains available separately for referenced credentials and adapter settings.

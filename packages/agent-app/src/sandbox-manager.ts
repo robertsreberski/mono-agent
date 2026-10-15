@@ -25,14 +25,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { CodedError } from "@mono-agent/agent-contracts";
-import {
-  createSandboxPolicy,
-  createSrtSandboxEngine,
-  MANAGED_SRT_TREE_SHA256,
-  type PreparedSandboxCommand,
-  type SandboxEngine,
-  type SandboxPolicy,
-} from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy, createSrtSandboxEngine, MANAGED_SRT_TREE_SHA256 } from "@mono-agent/agent-runtime/host/sandbox";
+import { type PreparedSandboxCommand, type SandboxEngine, type SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 
 import {
   currentProcessIncarnation,

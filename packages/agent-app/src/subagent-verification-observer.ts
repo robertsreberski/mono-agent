@@ -3,7 +3,7 @@ import { resolveSubagentObservationGit } from "./subagent-observation-git.js";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { PreparedSandboxCommand, ProcessJobProcessResult, SandboxEngine, SandboxPolicy } from "@mono-agent/runtime-adapter";
+import type { PreparedSandboxCommand, ProcessJobProcessResult, SandboxEngine, SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 
 export interface SubagentVerificationDeclaration { readonly workdir: string; readonly reportPath?: string }
 interface SubagentVerificationGitEntryIdentity { readonly device: string; readonly inode: string }

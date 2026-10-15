@@ -1,6 +1,8 @@
 import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/runtime-adapter";
+import { NativeEvidenceCapacityError } from "@mono-agent/agent-runtime";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import { type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
 import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityError, ModelSwitchMessageConsumedError } from "../durable-model-switch-contract.js";
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";

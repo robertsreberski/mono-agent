@@ -5,7 +5,7 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxThinking, fauxTex
 import { ToolHistoryWriter } from "@mono-agent/agent-harness";
 import { setTimeout as delay } from "node:timers/promises";
 import { createConfiguredAgentHarness } from "@mono-agent/agent-app";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 const [root, mode, slowWriter] = process.argv.slice(2);
 if (slowWriter === "slow-writer") {
   // Exercise the CI race: native Read finishes while its sidecar opens.

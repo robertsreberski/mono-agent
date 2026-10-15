@@ -5,7 +5,7 @@ import type { HandoffReference, ModelSwitchIdentity, ModelSwitchReservation, Mod
  * user action. Each later explicit user message authorizes one new attempt per
  * producer, with a new two-call cap for that message generation. Unknown
  * outcomes remain charged; callers persist state BEFORE any paid call. */
-export function createModelSwitchState(coordinates: Omit<ModelSwitchIdentity, "switchId">, reservation: ModelSwitchReservation, frozenBudget: import("@mono-agent/runtime-adapter").RuntimeHandoffBudget, initialMessageDigest: string): ModelSwitchState {
+export function createModelSwitchState(coordinates: Omit<ModelSwitchIdentity, "switchId">, reservation: ModelSwitchReservation, frozenBudget: import("@mono-agent/agent-runtime/host/types").RuntimeHandoffBudget, initialMessageDigest: string): ModelSwitchState {
   const state: ModelSwitchState = { version: 2, identity: { ...structuredClone(coordinates), switchId: switchDigest(coordinates) }, reservation: structuredClone(reservation),
     billingPolicy: MODEL_SWITCH_BILLING_POLICY, authorizationGeneration: 0, authorizations: [], attempts: [], phase: "outgoing", artifact: null, frozenBudget: structuredClone(frozenBudget), initialMessageDigest };
   validateModelSwitchState(state); return state;

@@ -1,7 +1,7 @@
 import { inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/agent-contracts";
-import type { MonoRuntimeLike, SandboxEngine } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 import {
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,

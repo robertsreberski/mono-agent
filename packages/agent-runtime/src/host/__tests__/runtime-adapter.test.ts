@@ -3,22 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  createPiOAuthApiKeyResolver,
-  createMonoRuntime,
-  describeMonoRuntimeSupport,
-  listMonoRuntimeBackends,
-  monoRuntimeSupportsLiveInput,
-  monoRuntimeSupportsMcpApps,
-  monoRuntimeSupportsSessionResume,
-  MODEL_REFERENCE_ECHO_MAX_BYTES,
-  MODEL_REFERENCE_REASON_MAX_BYTES,
-  parseMonoRuntimeModelReference,
-  runtimeOptionsForLocalProvider,
-  runtimeBackendForModel,
-  RuntimeAdapterError,
-  sanitizeModelReferenceText,
-} from "../index.js";
+import { createMonoRuntime, describeMonoRuntimeSupport, listMonoRuntimeBackends, monoRuntimeSupportsLiveInput, monoRuntimeSupportsMcpApps, monoRuntimeSupportsSessionResume, runtimeBackendForModel } from "@mono-agent/agent-runtime/host";
+import { createPiOAuthApiKeyResolver } from "@mono-agent/agent-runtime";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/agent-runtime/host/config";
 
 describe("runtime adapter model references", () => {
   it("canonicalizes the legacy pi wrapper", () => {

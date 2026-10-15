@@ -5,7 +5,7 @@ import type {
   RunSummary,
   RuntimeResultLike,
 } from "@mono-agent/observability";
-import type { RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 
 import type { BuiltAgentContext } from "../context/index.js";
 import type {

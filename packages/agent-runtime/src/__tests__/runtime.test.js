@@ -21,7 +21,7 @@ vi.mock("../ai/providers/engine-turn.js", async (importOriginal) => {
 const resolverMock = vi.fn(() => { throw new Error("Runtime must not dispatch through a resolver"); });
 vi.mock("../ai/runtime/registry.js", () => ({
   resolveEngineTurnAdapter: (...args) => resolverMock(...args),
-  resolveRuntimeBridge: (...args) => resolverMock(...args),
+  resolveEngineTurnAdapter: (...args) => resolverMock(...args),
 }));
 
 const { createRuntime } = await import("../runtime.js");

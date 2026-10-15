@@ -4,7 +4,7 @@ import {
   writeSettingsJson,
 } from "@mono-agent/agent-contracts";
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contracts";
-import type { PiTransport } from "@mono-agent/runtime-adapter";
+import type { PiTransport } from "@mono-agent/agent-runtime/host/types";
 
 import { assertNoRetiredMonoAgentConfig, MonoAgentConfigError } from "./config.js";
 import type { MemoryBackend, MemoryEmbeddingsInstructions, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";

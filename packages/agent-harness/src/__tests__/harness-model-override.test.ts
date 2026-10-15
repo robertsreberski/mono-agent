@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
 import type { AgentHarnessRequest, AgentHarnessSessionEvent, AgentHarnessSessionOptions } from "../index.js";

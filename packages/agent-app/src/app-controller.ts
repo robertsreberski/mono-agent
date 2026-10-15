@@ -12,12 +12,9 @@ import type {
 } from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type { TuiRestartAuthority } from "@mono-agent/operator-adapter";
-import type {
-  MonoRuntimeLike,
-  RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
-import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
-import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
+import { createSrtSandboxEngine } from "@mono-agent/agent-runtime/host/sandbox";
+import type { SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 
 import type { AppTraceDefaults, PrivateBackgroundRuntimePaths } from "./app-config.js";
 import type { createConfiguredMemory } from "./configured-agent.js";

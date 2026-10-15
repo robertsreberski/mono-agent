@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadMonoAgentConfig, type MonoAgentConfig } from "@mono-agent/config";
 import { createToolPolicy } from "@mono-agent/agent-harness";
-import { parseMcpServers } from "@mono-agent/runtime-adapter";
+import { parseMcpServers } from "@mono-agent/agent-runtime/host/config";
 import { createConfiguredAgentHarness } from "../configured-agent.js";
 import { validateMonoAgentFolder } from "../doctor.js";
 import { computerUseSection, configuredToolPolicyInput, resolveCuaDriverCommand } from "../computer-use.js";

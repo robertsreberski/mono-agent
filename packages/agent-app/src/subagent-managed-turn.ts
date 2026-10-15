@@ -1,7 +1,7 @@
 import type { SubagentSalvage } from "./subagent-salvage.js";
 import type { SubagentVerificationTarget } from "./subagent-verification-observer.js";
 import type { LiveInputMailbox } from "@mono-agent/agent-harness";
-import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
+import type { OwnedForegroundProcesses } from "@mono-agent/agent-runtime/host/types";
 import type { InstanceOutcome } from "./subagent-instances.js";
 import type { SubagentContinuity, SubagentFailureReason, SubagentOwnerIdentity } from "./subagent-registry-ownership.js";
 

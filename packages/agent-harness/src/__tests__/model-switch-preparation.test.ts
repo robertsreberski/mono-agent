@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonlSessionRepo } from "../../../engine/dist/session-store.js";
-import type { RuntimeNativePreparationStorage, RuntimeHandoffSummary } from "@mono-agent/runtime-adapter";
+import type { RuntimeNativePreparationStorage, RuntimeHandoffSummary } from "@mono-agent/agent-runtime/host/types";
 import { fixture, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { createModelSwitchState } from "../model-switch-billing.js";

@@ -1,4 +1,4 @@
-import type { RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 
 /** First gate that declined a terminal turn's native recovery. */
 export type TerminalRecoverySkipReason =

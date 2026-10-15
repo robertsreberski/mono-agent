@@ -3,7 +3,7 @@ import { assertIdentity, isOwned, publishAtomic, readOwned, syncDir } from "@mon
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { boundedSwitchBytes, switchDigest, switchHash, switchKeys, switchObject } from "./durable-model-switch-contract.js";
-import type { RuntimeNativeJournalAuthority } from "@mono-agent/runtime-adapter";
+import type { RuntimeNativeJournalAuthority } from "@mono-agent/agent-runtime/host/types";
 
 export const NATIVE_HISTORY_ROOT_FILE = ".native-history-root.json";
 export const NATIVE_HISTORY_ROOT_TEMP = /^\.native-history-root\.[a-f0-9]{32}\.tmp$/u;

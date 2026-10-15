@@ -270,7 +270,7 @@ relies on that canonical history for context.
 
 ### Sandbox policy
 
-Sandbox config is optional. A configured `sandbox` JSON block builds a fail-closed `@mono-agent/runtime-adapter` policy rooted at `runtime.workspace`.
+Sandbox config is optional. A configured `sandbox` JSON block builds a fail-closed `@mono-agent/agent-runtime/host` policy rooted at `runtime.workspace`.
 
 Enforced network modes are `none`, `localhost`, and `allowlist`. `allowlist` reads domains from `sandbox.network.allowlist`. `all`, bare `*`, and IPv6 literals are rejected because pinned SRT 0.0.64 cannot enforce them exactly. Migrate an existing native `network.mode: "all"` config to `none`, `localhost`, or an explicit allowlist; if unrestricted shell networking is intentional, set `sandbox.mode: "off"` and remove the network policy. Unsafe host-process fallback requires both `sandbox.fallback: "unsafe-host-process"` and `sandbox.unsafeAllowHostProcess: true`.
 
@@ -465,7 +465,7 @@ writeMonoAgentConfigJson
 
 ## Dependency Boundary
 
-`@mono-agent/config` may depend on `@mono-agent/agent-contracts` and `@mono-agent/runtime-adapter`. It must not depend on communication adapters, agent harness, or UI packages.
+`@mono-agent/config` may depend on `@mono-agent/agent-contracts` and `@mono-agent/agent-runtime/host`. It must not depend on communication adapters, agent harness, or UI packages.
 
 ## What This Package Does Not Own
 

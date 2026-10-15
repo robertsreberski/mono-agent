@@ -1,6 +1,6 @@
 import { assertSessionModelKey } from "./session-runtime.js";
-import { digestNativeTurnInput, formatLiveInputGuidance } from "@mono-agent/runtime-adapter";
-import type { RuntimePromptOverrides, RuntimeSessionTurnDescriptor } from "@mono-agent/runtime-adapter";
+import { digestNativeTurnInput, formatLiveInputGuidance } from "@mono-agent/agent-runtime/ai/live-input-prompt.js";
+import type { RuntimePromptOverrides, RuntimeSessionTurnDescriptor } from "@mono-agent/agent-runtime/host/types";
 import { createHash } from "node:crypto";
 
 export class DurableTurnAlreadyCommittedError extends Error {

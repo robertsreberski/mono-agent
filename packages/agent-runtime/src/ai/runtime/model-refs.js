@@ -11,9 +11,9 @@ const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * re-validation, by `mono-agent validate`, `doctor`, the TUI, the web console, the daemon log
  * and launchd's captured stdout, all of them line-oriented and durable.
  *
- * Deliberately the same set that `DIAGNOSTIC_UNSAFE_CHARACTERS` in @mono-agent/runtime-adapter
+ * Deliberately the same set that `DIAGNOSTIC_UNSAFE_CHARACTERS` in @mono-agent/agent-runtime/host
  * escapes when it quotes a *rejected* value: that layer makes an unparseable value safe to
- * print, this one makes a parsed value safe to print. runtime-adapter's model-reference bound
+ * print, this one makes a parsed value safe to print. host integration's model-reference bound
  * suite asserts the two agree code point by code point rather than by comment.
  */
 const UNQUOTABLE_REFERENCE_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
@@ -85,7 +85,7 @@ function requireModel(model) {
  * The requirements that ceiling was carrying are all met by the layers that render or transmit
  * a reference, where the answer to "too long" is a shorter STRING rather than a lost route:
  *  - a diagnostic echo is clamped by truncation, marking the cut -- `sanitizeModelReferenceText`
- *    on `MODEL_REFERENCE_ECHO_MAX_BYTES`, @mono-agent/runtime-adapter;
+ *    on `MODEL_REFERENCE_ECHO_MAX_BYTES`, @mono-agent/agent-runtime/host;
  *  - an adapter error body is clamped by `sendJsonError`;
  *  - the `/v1/info` payload is bounded by per-contributor measured budgets and a total
  *    serializer fence that sheds whole fields (`channel-drivers/tui.ts`, `sendBoundedInfo`).

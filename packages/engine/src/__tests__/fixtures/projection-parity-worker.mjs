@@ -140,7 +140,7 @@ async function captureMidRun(pn) {
 }
 async function captureRecovery(pn) {
   const adapter = await import(pathToFileURL(`${runtimeSource}/ai/providers/${providerAdapter}.js`));
-  const generateEngineTurnResponse = adapter.generateEngineTurnResponse ?? adapter.generatePiNativeResponse;
+  const generateEngineTurnResponse = adapter.generateEngineTurnResponse;
   const { recoverDurableNativeSession, resolveDurableNativeSessionRepo } = await pn("session-lifecycle");
   clock = 1700000000000;
   const faux = fauxProvider({ provider: "recovery-fixture", models: [{ id: "A" }] }); const models = createModels(); models.setProvider(faux.provider);

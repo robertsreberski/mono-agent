@@ -40,11 +40,7 @@ import {
   type AgentReplyPartFailure,
   type AgentResponder,
 } from "@mono-agent/agent-contracts";
-import type {
-  RuntimeMcpAppConnection,
-  RuntimeMcpAppHost,
-  RuntimeMcpAppRegistration,
-} from "@mono-agent/runtime-adapter";
+import type { RuntimeMcpAppConnection, RuntimeMcpAppHost, RuntimeMcpAppRegistration } from "@mono-agent/agent-runtime/host/types";
 
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import {

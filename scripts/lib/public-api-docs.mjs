@@ -303,7 +303,14 @@ function sourceCandidates(packageDir, target) {
   }
 
   const directPath = resolve(packageDir, target);
-  if (target.startsWith("./src/") || target.startsWith("./types/")) {
+  if (target.startsWith("./types/")) {
+    const stem = stripModuleExtension(target.slice("./types/".length));
+    // Prefer handwritten TS over stale generated declarations, but keep the
+    // existing JS/declaration union for JSDoc-owned entrypoints.
+    const sources = [".ts", ".tsx", ".mts", ".cts"].map((extension) => join(packageDir, "src", `${stem}${extension}`)).filter(existsSync);
+    return sources.length > 0 ? sources : existsSync(directPath) ? [directPath] : [];
+  }
+  if (target.startsWith("./src/")) {
     return existsSync(directPath) ? [directPath] : [];
   }
   if (!target.startsWith("./dist/")) {

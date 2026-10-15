@@ -4,12 +4,13 @@ import { newSubagentRecoveryBinding, isSubagentRecoveryBinding, issueRecoveryAck
 import type { SubagentRegistryPublication } from "./subagent-managed-turn.js";
 import type { SubagentSalvage } from "./subagent-salvage.js";
 import { boundSubagentSalvage } from "./subagent-salvage.js";
-import type { DurableSessionSalvage } from "@mono-agent/runtime-adapter";
+import type { DurableSessionSalvage } from "@mono-agent/agent-runtime/host/types";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { parseMonoRuntimeModelReference, type RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import { type RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
 

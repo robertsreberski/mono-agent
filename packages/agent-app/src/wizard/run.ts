@@ -4,7 +4,7 @@ import { emitKeypressEvents } from "node:readline";
 
 import * as p from "@clack/prompts";
 import type { EffortLevel } from "@mono-agent/config";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 import { findModule } from "../modules/catalog.js";
 import { hasSensitivePersistedEnvironmentValue } from "../first-run-readiness.js";

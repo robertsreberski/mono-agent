@@ -53,7 +53,7 @@ export function privatePiRuntime(modules, workspace, budget, { piAuthPath } = {}
   try {
     // Same lazy credential-store seam as production/real benchmarks. Selecting
     // credentials is execution-only: no auth path or credential enters artifacts.
-    resolvePiApiKey = piAuthPath === undefined ? undefined : modules.runtime.createPiOAuthApiKeyResolver({ path: piAuthPath });
+    resolvePiApiKey = piAuthPath === undefined ? undefined : modules.runtimeAuth.createPiOAuthApiKeyResolver({ path: piAuthPath });
     raw = modules.runtime.createMonoRuntime({ workspace, ...(resolvePiApiKey === undefined ? {} : { resolvePiApiKey }) });
   } catch { throw new PrivateError("private_judge_unavailable"); }
   return {

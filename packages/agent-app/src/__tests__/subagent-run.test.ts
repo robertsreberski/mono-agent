@@ -14,7 +14,7 @@ import { resolveJsonMonoAgentConfig } from "../../../config/dist/config.js";
 // Exercise the private tool-to-app seam without adding a public runtime export.
 // @ts-expect-error -- package-private JavaScript has no public declaration.
 import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 
 const harnessMock = vi.fn((options: Record<string, unknown>) => ({
   options,
@@ -33,8 +33,8 @@ const availableOwnerFenceSandboxEngine = {
 // as such here; an unparseable reference no longer reaches the guard because
 // the harness re-parses the pinned model when binding its session (#829).
 const NO_SKILLS_MODEL_REFERENCE = "opencode:glm-5.2";
-vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
+vi.mock("@mono-agent/agent-runtime/host", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mono-agent/agent-runtime/host")>();
   return {
     ...actual,
     describeMonoRuntimeSupport: (model: Parameters<typeof actual.describeMonoRuntimeSupport>[0]) => {

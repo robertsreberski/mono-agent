@@ -12,11 +12,9 @@ import type {
   AgentManualCompactionResult,
 } from "@mono-agent/agent-contracts";
 import { randomUUID } from "node:crypto";
-import {
-  monoRuntimeSupportsSessionResume,
-  modelReferenceKey,
-  type RuntimeResult,
-} from "@mono-agent/runtime-adapter";
+import { monoRuntimeSupportsSessionResume } from "@mono-agent/agent-runtime/host";
+import { modelReferenceKey } from "@mono-agent/agent-runtime/host/config";
+import { type RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 
 import type { BuiltAgentContext } from "./context/index.js";
 import { NoopRunRecorder } from "./recorder.js";

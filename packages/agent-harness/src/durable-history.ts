@@ -1,4 +1,4 @@
-import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, RuntimeNativeEpochContext, RuntimeNativeJournalRef } from "@mono-agent/runtime-adapter";
+import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, RuntimeNativeEpochContext, RuntimeNativeJournalRef } from "@mono-agent/agent-runtime/host/types";
 import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
 import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
@@ -195,11 +195,11 @@ export interface ManagedProviderSessionPreparation {
   /** Caller-supplied provenance is used only for a legacy source's API/model;
    * its account is explicitly null, never inferred from current credentials.
    * A definitively missing current journal captures canonical history instead. */
-  captureNativeEvidence(legacyProvenance?: import("@mono-agent/runtime-adapter").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
-    readonly source: CanonicalJournalDescriptor | null; readonly view: import("@mono-agent/runtime-adapter").RuntimeNativeEvidenceView;
+  captureNativeEvidence(legacyProvenance?: import("@mono-agent/agent-runtime/host/types").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
+    readonly source: CanonicalJournalDescriptor | null; readonly view: import("@mono-agent/agent-runtime/host/types").RuntimeNativeEvidenceView;
   }>;
   readHandoff(switchId: string, reference: HandoffReference): Promise<{ readonly artifact: Readonly<Record<string, unknown>>;
-    readonly budget: import("@mono-agent/runtime-adapter").RuntimeHandoffBudget }>;
+    readonly budget: import("@mono-agent/agent-runtime/host/types").RuntimeHandoffBudget }>;
   assertOwned(): Promise<void>;
   acquireNativeHistoryAuthority(): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
   beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
@@ -1506,7 +1506,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             ...(record.native ? { native: record.native } : {}), ...(record.lastSwitch ? { lastSwitch: record.lastSwitch } : {}) });
         }),
         captureNativeEvidence: (legacyProvenance) => owned(async () => {
-          const native = this.nativeJournalStorage as Partial<import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage> | undefined;
+          const native = this.nativeJournalStorage as Partial<import("@mono-agent/agent-runtime/host/types").RuntimeNativePreparationStorage> | undefined;
           if (!native?.captureEvidence || !native.freeze) throw new Error("Native evidence capture capability unavailable");
           const source = await this.modelSwitchStorageSource(id), record = await this.readRecord(id, held.rootIdentity);
           if (source.status !== "supported") throw new Error("Native evidence source unavailable");

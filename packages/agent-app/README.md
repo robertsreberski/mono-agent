@@ -1744,7 +1744,7 @@ compose communication adapters; adapters never depend on it.
   `*-adapter` package).
 - Core config schema and loading (owned by `@mono-agent/config`).
 - Low-level prompt/session/tool execution internals (owned by
-  `@mono-agent/agent-harness` and `@mono-agent/runtime-adapter`).
+  `@mono-agent/agent-harness` and `@mono-agent/agent-runtime/host`).
 - Multi-agent orchestration (owned by `@mono-agent/agent-orchestrator`).
 
 Opt in to metadata-only prompt-cache request fingerprints with

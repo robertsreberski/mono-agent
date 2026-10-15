@@ -1,19 +1,9 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
-import {
-  createMonoRuntime,
-  createPiOAuthApiKeyResolver,
-  PI_TRANSPORTS,
-} from "@mono-agent/runtime-adapter";
-import type {
-  CreateMonoRuntimeOptions,
-  MonoRuntimeLike,
-  PiTransport,
-  RuntimeEventLike,
-  RuntimeModelReference,
-  RuntimeResult,
-  RuntimeRunOptions,
-} from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { createPiOAuthApiKeyResolver } from "@mono-agent/agent-runtime";
+import { PI_TRANSPORTS } from "@mono-agent/agent-runtime/host/types";
+import type { CreateMonoRuntimeOptions, MonoRuntimeLike, PiTransport, RuntimeEventLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 import { redactSecrets } from "./redact-secrets.js";
 

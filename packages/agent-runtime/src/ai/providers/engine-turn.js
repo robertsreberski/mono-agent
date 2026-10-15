@@ -1370,10 +1370,3 @@ export const engineTurnAdapter = {
   execute: generateEngineTurnResponse,
   prepareNativeDispatch: preparePiNativeDispatch,
 };
-
-/** @deprecated Use generateEngineTurnResponse.
- * @type {typeof generateEngineTurnResponse} */
-export const generatePiNativeResponse = generateEngineTurnResponse;
-/** @deprecated Use engineTurnAdapter.
- * @type {typeof engineTurnAdapter} */
-export const piNativeRuntimeBridge = engineTurnAdapter;

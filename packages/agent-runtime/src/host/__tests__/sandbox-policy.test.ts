@@ -19,23 +19,7 @@ import {
   createToolContext,
 } from "@mono-agent/agent-runtime/agent/tools/shared/tool-context.js";
 
-import {
-  SandboxUnavailableError,
-  managedSrtInstallRoot,
-  createSandboxPolicy,
-  createSrtSandboxEngine,
-  describeSandboxEffectiveState,
-  failClosedSandboxPolicy,
-  mergeSandboxPolicies,
-  networkPolicyAllowsUrl,
-  prepareSandboxedCommand,
-  protectSandboxRoots,
-  resolveSandboxEffectiveState,
-  sandboxEffectiveStateWarning,
-  sandboxPolicyToRuntimeOptions,
-  sandboxRequired,
-  srtSettingsForPolicy,
-} from "../index.js";
+import { SandboxUnavailableError, managedSrtInstallRoot, createSandboxPolicy, createSrtSandboxEngine, describeSandboxEffectiveState, failClosedSandboxPolicy, mergeSandboxPolicies, networkPolicyAllowsUrl, prepareSandboxedCommand, protectSandboxRoots, resolveSandboxEffectiveState, sandboxEffectiveStateWarning, sandboxPolicyToRuntimeOptions, sandboxRequired, srtSettingsForPolicy } from "@mono-agent/agent-runtime/host/sandbox";
 import { monoSandboxImpl } from "../sandbox-impl.js";
 
 const tempDirs: string[] = [];

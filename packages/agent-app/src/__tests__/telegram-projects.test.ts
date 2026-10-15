@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore, type AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 import type { TelegramAdapterStartOptions } from "@mono-agent/telegram-adapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
 

@@ -6,7 +6,7 @@ import {
   registerTraceSource,
 } from "@mono-agent/observability";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
-import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import type { SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 
 import {
   loadAppCoreConfig,

@@ -18,7 +18,7 @@ import {
   verifyManagedSrtInstall,
 } from "../sandbox-managed.js";
 
-const lockResource = fileURLToPath(new URL("../../../agent-app/resources/srt/package-lock.json", import.meta.url));
+const lockResource = fileURLToPath(new URL("../../../../agent-app/resources/srt/package-lock.json", import.meta.url));
 const tempDirs: string[] = [];
 const TRUSTED_NODE_INSTALL_LAYOUTS = [
   ["NVM", [".nvm", "versions", "node", "v24.15.0", "bin", "node"]],

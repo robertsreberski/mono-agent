@@ -30,14 +30,14 @@
 //     two axes the passthrough itself inspects (`mode`, `network.mode`). It
 //     is deliberately SHALLOW — no readable/writableRoots intersection, no
 //     denyWrite union — the real, byte-identical merge algorithm is owned by
-//     @mono-agent/runtime-adapter in packages/runtime-adapter/src/sandbox.ts
+//     @mono-agent/agent-runtime/host in packages/agent-runtime/src/host/sandbox.ts
 //     (`mergeSandboxPolicies`) and is wired in by every mono-agent host through
 //     runtime-adapter.
 //
-// Real hosts (mono-agent, via @mono-agent/runtime-adapter) inject
+// Real hosts (mono-agent, via @mono-agent/agent-runtime/host) inject
 // `{mergePolicies: mergeSandboxPolicies, prepareCommand: prepareSandboxedCommand,
-// networkAllowsUrl: networkPolicyAllowsUrl}` from packages/runtime-adapter/src/sandbox.ts.
-// Those exports already conform to this interface exactly, so the injection is a direct pass-through (see runtime-adapter's
+// networkAllowsUrl: networkPolicyAllowsUrl}` from packages/agent-runtime/src/host/sandbox.ts.
+// Those exports already conform to this interface exactly, so the injection is a direct pass-through (see host integration's
 // sandbox-impl.ts for the thin TS-side adapter that satisfies the seam's
 // type shape).
 
@@ -78,8 +78,8 @@
  * readableRoots, writableRoots, denyWrite, ...) is read directly off whatever
  * the injected `mergePolicies` returns by path-resolver.js, and is opaque
  * pass-through data as far as this module is concerned. Real hosts get the
- * full, richly-typed policy from @mono-agent/runtime-adapter
- * (`packages/runtime-adapter/src/sandbox.ts`), whose `SandboxPolicy` is a
+ * full, richly-typed policy from @mono-agent/agent-runtime/host
+ * (`packages/agent-runtime/src/host/sandbox.ts`), whose `SandboxPolicy` is a
  * structural superset of this shape.
  * @property {string} [mode]
  * @property {SandboxNetworkPolicyLike} [network]
@@ -93,7 +93,7 @@
 /**
  * @typedef {Object} RuntimeSandboxEngine
  * Optional concrete sandboxing backend a caller can hand to `prepareCommand`
- * (matches @mono-agent/runtime-adapter's `SandboxEngine`). Not used by
+ * (matches @mono-agent/agent-runtime/host's `SandboxEngine`). Not used by
  * `passthroughSandbox` (see module doc: adapters live in runtime-adapter, not
  * the kernel) — documented here only because it is part of the
  * `prepareCommand` input shape real implementations accept.
@@ -210,7 +210,7 @@ async function prepareCommand({ policy, command }) {
   throw new SandboxUnavailableError(
     "Sandbox policy requires enforcement (mode !== \"off\") but no RuntimeSandbox implementation is configured. "
       + "Inject a real implementation via createRuntime({sandbox}) (mono-agent hosts get this automatically through "
-      + "the runtime-adapter package) or relax the policy.",
+      + "the agent-runtime/host entrypoint) or relax the policy.",
     { mode: policy.mode, command: command.command },
   );
 }

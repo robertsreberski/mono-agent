@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { RuntimeRunOptions, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 const execute = vi.hoisted(() => vi.fn());
 vi.mock("../../../agent-runtime/src/ai/providers/engine-turn.js", async (original) => ({

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createAgentResponder } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 import { createConfiguredAgentHarness } from "../configured-agent.js";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";

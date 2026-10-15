@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { retiredHostImports } from "./lib/retired-host-boundary.mjs";
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
@@ -184,6 +185,12 @@ for (const staleReference of staleReferences) {
     if (activeStaleReferenceLines(relative(root, file), text, staleReference).length) {
       errors.push(`${relative(root, file)} still references ${staleReference}.`);
     }
+  }
+}
+
+for (const file of walkTextFiles(root)) {
+  for (const specifier of retiredHostImports(file, readFileSync(file, "utf8"))) {
+    errors.push(`${relative(root, file)} imports removed host package ${specifier}.`);
   }
 }
 

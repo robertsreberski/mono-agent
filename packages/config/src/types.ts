@@ -1,5 +1,5 @@
-import type { LocalProviderDefinition, PiTransport, ProviderDefinition, RuntimeCompactionPolicy, RuntimeModelReference } from "@mono-agent/runtime-adapter";
-import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, PiTransport, ProviderDefinition, RuntimeCompactionPolicy, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
+import type { SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 
 import type {

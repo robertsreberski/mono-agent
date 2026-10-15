@@ -182,6 +182,7 @@ export function runPackedConsumerVerification(options = {}) {
     for (const pkg of publishablePackages) {
       assertPackedReleaseMetadata(pkg, readInstalledManifest(consumerDir, pkg.name));
     }
+    verifyPackedHostTypes(consumerDir, options.spawn);
     run("npm", ["run", "smoke"], consumerDir, options.spawn);
     runIsolatedPackedConsumers({
       packedPackages,
@@ -228,6 +229,7 @@ function runIsolatedPackedConsumers({
     const reachableNames = declaredInternalPackageClosure(pkg.name, packedManifestsByName);
     run("npm", ["install", "--no-audit", "--no-fund", "--package-lock=false"], isolatedDir, spawn);
     assertIsolatedInstallLayout(isolatedDir, pkg.name, reachableNames, allPackageNames);
+    if (reachableNames.includes("@mono-agent/agent-runtime")) verifyPackedHostTypes(isolatedDir, spawn);
     run("npm", ["run", "smoke", "--", "--target", pkg.name], isolatedDir, spawn);
     fs.rmSync(isolatedDir, { recursive: true, force: true });
   }
@@ -279,6 +281,18 @@ function installedPackageDirectories(modulesDir) {
     }
   }
   return directories;
+}
+
+export function verifyPackedHostTypes(consumerDir, spawn) {
+  // Use the repo's compiler, but resolve all framework types from the installed
+  // tarballs. Only Node ambient types come from the compiler host.
+  run(process.execPath, [path.join(REPO_ROOT, "node_modules/typescript/bin/tsc"),
+    "host-contract.ts", "host-types-only.ts", "--module", "NodeNext", "--moduleResolution", "NodeNext",
+    "--target", "ES2022", "--strict", "--exactOptionalPropertyTypes", "--skipLibCheck",
+    "--types", "node", "--typeRoots", path.join(REPO_ROOT, "node_modules/@types"),
+    "--outDir", "host-type-output"], consumerDir, spawn);
+  const typeOnly = fs.readFileSync(path.join(consumerDir, "host-type-output/host-types-only.js"), "utf8");
+  if (/\b(?:import|require)\b/u.test(typeOnly)) throw new Error("Packed type-only host consumer emitted a runtime import.");
 }
 
 function run(command, args, cwd, spawn = spawnSync) {

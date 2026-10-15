@@ -8,12 +8,7 @@ import { Worker } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 
 import { redactJsonValue } from "@mono-agent/observability";
-import type {
-  RuntimeToolLifecycleEvent,
-  RuntimeToolLifecyclePersistence,
-  RuntimeToolLifecycleSink,
-  RuntimeToolLifecycleTerminalState,
-} from "@mono-agent/runtime-adapter";
+import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, RuntimeToolLifecycleSink, RuntimeToolLifecycleTerminalState } from "@mono-agent/agent-runtime/host/types";
 
 import {
   canonicalToolArtifactRoot,

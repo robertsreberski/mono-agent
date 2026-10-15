@@ -7,7 +7,7 @@ import { readMonoAgentConfigJson } from "@mono-agent/config";
 import type { MonoAgentConfigJson } from "@mono-agent/config";
 import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 import type { RunSummaryStatus } from "@mono-agent/observability";
-import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import type { SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 
 import { loadAppCoreConfig } from "./app-config.js";
 import { validateMonoAgentFolder } from "./doctor.js";

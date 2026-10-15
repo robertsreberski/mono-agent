@@ -1,4 +1,4 @@
-import type { RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 
 export interface MemoryRuntimeResultOptions {
   readonly timedOut?: boolean;

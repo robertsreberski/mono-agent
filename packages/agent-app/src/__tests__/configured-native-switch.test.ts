@@ -8,7 +8,9 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@ear
 import { AgentHarnessFailureError, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/agent-harness";
 import type { AgentRequestBase, AgentResponder, AgentStreamEvent } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createManagedNativeJournalStorage, createMonoRuntime, type MonoRuntimeLike, type RuntimeNativePreparedDispatch } from "@mono-agent/runtime-adapter";
+import { createManagedNativeJournalStorage } from "@mono-agent/agent-runtime";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { type MonoRuntimeLike, type RuntimeNativePreparedDispatch } from "@mono-agent/agent-runtime/host/types";
 import { createConfiguredAgentResponder, createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
 import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
@@ -571,7 +573,7 @@ it("guarded pending unknown billing is never bypassed by typed capture capacity"
   { canonicalBytes: 32768, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }, budget, "0".repeat(64));
   const lease = await prep.beginModelSwitchStorage(state); if (lease.status !== "owned") throw new Error("Expected owned intent");
   await lease.admit("outgoing"); await lease.release(); await prep.abort();
-  const { NativeEvidenceCapacityError } = await import("@mono-agent/runtime-adapter");
+  const { NativeEvidenceCapacityError } = await import("@mono-agent/agent-runtime");
   vi.spyOn(f.native, "captureEvidence").mockRejectedValueOnce(new NativeEvidenceCapacityError());
   const deletion = vi.spyOn(f.native, "deleteJournals"), calls = f.transport.mock.calls.length;
   await expect(h.respond(f.request(await persistedId(f.root), "faux:A"), { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);

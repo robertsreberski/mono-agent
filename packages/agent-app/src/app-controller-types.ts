@@ -1,4 +1,4 @@
-import type { SandboxEffectiveState } from "@mono-agent/runtime-adapter";
+import type { SandboxEffectiveState } from "@mono-agent/agent-runtime/host/types";
 import type { ConfiguredAgentSessionEvent, ConfiguredAgentSessionSnapshot } from "./configured-agent.js";
 export type { ProcessJobsProtectionStatus } from "./process-jobs-protection.js";
 

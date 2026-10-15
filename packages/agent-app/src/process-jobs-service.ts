@@ -27,13 +27,7 @@ import {
   type ProcessJobProjection,
   type ProcessJobState,
 } from "@mono-agent/agent-contracts";
-import type {
-  ProcessJobProcessHandle,
-  ProcessJobProcessResult,
-  ProcessJobsController,
-  ProcessJobStartRequest,
-  ProcessJobStartResult,
-} from "@mono-agent/runtime-adapter";
+import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "@mono-agent/agent-runtime/host/types";
 
 import type { NotifyDeliveryResult } from "./channels.js";
 import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";

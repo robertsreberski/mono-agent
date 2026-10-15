@@ -10,22 +10,24 @@ agent turn:
 - pick the right backend from a model reference and execution mode
 - expose built-in tools, MCP tools, approvals, structured output, and live input
 - enforce an optional sandbox policy for built-in tool execution and stdio MCP
-  startup, through an injectable seam (see `agent/sandbox-seam.js`) rather than
-  a bundled sandboxing implementation
+  startup, through an injectable seam (see `agent/sandbox-seam.js`) with the concrete implementation owned by `src/host/`
 - normalize provider events into one runtime event stream
 - classify runtime failures and retryable provider errors
 - collect usage, cost, cache, capability, and warning telemetry
 - return raw text plus raw structured output to the host
 
-Hosts consume the package through `src/runtime.js`. The package has **zero
-workspace-package dependencies**: everything a host-side integration would
-otherwise need to inject (sandboxing, in this package's case) is expressed as
-a plain-data/plain-function seam the host wires up, not an import.
+Typed hosts use `@mono-agent/agent-runtime/host`; low-level consumers can still
+inject their own sandbox through `createRuntime()` / `createRouterRuntime()`.
+The package depends on agent-contracts for host contracts/errors and engine for
+native execution/storage. `src/host/` compiles from TypeScript to `dist/host`,
+while existing JavaScript ships from `src` with generated declarations in `types`.
+The host entrypoints split construction, config validation, contracts and sandbox
+support without adding a forwarding package. Config remains a separate package.
 
 ## Package Boundary
 
 **Diagram summary:** A host constructs `createRuntime()` or `createRouterRuntime()`.
-The runtime selects one of five provider bridges while sharing observability,
+The runtime selects the Pi provider bridge while sharing observability,
 failure normalization, and capability-specific agent-kernel services. It returns
 a provider-neutral result for the host to interpret.
 
@@ -40,22 +42,14 @@ flowchart TB
   Runtime --> Observability["Observers + metrics<br/>usage, cost, events, warnings"]
   Runtime --> Failure["Failure taxonomy<br/>retryable provider detection"]
 
-  Registry --> ClaudeSDK["Claude SDK bridge"]
-  Registry --> ClaudeCLI["Claude Code CLI bridge"]
   Registry --> PiSDK["Pi SDK bridge<br/>OpenAI, Codex, Gemini, OpenRouter,<br/>Ollama, custom providers"]
-  Registry --> CodexApp["Codex app-server CLI bridge"]
-  Registry --> OpenCodeApp["OpenCode app-server CLI bridge"]
 
   AgentKernel --> Builtins["Read / Write / Edit / Glob / Grep / Bash<br/>NodeRepl / WebFetch / WebSearch"]
   AgentKernel --> MCP["MCP stdio / SSE / HTTP tools"]
   AgentKernel --> Sandbox["Sandbox policy<br/>path/network checks + stdio command wrapping"]
   AgentKernel --> Artifacts["Tool-output bloat guard<br/>host artifact persistence"]
 
-  ClaudeSDK --> Providers["External model/provider surfaces"]
-  ClaudeCLI --> Providers
   PiSDK --> Providers
-  CodexApp --> Providers
-  OpenCodeApp --> Providers
 
   Runtime --> Result["RuntimeResult<br/>text, structuredResult, events,<br/>usage, diagnostics, failureKind"]
   Result --> CoreAI
@@ -237,7 +231,7 @@ Key responsibilities by subsystem:
   merge, command preparation, network-allow checks) and its zero-dependency
   `passthroughSandbox` default (no policy configured → unsandboxed, exactly as
   before; a policy configured with no implementation injected → fails closed).
-  Real hosts inject `@mono-agent/runtime-adapter`'s sandbox implementation.
+  Real hosts inject `@mono-agent/agent-runtime/host`'s sandbox implementation.
 - `agent/compaction.js`: derives adaptive compaction budgets and clamped output
   limits directly from typed `toolLimits` / `compaction` inputs and the model;
   estimates fixed request overhead and classifies context-pressure errors. Pi

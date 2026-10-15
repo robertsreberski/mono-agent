@@ -9,11 +9,8 @@ import {
   checkPiProviderAuth,
   describePiProviderAuth,
 } from "@mono-agent/agent-runtime/ai";
-import {
-  modelReferenceKey,
-  parseMonoRuntimeModelReference,
-  type RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import { type RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelDriver } from "./channels.js";

@@ -18,14 +18,8 @@ import type {
   MemoryCaptureSpeakerKind,
 } from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
-import type {
-  MonoRuntimeLike,
-  RuntimeModelReference,
-  RuntimeRunOptions,
-  RuntimeSessionTurnDescriptor,
-  RuntimeSessionTurnReconciliationResult,
-} from "@mono-agent/runtime-adapter";
-import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions, RuntimeSessionTurnDescriptor, RuntimeSessionTurnReconciliationResult } from "@mono-agent/agent-runtime/host/types";
+import type { SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 
 import type { BuiltAgentContext, HistoryMessage } from "./context/index.js";
 import type { SkillsCache } from "./skills/index.js";

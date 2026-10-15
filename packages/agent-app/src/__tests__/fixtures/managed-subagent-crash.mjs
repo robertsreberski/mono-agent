@@ -10,7 +10,7 @@ import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/pr
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadMonoAgentConfig } from "@mono-agent/config";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 import { acquireAgentRootOwnership } from "../../../dist/agent-root-coordinator.js";
 import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
 import { openProcessJobsService } from "../../../dist/process-jobs-service.js";

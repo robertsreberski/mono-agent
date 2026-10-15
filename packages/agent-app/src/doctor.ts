@@ -27,15 +27,11 @@ import {
   isStdioMcpServerSpec,
   loadToolPolicyFromJsonFile,
 } from "@mono-agent/agent-harness";
-import {
-  describeMonoRuntimeSupport,
-  inspectCodexSubscriptionSearch,
-  isValidMcpServerName,
-  modelReferenceKey,
-  networkPolicyAllowsUrl,
-  parseMonoRuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
-import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { describeMonoRuntimeSupport } from "@mono-agent/agent-runtime/host";
+import { inspectCodexSubscriptionSearch } from "@mono-agent/agent-runtime/agent/tools/index.js";
+import { isValidMcpServerName, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import { networkPolicyAllowsUrl } from "@mono-agent/agent-runtime/host/sandbox";
+import type { RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 import {
   buildMonoAgentConfigView,
   EFFORT_LEVELS,
@@ -45,14 +41,9 @@ import {
   redactMonoAgentConfig,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import {
-  MODEL_REFERENCE_ECHO_MAX_BYTES,
-  MODEL_REFERENCE_REASON_MAX_BYTES,
-  RuntimeAdapterError,
-  sandboxEffectiveStateWarning,
-  sanitizeModelReferenceText,
-} from "@mono-agent/runtime-adapter";
-import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/agent-runtime/host/config";
+import { sandboxEffectiveStateWarning } from "@mono-agent/agent-runtime/host/sandbox";
+import type { SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 import { getPiBuiltinModel } from "@mono-agent/agent-runtime";
 
 import {

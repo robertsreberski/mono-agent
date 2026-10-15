@@ -31,7 +31,7 @@ fs.readFile = (...args) => { countRead(); return readFile(...args); };
 syncBuiltinESMExports();
 const { createDurableHistoryStore } = await import("../packages/agent-harness/dist/durable-history.js");
 const { NativeHistoryRootStore } = await import("../packages/agent-harness/dist/native-history-root.js");
-const { createManagedNativeJournalStorage } = await import("@mono-agent/runtime-adapter");
+const { createManagedNativeJournalStorage } = await import("@mono-agent/agent-runtime");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const key = (id) => hash(`mono-agent-history-v1\0${id}`);
 const handleId = (id, epoch) => hash(`mono-agent-provider-session-v2\0${id}\0${epoch}`);

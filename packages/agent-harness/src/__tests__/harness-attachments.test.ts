@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { MemoryBlock, MemoryStore } from "@mono-agent/agent-contracts";
 import type { HistoryMessage } from "../context/index.js";
-import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 
 import { createAgentHarness } from "../index.js";
 import type { ConversationHistoryStore } from "../index.js";

@@ -1,4 +1,4 @@
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 /** Fixed host framing. Only the prefix of the latest user turn is authoritative. */
 export const HOST_TURN_CONTEXT_GUIDANCE = [

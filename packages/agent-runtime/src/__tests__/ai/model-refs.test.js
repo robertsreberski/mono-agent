@@ -142,7 +142,7 @@ describe("parseRuntimeModelReference", () => {
  * `requireQuotableReference`). The two properties the retired ceiling was carrying are asserted
  * where they are actually enforced, not here:
  *  - an oversized id cannot reach a diagnostic unclamped --
- *    `packages/runtime-adapter/src/__tests__/runtime-adapter.test.ts`, "an accepted reference is
+ *    `packages/agent-runtime/src/host/__tests__/runtime-adapter.test.ts`, "an accepted reference is
  *    bounded where it is RENDERED, at any length";
  *  - an oversized id cannot break the `/v1/info` budget --
  *    `packages/agent-app/src/__tests__/tui-channel.test.ts` and `tui-info-wire.test.ts`.
@@ -236,7 +236,7 @@ describe("parseRuntimeModelReference bounds what it accepts", () => {
   ])("still names the replacement for a retired backend carrying a bad value: %j", (authored, repair) => {
     // Order is load-bearing: the content check runs AFTER the retired-backend check so an
     // operator gets the concrete repair rather than a generic complaint. That message carries
-    // the operator's own text, and is bounded where it is rendered, by runtime-adapter's
+    // the operator's own text, and is bounded where it is rendered, by host integration's
     // `sanitizeModelReferenceText` -- not by re-checking the shape first here.
     expect(() => parseRuntimeModelReference(authored)).toThrow(repair);
   });

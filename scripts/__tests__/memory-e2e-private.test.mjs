@@ -416,7 +416,7 @@ describe("private hosted judge authentication and failure codes", () => {
     const resolver = vi.fn(), run = vi.fn(async () => ({ text: "{\"label\":\"useful\"}" }));
     const factory = vi.fn(() => resolver), create = vi.fn(() => ({ run, async disposeAllSessions() {} }));
     const budget = new Budget({ limits: { runtimeMs: 60000, chatSteps: 10, estimatedInputTokens: 10000 }, perCall: {} });
-    const modules = { runtime: { createPiOAuthApiKeyResolver: factory, createMonoRuntime: create } };
+    const modules = { runtime: { createMonoRuntime: create }, runtimeAuth: { createPiOAuthApiKeyResolver: factory } };
     try {
       const runtime = privatePiRuntime(modules, root, budget, { piAuthPath: "/OWNER-ONLY/FICTIONAL-AUTH.json" });
       expect(factory).toHaveBeenCalledWith({ path: "/OWNER-ONLY/FICTIONAL-AUTH.json" });
@@ -460,7 +460,7 @@ describe("private hosted judge authentication and failure codes", () => {
       return { ...modules,
         providerAuth: { checkPiProviderAuth: checkAuth },
         bujo: { ...modules.bujo, safeRebuildMemoryIndex: rebuild },
-        runtime: { ...modules.runtime, createPiOAuthApiKeyResolver: factory, createMonoRuntime: create },
+        runtime: { ...modules.runtime, createMonoRuntime: create }, runtimeAuth: { ...modules.runtimeAuth, createPiOAuthApiKeyResolver: factory },
         app: { ...modules.app, ...(scenario === "setup" ? { createConfiguredCurationLlm() { throw new Error(sentinel); } } : {}) },
       };
     };
@@ -487,7 +487,7 @@ describe("private hosted judge authentication and failure codes", () => {
       "private-judge": route, "allow-private-provider-route": [route] }, { root, env: {}, repositories: f.repositories, prepareBuild: async () => null,
       loadInputs: async () => ({ turns: validateTurns(turns()), registration: { ...registration(), productionRoutes: [route] } }),
       loadModules: async () => ({ ...modules, providerAuth: { checkPiProviderAuth: checkAuth }, bujo: { ...modules.bujo, safeRebuildMemoryIndex: rebuild },
-        runtime: { ...modules.runtime, createPiOAuthApiKeyResolver: factory, createMonoRuntime: () => ({ run, async disposeAllSessions() {} }) } }) })).rejects.toThrow("private_provider_auth_failed");
+        runtime: { ...modules.runtime, createMonoRuntime: () => ({ run, async disposeAllSessions() {} }) }, runtimeAuth: { ...modules.runtimeAuth, createPiOAuthApiKeyResolver: factory } }) })).rejects.toThrow("private_provider_auth_failed");
     expect(checkAuth).toHaveBeenCalledOnce(); expect(factory).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled(); expect(rebuild).not.toHaveBeenCalled();
     expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: "private_provider_auth_failed" });
     expect((await readdir(f.outputRoot)).includes("progress.json")).toBe(false);

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 import { buildSubagentsOptions } from "../dist/configured-agent.js";
 import { createSubagentInstanceRegistry } from "../dist/subagent-instances.js";
 import { openProcessJobsService } from "../dist/process-jobs-service.js";

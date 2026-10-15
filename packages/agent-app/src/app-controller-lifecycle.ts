@@ -1,4 +1,4 @@
-import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike } from "@mono-agent/agent-runtime/host/types";
 import type { ChannelDriver, ChannelId, ChannelStatus, RunningChannel } from "./channels.js";
 import type { ConfigApplyResult, SandboxStatus, TraceabilityStatus } from "./app-controller-types.js";
 

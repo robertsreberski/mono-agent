@@ -21,7 +21,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { MemoryCompletedTurn, MemoryCompletedTurnResult } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createSandboxPolicy, type RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
+import { type RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 const runCalls: Array<{ systemPrompt: string; options: RuntimeRunOptions }> = [];
 const fakeRuntime = {
@@ -39,12 +40,11 @@ const createSrtSandboxEngineMock = vi.fn(() => ({
 }));
 const coordinatorHome = vi.hoisted(() => ({ path: "" }));
 
-vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
+vi.mock("@mono-agent/agent-runtime/host", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mono-agent/agent-runtime/host")>();
   return {
     ...actual,
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
-    createSrtSandboxEngine: (..._args: unknown[]) => createSrtSandboxEngineMock(),
   };
 });
 vi.mock("../account-home.js", () => ({
@@ -283,3 +283,8 @@ function memoryModelConfig(
       : {}),
   };
 }
+
+vi.mock("@mono-agent/agent-runtime/host/sandbox", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/agent-runtime/host/sandbox")>(),
+    createSrtSandboxEngine: (..._args: unknown[]) => createSrtSandboxEngineMock(),
+}));

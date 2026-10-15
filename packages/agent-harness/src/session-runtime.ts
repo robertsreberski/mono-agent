@@ -1,9 +1,5 @@
-import {
-  modelReferenceKey,
-  parseMonoRuntimeModelReference,
-  type MonoRuntimeLike,
-  type RuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import { type MonoRuntimeLike, type RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 import type { AgentHarnessOptions } from "./types.js";
 
 export class ProviderSessionModelChangedError extends Error {
