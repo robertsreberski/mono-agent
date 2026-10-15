@@ -365,6 +365,19 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
  */
 export function assertNoRetiredMonoAgentConfigJson(json: object): void {
   assertNoRetiredMonoAgentConfig(json);
+  // JSON-only: resolved configs never carry this key, and checking it there would
+  // read provider settings during retired-field rejection.
+  const providers = (json as { providers?: unknown }).providers;
+  const native = isJsonRecord(providers) ? providers.piNative : undefined;
+  if (isJsonRecord(native) && Object.hasOwn(native, "piSessionsRoot")) {
+    throw new MonoAgentConfigError("invalid_json",
+      "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
+      { path: "providers.piNative.piSessionsRoot", paths: ["providers.piNative.piSessionsRoot"] });
+  }
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

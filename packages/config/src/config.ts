@@ -173,10 +173,6 @@ export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
     message: "`runtime.routeSafety` was removed; every route is Pi-native, so `per-route-native` has no meaning. Delete the key.",
   },
   {
-    path: "providers.piNative.piSessionsRoot",
-    message: "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
-  },
-  {
     path: "runtime.fallbackModels",
     message: "`runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ \"model\": \"...\" }]`. Replace the key with that shape.",
   },
