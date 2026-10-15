@@ -6,7 +6,6 @@
   Update imports, dependencies, and plugin configuration using the table below.
   Old names in `channels.plugins[].package` fail validation with an explicit
   `was renamed to` error naming the replacement, before package loading.
-  MCP command/argument package specifiers report the same migration error.
   CLI bins, symbols, config keys, channel IDs, and persisted formats stay unchanged.
 
 | Old package | New package |

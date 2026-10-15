@@ -183,9 +183,12 @@ describe("tool policy", () => {
   });
 });
 
-it.each(["@mono-agent/agent-orchestrator@0.25.1", "--package=@mono-agent/agent-orchestrator@0.25.1"])("rejects retired MCP package specifier %s", (specifier) => {
-  expect(() => createToolPolicy({ mcpServers: { peer: { command: "npx", args: ["-y", specifier] } } }))
-    .toThrow("@mono-agent/agent-orchestrator was renamed to @mono-agent/orchestrator; update mcpServers.peer.command/args");
-  expect(() => createToolPolicy({ mcpServers: { peer: { command: "npx", args: ["-y", "@mono-agent/orchestrator@0.25.1"] } } }))
-    .not.toThrow();
+it("preserves MCP arguments that refer to historical package metadata", () => {
+  const mcpServers = {
+    metadata: {
+      command: "node",
+      args: ["metadata-mcp.mjs", "--package=@mono-agent/agent-app@0.22.0"],
+    },
+  };
+  expect(createToolPolicy({ mcpServers }).mcpServers).toEqual(mcpServers);
 });

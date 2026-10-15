@@ -1,4 +1,3 @@
-import { packageRenameError } from "./package-renames.js";
 import { isPlainObject, isValidMcpServerName } from "./runtime-helpers.js";
 
 /**
@@ -60,11 +59,6 @@ export function parseMcpServers(
 function parseEntry(name: string, value: Record<string, unknown>): NormalizedMcpServer | undefined {
   const type = typeof value.type === "string" ? value.type : undefined;
   const command = typeof value.command === "string" ? value.command : undefined;
-  for (const specifier of [command, ...(Array.isArray(value.args) ? value.args : [])]) {
-    if (typeof specifier !== "string") continue;
-    const error = packageRenameError(specifier, `mcpServers.${name}.command/args`);
-    if (error !== undefined) throw new Error(error);
-  }
   const url = typeof value.url === "string" ? value.url : undefined;
   const headers = isPlainObject(value.headers) ? stringValueRecord(value.headers) : undefined;
 

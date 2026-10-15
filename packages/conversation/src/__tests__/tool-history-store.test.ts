@@ -68,7 +68,7 @@ beforeAll(async () => {
   await mkdir(fixtureScope, { recursive: true, mode: 0o700 });
   await Promise.all([
     symlink(fileURLToPath(new URL("../../../observability", import.meta.url)), join(fixtureScope, "observability"), "dir"),
-    symlink(fileURLToPath(new URL("../../../agent-runtime", import.meta.url)), join(fixtureScope, "turn"), "dir"),
+    symlink(fileURLToPath(new URL("../../../turn", import.meta.url)), join(fixtureScope, "turn"), "dir"),
   ]);
   const sourceNames = [
     "process-incarnation",

@@ -123,7 +123,7 @@ finish(0, "removed");
  * sources were deleted.
  *
  * `dist/` is gitignored, so a long-lived checkout accumulates output for sources that no
- * longer exist and `pnpm pack` ships it: @mono-agent/channel-telegram@0.15.3 published
+ * longer exist and `pnpm pack` ships it: @mono-agent/telegram-adapter@0.15.3 published
  * `dist/ask.js` two releases after `src/ask.ts` was removed. The declaration-only `types/`
  * emit has the same stale-output risk even though most packages do not create that directory.
  *

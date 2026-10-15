@@ -1672,13 +1672,9 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
         const policy = await loadToolPolicyFromJsonFile(config.tools.mcpConfigPath);
         configuredMcpServers = policy.mcpServers ?? {};
         configuredMcpServerNames = Object.keys(configuredMcpServers);
-      } catch (error) {
+      } catch {
         status = "error";
         details.push(`MCP config is malformed or unreadable: ${config.tools.mcpConfigPath}`);
-        // Only the explicit package migration diagnostic is safe to surface here.
-        if (error instanceof Error && /^@mono-agent\/[a-z-]+ was renamed to @mono-agent\/[a-z-]+; update mcpServers\./u.test(error.message)) {
-          details.push(error.message);
-        }
       }
     } else {
       status = "error";

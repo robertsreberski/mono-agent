@@ -71,14 +71,14 @@ describe("channel plugins", () => {
     expect(JSON.stringify(failures)).not.toContain("Cannot find");
   });
 
-  it("reports the explicit package rename for MCP launcher config during validate", async () => {
-    await writeFile(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { peer: {
-      command: "npx", args: ["-y", "@mono-agent/agent-orchestrator@0.25.1"],
+  it("accepts MCP arguments that refer to historical package metadata during validate", async () => {
+    await writeFile(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { metadata: {
+      command: "node", args: ["metadata-mcp.mjs", "--package=@mono-agent/agent-app@0.22.0"],
     } } }));
     const configPath = await writeConfig({ ...baseConfig(), tools: { mcpConfigPath: "./mcp.json" } });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-    expect(report.ok).toBe(false);
-    expect(JSON.stringify(report.sections)).toContain("@mono-agent/agent-orchestrator was renamed to @mono-agent/orchestrator; update mcpServers.peer.command/args");
+    expect(sectionById(report, "tools").status).not.toBe("error");
+    expect(JSON.stringify(report.sections)).not.toContain("was renamed to");
   });
 
   it("enumerates unique configured package names for managed-runtime capture", async () => {

@@ -18,7 +18,6 @@ const PACKAGE_RENAMES: Readonly<Record<string, string>> = {
 
 /** Return an actionable error for a retired npm specifier, including version pins. */
 export function packageRenameError(specifier: string, location: string): string | undefined {
-  specifier = specifier.replace(/^(?:--package=|-p=)/u, "");
   for (const [oldName, newName] of Object.entries(PACKAGE_RENAMES)) {
     if (specifier === oldName || specifier.startsWith(`${oldName}@`) || specifier.startsWith(`${oldName}/`)) {
       return `${oldName} was renamed to ${newName}; update ${location}`;

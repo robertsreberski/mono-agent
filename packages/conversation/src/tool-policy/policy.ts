@@ -1,4 +1,3 @@
-import { parseMcpServers } from "@mono-agent/turn/host/config";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -142,11 +141,6 @@ function normalizeToolList(value: readonly unknown[] | undefined, field: string)
 function normalizeMcpServers(value: Record<string, unknown>): Record<string, unknown> {
   if (!isRecord(value)) {
     throw new ToolPolicyError("invalid_tool_policy", "mcpServers must be an object.");
-  }
-  // Validate retired package specifiers before an MCP child can be launched.
-  try { parseMcpServers(value); }
-  catch (error) {
-    throw new ToolPolicyError("invalid_tool_policy", error instanceof Error ? error.message : String(error));
   }
   return structuredClone(value);
 }
