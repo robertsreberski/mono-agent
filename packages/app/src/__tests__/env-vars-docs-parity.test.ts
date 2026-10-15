@@ -121,7 +121,7 @@ function codeEnvKeys(root: string): Set<string> {
       continue;
     }
     for (const entry of readdirSync(workspaceDir)) {
-      if (entry.endsWith("-adapter")) {
+      if (entry.startsWith("channel-") || entry.startsWith("trigger-")) {
         files.push(...adapterConfigFiles(join(workspaceDir, entry, "src")));
       }
     }
@@ -151,7 +151,7 @@ function adapterCodeEnvKeys(root: string): Set<string> {
       continue;
     }
     for (const entry of readdirSync(workspaceDir)) {
-      if (entry.endsWith("-adapter")) {
+      if (entry.startsWith("channel-") || entry.startsWith("trigger-")) {
         files.push(...adapterConfigFiles(join(workspaceDir, entry, "src")));
       }
     }
@@ -186,7 +186,7 @@ function adapterWorkspaces(root: string): string[] {
       continue;
     }
     for (const entry of readdirSync(workspaceDir)) {
-      if (!entry.endsWith("-adapter")) {
+      if (!(entry.startsWith("channel-") || entry.startsWith("trigger-"))) {
         continue;
       }
       const configFiles = adapterConfigFiles(join(workspaceDir, entry, "src"));
@@ -215,6 +215,7 @@ describe("env-vars.md <-> code parity", () => {
   });
 
   it("discovers every config-bearing adapter env prefix", () => {
+    expect(adapterWorkspaces(root)).toHaveLength(9);
     expect(adapterWorkspaces(root)).toEqual(Object.keys(ADAPTER_ENV_PREFIXES).sort());
     expect(
       [...adapterCode].filter(

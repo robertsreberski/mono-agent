@@ -248,7 +248,7 @@ describe("mono-agent-composer reference parity", () => {
 
     expect(row).toHaveLength(4);
     expect(row?.[0]).toBe(
-      "Cron jobs (five-field expressions, timezones, stable job-id-seeded `H`; agent-app pins overlap to skip)",
+      "Cron jobs (five-field expressions, timezones, stable job-id-seeded `H`; app pins overlap to skip)",
     );
     expect(row?.[1]).toBe("config + code");
     expect(row?.[2]).toContain("per-job `model` / `effort`");
@@ -262,10 +262,10 @@ describe("mono-agent-composer reference parity", () => {
     const watchdog = section(cronChannel, "Run watchdog: a wedged run is aborted, not left to starve");
 
     expect(overlap).toContain("Scheduler overlap state is tracked per job");
-    expect(overlap).toContain("shared agent-app harness admission and execution limits");
+    expect(overlap).toContain("shared app harness admission and execution limits");
     expect(overlap).toContain("serialize work across different jobs or reject a run");
     expect(watchdog).toContain("scheduler slot it reclaims are **per job**");
-    expect(watchdog).toContain("shared agent-app harness admission and execution limits");
+    expect(watchdog).toContain("shared app harness admission and execution limits");
     expect(watchdog).toContain("delay sibling provider work or reject it");
     expect(cronChannel).not.toContain("never block one another");
     expect(cronChannel).not.toContain("does not affect its siblings");
