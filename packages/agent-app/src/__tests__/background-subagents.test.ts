@@ -292,6 +292,13 @@ describe("parent stop", () => {
     await send.execute("stop", { id: "helper", stop: true });
     await vi.waitFor(async () => expect((await f.store.get(started.details.jobId))?.subagentOwnership).toMatchObject({
       owner: { settlement: "running" }, disposition: { continuity: "unknown" }, publication: { state: "confirmed" } }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    // The terminal cancelled-with-child-still-busy state owes the parent its one
+    // completion wake as soon as no publication is pending. Whether it lands
+    // before the late result is a race; hold the result until it is delivered.
+    await vi.waitFor(async () => expect((await f.store.get(started.details.jobId))?.wake).toMatchObject({ state: "delivered", attempts: 1 }),
+      { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    expect(f.wake).toHaveBeenCalledOnce();
+    expect(f.wake.mock.calls[0]![0]).toMatchObject({ projection: { state: "cancelled", childStillBusy: true } });
     gate.resolve({ text: "late", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
     await vi.waitFor(() => expect(stranded).toBe(true), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await f.service.stop();
@@ -304,7 +311,6 @@ describe("parent stop", () => {
     const strandedRecord = await f.instances.get("helper");
     expect(strandedRecord).toMatchObject({ status: "idle", turns: 1, recoveryBlocked: true, recovery: { continuity: "unknown" } });
     expect(strandedRecord?.activeTurn).toBeUndefined();
-    expect(f.wake).not.toHaveBeenCalled();
 
     const reopened = await openProcessJobsService(f.options); services.push(reopened);
     const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {},
@@ -314,14 +320,22 @@ describe("parent stop", () => {
     reopened.bindManagedSubagents!({ root,
       verify: async (identity) => await (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => await (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication) });
-    await reopened.activateWakes(); await done(reopened, started.details.jobId);
-    const job = await f.store.get(started.details.jobId);
-    expect(job !== undefined && !hasSubagentObligation(job)).toBe(true);
+    await reopened.activateWakes();
+    // The wake was already delivered, so wait for the stranded certificate's
+    // durable publication itself rather than for wake delivery.
+    await vi.waitFor(async () => {
+      const job = await f.store.get(started.details.jobId);
+      expect(job !== undefined && isTerminalProcessJobState(job.state) && !hasSubagentObligation(job)).toBe(true);
+      expect(job?.subagentOwnership).toMatchObject({ disposition: { continuity: "retained", resumeAfterStop: true },
+        publication: { state: "confirmed", receiptPending: false, receiptRecorded: job?.subagentOwnership?.publication.sequence } });
+    }, { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const record = await (await registry.open(origin.conversationId)).get("helper");
     expect(record).toMatchObject({ status: "idle", turns: 1 }); expect(record?.recoveryBlocked).not.toBe(true); expect(record?.recovery).toBeUndefined();
+    // Reopen publishes the repaired certificate without a second completion wake.
+    expect((await f.store.get(started.details.jobId))?.wake).toMatchObject({ state: "delivered", attempts: 1 });
     expect(f.wake).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
-    // Inner waits: four durable waits and the six-second stop receipt.
-  }, 4 * DURABLE_DELIVERY_TIMEOUT_MS + 15_000);
+    // Inner waits: five durable waits and the six-second stop receipt.
+  }, 5 * DURABLE_DELIVERY_TIMEOUT_MS + 15_000);
   it("rearms a newer terminal publication when cancellation grace completes under an older publication", async () => {
     const f = await managedFixture(undefined, { maxRuntimeMs: 60_000 });
     const releaseUnknownConfirm = deferred<void>();
