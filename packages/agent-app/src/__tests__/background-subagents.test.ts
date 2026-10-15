@@ -1451,7 +1451,7 @@ describe("managed detached production execution", () => {
     const run = vi.fn(async () => ({ text: "settled once" }));
     const { agent } = tools(f, run);
     const receipt = await agent.execute("F3", { persist: true, background: true, id: "helper", prompt: "work" });
-    await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await f.service.stop();
     const root = resolve(f.root, "children"); let clock = Date.now();
     const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => clock,
