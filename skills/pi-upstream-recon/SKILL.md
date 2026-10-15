@@ -41,9 +41,9 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (keep them exact)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` at `1.0.1`.
+- `packages/agent-runtime`: `@earendil-works/pi-ai` at `1.2.0`.
 - `packages/engine`: `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core`
-  at `1.0.1`.
+  at `1.2.0`.
   Pi 1.x removed the experimental upstream harness and session repository.
   The mono-agent engine owns admission, steering and storage over the installed
   `runAgentLoop`; the runtime adapter owns provider and tool integration.
@@ -87,6 +87,20 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   Pi-auth-directory identity supplies it to the runtime auth facade and onboarding.
   API keys and Codex OAuth retain their separate paths. Agent Core supports
   optional provider stream events and assistant `thinkingLevel` metadata.
+- Pi 1.2.0 renames the Azure provider to `azure` (the Responses API id
+  remains `azure-openai-responses`) and adds Foundry Chat Completions. Existing
+  Azure routes must adopt the new provider id; do not invent a catalog alias.
+  Claude Haiku 5.5, effort maps and prompt-length pricing come from the catalog.
+  Pi's 3.5-character input estimator now clamps provider output more conservatively;
+  the attributed engine compaction estimator remains unchanged for session parity.
+  Pi 1.1 adds assistant/tool `durationMs`; `run-driver.js` removes only the
+  top-level message field before hooks and storage, preserving frozen session and
+  projection bytes. Tool-owned content/details and usage are untouched.
+  Pi 1.2's Anthropic preferred-strict fallback ignores `maxRetries: 0` but only
+  follows a definite HTTP 400 `invalid_request_error` for specific schema limits;
+  it never wraps stream consumption. Do not replace that safe native fallback.
+  New assistant-error retry patterns must not enable response-level retries in
+  the runtime: checks, compaction and handoffs keep SSE and `maxRetries: 0`.
 - Pi's standalone OAuth registry remains unavailable at runtime.
   `packages/agent-runtime/src/ai/pi-oauth-compat.js` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream
@@ -98,7 +112,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime/harness exact Pi AI `1.0.1` and Pi Agent Core `1.0.1`
+  fixture or the runtime/harness exact Pi AI `1.2.0` and Pi Agent Core `1.2.0`
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
@@ -109,7 +123,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   idle legacy v3/v4 main context with source-bound restartable staging, fsync the
   new transcript/publication before archiving the source, and cold-replay legacy files
   with open operations. Never test migration against real session directories.
-- A packed consumer should resolve Pi AI `1.0.1` from the runtime, the mono-agent
+- A packed consumer should resolve Pi AI `1.2.0` from the runtime, the mono-agent
   engine and Pi Agent Core. The release guard verifies these resolution paths independently so
   Core's upstream floating range cannot be rewired by a host dependency.
 

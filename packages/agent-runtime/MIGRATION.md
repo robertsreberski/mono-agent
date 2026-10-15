@@ -58,13 +58,31 @@ without runtime warnings. Runtime dispatch lazily loads the adapter directly;
 the optional resolver shares the same malformed-reference validation. Config,
 wire identifiers and the `"pi"` adapter id are unchanged.
 
-The runtime exact-pins Pi AI at `1.0.1`; `@mono-agent/engine` exact-pins
-Pi AI and Pi Agent Core at `1.0.1` (the terminal TUI renderer is retired, so no
+The runtime exact-pins Pi AI at `1.2.0`; `@mono-agent/engine` exact-pins
+Pi AI and Pi Agent Core at `1.2.0` (the terminal TUI renderer is retired, so no
 Pi TUI pin remains). Pi Core removed its high-level
 harness. The Pi provider glue now uses `@mono-agent/engine` for model-run admission,
 steering, journal/storage and compaction over upstream `runAgentLoop`; provider
 code remains Pi-owned. The existing `@mono-agent/agent-harness` package still
 owns host conversation/history orchestration.
+
+Pi 1.2.0 compatibility notes:
+
+- Use `azure:<model>` instead of `azure-openai-responses:<model>` for built-in
+  Azure routes. The `azure-openai-responses` API id and `AZURE_OPENAI_*`
+  environment variables are unchanged; Azure now also supports Foundry Chat
+  Completions, including DeepSeek V4 Pro.
+- Claude Haiku 5.5 and other refreshed catalog rows are available without local
+  backfills. Effort levels and long-prompt cost tiers follow Pi's catalog.
+- Provider output-limit estimation is more conservative (3.5 characters/token).
+  Session storage, historical imports and the engine compaction estimator stay
+  unchanged. New Pi response/tool timings are normalized out of message envelopes
+  before hooks and persistence, not added to the stored session format.
+- Provider checks, compaction summaries and handoff summaries remain single-shot
+  SSE with zero transport retries. Anthropic can downgrade preferred strict tools
+  once after a definite schema-limit rejection; connection failures and started
+  responses do not enter that fallback. Runtime assistant-level retries remain
+  disabled, including the new transient upstream-provider error patterns.
 
 Native transcripts use `journals/<journalId>.jsonl` under `sessionsRoot`.
 The immutable journal ID is independent of the epoch-bound provider handle;
@@ -816,7 +834,7 @@ falls back to its own env vars, exactly as returning `undefined` from the old ho
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
 
 Current dependency pins: **`@earendil-works/pi-ai` and
-`@earendil-works/pi-agent-core` are both `1.0.1`** (the initial Pi 0.80
+`@earendil-works/pi-agent-core` are both `1.2.0`** (the initial Pi 0.80
 migration landed at `0.80.5`, from `^0.79.1`). Pi 0.85's durable lane harness is
 adapted behind the runtime's existing public API. Pi 0.86 folds request prompts
 and tool declarations into the transcript's leading system message (providers
@@ -826,8 +844,8 @@ backfill), and adds static `meta` and `radius` provider catalogs. Compaction
 remains owned by mono-agent policy, and model-native `max` reasoning plus Pi's
 request-wide pricing tiers are preserved.
 
-Packed npm consumers resolve the runtime-owned exact Pi AI 1.0.1 copy for both
-the runtime and Agent Core's `^1.0.1` dependency. The release guard verifies
+Packed npm consumers resolve the runtime-owned exact Pi AI 1.2.0 copy for both
+the runtime and Agent Core's `^1.2.0` dependency. The release guard verifies
 both resolution paths independently.
 
 Pi 0.87.0 removes `shouldStopAfterTurn` from the low-level loop config,
@@ -914,7 +932,7 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only dependencies
-  to the exact Pi AI `1.0.1` and Pi Agent Core `1.0.1` compatibility pins
+  to the exact Pi AI `1.2.0` and Pi Agent Core `1.2.0` compatibility pins
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
@@ -922,7 +940,7 @@ Worklab's runtime fork:
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-   exact Pi AI `1.0.1` and Pi Agent Core `1.0.1` compatibility pins inside the
+   exact Pi AI `1.2.0` and Pi Agent Core `1.2.0` compatibility pins inside the
    runtime and its engine dependency. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.

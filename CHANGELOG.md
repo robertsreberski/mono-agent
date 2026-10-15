@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add Pi's refreshed model catalog, including Claude Haiku 5.5 with native effort
+  levels and long-prompt pricing. Azure routes now also cover Foundry Chat
+  Completions and DeepSeek V4 Pro.
+- Rename built-in Azure routes to `azure:<model>` (breaking config change):
+  `azure-openai-responses:<model>` no longer resolves. The `AZURE_OPENAI_*`
+  environment variables are unchanged.
+- Keep stored sessions and single-shot provider checks and summaries unchanged
+  with Pi 1.2.0. Allow Anthropic's preferred strict tools to downgrade only after
+  a definite schema-limit rejection; never repeat a started response that way.
+
 - Reject renamed sessions-root configuration before a clear-sessions restart can
   stop the worker or delete history. Refuse pre-release storage during startup
   and validation, and report it as a terminal storage safety failure rather

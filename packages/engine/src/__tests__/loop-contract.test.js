@@ -22,7 +22,7 @@ async function journal(raw) {
   return (await readFile(raw.metadata.path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 }
 async function fixture(tools, responses, beforeDispatch = () => {}) {
-  expect(require("@earendil-works/pi-agent-core/package.json").version).toBe("1.0.1");
+  expect(require("@earendil-works/pi-agent-core/package.json").version).toBe("1.2.0");
   const root = await mkdtemp(join(tmpdir(), "loop-contract-"));
   const raw = await new JsonlSessionRepo({ sessionsRoot: root }).create();
   const faux = fauxProvider({ provider: "faux", models: [{ id: "fictional-loop" }] });
@@ -38,7 +38,7 @@ async function fixture(tools, responses, beforeDispatch = () => {}) {
   return { raw, driver, async close() { await driver.close(); await raw.close(); await rm(root, { recursive: true, force: true }); } };
 }
 
-describe("installed Pi 1.0.1 loop contract through the run driver", () => {
+describe("installed Pi 1.2.0 loop contract through the run driver", () => {
   it.each(["admitted", "started"])("awaits beforeToolCall and the %s fsync before exactly one successful effect", async (phase) => {
     const hook = gate(), fsync = gate();
     let effects = 0, executionRecords;

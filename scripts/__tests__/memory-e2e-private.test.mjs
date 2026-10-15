@@ -166,7 +166,7 @@ describe("private memory evaluation privacy boundary", () => {
       vi.stubEnv(key, value);
       // One shared guard protects every built-in SDK route, including all
       // OpenAI-compatible providers; no real SDK/auth/provider is constructed.
-      for (const provider of ["anthropic", "openai", "openai-codex", "azure-openai-responses", "google", "google-vertex", "amazon-bedrock", "openrouter", "groq", "xai"]) {
+      for (const provider of ["anthropic", "openai", "openai-codex", "azure", "google", "google-vertex", "amazon-bedrock", "openrouter", "groq", "xai"]) {
         expect(() => privateCompletionRuntime({ runtime: { createMonoRuntime } }, `${provider}:fictional-model`, root, {})).toThrow("private_isolation_required");
       }
       vi.unstubAllEnvs();
