@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fix a parent-stopped background subagent whose late result kept its session
+  context staying blocked in recovery, with its process job holding a running
+  slot, when registry writes were slow. The late result now settles with its
+  final resumable outcome, and reopening the agent repairs instances already
+  stuck this way. Late results without proven context still require recovery,
+  and no tool is ever re-run.
+
 - Report interrupted Web turns and wait for the user instead of starting an
   automatic paid turn. Carry recovery advisories once into the next explicit
   user turn; leave background-job completion delivery unchanged.
@@ -23,6 +30,7 @@
 
 - Keep history owners protected on inconclusive process probes, and retry
   transient self-identity failures.
+
 - Fix concurrent durable A2A record reads during acceptance and expiry
   compaction. Keep active dispatches in doubt and expired keys permanently
   bound without rejecting safe atomic replacements as unsafe state.

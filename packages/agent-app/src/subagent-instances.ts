@@ -598,6 +598,31 @@ export function createSubagentInstanceRegistry(options: {
             }
             if (record.ownerReceipt?.jobId === identity.jobId && record.ownerReceipt.storeRoot === identity.storeRoot && record.ownerReceipt.turnToken === identity.turnToken
               && record.ownerReceipt.sequence >= publication.sequence) return;
+            // Before true settlement stored a parent stop's final disposition
+            // atomically, an older release of this exact turn could land with the
+            // grace's provisional unknown continuity and drop the active turn. Only
+            // the job's newer retained stop certificate for that same unfinalized
+            // receipt may lift that provisional recovery; turns and usage were
+            // already counted. Anything else remains stale and fails closed.
+            const receipt = record.ownerReceipt;
+            if (!record.activeTurn && receipt && receipt.jobId === identity.jobId && receipt.storeRoot === identity.storeRoot
+              && receipt.turnToken === identity.turnToken && receipt.sequence < publication.sequence && !receipt.finalized && !receipt.acknowledged
+              && publication.released && !publication.neverStarted && publication.disposition.resumeAfterStop === true
+              && publication.disposition.continuity === "retained" && record.recovery?.turnToken === identity.turnToken
+              && record.recovery.continuity === "unknown") {
+              if (phase === "intent") return;
+              const question = publication.outcome?.question;
+              if (publication.disposition.status === "awaiting_reply" && question) {
+                if (!validQuestion(question)) throw new Error("Invalid subagent question.");
+                record.pendingQuestion = structuredClone(question);
+                record.status = "awaiting_reply";
+              }
+              delete record.recovery;
+              record.ownerReceipt = { ...receipt, sequence: publication.sequence };
+              record.lastStatus = publication.disposition.status;
+              record.updatedAt = now();
+              return;
+            }
             if (!record.activeTurn || !record.ownerLink || !sameSubagentOwner(identity, { ...record.ownerLink,
               conversationId, instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: record.activeTurn.token })) throw new SubagentRecoveryError("subagent_stale_turn");
             const disposition = publication.disposition;

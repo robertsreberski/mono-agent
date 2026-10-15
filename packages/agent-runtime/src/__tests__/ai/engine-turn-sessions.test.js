@@ -1477,9 +1477,16 @@ describe("pi-native sessions", () => {
     const runA = generateEngineTurnResponse("system", optionsResume);
     const runB = generateEngineTurnResponse("system", optionsResume);
 
-    // Let one claim busy and the other observe it, then release the gated turn.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    /** @type {any} */ (release)?.();
+    // Keep the winner busy until the loser actually settles. A fixed sleep can
+    // release the winner before a slow cold reopen finishes, turning the loser
+    // into an ordinary sequential resume rather than a concurrent-turn refusal.
+    try {
+      const loser = await Promise.race([runA, runB]);
+      expect(loser.failureKind).toBe("session_busy");
+    } finally {
+      /** @type {any} */ (release)?.();
+      await Promise.allSettled([runA, runB]);
+    }
     const settled = await Promise.allSettled([runA, runB]);
     expect(settled.every((entry) => entry.status === "fulfilled")).toBe(true);
     const results = settled.map((entry) => { if (entry.status !== "fulfilled") throw entry.reason; return entry.value; });
