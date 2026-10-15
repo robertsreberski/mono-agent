@@ -75,7 +75,7 @@ The string that names a provider and model together, in the form `<provider>:<mo
 
 ## Provider session
 
-A continuous, per-conversation session against the provider, kept warm and evicted after idle time so follow-up turns resume without re-sending full history. Configured via `runtime.session.mode` and `runtime.session.idleTimeoutMs`; native engine sessions can be persisted to JSONL via `providers.piNative.piSessionsRoot`. See [Sessions and concurrency](/runtime/sessions-concurrency/).
+A continuous, per-conversation session against the provider, kept warm and evicted after idle time so follow-up turns resume without re-sending full history. Configured via `runtime.session.mode` and `runtime.session.idleTimeoutMs`; native engine sessions can be persisted to JSONL via `runtime.session.root`. See [Sessions and concurrency](/runtime/sessions-concurrency/).
 
 ## Rapid-log
 

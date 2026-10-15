@@ -51,7 +51,7 @@ for (const cancelAt of ["admission", "provider"] as const) {
       model: { provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
       historyStore: store,
       session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
-      piSessionsRoot: join(dir, "pi"),
+      sessionsRoot: join(dir, "pi"),
       runtime: {
         async run(prompt: string, options: RuntimeRunOptions) {
           calls++;

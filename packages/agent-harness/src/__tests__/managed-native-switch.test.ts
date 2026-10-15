@@ -19,7 +19,7 @@ it("keeps pending switches in host storage without native events or B binding", 
   expect((await f.store.readProviderSessionBinding(bucket))?.modelKey).toBe("faux:A");
   await expect(f.store.beginProviderSessionTurn(bucket, "no-dispatch", { modelKey: "faux:B" })).rejects.toThrow("pending");
 });
-const journals = (f: { base: string }) => readdir(join(f.base, "native", "mono-v2", "journals"));
+const journals = (f: { base: string }) => readdir(join(f.base, "native", "journals"));
 const exists = (path: string) => readFile(path).then(() => true, () => false);
 it("rolls ready content into the exact target journal, binding and receipt, then retires the outgoing journal and fence", async () => {
   const f = await setup(), reference = await ready(f);
@@ -31,7 +31,7 @@ it("rolls ready content into the exact target journal, binding and receipt, then
   expect(canonical.native.projection).toEqual(reference);
   // Exactly one current journal: the guarded target. The outgoing journal is retired.
   const names = await journals(f); expect(names).toHaveLength(1); expect(await exists(f.nativePath)).toBe(false);
-  const target = (await readFile(join(f.base, "native", "mono-v2", "journals", names[0]!), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const target = (await readFile(join(f.base, "native", "journals", names[0]!), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   expect(target[0].hostAuthority).toEqual(canonical.native.authority); expect(target.slice(1)).toHaveLength(4);
   expect((await f.store.stats()).reservedBytes).toBe(0);
   expect((await readdir(join(f.base, "history", ".model-switches"))).filter((name) => name.endsWith(".fence.json"))).toHaveLength(0);
@@ -88,7 +88,7 @@ it("never recreates a target journal lost after the canonical receipt; recovery 
   const f = await setup(); await ready(f);
   await expect(f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { onPhase: async (phase) => { if (phase === "switch_canonical_directory_synced") throw new Error("Interrupted cleanup"); } })).rejects.toThrow();
   const target = (await journals(f)).find((name) => !f.nativePath.endsWith(name))!;
-  await rm(join(f.base, "native", "mono-v2", "journals", target));
+  await rm(join(f.base, "native", "journals", target));
   expect(await openStore(f.base).store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { })).toEqual({ status: "committed" });
   expect(await journals(f)).toEqual([]);
   expect((await readdir(join(f.base, "history", ".model-switches"))).filter((name) => name.endsWith(".fence.json"))).toHaveLength(0);

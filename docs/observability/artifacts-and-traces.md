@@ -178,7 +178,7 @@ For an admitted, non-isolated cancelled interactive turn, active conversation hi
 ## Canonical tool lifecycle evidence (`SessionHistory`)
 
 Managed-tool invocation/result history does **not** use run JSONL, web SQLite,
-provider transcripts, or Pi session files as its canonical store. The harness
+provider transcripts, or session files as its canonical store. The harness
 writes redacted, bounded lifecycle pairs incrementally to the separate
 `history/tool-history/tool-lifecycles.sqlite` sidecar. That crash-safe boundary
 is independent of successful-turn message commit, so a rejected, failed,

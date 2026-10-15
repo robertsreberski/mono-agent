@@ -18,8 +18,8 @@ export function validateNativeSessionAuthority(options, handleId, requestedId) {
     return;
   }
   if (access.version !== 1 || access.currentHandleId !== handleId || requestedId !== handleId
-    || typeof access.assertCurrent !== "function" || !options.piSessionsRoot
-    || typeof access.sessionsRoot !== "string" || !normalizeDurableSessionsRoot(access.sessionsRoot) || normalizeDurableSessionsRoot(access.sessionsRoot) !== normalizeDurableSessionsRoot(options.piSessionsRoot)
+    || typeof access.assertCurrent !== "function" || !options.sessionsRoot
+    || typeof access.sessionsRoot !== "string" || !normalizeDurableSessionsRoot(access.sessionsRoot) || normalizeDurableSessionsRoot(access.sessionsRoot) !== normalizeDurableSessionsRoot(options.sessionsRoot)
     || options.sessionKeepAlive !== true
     || options.sessionTurn?.kind !== "host" || !options.sessionTurn.reconciliation || options.sessionTurn.handleId !== handleId
     || options.sessionTurn.ownerKey !== access.hostAuthority?.ownerKey

@@ -261,7 +261,7 @@ Continuous provider sessions are configured under `runtime.session` (JSON: `{ "r
 
 In `continuous` mode (the default), consecutive messages in a conversation can
 reuse one provider session (a Codex app-server thread, Claude resume token, or
-Pi session transcript). Only a confirmed warm resume omits prior messages from
+session transcript). Only a confirmed warm resume omits prior messages from
 the next provider input; the default app host still appends every successful
 turn to canonical durable conversation history. Expiry, invalidation, a
 non-resumable runtime, or any configured fallback route uses the cold

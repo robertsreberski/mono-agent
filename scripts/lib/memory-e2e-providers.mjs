@@ -432,7 +432,7 @@ export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, ta
       try {
         result = await meteredRuntime(runtime, { budget, stage, tag }).run(MEMORY_SYSTEM, {
           model, messages: [{ role: "user", content: prompt }], abortSignal: options.abortSignal ?? new AbortController().signal,
-          cwd: workspace, piSessionsRoot: sessionsRoot, allowedTools: [], disallowedTools: [], mcpServers: {},
+          cwd: workspace, sessionsRoot: sessionsRoot, allowedTools: [], disallowedTools: [], mcpServers: {},
           ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
         });
       } catch (error) {

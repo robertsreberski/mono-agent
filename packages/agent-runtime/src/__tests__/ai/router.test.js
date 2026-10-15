@@ -1476,17 +1476,17 @@ it.each(["primary retry", "backup", "skipped primary"])("strips inherited projec
   expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
 });
 
-it("protects piSessionsRoot when native current-handle authority is supplied", async () => {
+it("protects sessionsRoot when native current-handle authority is supplied", async () => {
   const primary = modelRef("openai-codex", "primary"), router = createRouterRuntime({ chain: [primary],
-    resolveAttempt: async () => ({ options: { piSessionsRoot: "/fictional/foreign-native" } }) });
-  const result = await router.run("Rules", { model: primary, messages: [], nativeSessionAuthority: { fixture: "host-owned" }, piSessionsRoot: "/fictional/owned-native" });
-  expect(result.error).toContain("cannot override piSessionsRoot"); expect(executeMock).not.toHaveBeenCalled();
+    resolveAttempt: async () => ({ options: { sessionsRoot: "/fictional/foreign-native" } }) });
+  const result = await router.run("Rules", { model: primary, messages: [], nativeSessionAuthority: { fixture: "host-owned" }, sessionsRoot: "/fictional/owned-native" });
+  expect(result.error).toContain("cannot override sessionsRoot"); expect(executeMock).not.toHaveBeenCalled();
 });
 it("preserves ordinary resolver native-root selection without native authority", async () => {
   const primary = modelRef("openai-codex", "primary"); executeMock.mockResolvedValueOnce({ text: "ordinary reply", events: [] });
-  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { piSessionsRoot: "/fictional/ordinary-native" } }) });
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { sessionsRoot: "/fictional/ordinary-native" } }) });
   expect((await router.run("Rules", { model: primary, messages: [] })).text).toBe("ordinary reply");
-  expect(executeMock.mock.calls[0][1].piSessionsRoot).toBe("/fictional/ordinary-native");
+  expect(executeMock.mock.calls[0][1].sessionsRoot).toBe("/fictional/ordinary-native");
 });
 
 it.each(["backup", "retry", "unsupported primary"])("permits a detached %s resolver to choose its own native root", async (variant) => {
@@ -1496,11 +1496,11 @@ it.each(["backup", "retry", "unsupported primary"])("permits a detached %s resol
   executeMock.mockResolvedValueOnce({ text: "detached root selected", events: [] });
   const chain = variant === "backup" ? [primary, backup] : [{ model: primary, attempts: variant === "retry" ? 2 : 1 }];
   const router = createRouterRuntime({ chain, retry: { backoffMs: 0, maxBackoffMs: 0 }, resolveAttempt: async ({ attemptIndex, retryIndex }) => ({
-    options: attemptIndex > 0 || retryIndex > 0 || variant === "unsupported primary" ? { piSessionsRoot: "/fictional/detached-native" } : {} }) });
+    options: attemptIndex > 0 || retryIndex > 0 || variant === "unsupported primary" ? { sessionsRoot: "/fictional/detached-native" } : {} }) });
   const result = await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true,
-    nativeSessionAuthority: { fixture: "host-owned" }, nativeSessionProjection: { fixture: "host-owned" }, piSessionsRoot: "/fictional/owned-native" });
+    nativeSessionAuthority: { fixture: "host-owned" }, nativeSessionProjection: { fixture: "host-owned" }, sessionsRoot: "/fictional/owned-native" });
   expect(result.error).toBeFalsy(); expect(result.text).toBe("detached root selected");
-  const detached = executeMock.mock.calls.at(-1)[1]; expect(detached.piSessionsRoot).toBe("/fictional/detached-native");
+  const detached = executeMock.mock.calls.at(-1)[1]; expect(detached.sessionsRoot).toBe("/fictional/detached-native");
   expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
   expect(detached).not.toHaveProperty("sessionTurn"); expect(detached).not.toHaveProperty("providerSessionId");
 });
@@ -1956,4 +1956,29 @@ it("keeps prepared dispatch and handoff producers primary-only after an empty-pr
   expect(result.failureKind).toBe("provider_unavailable"); expect(result.failoverHistory).toHaveLength(1);
   expect(resolver).toHaveBeenCalledOnce(); expect(prepared).toHaveBeenCalledOnce(); expect(producer).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
   expect(ack).not.toHaveBeenCalled(); expect(loader).not.toHaveBeenCalled(); expect(executeMock).not.toHaveBeenCalled();
+});
+
+it("rejects the old run option before dispatch, including when the replacement is present", async () => {
+  const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7")] });
+  for (const piSessionsRoot of [undefined, "old"]) {
+    const options = { piSessionsRoot, sessionsRoot: "/fictional/new" };
+    await expect(router.run("sys", options)).rejects.toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+    await expect(router.prepareNativeDispatch("sys", options)).rejects.toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+  }
+  expect(executeMock).not.toHaveBeenCalled();
+});
+
+it("rejects the old option at direct provider entrypoints too", async () => {
+  const { generateEngineTurnResponse, preparePiNativeDispatch } = await vi.importActual("../../ai/providers/engine-turn.js");
+  const options = { piSessionsRoot: "/fictional/old" };
+  await expect(generateEngineTurnResponse("sys", options)).rejects.toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+  expect(() => preparePiNativeDispatch("sys", options)).toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+});
+
+it("never retries or falls back for an unsupported sessions root", async () => {
+  executeMock.mockResolvedValue({ text: null, error: "Sessions root requires offline cleanup", failureKind: "safety_sessions_root_unsupported", retryable: false, events: [] });
+  const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7"), modelRef("openai-codex", "gpt-5.5")],
+    retry: { primaryAttempts: 3, backoffMs: 0, maxBackoffMs: 0 } });
+  expect(await router.run("sys", {})).toMatchObject({ failureKind: "safety_sessions_root_unsupported", retryable: false });
+  expect(executeMock).toHaveBeenCalledTimes(1);
 });

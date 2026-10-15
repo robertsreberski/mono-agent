@@ -18,7 +18,7 @@ Runtime package in the mono-agent lockstep release.
 
 ## Responsibility
 
-Own the model-run loop, journal schema and storage, legacy Pi v3/v4 import, retry
+Own the model-run loop, journal schema and storage, legacy v3/v4 import, retry
 stream and attributed compaction kit. Pi AI supplies models/providers and Pi
 Agent Core supplies `runAgentLoop`; the engine does not fork those dependencies.
 The `sessions.js` contract owns storage outcomes, not runtime result objects,
@@ -68,20 +68,20 @@ unconsumed native offers before sealing; none carries into the next turn.
 | `src/session-store.js` | Memory and durable journal repositories |
 | `src/journal-reader.js`, `src/journal-lock.js` | Offset-backed incremental validation and SQLite kernel locks |
 | `src/session-lifecycle.js`, `src/native-journal-storage.js`, `src/session-registry.js` | Storage lifecycle, managed evidence and registry factories |
-| `src/legacy-import.js` | Idle effective-main legacy Pi v3/v4 import |
+| `src/legacy-import.js` | Idle effective-main legacy v3/v4 import |
 | `src/run-driver.js`, `src/retry-stream.js` | Model operations over Pi's loop |
 | `src/session-context.js` | Adapter-shaped native context projection |
 | `src/compaction-kit/` | Attributed summary/cut/estimator helpers |
 
 Owned, non-group/other-writable legacy roots (including 0755) are tightened to
-0700 through a pinned no-follow descriptor. V2 directories/files remain strictly
+0700 through a pinned no-follow descriptor. Session directories/files remain strictly
 owner-private; writable or foreign-owned roots are rejected. One permanent catalogue mutex
 serializes acquisition and retired-writer lock reclamation; per-journal writer
 locks never hold that mutex over model execution. Torn owned tails are repaired
 and fsynced before reuse; complete corruption and resource failures are explicit.
 Native records above 2 MiB and journals above 32 MiB are supported.
 
-Idle legacy Pi v3/v4 imports retain a source inode/content fingerprint and import
+Idle legacy v3/v4 imports retain a source inode/content fingerprint and import
 ID in owned staging. Complete context is sealed and fsynced before publication;
 publication directories are synced before the source is identity-checked and
 archived. Process-crash retries resume validated stages or rebuild incomplete

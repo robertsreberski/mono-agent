@@ -106,14 +106,14 @@ function contentMessages(options: RuntimeRunOptions): string[] {
   return options.messages.map((message) => `${message.role}:${String(message.content)}`);
 }
 
-describe("configured durable Pi history", () => {
+describe("configured durable session history", () => {
   it("replays canonical history once and retains valid epochs after cancellation and failure", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-app-durable-pi-history-"));
     tempDirs.push(dir);
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, ".mono-agent", "artifacts");
     const historyRoot = join(dir, ".mono-agent", "history");
-    const piSessionsRoot = join(dir, ".mono-agent", "pi-sessions");
+    const sessionsRoot = join(dir, ".mono-agent", "pi-sessions");
     await writeFile(identityPath, "You are Mono.", "utf8");
 
     const faux = fauxProvider({
@@ -133,11 +133,11 @@ describe("configured durable Pi history", () => {
         model,
         maxTurns: 4,
         workspace: dir,
-        session: { mode: "continuous", idleTimeoutMs: 60_000 },
+        session: { root: sessionsRoot, mode: "continuous", idleTimeoutMs: 60_000 },
         compaction: { enabled: false },
         retry: { primaryAttempts: 1, backoffMs: 1_000, maxBackoffMs: 15_000 },
       },
-      providers: { piNative: { piSessionsRoot } },
+      providers: { piNative: {} },
       context: { identityPath, selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: {

@@ -390,7 +390,7 @@ describe("AgentHarness per-request override session binding", () => {
     expect(overrideCalls[0]?.options.sessionId).toBeUndefined();
     expect(overrideCalls[0]?.options.providerSessionId).toBeUndefined();
     expect(overrideCalls[0]?.options.sessionKeepAlive).toBe(true);
-    expect(overrideCalls[0]?.options.piSessionsRoot).toBeUndefined();
+    expect(overrideCalls[0]?.options.sessionsRoot).toBeUndefined();
     expect(sessionEvents).toContainEqual(expect.objectContaining({
       kind: "cold",
       conversationId: "conv",
@@ -507,7 +507,7 @@ describe("AgentHarness per-request override session binding", () => {
       runtime: base.runtime,
       model: defaultModel,
       session: continuousSession,
-      piSessionsRoot: "/tmp/host-durable-pi",
+      sessionsRoot: "/tmp/host-durable-pi",
       runtimeForModel: () => override.runtime,
       // Mirror the app extension: a webhook `model` in metadata → a parsed model
       // override. (Isolation itself is driven by the metadata, in the harness.)
@@ -518,7 +518,7 @@ describe("AgentHarness per-request override session binding", () => {
             ? {}
             : {
               model: claudeModel,
-              piSessionsRoot: "/tmp/extension-hijack",
+              sessionsRoot: "/tmp/extension-hijack",
               sessionId: "extension-session",
               providerSessionId: "extension-provider-session",
               sessionKeepAlive: true,
@@ -538,7 +538,7 @@ describe("AgentHarness per-request override session binding", () => {
     expect(override.calls[0]?.options.sessionId).toBeUndefined();
     expect(override.calls[0]?.options.providerSessionId).toBeUndefined();
     expect(override.calls[0]?.options.sessionKeepAlive).toBe(true);
-    expect(override.calls[0]?.options.piSessionsRoot).toBeUndefined();
+    expect(override.calls[0]?.options.sessionsRoot).toBeUndefined();
 
     // Returning to the default starts a fresh model-bound epoch.
     await harness.run(request("conv"));
@@ -750,7 +750,7 @@ describe("model binding admission and attribution", () => {
     const identityPath = await identityFixture();
     const harness = createAgentHarness({ identityPath, model: defaultModel, runtime: base.runtime,
       historyStore: createDurableHistoryStore({ root: join(identityPath, "..", "history"), retireProviderSession: async () => undefined }),
-      piSessionsRoot: join(identityPath, "..", "pi"),
+      sessionsRoot: join(identityPath, "..", "pi"),
       session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000,
         onSessionEvent: (event) => { events.push(event); } },
       runtimeForModel: () => ({ refreshSession: async () => undefined, syncSession: async () => true, run: async (_prompt, options) => {

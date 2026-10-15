@@ -17,7 +17,7 @@ export function eligibleContextImport(options: AgentHarnessOptions): Conversatio
     || typeof support.prepareImport !== "function"
   ) return undefined;
   if (support.providerState === "absent") {
-    return options.piSessionsRoot === undefined ? support : undefined;
+    return options.sessionsRoot === undefined ? support : undefined;
   }
   return support.providerState === "retire-fail-closed"
     && options.historyStore?.providerSessionRetirement === "fail-closed"

@@ -1,6 +1,7 @@
 // @ts-check
 // Narrow port of agent-harness/durable-history's SQLite kernel-lock primitive.
 // Catalogue acquisition and per-journal lock reclamation use the same mutex.
+import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -23,16 +24,17 @@ export class JournalLocks {
   constructor(root, identities) {
     this.root = root;
     this.identities = identities;
-    this.directory = join(root, "mono-v2", "locks");
+    this.directory = join(root, "locks");
     this.catalogPath = join(this.directory, "catalog.sqlite");
   }
   /** @param {string} sessionsRoot */
   static async open(sessionsRoot, onRootPermissionsTightened = () => {}) {
     const root = resolve(sessionsRoot);
+    assertSupportedSessionsRoot(root);
     // Validate each existing parent under the supplied trust boundary before
     // creating its child; recursive mkdir would follow an existing symlink.
     const identities = new Map();
-    for (const path of [root, join(root, "mono-v2"), join(root, "mono-v2", "locks")]) {
+    for (const path of [root, join(root, "locks")]) {
       try { await mkdir(path, { mode: 0o700, recursive: path === root }); }
       catch (error) { if (error.code !== "EEXIST") throw error; }
       let stat = await lstat(path);
@@ -55,6 +57,7 @@ export class JournalLocks {
     return locks;
   }
   async assertRoot() {
+    assertSupportedSessionsRoot(this.root);
     for (const [path, identity] of this.identities) await assertIdentity(path, identity, fail);
   }
   async syncDirectory() {

@@ -40,7 +40,7 @@ describe("awaited owned foreground command seam", () => {
     expect(controller.run.mock.calls[0][0]).toMatchObject({ callId: "host-call", tool, timeoutMs: 180_000, prepared: { cwd: root } });
   });
 
-  it("passes the controller and host call id through the actual Pi turn tool builder", async () => {
+  it("passes the controller and host call id through the actual session turn tool builder", async () => {
     const root = await workspace();
     const run = vi.fn(async (request) => { await request.prepared.cleanup(); return result(); });
     const forAttempt = vi.fn(() => ({ run }));

@@ -684,7 +684,7 @@ export interface RuntimeRunOptions {
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
-  readonly piSessionsRoot?: string;
+  readonly sessionsRoot?: string;
   /** Host-owned shared web admission; never model-configurable. */
   readonly webRequestCoordinator?: {
     readonly scope: string;

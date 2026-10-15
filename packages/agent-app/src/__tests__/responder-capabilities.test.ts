@@ -72,8 +72,8 @@ it("advertises and executes manual compaction from a configured harness through 
   await writeFile(identityPath, "You are a test agent.");
   const config: MonoAgentConfig = {
     runtime: { model: { provider: "faux", model: "test", reference: "faux:test" }, workspace: dir,
-      session: { mode: "continuous", idleTimeoutMs: 60_000 } },
-    providers: { piNative: { piSessionsRoot: join(dir, "pi") } },
+      session: { root: join(dir, "pi"), mode: "continuous", idleTimeoutMs: 60_000 } },
+    providers: { piNative: {} },
     context: { identityPath, selectedSkills: [] },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(dir, "artifacts"), retention: { maxAgeDays: 365, maxCount: 100, dryRun: false },

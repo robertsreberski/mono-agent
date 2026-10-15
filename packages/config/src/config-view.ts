@@ -170,7 +170,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "providers.piNative.cacheRetention": true,
   "providers.piNative.piMaxRetries": true,
   "providers.piNative.maxRetryDelayMs": true,
-  "providers.piNative.piSessionsRoot": true,
+  "runtime.session.root": true,
 } as const satisfies Record<string, true>;
 
 export type ConfigViewFieldId = keyof typeof CORE_CONFIG_FIELD_IDS;
@@ -391,6 +391,12 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         label: "Workspace",
         value: runtime.workspace,
         jsonPresent: json.runtime?.workspace !== undefined,
+      }),
+      toField({
+        id: "runtime.session.root",
+        label: "Sessions root",
+        value: runtime.session.root ?? "in-memory",
+        jsonPresent: json.runtime?.session?.root !== undefined,
       }),
       toField({
         id: "runtime.session.mode",
@@ -1172,12 +1178,6 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
         label: "Pi max retry delay (ms)",
         value: providers?.piNative?.maxRetryDelayMs === undefined ? "default" : String(providers.piNative.maxRetryDelayMs),
         jsonPresent: json.providers?.piNative?.maxRetryDelayMs !== undefined,
-      }),
-      toField({
-        id: "providers.piNative.piSessionsRoot",
-        label: "Pi sessions root",
-        value: providers?.piNative?.piSessionsRoot ?? "in-memory",
-        jsonPresent: json.providers?.piNative?.piSessionsRoot !== undefined,
       }),
       toField({
         id: "providers",

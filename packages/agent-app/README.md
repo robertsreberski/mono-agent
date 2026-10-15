@@ -37,8 +37,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   commit. Cancellation preserves operator, shutdown, stale-session, signal,
   timeout, generic, and unrecorded-reason provenance; failure records a trusted
   host settlement category while bounding/redacting runtime/provider code and
-  detail as untrusted evidence. Eligible durable Pi recovery retains native context
-  without appending the account to Pi; cold reseed includes the account. The
+  detail as untrusted evidence. Eligible durable session recovery retains native context
+  without appending the account to the session; cold reseed includes the account. The
   coordinated native turns use canonical v3 receipts and owner-held,
   storage-only reconciliation across crashes. Read-only history loading does
   not recover or migrate. Interrupted work waits for the next explicit message;
@@ -71,7 +71,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `native_switch_busy` drains only bounded inactive owners after claim release,
   never automatically replaying the message. Enable only with
   `runtime.session.modelSwitch: { "enabled": true }`,
-  continuous sessions and `providers.piNative.piSessionsRoot`. Both fresh and
+  continuous sessions and `runtime.session.root`. Both fresh and
   existing roots acquire native authority lazily under ownership. Back up host/native stores and stop every older writer
   first. Older binaries refuse native conversations and root scans, but this
   is not a universal old-writer admission barrier: mixed writers are prohibited.
@@ -830,7 +830,7 @@ cold-project tool records but suppress that new tool; `validate` reports
 `unsupported_route` rather than pretending coverage exists. Issue #626 does not
 change `RunHistory`'s pre-existing direct-ACP route wiring.
 
-The canonical data is not run JSONL, Pi JSONL, web SQLite, or message-history
+The canonical data is not run JSONL, session JSONL, web SQLite, or message-history
 JSON. The harness incrementally writes every managed-tool start and terminal
 result to `history/tool-history/tool-lifecycles.sqlite`, independently of
 successful-turn commit. A lifecycle record may therefore exist without a

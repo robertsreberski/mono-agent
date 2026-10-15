@@ -137,7 +137,7 @@ it("incoming prepared execution commits through the real native P2 inspector, re
   const incoming = await prepareHarnessRuntime({ options: { identityPath: "/fictional/identity.md", model: { provider: "faux", model: "B", reference: "faux:B" },
     runtime, runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], compaction: { enabled: false } } },
     request: { conversationId: bucket, userMessage: message, abortSignal: controller.signal }, recorder: { onEvent: vi.fn() } as unknown as RunRecorder,
-    sessionsEnabled: true, runId: "real-incoming-turn", durablePiSessionsRoot: nativeRoot,
+    sessionsEnabled: true, runId: "real-incoming-turn", durableSessionsRoot: nativeRoot,
     routing: { modelKey: "faux:B", runtimeForSession: () => runtime, onRuntimeSelected: vi.fn() },
     attachmentContext: { root: "", allowedPaths: [], allowedIdentities: [] }, continuationCapabilities: [], turnContinuityCollector: new UncommittedTurnCollector(),
     assertOwned: () => prep.assertOwned(), prepareContext: async () => ({ context: buildAgentContext({ identity: "Fictional stable rules", userMessage: message }),

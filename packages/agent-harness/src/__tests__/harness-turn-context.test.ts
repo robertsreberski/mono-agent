@@ -188,17 +188,17 @@ describe("AgentHarness turn_context synthetic event", () => {
 
   it("reports authoritative empty history instead of claiming a custom store's uncoordinated durable resume", async () => {
     const identityPath = await identityFixture();
-    const piSessionsRoot = await mkdtemp(join(tmpdir(), "agent-harness-turn-context-pi-"));
-    tempDirs.push(piSessionsRoot);
+    const sessionsRoot = await mkdtemp(join(tmpdir(), "agent-harness-turn-context-pi-"));
+    tempDirs.push(sessionsRoot);
     // A custom in-memory history store cannot coordinate crash-safe provider
-    // epochs. Even with piSessionsRoot configured, the harness must not claim an
+    // epochs. Even with sessionsRoot configured, the harness must not claim an
     // unverified JSONL transcript carries context after restart.
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-durable" }));
     const recorder = new SpyRecorder();
     const harness = createAgentHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session,
-      piSessionsRoot, recorderFactory: () => recorder,
+      sessionsRoot, recorderFactory: () => recorder,
     });
 
     await harness.run(request("conv-durable", "after restart"));
@@ -209,7 +209,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     expect(tc[0]!.historyCount).toBe(0);
     expect(tc[0]!.history).toBeUndefined();
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
-    expect(fake.calls[0]?.options.piSessionsRoot).toBeUndefined();
+    expect(fake.calls[0]?.options.sessionsRoot).toBeUndefined();
   });
 
   it("double-fires on the resume-replay retry, the second carrying replayed history", async () => {

@@ -1,6 +1,6 @@
 ---
 title: "Sessions, concurrency & engine-turn tuning"
-description: "Distinguish session boundaries, configure queueing and concurrency, and manage durable Pi transcripts."
+description: "Distinguish session boundaries, configure queueing and concurrency, and manage durable session transcripts."
 sidebar:
   order: 5
 ---
@@ -16,25 +16,25 @@ Mono-agent uses "session" for five related but different boundaries:
 | `runtime.session` config block | Agent config / env | Whether turns try to reuse a warm provider session and how long idle warmth lasts | Changing config, setting `mode: "per-message"`, or disabling resume support |
 | Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, unsafe or unsettled cancelled/failed turns, harness disposal, or process restart when only in-memory |
 | Canonical logical-session history | Durable message-history files plus the separate `tool-history/tool-lifecycles.sqlite` sidecar | Cold context replay and retained, searchable managed-tool invocation/result evidence; settled failed/cancelled non-isolated turns have bounded message accounts, while tool records may still outlive isolated, never-started, or hard-crashed runs with no account | A conversation reset clears every message and tool-history bucket visible in that logical session; `mono-agent restart --clear-sessions` clears all persisted conversation state |
-| Durable Pi transcript | engine-turn JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for engine-turn provider sessions | `mono-agent restart --clear-sessions`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `piSessionsRoot` unset |
+| Durable session transcript | engine-turn JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for engine-turn provider sessions | `mono-agent restart --clear-sessions`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `runtime.session.root` unset |
 | Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments/live follow-ups, durable submission receipts, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted, requeues only unmarked offers, renders dispatch-marked live input uncertain without retry, and retains submission receipts for read-only recovery |
 
 Boundary rules:
 
 | Boundary | What ends | What survives | What is emitted |
 | --- | --- | --- | --- |
-| Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the web console | Durable memory, old run artifacts, durable Pi transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
+| Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the web console | Durable memory, old run artifacts, durable session transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
 | Isolated proactive turn (`runtime.session.isolateProactive: true`) | Nothing shared; the proactive turn intentionally skips the conversation's warm provider session | Existing interactive warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "proactive"` |
 | Default model change within a continuous conversation | The previous model-bound provider epoch; the new model starts from canonical history | Durable message and tool history, memory, and run artifacts | `session_boundary` with `kind: "resume_replay"` and `reason: "model_change"` |
 | First bound turn for a legacy unbound provider record | The pre-model-binding provider epoch; the requested model starts from canonical history without guessing the previous owner | Durable message and tool history, memory, and run artifacts | One cold session event plus `session_boundary` with `kind: "resume_replay"`, both with `reason: "legacy_unbound_model"` |
 | Resume replay after stale/missing provider session | The stale provider session id | Durable history, memory, run artifacts, and the run itself, which retries once | `runtime_warning` `session_resume_retry` plus `session_boundary` with `kind: "resume_replay"` |
 | Host-only history append / unsynchronized provider result | The prior durable provider epoch | Canonical history, memory, and run artifacts | The next provider turn receives a fresh epoch id and replays canonical history |
-| Cancelled admitted interactive turn | The unfinished run; an unsafe or unsettled provider epoch | A bounded, redacted continuity account in canonical history, retained tool-history records, and run artifacts | Eligible durable Pi turns retain their native context and emit `resume_replay` with `cancelled_turn_resume` on the next turn; unsafe tails reseed from the continuity account |
+| Cancelled admitted interactive turn | The unfinished run; an unsafe or unsettled provider epoch | A bounded, redacted continuity account in canonical history, retained tool-history records, and run artifacts | Eligible durable session turns retain their native context and emit `resume_replay` with `cancelled_turn_resume` on the next turn; unsafe tails reseed from the continuity account |
 | Failed admitted non-isolated turn before success commit | The failed run; an ineligible or unproven provider epoch | A bounded, redacted continuity account in canonical history, retained tool-history records, and run artifacts; memory capture remains excluded | One eligible provider failure per epoch can retain native context and emit `failed_turn_resume`; context/auth/usage failures, invalid results and exhausted retries reseed |
 | Telegram `/new` | Current chat's warm provider session plus message and tool history for its logical session across daily rollover | All unrelated conversations, durable memory, run artifacts, and the chat's model/effort override | Telegram confirmation; the next message rebuilds startup context and reloads skills |
-| Idle eviction / replaced / disposed provider session | Warm runtime continuity for that conversation id | Durable Pi transcripts, durable history, memory, and run artifacts | App log line and status metadata event (`evicted`) with reason |
+| Idle eviction / replaced / disposed provider session | Warm runtime continuity for that conversation id | Durable session transcripts, durable history, memory, and run artifacts | App log line and status metadata event (`evicted`) with reason |
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
-| `mono-agent restart --clear-sessions` / explicit purge | Durable Pi transcripts under `piSessionsRoot`, persistent child registries and transcripts under `subagents.instances.root`, message-history files, the tool-history sidecar, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path`, recorded run artifacts, and process-job records/output; nonterminal jobs are interrupted by any restart | Restart/status output reports message-history and tool-history counts/bytes plus ACP authorization counts separately |
+| `mono-agent restart --clear-sessions` / explicit purge | Durable session transcripts under `runtime.session.root`, persistent child registries and transcripts under `subagents.instances.root`, message-history files, the tool-history sidecar, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path`, recorded run artifacts, and process-job records/output; nonterminal jobs are interrupted by any restart | Restart/status output reports message-history and tool-history counts/bytes plus ACP authorization counts separately |
 | Browser disconnect or reload | Only that SSE/browser connection | Web service turn, source-bound thread, messages, committed attachments, provider/harness work | Reconnect receives current state and subsequent events |
 | Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, queued live follow-ups, submission receipts, agent memory/history, recorded runs | Active web turn is projected as `interrupted`; unmarked live offers become queued normal turns, dispatch-marked offers become uncertain, and browsers recover a known submission with `GET` instead of repeating `POST` |
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
@@ -42,27 +42,27 @@ Boundary rules:
 
 ## Durable-history upgrade and rollback
 
-Every durable-history user upgrades one way, with or without `piSessionsRoot`
+Every durable-history user upgrades one way, with or without `runtime.session.root`
 or model switching. The first durable turn rewrites canonical conversation
 history as version 3; read-only loading does not. Before upgrading, stop all
-writers and back up the canonical history directory and any native Pi root as a
+writers and back up the canonical history directory and any sessions root as a
 consistent snapshot. Older binaries cannot read version 3. Rollback requires
 stopping writers and restoring the backup, not disabling model switching.
 
 ## Web-only durable model-switch opt-in
 
 Defaults retain cold model-change replay. After backing up consistent host history
-and native Pi roots and stopping **every older writer**, opt in explicitly:
+and sessions roots and stopping **every older writer**, opt in explicitly:
 
 ```json
 {
   "runtime": {
     "session": {
       "mode": "continuous",
+      "root": ".mono-agent/sessions",
       "modelSwitch": { "enabled": true }
     }
-  },
-  "providers": { "piNative": { "piSessionsRoot": ".mono-agent/pi-sessions" } }
+  }
 }
 ```
 
@@ -192,7 +192,7 @@ not block missing-current-journal recovery. Losing the whole native root, for ex
 machine, recovers on the next message without a reset.
 
 The same rule covers the canonical history root, its `.locks`, `.pending-turns`
-and `.model-switches` folders and legacy Pi session folders. Unrelated names are
+and `.model-switches` folders and legacy session folders. Unrelated names are
 ignored. A damaged entry of one conversation (empty, malformed, not exactly
 owner-only `0600`, or hard-linked) stays on disk, still counts toward storage
 limits and is never deleted or evicted. This applies to pending-turn
@@ -311,7 +311,7 @@ removal are the operator's responsibility.
   procedure below; never remove `.locks` wholesale.
 - **Native journals:** identify the exact enrolled journal ID from the diagnostic
   or trusted backup, then set aside the damaged
-  `piSessionsRoot/mono-v2/journals/<id>.jsonl` with a collision-free suffix.
+  `<root>/journals/<id>.jsonl` with a collision-free suffix.
   Preserve the canonical and root authority when they are readable. An absent
   current journal can then take the existing cold-recovery/reset path; a damaged
   one cannot. Do not fabricate headers, adopt an orphan, delete unrelated
@@ -348,7 +348,7 @@ do not expand a rename into an indiscriminate directory cleanup.
    `.native-history-root.json` cannot: restore that exact authority marker from
    the consistent backup before restarting. Never generate new authority over
    existing guarded native journals. Likewise, do not rebuild the native
-   `mono-v2/locks/catalog.sqlite` or journal locks while any native writer lives.
+   `locks/catalog.sqlite` or journal locks while any native writer lives.
 5. Restart upgraded writers and verify ordinary storage-only interruption
    recovery. Recovery reports interrupted turns and waits; it does not rerun
    providers, tools or paid summary calls. Keep the backed-up/damaged files until
@@ -360,10 +360,10 @@ To enable:
 1. Stop **every** writer for the agent root: the app service, CLI runs, managed
    workers and any older binary. Nothing verifies this for you.
 2. While stopped, back up the canonical history directory (beside
-   `artifacts.dir`) and `piSessionsRoot` together, as one consistent snapshot.
+   `artifacts.dir`) and `runtime.session.root` together, as one consistent snapshot.
 3. Set `runtime.session.modelSwitch` to
    `{ "enabled": true }` with continuous sessions
-   and a durable `piSessionsRoot`, then start only upgraded binaries.
+   and a durable `runtime.session.root`, then start only upgraded binaries.
 
 Rollback: stop all writers, then restore **both** backups from step 2.
 Setting `enabled: false` afterwards does not convert native conversations back.
@@ -423,7 +423,7 @@ Limits:
 `runtime.session` decides whether the runtime keeps a warm provider session per conversation or starts fresh on every message.
 
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with canonical replay and bounded transcript-tail context. With coordinated durable Pi history,
+stateless with canonical replay and bounded transcript-tail context. With coordinated durable session history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.
@@ -452,7 +452,7 @@ remains primary-only, with no routed retry or backup.
 
 A continuous conversation binds its provider session to the requested primary model, including a thread or channel model override. Repeating that model stays warm; changing it (including returning to the default) retires the old session on its owning runtime and starts a fresh epoch. The cold turn is seeded from canonical user/assistant text and the existing bounded tool-history projection; subsequent warm turns retain the native transcript, including tool results and signed reasoning. Effort-only and same-model overrides do not rotate the session. Continuations and opt-in proactive isolation keep their existing one-shot behavior. Configured retry/fallback behavior follows the [fallback session policy](/runtime/fallback/).
 
-With `providers.piNative.piSessionsRoot`, the durable history record and its recovery fence persist the model binding alongside the epoch. A restarted process resolves the session's owning runtime from that binding. Existing histories without a binding load normally but take one cold reseed before becoming bound. Older binaries reject the new bound history shape; downgrade does not automatically rotate or migrate those records.
+With `runtime.session.root`, the durable history record and its recovery fence persist the model binding alongside the epoch. A restarted process resolves the session's owning runtime from that binding. Existing histories without a binding load normally but take one cold reseed before becoming bound. Older binaries reject the new bound history shape; downgrade does not automatically rotate or migrate those records.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -474,7 +474,7 @@ In `continuous` mode the runtime holds one warm provider session per conversatio
 ```
 
 
-Warm in-memory sessions are lost on restart. To resume across restarts, use the default durable history store together with `providers.piNative.piSessionsRoot` (see [engine-turn tuning](#pi-native-tuning) below). The history store, not a conversation-id hash, owns the resumable provider epoch.
+Warm in-memory sessions are lost on restart. To resume across restarts, use the default durable history store together with `runtime.session.root` (see [engine-turn tuning](#pi-native-tuning) below). The history store, not a conversation-id hash, owns the resumable provider epoch.
 
 `rolloverNotice` is adapter-local and default-off. It does not enable rollover by itself and does not add a new IPC channel or change provider resume behavior. When daily rollover is already enabled and a base conversation crosses into a new day bucket, the responder streams `New session bucket started: <bucket>.` before the model answer and includes the same prelude in the returned final text for final-only transports.
 
@@ -633,16 +633,16 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 | `providers.piNative.promptCacheDiagnostics` | boolean; default `false` | Metadata-only request fingerprints in run artifacts |
 | `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Provider SDK-policy retries before a response starts; streamed responses are not repeated (see [Fallback](/runtime/fallback/)) |
 | `providers.piNative.maxRetryDelayMs` | default `60000` | Ceiling for provider-requested Retry-After delays (ms); longer requested delays fail |
-| `providers.piNative.piSessionsRoot` | path; unset = in-memory | Durable JSONL session store enabling resume across restarts |
+| `runtime.session.root` | path; unset = in-memory | Durable JSONL session store enabling resume across restarts |
 
 ```json
 {
+  "runtime": { "session": { "root": ".mono-agent/sessions" } },
   "providers": {
     "piNative": {
       "transport": "sse",
       "piMaxRetries": 2,
-      "maxRetryDelayMs": 60000,
-      "piSessionsRoot": ".mono-agent/sessions"
+      "maxRetryDelayMs": 60000
     }
   }
 }
@@ -653,7 +653,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 
 ### Durable sessions and restart
 
-With the configured app's default history store, setting `piSessionsRoot` persists Pi sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding cross-process logical/exact owner rows in the fixed 16-file claim registry. Physical shard collisions do not serialize unrelated provider turns or their cancellation publication; existing legacy per-conversation lock files are still honored in place. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
+With the configured app's default history store, setting `runtime.session.root` persists sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding cross-process logical/exact owner rows in the fixed 16-file claim registry. Physical shard collisions do not serialize unrelated provider turns or their cancellation publication; existing legacy per-conversation lock files are still honored in place. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
 
 Stop **every older writer** before running the upgraded version against a
 history directory. Concurrent pre-upgrade binaries, including claim-aware
@@ -676,7 +676,7 @@ capacity limits are unchanged.
 
 If the process dies after provider mutation but before that clean commit, the fence remains. The next same-conversation run retires the exact fenced JSONL, rotates to a new random epoch, and replays canonical history. An unrelated mutation also reclaims inactive fences as retirement journals: provider deletion and directory fsync complete before the fence is removed. If canonical epoch/revision proves that history commit succeeded and only fence cleanup crashed, maintenance preserves the valid transcript and removes only the stale fence. Beginning and aborting a fresh conversation cannot evict an older successful conversation because fences are bounded separately. Missing/v1 records, failed sync, retention that removes a record, and `appendVerbatimTurn` host-only deliveries retire and rotate provider state for the same reason.
 
-Cancelled and failed turns can retain the same durable Pi epoch when the primary
+Cancelled and failed turns can retain the same durable session epoch when the primary
 first attempt provides a receipt for a closed operation. Recovery reserves and
 reopens the exact record, checks model, revision, tip, ancestry, settled operation
 and applied input identities, validates the effective provider projection, and
@@ -816,9 +816,9 @@ retirement (or a reset discards it).
 
 Each clean record also carries the durable provider transcript revision. A process saves that revision with its warm handle. If another process commits the same epoch first, the revision mismatch forces the stale process-local handle to close and reopen the current JSONL (or rebuild from canonical history) before it can omit history. The same strict refresh runs for an unconfirmed durable resume when a newly constructed harness has no local mapping, preventing a module-global provider registry from reviving older process memory. Cross-process serialization therefore protects both disk writes and in-memory provider state.
 
-On every cold durable Pi reopen, the harness loads canonical history and passes it as structured leading runtime messages, with the current user message last; it does not duplicate those turns inside the system prompt. Pi appends the leading messages only when the requested durable epoch has no JSONL and must be created on miss. When the JSONL exists, Pi resumes it and skips the supplied leading history, so a true resume also sees each prior turn exactly once. Confirmed warm turns send only the current user message. Stateless/non-resumable turns and the one explicit resume-retry continue to replay history through the ordinary prompt path.
+On every cold durable session reopen, the harness loads canonical history and passes it as structured leading runtime messages, with the current user message last; it does not duplicate those turns inside the system prompt. Pi appends the leading messages only when the requested durable epoch has no JSONL and must be created on miss. When the JSONL exists, Pi resumes it and skips the supplied leading history, so a true resume also sees each prior turn exactly once. Confirmed warm turns send only the current user message. Stateless/non-resumable turns and the one explicit resume-retry continue to replay history through the ordinary prompt path.
 
-When `piSessionsRoot` is unset, sessions are in-memory only. A programmatic custom `historyStore` also stays process-local unless it both implements `beginProviderSessionTurn` and advertises `providerSessionRetirement: "fail-closed"`; the harness withholds the durable path because fencing alone cannot reclaim cold JSONL after rotation or retention. Advertise that capability only when the store can durably fence before the provider, serialize the conversation across processes, expose a monotonic provider transcript revision, atomically publish the next revision or rotate the epoch with history commit, and prove exact-id provider transcript retirement before making an epoch unreachable.
+When `runtime.session.root` is unset, sessions are in-memory only. A programmatic custom `historyStore` also stays process-local unless it both implements `beginProviderSessionTurn` and advertises `providerSessionRetirement: "fail-closed"`; the harness withholds the durable path because fencing alone cannot reclaim cold JSONL after rotation or retention. Advertise that capability only when the store can durably fence before the provider, serialize the conversation across processes, expose a monotonic provider transcript revision, atomically publish the next revision or rotate the epoch with history commit, and prove exact-id provider transcript retirement before making an epoch unreachable.
 
 Canonical context import is a separate optional v1 contract; `append` or
 `deliverVerbatim` does not imply it. A store may advertise import only when a
@@ -843,7 +843,7 @@ Warm process-local handles carry the canonical history version and are retired
 before the next Send when a reset/import advanced it.
 
 :::caution
-`mono-agent restart --clear-sessions` purges `piSessionsRoot`, canonical message-history files, the separate canonical tool-history sidecar, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays or searches an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Output reports message-history files/bytes separately from tool-history calls/records/bytes and ACP authorization counts. Durable memory under `memory.path`, recorded run artifacts, and process-job records/output remain untouched. Any nonterminal process job is interrupted by restart independently of the flag. A missing store is a no-op.
+`mono-agent restart --clear-sessions` purges `runtime.session.root`, canonical message-history files, the separate canonical tool-history sidecar, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays or searches an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Output reports message-history files/bytes separately from tool-history calls/records/bytes and ACP authorization counts. Durable memory under `memory.path`, recorded run artifacts, and process-job records/output remain untouched. Any nonterminal process job is interrupted by restart independently of the flag. A missing store is a no-op.
 :::
 
 For retry behavior across *different* models (provider failover, not transport retries), see [Fallback & failover](/runtime/fallback/). Transport retries here follow provider SDK policy before a response starts within a single model. A failed started stream is not automatically repeated by that layer; router fallback moves to the next model under its separate rules.
@@ -887,7 +887,7 @@ APIs grant no authority to migrate a real root.
 resumes that child's own engine-turn durable session. Its registry lives at
 `<subagents root>/<sha256(conversationId)>/instances.json`; provider transcripts
 live in the sibling `sessions/` directory. The default root is
-`<artifacts.dir>/../subagents`, independent of the main `piSessionsRoot`.
+`<artifacts.dir>/../subagents`, independent of the main `runtime.session.root`.
 
 Registry mutations and active turns are file-locked across processes. A busy
 instance rejects another turn or a close; Pi's own `session_busy` result is also

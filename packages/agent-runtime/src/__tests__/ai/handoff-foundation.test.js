@@ -60,7 +60,7 @@ it("refuses preserving detach during real native dispatch, then detaches the idl
   } });
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional complete response")])]);
   const result = await generateEngineTurnResponse("Fictional rules", { model: { provider: "detach-fixture", model: "fixture", reference: "detach-fixture:fixture" },
-    piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "busy-fixture", piSessionsRoot: root,
+    piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "busy-fixture", sessionsRoot: root,
     sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
   expect(result.error).toBeNull(); expect(/** @type {any} */ (await attempt).error.code).toBe("ERR_HARNESS_WRITER_BUSY");
   const metadata = (await resolveDurableNativeSessionRepo(root).list())[0]; const before = await readFile(metadata.path);
@@ -86,7 +86,7 @@ it.each(["find", "create"])("refuses detach during in-flight cold %s before an i
   const faux = fauxProvider({ provider: "cold-fixture", models: [{ id: "fixture" }] }); const models = createModels(); models.setProvider(faux.provider);
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional cold response")])]);
   const running = generateEngineTurnResponse("Fictional rules", { model: { provider: "cold-fixture", model: "fixture", reference: "cold-fixture:fixture" },
-    piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "cold-fixture", piSessionsRoot: root,
+    piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "cold-fixture", sessionsRoot: root,
     sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
   try {
     await waiting;

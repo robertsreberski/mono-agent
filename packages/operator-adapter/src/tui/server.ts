@@ -931,7 +931,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         // responder error can carry provider output or conversation content.
         const reason = errorToMessage(error);
         const knownReasons = [
-          "Manual compaction needs a durable Pi session.",
+          "Manual compaction needs a durable session.",
           "Manual compaction is unavailable for this conversation's model.",
           "The history store cannot report the session model binding.",
           "The runtime cannot compact a durable session.",

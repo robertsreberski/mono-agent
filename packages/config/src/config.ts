@@ -429,7 +429,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
   const maxTurns = readMaxTurns(runtimeJson?.maxTurns);
   const compaction = readRuntimeCompactionConfig(runtimeJson?.compaction);
   const workspace = readPath(jsonString(runtimeJson?.workspace, "runtime.workspace"), cwd, cwd);
-  const session = readSessionConfig(runtimeJson?.session);
+  const session = readSessionConfig(runtimeJson?.session, cwd);
   const identityPath = readPath(requireJsonString(contextJson?.identityPath, "context.identityPath"), cwd);
   const soulPath = readOptionalPath(jsonString(contextJson?.soulPath, "context.soulPath"), cwd);
   const skillsRoot = readOptionalPath(jsonString(contextJson?.skillsRoot, "context.skillsRoot"), cwd);
@@ -628,8 +628,8 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ...(localProviders.length === 0 ? {} : { local: localProviders }),
     ...(piNative === undefined ? {} : { piNative }),
   };
-  if (session.modelSwitch?.enabled && !piNative?.piSessionsRoot) throw new MonoAgentConfigError(
-    "invalid_json", "Model switching requires durable Pi sessions.", { path: "providers.piNative.piSessionsRoot" });
+  if (session.modelSwitch?.enabled && !session.root) throw new MonoAgentConfigError(
+    "invalid_json", "Model switching requires runtime.session.root.", { path: "runtime.session.root" });
   const configuredProviders = resolveConfiguredProviders({ providers });
   const context1MModels = collectContext1MDeclarations(input.json ?? {}, configuredProviders);
   assertConfiguredProviderCoverage(model, fallbacks, configuredProviders, subagentRoutes);
@@ -1609,8 +1609,9 @@ function sandboxPolicyErrorPath(error: SandboxPolicyError): string {
   return "sandbox.mode";
 }
 
-function readSessionConfig(value: unknown): MonoAgentConfig["runtime"]["session"] {
+function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig["runtime"]["session"] {
   const session = jsonRecord(value, "runtime.session") ?? {};
+  const root = readOptionalPath(jsonString(session.root, "runtime.session.root"), cwd);
   const mode = jsonChoice<SessionMode>(session.mode, "runtime.session.mode", [
     "continuous",
     "per-message",
@@ -1640,6 +1641,7 @@ function readSessionConfig(value: unknown): MonoAgentConfig["runtime"]["session"
   return {
     mode,
     idleTimeoutMs,
+    ...(root === undefined ? {} : { root }),
     ...(enabled === true ? { modelSwitch: { enabled } } : {}),
     rollover,
     ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
@@ -2324,7 +2326,10 @@ function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>>
       path: "providers.piNative.cacheRetention",
     });
   }
-  const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
+  if (Object.hasOwn(record, "piSessionsRoot")) throw new MonoAgentConfigError(
+    "invalid_json", "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
+    { path: "providers.piNative.piSessionsRoot" });
+  const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs"]);
   const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
   if (unknownKeys.length > 0) {
     throw new MonoAgentConfigError("invalid_json", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
@@ -2452,14 +2457,12 @@ function readPiNativeProviderConfig(
   const piMaxRetriesValue = normalizeOptionalString(jsonString(piNative.piMaxRetries, "providers.piNative.piMaxRetries"));
   const piMaxRetries = jsonOptionalInteger(piMaxRetriesValue, "providers.piNative.piMaxRetries", { min: 0, max: 8 });
   const maxRetryDelayMs = jsonOptionalInteger(piNative.maxRetryDelayMs, "providers.piNative.maxRetryDelayMs", { min: 100, max: 3_600_000 });
-  const piSessionsRoot = readOptionalPath(jsonString(piNative.piSessionsRoot, "providers.piNative.piSessionsRoot"), cwd);
   return {
     ...(transport === undefined ? {} : { transport }),
     ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
     cacheRetention,
     ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
     ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
-    ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),
   };
 }
 

@@ -47,7 +47,7 @@ async function syncDurableTranscript(entry) {
   if (!entry.durable) return;
   const path = entry.metadata?.path;
   if (typeof path !== "string" || !path) {
-    throw new Error("Durable Pi session metadata is missing its JSONL path");
+    throw new Error("Durable session metadata is missing its JSONL path");
   }
   // The harness owns a pinned descriptor and writer lock across this barrier.
   // Fsync both the journal and its complete publication-directory chain.
@@ -58,7 +58,7 @@ async function invalidateNativeSession(entry) {
   if (entry.durable) {
     const path = entry.metadata?.path;
     if (typeof path !== "string" || !path) {
-      throw new Error("Durable Pi session metadata is missing its JSONL path");
+      throw new Error("Durable session metadata is missing its JSONL path");
     }
     // Explicit invalidation is idempotent. A preceding failed sync may have
     // observed that the transcript was already removed outside this process.
@@ -78,7 +78,7 @@ async function invalidateNativeSession(entry) {
 }
 
 /**
- * Release a Pi session handle and remove its repository record as independent
+ * Release a session handle and remove its repository record as independent
  * best-effort operations. A close failure must not prevent deletion of a fresh
  * or otherwise poisoned transcript.
  * @param {any} session
@@ -116,8 +116,8 @@ const durableNativeSessionRepos = new Map();
 // whole await window so preserving detach cannot claim that handle is idle.
 const coldOpenCounts = new Map();
 
-export function resolveDurableNativeSessionRepo(piSessionsRoot) {
-  const root = normalizeDurableSessionsRoot(piSessionsRoot);
+export function resolveDurableNativeSessionRepo(sessionsRoot) {
+  const root = normalizeDurableSessionsRoot(sessionsRoot);
   if (!root) return null;
   let repo = durableNativeSessionRepos.get(root);
   if (!repo) {
@@ -131,7 +131,7 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
 }
 
 /**
- * Retire every currently materialized durable Pi transcript with this exact
+ * Retire every currently materialized durable session transcript with this exact
  * logical id. This is intentionally stronger than live-session invalidation:
  * history rotation and retention can retire an epoch after its registry entry
  * was already evicted or after a process restart. Active writers reject late
@@ -139,17 +139,17 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
  * canonical epoch has already rotated, so that old id is never resumable in the
  * interim. Absence is success; cleanup or verification uncertainty rejects.
  */
-export async function retireDurableNativeSession(providerSessionId, piSessionsRoot, deletionOptions = undefined) {
+export async function retireDurableNativeSession(providerSessionId, sessionsRoot, deletionOptions = undefined) {
   if (!isSafeSessionId(providerSessionId)) {
     throw new TypeError("providerSessionId must be a safe, non-empty session id");
   }
-  if (typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) {
-    throw new TypeError("piSessionsRoot must be a non-empty path");
+  if (typeof sessionsRoot !== "string" || !sessionsRoot.trim()) {
+    throw new TypeError("sessionsRoot must be a non-empty path");
   }
 
   await nativeSessions.refresh(providerSessionId);
-  const repo = resolveDurableNativeSessionRepo(piSessionsRoot);
-  if (!repo) throw new Error("Durable Pi session repository is unavailable");
+  const repo = resolveDurableNativeSessionRepo(sessionsRoot);
+  if (!repo) throw new Error("Durable session repository is unavailable");
   if (deletionOptions === undefined) await repo.retireByHandle(providerSessionId);
   else await repo.retireByHandle(providerSessionId, deletionOptions);
 }
@@ -158,11 +158,11 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
  * unresolved handle; the host must settle it first. Durable bytes are untouched.
  * This does not establish cross-process canonical retirement authority.
  */
-export async function detachDurableNativeSession(providerSessionId, piSessionsRoot) {
-  if (!isSafeSessionId(providerSessionId) || typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) throw new TypeError("Invalid durable detach identity");
+export async function detachDurableNativeSession(providerSessionId, sessionsRoot) {
+  if (!isSafeSessionId(providerSessionId) || typeof sessionsRoot !== "string" || !sessionsRoot.trim()) throw new TypeError("Invalid durable detach identity");
   const entry = nativeSessions.get(providerSessionId);
   if (coldOpenCounts.has(providerSessionId) || entry?.busy || entry?.recoveryPending) throw Object.assign(new Error("Native turn must be settled before detach"), { code: "ERR_HARNESS_WRITER_BUSY" });
-  if (entry && (!entry.durable || entry.repo !== resolveDurableNativeSessionRepo(piSessionsRoot))) throw new TypeError("Native detach owner mismatch");
+  if (entry && (!entry.durable || entry.repo !== resolveDurableNativeSessionRepo(sessionsRoot))) throw new TypeError("Native detach owner mismatch");
   // Sessions are closed after each idle turn. Removal deliberately bypasses
   // onEvict: invalidation deletes, while ordinary disposal syncs unnecessarily.
   if (entry && !nativeSessions.delete(providerSessionId)) throw new Error("Native detach unavailable");
@@ -248,12 +248,12 @@ export async function resolveSession(runState, {
         if (remaining) coldOpenCounts.set(requestedSessionId, remaining); else coldOpenCounts.delete(requestedSessionId);
       }
     }
-    const unreadable = () => unavailable(requestedSessionId, `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`, "native_journal_unreadable", "pi_session_unreadable");
+    const unreadable = () => unavailable(requestedSessionId, `Session ${requestedSessionId} catalogue could not be read; native evidence was preserved`, "native_journal_unreadable", "pi_session_unreadable");
     if (!entry) {
-      if (busy) return unavailable(requestedSessionId, `Pi session ${requestedSessionId} is busy`, "session_busy", "pi_session_busy");
+      if (busy) return unavailable(requestedSessionId, `Session ${requestedSessionId} is busy`, "session_busy", "pi_session_busy");
       if (durableRepo && requireExisting) {
         if (uncertain) return unreadable();
-        return unavailable(requestedSessionId, `Pi session ${requestedSessionId} is not live`, "session_not_found", "pi_session_not_found");
+        return unavailable(requestedSessionId, `Session ${requestedSessionId} is not live`, "session_not_found", "pi_session_not_found");
       }
       if (owned) return unreadable();
       if (durableRepo && isSafeSessionId(providerSessionId)) {
@@ -277,14 +277,14 @@ export async function resolveSession(runState, {
           runState.createdOnMiss = true;
         }
       } else {
-        return unavailable(requestedSessionId, `Pi session ${requestedSessionId} is not live`, "session_not_found", "pi_session_not_found");
+        return unavailable(requestedSessionId, `Session ${requestedSessionId} is not live`, "session_not_found", "pi_session_not_found");
       }
     }
     if (entry && !runState.createdOnMiss) {
       const claimed = entry.recoveryPending ? { ok: /** @type {const} */ (false), reason: "busy" } : liveness.claim(requestedSessionId);
       if (!claimed.ok) {
         const missing = /** @type {{reason: string}} */ (claimed).reason === "missing";
-        return unavailable(requestedSessionId, missing ? `Pi session ${requestedSessionId} is not live` : `Pi session ${requestedSessionId} is busy with another turn`,
+        return unavailable(requestedSessionId, missing ? `Session ${requestedSessionId} is not live` : `Session ${requestedSessionId} is busy with another turn`,
           missing ? "session_not_found" : "session_busy", missing ? "pi_session_not_found" : "pi_session_busy");
       }
       runState.sessionEntry = claimed.entry;
@@ -486,9 +486,9 @@ export async function captureSessionRecovery(runState, { identity, model, pendin
   const entry = runState.sessionEntry || runState.registeredSessionEntry;
   if (!entry?.durable) return { status: "not_durable" };
   try {
-    if (!Array.isArray(runState.recoveryInputIds)) throw new Error("Pi session recovery input identities are unavailable");
+    if (!Array.isArray(runState.recoveryInputIds)) throw new Error("Session recovery input identities are unavailable");
     const tipId = await runState.session.getLeafId();
-    if (typeof tipId !== "string" || !tipId) throw new Error("Pi session recovery tip is unavailable");
+    if (typeof tipId !== "string" || !tipId) throw new Error("Session recovery tip is unavailable");
     const ancestry = createHash("sha256").update(JSON.stringify(await runState.session.getEntries())).digest("hex");
     await runState.session.close();
     const receipt = { ...identity, tipId };

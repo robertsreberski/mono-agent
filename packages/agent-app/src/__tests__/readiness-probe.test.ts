@@ -156,7 +156,7 @@ describe("readiness probe", () => {
         expect(config.runtime.fallbacks).toBeUndefined();
         expect(config.memory).toBeUndefined();
         expect(config.runtime.session).toMatchObject({ mode: "continuous" });
-        expect(config.providers?.piNative?.piSessionsRoot).toBeUndefined();
+        expect(config.runtime.session.root).toBeUndefined();
         expect(options.sessionKeepAlive).toBe(false);
         return { text: "ready" };
       },

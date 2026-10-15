@@ -37,7 +37,7 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
   };
   const makeHarness = (model = "A", enabled = false, options: Partial<AgentHarnessOptions> = {}, inheritModel = false) => {
     const primary = runtimeFor(model);
-    const harness = new MonoAgentHarness({ runtime: primary, identityPath, cwd: base, piSessionsRoot: nativeRoot, historyStore: store, session: { mode: "continuous", idleTimeoutMs: 600000 },
+    const harness = new MonoAgentHarness({ runtime: primary, identityPath, cwd: base, sessionsRoot: nativeRoot, historyStore: store, session: { mode: "continuous", idleTimeoutMs: 600000 },
       model: { provider: "faux", model, reference: `faux:${model}` }, runtimeForModel: (ref) => runtimeFor(ref.model), runtimeOptionsForRequest: async ({ request }) => ({ runtimeOptions: typeof (request.metadata?.web as {model?: string})?.model === "string" ? { model: parseMonoRuntimeModelReference((request.metadata!.web as {model: string}).model) } : {} }), runtimeOptions: { piResolvedModels: models, allowedTools: [], compaction: { enabled: false } }, ...options },
     { ...(enabled ? { nativeModelSwitch: { native, sessionsRoot: nativeRoot,
         deliveryId: (request: AgentHarnessRequest) => request.metadata?.delivery as string | undefined,
@@ -305,7 +305,7 @@ it("unguarded default and unguarded prepared turns emit no nativeProvenance; pre
   // prepare-time flag or forged provenance value is never honoured or copied.
   const lease = await runtime.prepareNativeDispatch!("Fictional unguarded rules", { model: parseMonoRuntimeModelReference("faux:A"),
     abortSignal: new AbortController().signal, messages: [{ role: "user", content: "Fictional unguarded prepared input" }], allowedTools: [],
-    piSessionsRoot: f.nativeRoot, sessionId: "fictional-unguarded-prepare", sessionKeepAlive: true, compaction: { enabled: false },
+    sessionsRoot: f.nativeRoot, sessionId: "fictional-unguarded-prepare", sessionKeepAlive: true, compaction: { enabled: false },
     nativeProvenanceRecording: true, ...{ nativeProvenance: { provider: "faux", api: "forged", model: "A", account: "forged" } } });
   try { f.faux.setResponses([text("Fictional unguarded reply")]); expect((await lease.run()).error).toBeFalsy(); }
   finally { await lease.close(); }

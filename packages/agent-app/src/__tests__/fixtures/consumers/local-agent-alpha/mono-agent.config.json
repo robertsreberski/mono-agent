@@ -16,13 +16,13 @@
       "idleTimeoutMs": 1800000,
       "rollover": "daily",
       "rolloverTimezone": "Europe/Rome",
-      "isolateProactive": true
+      "isolateProactive": true,
+      "root": "./.mono-agent/sessions"
     }
   },
   "providers": {
     "piAuthPath": "./pi-auth/auth.json",
     "piNative": {
-      "piSessionsRoot": "./.mono-agent/sessions",
       "maxRetryDelayMs": 30000
     }
   },

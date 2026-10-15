@@ -530,12 +530,12 @@ export interface AgentHarnessOptions {
   readonly effort?: string;
   readonly maxTurns?: number;
   /**
-   * Durable pi-native session root directory. When set, provider sessions are
+   * Durable sessions root directory. When set, provider sessions are
    * persisted to disk (JSONL) only when the history store implements the
    * crash-safe provider-session turn transaction. Custom stores without that
    * contract remain in-memory. Unset = in-memory only.
    */
-  readonly piSessionsRoot?: string;
+  readonly sessionsRoot?: string;
   readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink" | "detachedContext">;
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
@@ -636,7 +636,7 @@ export interface AgentHarnessRuntimeOptionsExtension {
   // the harness isolates it before assembling context. `Partial` keeps every field optional (an
   // extension that sets only `mcpServers` stays valid). `messages`/`abortSignal`/
   // `onEvent` stays harness-owned. Provider-session ids, keep-alive fields, and
-  // piSessionsRoot are accepted structurally for compatibility but stripped
+  // sessionsRoot are accepted structurally for compatibility but stripped
   // and replaced by the harness's coordinated decision.
   readonly runtimeOptions?: Omit<
     Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink" | "detachedContext">>,

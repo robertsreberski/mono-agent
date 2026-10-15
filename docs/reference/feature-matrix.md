@@ -36,7 +36,7 @@ Core precedence: `mono-agent.config.json` > built-in defaults. Adapter-owned env
 | `runtime.local-providers` | config | `providers.local[]` | — | [Local providers](/runtime/local-providers/) | [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) |
 | `runtime.providers` | config | `providers.<providerId>`, `providers.local[]`, `providers.piAuthPath`, `providers.piNative.*` | — | [Providers](/runtime/providers/) | — |
 | `runtime.pi-credentials` | config | `providers.piAuthPath` (OAuth/account and API-key credentials such as OpenCode-Go) | — | [Local providers](/runtime/local-providers/) | — |
-| `runtime.pi-native-tuning` | config | `providers.piNative.transport`, `providers.piNative.piMaxRetries`, `providers.piNative.maxRetryDelayMs`, `providers.piNative.piSessionsRoot` | — | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |
+| `runtime.pi-native-tuning` | config | `providers.piNative.transport`, `providers.piNative.piMaxRetries`, `providers.piNative.maxRetryDelayMs`, `runtime.session.root` | — | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |
 | `runtime.tool-parallelism` | code | `runtimeOptions.piToolExecutionMode` | — | [Tools & guards](/runtime/tools-and-guards/) | — |
 | `runtime.web-research` | config + auto | `tools.web.search.*`, `tools.web.fetch.*` | — | [Local-first web research](/tools/web-research/) | [Local-first web research agent](/playbooks/local-web-research/) |
 | `runtime.webfetch-retry` | auto | (built into WebFetch) | — | [Tools & guards](/runtime/tools-and-guards/) | — |

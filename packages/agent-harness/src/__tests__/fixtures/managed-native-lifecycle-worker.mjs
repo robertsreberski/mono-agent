@@ -21,5 +21,5 @@ if (stop) {
 let canonical = null;
 try { canonical = JSON.parse(await readFile(join(base, "history", `${switchConversationKey(bucket)}.history.json`), "utf8")); }
 catch (error) { if (error.code !== "ENOENT") throw error; }
-console.log(JSON.stringify({ canonical, stats: await store.stats(), journals: (await readdir(join(base, "native", "mono-v2", "journals"))).sort(),
+console.log(JSON.stringify({ canonical, stats: await store.stats(), journals: (await readdir(join(base, "native", "journals"))).sort(),
   switches: (await readdir(join(base, "history", ".model-switches"))).sort(), operations: (await readdir(join(base, "history"))).filter((name) => name.startsWith(".native-history-op.")).sort() }));

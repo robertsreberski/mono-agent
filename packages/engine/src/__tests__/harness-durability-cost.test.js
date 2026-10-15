@@ -79,9 +79,11 @@ it("reopens a clean closed journal without lock/directory fsync or a full file s
 });
 it("still syncs new journal/lock directory publication and retirement unlink", async () => {
   reset(); const { repo, raw } = await fixture();
-  expect(meter.lock).toBe(2); expect(meter.journal).toBeGreaterThanOrEqual(2); expect(meter.directory).toBeGreaterThanOrEqual(5);
+  expect(meter.lock).toBe(2); expect(meter.journal).toBeGreaterThanOrEqual(2); // Publication syncs journals, locks and the root; there is no version-directory barrier.
+  expect(meter.directory).toBeGreaterThanOrEqual(4);
   await raw.sync(); const metadata = raw.metadata; await raw.close(); reset();
-  await repo.retire(metadata); expect(meter.directory).toBeGreaterThanOrEqual(4); expect(await repo.listOwned()).toEqual([]);
+  // Retirement likewise syncs only the three flattened publication directories.
+  await repo.retire(metadata); expect(meter.directory).toBeGreaterThanOrEqual(3); expect(await repo.listOwned()).toEqual([]);
 });
 
 it("serializes verified cache batches against legitimate queued appends instead of falsely poisoning their version", async () => {

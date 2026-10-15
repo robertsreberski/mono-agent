@@ -1,3 +1,4 @@
+import { resolveAppSessionsRoot } from "./app-config.js";
 import { WorkerActivityTracker } from "./worker-activity.js";
 import { publishWorkerActivity } from "./worker-activity-snapshot.js";
 import { readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
@@ -867,6 +868,8 @@ async function runForceRestart(
   deps: BackgroundDeps,
   environment: Record<string, string | undefined>,
 ): Promise<number> {
+  // Reject renamed raw config before stopping the current worker.
+  await resolveAppSessionsRoot({ env: environment, cwd: target.cwd, configPath: target.configPath });
   return await forceRestartBackground(target, deps, async () => {
     const result = await purgeConversationState({ env: environment, cwd: target.cwd, configPath: target.configPath });
     process.stdout.write(formatConversationStatePurgeResult(result));

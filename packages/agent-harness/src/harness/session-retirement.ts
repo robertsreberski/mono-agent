@@ -40,9 +40,9 @@ export async function retireRunResultSession(
     } catch {
       // Cleanup is best-effort; the host mapping is still evicted below.
     }
-    if (options.piSessionsRoot !== undefined && runtime.retireDurableSession !== undefined) {
+    if (options.sessionsRoot !== undefined && runtime.retireDurableSession !== undefined) {
       try {
-        await runtime.retireDurableSession(id, options.piSessionsRoot);
+        await runtime.retireDurableSession(id, options.sessionsRoot);
       } catch {
         // An open provider may still be unwinding. The canonical epoch has
         // already rotated; a returned provider result retries this cleanup.

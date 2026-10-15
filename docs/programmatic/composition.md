@@ -100,7 +100,7 @@ agent root it owns, so its first run fails closed instead of invoking a
 provider. Direct `createConfiguredMemory` callers whose selected tier uses an
 LLM or embedding provider should likewise pass `{ cwd: agentRoot }`.
 
-A custom `historyStore` keeps provider sessions process-local unless it implements the crash-safe `beginProviderSessionTurn` transaction and advertises `providerSessionRetirement: "fail-closed"`. That marker is a promise that epoch rotation, dirty-fence recovery, and retention can durably retire every exact provider id before canonical history makes it unreachable. The harness withholds `piSessionsRoot` when either half is missing.
+A custom `historyStore` keeps provider sessions process-local unless it implements the crash-safe `beginProviderSessionTurn` transaction and advertises `providerSessionRetirement: "fail-closed"`. That marker is a promise that epoch rotation, dirty-fence recovery, and retention can durably retire every exact provider id before canonical history makes it unreachable. The harness withholds `sessionsRoot` when either half is missing.
 
 For native conversations, the managed history coordinator additionally owns the
 current journal and reference-checked lifecycle disposition: P preserves/detaches
@@ -187,7 +187,7 @@ const responder = await createConfiguredAgentResponder({
 });
 ```
 
-The callback receives `{ request, runId, context }` (the inbound request, the run id, and the already-built `BuiltAgentContext`). It returns a partial `runtimeOptions` object plus an optional `cleanup` hook. `messages`, `abortSignal`, `onEvent`, provider-session ids, keep-alive fields, and `piSessionsRoot` remain harness-owned. `model` and `effort` are accepted for the configured cron/webhook/TUI override path. A request extension may set `piTransport` only when the host left it unset; an explicit host/config value remains authoritative.
+The callback receives `{ request, runId, context }` (the inbound request, the run id, and the already-built `BuiltAgentContext`). It returns a partial `runtimeOptions` object plus an optional `cleanup` hook. `messages`, `abortSignal`, `onEvent`, provider-session ids, keep-alive fields, and `sessionsRoot` remain harness-owned. `model` and `effort` are accepted for the configured cron/webhook/TUI override path. A request extension may set `piTransport` only when the host left it unset; an explicit host/config value remains authoritative.
 
 :::note
 Request-scoped options apply at the harness **run boundary**: they are resolved after context assembly and merged just before the provider call, then `cleanup` runs when the turn finishes. A model-changing option under continuous-session mode must match a valid model already declared in the request's cron, webhook, or TUI metadata, because that declaration isolates the turn before history assembly. An undeclared late model change fails before provider execution; otherwise a warm session could have omitted history for the wrong runtime.

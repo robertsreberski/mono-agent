@@ -22,7 +22,7 @@ Three keys inside `providers` are reserved for Pi runtime configuration; every o
 | Key | Purpose |
 | --- | --- |
 | `piAuthPath` | Path to the Pi auth store (default `~/.pi/agent/auth.json`). OAuth/account credentials and API keys live here. |
-| `piNative` | Pi transport and retry tuning: `transport` (`auto`/`sse`/`websocket`/`websocket-cached`), `piMaxRetries` (0–8, default 2), `maxRetryDelayMs` (default 60000), `piSessionsRoot` (durable JSONL session storage). |
+| `piNative` | Pi transport and retry tuning: `transport` (`auto`/`sse`/`websocket`/`websocket-cached`), `piMaxRetries` (0–8, default 2), `maxRetryDelayMs` (default 60000). |
 | `local` | Legacy compatibility projection for `providers.local[]`. New configs prefer the provider-map shape below. |
 
 ## Declaring a provider
@@ -225,3 +225,5 @@ re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
 This is workload-specific evidence, not a billing guarantee. Agents that only
 chain turns within five minutes pay slightly more with long retention and can
 set `"short"` instead.
+
+Durable session storage is configured separately with `runtime.session.root`.

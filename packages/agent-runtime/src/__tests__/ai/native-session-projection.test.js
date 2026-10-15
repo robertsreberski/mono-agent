@@ -30,7 +30,7 @@ async function setup() {
   const assertCurrent = vi.fn(async (_request) => {});
   const options = (turn = 1, extra = {}) => ({ model: { provider: model.provider, model: model.id, reference: `${model.provider}:${model.id}` },
     piResolvedModel: model, piResolvedModels: models, effort: "none", allowedTools: [],
-    sessionId: handle, providerSessionId: handle, sessionKeepAlive: true, piSessionsRoot: root,
+    sessionId: handle, providerSessionId: handle, sessionKeepAlive: true, sessionsRoot: root,
     sessionTurn: { kind: "host", ownerKey: hostAuthority.ownerKey, historyBucket: hostAuthority.historyBucket, turnId: `turn-${turn}`, handleId: handle, baseRevision: turn - 1,
       reconciliation: { version: 1, purpose: "execution", fenceDigest: "c".repeat(64), initialInputId: `input-${turn}` } },
     nativeSessionAuthority: { version: 1, currentHandleId: handle, sessionsRoot: root, hostAuthority, assertCurrent },
@@ -39,7 +39,7 @@ async function setup() {
   return { root, faux, model, models, options, assertCurrent };
 }
 async function journal(root) {
-  const directory = join(root, "mono-v2/journals");
+  const directory = join(root, "journals");
   const name = (await readdir(directory)).find((name) => name.endsWith(".jsonl"));
   return (await readFile(join(directory, name), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 }
@@ -192,7 +192,7 @@ it("denies current-handle creation before publishing a guarded header", async ()
   f.assertCurrent.mockImplementation(async ({ action }) => { if (action === "create") throw new Error("Creation is not authorized"); });
   const result = await generateEngineTurnResponse("Rules", f.options());
   expect(result.failureKind).toBe("safety_native_session_authority"); expect(provider).not.toHaveBeenCalled();
-  const names = await readdir(join(f.root, "mono-v2/journals")).catch((error) => { if (error.code !== "ENOENT") throw error; return []; });
+  const names = await readdir(join(f.root, "journals")).catch((error) => { if (error.code !== "ENOENT") throw error; return []; });
   expect(names.filter((name) => name.endsWith(".jsonl"))).toEqual([]);
 });
 
@@ -342,7 +342,7 @@ it.each(["coverage-extra", "source-extra", "long-journal-id", "long-tip-id", "ar
   const result = await generateEngineTurnResponse("Rules", opts);
   expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false);
   expect(provider).not.toHaveBeenCalled(); expect(f.assertCurrent).not.toHaveBeenCalled();
-  expect(await readdir(f.root)).not.toContain("mono-v2");
+  expect(await readdir(f.root)).toEqual([]);
 });
 
 it.each([discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow].map((cleanup) => [cleanup.name, cleanup]))(
