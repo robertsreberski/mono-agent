@@ -147,7 +147,7 @@ export interface AdapterSendToolsRuntimeExtension {
   readonly runtimeOptions: {
     readonly mcpServers: Record<string, unknown>;
     readonly mcpCallNoTotalTimeoutTools?: readonly string[];
-    readonly hostCapabilities?: import("@mono-agent/runtime-adapter").RuntimeRunOptions["hostCapabilities"];
+    readonly hostCapabilities?: import("@mono-agent/agent-runtime/host/types").RuntimeRunOptions["hostCapabilities"];
   };
   readonly cleanup: () => Promise<void>;
   readonly settleCleanup?: () => Promise<void>;

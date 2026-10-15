@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
 
 import {
   PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR,

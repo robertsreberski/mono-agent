@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WebService } from "../../../dist/service.js";
 import { createAgentHarness, createDurableHistoryStore } from "../../../../agent-harness/dist/index.js";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 const [root, mode] = process.argv.slice(2), timestamp = "2000-01-01T00:00:00.000Z";
 const historyRoot = join(root, "history"), stateDir = join(root, "web");

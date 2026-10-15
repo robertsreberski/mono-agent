@@ -1,6 +1,6 @@
 import type { PendingTurnInput } from "./durable-turn-contract.js";
 import { createPendingLiveInput } from "./durable-turn-contract.js";
-import type { RuntimePromptOverrides } from "@mono-agent/runtime-adapter";
+import type { RuntimePromptOverrides } from "@mono-agent/agent-runtime/host/types";
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   AGENT_LIVE_INPUT_MAX_MESSAGES,
@@ -8,7 +8,7 @@ import {
   type AgentLiveInputRequest,
   type AgentLiveInputSettlement,
 } from "@mono-agent/agent-contracts";
-import type { RuntimeLiveInputMessage } from "@mono-agent/runtime-adapter";
+import type { RuntimeLiveInputMessage } from "@mono-agent/agent-runtime/host/types";
 
 export interface AppliedLiveInput {
   readonly id: string;

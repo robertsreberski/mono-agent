@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore } from "@mono-agent/agent-harness";
-import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 import { SlackAdapter } from "@mono-agent/slack-adapter";
 import type {
   SlackChatPostMessageParams,

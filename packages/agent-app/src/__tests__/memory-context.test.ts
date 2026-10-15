@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createInMemoryHistoryStore } from "@mono-agent/agent-harness";
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 import { describe, expect, it } from "vitest";
 import { createConfiguredAgentHarness } from "../configured-agent.js";
 import { ensureSharedMemoryRetrieval, type MemoryControllerPort } from "../app-controller-memory.js";

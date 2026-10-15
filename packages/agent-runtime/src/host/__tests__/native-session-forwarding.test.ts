@@ -8,7 +8,7 @@ const kernel = vi.hoisted(() => ({ run: vi.fn(async (_system: string, _options: 
   prepareNativeDispatch: vi.fn(async (_system: string, _options: Record<string, any>) => prepared) }));
 beforeEach(() => { vi.clearAllMocks(); });
 vi.mock("@mono-agent/agent-runtime", () => ({ createRuntime: () => kernel, createRouterRuntime: () => kernel }));
-import { createMonoRuntime } from "../runtime-adapter.js";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 import type { RuntimeNativeSessionAuthority, RuntimeNativeSessionProjection } from "../types.js";
 const model = { provider: "faux", model: "fixture", reference: "faux:fixture" };
 it.each([false, true])("forwards host native authority/projection unchanged through the facade (routed=%s)", async (routed) => {

@@ -1,5 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
-import type { ProcessJobProcessResult } from "@mono-agent/runtime-adapter";
+import type { ProcessJobProcessResult } from "@mono-agent/agent-runtime/host/types";
 import { isSubagentUuid } from "./subagent-registry-ownership.js";
 import type { SubagentOwnedCommand } from "./subagent-execution-ownership.js";
 

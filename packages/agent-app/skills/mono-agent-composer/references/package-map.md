@@ -22,7 +22,7 @@ Every real host needs these concepts:
 | --- | --- | --- | --- |
 | Shared request/response shape | `@mono-agent/agent-contracts` | `AgentResponder`, request, response, stream, cancellation contracts | Prompt building, runtime execution, transport |
 | Core config | `@mono-agent/config` | Runtime, context, memory, tools, artifact, traceability settings | Adapter credentials, chat allowlists |
-| Runtime facade | `@mono-agent/runtime-adapter` | Canonical `<provider>:<model>` refs, the Pi backend descriptor, sandbox policy, local provider runtime options | Prompts, adapters, memory |
+| Runtime facade | `@mono-agent/agent-runtime/host` | Canonical `<provider>:<model>` refs, the Pi backend descriptor, sandbox policy, local provider runtime options | Prompts, adapters, memory |
 | Configured responder | `@mono-agent/agent-app` | Turns `MonoAgentConfig` into runtime, memory, harness, and responder | Polling chats, serving APIs, adapter settings |
 
 Minimal local host:
@@ -159,7 +159,7 @@ Use `@mono-agent/agent-orchestrator` when one runtime should call named collabor
 
 ## Runtime Join
 
-Use `@mono-agent/runtime-adapter` unless the host has a custom runtime implementation that already satisfies `MonoRuntimeLike`.
+Use `@mono-agent/agent-runtime/host` unless the host has a custom runtime implementation that already satisfies `MonoRuntimeLike`.
 
 There is one supported model reference family: canonical `<provider>:<model>`,
 run Pi-native. Only the first colon is structural, so `ollama:gemma4:31b` is

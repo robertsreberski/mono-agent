@@ -1,11 +1,6 @@
 import { isChannelUserCancelReason, type AgentMessageSender, type MemoryCaptureEvidence } from "@mono-agent/agent-contracts";
 import type { RuntimeEventLike } from "@mono-agent/observability";
-import type {
-  RuntimeToolLifecycleEvent,
-  RuntimeToolLifecyclePersistence,
-  RuntimeToolLifecycleSink,
-  RuntimeToolLifecycleTerminalState,
-} from "@mono-agent/runtime-adapter";
+import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, RuntimeToolLifecycleSink, RuntimeToolLifecycleTerminalState } from "@mono-agent/agent-runtime/host/types";
 import { types as nodeUtilTypes } from "node:util";
 
 import type { HistoryMessage } from "../context/index.js";

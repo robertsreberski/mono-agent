@@ -11,7 +11,7 @@ channel adapter
   -> agent-contracts request/stream interfaces
   -> agent-app responder composition
   -> agent-harness turn orchestration
-  -> runtime-adapter
+  -> agent-runtime/host protected host integration
   -> agent-runtime provider implementation
 
 optional side paths
@@ -65,7 +65,6 @@ flowchart TB
   end
 
   subgraph Runtime["Pi runtime"]
-    RuntimeAdapter["@mono-agent/runtime-adapter<br/>model refs + sandbox policy"]
     AgentRuntime["@mono-agent/agent-runtime<br/>Pi implementation"]
     PiSdk["Pi providers<br/>&lt;provider&gt;:&lt;model&gt;"]
   end
@@ -99,16 +98,15 @@ flowchart TB
   AgentApp --> Config
   AgentApp --> Harness
   AgentApp --> Memory
-  AgentApp --> RuntimeAdapter
+  AgentApp --> AgentRuntime
   AgentApp --> Observability
   Config --> Contracts
-  Config --> RuntimeAdapter
+  Config --> AgentRuntime
   Harness --> Contracts
-  Harness --> RuntimeAdapter
+  Harness --> AgentRuntime
   Harness --> Observability
 
-  RuntimeAdapter --> AgentRuntime
-  RuntimeAdapter --> Contracts
+  AgentRuntime --> Contracts
   AgentRuntime --> PiSdk
 ```
 
@@ -120,13 +118,13 @@ Static manifest dependencies (abridged; see PACKAGES.md for every edge)
 @mono-agent/agent-app
   ├─ config + agent-contracts
   ├─ agent-harness
-  ├─ runtime-adapter ── agent-runtime
+  ├─ agent-runtime (host integration + provider runtime)
   ├─ memory + observability
   ├─ built-in channel adapters
   ├─ operator-adapter
   └─ tui + web
 
-agent-harness ── agent-contracts + runtime-adapter + observability
+agent-harness ── agent-contracts + agent-runtime + observability
 tui / web ── agent-contracts + config + observability
 
 Runtime-only composition (not manifest dependency edges)
@@ -154,7 +152,7 @@ Rules for future packages:
 | Config schema, validation, or source precedence | `packages/config` |
 | Host/CLI/config composition | `packages/agent-app` |
 | One request, tools, MCP, approvals, or structured output | `packages/agent-harness` |
-| Provider routing or sandbox facade | `packages/runtime-adapter` |
+| Provider routing or sandbox facade | `packages/agent-runtime/src/host` |
 | Provider implementation or runtime sessions | `packages/agent-runtime` |
 | Transport-specific behavior | The matching `*-adapter` package |
 | Memory persistence, recall, or maintenance | `packages/memory` or an explicitly selected plugin backend |

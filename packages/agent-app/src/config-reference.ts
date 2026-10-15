@@ -13,12 +13,8 @@ import {
   MonoAgentConfigError,
 } from "@mono-agent/config";
 import type { MonoAgentConfigJson } from "@mono-agent/config";
-import {
-  PI_TRANSPORTS,
-  SANDBOX_FALLBACKS,
-  SANDBOX_MODES,
-  SANDBOX_NETWORK_MODES,
-} from "@mono-agent/runtime-adapter";
+import { PI_TRANSPORTS } from "@mono-agent/agent-runtime/host/types";
+import { SANDBOX_FALLBACKS, SANDBOX_MODES, SANDBOX_NETWORK_MODES } from "@mono-agent/agent-runtime/host/sandbox";
 import { CRON_CONFIG_FIELDS } from "@mono-agent/cron-adapter";
 import { OPENAI_API_CONFIG_FIELDS } from "@mono-agent/openai-api-adapter";
 import { TUI_CONFIG_FIELDS } from "@mono-agent/operator-adapter";

@@ -6,11 +6,11 @@ import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
 import type { DurableHistoryStoreOptions } from "../durable-history.js";
-import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/agent-runtime/host/types";
 import { validateNativeTurnHistory } from "../durable-model-switch-contract.js";
 import type { NativeTurnHistory } from "../durable-model-switch-contract.js";
 import { bucket, modelKey, timestamp, canonicalRecord, conversationKey, evidence } from "./fixtures/canonical-v5-fixture.mjs";
-import { createManagedNativeJournalStorage } from "@mono-agent/runtime-adapter";
+import { createManagedNativeJournalStorage } from "@mono-agent/agent-runtime";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });

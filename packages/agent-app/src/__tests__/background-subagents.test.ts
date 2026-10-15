@@ -7,7 +7,8 @@ import { execToolRun } from "../../../agent-runtime/src/agent/tools/exec.js";
 import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/agent-contracts";
 import { fileURLToPath } from "node:url";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
-import { createMonoRuntime, createSandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
 import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
 import { generateEngineTurnResponse } from "../../../agent-runtime/src/ai/providers/engine-turn.js";

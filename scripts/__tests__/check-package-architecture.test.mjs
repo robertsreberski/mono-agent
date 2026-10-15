@@ -1,3 +1,4 @@
+import { retiredHostImports } from "../lib/retired-host-boundary.mjs";
 import { activeStaleReferenceLines, engineRuntimeImports } from "../lib/engine-boundary.mjs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -132,5 +133,23 @@ describe("engine ownership and historical reference guard", () => {
       }
     }
     expect(engineRuntimeImports(root, file, 'import "./session-store.js"; import "../src/session-store.js"; import "@earendil-works/pi-agent-core"; import "node:fs";')).toEqual([]);
+  });
+});
+
+describe("retired host package imports", () => {
+  const old = "@mono-agent/runtime-adapter";
+  it.each([
+    `import { createMonoRuntime } from "${old}";`,
+    `export * from "${old}";`,
+    `import type { RuntimeRunOptions } from "${old}";`,
+    `type Options = import("${old}").RuntimeRunOptions;`,
+    `const host = await import("${old}");`,
+    `const host = require("${old}");`,
+  ])("rejects active imports: %s", (text) => {
+    expect(retiredHostImports("fixture.ts", text)).toEqual([old]);
+  });
+  it("permits migration prose and negative package-resolution assertions", () => {
+    expect(retiredHostImports("MIGRATION.md", `import { x } from "${old}"`)).toEqual([]);
+    expect(retiredHostImports("fixture.ts", `// import x from "${old}"\nassertRemovedImport("${old}");`)).toEqual([]);
   });
 });

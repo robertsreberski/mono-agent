@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxThinking, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { createAgentHarness, createDurableHistoryStore, createSessionRuntimeResolver, createToolPolicy } from "@mono-agent/agent-harness";
-import { createMonoRuntime, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 const [root, origin, sequenceJson, startText = "0", defaultName = "base", unrouted = "false", legacyUnbound = "false"] = process.argv.slice(2);
 const sequence = JSON.parse(sequenceJson);

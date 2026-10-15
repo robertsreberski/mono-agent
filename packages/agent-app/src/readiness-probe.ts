@@ -13,13 +13,7 @@ import {
   redactSecrets,
 } from "./redact-secrets.js";
 import type { WizardPlan } from "./wizard/answers.js";
-import type {
-  PiTransport,
-  RuntimeEventLike,
-  RuntimeModelReference,
-  RuntimeResult,
-  RuntimeRunOptions,
-} from "@mono-agent/runtime-adapter";
+import type { PiTransport, RuntimeEventLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 const CLOUD_READINESS_TIMEOUT_MS = 90_000;
 const LOCAL_READINESS_TIMEOUT_MS = 240_000;

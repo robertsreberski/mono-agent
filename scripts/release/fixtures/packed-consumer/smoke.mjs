@@ -51,11 +51,12 @@ if (packageNames.includes("@mono-agent/agent-app")) {
 }
 
 if (packageNames.includes("@mono-agent/agent-runtime")) {
+  await assertRemovedImport("@mono-agent/runtime-adapter", "ERR_MODULE_NOT_FOUND");
   for (const entry of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai"]) {
     const api = await import(entry);
-    assert.equal(api.resolveRuntimeBridge, api.resolveEngineTurnAdapter);
-    assert.equal(api.generatePiNativeResponse, api.generateEngineTurnResponse);
-    assert.equal(api.piNativeRuntimeBridge, api.engineTurnAdapter);
+    assert.equal("resolveRuntimeBridge" in api, false);
+    assert.equal("generatePiNativeResponse" in api, false);
+    assert.equal("piNativeRuntimeBridge" in api, false);
     assert.equal(typeof api.generateEngineTurnResponse, "function");
     assert.equal(api.engineTurnAdapter.execute, api.generateEngineTurnResponse);
     assert.equal(api.engineTurnAdapter.id, "pi");

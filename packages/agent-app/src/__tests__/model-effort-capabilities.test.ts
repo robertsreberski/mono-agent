@@ -4,8 +4,8 @@ import {
   getPiBuiltinModel,
   reasoningLevelsForPiModel,
 } from "@mono-agent/agent-runtime";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
-import type { LocalProviderDefinition } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import type { LocalProviderDefinition } from "@mono-agent/agent-runtime/host/types";
 
 import { resolveAdvertisedModelEffort } from "../model-effort-capabilities.js";
 

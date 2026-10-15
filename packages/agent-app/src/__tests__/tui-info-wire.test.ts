@@ -4,7 +4,7 @@ import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { MAX_INFO_BODY_BYTES } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TuiAdapterConfig } from "@mono-agent/operator-adapter";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 import { OperatorClient } from "@mono-agent/web";
 
 import type { ChannelStartInput, RunningChannel } from "../channels.js";

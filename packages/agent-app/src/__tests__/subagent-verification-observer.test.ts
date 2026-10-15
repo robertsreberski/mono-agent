@@ -1,7 +1,8 @@
 import { lstat, mkdtemp, mkdir, rename, writeFile, rm, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createSandboxPolicy, type ProcessJobProcessResult, type SandboxCommandSpec, type SandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
+import { type ProcessJobProcessResult, type SandboxCommandSpec, type SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 import { isSubagentVerificationObservation, observeSubagentVerification, registerSubagentVerification } from "../subagent-verification-observer.js";
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";

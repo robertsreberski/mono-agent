@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { expect, it, vi } from "vitest";
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 import { createAgentHarness, createDurableHistoryStore } from "../index.js";
 

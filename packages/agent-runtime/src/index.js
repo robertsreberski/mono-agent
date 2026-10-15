@@ -14,7 +14,7 @@ export {
 } from "./runtime-brand.js";
 
 export * from "./ai/index.js";
-export { resolveEngineTurnAdapter, resolveRuntimeBridge, generateEngineTurnResponse, generatePiNativeResponse, engineTurnAdapter, piNativeRuntimeBridge } from "./ai/index.js";
+export { resolveEngineTurnAdapter, generateEngineTurnResponse, engineTurnAdapter } from "./ai/index.js";
 export * from "./agent/index.js";
 
 export { produceNativeHandoffSummary, HANDOFF_SUMMARY_PROMPT } from "./ai/providers/engine-turn/handoff-producer.js";

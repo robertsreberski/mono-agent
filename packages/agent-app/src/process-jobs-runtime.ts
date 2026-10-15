@@ -4,14 +4,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import {
-  failClosedSandboxPolicy,
-  mergeSandboxPolicies,
-  protectSandboxRoots,
-  type RuntimeModelReference,
-  type SandboxEngine,
-  type SandboxPolicy,
-} from "@mono-agent/runtime-adapter";
+import { failClosedSandboxPolicy, mergeSandboxPolicies, protectSandboxRoots } from "@mono-agent/agent-runtime/host/sandbox";
+import { type RuntimeModelReference, type SandboxEngine, type SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 
 import type { ChannelId } from "./channels.js";
 import type { AgentRootOwnership, AgentRootRequestLease } from "./agent-root-coordinator.js";

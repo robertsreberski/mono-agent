@@ -1,8 +1,4 @@
-import type {
-  RuntimeHandoffProducerRequest, RuntimeHandoffProducerResult, RuntimeHandoffFit,
-  RuntimeNativeDispatchSnapshot, RuntimeNativeEvidenceView, RuntimeNativePreparationStorage,
-  RuntimeHandoffOptions, RuntimeHandoffBudget, RuntimeResult,
-} from "@mono-agent/runtime-adapter";
+import type { RuntimeHandoffProducerRequest, RuntimeHandoffProducerResult, RuntimeHandoffFit, RuntimeNativeDispatchSnapshot, RuntimeNativeEvidenceView, RuntimeNativePreparationStorage, RuntimeHandoffOptions, RuntimeHandoffBudget, RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 import type { ManagedProviderSessionPreparation, ManagedModelSwitchStorageLease } from "../durable-history.js";
 import type { ModelSwitchState, ModelSwitchReservation, CanonicalJournalDescriptor, HandoffReference } from "../durable-model-switch-contract.js";
 import { switchDigest, switchCoverageDigest, validateModelSwitchState, validateFrozenHandoffBudget } from "../durable-model-switch-contract.js";

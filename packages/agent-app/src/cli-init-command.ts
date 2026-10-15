@@ -6,7 +6,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { readMonoAgentConfigJson } from "@mono-agent/config";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 import {
   canonicalBackgroundConfigPath,

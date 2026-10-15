@@ -1,4 +1,4 @@
-import type { DurableSessionSalvage } from "@mono-agent/runtime-adapter";
+import type { DurableSessionSalvage } from "@mono-agent/agent-runtime/host/types";
 import { redactProcessOutput } from "./process-output-redaction.js";
 import { redactSecrets } from "./redact-secrets.js";
 

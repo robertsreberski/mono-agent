@@ -2,14 +2,8 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
-import type {
-  MonoRuntimeLike,
-  RuntimeRunOptions,
-  SandboxEngine,
-  SandboxPolicy,
-  RuntimeToolOptions,
-} from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import type { MonoRuntimeLike, RuntimeRunOptions, SandboxEngine, SandboxPolicy, RuntimeToolOptions } from "@mono-agent/agent-runtime/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const processRunnerHooks = vi.hoisted(() => ({

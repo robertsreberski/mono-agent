@@ -3,15 +3,9 @@ import { randomUUID } from "node:crypto";
 import { createPendingInitialInput, createPendingLiveInput, assertDetachedTurnDescriptor } from "../durable-turn-contract.js";
 import { sessionModelKey } from "../session-runtime.js";
 import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
-import {
-  monoRuntimeSupportsLiveInput,
-  sandboxPolicyToRuntimeOptions,
-  type RuntimeMessage,
-  type RuntimeResult,
-  type RuntimeRunOptions,
-  type RuntimeNativePreparedDispatch, type RuntimeNativeDispatchSnapshot, type RuntimeNativeDispatchBinding,
-  type RuntimeHandoffProducerRequest, type RuntimeHandoffProducerResult, type RuntimeHandoffFit,
-} from "@mono-agent/runtime-adapter";
+import { monoRuntimeSupportsLiveInput } from "@mono-agent/agent-runtime/host";
+import { sandboxPolicyToRuntimeOptions } from "@mono-agent/agent-runtime/host/sandbox";
+import { type RuntimeMessage, type RuntimeResult, type RuntimeRunOptions, type RuntimeNativePreparedDispatch, type RuntimeNativeDispatchSnapshot, type RuntimeNativeDispatchBinding, type RuntimeHandoffProducerRequest, type RuntimeHandoffProducerResult, type RuntimeHandoffFit } from "@mono-agent/agent-runtime/host/types";
 
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, neutralizeTurnEnvelope } from "../context/turn-envelope.js";
@@ -491,7 +485,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
         observers: [...(Array.isArray(merged.observers) ? merged.observers : []), {
           recordEvent: (event: RuntimeEventLike) => turnContinuityCollector.observeNativeEvent(event),
-          recordToolLifecycle: (event: import("@mono-agent/runtime-adapter").RuntimeToolLifecycleEvent) => turnContinuityCollector.admitToolLifecycle(event),
+          recordToolLifecycle: (event: import("@mono-agent/agent-runtime/host/types").RuntimeToolLifecycleEvent) => turnContinuityCollector.admitToolLifecycle(event),
         }],
         toolLifecycleSink: turnContinuityCollector.wrapToolLifecycleSink(
           options.toolHistory?.writer.createSink({

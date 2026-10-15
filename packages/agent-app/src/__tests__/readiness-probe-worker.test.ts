@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  CreateMonoRuntimeOptions,
-  MonoRuntimeLike,
-  RuntimeEventLike,
-  RuntimeResult,
-  RuntimeRunOptions,
-} from "@mono-agent/runtime-adapter";
+import type { CreateMonoRuntimeOptions, MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 import {
   readWorkerData,

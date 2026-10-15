@@ -17,7 +17,7 @@ import type { MemoryCompletedTurn, MemoryCompletedTurnResult } from "@mono-agent
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore, inspectCompletedTurnIntake } from "@mono-agent/memory/bujo";
 import type { RunSummary } from "@mono-agent/observability";
-import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
 import { createConfiguredCurationLlm } from "../configured-agent.js";

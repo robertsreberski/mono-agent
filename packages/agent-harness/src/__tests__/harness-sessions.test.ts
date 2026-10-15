@@ -9,8 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryBlock, MemoryStore } from "@mono-agent/agent-contracts";
 import type { HistoryMessage } from "../context/index.js";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
-import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/agent-runtime/host/types";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 import {
   AgentHarnessError,

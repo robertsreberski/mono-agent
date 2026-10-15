@@ -22,8 +22,8 @@ const processIdentity = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@mono-agent/runtime-adapter")>(),
+vi.mock("@mono-agent/agent-runtime/host", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/agent-runtime/host")>(),
   createMonoRuntime: () => ({
     run: runtimeState.run,
     reconcileSessionTurn: runtimeState.reconcileSessionTurn,

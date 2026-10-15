@@ -8,7 +8,7 @@ const [root, action, phase] = process.argv.slice(2);
 const source = { journalId: "fictional-journal", epoch: "1".repeat(64), handleId: "2".repeat(64),
   ownerKey: "fictional-owner", historyBucket: "fictional-conversation", sourceTipId: "fictional-tip", sourceSeq: 4, sourceDigest: "3".repeat(64),
   provenance: { provider: "faux", api: "faux-api", model: "A", account: null } };
-/** @type {import("@mono-agent/runtime-adapter").RuntimeHandoffBudget} */
+/** @type {import("@mono-agent/agent-runtime").RuntimeHandoffBudget} */
 const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
 const state = createModelSwitchState({ ownerKey: source.ownerKey, historyBucket: source.historyBucket, sourceCanonicalDigest: "4".repeat(64), sourceRevision: 2,
   sourceEpoch: source.epoch, source, fromModelKey: "faux:A", toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null },

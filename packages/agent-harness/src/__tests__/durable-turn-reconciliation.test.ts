@@ -3,8 +3,8 @@ import { mkdtemp, readFile, readdir, rm, lstat, writeFile, rename, mkdir, utimes
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
-import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/agent-runtime/host/types";
 import type { DurableHistoryStoreOptions } from "../durable-history.js";
 import type { ConversationHistoryTurnInspection } from "../types.js";
 import { PendingTurnPayloadStore } from "../durable-turn-payloads.js";

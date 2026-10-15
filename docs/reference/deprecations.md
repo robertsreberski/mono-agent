@@ -20,14 +20,7 @@ No deprecated surface currently has a scheduled removal.
 
 ## Deprecations without scheduled removal
 
-The runtime retains these identity-preserving aliases without runtime warnings
-or a scheduled removal. New integrations should use the canonical names.
-
-| Deprecated surface | Canonical replacement |
-| --- | --- |
-| `resolveRuntimeBridge` | `resolveEngineTurnAdapter` |
-| `generatePiNativeResponse` | `generateEngineTurnResponse` |
-| `piNativeRuntimeBridge` | `engineTurnAdapter` |
+No runtime adapter aliases remain.
 
 ## Removed surfaces
 
@@ -37,6 +30,10 @@ programmatic surfaces are simply no longer exported.
 
 | Removed surface | Replacement |
 | --- | --- |
+| `@mono-agent/runtime-adapter` | `@mono-agent/agent-runtime/host` subpaths; see the runtime migration guide |
+| `resolveRuntimeBridge` | `resolveEngineTurnAdapter` |
+| `generatePiNativeResponse` | `generateEngineTurnResponse` |
+| `piNativeRuntimeBridge` | `engineTurnAdapter` |
 | `mono-agent restart --force` | `mono-agent restart --clear-sessions` (same effect) |
 | `mono-agent metrics` | `mono-agent runs` (equivalently `mono-agent runs report`) |
 | `mono-agent audit-runs` and its `--artifact-dir` flag | `mono-agent runs audit --artifacts <path>` |

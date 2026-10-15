@@ -2,7 +2,7 @@ import { effectiveSandboxBoundary, effectiveSandboxReport } from "../effective-s
 import { describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
 
 import {
   PROCESS_JOBS_UNSAFE_HOST_WARNING,

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { MemoryStore } from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
-import type { RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 import type { SkillsCache } from "../skills/index.js";
 
 import { createAgentHarness, ToolHistoryReader } from "../index.js";

@@ -13,11 +13,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
 import { createDurableHistoryStore, type AgentHarness } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import {
-  createMonoRuntime,
-  type MonoRuntimeLike,
-  type RuntimeRunOptions,
-} from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { type MonoRuntimeLike, type RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 import { createConfiguredAgentHarness } from "../index.js";
 

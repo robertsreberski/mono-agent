@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 const fakeRuntime = {
   run: vi.fn(),
@@ -10,12 +10,11 @@ const createMonoRuntimeMock = vi.fn((_options: unknown) => fakeRuntime);
 const fakeSandboxEngine = { id: "fallback-sandbox-engine" };
 const createSrtSandboxEngineMock = vi.fn(() => fakeSandboxEngine);
 
-vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
+vi.mock("@mono-agent/agent-runtime/host", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mono-agent/agent-runtime/host")>();
   return {
     ...actual,
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
-    createSrtSandboxEngine: () => createSrtSandboxEngineMock(),
   };
 });
 
@@ -202,3 +201,8 @@ function monoConfig(
     },
   };
 }
+
+vi.mock("@mono-agent/agent-runtime/host/sandbox", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/agent-runtime/host/sandbox")>(),
+    createSrtSandboxEngine: () => createSrtSandboxEngineMock(),
+}));

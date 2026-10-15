@@ -1,3 +1,5 @@
+import type * as Kernel from "#kernel/types";
+import type * as Pricing from "#kernel/cost";
 import type { OwnedForegroundProcesses } from "./owned-foreground-processes.js";
 import type {
   AgentReplyMcpAppPart,
@@ -13,11 +15,7 @@ export interface MonoRuntimeSandboxEngine {
   prepareCommand(command: SandboxCommandSpec, policy: SandboxPolicy): Promise<PreparedSandboxCommand>;
 }
 
-export interface RuntimeModelReference {
-  readonly provider: string;
-  readonly model: string;
-  readonly reference: string;
-}
+export type RuntimeModelReference = Readonly<Kernel.RuntimeModelRef>;
 
 export interface MonoRuntimeBackendCapabilities {
   readonly kind?: string;
@@ -146,60 +144,17 @@ export interface RuntimeEventLike {
 }
 
 /** Durable terminal classification for one managed tool invocation. */
-export type RuntimeToolLifecycleTerminalState =
-  | "success"
-  | "rejected"
-  | "error"
-  | "exit_nonzero"
-  | "timeout"
-  | "signal"
-  | "cancelled"
-  | "interrupted";
+import type { RuntimeToolLifecycleTerminalState } from "#kernel/types";
+export type { RuntimeToolLifecycleTerminalState } from "#kernel/types";
 
 /** Provider-neutral, host-persisted half of a managed tool lifecycle. */
-export type RuntimeToolLifecycleEvent =
-  | {
-      readonly phase: "invocation";
-      readonly toolCallId: string;
-      readonly toolName: string;
-      readonly arguments?: unknown;
-    }
-  | {
-      readonly phase: "result";
-      readonly toolCallId: string;
-      readonly toolName?: string;
-      readonly content?: unknown;
-      readonly state: RuntimeToolLifecycleTerminalState;
-      /** Existing observability failure taxonomy; no competing errorKind. */
-      readonly failureKind?: string;
-      readonly detailCode?: string;
-      readonly executionMs?: number;
-      readonly artifacts?: readonly {
-        readonly path: string;
-        readonly available?: boolean;
-      }[];
-    };
+export type RuntimeToolLifecycleEvent = Kernel.RuntimeToolLifecycleEvent;
 
 /** Host acknowledgement for one accepted lifecycle half. */
-export interface RuntimeToolLifecyclePersistence {
-  readonly recordId?: string;
-  readonly sequence?: number;
-  /** Persisted now, accepted for bounded reconciliation, or definitively failed. */
-  readonly persistence: "persisted" | "deferred" | "failed";
-  readonly truncated?: boolean;
-  readonly originalBytes?: number;
-  readonly retainedBytes?: number;
-  readonly artifactReferences?: readonly {
-    readonly id: string;
-    readonly available: boolean;
-  }[];
-  readonly errorCode?: string;
-}
+export type RuntimeToolLifecyclePersistence = Kernel.RuntimeToolLifecyclePersistence;
 
 /** Awaited host boundary used to persist managed tool lifecycles. */
-export type RuntimeToolLifecycleSink = (
-  event: RuntimeToolLifecycleEvent,
-) => Promise<RuntimeToolLifecyclePersistence | undefined>;
+export type RuntimeToolLifecycleSink = Kernel.RuntimeToolLifecycleSink;
 
 /** One exact normalized native or in-process subagent activity event. */
 export interface RuntimeSubagentActivityEvent extends RuntimeEventLike {
@@ -294,12 +249,7 @@ function optionalLiteral(
 }
 
 /** Monotonic per-execution evidence, armed only after canonical replay seeding. */
-export interface RuntimeDispatchProgress {
-  readonly version: 1;
-  readonly armed: boolean;
-  readonly toolAdmitted: boolean;
-  readonly liveInputTaken: boolean;
-}
+export type RuntimeDispatchProgress = Readonly<NonNullable<Kernel.RuntimeResult["dispatchProgress"]>>;
 
 export interface RuntimeResult {
   /** Missing, malformed or unarmed evidence cannot certify no progress. */
@@ -335,48 +285,20 @@ export interface RuntimeResult {
  * Typed per-run tool-output limits (mirrors agent-runtime's RuntimeToolLimits,
  * ai/types.js). Omitted fields use the kernel defaults.
  */
-export interface RuntimeToolLimits {
-  readonly toolTextLimitChars?: number;
-  readonly bashOutputLimitChars?: number;
-  readonly mcpTextLimitChars?: number;
-  readonly searchResultLimit?: number;
-  readonly imageInlineMaxBytes?: number;
-  readonly toolPayloadMaxBytes?: number;
-  readonly mcpCallTimeoutMs?: number;
-  readonly mcpCallMaxTotalTimeoutMs?: number;
-  /**
-   * Foreground ceiling and default for Bash/Exec timeouts on the Pi bridge
-   * (defaults to 120_000). Background process-job hand-offs ignore it and are
-   * bounded by `processJobs.maxRuntimeMs` on the host side instead.
-   */
-  readonly bashTimeoutMs?: number;
-}
+export type RuntimeToolLimits = Readonly<Kernel.RuntimeToolLimits>;
 
 /**
  * Typed per-run context-compaction policy (mirrors agent-runtime's
  * RuntimeCompactionPolicy). Omitted scalar budgets resolve adaptively against
  * the effective model context window.
  */
-export interface RuntimeCompactionPolicy {
-  readonly enabled?: boolean;
-  readonly triggerRatio?: number;
-  readonly keepRecentTokens?: number;
-  readonly summaryMaxTokens?: number;
-  readonly minSavingsTokens?: number;
-  readonly fixedOverheadEnabled?: boolean;
-  readonly contextWindowOverride?: number;
-}
+export type RuntimeCompactionPolicy = Readonly<Kernel.RuntimeCompactionPolicy>;
 
 /**
  * Per-run prompt-fragment overrides (mirrors agent-runtime's
  * RuntimePromptOverrides). Precedence run over host over the kernel default.
  */
-export interface RuntimePromptOverrides {
-  readonly structuredOutputInstruction?: (systemPrompt: string) => string;
-  readonly structuredOutputFinalization?: () => string;
-  readonly emptyReplyFinalization?: () => string;
-  readonly liveInputGuidance?: (body: string) => string;
-}
+export type RuntimePromptOverrides = Readonly<Kernel.RuntimePromptOverrides>;
 
 /** Exact native identifiers that can correlate a live follow-up to one provider run. */
 export interface RuntimeLiveInputEvidence {
@@ -738,99 +660,8 @@ export interface DurableSessionSalvage {
   readonly additionalOutcomesUnknown: boolean;
 }
 
-/** Host-only storage authority; never a model-facing runtime option. */
-export interface RuntimeNativeJournalAuthority {
-  readonly version: 1;
-  readonly rootId: string;
-  readonly authorityId: string;
-  readonly ownerKey: string;
-  readonly historyBucket: string;
-}
-export interface RuntimeNativeJournalDeletion {
-  readonly hostAuthority: RuntimeNativeJournalAuthority;
-  readonly disposition: "C" | "D";
-  readonly assertOwned: () => Promise<void>;
-}
-
-/** Private administrative journal coordinates, never model-facing run options. */
-export interface RuntimeNativeJournalDescriptor {
-  readonly journalId: string; readonly epoch: string; readonly handleId: string;
-  readonly ownerKey: string; readonly historyBucket: string;
-  readonly sourceTipId: string | null; readonly sourceSeq: number; readonly sourceDigest: string;
-  readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
-}
-/** One exact native journal; deletion never infers membership from a catalogue. */
-export interface RuntimeNativeJournalRef { readonly handleId: string; readonly journalId: string }
-/** Deterministic host-owned guarded epoch for a switch target or a cold rotation. */
-export interface RuntimeNativeEpochContext {
-  readonly hostAuthority: RuntimeNativeJournalAuthority;
-  readonly assertOwned: () => Promise<void>;
-  readonly targetHandleId: string; readonly timestamp: number;
-}
-export interface RuntimeNativeJournalStorage {
-  /** Idempotent: an exact initializer prefix is accepted, anything else refuses. */
-  createEpoch(context: RuntimeNativeEpochContext): Promise<void>;
-  /** Read-only retention eligibility probe, not deletion authority. */
-  deletionBlocked(journals: readonly RuntimeNativeJournalRef[], authority: RuntimeNativeJournalAuthority): Promise<boolean>;
-  /** Exact listed journals only; definitively absent members are idempotent success. */
-  deleteJournals(journals: readonly RuntimeNativeJournalRef[], context: RuntimeNativeJournalDeletion): Promise<void>;
-  freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest" | "provenance"> & { readonly provenance?: RuntimeNativeJournalDescriptor["provenance"] }): Promise<RuntimeNativeJournalDescriptor>;
-  inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly stagedBytes: number; readonly damaged?: true }>> }>;
-  /** Read-only presence probe for the canonical current journal, called under the
-   * held host claim. `missing` only when no published or staged bytes exist for
-   * the exact coordinate; any doubt (unreadable header/record, staged-only bytes,
-   * catalogue failure) is `unreadable` and never authorizes a cold boundary. */
-  inspectCurrentJournal?(coordinates: { readonly handleId: string; readonly journalId?: string }): Promise<RuntimeNativeJournalPresence>;
-}
-export type RuntimeNativeJournalPresence = { readonly status: "present" | "missing" } | { readonly status: "unreadable"; readonly reason: string };
-
-/** Complete immutable evidence, validated against exact native bytes. Cloning
- * loses validation identity; pass the original view to preparation helpers. */
-export interface RuntimeNativeEvidenceView {
-  readonly version: 1; readonly ownerKey: string; readonly historyBucket: string;
-  readonly gaps: readonly Record<string, unknown>[];
-  /** The prior accepted handoff this journal inherits, or null. */
-  readonly prior: Readonly<Record<string, unknown>> | null;
-  readonly segments: readonly { readonly descriptor: Omit<RuntimeNativeJournalDescriptor, "epoch">;
-    readonly header: Readonly<Record<string, unknown>>; readonly records: readonly Readonly<Record<string, unknown>>[];
-    readonly entries: readonly Readonly<Record<string, unknown>>[]; readonly repairs: readonly Readonly<Record<string, unknown>>[];
-    readonly turns: readonly Readonly<Record<string, unknown>>[]; readonly allCalls: readonly Readonly<Record<string, unknown>>[];
-    readonly calls: readonly Readonly<Record<string, unknown>>[]; readonly inputs: readonly Readonly<Record<string, unknown>>[] }[];
-}
-export type RuntimeHandoffBudget = NonNullable<RuntimeNativeSessionProjection["dispatchBudget"]>;
-export interface RuntimePreparedHandoff {
-  readonly status: "prepared"; readonly checkpoints: readonly Readonly<Record<string, unknown>>[];
-  readonly ledger: readonly Readonly<Record<string, unknown>>[]; readonly recent: readonly Readonly<Record<string, unknown>>[];
-  readonly older: readonly Readonly<Record<string, unknown>>[];
-  readonly prior: Readonly<Record<string, unknown>> | null;
-  readonly coverage: readonly RuntimeNativeEvidenceView["segments"][number]["descriptor"][];
-}
-export type RuntimeHandoffSummary = Readonly<Record<"intent" | "constraints" | "decisions" | "completedWork" | "failures" | "openWork" | "nextActions" | "references", readonly string[]>>;
-export interface RuntimeHandoffProducerRequest { readonly prepared: RuntimePreparedHandoff; readonly outputReserve: number }
-export type RuntimeHandoffFit = { readonly status: "ready" } | { readonly status: "budget_failure"; readonly reason: string };
-export type RuntimeHandoffProducerResult = { readonly status: "ready"; readonly summary: RuntimeHandoffSummary; readonly usage?: unknown; readonly durationMs?: number }
-  | { readonly status: "summary_rejected"; readonly reason: string; readonly usage?: unknown; readonly durationMs?: number }
-  | { readonly status: "budget_failure"; readonly reason: string };
-export interface RuntimeHandoffOptions {
-  readonly target: RuntimeNativeJournalDescriptor["provenance"]; readonly budget: RuntimeHandoffBudget;
-  readonly timestamp: number; readonly hostContext: Readonly<Record<string, unknown>>;
-  readonly summary?: RuntimeHandoffSummary; readonly producer?: "outgoing" | "checkpoint" | "incoming";
-}
-export type RuntimeHandoffProposal = { readonly status: "ready"; readonly artifact: Readonly<Record<string, unknown>>;
-  readonly contentHash: string; readonly messages: readonly Readonly<Record<string, unknown>>[]; readonly coverage: RuntimePreparedHandoff["coverage"] }
-  | { readonly status: "budget_failure" | "summary_rejected"; readonly reason: string }
-  | { readonly status: "summary_required"; readonly prepared: RuntimePreparedHandoff };
-export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalStorage {
-  /** Null source: the current journal is definitively missing; canonical gaps carry the history. */
-  captureEvidence(source: RuntimeNativeJournalDescriptor | null, context: { readonly ownerKey: string; readonly historyBucket: string;
-    readonly hostAuthority?: RuntimeNativeJournalAuthority; readonly assertOwned: () => Promise<void>;
-    readonly gaps?: readonly Record<string, unknown>[]; readonly prior?: Readonly<Record<string, unknown>> | null }): Promise<RuntimeNativeEvidenceView>;
-  createBudget(input: { readonly contextWindow: number; readonly outputReserve: number; readonly inputTokens: number; readonly hostContext: Readonly<Record<string, unknown>> }): RuntimeHandoffBudget;
-  /** Pure real-compaction input/output preflight; no provider or native writes. */
-  checkInheritedPrefix?(messages: readonly Readonly<Record<string, unknown>>[], model: RuntimeNativeDispatchSnapshot["model"], compaction?: RuntimeRunOptions["compaction"], prefixTokenCap?: number): Promise<RuntimeHandoffFit>;
-  prepareHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimePreparedHandoff | { readonly status: "budget_failure"; readonly reason: string };
-  buildHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimeHandoffProposal;
-}
+import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeJournalPresence, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeHandoffProposal, RuntimeNativePreparationStorage } from "#kernel/native-journal-types";
+export type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeJournalPresence, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeHandoffProposal, RuntimeNativePreparationStorage } from "#kernel/native-journal-types";
 
 /** Actual resolved native request, never credentials/auth headers. */
 export interface RuntimeNativeDispatchSnapshot {
@@ -900,20 +731,10 @@ export interface RuntimeToolOptions {
 }
 
 /** A parsed model reference as agent-runtime's pricing resolvers receive it (see ai/cost.js's ParsedModelReference). */
-export interface MonoRuntimeParsedPricingModel {
-  readonly provider: string;
-  readonly model: string;
-}
+export type MonoRuntimeParsedPricingModel = Readonly<Pricing.ParsedModelReference>;
 
 /** agent-runtime's normalized per-token pricing row (see ai/cost.js's NormalizedPricing). */
-export interface MonoRuntimePricing {
-  readonly input: number | null;
-  readonly cacheRead: number | null;
-  readonly cacheWrite: number | null;
-  readonly output: number | null;
-  readonly source: string;
-  readonly priced: boolean;
-}
+export type MonoRuntimePricing = Readonly<Pricing.NormalizedPricing>;
 
 /** Payload passed to `onToolApprovalRequest` (see agent/approval.js's ApprovalRequestPayload). */
 export interface MonoRuntimeApprovalRequest {
@@ -968,3 +789,19 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
 
 /** Source-level built-in web search provider names; arrays are ordered fallback chains. */
 type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "local";
+
+export type { RuntimeAdapterErrorCode, RuntimeAdapterErrorDetails } from "./model-reference.js";
+
+export type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution, MonoRuntimeAttemptResolver, MonoRuntimeFallbackChainEntry, MonoRuntimeRetryPolicy } from "./runtime-adapter.js";
+
+export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
+
+export type { ProcessJobLaunchOptions, ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "./process-jobs.js";
+
+export type { PreparedSandboxCommand, PrepareSandboxedCommandInput, SandboxCommandSpec, SandboxEffectiveMode, SandboxEffectiveState, SandboxEngine, SandboxEngineId, SandboxErrorCode, SandboxFallback, SandboxMode, SandboxNetworkMode, SandboxNetworkPolicy, SandboxNetworkPolicyInput, SandboxPolicy, SandboxPolicyInput, SandboxPolicyRuntimeOptions, SrtFilesystemSettings, SrtNetworkSettings, SrtSandboxEngineOptions, SrtSettings } from "./sandbox.js";
+
+export type { AgentRuntimeCustomModel, AgentRuntimeCustomProvider, DiscoverLocalProviderModelsOptions, DiscoveredLocalModel, LocalProviderCapabilities, LocalProviderDefinition, LocalProviderModelDefinition, LocalProviderPricing, LocalProviderRuntimeOptions, LocalProviderType, ModelEffortLevels, ProviderDefinition } from "./local-providers.js";
+
+export type { DiscoveredProvider, DiscoverLocalProvidersInput } from "./provider-discovery.js";
+
+export type { OwnedForegroundProcessRequest, OwnedForegroundProcessController, OwnedForegroundProcesses } from "./owned-foreground-processes.js";

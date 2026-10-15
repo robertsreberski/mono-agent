@@ -17,11 +17,7 @@ import {
   type ConversationHistoryStore,
   type HistoryMessage,
 } from "@mono-agent/agent-harness";
-import type {
-  MonoRuntimeLike,
-  RuntimeResult,
-  RuntimeRunOptions,
-} from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
 

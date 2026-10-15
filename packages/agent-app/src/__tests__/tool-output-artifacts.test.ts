@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createToolOutputArtifactsRuntimeExtension } from "../tool-output-artifacts.js";

@@ -4,7 +4,7 @@
 //
 // `tsc -p tsconfig.types.json` (allowJs + declaration + emitDeclarationOnly)
 // compiles these typedefs into packages/agent-runtime/types/ai/types.d.ts;
-// downstream TS consumers (currently the runtime-adapter package) import them
+// downstream TS consumers (currently the agent-runtime/host entrypoint) import them
 // via `import('./types.js').X` JSDoc syntax from the other seam files, or
 // transitively through the package root's generated declarations.
 //
@@ -512,7 +512,7 @@
  * @property {string} [qaOutputDir]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
  * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine]
- * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject runtime-adapter's implementation from packages/runtime-adapter/src/sandbox.ts.
+ * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject host integration's implementation from packages/agent-runtime/src/host/sandbox.ts.
  * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.

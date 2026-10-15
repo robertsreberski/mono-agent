@@ -16,9 +16,9 @@ import type { MemoryStore } from "@mono-agent/agent-contracts";
 import { createBujoMemoryStore, POSSIBLY_RELEVANT_HEADING } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { JournalBrowseSnapshot } from "@mono-agent/memory/store";
-import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
-import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
-import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/agent-runtime/host/types";
+import { createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
+import type { SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 import {
   ToolHistoryReader,
   type ConversationHistoryStore,

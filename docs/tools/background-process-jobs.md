@@ -215,7 +215,7 @@ harness/responder, app-owned operator endpoint, the lazy-run wrapper returned by
 `createConfiguredAgentRuntime`, configured named children, and direct configured
 memory LLM/embedding calls. Web and ACP clients are thin clients of an
 already owned host and do not invoke a provider themselves. Lower-level
-`@mono-agent/runtime-adapter` and `@mono-agent/agent-runtime` factories are
+`@mono-agent/agent-runtime/host` and `@mono-agent/agent-runtime` factories are
 root-agnostic unless an app-owned caller supplies the protection policy and
 route gate.
 

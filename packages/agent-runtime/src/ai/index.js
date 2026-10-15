@@ -11,11 +11,11 @@ export {
   syncProviderSession,
 } from "./runtime/sessions.js";
 export { createMetricsObserver, createObserverHub } from "./observer.js";
-export { resolveEngineTurnAdapter, resolveRuntimeBridge } from "./runtime/registry.js";
-export { generateEngineTurnResponse, engineTurnAdapter, generatePiNativeResponse, piNativeRuntimeBridge } from "./providers/engine-turn.js";
+export { resolveEngineTurnAdapter } from "./runtime/registry.js";
+export { generateEngineTurnResponse, engineTurnAdapter } from "./providers/engine-turn.js";
 // Re-exported with `export *` so the JSDoc-declared snapshot types
 // (PiBuiltinModelSnapshot, PiBuiltinProviderSnapshot, …) travel with the
-// functions; runtime-adapter re-exports these for host-side catalog builders.
+// functions; hosts import these directly for host-side catalog builders.
 export * from "./pi-interop.js";
 export * from "./provider-check.js";
 export {

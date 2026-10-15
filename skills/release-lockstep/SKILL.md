@@ -14,8 +14,8 @@ All catalog-publishable packages release in lockstep.
 version to equal the tag and every internal dependency to use the exact matching
 workspace range.
 
-**Lockstep set:** all **22 `publishable: true` packages** in
-`scripts/package-catalog.mjs` release together: 16 core packages (entries without
+**Lockstep set:** all **21 `publishable: true` packages** in
+`scripts/package-catalog.mjs` release together: 15 core packages (entries without
 a `tier`), 1 `tier: "alias"` package (`create-mono-agent` under `packages/*`), and
 5 `tier: "plugin"` extras under `extras/*` (a2a-adapter, agent-orchestrator,
 docs-mcp, messenger-adapter, and whatsapp-adapter). Plugin

@@ -25,7 +25,7 @@ Composition spine for an agent request. It turns a communication request into co
 ## Install / Usage
 
 ```bash
-pnpm add @mono-agent/agent-harness @mono-agent/runtime-adapter
+pnpm add @mono-agent/agent-harness @mono-agent/agent-runtime
 ```
 
 <!-- doc-test:typescript -->
@@ -36,10 +36,8 @@ import {
   createAgentResponder,
   createToolPolicy,
 } from "@mono-agent/agent-harness";
-import {
-  createMonoRuntime,
-  parseMonoRuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 const model = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
 const harness = createAgentHarness({
@@ -1193,7 +1191,7 @@ synthesize an unusable parent-link id.
 
 ## Dependency Boundary
 
-The harness may depend on core building blocks: agent-contracts, observability, and runtime-adapter. It owns prompt context assembly, selected skill loading, and fail-closed tool/MCP policy normalization. Sandbox policy/types are owned by runtime-adapter. It accepts the `MemoryStore` contract from `@mono-agent/agent-contracts` without depending on a concrete memory backend. It must not depend on communication adapters or host composition code.
+The harness may depend on core building blocks: agent-contracts, observability, and agent-runtime host integration. It owns prompt context assembly, selected skill loading, and fail-closed tool/MCP policy normalization. Sandbox policy/types are owned by agent-runtime host integration. It accepts the `MemoryStore` contract from `@mono-agent/agent-contracts` without depending on a concrete memory backend. It must not depend on communication adapters or host composition code.
 
 ## What This Package Does Not Own
 
@@ -1207,7 +1205,7 @@ It does not poll chats, serve UI, parse host settings files, own provider creden
   documents queue-after-turn, admission, execution bounds, and durable sessions.
 - [Tool policy](https://docs.mono-agent.dev/tools/policy/) covers the fail-closed tool
   boundary passed into this package.
-- [`@mono-agent/runtime-adapter`](https://github.com/robertsreberski/mono-agent/tree/main/packages/runtime-adapter)
+- [`@mono-agent/agent-runtime/host`](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-runtime)
   owns the runtime contract consumed here.
 - [`@mono-agent/agent-contracts`](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
   owns the structural request, stream, response, and memory interfaces.

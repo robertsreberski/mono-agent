@@ -1,6 +1,6 @@
 import { retainSubagentCommandReceipt, subagentCommandReceipt, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { randomUUID } from "node:crypto";
-import type { OwnedForegroundProcessRequest, OwnedForegroundProcesses, ProcessJobProcessHandle, ProcessJobProcessResult } from "@mono-agent/runtime-adapter";
+import type { OwnedForegroundProcessRequest, OwnedForegroundProcesses, ProcessJobProcessHandle, ProcessJobProcessResult } from "@mono-agent/agent-runtime/host/types";
 import type { ProcessIncarnation } from "./process-incarnation.js";
 import { SUBAGENT_SEEN_CALLS_MAX_BYTES, SUBAGENT_SEEN_CALLS_MAX_COUNT, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
 

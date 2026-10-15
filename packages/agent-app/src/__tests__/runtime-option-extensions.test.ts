@@ -1,7 +1,7 @@
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import { describe, expect, it, vi } from "vitest";
 
-import { failClosedSandboxPolicy, protectSandboxRoots } from "@mono-agent/runtime-adapter";
+import { failClosedSandboxPolicy, protectSandboxRoots } from "@mono-agent/agent-runtime/host/sandbox";
 
 import {
   clearSessionsSandboxPolicy,

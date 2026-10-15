@@ -8,12 +8,8 @@ import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import { modelReferenceKey } from "@mono-agent/runtime-adapter";
-import type {
-  MonoRuntimeLike,
-  RuntimeModelReference,
-  SandboxEngine,
-} from "@mono-agent/runtime-adapter";
+import { modelReferenceKey } from "@mono-agent/agent-runtime/host/config";
+import type { MonoRuntimeLike, RuntimeModelReference, SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 

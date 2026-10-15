@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeEventLike } from "@mono-agent/observability";
-import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
 import type { ConversationHistoryStore, HistoryMessage, PreparedHistoryAppend } from "../index.js";

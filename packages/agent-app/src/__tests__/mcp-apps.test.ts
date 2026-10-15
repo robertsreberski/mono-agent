@@ -24,11 +24,7 @@ import {
   type AgentReplyMcpAppPart,
   type AgentResponder,
 } from "@mono-agent/agent-contracts";
-import type {
-  RuntimeMcpAppConnection,
-  RuntimeMcpAppHost,
-  RuntimeMcpAppRegistration,
-} from "@mono-agent/runtime-adapter";
+import type { RuntimeMcpAppConnection, RuntimeMcpAppHost, RuntimeMcpAppRegistration } from "@mono-agent/agent-runtime/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {

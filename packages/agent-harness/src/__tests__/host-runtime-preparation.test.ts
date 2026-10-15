@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunRecorder } from "@mono-agent/observability";
-import type { MonoRuntimeLike, RuntimePreparedHandoff } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimePreparedHandoff } from "@mono-agent/agent-runtime/host/types";
 // @ts-expect-error Fake transport fixture, real native orchestration.
 import { preparedHostFixture } from "../../../agent-runtime/src/__tests__/fixtures/prepared-host-runtime.mjs";
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "../harness/runtime-execution.js";

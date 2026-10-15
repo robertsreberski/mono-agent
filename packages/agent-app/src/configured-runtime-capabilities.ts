@@ -1,4 +1,4 @@
-import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike } from "@mono-agent/agent-runtime/host/types";
 
 /** Private memory completion cannot expose storage methods outside its run lease. */
 export function completionOnlyRuntime(runtime: MonoRuntimeLike): MonoRuntimeLike {

@@ -2,7 +2,7 @@ import net from "node:net";
 
 import { listPiBuiltinModels } from "@mono-agent/agent-runtime";
 
-import { RuntimeAdapterError } from "./runtime-adapter.js";
+import { RuntimeAdapterError } from "./model-reference.js";
 import { isPlainObject } from "./runtime-helpers.js";
 import type { RuntimeModelReference } from "./types.js";
 

@@ -7,7 +7,7 @@ import * as harness from "@mono-agent/agent-harness";
 import * as bujo from "@mono-agent/memory/bujo";
 import * as store from "@mono-agent/memory/store";
 import * as search from "@mono-agent/memory/search";
-import * as runtime from "@mono-agent/runtime-adapter";
+import * as runtime from "@mono-agent/agent-runtime/host";
 import * as retrieval from "../memory-retrieval.js";
 import * as journal from "../memory-journal.js";
 import * as extensions from "../runtime-option-extensions.js";

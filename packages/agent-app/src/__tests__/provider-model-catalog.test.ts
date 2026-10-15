@@ -4,7 +4,7 @@ import {
   listPiBuiltinModels,
   listPiBuiltinProviders,
 } from "@mono-agent/agent-runtime";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 import { buildProviderModelCatalog, selectProviderAuthCheckModel } from "../provider-model-catalog.js";
 import { resolveAdvertisedModelEffortForBuiltin } from "../model-effort-capabilities.js";

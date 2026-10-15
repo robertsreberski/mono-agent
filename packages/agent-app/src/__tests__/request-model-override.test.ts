@@ -1,11 +1,5 @@
-import {
-  MODEL_REFERENCE_ECHO_MAX_BYTES,
-  MODEL_REFERENCE_REASON_MAX_BYTES,
-  parseMonoRuntimeModelReference,
-  RuntimeAdapterError,
-  sanitizeModelReferenceText,
-} from "@mono-agent/runtime-adapter";
-import type { LocalProviderDefinition, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/agent-runtime/host/config";
+import type { LocalProviderDefinition, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";

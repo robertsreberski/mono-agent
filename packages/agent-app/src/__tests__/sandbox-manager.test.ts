@@ -25,8 +25,8 @@ const runtimeAdapterMocks = vi.hoisted(() => ({
   createSrtSandboxEngine: vi.fn(),
 }));
 
-vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
+vi.mock("@mono-agent/agent-runtime/host/sandbox", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mono-agent/agent-runtime/host/sandbox")>();
   runtimeAdapterMocks.createSrtSandboxEngine.mockImplementation(actual.createSrtSandboxEngine);
   return { ...actual, createSrtSandboxEngine: runtimeAdapterMocks.createSrtSandboxEngine };
 });

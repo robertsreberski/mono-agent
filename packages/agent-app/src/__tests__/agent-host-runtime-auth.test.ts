@@ -9,12 +9,11 @@ const resolvePiApiKey = vi.fn();
 const createMonoRuntimeMock = vi.fn((_options: unknown) => fakeRuntime);
 const createPiOAuthApiKeyResolverMock = vi.fn((_options: unknown) => resolvePiApiKey);
 
-vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
+vi.mock("@mono-agent/agent-runtime/host", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mono-agent/agent-runtime/host")>();
   return {
     ...actual,
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
-    createPiOAuthApiKeyResolver: (options: unknown) => createPiOAuthApiKeyResolverMock(options),
   };
 });
 
@@ -71,3 +70,8 @@ function monoConfig(piAuthPath: string): MonoAgentConfig {
     },
   };
 }
+
+vi.mock("@mono-agent/agent-runtime", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/agent-runtime")>(),
+    createPiOAuthApiKeyResolver: (options: unknown) => createPiOAuthApiKeyResolverMock(options),
+}));

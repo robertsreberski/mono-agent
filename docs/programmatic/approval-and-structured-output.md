@@ -30,10 +30,8 @@ Approval gates let your host pause a tool call, ask a human (or another system) 
 <!-- doc-test:typescript -->
 
 ```ts
-import {
-  createMonoRuntime,
-  parseMonoRuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 const runtime = createMonoRuntime({
   workspace: process.cwd(),
@@ -98,10 +96,8 @@ Provide it directly to `run()` or through harness request options.
 <!-- doc-test:typescript -->
 
 ```ts
-import {
-  createMonoRuntime,
-  parseMonoRuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 const runtime = createMonoRuntime();
 const result = await runtime.run("Return only the requested structured result.", {
@@ -154,11 +150,9 @@ delivery that may have happened and must not be retried automatically.
 <!-- doc-test:typescript -->
 
 ```ts
-import {
-  createMonoRuntime,
-  parseMonoRuntimeModelReference,
-  type RuntimeLiveInputMessage,
-} from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import { type RuntimeLiveInputMessage } from "@mono-agent/agent-runtime/host/types";
 
 async function* steeringMessages(): AsyncIterable<RuntimeLiveInputMessage> {
   yield {

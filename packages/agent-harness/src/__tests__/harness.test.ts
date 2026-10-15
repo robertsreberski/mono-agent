@@ -12,10 +12,11 @@ import type {
   MemoryCompletedTurnResult,
   MemoryStore,
 } from "@mono-agent/agent-contracts";
-import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/agent-runtime/host/types";
 import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
 import type { RunExporter, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
-import { createSandboxPolicy, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 import {
   AgentHarnessFailureError,
@@ -2341,7 +2342,7 @@ describe("AgentHarness", () => {
     const admissions: MemoryCompletedTurn[] = [];
     const runtime = createFakeRuntime(async (_prompt, options) => {
       const observer = (options.observers as readonly unknown[] | undefined)?.find((value): value is {
-        recordToolLifecycle: (event: import("@mono-agent/runtime-adapter").RuntimeToolLifecycleEvent) => void
+        recordToolLifecycle: (event: import("@mono-agent/agent-runtime/host/types").RuntimeToolLifecycleEvent) => void
       } => typeof value === "object" && value !== null && "recordToolLifecycle" in value);
       expect(observer).toBeDefined();
       const call = (toolCallId: string, state: "error" | "success") => {

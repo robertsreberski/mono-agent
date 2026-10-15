@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createConfiguredAgentResponderForApp } from "../configured-agent.js";

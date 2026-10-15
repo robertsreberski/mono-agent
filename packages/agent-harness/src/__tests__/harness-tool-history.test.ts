@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
-import type { RuntimeRunOptions, RuntimeResult, RuntimeToolLifecyclePersistence } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult, RuntimeToolLifecyclePersistence } from "@mono-agent/agent-runtime/host/types";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {

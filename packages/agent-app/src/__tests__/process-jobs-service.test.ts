@@ -6,11 +6,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { parseProcessJobProjection, processJobPublicError, type ProcessJobProjection } from "@mono-agent/agent-contracts";
-import type {
-  ProcessJobProcessHandle,
-  ProcessJobProcessResult,
-  ProcessJobStartRequest,
-} from "@mono-agent/runtime-adapter";
+import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobStartRequest } from "@mono-agent/agent-runtime/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelId, RunningChannel } from "../channels.js";

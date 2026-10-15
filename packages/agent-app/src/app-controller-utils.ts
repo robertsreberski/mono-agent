@@ -10,12 +10,9 @@ import type {
   MemoryHealthIssueCode,
   MemoryHealthStatus,
 } from "@mono-agent/memory/bujo";
-import {
-  describeSandboxEffectiveState,
-  monoRuntimeSupportsMcpApps,
-  sandboxEffectiveStateWarning,
-} from "@mono-agent/runtime-adapter";
-import type { SandboxEffectiveState } from "@mono-agent/runtime-adapter";
+import { describeSandboxEffectiveState, sandboxEffectiveStateWarning } from "@mono-agent/agent-runtime/host/sandbox";
+import { monoRuntimeSupportsMcpApps } from "@mono-agent/agent-runtime/host";
+import type { SandboxEffectiveState } from "@mono-agent/agent-runtime/host/types";
 
 import type { SandboxStatus } from "./app-controller-types.js";
 import type {

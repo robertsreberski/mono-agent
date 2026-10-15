@@ -110,9 +110,9 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
     estimatedInputTokens: turns.length * 1000000, embeddingInputTokens: turns.length * 1000000, outputTokens: turns.length * 100000 },
     perCall: { embeddingTimeoutMs: 10000 } };
   const allowed = flags["allow-private-provider-route"] ?? [];
-  const llm = validatePrivateRoute(flags["private-capture-route"] ?? "ollama:private-unused", allowed, registration, modules.runtime);
+  const llm = validatePrivateRoute(flags["private-capture-route"] ?? "ollama:private-unused", allowed, registration, modules.runtimeConfig);
   const judgeRoute = flags["private-judge"];
-  if (judgeRoute !== undefined) validatePrivateRoute(judgeRoute, allowed, registration, modules.runtime);
+  if (judgeRoute !== undefined) validatePrivateRoute(judgeRoute, allowed, registration, modules.runtimeConfig);
   if (flags["private-mode"] === "capture" && flags["private-capture-route"] === undefined) throw new PrivateError("private_provider_route_refused");
   const budget = new Budget(plan); budget.privateChatCalls = 0;
   const cache = privateEmbeddingCache();
@@ -128,7 +128,7 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
       judgeWork = await mkdtemp(join(roots.outputRoot, "judge-"));
       await assertPrivateLocation(judgeWork, roots.repositories);
       try {
-        const llmConfig = validatePrivateRoute(judgeRoute, allowed, registration, modules.runtime);
+        const llmConfig = validatePrivateRoute(judgeRoute, allowed, registration, modules.runtimeConfig);
         const config = modules.config.resolveJsonMonoAgentConfig({ json: baseConfig(judgeWork, join(judgeWork, "memory"), flags, llmConfig), cwd: judgeWork });
         await mkdir(config.runtime.workspace, { mode: 0o700 });
         await assertPrivateLocation(judgeWork, roots.repositories);

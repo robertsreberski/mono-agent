@@ -473,7 +473,7 @@ it("manual/stale-map P disposal preserves the guarded current journal under the 
   const f = await setup(), current = managedHandle(f.before.providerSession.epoch), path = join(f.base, "native", "journals", `${journalOf(f.before.providerSession.epoch)}.jsonl`);
   const bytes = await readFile(path);
   const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-manual-owner", { modelKey: "faux:B" });
-  const { createMonoRuntime } = await import("@mono-agent/runtime-adapter");
+  const { createMonoRuntime } = await import("@mono-agent/agent-runtime/host");
   const runtime = createMonoRuntime({ workspace: f.base });
   const invalidation = vi.spyOn(runtime, "invalidateSession"), retirement = vi.spyOn(runtime, "retireDurableSession");
   try {

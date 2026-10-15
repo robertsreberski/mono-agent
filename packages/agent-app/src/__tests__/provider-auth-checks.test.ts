@@ -1,6 +1,6 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { ProviderAuthStatusSnapshot } from "@mono-agent/agent-contracts";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 import { describe, expect, it, vi } from "vitest";
 
 import { createProviderAuthCheckManager, type ProviderAuthCheckExecution } from "../provider-auth-checks.js";

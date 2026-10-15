@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { ProcessJobProcessHandle, ProcessJobStartRequest } from "@mono-agent/runtime-adapter";
+import type { ProcessJobProcessHandle, ProcessJobStartRequest } from "@mono-agent/agent-runtime/host/types";
 import { afterEach, describe, expect, it } from "vitest";
 
 // Package-private integration seam: this verifies the exact Pi runner used by

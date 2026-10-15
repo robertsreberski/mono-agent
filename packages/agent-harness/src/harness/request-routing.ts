@@ -1,9 +1,6 @@
 import { deriveRunSource } from "@mono-agent/observability";
-import {
-  modelReferenceKey,
-  parseMonoRuntimeModelReference,
-} from "@mono-agent/runtime-adapter";
-import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
+import type { RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 import { sessionModelKey } from "../session-runtime.js";
 import type { AgentHarnessRequest } from "../types.js";

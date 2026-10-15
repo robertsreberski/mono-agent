@@ -6,7 +6,7 @@ import {
   assertAgentContinuationOriginContext,
   type AgentContinuationOriginContext,
 } from "@mono-agent/agent-contracts";
-import { isValidMcpServerName } from "@mono-agent/runtime-adapter";
+import { isValidMcpServerName } from "@mono-agent/agent-runtime/host/config";
 
 import type { HistoryMessage } from "../context/index.js";
 import { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "../mcp-server-transport.js";

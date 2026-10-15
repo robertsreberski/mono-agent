@@ -1,6 +1,6 @@
 import type { TurnHistoryV5 } from "../../durable-model-switch-contract.js";
 import type { ConversationHistoryTurnInspection } from "../../types.js";
-import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/agent-runtime/host/types";
 type Mutable<T> = { -readonly [K in keyof T]: T[K] extends readonly (infer V)[] ? Mutable<V>[] : T[K] extends object ? Mutable<T[K]> : T[K] };
 export const bucket: string;
 export const modelKey: string;

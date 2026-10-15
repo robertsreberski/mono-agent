@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixture, ready, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 import { createAgentHarness } from "../harness.js";
-import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });

@@ -21,11 +21,7 @@ import {
   isKnownArtifactFailureKind,
   sanitizeVisibleText,
 } from "@mono-agent/observability";
-import type {
-  RuntimeToolLifecycleEvent,
-  RuntimeToolLifecyclePersistence,
-  RuntimeToolLifecycleTerminalState,
-} from "@mono-agent/runtime-adapter";
+import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, RuntimeToolLifecycleTerminalState } from "@mono-agent/agent-runtime/host/types";
 
 import { isProcessAlive } from "./history-process-liveness.js";
 import { continueToolHistoryOperationTail } from "./tool-history-worker-queue.js";

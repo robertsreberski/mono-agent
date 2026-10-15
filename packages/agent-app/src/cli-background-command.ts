@@ -15,9 +15,7 @@ import { acquireFilesystemLifecycleLock } from "./launchd-lifecycle-lock.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
 import { resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import { createSupervisedRestartAuthority } from "./supervised-restart-authority.js";
-import {
-  sandboxEffectiveStateWarning,
-} from "@mono-agent/runtime-adapter";
+import { sandboxEffectiveStateWarning } from "@mono-agent/agent-runtime/host/sandbox";
 
 import { startMonoAgentApp } from "./app.js";
 import type { MonoAgentApp, SandboxStatus } from "./app.js";

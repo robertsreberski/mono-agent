@@ -45,8 +45,21 @@ it("keeps native registry identity in runtime fan-out and registers only runtime
   await standalone.disposeAll();
 });
 
-it("always supplies runtime prefix preflight through the published factory", () => {
+it("always supplies runtime prefix preflight through the published factory", async () => {
   const native = createManagedNativeJournalStorage({ sessionsRoot: "/fictional/native" });
-  expect(native.checkInheritedPrefix).toBe(checkNativeInheritedPrefix);
+  const producer = await import("../../ai/providers/engine-turn/handoff-producer.js");
+  const fit = { status: "ready" };
+  vi.spyOn(producer, "checkNativeInheritedPrefix").mockResolvedValue(fit);
+  const messages = Object.freeze([{ role: "user", content: "Fictional input." }]);
+  const model = { provider: "faux", id: "fixture", api: "faux", contextWindow: 32000, maxTokens: 4096 };
+  const compaction = { enabled: true };
+  expect(await native.checkInheritedPrefix(messages, model, compaction, 10)).toBe(fit);
+  expect(checkNativeInheritedPrefix).toHaveBeenCalledOnce();
+  const [copiedMessages, actualModel, actualCompaction, prefixTokenCap] = checkNativeInheritedPrefix.mock.calls[0];
+  expect(copiedMessages).toEqual(messages);
+  expect(copiedMessages).not.toBe(messages);
+  expect(actualModel).toBe(model);
+  expect(actualCompaction).toBe(compaction);
+  expect(prefixTokenCap).toBe(10);
   expect(storage.createManagedNativeJournalStorage({ sessionsRoot: "/fictional/native" })).not.toHaveProperty("checkInheritedPrefix");
 });

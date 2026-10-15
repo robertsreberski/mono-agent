@@ -9,7 +9,7 @@ import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness"
 import { describe, expect, it, vi } from "vitest";
 import { formatProviderUsageLead } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 import { createAgentProviderUsage } from "../provider-usage-scope.js";
 import { createProviderUsageService } from "../provider-usage.js";
 import { createProviderUsageRuntimeExtension, isProviderUsageToolAllowed, PROVIDER_USAGE_INPUT } from "../provider-usage-tool.js";

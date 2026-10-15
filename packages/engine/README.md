@@ -370,7 +370,7 @@ validateSessionTurn
 ## Dependency Boundary
 
 Only exact-pinned Pi AI and Pi Agent Core 1.2.0 and Node built-ins. No dependency
-on `agent-runtime`, `runtime-adapter`, `agent-harness`, channels or host config.
+on `agent-runtime` (including its host integration), `agent-harness`, channels or host config.
 
 ## What This Package Does Not Own
 

@@ -66,6 +66,19 @@ describe("package Public API documentation", () => {
     ]);
   });
 
+  it("derives mixed host exports from TS without stale declaration output", async () => {
+    const fixture = await createPackageFixture({
+      exports: { "./host": { types: "./types/host/index.d.ts", default: "./dist/host/index.js" } },
+      sources: {
+        "src/host/index.ts": "export interface HostOptions { enabled: boolean }\nexport const createHost = () => {};\n",
+        "types/host/index.d.ts": "export declare const stale: boolean;\n",
+      },
+    });
+    const { inventories, errors } = collectPackagePublicApiInventories(fixture);
+    expect(errors).toEqual([]);
+    expect(inventories[0].entrypoints).toEqual([{ subpath: "./host", exportNames: ["HostOptions", "createHost"] }]);
+  });
+
   it("detects both missing and invented names in a classified inventory", async () => {
     const fixture = await createPackageFixture({
       exports: { ".": { types: "./dist/index.d.ts", import: "./dist/index.js" } },

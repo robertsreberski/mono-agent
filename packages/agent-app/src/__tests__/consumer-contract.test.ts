@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import type { SandboxEngine } from "@mono-agent/agent-runtime/host/types";
 
 import {
   consumerContractNames,

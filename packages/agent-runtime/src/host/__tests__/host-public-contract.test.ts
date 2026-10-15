@@ -1,27 +1,13 @@
-// Compile-time structural contract between this façade's hand-written types
-// (src/types.ts) and @mono-agent/agent-runtime's generated kernel types
-// (packages/agent-runtime/types/**, built by `tsc -p tsconfig.types.json`
-// from the kernel's JSDoc typedefs — see ai/types.js).
-//
-// Most assertions are compile-time only: `expectTypeOf(...).toExtend<...>()`
-// compiles only when assignability holds, so `tsc --noEmit` (`pnpm run
-// typecheck`) enforces the contract. Vitest also executes the public event
-// guard's positive and negative boundary cases.
-//
-// Kernel parameter/return/element types are extracted structurally via
-// `Parameters<...>`/`ReturnType<...>` off the consumed kernel symbols
-// (see src/runtime-adapter.ts's imports) rather than importing agent-runtime's
-// internal type names by name — this only depends on the shape actually
-// exercised at the seam, not on kernel type-alias naming.
+// Public host restrictions and deliberate adaptations to the canonical kernel.
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { createPiOAuthApiKeyResolver, createRuntime } from "@mono-agent/agent-runtime";
 import { parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 
-import { createMonoRuntime } from "../runtime-adapter.js";
-import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "../runtime-adapter.js";
-import { isRuntimeSubagentActivityEvent } from "../index.js";
+import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
+import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "@mono-agent/agent-runtime/host/types";
+import { isRuntimeSubagentActivityEvent } from "@mono-agent/agent-runtime/host/types";
 import type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
@@ -33,9 +19,6 @@ import type {
   RuntimeSubagentActivityEvent,
   RuntimeSubagentActivityPhase,
   RuntimeSubagentIdentity,
-  RuntimeToolLifecycleEvent,
-  RuntimeToolLifecyclePersistence,
-  RuntimeToolLifecycleSink,
   RuntimeToolLifecycleTerminalState,
   RuntimeToolOptions,
 } from "../types.js";
@@ -44,9 +27,6 @@ type KernelRuntimeInstance = ReturnType<typeof createRuntime>;
 type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
 type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
 type KernelRuntimeEvent = Parameters<NonNullable<KernelRunOptions["onEvent"]>>[0];
-type KernelToolLifecycleSink = NonNullable<KernelRunOptions["toolLifecycleSink"]>;
-type KernelToolLifecycleEvent = Parameters<KernelToolLifecycleSink>[0];
-type KernelToolLifecyclePersistence = Awaited<ReturnType<KernelToolLifecycleSink>>;
 type KernelSubagentActivityEvent = Extract<KernelRuntimeEvent, { type: "subagent_activity" }>;
 type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 type KernelRunResult = Awaited<ReturnType<KernelRuntimeInstance["run"]>>;
@@ -90,7 +70,7 @@ function assertAssignable<T>(_value: T): void {
   // Compile-time only.
 }
 
-describe("runtime-adapter facade / agent-runtime kernel structural contract", () => {
+describe("host public contract", () => {
   it("keeps live-input callbacks source-compatible with contextual-void expression returns", () => {
     const calls: string[] = [];
     const message: RuntimeLiveInputMessage = {
@@ -109,7 +89,7 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     expectTypeOf<RuntimeToolOptions["sandbox"]>().toEqualTypeOf<undefined>();
 
     if (false) {
-      // @ts-expect-error runtime-adapter owns and injects the sandbox implementation.
+      // @ts-expect-error createMonoRuntime owns and injects the sandbox implementation.
       createMonoRuntime({ sandbox: {} });
 
       const runtime = createMonoRuntime();
@@ -158,11 +138,6 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
   });
 
   it("keeps the public lifecycle sink exact for direct TypeScript consumers", () => {
-    expectTypeOf<KernelToolLifecycleEvent>().toEqualTypeOf<RuntimeToolLifecycleEvent>();
-    expectTypeOf<KernelToolLifecyclePersistence>()
-      .toEqualTypeOf<RuntimeToolLifecyclePersistence | undefined>();
-    expectTypeOf<KernelToolLifecycleSink>().toEqualTypeOf<RuntimeToolLifecycleSink>();
-
     if (false) {
       const runtime = createRuntime();
       void runtime.run("SYSTEM", {

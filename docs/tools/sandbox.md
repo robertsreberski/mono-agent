@@ -7,7 +7,7 @@ sidebar:
 
 For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This includes both `Bash` commands and the child process behind `NodeRepl`. This page covers the `sandbox` config block and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
-The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`.
+The whole block is **config** coverage backed by `@mono-agent/agent-runtime/host`.
 
 ## Quick reference
 

@@ -2,12 +2,8 @@ import type {
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/agent-harness";
-import {
-  mergeSandboxPolicies,
-  protectSandboxRoots,
-  type RuntimeModelReference,
-  type SandboxPolicy,
-} from "@mono-agent/runtime-adapter";
+import { mergeSandboxPolicies, protectSandboxRoots } from "@mono-agent/agent-runtime/host/sandbox";
+import { type RuntimeModelReference, type SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 
 import {
   assertClearSessionsRecoveryResolved,

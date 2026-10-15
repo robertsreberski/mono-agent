@@ -28,8 +28,7 @@ kernel.
 Mono-agent can add narrow, additive exports to `@mono-agent/agent-runtime` when
 Worklab needs an existing runtime surface that is already part of the package.
 For engine-turn response generation, Worklab should use
-`generateEngineTurnResponse` from `@mono-agent/agent-runtime/ai` (its deprecated
-`generatePiNativeResponse` alias is the same function) rather than a
+`generateEngineTurnResponse` from `@mono-agent/agent-runtime/ai` rather than a
 separate provider subpath or a `pi-sdk` compatibility export.
 
 Provider-package ownership follows the same rule. Worklab should remove

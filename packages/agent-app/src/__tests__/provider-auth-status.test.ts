@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ChannelDriver } from "../channels.js";

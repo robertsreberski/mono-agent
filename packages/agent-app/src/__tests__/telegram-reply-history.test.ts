@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore } from "@mono-agent/agent-harness";
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 import { createTelegramBot } from "@mono-agent/telegram-adapter";
 import { afterEach, describe, expect, it } from "vitest";
 

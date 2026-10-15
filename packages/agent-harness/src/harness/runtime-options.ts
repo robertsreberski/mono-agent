@@ -1,11 +1,6 @@
-import {
-  mergeSandboxPolicies,
-  modelReferenceKey,
-} from "@mono-agent/runtime-adapter";
-import type {
-  RuntimeModelReference,
-  SandboxPolicy,
-} from "@mono-agent/runtime-adapter";
+import { mergeSandboxPolicies } from "@mono-agent/agent-runtime/host/sandbox";
+import { modelReferenceKey } from "@mono-agent/agent-runtime/host/config";
+import type { RuntimeModelReference, SandboxPolicy } from "@mono-agent/agent-runtime/host/types";
 
 import type { AgentHarnessRuntimeOptionsExtension } from "../types.js";
 import { isRecord } from "./value-utils.js";

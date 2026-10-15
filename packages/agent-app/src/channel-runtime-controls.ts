@@ -1,8 +1,8 @@
 import { EFFORT_LEVELS, resolveConfiguredProviders } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TuiCatalogModel, TuiModelOption } from "@mono-agent/operator-adapter";
-import { modelReferenceKey } from "@mono-agent/runtime-adapter";
-import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { modelReferenceKey } from "@mono-agent/agent-runtime/host/config";
+import type { RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
 
 import { buildProviderModelCatalog } from "./provider-model-catalog.js";
 import { configuredRuntimeModels } from "./runtime-routes.js";

@@ -1,31 +1,12 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
-import {
-  supportsPiContext1M,
-  isAutodiscoverableProviderId,
-  isPrivateBaseUrl,
-  isPiBuiltinProvider,
-  localProviderDefinitionFor,
-  MODEL_REFERENCE_ECHO_MAX_BYTES,
-  MODEL_REFERENCE_REASON_MAX_BYTES,
-  modelReferenceKey,
-  parseMonoRuntimeModelReference,
-  PI_TRANSPORTS,
-  RuntimeAdapterError,
-  sanitizeModelReferenceText,
-  validateLocalProviderDefinition,
-  validateProviderDefinition,
-} from "@mono-agent/runtime-adapter";
-import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport, ProviderDefinition, RuntimeModelReference } from "@mono-agent/runtime-adapter";
-import {
-  SANDBOX_FALLBACKS,
-  SANDBOX_MODES,
-  SANDBOX_NETWORK_MODES,
-  SandboxPolicyError,
-  createSandboxPolicy,
-} from "@mono-agent/runtime-adapter";
-import type { SandboxFallback, SandboxMode, SandboxNetworkMode } from "@mono-agent/runtime-adapter";
+import { supportsPiContext1M } from "@mono-agent/agent-runtime/host/config";
+import { isAutodiscoverableProviderId, isPrivateBaseUrl, isPiBuiltinProvider, localProviderDefinitionFor, MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, modelReferenceKey, parseMonoRuntimeModelReference, RuntimeAdapterError, sanitizeModelReferenceText, validateLocalProviderDefinition, validateProviderDefinition } from "@mono-agent/agent-runtime/host/config";
+import { PI_TRANSPORTS } from "@mono-agent/agent-runtime/host/types";
+import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport, ProviderDefinition, RuntimeModelReference } from "@mono-agent/agent-runtime/host/types";
+import { SANDBOX_FALLBACKS, SANDBOX_MODES, SANDBOX_NETWORK_MODES, SandboxPolicyError, createSandboxPolicy } from "@mono-agent/agent-runtime/host/sandbox";
+import type { SandboxFallback, SandboxMode, SandboxNetworkMode } from "@mono-agent/agent-runtime/host/types";
 import {
   normalizeOptionalString,
   readBoolean,

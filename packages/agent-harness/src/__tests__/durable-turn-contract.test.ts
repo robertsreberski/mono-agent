@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { digestNativeTurnInput, formatLiveInputGuidance } from "@mono-agent/runtime-adapter";
+import { digestNativeTurnInput, formatLiveInputGuidance } from "@mono-agent/agent-runtime/ai/live-input-prompt.js";
 import { describe, expect, it } from "vitest";
 import {
   createPendingTurnPayload, createPendingTurnInput, createPendingInitialInput, createPendingLiveInput, durableTurnFenceDigest, parsePendingTurnPayload, serializeDurableTurnFence,

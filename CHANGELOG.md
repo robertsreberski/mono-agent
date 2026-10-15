@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Remove `@mono-agent/runtime-adapter` (breaking): import host construction,
+  config helpers, contracts, and sandbox support from
+  `@mono-agent/agent-runtime/host`, `/host/config`, `/host/types`, and
+  `/host/sandbox`. Keep direct kernel helpers at their canonical runtime or
+  contracts entrypoints; see the exact import table in the runtime migration
+  guide. Remove `resolveRuntimeBridge`, `generatePiNativeResponse`, and
+  `piNativeRuntimeBridge`; use `resolveEngineTurnAdapter`,
+  `generateEngineTurnResponse`, and `engineTurnAdapter`. No compatibility
+  package or aliases remain; behavior, storage formats, and protection stay
+  unchanged.
+
 - Add Pi's refreshed model catalog, including Claude Haiku 5.5 with native effort
   levels and long-prompt pricing. Azure routes now also cover Foundry Chat
   Completions and DeepSeek V4 Pro.

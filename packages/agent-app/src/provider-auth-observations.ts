@@ -1,7 +1,7 @@
 import type { ProviderAuthProviderStatus } from "@mono-agent/agent-contracts";
 import { MAX_PROVIDER_AUTH_ITEMS, PROVIDER_USAGE_IDS, type ProviderUsageId } from "@mono-agent/agent-contracts";
 import type { RunSummary } from "@mono-agent/observability";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 
 const FAILURE_TTL_MS = 24 * 60 * 60 * 1_000;
 const MAX_TRACKED_RUNS = MAX_PROVIDER_AUTH_ITEMS * 4;

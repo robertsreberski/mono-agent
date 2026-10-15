@@ -1511,3 +1511,5 @@ async function proveSrtEnforcement(launch: SrtLaunch): Promise<void> {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+export { MANAGED_SRT_TREE_SHA256, managedSrtInstallRoot } from "./sandbox-managed.js";

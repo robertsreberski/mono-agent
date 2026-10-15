@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
 import type { AgentHarnessOptions, ConversationHistoryStore } from "../types.js";
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions } from "@mono-agent/agent-runtime/host/types";
 
 const model = { provider: "faux", model: "base", reference: "faux:base" };
 const alternate = { provider: "faux", model: "override", reference: "faux:override" };

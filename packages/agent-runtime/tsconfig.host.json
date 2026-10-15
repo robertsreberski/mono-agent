@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declarationDir": "types",
+    "tsBuildInfoFile": "dist/.host.tsbuildinfo",
+    "paths": {
+      "#kernel/types": [
+        "./types/ai/types.d.ts"
+      ],
+      "#kernel/cost": [
+        "./types/ai/cost.d.ts"
+      ],
+      "#kernel/native-journal-types": [
+        "./types/ai/native-journal-types.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/host/**/*.ts"
+  ]
+}
