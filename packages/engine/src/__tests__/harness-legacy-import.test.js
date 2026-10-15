@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { JournalReader } from "../journal-reader.js";
+import { listLegacySessions } from "../legacy-import.js";
 import { JsonlSessionRepo, SessionStore } from "../session-store.js";
 const roots = [];
 async function fixture(version = 4) {
@@ -190,4 +192,41 @@ it.each([["import", false], ["import", true], ["clean_break", false], ["clean_br
   await reopened.close(); const bytes = await readFile(metadata.path);
   const again = await new JsonlSessionRepo({ sessionsRoot: root }).open(metadata); expect(await again.getRepairEntries()).toEqual(repairs); await again.close();
   expect((await readFile(metadata.path)).equals(bytes)).toBe(true);
+});
+
+it("filters id-specific discovery by filename before opening headers, including archives", async () => {
+  const { root, source } = await fixture();
+  await writeFile(join(root, "legacy", "fixture_other.jsonl"), "damaged unrelated source");
+  await writeFile(join(root, "legacy", "unattributable.jsonl"), "unknown owner");
+  await copyFile(source, `${source}.migrated`);
+  const open = vi.spyOn(JournalReader, "open");
+  const found = await listLegacySessions(root, { id: "fixture-session", includeArchives: true });
+  expect(found.sessions).toHaveLength(2);
+  expect(found.unattributed).toEqual([{ name: "legacy/unattributable.jsonl" }]);
+  expect(open.mock.calls.map(([path]) => path).sort()).toEqual([source, `${source}.migrated`, join(root, "legacy", "unattributable.jsonl")].sort());
+  open.mockClear();
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const session = await repo.create({ id: "fresh-fictional" }); await session.close();
+  expect(open.mock.calls.filter(([path]) => path.includes("/legacy/")).map(([path]) => path)).toEqual([join(root, "legacy", "unattributable.jsonl")]);
+  await expect(repo.create({ id: "other" })).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
+});
+
+it("finds and imports a renamed unattributable legacy source without losing context", async () => {
+  const { root, source, original } = await fixture();
+  const renamed = join(root, "legacy", "fictional-source.jsonl"); await rename(source, renamed);
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const metadata = await repo.find("fixture-session"); expect(metadata?.path).toBe(renamed);
+  const session = await repo.open(metadata);
+  try { expect((await session.getEntries()).map((entry) => entry.message.role)).toEqual(["user", "assistant"]); }
+  finally { await session.close(); }
+  expect(await readFile(`${renamed}.migrated`)).toEqual(original);
+  await repo.retireByHandle("fixture-session");
+  await expect(stat(`${renamed}.migrated`)).rejects.toMatchObject({ code: "ENOENT" });
+});
+it("keeps duplicate-source guards when one legacy filename has no attributable id", async () => {
+  const { root, source } = await fixture();
+  await copyFile(source, join(root, "legacy", "fictional-source.jsonl"));
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  await expect(repo.find("fixture-session")).rejects.toThrow("Invalid");
+  await expect(repo.open((await repo.list())[0])).rejects.toThrow("Invalid");
 });

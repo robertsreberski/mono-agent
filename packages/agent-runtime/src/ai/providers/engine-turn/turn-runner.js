@@ -297,6 +297,8 @@ export async function buildTurnHarness(runState, {
   steeringMode,
   options,
 }) {
+  const providerCheck = Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0;
+  // Codex auto transport can resend via SSE even with a zero retry budget.
   const harness = await createHarnessAdapter(session, {
     session,
     models: piModels,
@@ -306,14 +308,12 @@ export async function buildTurnHarness(runState, {
     tools,
     toolExecutionMode,
     silentTurnState: runState.silentTurn,
-    streamOptions: { transport, maxRetries, maxRetryDelayMs,
+    streamOptions: { transport: providerCheck ? "sse" : transport, maxRetries: providerCheck ? 0 : maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },
-    // One runtime knob controls both layers. Zero disables request retries;
-    // otherwise retain the inherited three driver retries and transport budget.
-    // Health probes also disable this layer (their transport budget is zero).
-    retry: { enabled: maxRetries > 0 && !(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0),
-      maxRetries: maxRetries === 0 ? 0 : 3, baseDelayMs: 1000 },
+    // Pi providers retry SDK-policy failures only before a response starts.
+    // Never resend their settled error: it may describe a partial paid stream.
+    retry: { enabled: false, maxRetries: 0 },
     steeringMode,
     followUpMode: steeringMode,
     assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.piSessionsRoot) : undefined,

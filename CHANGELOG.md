@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Report interrupted Web turns and wait for the user instead of starting an
+  automatic paid turn. Carry recovery advisories once into the next explicit
+  user turn; leave background-job completion delivery unchanged.
+
+- Use provider SDK pre-response retries sized by `piMaxRetries`, including
+  connection losses before response headers. Keep started streams from being
+  repeated by that layer and disable driver retries; configured router rules
+  still apply. Codex can fall back from websocket to SSE independently of the
+  retry budget. Force single-shot SSE for provider checks and summaries.
+
+- Let the first model switch proceed while unrelated conversations are active
+  or have damaged recovery data, preserving their ownership and evidence.
+
+- Let cancelled admissions stop waiting for pending-turn drain locks before
+  recovery publication starts.
+
+- Limit legacy session header reads to matching filenames for individual
+  session creation, lookup, import and retirement.
+
+- Keep history owners protected on inconclusive process probes, and retry
+  transient self-identity failures.
 - Fix concurrent durable A2A record reads during acceptance and expiry
   compaction. Keep active dispatches in doubt and expired keys permanently
   bound without rejecting safe atomic replacements as unsafe state.
@@ -99,9 +120,9 @@
   unattributable remnants instead of silently claiming complete cleanup. Report
   damaged pending recovery data with repair guidance, not another-send advice,
   and reject invalid native mutation IDs asynchronously. Store durable markers
-  for interrupted `AskUser` questions, not quoted notice text; the restart Web
-  wake omits `AskUser` and includes interrupted-question and unapplied-message
-  notes. Answer interrupted questions in a new message, never by reviving or
+  for interrupted `AskUser` questions, not quoted notice text; the next explicit
+  Web user turn includes interrupted-question and unapplied-message notes.
+  Answer interrupted questions in a new message, never by reviving or
   replaying the tool. Report admitted messages not confirmed as applied once on
   recovery; do not replay them, and resend them if still needed.
 

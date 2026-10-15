@@ -282,12 +282,14 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   /** @type {Array<any>} */
   const transcript = [];
   function commitCompaction(entries, compaction) {
+    const timestamp = Date.now();
     const committed = {
       type: "compaction",
       id: `c${transcript.length}`,
       parentId: entries.at(-1)?.id || null,
-      timestamp: Date.now(),
+      timestamp,
       ...compaction,
+      checkpoint: { summaryMessage: { role: "compactionSummary", summary: compaction.summary, tokensBefore: compaction.tokensBefore, timestamp } },
       fromHook: true,
     };
     const rebuilt = buildHarnessSessionContext([...entries, committed], { includeFailed: true });
@@ -585,7 +587,7 @@ describe("mid-run transcript accounting", () => {
     expect(adjustment.carriedUsage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
     expect(adjustment.baselineAfter).toBe(2);
     expect(buildHarnessSessionContext([
-      { type: "compaction", id: "c1", parentId: null, timestamp: 1, summary: "s", retainedTail: contextBefore },
+      { type: "compaction", id: "c1", parentId: null, timestamp: 1, summary: "s", retainedTail: contextBefore, checkpoint: { summaryMessage: { role: "compactionSummary", summary: "s", timestamp: 1 } } },
     ], { includeFailed: true }).slice(adjustment.baselineAfter)).toEqual(contextBefore.slice(1));
   });
 });

@@ -192,19 +192,15 @@ it("Web retry/reopen never authorize a new billed generation", async () => {
   }
 });
 
-it("real typed root contention drains without waiting on a pinned foreign claim or replaying the Web message", async () => {
+it("the first configured Web switch needs no root-wide drain while a foreign claim stays pinned", async () => {
   const f = await fixture(); await f.seed(); const h = await f.make(true);
   const foreign = await f.getStore().beginProviderSessionTurn!("fictional-other-owner", "fictional-pinned-run", { modelKey: "faux:A" });
-  const before = await f.record();
   try {
-    await expect(h.respond(f.request("fictional-busy-web-message", "faux:B"), { append: async () => {} }))
-      .rejects.toMatchObject({ failure: { kind: "native_switch_busy", details: { retryable: true } } });
-    expect(f.getDraining()).toHaveBeenCalledExactlyOnceWith({ limit: 32 });
-    expect(await f.record()).toEqual(before); expect(f.transport).toHaveBeenCalledTimes(1);
-    // The failed preparation's claim is gone while the unrelated claim is still
-    // pinned. Inspection does not retry or admit the failed incoming message.
-    const released = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-post-busy-inspection");
-    try { expect((await released.read()).pending).toBeUndefined(); } finally { await released.abort(); }
+    f.faux.setResponses([reply(summary), reply("Fictional switched answer")]);
+    await h.respond(f.request("fictional-active-sibling-web-message", "faux:B"), { append: async () => {} });
+    expect(f.getDraining()).not.toHaveBeenCalled();
+    expect(f.transport).toHaveBeenCalledTimes(3);
+    expect((await f.getStore().load("web:fictional-thread")).at(-1)?.content).toBe("Fictional switched answer");
   } finally { await foreign.abort(); }
 });
 

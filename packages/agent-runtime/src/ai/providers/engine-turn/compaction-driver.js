@@ -175,11 +175,14 @@ export function piSummaryReserveTokens(summaryMaxTokens, isSplitTurn) {
 }
 
 async function previewCompactedContext(branchEntries, result) {
+  const timestamp = Date.now();
   const previewEntry = {
     type: "compaction",
     id: "mono-agent-compaction-preview",
     parentId: branchEntries.at(-1)?.id || null,
-    timestamp: Date.now(),
+    timestamp,
+    // This is a projection-only preview, not a persisted journal cut.
+    checkpoint: { summaryMessage: { role: "compactionSummary", summary: result.summary, tokensBefore: result.tokensBefore, timestamp } },
     summary: result.summary,
     retainedTail: result.retainedTail,
     tokensBefore: result.tokensBefore,

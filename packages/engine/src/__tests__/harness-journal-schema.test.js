@@ -36,8 +36,11 @@ function allKindsFixture() {
     const result = append("message", { message: { role: "toolResult", toolCallId: "call-one", toolName: "Read", isError: false },
       contextParentId: message.id, provenance: { provider: "faux", api: "faux", model: "fictional" }, input: { id: null, complete: true } }, "operation-one");
     append("tool_result", { callId: "call-one", name: "Read", messageId: result.id, outcome: "success" }, "operation-one");
-    const checkpoint = append("compaction", { compaction: { summary: "Fictional summary." }, contextParentId: result.id,
-      preservedMessageIds: [message.id, result.id], derivedMessages: [], coverageVersion: 1 }, "operation-one");
+    const checkpoint = append("compaction", { compaction: { summary: "Fictional summary.", checkpoint: {
+      version: 1, projectionVersion: 1, summaryMessage: { role: "compactionSummary", summary: "Fictional summary.", timestamp: 1 },
+      preservedMessageIds: [message.id, result.id], derivedMessages: [], tokensBefore: null, tokensAfter: null, model: null,
+      coverage: { version: 1, sourceTipId: result.id, sourceEntryCount: 3 },
+    } }, contextParentId: result.id, preservedMessageIds: [message.id, result.id], derivedMessages: [], coverageVersion: 1 }, "operation-one");
     append("operation_end", { status: "completed", tipId: checkpoint.id }, "operation-one");
     append("rewind", { tipId: result.id });
     append("interruption", { cause: "explicit-account", operationIds: ["operation-one"] });
@@ -165,4 +168,12 @@ it("rejects malformed protected descriptors independently of recovery capability
     { ...descriptor, handleId: "other" }, { ...descriptor, ownerKey: "" }]) {
     expect(() => validateSessionTurn(bad, "handle")).toThrow("sessionTurn");
   }
+});
+
+it("rejects current-format compactions without a checkpoint without advancing the validator", () => {
+  const { append, validator } = fixture();
+  const seq = validator.seq, tip = validator.tip;
+  expect(() => append("compaction", { compaction: { summary: "Fictional summary", tokensBefore: 100, retainedTail: [] },
+    contextParentId: null, preservedMessageIds: [], derivedMessages: [], coverageVersion: 1 })).toThrow("Invalid");
+  expect(validator.seq).toBe(seq); expect(validator.tip).toBe(tip);
 });

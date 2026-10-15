@@ -13,8 +13,8 @@ import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 //     is "open the session from a repo and hand it to a new harness". There is
 //     no separate live-session registry here.
 //   * The provider transport (pi-ai streamSimple) is invoked by the harness;
-//     retry/backoff is delegated to pi-ai via streamOptions.maxRetries instead
-//     of the legacy manual loop.
+//     pre-response retry/backoff is owned by pi-ai provider transport; the
+//     engine never retries a settled response or a partial paid stream.
 //   * Tool sandboxing, approval gates, allowlist/bloat filtering, and the MCP
 //     tool bridge are reused shared pieces — they are wired into the harness
 //     via its `tools` option, never reimplemented.
@@ -628,12 +628,11 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     mcpClients = builtMcpClients;
     closeRunTools = builtCloseRunTools;
 
-    // Provider retry/backoff is delegated to pi-ai via streamOptions, replacing
-    // the legacy hand-rolled stream-retry loop.
+    // One pre-response SDK-policy retry layer in pi-ai; no driver response retry.
     const retryValue = typeof options.piMaxRetries === "string" && options.piMaxRetries.trim() !== ""
       ? Number(options.piMaxRetries) : options.piMaxRetries;
-    const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, retryValue)) : 2;
-    const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs))
+    const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, Math.trunc(retryValue))) : 2;
+    const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs)) && Number(options.maxRetryDelayMs) > 0
       ? Number(options.maxRetryDelayMs)
       : 60_000;
     // Steering controls user follow-up delivery, not tool scheduling. Keep it

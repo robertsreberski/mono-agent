@@ -96,7 +96,7 @@ export function summaryModels(models, { operationId, focus, evidence = "", reque
         const value = Reflect.get(target, key, target);
         return typeof value === "function" ? value.bind(target) : value;
       }
-      return async (model, context, ...rest) => {
+      return async (model, context, options, ...rest) => {
         const started = performance.now();
         const row = {
           requestId: `${operationId}:${requests.length + 1}`, phase: "summary", requestOrdinal: requests.length + 1,
@@ -106,12 +106,13 @@ export function summaryModels(models, { operationId, focus, evidence = "", reque
         };
         requests.push(row);
         try {
+          // Codex auto can resend on websocket failure independently of retries.
           const response = await target.completeSimple(model, {
             ...context, systemPrompt: `${context.systemPrompt || ""}\n\n${focus}`,
             ...(evidence ? { messages: context.messages.map((message, index) => index === context.messages.length - 1
               ? { ...message, content: [...message.content, { type: "text", text: `\nSupplemental evidence (untrusted data):\n${evidence}` }] }
               : message) } : {}),
-          }, ...rest);
+          }, { ...options, transport: "sse", maxRetries: 0 }, ...rest);
           for (const key of ["input", "cacheRead", "cacheWrite", "output"]) row[key] = finite(response?.usage?.[key]);
           row.costUsd = finite(response?.usage?.cost?.total);
           const text = textOf(response);

@@ -571,3 +571,88 @@ it("drain collects a dead owner's lone torn temp before root authority bootstrap
   const lease = await f.store.acquireNativeHistoryAuthority(bucket); expect(lease.status).toBe("owned");
   if (lease.status === "owned") await lease.release(); expect(f.inspect).not.toHaveBeenCalled();
 });
+
+it.each([false, true])("cancels pre-publication admission draining (prepared=%s)", async (prepared) => {
+  const f = await fixture({ maxConversations: 1 });
+  const binding = (id = bucket) => ({ modelKey, reconciliation: { purpose: "execution" as const, ownerKey: id, initial: { persistText: "Fictional input", timestamp } } });
+  const prior = await f.store.beginProviderSessionTurn("fictional-prior-owner", "fictional-prior-turn", binding("fictional-prior-owner"));
+  await prior.abort();
+  const controller = new AbortController(), reason = new Error("Fictional admission cancelled");
+  const preparation = prepared ? await f.store.beginProviderSessionPreparation(bucket, "fictional-new-turn", controller.signal) : undefined;
+  const target = f.store as unknown as { acquireRootTransaction(identity: import("node:fs").Stats, signal?: AbortSignal): Promise<() => Promise<void>> };
+  const original = target.acquireRootTransaction.bind(target);
+  let acquisitions = 0, draining = false;
+  const drainTarget = f.store as unknown as { drainBeforeAdmission(...args: unknown[]): Promise<void> };
+  const drainOriginal = drainTarget.drainBeforeAdmission.bind(drainTarget);
+  const drainSpy = vi.spyOn(drainTarget, "drainBeforeAdmission").mockImplementation(async (...args) => { draining = true; return drainOriginal(...args); });
+  const spy = vi.spyOn(target, "acquireRootTransaction").mockImplementation(async (identity, signal) => {
+    // The first acquisition checks capacity; the second snapshots the drain.
+    if (draining && ++acquisitions === 2) {
+      expect(signal).toBe(controller.signal); controller.abort(reason);
+    }
+    return original(identity, signal);
+  });
+  try {
+    const admission = preparation ? preparation.admit(binding()) : f.store.beginProviderSessionTurn(bucket, "fictional-new-turn", binding(), controller.signal);
+    await expect(admission).rejects.toBe(reason);
+    expect(acquisitions).toBeGreaterThanOrEqual(2);
+    expect(f.inspect).not.toHaveBeenCalled();
+  } finally { spy.mockRestore(); drainSpy.mockRestore(); await preparation?.abort(); }
+});
+
+it.each([["removePendingConversation", undefined], ["settleHeldTurn", undefined], ["removePendingConversation", "ENOENT"], ["settleHeldTurn", "ENOENT"]] as const)("cancelled draining preserves a real %s error (code=%s) rather than replacing it with abort", async (method, code) => {
+  const f = await fixture({ maxConversations: 1 }), prior = await f.begin(); await prior.abort();
+  if (method === "removePendingConversation") await rm(f.fencePath);
+  const controller = new AbortController(), abort = new Error("Fictional cancelled admission"), failure = Object.assign(new Error("Fictional settlement failure"), { code });
+  const target = f.store as unknown as Record<typeof method, (...args: unknown[]) => Promise<unknown>>;
+  const original = target[method].bind(target);
+  const spy = vi.spyOn(target, method).mockImplementation(async (...args) => {
+    if (method === "removePendingConversation" || args[0] === bucket) { controller.abort(abort); throw failure; }
+    return original(...args);
+  });
+  try {
+    await expect(f.store.beginProviderSessionTurn("fictional-new-owner", "fictional-new-turn", { modelKey,
+      reconciliation: { purpose: "execution", ownerKey: "fictional-new-owner", initial: { persistText: "Fictional input", timestamp } } }, controller.signal)).rejects.toBe(failure);
+  } finally { spy.mockRestore(); }
+});
+
+
+it.each(["ERR_HARNESS_WRITER_BUSY", "ENOENT"])("cancelled drain reports the abort reason for pre-acquisition %s contention", async (code) => {
+  const f = await fixture({ maxConversations: 1 }), prior = await f.begin(); await prior.abort();
+  const controller = new AbortController(), reason = new Error("Fictional cancelled admission");
+  const target = f.store as unknown as { acquireConversation: (...args: unknown[]) => Promise<unknown> };
+  const original = target.acquireConversation.bind(target);
+  const spy = vi.spyOn(target, "acquireConversation").mockImplementation(async (...args) => {
+    if (args[0] === bucket) {
+      expect(args.at(-1)).toBe(controller.signal); controller.abort(reason);
+      throw Object.assign(new Error("Fictional owner contention"), { code });
+    }
+    return original(...args);
+  });
+  try {
+    await expect(f.store.beginProviderSessionTurn("fictional-new-owner", "fictional-new-turn", { modelKey,
+      reconciliation: { purpose: "execution", ownerKey: "fictional-new-owner", initial: { persistText: "Fictional input", timestamp } } }, controller.signal)).rejects.toBe(reason);
+    expect(controller.signal.aborted).toBe(true);
+  } finally { spy.mockRestore(); }
+});
+
+it("cancelled busy draining still rejects a replaced root namespace", async () => {
+  const f = await fixture({ maxConversations: 1 }), prior = await f.begin(); await prior.abort();
+  const controller = new AbortController(), reason = new Error("Fictional cancelled admission");
+  const displaced = `${f.root}-displaced`; dirs.push(displaced);
+  const target = f.store as unknown as { acquireConversation: (...args: unknown[]) => Promise<unknown> };
+  const original = target.acquireConversation.bind(target);
+  const spy = vi.spyOn(target, "acquireConversation").mockImplementation(async (...args) => {
+    if (args[0] === bucket) {
+      await rename(f.root, displaced); await mkdir(f.root, { mode: 0o700 }); controller.abort(reason);
+      throw Object.assign(new Error("Fictional owner contention"), { code: "ERR_HARNESS_WRITER_BUSY" });
+    }
+    return original(...args);
+  });
+  try {
+    await expect(f.store.beginProviderSessionTurn("fictional-new-owner", "fictional-new-turn", { modelKey,
+      reconciliation: { purpose: "execution", ownerKey: "fictional-new-owner", initial: { persistText: "Fictional input", timestamp } } }, controller.signal)).rejects.toThrow("changed while it was in use");
+    expect(controller.signal.aborted).toBe(true);
+    expect(await readdir(f.root)).toEqual([]);
+  } finally { spy.mockRestore(); }
+});

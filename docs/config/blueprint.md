@@ -138,8 +138,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "transport": "auto",                // auto | sse | websocket | websocket-cached
       // "cacheRetention": "short",      // opt out of default Anthropic 1h cache; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
-      "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
-      "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
+      "piMaxRetries": 2,                   // 0-8; provider SDK-policy retries before a response starts
+      "maxRetryDelayMs": 60000,            // ceiling for provider-requested Retry-After delays (ms); longer requests fail
       "piSessionsRoot": ".mono-agent/sessions" // durable JSONL sessions → resume across restarts (unset = in-memory)
     },
     "local": [
