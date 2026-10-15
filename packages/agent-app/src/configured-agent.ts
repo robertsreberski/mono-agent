@@ -1,3 +1,4 @@
+import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import type { ConversationHistoryTurnInspection } from "@mono-agent/agent-harness";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
 import { implicitModelRuntimeOptions } from "./request-model-override.js";
@@ -1153,6 +1154,7 @@ async function createConfiguredAgentHarnessInternal(
 ): Promise<AgentHarness> {
   const config = options.config;
   assertNoRetiredMonoAgentConfig(config);
+  await assertSupportedSessionsRoot(config.runtime.session.root);
   const switchConfig = config.runtime.session.modelSwitch;
   if (switchConfig?.enabled === true) {
     if (config.runtime.session.mode !== "continuous") throw new MonoAgentConfigError("invalid_json",

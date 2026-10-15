@@ -1038,7 +1038,7 @@ describe("AgentHarness continuous sessions", () => {
     ]));
   });
 
-  it("keeps a custom history store process-local even when extensions try to force durable Pi state", async () => {
+  it("keeps a custom history store process-local even when extensions try to force durable session state", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "warm-only" }));

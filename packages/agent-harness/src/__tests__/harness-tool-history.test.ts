@@ -677,7 +677,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     await harness.dispose?.();
   });
 
-  it("seeds durable Pi reopen with tool history as a prior message so native resume can omit it", async () => {
+  it("seeds durable session reopen with tool history as a prior message so native resume can omit it", async () => {
     const { identityPath, root } = await fixture();
     const writer = await ToolHistoryWriter.open({ root });
     const reader = new ToolHistoryReader(root);

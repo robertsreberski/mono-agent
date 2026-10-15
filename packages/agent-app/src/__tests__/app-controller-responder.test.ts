@@ -427,7 +427,7 @@ describe("process-job mixed fallback route guard", () => {
     }
   });
 
-  it("fails a degraded all-Pi turn before providers when the sandbox engine is unavailable", async () => {
+  it("fails a degraded session turn before providers when the sandbox engine is unavailable", async () => {
     const fixture = await createRouteGuardFixture(
       PI_ROUTE,
       PI_FALLBACK_ROUTE,

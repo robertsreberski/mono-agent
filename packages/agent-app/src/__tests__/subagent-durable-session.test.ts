@@ -289,7 +289,7 @@ describe("app persistent subagent durable sessions", () => {
       expect(await transcript()).toBe("");
     } finally { await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
   });
-  it("a real parent Pi turn sees Agent awaiting_reply as a non-error and has no AskParent", async () => {
+  it("a real parent session turn sees Agent awaiting_reply as a non-error and has no AskParent", async () => {
     const root = await mkdtemp(resolve(process.cwd(), ".parent-dialogue-test-"));
     const owner = createMonoRuntime();
     try {

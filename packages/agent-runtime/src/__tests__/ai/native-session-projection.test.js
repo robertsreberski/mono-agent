@@ -342,7 +342,7 @@ it.each(["coverage-extra", "source-extra", "long-journal-id", "long-tip-id", "ar
   const result = await generateEngineTurnResponse("Rules", opts);
   expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false);
   expect(provider).not.toHaveBeenCalled(); expect(f.assertCurrent).not.toHaveBeenCalled();
-  expect(await readdir(f.root)).not.toContain("journals");
+  expect(await readdir(f.root)).toEqual([]);
 });
 
 it.each([discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow].map((cleanup) => [cleanup.name, cleanup]))(

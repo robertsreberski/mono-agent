@@ -235,22 +235,22 @@ describe("loadProcessJobsSettings", () => {
       kind: "ACP sessions",
     },
     {
-      name: "inside Pi provider sessions",
+      name: "inside Sessions",
       value: { runtime: { session: { root: ".state/sessions" } },
         artifacts: { dir: ".other/artifacts" },
         providers: { piNative: {} },
         processJobs: { stateDir: ".state/sessions/jobs" },
       },
-      kind: "Pi provider sessions",
+      kind: "Sessions",
     },
     {
-      name: "containing Pi provider sessions",
+      name: "containing Sessions",
       value: { runtime: { session: { root: ".state/sessions" } },
         artifacts: { dir: ".other/artifacts" },
         providers: { piNative: {} },
         processJobs: { stateDir: ".state" },
       },
-      kind: "Pi provider sessions",
+      kind: "Sessions",
     },
   ])("rejects a process-job state directory $name the clear-sessions root", async ({ value, kind }) => {
     const input = await fixture(value);
@@ -300,7 +300,7 @@ describe("loadProcessJobsSettings", () => {
 
     await expect(loadProcessJobsSettings(input)).rejects.toMatchObject({
       code: "invalid_json",
-      details: { path: "processJobs.stateDir", purgeRootKind: "Pi provider sessions" },
+      details: { path: "processJobs.stateDir", purgeRootKind: "Sessions" },
     });
   });
 

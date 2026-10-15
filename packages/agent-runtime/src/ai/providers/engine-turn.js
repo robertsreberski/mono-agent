@@ -553,7 +553,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     nativeSessionAuthority: options.nativeSessionAuthority && { ...options.nativeSessionAuthority,
       hostAuthority: structuredClone(options.nativeSessionAuthority.hostAuthority) },
     nativeSessionProjection: options.nativeSessionProjection && structuredClone(options.nativeSessionProjection) };
-  const durableRepo = resolveDurableNativeSessionRepo(options.sessionsRoot);
+  let durableRepo;
 
   const prepareRun = async () => {
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
@@ -649,6 +649,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
   };
 
   try {
+    durableRepo = resolveDurableNativeSessionRepo(options.sessionsRoot);
     const prepared = control ? await prepareRun() : undefined;
     if (prepared) {
       if (runtimeWarnings.some((warning) => ["mcp_init_failed", "mcp_list_tools_failed"].includes(warning.warning_kind))) {
@@ -1334,6 +1335,9 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     if (err?.code === "ERR_NATIVE_SESSION_AUTHORITY" || err?.code === "ERR_HANDOFF_DISPATCH_BUDGET") {
       return { ...failure, failureKind: err.code === "ERR_NATIVE_SESSION_AUTHORITY" ? "safety_native_session_authority" : "safety_handoff_dispatch_budget",
         retryable: false, providerSessionRecovery: undefined };
+    }
+    if (err?.code === "ERR_SESSIONS_ROOT_UNSUPPORTED") {
+      return { ...failure, failureKind: "safety_sessions_root_unsupported", retryable: false, providerSessionRecovery: undefined };
     }
     if (isJournalStorageError(err)) {
       return { ...failure, failureKind: "safety_journal_storage_failed", retryable: false, providerSessionRecovery: undefined,

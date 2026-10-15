@@ -226,13 +226,13 @@ it("rejects complete corrupt records without repairing them", async () => {
   expect(await readFile(session.metadata.path)).toEqual(original);
 });
 
-it("rejects replaced roots and symlink files without recreating or mutating them", async () => {
+it.each(["journals", "locks"])("rejects replaced %s and symlink files without recreating or mutating them", async (directory) => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "replaced" });
-  await rename(join(r, "locks"), join(r, "quarantined"));
+  await rename(join(r, directory), join(r, "quarantined"));
   await expect(session.appendMessage(message)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(session.close()).rejects.toMatchObject({ code: "ENOENT" });
   await expect(repo.create({ id: "late" })).rejects.toMatchObject({ code: "ENOENT" });
-  await expect(stat(join(r, "locks"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(join(r, directory))).rejects.toMatchObject({ code: "ENOENT" });
   const other = new JsonlSessionRepo({ sessionsRoot: await root() }); const victim = await other.create({ id: "symlink" }); await victim.close();
   const target = `${victim.metadata.path}.target`; await rename(victim.metadata.path, target); const bytes = await readFile(target);
   await symlink(target, victim.metadata.path);

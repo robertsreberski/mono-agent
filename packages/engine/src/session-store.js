@@ -391,6 +391,8 @@ export class JsonlSessionRepo {
     this.locksPromise ??= JournalLocks.open(this.root, this.onRootPermissionsTightened);
     const locks = await this.locksPromise;
     await locks.assertRoot();
+    // Once pinned, a removed journals directory must never be recreated by a late writer.
+    if (this.directoryIdentity !== null) { await this.assertDirectory(); return locks; }
     try { await mkdir(this.directory, { mode: 0o700 }); }
     catch (error) { if (error.code !== "EEXIST") throw error; }
     const stat = await lstat(this.directory);

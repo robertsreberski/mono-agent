@@ -80,6 +80,13 @@ describe("resolveAppSessionsRoot", () => {
     expect(root).toBe(join(dir, "from-config"));
   });
 
+  it.each([undefined, ".mono-agent/new-sessions"])("rejects the old raw config key even with replacement=%s", async (replacement) => {
+    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "old" } },
+      runtime: { session: { root: replacement } } });
+    await expect(resolveAppSessionsRoot(inputFor(configPath))).rejects.toThrow(
+      "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there");
+  });
+
   it("returns undefined (does not throw) when the config file is malformed", async () => {
     const configPath = join(dir, "mono-agent.config.json");
     await writeFile(configPath, "{ not valid json");
@@ -111,6 +118,37 @@ describe("purgeConversationState session accounting", () => {
     expect(result.root).toBe(root);
     expect(result.files).toBe(2);
     await expect(stat(root)).rejects.toThrow();
+  });
+
+  it("rejects old-key purge config before deleting any continuity store", async () => {
+    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: ".mono-agent/sessions" } } });
+    const paths = ["sessions/mono-v2/evidence.jsonl", "history/conversation.history.json",
+      "subagents/instances.json", "acp-sessions/authorization.json"];
+    for (const name of paths) {
+      const path = join(dir, ".mono-agent", name);
+      await mkdir(join(path, ".."), { recursive: true });
+      await writeFile(path, "fictional evidence");
+    }
+    const afterValidation = vi.fn();
+    await expect(purgeConversationState(inputFor(configPath), { hooks: { afterValidation } })).rejects.toThrow(
+      "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there");
+    expect(afterValidation).not.toHaveBeenCalled();
+    for (const name of paths) expect(await readFile(join(dir, ".mono-agent", name), "utf8")).toBe("fictional evidence");
+  });
+
+  it("keeps the existing recovery-manifest discriminator independent of the Sessions display label", async () => {
+    const configPath = await writeConfig({ runtime: { session: { root: ".mono-agent/sessions" } } });
+    const root = join(dir, ".mono-agent", "sessions"); await mkdir(root, { recursive: true });
+    await writeFile(join(root, "fixture.jsonl"), "fictional evidence");
+    await expect(purgeConversationState(inputFor(configPath), { hooks: { afterRootQuarantined: () => {
+      throw new Error("fictional interruption");
+    } } })).rejects.toThrow("fictional interruption");
+    const registry = clearSessionsRegistryRoot(dir), names = (await readdir(registry)).filter((name) => name.endsWith(".json"));
+    expect(names).toHaveLength(1);
+    // A wire discriminator is not a public config alias; existing interrupted purges must remain recoverable.
+    expect(JSON.parse(await readFile(join(registry, names[0]!), "utf8")).kind).toBe("Pi provider sessions");
+    await purgeConversationState(inputFor(configPath));
+    await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("refuses pre-release roots during purge without deleting session evidence", async () => {
@@ -437,7 +475,7 @@ describe("purgeConversationState", () => {
 
     await expect(purgeConversationState(inputFor(configPath))).rejects.toMatchObject({
       code: "invalid_json",
-      details: { path: "processJobs.stateDir", purgeRootKind: "Pi provider sessions" },
+      details: { path: "processJobs.stateDir", purgeRootKind: "Sessions" },
     });
     await expect(readFile(join(sessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("session\n");
     await expect(readFile(join(historyRoot, "conversation.history.json"), "utf8")).resolves.toBe("history\n");

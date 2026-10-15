@@ -106,7 +106,7 @@ function contentMessages(options: RuntimeRunOptions): string[] {
   return options.messages.map((message) => `${message.role}:${String(message.content)}`);
 }
 
-describe("configured durable Pi history", () => {
+describe("configured durable session history", () => {
   it("replays canonical history once and retains valid epochs after cancellation and failure", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-app-durable-pi-history-"));
     tempDirs.push(dir);

@@ -4484,3 +4484,8 @@ it("rejects the renamed harness root option before construction", () => {
   expect(() => createAgentHarness({ piSessionsRoot: "/fictional/old", sessionsRoot: "/fictional/new" } as never))
     .toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
 });
+
+it("rejects the old sessions root nested in runtime options at construction", () => {
+  expect(() => createAgentHarness({ runtimeOptions: { piSessionsRoot: "/fictional/old" } } as never))
+    .toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+});

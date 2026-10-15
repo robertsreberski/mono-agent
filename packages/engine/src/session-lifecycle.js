@@ -248,12 +248,12 @@ export async function resolveSession(runState, {
         if (remaining) coldOpenCounts.set(requestedSessionId, remaining); else coldOpenCounts.delete(requestedSessionId);
       }
     }
-    const unreadable = () => unavailable(requestedSessionId, `session ${requestedSessionId} catalogue could not be read; native evidence was preserved`, "native_journal_unreadable", "pi_session_unreadable");
+    const unreadable = () => unavailable(requestedSessionId, `Session ${requestedSessionId} catalogue could not be read; native evidence was preserved`, "native_journal_unreadable", "pi_session_unreadable");
     if (!entry) {
-      if (busy) return unavailable(requestedSessionId, `session ${requestedSessionId} is busy`, "session_busy", "pi_session_busy");
+      if (busy) return unavailable(requestedSessionId, `Session ${requestedSessionId} is busy`, "session_busy", "pi_session_busy");
       if (durableRepo && requireExisting) {
         if (uncertain) return unreadable();
-        return unavailable(requestedSessionId, `session ${requestedSessionId} is not live`, "session_not_found", "pi_session_not_found");
+        return unavailable(requestedSessionId, `Session ${requestedSessionId} is not live`, "session_not_found", "pi_session_not_found");
       }
       if (owned) return unreadable();
       if (durableRepo && isSafeSessionId(providerSessionId)) {
@@ -277,14 +277,14 @@ export async function resolveSession(runState, {
           runState.createdOnMiss = true;
         }
       } else {
-        return unavailable(requestedSessionId, `session ${requestedSessionId} is not live`, "session_not_found", "pi_session_not_found");
+        return unavailable(requestedSessionId, `Session ${requestedSessionId} is not live`, "session_not_found", "pi_session_not_found");
       }
     }
     if (entry && !runState.createdOnMiss) {
       const claimed = entry.recoveryPending ? { ok: /** @type {const} */ (false), reason: "busy" } : liveness.claim(requestedSessionId);
       if (!claimed.ok) {
         const missing = /** @type {{reason: string}} */ (claimed).reason === "missing";
-        return unavailable(requestedSessionId, missing ? `session ${requestedSessionId} is not live` : `session ${requestedSessionId} is busy with another turn`,
+        return unavailable(requestedSessionId, missing ? `Session ${requestedSessionId} is not live` : `Session ${requestedSessionId} is busy with another turn`,
           missing ? "session_not_found" : "session_busy", missing ? "pi_session_not_found" : "pi_session_busy");
       }
       runState.sessionEntry = claimed.entry;
@@ -486,9 +486,9 @@ export async function captureSessionRecovery(runState, { identity, model, pendin
   const entry = runState.sessionEntry || runState.registeredSessionEntry;
   if (!entry?.durable) return { status: "not_durable" };
   try {
-    if (!Array.isArray(runState.recoveryInputIds)) throw new Error("session recovery input identities are unavailable");
+    if (!Array.isArray(runState.recoveryInputIds)) throw new Error("Session recovery input identities are unavailable");
     const tipId = await runState.session.getLeafId();
-    if (typeof tipId !== "string" || !tipId) throw new Error("session recovery tip is unavailable");
+    if (typeof tipId !== "string" || !tipId) throw new Error("Session recovery tip is unavailable");
     const ancestry = createHash("sha256").update(JSON.stringify(await runState.session.getEntries())).digest("hex");
     await runState.session.close();
     const receipt = { ...identity, tipId };

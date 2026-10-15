@@ -170,7 +170,7 @@ export class MonoAgentHarness implements AgentHarness {
   private disposePromise: Promise<void> | undefined;
 
   constructor(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}) {
-    if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+    if (Object.hasOwn(options, "piSessionsRoot") || (options.runtimeOptions && Object.hasOwn(options.runtimeOptions, "piSessionsRoot"))) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
     validateOptions(options);
     if ((options.memoryWriteMode === "append-host-summary" || options.memoryWriteMode === "capture")
       && typeof options.memory?.persistCompletedTurn !== "function") {

@@ -1974,3 +1974,11 @@ it("rejects the old option at direct provider entrypoints too", async () => {
   await expect(generateEngineTurnResponse("sys", options)).rejects.toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
   expect(() => preparePiNativeDispatch("sys", options)).toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
 });
+
+it("never retries or falls back for an unsupported sessions root", async () => {
+  executeMock.mockResolvedValue({ text: null, error: "Sessions root requires offline cleanup", failureKind: "safety_sessions_root_unsupported", retryable: false, events: [] });
+  const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7"), modelRef("openai-codex", "gpt-5.5")],
+    retry: { primaryAttempts: 3, backoffMs: 0, maxBackoffMs: 0 } });
+  expect(await router.run("sys", {})).toMatchObject({ failureKind: "safety_sessions_root_unsupported", retryable: false });
+  expect(executeMock).toHaveBeenCalledTimes(1);
+});

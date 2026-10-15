@@ -174,7 +174,7 @@ describe("Sessions", () => {
     }
   });
 
-  it("resumes a cancelled tool-bearing durable Pi turn with a byte-stable valid request prefix", async () => {
+  it("resumes a cancelled tool-bearing durable session turn with a byte-stable valid request prefix", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-terminal-recovery-"));
     writeFileSync(join(root, "evidence.txt"), "native tool evidence");
     const model = setup({ reasoning: true });
@@ -726,7 +726,7 @@ describe("Sessions", () => {
       sessionId: "no-such-session",
     }));
     expect(result.failureKind).toBe("session_not_found");
-    expect(result.error).toBe("session no-such-session is not live");
+    expect(result.error).toBe("Session no-such-session is not live");
     expect(result.cancelled).toBe(false);
     expect(result.numTurns).toBe(0);
     expect(result.providerSessionId).toBe("no-such-session");
@@ -1870,6 +1870,24 @@ describe("durable primary sessions through the fallback router", () => {
     });
     return { model, attempts, router };
   }
+
+  it.each(["direct", "router"])("refuses pre-release storage as a terminal safety failure (%s)", async (path) => {
+    const root = mkdtempSync(join(tmpdir(), "sessions-root-refusal-")), oldPath = join(root, "mono-v2");
+    mkdirSync(oldPath); writeFileSync(join(oldPath, "evidence"), "fictional evidence");
+    const { model, attempts, router } = routedFixture();
+    try {
+      const options = runOptions(model, { sessionsRoot: root, sessionId: "fictional-refusal", sessionKeepAlive: true,
+        messages: [{ role: "user", content: "Fictional request" }] });
+      const result = path === "direct" ? await generateEngineTurnResponse("Fictional instructions", options)
+        : await router.run("Fictional instructions", options);
+      expect(result).toMatchObject({ failureKind: "safety_sessions_root_unsupported", retryable: false,
+        error: expect.stringContaining(`Sessions root contains ${oldPath}, written by a pre-release build; restore a backup or remove it`) });
+      expect(faux.state.callCount).toBe(0);
+      expect(attempts).toEqual(path === "router" ? ["faux-model"] : []);
+      expect(readdirSync(root)).toEqual(["mono-v2"]);
+      expect(readFileSync(join(oldPath, "evidence"), "utf8")).toBe("fictional evidence");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 
   // piMaxRetries controls transport retries, not Pi core's lane retries, so the
   // primary fails on every request it makes and only the backup answers.

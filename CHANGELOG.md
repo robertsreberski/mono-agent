@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reject renamed sessions-root configuration before a clear-sessions restart can
+  stop the worker or delete history. Refuse pre-release storage during startup
+  and validation, and report it as a terminal storage safety failure rather
+  than retrying providers or falling back.
+
 - Rename durable storage to sessions (breaking config change): move
   `providers.piNative.piSessionsRoot` to `runtime.session.root`, and replace the
   programmatic run option `piSessionsRoot` with `sessionsRoot`. Old names fail
@@ -291,7 +296,7 @@
 
 - Add OFF-default Web-only durable model switching through
   `runtime.session.modelSwitch.enabled`, requiring explicit continuous sessions
-  and durable Pi storage. Persisted Web message IDs bound summary billing;
+  and durable session storage. Persisted Web message IDs bound summary billing;
   pending messages never replay, and wrappers preserve identities across
   redelivery and forward owned preparation. Guarded model changes without
   persisted identities fail closed, and delivery identities require the Web

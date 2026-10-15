@@ -1,3 +1,4 @@
+import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type BigIntStats, type Dirent } from "node:fs";
 import { lstat, mkdir, open, opendir, readdir, realpath, rename, rm, stat, unlink } from "node:fs/promises";
@@ -219,12 +220,7 @@ async function inspectSessionsRoot(
 ): Promise<PurgeSessionsResult> {
   if (root === undefined) return { removed: false, files: 0 };
   if (root.target === undefined) return { root: root.path, removed: false, files: 0 };
-  const oldPath = join(root.path, "mono-v2");
-  const oldLayout = await lstat(oldPath).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (oldLayout) throw new Error(`Sessions root contains ${oldPath}, written by a pre-release build; restore a backup or remove it after checking nothing in it is needed. No automatic migration is supported.`);
+  await assertSupportedSessionsRoot(root.path);
   return { root: root.path, removed: true, files: await countSessionFiles(root.path) };
 }
 
@@ -263,10 +259,13 @@ interface AttestedPrivateDirectory {
   readonly identity: { readonly dev: bigint; readonly ino: bigint };
 }
 
+// Keep the existing manifest wire discriminator stable; only display labels change.
+type StoredPurgeKind = Exclude<ResolvedConversationStatePurgeRoot["kind"], "Sessions"> | "Pi provider sessions";
+
 interface ClearSessionsManifest {
   readonly schema: typeof CLEAR_SESSIONS_MANIFEST_SCHEMA;
   readonly id: string;
-  readonly kind: ResolvedConversationStatePurgeRoot["kind"];
+  readonly kind: StoredPurgeKind;
   readonly originalPath: string;
   readonly originalCanonicalPath: string;
   readonly originalIdentity: WireIdentity;
@@ -462,7 +461,7 @@ async function quarantinePurgeRoot(
   const manifest: ClearSessionsManifest = {
     schema: CLEAR_SESSIONS_MANIFEST_SCHEMA,
     id,
-    kind: root.kind,
+    kind: root.kind === "Sessions" ? "Pi provider sessions" : root.kind,
     originalPath: root.path,
     originalCanonicalPath: root.canonicalPath,
     originalIdentity: wireIdentity(target.identity),
@@ -992,7 +991,7 @@ function sameWireIdentity(
   return value.dev.toString() === expected.dev && value.ino.toString() === expected.ino;
 }
 
-function isPurgeKind(value: unknown): value is ResolvedConversationStatePurgeRoot["kind"] {
+function isPurgeKind(value: unknown): value is StoredPurgeKind {
   return value === "Pi provider sessions"
     || value === "durable session/tool history"
     || value === "ACP sessions"

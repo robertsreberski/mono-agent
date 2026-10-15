@@ -1,3 +1,4 @@
+import { assertNoOldSessionsRoot } from "./sessions-root.js";
 import { readMonoAgentConfigJson } from "@mono-agent/config";
 import type { BigIntStats } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
@@ -17,7 +18,7 @@ export interface ConversationStatePurgeRoots {
 }
 
 export type ConversationStatePurgeRootKind =
-  | "Pi provider sessions"
+  | "Sessions"
   | "durable session/tool history"
   | "ACP sessions"
   | "persistent subagent instances";
@@ -104,7 +105,7 @@ export async function resolveConversationStatePurgePlan(
   const [sessions, history, acpSessions, subagents] = await Promise.all([
     roots.sessions === undefined
       ? undefined
-      : resolveAndAttestConversationStatePurgeRoot("Pi provider sessions", roots.sessions),
+      : resolveAndAttestConversationStatePurgeRoot("Sessions", roots.sessions),
     resolveAndAttestConversationStatePurgeRoot("durable session/tool history", roots.history),
     resolveAndAttestConversationStatePurgeRoot("ACP sessions", roots.acpSessions),
     roots.subagents === undefined ? undefined : resolveAndAttestConversationStatePurgeRoot("persistent subagent instances", roots.subagents),
@@ -319,6 +320,7 @@ function resolveSnapshotRoots(
   // as the live resolvers: stale MONO_AGENT_PI_SESSIONS_ROOT and
   // MONO_AGENT_ARTIFACT_DIR values in the environment are silently ignored so
   // `restart --clear-sessions` purges exactly what the runtime uses.
+  assertNoOldSessionsRoot(json);
   const runtime = optionalObject(json.runtime, "runtime");
   const session = optionalObject(runtime?.session, "runtime.session");
   const artifacts = optionalObject(json.artifacts, "artifacts");

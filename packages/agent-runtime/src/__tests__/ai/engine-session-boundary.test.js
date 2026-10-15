@@ -8,8 +8,8 @@ import { createSessionRegistry, syncProviderSession, refreshProviderSession, dis
 afterEach(() => vi.restoreAllMocks());
 
 it.each([
-  ["session_busy", "pi_session_busy", "session fictional is busy with another turn"],
-  ["session_not_found", "pi_session_not_found", "session fictional is not live"],
+  ["session_busy", "pi_session_busy", "Session fictional is busy with another turn"],
+  ["session_not_found", "pi_session_not_found", "Session fictional is not live"],
   ["native_journal_unreadable", "pi_session_unreadable", "session fictional catalogue could not be read; native evidence was preserved"],
 ])("keeps the legacy unavailable result byte-equivalent for %s", async (failureKind, code, message) => {
   vi.spyOn(Date, "now").mockReturnValue(1000);

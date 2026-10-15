@@ -11,5 +11,6 @@ export function assertSupportedSessionsRoot(root) {
   const path = join(root, "mono-v2");
   try { lstatSync(path); }
   catch (error) { if (error.code === "ENOENT") return; throw error; }
-  throw new Error(`Sessions root contains ${path}, written by a pre-release build; restore a backup or remove it after checking nothing in it is needed. No automatic migration is supported.`);
+  throw Object.assign(new Error(`Sessions root contains ${path}, written by a pre-release build; restore a backup or remove it after checking nothing in it is needed. No automatic migration is supported.`),
+    { code: "ERR_SESSIONS_ROOT_UNSUPPORTED" });
 }
