@@ -21,7 +21,7 @@ const store = createDurableHistoryStore({ root: historyRoot, now: () => Date.par
 await writeFile(join(root, "IDENTITY.md"), "Fictional stable instructions.");
 const harness = createAgentHarness({ identityPath: join(root, "IDENTITY.md"), cwd: root,
   historyStore: store, model: parseMonoRuntimeModelReference("openai:fictional-model"),
-  createRunId: () => "fictional-turn", piSessionsRoot: join(root, "native"),
+  createRunId: () => "fictional-turn", sessionsRoot: join(root, "native"),
   session: { mode: "continuous", idleTimeoutMs: 60_000 },
   runtime: {
     sessionTurnReconciliation: "v1", async reconcileSessionTurn() { return { status: "absent" }; },

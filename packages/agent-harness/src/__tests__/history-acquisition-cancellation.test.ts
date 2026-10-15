@@ -176,7 +176,7 @@ it.each(["provider", "exclusive", "compaction"])("harness %s acquisition cancell
   const run = vi.fn(async () => ({ text: "Fictional response" })), syncSession = vi.fn(async () => true);
   const harness = new MonoAgentHarness({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
     historyStore: f.store, session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
-    ...(mode === "exclusive" ? {} : { piSessionsRoot: join(f.root, "..", "native") }),
+    ...(mode === "exclusive" ? {} : { sessionsRoot: join(f.root, "..", "native") }),
     runtime: { run, syncSession, refreshSession: async () => {}, disposeSession: async () => true, disposeAllSessions: async () => {} } });
   const entered = mode === "exclusive" ? vi.spyOn(f.store.contextImport!, "beginExclusiveTurn") : vi.spyOn(f.store, "beginProviderSessionTurn");
   try {
@@ -219,7 +219,7 @@ it.each(["provider", "exclusive"])("cancellation during attachment preflight bef
   const run = vi.fn(async () => ({ text: "Fictional response" }));
   const harness = new MonoAgentHarness({ identityPath, attachmentsDir, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
     historyStore: f.store, session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
-    ...(mode === "provider" ? { piSessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
+    ...(mode === "provider" ? { sessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
   let settled = false;
   const pending = harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal,
     attachments: [{ kind: "document", mimeType: "text/plain", name: "fictional.txt", data: Buffer.from("Fictional attachment").toString("base64") }] }).then((result) => { settled = true; return result; });
@@ -250,7 +250,7 @@ it.each(["provider", "synchronous-provider", "exclusive", "uncoordinated"])("an 
   }
   const run = vi.fn(async () => { controller.abort(); return { text: "Fictional late response" }; });
   const harness = new MonoAgentHarness({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" }, historyStore: store,
-    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode.endsWith("provider") ? { piSessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
+    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode.endsWith("provider") ? { sessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
   try {
     expect((await harness.run({ conversationId: id, userMessage: "Fictional admitted input", abortSignal: controller.signal })).failure?.kind).toBe("cancelled");
     const messages = await store.load(id); expect(messages.some((message) => message.role === "user" && message.content.includes("Fictional admitted input"))).toBe(true);

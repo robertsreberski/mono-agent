@@ -67,7 +67,7 @@ shows promoted text in the answer, not again in Activity.
 
 Presentation tools attach parts beneath the reply text; they do not replace the
 answer or finish the turn. Their successful results remind the model to write its user-facing
-reply as normal assistant text. If a normally settled Pi turn contains no text at
+reply as normal assistant text. If a normally settled session turn contains no text at
 all, the runtime makes one same-session finalization request with tools disabled.
 It never exposes thinking as an answer. Cancelled or failed turns, silent
 completions, pending parent questions, max-turn stops, and structured-output turns

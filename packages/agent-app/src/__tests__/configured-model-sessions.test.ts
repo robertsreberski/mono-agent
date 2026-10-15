@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -21,10 +21,10 @@ async function config(backup: boolean): Promise<MonoAgentConfig> {
   const identityPath = join(dir, "IDENTITY.md");
   await writeFile(identityPath, "You are Mono.");
   return { runtime: { model: model("base"), maxTurns: 4, workspace: dir,
-    session: { mode: "continuous", idleTimeoutMs: 60000 }, compaction: { enabled: false },
+    session: { root: join(dir, "pi"), mode: "continuous", idleTimeoutMs: 60000 }, compaction: { enabled: false },
     retry: { primaryAttempts: backup ? 1 : 2, backoffMs: 0, maxBackoffMs: 0 },
     ...(backup ? { fallbacks: [{ model: model("backup") }] } : {}) },
-    providers: { piNative: { piSessionsRoot: join(dir, "pi") } },
+    providers: { piNative: {} },
     context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(dir, "artifacts"), retention: { maxAgeDays: 365, maxCount: 100, dryRun: false },
       memoryRetention: { maxAgeDays: 7, maxCount: 100, dryRun: false } },
@@ -81,4 +81,15 @@ it("keeps retry-only model overrides warm on their cached primary runtime", asyn
     expect(calls[1]?.sessionId).toBe("primary-session");
     expect(calls[2]?.sessionId).toBe("primary-session");
   } finally { await harness.dispose?.(); }
+});
+
+it("refuses a pre-release sessions root before composing a harness or recorder", async () => {
+  const settings = await config(true), oldPath = join(settings.runtime.session.root!, "mono-v2");
+  await mkdir(oldPath, { recursive: true }); await writeFile(join(oldPath, "evidence"), "fictional evidence");
+  const before = await readdir(settings.runtime.workspace);
+  await expect(createConfiguredAgentHarness({ config: settings, cwd: settings.runtime.workspace })).rejects.toThrow(
+    `Sessions root contains ${oldPath}, written by a pre-release build; restore a backup or remove it after checking nothing in it is needed`);
+  expect(execute).not.toHaveBeenCalled();
+  expect(await readdir(settings.runtime.workspace)).toEqual(before);
+  expect(await readdir(settings.runtime.session.root!)).toEqual(["mono-v2"]);
 });

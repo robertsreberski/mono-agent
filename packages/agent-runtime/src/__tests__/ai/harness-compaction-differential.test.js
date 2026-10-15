@@ -34,7 +34,7 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
     result = await generateEngineTurnResponse("Fictional system.", {
       model: { provider: "faux", model: "differential-model", reference: "faux:differential-model" },
       piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", allowedTools: [], messages: history,
-      manualCompaction: true, sessionKeepAlive: true, piSessionsRoot: root,
+      manualCompaction: true, sessionKeepAlive: true, sessionsRoot: root,
       compaction: { keepRecentTokens: 4000, summaryMaxTokens: 2000, compactionMinSavingsTokens: 0 },
     });
     expect(result.manualCompaction?.status).toBe("succeeded");

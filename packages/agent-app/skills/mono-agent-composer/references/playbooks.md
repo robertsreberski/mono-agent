@@ -196,8 +196,8 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ```json
 {
-  "runtime": { "model": "anthropic:claude-sonnet-4-6", "fallbacks": [{ "model": "openai-codex:gpt-5.6-sol" }, { "model": "ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
-  "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "transport": "auto", "piMaxRetries": 2, "maxRetryDelayMs": 60000, "piSessionsRoot": ".mono-agent/sessions" } }
+  "runtime": { "model": "anthropic:claude-sonnet-4-6", "fallbacks": [{ "model": "openai-codex:gpt-5.6-sol" }, { "model": "ollama:gemma4:31b" }], "session": { "mode": "continuous", "root": ".mono-agent/sessions" } },
+  "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "transport": "auto", "piMaxRetries": 2, "maxRetryDelayMs": 60000 } }
 }
 ```
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired in 0.21.0

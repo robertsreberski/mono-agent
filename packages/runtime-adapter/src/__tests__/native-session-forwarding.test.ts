@@ -28,10 +28,10 @@ it.each([false, true])("forwards typed native preparation and its exact lease wi
   expect(runtime.prepareNativeDispatch).toBeTypeOf("function"); expect(kernel.prepareNativeDispatch).not.toHaveBeenCalled();
   const signal = new AbortController().signal;
   const lease = await runtime.prepareNativeDispatch!("Frozen rules", { model, messages: [{ role: "user", content: "Frozen fictional input" }],
-    abortSignal: signal, piSessionsRoot: "/fictional/native", sandbox: { fictional: true } } as any);
+    abortSignal: signal, sessionsRoot: "/fictional/native", sandbox: { fictional: true } } as any);
   expect(lease).toBe(prepared); expect(lease.snapshot).toBe(prepared.snapshot);
   const forwarded = kernel.prepareNativeDispatch.mock.calls[0]![1];
-  expect(forwarded).toMatchObject({ model, piSessionsRoot: "/fictional/native" }); expect(forwarded.abortSignal).toBe(signal);
+  expect(forwarded).toMatchObject({ model, sessionsRoot: "/fictional/native" }); expect(forwarded.abortSignal).toBe(signal);
   expect(forwarded).not.toHaveProperty("sandbox"); expect(kernel.run).not.toHaveBeenCalled();
   lease.assertReady!(); expect(prepared.assertReady).toHaveBeenCalledOnce();
   const producer = { prepared: { status: "prepared" as const, checkpoints: [], ledger: [], recent: [], older: [], prior: null, coverage: [] }, outputReserve: 256 };

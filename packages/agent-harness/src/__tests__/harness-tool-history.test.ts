@@ -677,7 +677,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     await harness.dispose?.();
   });
 
-  it("seeds durable Pi reopen with tool history as a prior message so native resume can omit it", async () => {
+  it("seeds durable session reopen with tool history as a prior message so native resume can omit it", async () => {
     const { identityPath, root } = await fixture();
     const writer = await ToolHistoryWriter.open({ root });
     const reader = new ToolHistoryReader(root);
@@ -720,7 +720,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       model,
       historyStore,
       session,
-      piSessionsRoot: join(root, "pi-sessions"),
+      sessionsRoot: join(root, "pi-sessions"),
       createRunId: () => `run-${String(++run)}`,
       toolHistory: {
         writer,
@@ -785,7 +785,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       model,
       historyStore,
       session,
-      piSessionsRoot: join(root, "empty-pi-sessions"),
+      sessionsRoot: join(root, "empty-pi-sessions"),
       createRunId: () => "empty-structured-run",
       toolHistory: {
         writer,

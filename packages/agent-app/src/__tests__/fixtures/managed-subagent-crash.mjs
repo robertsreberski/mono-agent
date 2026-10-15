@@ -85,7 +85,7 @@ async function open(root, options = {}) {
 }
 async function sessionFile(instances) {
   const instance = await instances.get("proof");
-  const directory = resolve(instance.sessionsRoot, "mono-v2", "journals");
+  const directory = resolve(instance.sessionsRoot, "journals");
   const paths = [];
   for (const file of await readdir(directory, { withFileTypes: true })) {
     if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;

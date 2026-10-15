@@ -389,7 +389,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
           historyStore: modules.harness.createInMemoryHistoryStore({ maxMessages: 100 }),
           onMemoryWarning: () => trial.warnings.push("memory_warning"),
           createRunId: (() => { let run = 0; return () => `${group.id}-${arm}-${++run}`; })(),
-          runtimeOptions: { piSessionsRoot: sessionsRoot, compaction: { enabled: false }, piMaxRetries: 0, effort: "none" },
+          runtimeOptions: { sessionsRoot: sessionsRoot, compaction: { enabled: false }, piMaxRetries: 0, effort: "none" },
           toolPolicy: modules.harness.createToolPolicy({ allowedTools: [] }),
         };
         if (memoryArm) {
@@ -629,7 +629,7 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
           historyStore: modules.harness.createInMemoryHistoryStore({ maxMessages: 100 }),
           onMemoryWarning: () => sharedWarnings.push("memory_warning"),
           createRunId: (() => { let run = 0; return () => `${group.id}-${arm}-${++run}`; })(),
-          runtimeOptions: { piSessionsRoot: sessionsRoot, compaction: { enabled: false }, piMaxRetries: 0, effort: "none" },
+          runtimeOptions: { sessionsRoot: sessionsRoot, compaction: { enabled: false }, piMaxRetries: 0, effort: "none" },
           toolPolicy: modules.harness.createToolPolicy({ allowedTools: [] }),
         };
         if (arm === "bujo") {

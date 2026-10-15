@@ -678,7 +678,7 @@ name is deletion authority. SIGKILL tests cover intent publication, summary
 start/returned-before-cache, artifact publication and ready-fence replacement,
 with two fresh-process recoveries per interruption.
 
-With continuous sessions, `piSessionsRoot`, and a fail-closed durable history
+With continuous sessions, `sessionsRoot`, and a fail-closed durable history
 store, the harness and responder also expose `compactConversation()`: a
 promptless provider-history transaction that compacts the exact idle
 conversation through the runtime's guarded Pi driver. It acquires the provider
@@ -963,7 +963,7 @@ readProcessIncarnation
 With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Every harness-prepared cold/fresh run, continuation and the one stale-session retry supplies structured canonical messages in chronological order. Deterministic per-message labels preserve speakers and stored timestamps; legacy system/tool roles become labeled untrusted user context, never native tool calls. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
 
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with canonical replay and bounded transcript-tail context. With coordinated durable Pi history,
+stateless with canonical replay and bounded transcript-tail context. With coordinated durable session history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.
@@ -1020,7 +1020,7 @@ and `untrustedDetail` inside tag-safe JSON explicitly framed as untrusted
 evidence. The collector seals at settlement and rejects late runtime events. Native events
 admitted before the seal retain that admission while sidecar persistence is
 queued; continuity waits for those accepted writes before finalizing history.
-Eligible coordinated durable Pi turns retain their epoch after validated native
+Eligible coordinated durable session turns retain their epoch after validated native
 settlement; the canonical revision advances once. Recovery adds no Pi message.
 Pi filters interrupted prose/reasoning and retains completed native tools and the
 cancelled user input. Cancellation permits 1,000 ms by default for provider settlement while
@@ -1204,7 +1204,7 @@ It does not poll chats, serve UI, parse host settings files, own provider creden
 - [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
   explains when to use the harness instead of `agent-app`.
 - [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
-  documents queue-after-turn, admission, execution bounds, and durable Pi sessions.
+  documents queue-after-turn, admission, execution bounds, and durable sessions.
 - [Tool policy](https://docs.mono-agent.dev/tools/policy/) covers the fail-closed tool
   boundary passed into this package.
 - [`@mono-agent/runtime-adapter`](https://github.com/robertsreberski/mono-agent/tree/main/packages/runtime-adapter)

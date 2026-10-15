@@ -63,7 +63,7 @@ describe("provider check", () => {
         providerAttributionSessionId: "attribution-session",
         runId: "ordinary-run",
         sessionKeepAlive: true,
-        piSessionsRoot: "/tmp/must-not-be-used",
+        sessionsRoot: "/tmp/must-not-be-used",
         messages: [{ role: "user", content: "ordinary history" }],
         observers: [() => undefined],
         onEvent: () => undefined,
@@ -80,7 +80,7 @@ describe("provider check", () => {
     expect(options).not.toHaveProperty("providerAttributionSessionId");
     expect(options).not.toHaveProperty("runId");
     expect(options).not.toHaveProperty("sessionKeepAlive");
-    expect(options).not.toHaveProperty("piSessionsRoot");
+    expect(options).not.toHaveProperty("sessionsRoot");
     expect(options).not.toHaveProperty("observers");
     expect(options).not.toHaveProperty("onEvent");
     expect(options).not.toHaveProperty("toolLifecycleSink");

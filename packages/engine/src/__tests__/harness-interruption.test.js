@@ -20,7 +20,7 @@ it("survives SIGKILL after returned outcome sync before envelope placement; repe
   const child = fork(new URL("./fixtures/effect-worker.mjs", import.meta.url), [root, "run"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try { expect((await notice(child))[0]).toEqual({ phase: "returned-outcome-synced" }); const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
   finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
-  const directory = join(root, "mono-v2", "journals"); const path = join(directory, (await readdir(directory))[0]); const before = await readFile(path);
+  const directory = join(root, "journals"); const path = join(directory, (await readdir(directory))[0]); const before = await readFile(path);
   const first = await reopen(root); const after = await readFile(path); const second = await reopen(root);
   expect(after.subarray(0, before.length).equals(before)).toBe(true); expect((await readFile(path)).equals(after)).toBe(true);
   expect(first).toEqual(second); expect(await readFile(join(root, "effect-counter"), "utf8")).toBe("1");

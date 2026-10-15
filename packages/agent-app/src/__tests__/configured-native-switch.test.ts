@@ -31,8 +31,8 @@ async function fixture(publicConfig = false) {
   const originalTransport = faux.provider.streamSimple.bind(faux.provider);
   const transport = vi.spyOn(faux.provider, "streamSimple"), native = createManagedNativeJournalStorage({ sessionsRoot: nativeRoot });
   const config: MonoAgentConfig = {
-    runtime: { model: { provider: "faux", model: "A", reference: "faux:A" }, workspace: root, maxTurns: 4, session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none" } },
-    providers: { piNative: { piSessionsRoot: nativeRoot } }, context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
+    runtime: { model: { provider: "faux", model: "A", reference: "faux:A" }, workspace: root, maxTurns: 4, session: { root: nativeRoot, mode: "continuous", idleTimeoutMs: 600000, rollover: "none" } },
+    providers: { piNative: {} }, context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(root, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false }, memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false } },
     traceability: { registryDir: join(root, "trace") },
   };
@@ -206,7 +206,7 @@ it("the first configured Web switch needs no root-wide drain while a foreign cla
 
 it("prepared configured runtime retains protection through summary/close, strips it from completion-only runtimes", async () => {
   const f = await fixture(), runtime = f.runtimeFor("A"), owner = await acquireAgentRootOwnership(f.root); cleanup.push(() => releaseAgentRootOwnershipWhenIdle(owner));
-  const prepared = await runtime.prepareNativeDispatch!("Fictional prepared instructions", { model: { provider: "faux", model: "A", reference: "faux:A" }, messages: [{ role: "user", content: "Fictional input" }], abortSignal: new AbortController().signal, allowedTools: [], piSessionsRoot: f.nativeRoot });
+  const prepared = await runtime.prepareNativeDispatch!("Fictional prepared instructions", { model: { provider: "faux", model: "A", reference: "faux:A" }, messages: [{ role: "user", content: "Fictional input" }], abortSignal: new AbortController().signal, allowedTools: [], sessionsRoot: f.nativeRoot });
   const settled = vi.fn(); const waiting = owner.coordinator.waitForSettlement().then(settled); await Promise.resolve(); await Promise.resolve();
   expect(settled).not.toHaveBeenCalled(); expect(prepared.assertReady).toBeTypeOf("function"); expect(prepared.checkHandoffSummary).toBeTypeOf("function"); expect(prepared.produceHandoffSummary).toBeTypeOf("function");
   expect(runtime.salvageDurableSession).toBeUndefined();
@@ -442,12 +442,13 @@ it("public upgrade settles a legacy pending turn storage-only, then switches fro
   expect(record.messages.at(-2).content).toBe("Fictional new explicit input");
   expect(await nativeFiles(f.nativeRoot)).toHaveLength(1); expect(await modelChanges(f.nativeRoot)).toHaveLength(0);
 });
-it.each(["continuous", "piSessionsRoot"])("programmatic switch validation names the missing %s condition", async (missing) => {
+it.each(["continuous", "runtime.session.root"])("programmatic switch validation names the missing %s condition", async (missing) => {
   const f = await fixture();
-  const config = { ...f.config, runtime: { ...f.config.runtime, session: { ...f.config.runtime.session,
-    ...(missing === "continuous" ? { mode: "per-message" as const } : {}),
+  const { root: _root, ...sessionWithoutRoot } = f.config.runtime.session;
+  const config = { ...f.config, runtime: { ...f.config.runtime, session: {
+    ...(missing === "continuous" ? { ...f.config.runtime.session, mode: "per-message" as const } : sessionWithoutRoot),
     modelSwitch: { enabled: true },
-  } }, ...(missing === "piSessionsRoot" ? { providers: {} } : {}) };
+  } } };
   await expect(createConfiguredAgentResponder({ cwd: f.root, config })).rejects.toThrow(missing);
   await expect(lstat(f.nativeRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });

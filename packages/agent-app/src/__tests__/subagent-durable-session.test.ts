@@ -197,7 +197,7 @@ describe("app persistent subagent durable sessions", () => {
       expect(second.details.subagent.status).toBe("ok");
       expect(second.details.subagent.instance.turns).toBe(2);
       expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
-      expect(calls[1]?.piSessionsRoot).toBe(record.sessionsRoot);
+      expect(calls[1]?.sessionsRoot).toBe(record.sessionsRoot);
       expect(calls[1]?.sessionKeepAlive).toBe(true);
       expect(calls[1]?.providerAttributionSessionId).toBeUndefined();
       const users = context!.messages.filter((message) => message.role === "user");
@@ -271,7 +271,7 @@ describe("app persistent subagent durable sessions", () => {
       expect((await handle.get("critic"))?.status).toBe("idle");
       expect(second.details.subagent.instance.turns).toBe(2);
       expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
-      expect(calls[1]?.piSessionsRoot).toBe(record.sessionsRoot);
+      expect(calls[1]?.sessionsRoot).toBe(record.sessionsRoot);
       expect(calls[1]?.sessionKeepAlive).toBe(true);
       expect(calls[1]?.providerAttributionSessionId).toBeUndefined();
       const users = context!.messages.filter((message) => message.role === "user");
@@ -289,7 +289,7 @@ describe("app persistent subagent durable sessions", () => {
       expect(await transcript()).toBe("");
     } finally { await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
   });
-  it("a real parent Pi turn sees Agent awaiting_reply as a non-error and has no AskParent", async () => {
+  it("a real parent session turn sees Agent awaiting_reply as a non-error and has no AskParent", async () => {
     const root = await mkdtemp(resolve(process.cwd(), ".parent-dialogue-test-"));
     const owner = createMonoRuntime();
     try {

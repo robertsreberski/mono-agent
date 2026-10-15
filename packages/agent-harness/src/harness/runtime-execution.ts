@@ -72,7 +72,7 @@ export interface PreparedHarnessRuntime {
 export interface HarnessRuntimePreparationInput {
   readonly options: AgentHarnessOptions; readonly runLimiter?: Semaphore; readonly sessionsEnabled: boolean;
   readonly request: AgentHarnessRequest; readonly recorder: RunRecorder; readonly runId: string;
-  readonly durablePiSessionsRoot: string; readonly routing: HarnessRuntimeRouting;
+  readonly durableSessionsRoot: string; readonly routing: HarnessRuntimeRouting;
   readonly attachmentContext: AttachmentRequestContext;
   readonly continuationCapabilities: AgentHarnessContinuationClaimCapability[];
   readonly turnContinuityCollector: UncommittedTurnCollector;
@@ -156,7 +156,7 @@ export function prepareHarnessRuntime(input: HarnessRuntimePreparationInput): Pr
       });
       return await binding;
     } }, options, input.runLimiter, input.sessionsEnabled, request, input.recorder,
-    undefined as unknown as BuiltAgentContext, undefined, input.runId, undefined, undefined, input.durablePiSessionsRoot,
+    undefined as unknown as BuiltAgentContext, undefined, input.runId, undefined, undefined, input.durableSessionsRoot,
     false, { ...input.routing }, [], [], false, false, undefined, copyPreparationData(input.attachmentContext), input.continuationCapabilities,
     input.turnContinuityCollector, input.liveInputMailbox, input.onProviderStart);
   void outcome.then(() => { if (state === "preparing" || state === "closed") rejectPrepared(new Error("Host preparation did not complete")); }, rejectPrepared)
@@ -179,7 +179,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
   runId: string,
   resumeSessionId: string | undefined,
   providerAttributionSessionId: string | undefined,
-  durablePiSessionsRoot: string | undefined,
+  durableSessionsRoot: string | undefined,
   sessionIsolated: boolean,
   routing: HarnessRuntimeRouting,
   skillDisclosureEntries: readonly SkillIndexSummary[],
@@ -308,7 +308,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       // extension/static values unconditionally, then add only the decisions
       // made by the coordinated harness below. Conditional object spreads do
       // not remove pre-existing keys when their guard is false.
-      delete merged.piSessionsRoot;
+      delete merged.sessionsRoot;
       delete merged.sessionKeepAlive;
       delete merged.sessionIdleTimeoutMs;
       delete merged.sessionId;
@@ -441,7 +441,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         )),
       };
       let reconciliation = routing.reconciliation;
-      if (!preparation && reconciliation !== undefined && routing.turnRevision !== undefined && durablePiSessionsRoot !== undefined) {
+      if (!preparation && reconciliation !== undefined && routing.turnRevision !== undefined && durableSessionsRoot !== undefined) {
         const id = reconciliation.descriptor.reconciliation!.initialInputId!;
         // Replace the provisional pre-context digest before any native dispatch.
         await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
@@ -465,12 +465,12 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       let runtimeOptions: RuntimeRunOptions = {
         ...merged,
         ...(routing.turnRevision !== undefined && sessionsEnabled && !sessionIsolated
-          && durablePiSessionsRoot !== undefined && (resumeSessionId ?? providerAttributionSessionId) !== undefined
+          && durableSessionsRoot !== undefined && (resumeSessionId ?? providerAttributionSessionId) !== undefined
           ? { sessionTurn: reconciliation?.descriptor ?? { kind: "host" as const, ownerKey: options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
               historyBucket: request.conversationId, turnId: runId,
               handleId: (resumeSessionId ?? providerAttributionSessionId)!, baseRevision: routing.turnRevision } } : {}),
         sessionRecovery: routing.recoveryRevision !== undefined && typeof runtime.recoverSession === "function"
-          && sessionsEnabled && !sessionIsolated && durablePiSessionsRoot !== undefined
+          && sessionsEnabled && !sessionIsolated && durableSessionsRoot !== undefined
           ? { runId, revision: routing.recoveryRevision } : undefined,
         model: effectiveModel,
         ...(!preparation ? { detachedContext } : {}),
@@ -505,9 +505,9 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         // Durable provider-session root is forwarded only for a host-history
         // coordinated turn. Custom stores and isolated runs cannot safely make
         // provider JSONL authoritative across a crash, so they stay in-memory.
-        ...(durablePiSessionsRoot === undefined
+        ...(durableSessionsRoot === undefined
           ? {}
-          : { piSessionsRoot: durablePiSessionsRoot }),
+          : { sessionsRoot: durableSessionsRoot }),
         // Progressive skill disclosure (index mode): pass the discovered skills
         // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
         // `ReadSkill` tool. These live after the merge so request extensions cannot

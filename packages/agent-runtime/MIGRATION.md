@@ -18,6 +18,37 @@ the configuration schema.
 
 ## Unreleased mono-agent engine
 
+### Breaking sessions configuration and storage rename
+
+Move `providers.piNative.piSessionsRoot` to `runtime.session.root` (paths remain
+relative to the agent root). The old key fails config validation with
+`providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there`.
+For programmatic runtime and harness options, replace `piSessionsRoot` with
+`sessionsRoot`; the old option fails with
+`piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead`.
+There are no deprecated aliases, even when the replacement is also present.
+Other `providers.piNative` transport/retry settings stay where they are.
+
+```json
+{
+  "runtime": {
+    "session": { "root": ".mono-agent/sessions" }
+  }
+}
+```
+
+The root now contains `journals/`, `locks/` and `aliases/` directly. A root
+containing `mono-v2/` from a pre-release build is refused before any permissions,
+locks or evidence are changed. The error names that path and asks you to restore
+a backup or remove it after checking nothing in it is needed. No automatic
+migration is performed. Legacy sessions from earlier versions still import;
+reserved `journals`, `locks` and `aliases` directories are never scanned as
+legacy sources. The warning kind is now `sessions_root_permissions_tightened`.
+
+Stop all writers and back up canonical history and the sessions root together
+before the one-way upgrade. Rollback requires restoring that consistent backup
+and its matching old configuration; do not run mixed binaries on one root.
+
 
 The canonical adapter API is `resolveEngineTurnAdapter`,
 `generateEngineTurnResponse` and `engineTurnAdapter`. The old exports
@@ -35,7 +66,7 @@ steering, journal/storage and compaction over upstream `runAgentLoop`; provider
 code remains Pi-owned. The existing `@mono-agent/agent-harness` package still
 owns host conversation/history orchestration.
 
-Native transcripts use `mono-v2/journals/<journalId>.jsonl` under `piSessionsRoot`.
+Native transcripts use `journals/<journalId>.jsonl` under `sessionsRoot`.
 The immutable journal ID is independent of the epoch-bound provider handle;
 logical ownership remains explicitly unbound until a host descriptor binds it. Idle
 legacy v3/v4 files import their effective main-branch context only. After the
@@ -68,10 +99,10 @@ strip it. P2-P6 host reconciliation, model-switch/handoffs, queue/delegation wor
 remain pending.
 
 An existing current-uid-owned Pi 0.99 root such as 0755 is tightened to 0700
-through a pinned no-follow descriptor before creating v2 data. Group/other-writable
+through a pinned no-follow descriptor before creating session data. Group/other-writable
 roots are rejected, not adopted. The runtime emits one bounded, path-free
-`runtime_warning` with kind `pi_sessions_root_permissions_tightened` when access
-is tightened, including if later session setup fails. Version directories, journals and locks remain
+`runtime_warning` with kind `sessions_root_permissions_tightened` when access
+is tightened, including if later session setup fails. Session directories, journals and locks remain
 strictly owner-private;
 symlinked/replaced components and complete corrupt records fail closed. Native
 headers publish through synced `.creating` files; incomplete unpublished creations
@@ -81,7 +112,7 @@ owned final records are repaired under a kernel-backed writer lock and fsynced
 before reuse. Large native records and journals use incremental validation and
 offset-backed lookup rather than fixed 2 MiB/32 MiB limits.
 
-**Rollback:** old binaries cannot read v2, and cannot reliably retire orphaned v2
+**Rollback:** old binaries cannot read these journals, and cannot reliably retire orphaned
 journals. They may cold-replay canonical history after a legacy source has been
 archived. Stop all writers and preserve a consistent backup before cleanup under
 the new storage protocol or an approved offline cleanup. Restore legacy sources

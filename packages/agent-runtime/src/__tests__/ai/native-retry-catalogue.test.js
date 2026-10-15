@@ -27,7 +27,7 @@ it.each(["find"])("refuses cold reopen when the native %s throws", async (method
   const create = vi.spyOn(repo, "create");
   try {
     const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
-      sessionId: "catalogue-failure", piSessionsRoot: root, sessionKeepAlive: true,
+      sessionId: "catalogue-failure", sessionsRoot: root, sessionKeepAlive: true,
       sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket",
         turnId: "catalogue-turn", handleId: "catalogue-failure", baseRevision: 1,
         reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } },
@@ -87,7 +87,7 @@ it("creates a new conversation despite id-less legacy damage", async () => {
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
   try {
     const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
-      sessionId, piSessionsRoot: root, sessionKeepAlive: true,
+      sessionId, sessionsRoot: root, sessionKeepAlive: true,
       messages: [{ role: "user", content: "Fictional request" }],
     }));
     expect(result.text, result.error).toBe("Fictional answer");
@@ -104,7 +104,7 @@ it.each(["ERR_HARNESS_WRITER_BUSY", "ERR_HARNESS_JOURNAL_UNREADABLE"])("classifi
   const create = vi.spyOn(repo, "create");
   try {
     const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
-      sessionId, piSessionsRoot: root, sessionKeepAlive: true,
+      sessionId, sessionsRoot: root, sessionKeepAlive: true,
       messages: [{ role: "user", content: "Fictional request" }],
     }));
     expect(result.failureKind).toBe(code === "ERR_HARNESS_WRITER_BUSY" ? "session_busy" : "native_journal_unreadable");

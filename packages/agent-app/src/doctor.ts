@@ -1,3 +1,4 @@
+import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
 import { assertComputerUseServerNameAvailable, COMPUTER_USE_SERVER_NAME, computerUseSection } from "./computer-use.js";
 import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
@@ -240,6 +241,7 @@ export async function validateMonoAgentFolder(
   try {
     // Validation returns structured diagnostics; do not emit loader prose.
     coreConfig = await loadAppCoreConfig(options, { warnOnDeprecatedConfig: false, warnOnDuplicateConfig: false });
+    await assertSupportedSessionsRoot(coreConfig.runtime.session.root);
     sections.push({ id: "core", label: "Core config", status: "ok", details: [`Loaded ${options.configPath}.`] });
   } catch (error) {
     if (!isAppCoreConfigError(error)) {

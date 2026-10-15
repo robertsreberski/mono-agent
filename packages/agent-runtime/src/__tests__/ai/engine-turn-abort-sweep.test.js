@@ -151,7 +151,7 @@ async function establishResumeSession(model, root) {
   const first = await generateEngineTurnResponse("system", runOptions(model, {
     messages: [{ role: "user", content: "turn-1" }],
     sessionKeepAlive: true,
-    piSessionsRoot: root,
+    sessionsRoot: root,
   }));
   expect(first.error).toBeNull();
   expect(countJsonlFiles(root)).toBe(1);
@@ -171,7 +171,7 @@ async function assertResumeUnwedgedAndClean(model, root, sessionId) {
     messages: [{ role: "user", content: "turn-3" }],
     sessionKeepAlive: true,
     sessionId,
-    piSessionsRoot: root,
+    sessionsRoot: root,
   }));
   expect(third.error).toBeNull();
   expect(third.failureKind).not.toBe("session_busy");
@@ -193,7 +193,7 @@ async function assertCreateOnMissUnwedged(model, root, derivedId) {
     messages: [{ role: "user", content: "turn-after" }],
     sessionKeepAlive: true,
     sessionId: derivedId,
-    piSessionsRoot: root,
+    sessionsRoot: root,
   }));
   expect(next.error).toBeNull();
   expect(next.text).toBe("reply-after");
@@ -220,7 +220,7 @@ describe("pi-native abort sweep — entry (OP0, before any session work)", () =>
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: sig.signal,
       }));
       expect(aborted.cancelled).toBe(true);
@@ -240,7 +240,7 @@ describe("pi-native abort sweep — entry (OP0, before any session work)", () =>
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: "onmiss-entry-id",
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: sig.signal,
       }));
       expect(aborted.cancelled).toBe(true);
@@ -267,7 +267,7 @@ describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP8)", () =>
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: sig.signal,
       }));
       expect(aborted.cancelled).toBe(true);
@@ -288,7 +288,7 @@ describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP8)", () =>
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: "onmiss-guard-id",
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: sig.signal,
       }));
       expect(aborted.cancelled).toBe(true);
@@ -317,7 +317,7 @@ describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP8)", () =>
           messages: [{ role: "user", content: sessionKind === "resume" ? "turn-2" : "turn-1" }],
           sessionKeepAlive: true,
           sessionId,
-          piSessionsRoot: root,
+          sessionsRoot: root,
           abortSignal: sig.signal,
         }));
         expect(sig.reads).toBeGreaterThanOrEqual(3);
@@ -344,7 +344,7 @@ describe("pi-native abort sweep — during the provider request (AP11, handler-d
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: sig.signal,
       }));
       expect(aborted.cancelled).toBe(true);
@@ -361,7 +361,7 @@ describe("pi-native abort sweep — during the provider request (AP11, handler-d
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: "onmiss-prompt-id",
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: sig.signal,
       }));
       expect(aborted.cancelled).toBe(true);
@@ -384,7 +384,7 @@ describe("pi-native abort sweep — post-run TOCTOU (OP3, commitSession decision
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: sig.signal,
         onEvent: (event) => { if (event?.type === "capabilities_resolved") sig.fire(); },
       }));
@@ -403,7 +403,7 @@ describe("pi-native abort sweep — post-run TOCTOU (OP3, commitSession decision
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: "onmiss-toctou-id",
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: sig.signal,
         onEvent: (event) => { if (event?.type === "capabilities_resolved") sig.fire(); },
       }));
@@ -433,7 +433,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId: probeId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: probe.signal,
       }));
       const lastRead = probe.reads;
@@ -449,7 +449,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
           messages: [{ role: "user", content: "turn-2" }],
           sessionKeepAlive: true,
           sessionId,
-          piSessionsRoot: realRoot,
+          sessionsRoot: realRoot,
           abortSignal: sig.signal,
         }));
         expect(aborted.cancelled).toBe(true);
@@ -460,7 +460,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
           messages: [{ role: "user", content: "turn-3" }],
           sessionKeepAlive: true,
           sessionId,
-          piSessionsRoot: realRoot,
+          sessionsRoot: realRoot,
         }));
         expect(third.diagnostics?.pi_error_code).not.toBe("pi_session_busy");
       });
@@ -477,7 +477,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: "onmiss-i10-probe",
-        piSessionsRoot: probeRoot,
+        sessionsRoot: probeRoot,
         abortSignal: probe.signal,
       }));
       const lastRead = probe.reads;
@@ -490,7 +490,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
           messages: [{ role: "user", content: "turn-1" }],
           sessionKeepAlive: true,
           sessionId: "onmiss-i10-real",
-          piSessionsRoot: realRoot,
+          sessionsRoot: realRoot,
           abortSignal: sig.signal,
         }));
         expect(aborted.cancelled).toBe(true);
@@ -513,7 +513,7 @@ describe("pi-native abort sweep — throw funnel (outer catch, cleanupSessionOnT
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: "onmiss-throw-id",
-        piSessionsRoot: root,
+        sessionsRoot: root,
         onEvent: (event) => { if (event?.type === "provider_request_started") throw new Error("setup-boom"); },
       }));
       expect(failed.error).toBe("setup-boom");
@@ -531,7 +531,7 @@ describe("pi-native abort sweep — throw funnel (outer catch, cleanupSessionOnT
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
         // Throws AFTER the prompt ran (estimateCost invokes resolveCustomPricing),
         // landing in the outer catch with the live session already mutated.
         resolveCustomPricing: () => { throw new Error("pricing-boom"); },

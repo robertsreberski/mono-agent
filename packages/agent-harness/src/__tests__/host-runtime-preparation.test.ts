@@ -28,7 +28,7 @@ async function fixture() {
     runtimeOptions: f.options, decorateUserMessage: (text: string) => `Fictional decoration: ${text}`, cleanup: extensionClose, settleCleanup: settleClose }; });
   const input: HarnessRuntimePreparationInput = { options: { identityPath: "/fictional/identity.md", model: f.model, runtime, runtimeOptionsForRequest: extension },
     request: { conversationId: "fictional", userMessage: "Original fictional input", abortSignal: controller.signal, metadata }, recorder: { onEvent: vi.fn() } as unknown as RunRecorder,
-    sessionsEnabled: true, runLimiter: limiter, runId: "prepared", durablePiSessionsRoot: nativeRoot,
+    sessionsEnabled: true, runLimiter: limiter, runId: "prepared", durableSessionsRoot: nativeRoot,
     routing: { modelKey: "faux:fixture", runtimeForSession: () => runtime, onRuntimeSelected: vi.fn() },
     attachmentContext: { root: "", allowedPaths: [], allowedIdentities: [] }, continuationCapabilities: [], turnContinuityCollector: new UncommittedTurnCollector(),
     assertOwned: () => owner.assertOwned(), prepareContext: context };

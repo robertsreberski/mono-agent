@@ -1,3 +1,4 @@
+import { assertNoOldSessionsRoot } from "./sessions-root.js";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
@@ -93,26 +94,17 @@ export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Pro
 }
 
 /**
- * Resolve the durable pi-session store the runtime resumes from, the same way the
- * runtime does: from `providers.piNative.piSessionsRoot` in the config file. Returns undefined when
+ * Resolve the durable session store the runtime resumes from, the same way the
+ * runtime does: from `runtime.session.root` in the config file. Returns undefined when
  * neither is set — that means sessions are kept in-memory only, so there is nothing
  * on disk to purge. Tolerates an unreadable config like the resolvers above.
  */
 export async function resolveAppSessionsRoot(input: MonoAgentAppConfigInput): Promise<string | undefined> {
-  try {
-    const { json } = await readMonoAgentConfigJson(input.configPath);
-    const configDir =
-      typeof json.providers?.piNative?.piSessionsRoot === "string"
-        ? json.providers.piNative.piSessionsRoot.trim()
-        : "";
-    if (configDir.length > 0) {
-      return resolve(input.cwd, configDir);
-    }
-  } catch {
-    // Tolerate an unreadable config; there is nothing to purge if we cannot resolve it.
-  }
-
-  return undefined;
+  const source = await readMonoAgentConfigJson(input.configPath).catch(() => undefined);
+  assertNoOldSessionsRoot(source?.json);
+  const json = source?.json;
+  const configDir = typeof json?.runtime?.session?.root === "string" ? json.runtime.session.root.trim() : "";
+  return configDir.length > 0 ? resolve(input.cwd, configDir) : undefined;
 }
 
 export async function resolveAppTraceRegistryDir(input: MonoAgentAppConfigInput): Promise<string> {

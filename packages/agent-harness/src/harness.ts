@@ -170,6 +170,7 @@ export class MonoAgentHarness implements AgentHarness {
   private disposePromise: Promise<void> | undefined;
 
   constructor(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}) {
+    if (Object.hasOwn(options, "piSessionsRoot") || (options.runtimeOptions && Object.hasOwn(options.runtimeOptions, "piSessionsRoot"))) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
     validateOptions(options);
     if ((options.memoryWriteMode === "append-host-summary" || options.memoryWriteMode === "capture")
       && typeof options.memory?.persistCompletedTurn !== "function") {
@@ -213,7 +214,7 @@ export class MonoAgentHarness implements AgentHarness {
 
   /**
    * Promptless provider-history transaction: compact this conversation's
-   * durable Pi session through the runtime's guarded driver without a user
+   * durable session through the runtime's guarded driver without a user
    * prompt. Canonical host history stays full; only the provider revision
    * advances (synced) or the epoch rotates fail-closed (unsynced/failed).
    */
@@ -228,10 +229,10 @@ export class MonoAgentHarness implements AgentHarness {
     }
     const historyStore = this.options.historyStore;
     const beginProviderSessionTurn = historyStore?.beginProviderSessionTurn?.bind(historyStore);
-    if (!this.sessionsEnabled() || this.options.piSessionsRoot === undefined
+    if (!this.sessionsEnabled() || this.options.sessionsRoot === undefined
       || historyStore?.providerSessionRetirement !== "fail-closed"
       || beginProviderSessionTurn === undefined) {
-      throw new AgentHarnessError("compaction_unsupported", "Manual compaction needs a durable Pi session.");
+      throw new AgentHarnessError("compaction_unsupported", "Manual compaction needs a durable session.");
     }
     // Resolve the conversation's model exactly as a turn carrying the same
     // selection would (invalid selections fall back to the host default).
@@ -366,7 +367,7 @@ export class MonoAgentHarness implements AgentHarness {
           historyBucket: conversationId, turnId: `synthetic:manual:${runId}`, handleId: sessionId, baseRevision: revision },
         sessionKeepAlive: true,
         sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
-        piSessionsRoot: this.options.piSessionsRoot,
+        sessionsRoot: this.options.sessionsRoot,
         allowedTools: [],
         disallowedTools: ["*"],
         mcpServers: {},
@@ -1184,19 +1185,19 @@ export class MonoAgentHarness implements AgentHarness {
       } = await applyHarnessAttachments(this.options, request, runId, emit);
       persistText = persistUserMessage;
       throwIfCancellationOwned();
-      // Durable Pi transcripts are safe to resume across a restart only when the
+      // Durable session transcripts are safe to resume across a restart only when the
       // canonical history store owns their epoch and dirty/clean transaction.
       // Merely hashing a conversation id is insufficient: a crash can persist Pi
       // JSONL before host history, and the stale transcript would then resurrect.
       // Custom history stores keep process-local warm sessions, but never receive
-      // piSessionsRoot unless they implement this coordinator contract.
+      // sessionsRoot unless they implement this coordinator contract.
       const localPreviousModelKey = sessionRecord?.modelKey;
       const historyStore = this.options.historyStore;
       const contextImportSupport = eligibleContextImport(this.options);
       const beginProviderSessionTurn = historyStore?.beginProviderSessionTurn?.bind(historyStore);
       const durableProviderSessionsEnabled = !isolated
         && this.sessionsEnabled()
-        && this.options.piSessionsRoot !== undefined
+        && this.options.sessionsRoot !== undefined
         && historyStore?.providerSessionRetirement === "fail-closed"
         && beginProviderSessionTurn !== undefined
         && (historyStore?.readProviderSessionBinding !== undefined
@@ -1212,7 +1213,7 @@ export class MonoAgentHarness implements AgentHarness {
             nativePreparationActive = true;
             preparedNativeTurn = await prepareConfiguredModelSwitch({ policy: this.nativeModelSwitch,
               preparation: { options: turnOptions, ...(this.runLimiter ? { runLimiter: this.runLimiter } : {}), sessionsEnabled: this.sessionsEnabled(), request: activeRequest, recorder,
-                runId, durablePiSessionsRoot: this.options.piSessionsRoot!, routing: { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession,
+                runId, durableSessionsRoot: this.options.sessionsRoot!, routing: { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession,
                   onRuntimeSelected: (key) => { activeAttemptModelKey = key; } }, attachmentContext, continuationCapabilities, turnContinuityCollector,
                 ...(liveInputMailbox ? { liveInputMailbox } : {}), onProviderStart: () => noteProviderStart(coordinatedProviderSessionId) },
               prepareContext: async (frozenRequest, frozenOptions) => await prepareHarnessContext(frozenOptions, this.skillsCache, frozenRequest, {
@@ -1431,7 +1432,7 @@ export class MonoAgentHarness implements AgentHarness {
           runId,
           resumeSessionId,
           providerAttributionSessionId,
-          providerHistoryTurn === undefined ? undefined : this.options.piSessionsRoot,
+          providerHistoryTurn === undefined ? undefined : this.options.sessionsRoot,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
             ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),

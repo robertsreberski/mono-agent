@@ -7,7 +7,7 @@ const id = (v) => typeof v === "string" && v.length > 0 && v.length <= 512;
 const time = (v) => Number.isSafeInteger(v) && v >= 0;
 const ids = (v) => Array.isArray(v) && v.every(id) && new Set(v).size === v.length;
 const status = (v) => ["completed", "failed", "aborted", "interrupted"].includes(v);
-const fail = () => { throw Object.assign(new Error("Invalid mono-agent harness journal v2"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
+const fail = () => { throw Object.assign(new Error("Invalid session journal"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
 const requireValue = (v) => { if (!v) fail(); };
 
 /** Digest only the actual native input content, never controllers or timestamps. */
@@ -32,7 +32,7 @@ export function validateJournalHeader(header) {
       && /^[a-f0-9]{64}$/.test(info.contextHash) && source?.id === header.id
       && typeof source.path === "string" && source.path.split(/[\\/]/).length === 2
       && source.path.split(/[\\/]/).every((part) => part && part !== "." && part !== "..")
-      && source.path.split(/[\\/]/)[0] !== "mono-v2"
+      && !["journals", "locks", "aliases"].includes(source.path.split(/[\\/]/)[0])
       && source.path.endsWith(".jsonl") && object(identity)
       && ["dev", "ino", "size"].every((key) => time(identity[key]))
       && Number.isFinite(identity.mtimeMs) && /^[a-f0-9]{64}$/.test(identity.sha256));

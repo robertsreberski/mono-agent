@@ -107,10 +107,10 @@ const ratio = ({ input, cacheRead, cacheWrite }) => {
 
 function makeConfig(root, model, scenario, piAuthPath, toolsEnabled = true) {
   return {
-    runtime: { model, maxTurns: 4, workspace: root, session: { mode: scenario === "stateless" ? "per-message" : "continuous", idleTimeoutMs: 60_000 } },
+    runtime: { model, maxTurns: 4, workspace: root, session: { root: join(root, "pi-sessions"), mode: scenario === "stateless" ? "per-message" : "continuous", idleTimeoutMs: 60_000 } },
     providers: {
       ...(piAuthPath === undefined ? {} : { piAuthPath }),
-      piNative: { piSessionsRoot: join(root, "pi-sessions") },
+      piNative: {},
     },
     context: { identityPath: join(root, "IDENTITY.md"), selectedSkills: [] },
     tools: { allowedTools: toolsEnabled ? ["Read"] : [], disallowedTools: [] },

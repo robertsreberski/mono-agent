@@ -242,7 +242,7 @@ Configure `subagents.instances`:
 | `idleTtlMs` | `86400000` (one day) | 60000–604800000; expiry is applied on registry access. Running instances do not expire. |
 | `maxTurns` | `60` | 1–500 total child turns per instance; close and create another when exhausted. This differs from the per-run `subagents.maxTurns` model-turn cap. |
 
-The registry and Pi JSONL transcripts survive restarts. An interrupted instance
+The registry and session JSONL transcripts survive restarts. An interrupted instance
 returns to `awaiting_reply` when it has a pending question, otherwise idle; it does not rerun automatically. Closed and expired
 records remain for up to 24 hours, bounded to 64 terminal records per
 conversation and a 16 MiB registry. Terminal records are pruned before a write

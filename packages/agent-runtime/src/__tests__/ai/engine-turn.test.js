@@ -678,7 +678,7 @@ describe("pi-native AgentHarness bridge", () => {
       effort: "none",
       allowedTools: [],
       resolvePiApiKey: async () => null,
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     });
 
     expect(result.error).toBe("Provider is not configured: openai-codex");
@@ -705,7 +705,7 @@ describe("pi-native AgentHarness bridge", () => {
         effort: "none",
         allowedTools: [],
         resolvePiApiKey: async () => null,
-        piSessionsRoot: sessionsRoot,
+        sessionsRoot: sessionsRoot,
       });
 
       expect(result.error).toBe("Provider is not configured: opencode-go");
@@ -736,7 +736,7 @@ describe("pi-native AgentHarness bridge", () => {
       allowedTools: [],
       resolvePiApiKey: async () => null,
       providerCheckAuthContext: authContext,
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     });
     expect(result.error).toBe(`Provider is not configured: ${provider}`);
     expect(result.failureKind).toBe("provider_auth");
@@ -821,7 +821,7 @@ describe("pi-native AgentHarness bridge", () => {
       effort: "max",
       messages: [{ role: "user", content: "use native max" }],
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
 
     expect(result.error).toBeNull();
@@ -1813,7 +1813,7 @@ describe("pi-native AgentHarness bridge", () => {
     const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(first.error).toBeNull();
     expect(first.text).toBe("reply-1");
@@ -1831,7 +1831,7 @@ describe("pi-native AgentHarness bridge", () => {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId: first.providerSessionId,
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(second.error).toBeNull();
     expect(second.text).toBe("reply-2");
@@ -1850,7 +1850,7 @@ describe("pi-native AgentHarness bridge", () => {
   });
 
   it("fails fast with session_not_found on an in-memory resume miss without invoking the provider", async () => {
-    // In-memory resume miss (no piSessionsRoot): no live entry and no durable
+    // In-memory resume miss (no sessionsRoot): no live entry and no durable
     // repo to create-on-miss into, so the per-process session_not_found contract
     // holds. (The DURABLE resume miss now creates-on-miss under the requested id
     // — see the cross-restart resume test in pi-native-sessions.test.js, F9.)
@@ -2209,7 +2209,7 @@ describe("pi-native auto-compaction", () => {
       model: { provider: "faux", model: "proactive", reference: "faux:proactive" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(result.error).toBeNull();
     expect(result.text).toBe("done");
@@ -2251,7 +2251,7 @@ describe("pi-native auto-compaction", () => {
     faux.setResponses([fauxAssistantMessage([fauxText("SUMMARY durable cut")])]);
     const compacted = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true, messages: history, sessionId: id, providerSessionId: id,
-      sessionKeepAlive: true, piSessionsRoot: sessionsRoot,
+      sessionKeepAlive: true, sessionsRoot: sessionsRoot,
       resolvePiApiKey: async () => "faux-key",
     }));
     expect(compacted.manualCompaction).toMatchObject({ status: "succeeded" });
@@ -2265,7 +2265,7 @@ describe("pi-native auto-compaction", () => {
     const reply = await generateEngineTurnResponse("system", runOptions(base, {
       messages: [...history, { role: "user", content: "after-cut" }],
       sessionId: id, providerSessionId: id, sessionKeepAlive: true,
-      piSessionsRoot: sessionsRoot, resolvePiApiKey: async () => "faux-key",
+      sessionsRoot: sessionsRoot, resolvePiApiKey: async () => "faux-key",
     }));
     expect(reply.error).toBeNull();
     expect(reply.text).toBe("continued");
@@ -2359,7 +2359,7 @@ describe("pi-native auto-compaction", () => {
       model: { provider: "faux", model: "reactive", reference: "faux:reactive" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(result.error).toBeNull();
     expect(result.text).toBe("recovered");
@@ -2384,7 +2384,7 @@ describe("pi-native auto-compaction", () => {
       model: { provider: "faux", model: "guard", reference: "faux:guard" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     // Proactive compaction fired, the turn still overflowed, and the bridge
     // surfaces the overflow WITHOUT a second compaction or a re-prompt.
@@ -2409,7 +2409,7 @@ describe("pi-native auto-compaction", () => {
       model: { provider: "faux", model: "loop", reference: "faux:loop" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(result.failureKind).toBe("context_limit");
     // overflow + summary + ONE re-prompt overflow = 3 calls; never the 4th.
@@ -2436,7 +2436,7 @@ describe("pi-native auto-compaction", () => {
       model: runRef,
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(run1.diagnostics.context_compaction_proactive).toBeUndefined();
     expect(run1.diagnostics.context_compaction_reactive).toBe(true);
@@ -2453,7 +2453,7 @@ describe("pi-native auto-compaction", () => {
       model: runRef,
       messages: bigHistory(110, 2000),
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(run2.error).toBeNull();
     expect(run2.text).toBe("done-2");
@@ -2501,7 +2501,7 @@ describe("pi-native auto-compaction", () => {
       messages,
       allowedTools: ["Read", "Grep", "Bash"],
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
       // On by default — no flag set; the correction fires unless explicitly disabled.
     }));
     expect(result.error).toBeNull();
@@ -2540,7 +2540,7 @@ describe("pi-native auto-compaction", () => {
       messages,
       allowedTools: ["Read", "Grep", "Bash"],
       resolvePiApiKey: async () => "faux-key",
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
       // Escape hatch: explicitly disable the correction to restore the prior
       // transcript-only trigger (under-counts overhead).
       compaction: { fixedOverheadEnabled: false },

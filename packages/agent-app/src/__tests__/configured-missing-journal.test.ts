@@ -34,8 +34,8 @@ async function fixture(enabled = true) {
   const configPath = join(root, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify({
     runtime: { model: "pi:openai-codex:gpt-5.5", workspace: root, maxTurns: 4,
-      session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: enabled ? { enabled: true } : { enabled: false } } },
-    providers: { piNative: { piSessionsRoot: nativeRoot } }, context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
+      session: { root: nativeRoot, mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: enabled ? { enabled: true } : { enabled: false } } },
+    providers: { piNative: {} }, context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(root, "artifacts") }, traceability: { registryDir: join(root, "trace") },
   }));
   const loaded = await loadAppCoreConfig({ cwd: root, configPath, env: {} });
@@ -77,9 +77,9 @@ async function fixture(enabled = true) {
     }
     return undefined;
   };
-  const journals = join(nativeRoot, "mono-v2", "journals");
+  const journals = join(nativeRoot, "journals");
   const contexts = () => transport.mock.calls.map(([, context]) => JSON.stringify(context.messages));
-  return { faux, transport, leaseRuns, make, send, reply, record, journals, contexts, summaryCalls: () => transport.mock.calls.filter(([, context]) => isSummary(context)).length };
+  return { root, faux, transport, leaseRuns, make, send, reply, record, journals, contexts, summaryCalls: () => transport.mock.calls.filter(([, context]) => isSummary(context)).length };
 }
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 const ownJournals = async (directory: string) => (await readdir(directory)).filter((name) => name.endsWith(".jsonl") && !(name in foreign));
@@ -195,7 +195,7 @@ it.each([
   const refused = await f.send(h, "fictional-after-corruption", version === 5 && !kind.endsWith("switch") ? "B" : "A");
   expect(refused).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
   expect(f.transport).toHaveBeenCalledTimes(calls);
-  expect((await readdir(join(f.journals, "..", "..", "..", "history"))).some((name) => name.startsWith(".native-history-op"))).toBe(false);
+  expect((await readdir(join(f.root, "history"))).some((name) => name.startsWith(".native-history-op"))).toBe(false);
   expect(await readFile(join(f.journals, current), "utf8")).toBe(bytes);
   expect(await f.record()).toEqual(before);
 }, 20_000);

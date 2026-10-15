@@ -316,7 +316,7 @@ export async function buildTurnHarness(runState, {
     retry: { enabled: false, maxRetries: 0 },
     steeringMode,
     followUpMode: steeringMode,
-    assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.piSessionsRoot) : undefined,
+    assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.sessionsRoot) : undefined,
     inheritedProjection: options.nativeSessionProjection?.inherited,
     inheritedProjectionRef: options.nativeSessionProjection?.artifact,
     handoffDispatchBudget: options.nativeSessionProjection?.dispatchBudget,

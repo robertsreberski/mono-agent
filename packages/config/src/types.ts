@@ -283,6 +283,7 @@ export interface MonoAgentConfig {
     readonly compaction?: RuntimeCompactionPolicy;
     readonly workspace: string;
     readonly session: {
+      readonly root?: string;
       readonly mode: SessionMode;
       readonly idleTimeoutMs: number;
       /** Daily/none session rollover; default "none". */
@@ -503,7 +504,6 @@ export interface PiNativeProviderConfig {
    * Directory for durable JSONL session storage. When set, provider sessions
    * persist to disk and resume across restarts; unset keeps sessions in-memory.
    */
-  readonly piSessionsRoot?: string;
 }
 
 export type RedactedLocalProviderDefinition = Omit<LocalProviderDefinition, "apiKey"> & {

@@ -99,7 +99,7 @@ describe("reply artifact responder composition", () => {
     const memoryPath = join(workspace, "host-d", "knowledge.txt");
     const mcpConfigPath = join(workspace, "host-e", "tooling.json");
     const piAuthPath = join(workspace, "host-f", "provider-access.json");
-    const piSessionsRoot = join(workspace, "host-g");
+    const sessionsRoot = join(workspace, "host-g");
     const traceRegistryDir = join(workspace, "host-h");
     const continuationStateDir = join(workspace, "host-i");
     const processJobsStateDir = join(workspace, "host-l");
@@ -120,7 +120,7 @@ describe("reply artifact responder composition", () => {
       { label: "memory", path: memoryPath },
       { label: "MCP config", path: mcpConfigPath },
       { label: "Pi auth", path: piAuthPath },
-      { label: "provider sessions", path: join(piSessionsRoot, "host-data.txt") },
+      { label: "provider sessions", path: join(sessionsRoot, "host-data.txt") },
       { label: "trace registry", path: join(traceRegistryDir, "host-data.txt") },
       { label: "continuation state", path: join(continuationStateDir, "host-data.txt") },
       { label: "process-job state", path: join(processJobsStateDir, "host-data.txt") },
@@ -131,10 +131,10 @@ describe("reply artifact responder composition", () => {
 
     const rawConfig = {
       agent: { name: privateSentinel },
-      runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
+      runtime: { session: { root: "./host-g" },  model: "openai-codex:gpt-5.5", workspace: "." },
       providers: {
         piAuthPath: "./host-f/provider-access.json",
-        piNative: { piSessionsRoot: "./host-g" },
+        piNative: {},
       },
       context: {
         identityPath: "./host-a/info.txt",
@@ -163,7 +163,7 @@ describe("reply artifact responder composition", () => {
       writeFile(memoryPath, privateSentinel),
       writeFile(mcpConfigPath, '{"mcpServers":{}}\n'),
       writeFile(piAuthPath, privateSentinel),
-      writeFile(join(piSessionsRoot, "host-data.txt"), privateSentinel),
+      writeFile(join(sessionsRoot, "host-data.txt"), privateSentinel),
       writeFile(join(traceRegistryDir, "host-data.txt"), privateSentinel),
       writeFile(join(continuationStateDir, "host-data.txt"), privateSentinel),
       writeFile(join(processJobsStateDir, "host-data.txt"), privateSentinel),
@@ -427,7 +427,7 @@ describe("process-job mixed fallback route guard", () => {
     }
   });
 
-  it("fails a degraded all-Pi turn before providers when the sandbox engine is unavailable", async () => {
+  it("fails a degraded session turn before providers when the sandbox engine is unavailable", async () => {
     const fixture = await createRouteGuardFixture(
       PI_ROUTE,
       PI_FALLBACK_ROUTE,
@@ -648,10 +648,10 @@ it("compacts durable web conversations through the production responder composit
   const other = parseMonoRuntimeModelReference("openai-codex:gpt-5.4");
   const config: MonoAgentConfig = {
     runtime: { model: primary, fallbacks: [{ model: other }], workspace: dir,
-      session: { mode: "continuous", idleTimeoutMs: 60_000, rollover: "daily",
+      session: { root: join(dir, "pi"), mode: "continuous", idleTimeoutMs: 60_000, rollover: "daily",
         rolloverTimezone: "America/New_York", isolateProactive: true },
       compaction: { triggerRatio: 0.9 } },
-    providers: { piNative: { piSessionsRoot: join(dir, "pi") } },
+    providers: { piNative: {} },
     context: { identityPath, selectedSkills: [] },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(dir, "artifacts"), retention: { maxAgeDays: 365, maxCount: 100, dryRun: false },
@@ -685,7 +685,7 @@ it("compacts durable web conversations through the production responder composit
     // Custom route ownership is not certified by the default inner matcher.
     // Method presence alone must not opt this scripted provider into P2.
     return { ...routed,
-    // The scripted provider is the durable Pi session owner; the router's
+    // The scripted provider is the durable session owner; the router's
     // default inner runtime has no knowledge of this test's provider handle.
     syncSession: provider.syncSession!.bind(provider),
     refreshSession: provider.refreshSession!.bind(provider),

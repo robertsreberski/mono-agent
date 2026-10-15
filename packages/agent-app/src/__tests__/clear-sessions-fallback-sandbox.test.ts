@@ -30,7 +30,7 @@ vi.mock("../../../agent-runtime/src/agent/tools/shared/process-runner.js", async
 });
 
 // This deliberately crosses the package-private boundary: the regression is
-// deciding only when the actual Pi turn builder creates Read/Write/Bash with
+// deciding only when the actual session turn builder creates Read/Write/Bash with
 // the fallback attempt's projected sandbox context.
 // @ts-expect-error -- package-private JavaScript deciding sink has no public declaration.
 import { buildTurnTools } from "../../../agent-runtime/src/ai/providers/engine-turn/turn-runner.js";

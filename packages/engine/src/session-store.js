@@ -1,3 +1,4 @@
+import { assertSupportedSessionsRoot } from "./sessions-root.js";
 // Mono-agent-owned append-only single-main-branch store. No provider execution here.
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
@@ -376,7 +377,8 @@ async function absent(path) { try { await lstat(path); return false; } catch (er
 export class JsonlSessionRepo {
   constructor({ sessionsRoot, onImportPhase = async (_phase) => {}, onHeaderUpgradePhase = async (_phase) => {}, onRootPermissionsTightened = () => {} }) {
     this.root = resolve(sessionsRoot);
-    this.directory = join(this.root, "mono-v2", "journals");
+    assertSupportedSessionsRoot(this.root);
+    this.directory = join(this.root, "journals");
     this.openSessions = new Map();
     this.locksPromise = null;
     this.directoryIdentity = null; this.warm = null;
@@ -389,6 +391,8 @@ export class JsonlSessionRepo {
     this.locksPromise ??= JournalLocks.open(this.root, this.onRootPermissionsTightened);
     const locks = await this.locksPromise;
     await locks.assertRoot();
+    // Once pinned, a removed journals directory must never be recreated by a late writer.
+    if (this.directoryIdentity !== null) { await this.assertDirectory(); return locks; }
     try { await mkdir(this.directory, { mode: 0o700 }); }
     catch (error) { if (error.code !== "EEXIST") throw error; }
     const stat = await lstat(this.directory);
@@ -555,7 +559,7 @@ export class JsonlSessionRepo {
   }
   async syncDirectories() {
     await this.assertDirectory();
-    await syncPath(this.directory); await syncPath(join(this.root, "mono-v2")); await syncPath(this.root);
+    await syncPath(this.directory); await syncPath(this.root);
     await this.assertDirectory();
   }
   async openLocked(metadata, writer, { repair = true, validateHeader = undefined } = {}) {
@@ -969,7 +973,7 @@ export class JsonlSessionRepo {
     if (files.some((name) => name.startsWith(`${metadata.journalId}.`))) return false;
     // P1a emits no aliases. Adding projections must extend this same predicate
     // and removal transaction; unknown future aliases conservatively pin locks.
-    const aliases = join(this.root, "mono-v2", "aliases");
+    const aliases = join(this.root, "aliases");
     if (!await absent(aliases)) {
       const stat = await lstat(aliases); if (!stat.isDirectory()) fail();
       if ((await readdir(aliases)).length) return false;
@@ -983,7 +987,7 @@ export class JsonlSessionRepo {
     const paths = this.journalPaths(metadata);
     const files = await readdir(this.directory);
     if (files.some((name) => name.startsWith(`${metadata.journalId}.`) && !paths.some((path) => path.endsWith(`/${name}`)))) fail();
-    const aliases = join(this.root, "mono-v2", "aliases");
+    const aliases = join(this.root, "aliases");
     if (!await absent(aliases) && (!(await lstat(aliases)).isDirectory() || (await readdir(aliases)).length)) fail();
     // Validate all matching evidence before removing either publication phase.
     const readers = [], archives = [];
@@ -1007,7 +1011,7 @@ export class JsonlSessionRepo {
   }
   async removeLegacy(metadata) {
     const path = resolve(metadata.path), parent = dirname(path);
-    if (dirname(parent) !== this.root || parent === join(this.root, "mono-v2")) fail();
+    if (dirname(parent) !== this.root || ["journals", "locks", "aliases"].some((name) => parent === join(this.root, name))) fail();
     await this.assertDirectory();
     if (await absent(path)) return;
     const reader = await JournalReader.open(path, this.root, { ownerOnly: false });

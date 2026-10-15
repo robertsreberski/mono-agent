@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Reject renamed sessions-root configuration before a clear-sessions restart can
+  stop the worker or delete history. Refuse pre-release storage during startup
+  and validation, and report it as a terminal storage safety failure rather
+  than retrying providers or falling back.
+
+- Rename durable storage to sessions (breaking config change): move
+  `providers.piNative.piSessionsRoot` to `runtime.session.root`, and replace the
+  programmatic run option `piSessionsRoot` with `sessionsRoot`. Old names fail
+  explicitly, naming the replacement; no deprecated aliases are accepted.
+  Session journals, locks and aliases now live directly under the root. Roots
+  containing `mono-v2/` from pre-release builds are refused without modification;
+  restore a backup or remove that directory only after checking it is not needed.
+  Rename the permissions warning to `sessions_root_permissions_tightened`.
+
 - Fix a parent-stopped background subagent whose late result kept its session
   context staying blocked in recovery, with its process job holding a running
   slot, when registry writes were slow. The late result now settles with its
@@ -64,7 +78,7 @@
 
 - Keep Pi-native execution on Pi 1.x through the new `@mono-agent/engine`, with
   versioned native journals and distinct logical turns/execution operations.
-  Import idle legacy Pi main-branch context; reopen still aborts old operations
+  Import idle legacy main-branch context; reopen still aborts old operations
   and model-change retirement remains destructive outside durable model
   switching. Support large native records and journals with kernel-backed writer
   exclusion and safe retired-lock cleanup. Resume interrupted idle legacy
@@ -76,7 +90,7 @@
   missing journals as absence and writer-owned creation stages as busy. Refuse
   unreadable native catalogues without retiring or cold-replaying a turn. Freeze
   storage formats and deterministic journal identities: the first durable turn
-  writes `mono-v2` journals, `.pending-turns` and the new canonical history
+  writes session journals, `.pending-turns` and the new canonical history
   format. Older binaries must not run against that root; rollback requires
   restoring a backup.
 
@@ -282,7 +296,7 @@
 
 - Add OFF-default Web-only durable model switching through
   `runtime.session.modelSwitch.enabled`, requiring explicit continuous sessions
-  and durable Pi storage. Persisted Web message IDs bound summary billing;
+  and durable session storage. Persisted Web message IDs bound summary billing;
   pending messages never replay, and wrappers preserve identities across
   redelivery and forward owned preparation. Guarded model changes without
   persisted identities fail closed, and delivery identities require the Web
@@ -372,7 +386,7 @@
   never deleted; a damaged file of unknown ownership blocks only a conversation
   whose own session file is missing, with `native_journal_unreadable`.
 
-- Fix one stray or damaged file in the conversation history or legacy Pi session
+- Fix one stray or damaged file in the conversation history or legacy session
   folder stopping every conversation. Ignore unrelated names and preserve
   damaged entries (empty, malformed, wrong permissions or hard-linked), charging
   them against storage limits and refusing only their own conversation.

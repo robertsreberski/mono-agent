@@ -62,11 +62,11 @@ it("validates a single durable projection binding and rejects repeated or malfor
   const f = await fixture();
   const binding = { version: 1, artifact: { id: "4".repeat(64), hash: "5".repeat(64) }, coverage, messageDigest: "6".repeat(64) };
   const baseline = f.raw.records.length;
-  await expect(f.raw.beginTurn("invalid", {}, "synthetic", undefined, { ...binding, artifact: { ...binding.artifact, hash: "bad" } })).rejects.toThrow("Invalid mono-agent harness journal");
+  await expect(f.raw.beginTurn("invalid", {}, "synthetic", undefined, { ...binding, artifact: { ...binding.artifact, hash: "bad" } })).rejects.toThrow("Invalid session journal");
   expect(f.raw.records).toHaveLength(baseline);
   await f.raw.beginTurn("bound", {}, "synthetic", undefined, binding); await f.raw.endTurn("bound", "completed");
   expect(f.raw.validator.projectionBinding).toEqual(binding);
   const settled = f.raw.records.length;
-  await expect(f.raw.beginTurn("rebind", {}, "synthetic", undefined, binding)).rejects.toThrow("Invalid mono-agent harness journal");
+  await expect(f.raw.beginTurn("rebind", {}, "synthetic", undefined, binding)).rejects.toThrow("Invalid session journal");
   expect(f.raw.records).toHaveLength(settled); expect(f.provider).not.toHaveBeenCalled(); await f.raw.close();
 });

@@ -52,8 +52,8 @@ async function open(base = "A") {
   await writeFile(join(root, "IDENTITY.md"), "Fictional stable instructions");
   await writeFile(configPath, JSON.stringify({
     runtime: { model: "pi:openai-codex:gpt-5.5", workspace: root, maxTurns: 4,
-      session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: { enabled: true } } },
-    providers: { piNative: { piSessionsRoot: nativeRoot } }, context: { identityPath: join(root, "IDENTITY.md"), selectedSkills: [] },
+      session: { root: nativeRoot, mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: { enabled: true } } },
+    providers: { piNative: {} }, context: { identityPath: join(root, "IDENTITY.md"), selectedSkills: [] },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(root, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false }, memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false } },
     traceability: { registryDir: join(root, "trace") },
@@ -92,7 +92,7 @@ async function canonical(id = conversationId) {
   return null;
 }
 async function snapshot(store) {
-  const journals = (await files(join(nativeRoot, "mono-v2", "journals"))).filter((path) => path.endsWith(".jsonl")).sort();
+  const journals = (await files(join(nativeRoot, "journals"))).filter((path) => path.endsWith(".jsonl")).sort();
   const records = await Promise.all(journals.map(async (path) => (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line))));
   return {
     canonical: await canonical(), successor: await canonical(successorId),
@@ -138,7 +138,7 @@ async function missingJob(scenario, mode) {
     if (mode === "produce") {
       results.push(await respond(opened.responder, "fictional-seed", "A"));
       if (scenario !== "missing-v3") results.push(await respond(opened.responder, "fictional-switch", "B"));
-      const journals = join(nativeRoot, "mono-v2", "journals");
+      const journals = join(nativeRoot, "journals");
       if (scenario === "missing-root") {
         const report = { results, calls: calls(), contexts, ...await snapshot(opened.store) };
         await opened.responder.dispose(); await rm(nativeRoot, { recursive: true, force: true });
@@ -172,14 +172,14 @@ process.once("message", async ({ scenario, mode }) => {
       if (scenario === "return" || scenario === "missing-switch") results.push(await respond(opened.responder, "fictional-b-turn", "B"));
       if (scenario === "missing-switch") {
         // External loss before an explicit switch: canonical history is the outgoing evidence.
-        const journals = join(nativeRoot, "mono-v2", "journals");
+        const journals = join(nativeRoot, "journals");
         for (const name of (await readdir(journals)).filter((name) => name.endsWith(".jsonl"))) await unlink(join(journals, name));
       }
       if (scenario === "retention") {
         const old = new Date("2000-01-01T00:00:00Z");
         for (const name of (await readdir(historyRoot)).filter((name) => name.endsWith(".history.json"))) await utimes(join(historyRoot, name), old, old);
       }
-      const journals = (await files(join(nativeRoot, "mono-v2", "journals"))).filter((path) => path.endsWith(".jsonl"));
+      const journals = (await files(join(nativeRoot, "journals"))).filter((path) => path.endsWith(".jsonl"));
       const bytes = Object.fromEntries(await Promise.all(journals.map(async (path) => [path.split("/").at(-1), (await readFile(path)).toString("base64")])));
       await writeFile(join(root, "before.json"), JSON.stringify({ ...await snapshot(opened.store), bytes }));
       globalThis.__fixtureArmed = true;

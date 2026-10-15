@@ -36,7 +36,7 @@ my-agent/
       graph.jsonl          # BuJo canonical entity graph
       .replay-projection-v1.json # BuJo exact metadata-only replay authority (0600)
       .index/              # managed generations + manifest/runtime metadata
-    sessions/              # optional durable Pi transcripts when configured
+    sessions/              # optional durable session transcripts when configured
     process-jobs/          # opt-in owner-private Exec/Bash jobs and output
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     trace-sources/         # traceability registry (if kept folder-local)
@@ -114,6 +114,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     },
     "workspace": ".",
     "session": {
+      "root": ".mono-agent/sessions", // durable JSONL sessions; unset = in-memory
       "mode": "continuous",                // warm provider session per conversation; per-message starts cold
       "idleTimeoutMs": 1800000,             // warm-session eviction only; durable history is separate
       "rollover": "none",                  // none|daily; daily appends a date bucket to conversation ids (console threads excluded)
@@ -139,8 +140,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       // "cacheRetention": "short",      // opt out of default Anthropic 1h cache; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; provider SDK-policy retries before a response starts
-      "maxRetryDelayMs": 60000,            // ceiling for provider-requested Retry-After delays (ms); longer requests fail
-      "piSessionsRoot": ".mono-agent/sessions" // durable JSONL sessions → resume across restarts (unset = in-memory)
+      "maxRetryDelayMs": 60000            // ceiling for provider-requested Retry-After delays (ms); longer requests fail
     },
     "local": [
       {

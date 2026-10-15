@@ -333,11 +333,13 @@ export async function generateEngineTurnResponse(systemPrompt, options = {}) {
 
 /** Additive preparation only. No configured host invokes it yet. */
 export function preparePiNativeDispatch(systemPrompt, options = {}, afterSettlement = async () => {}) {
+  if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
   const frozen = snapshotNativeDispatchOptions(options);
   return createPreparedDispatchLease((control) => executePiNativeResponse(systemPrompt, frozen, control).finally(afterSettlement), frozen.abortSignal);
 }
 
 async function executePiNativeResponse(systemPrompt, options = {}, control = undefined) {
+  if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
   const dispatchProgress = createDispatchProgress();
   try {
     const result = await executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress);
@@ -476,7 +478,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     if (options.sessionTurn !== undefined) {
       try {
         validateSessionTurn(options.sessionTurn, providerSessionId);
-        if (options.sessionTurn.reconciliation && (typeof options.piSessionsRoot !== "string" || !options.piSessionsRoot.trim()
+        if (options.sessionTurn.reconciliation && (typeof options.sessionsRoot !== "string" || !options.sessionsRoot.trim()
           || options.sessionKeepAlive !== true || options.sessionTurn.reconciliation.purpose !== (options.manualCompaction ? "compaction" : "execution"))) {
           throw new TypeError("Reconciliation requires a durable kept-alive turn of matching purpose");
         }
@@ -551,7 +553,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     nativeSessionAuthority: options.nativeSessionAuthority && { ...options.nativeSessionAuthority,
       hostAuthority: structuredClone(options.nativeSessionAuthority.hostAuthority) },
     nativeSessionProjection: options.nativeSessionProjection && structuredClone(options.nativeSessionProjection) };
-  const durableRepo = resolveDurableNativeSessionRepo(options.piSessionsRoot);
+  let durableRepo;
 
   const prepareRun = async () => {
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
@@ -647,6 +649,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
   };
 
   try {
+    durableRepo = resolveDurableNativeSessionRepo(options.sessionsRoot);
     const prepared = control ? await prepareRun() : undefined;
     if (prepared) {
       if (runtimeWarnings.some((warning) => ["mcp_init_failed", "mcp_list_tools_failed"].includes(warning.warning_kind))) {
@@ -707,7 +710,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     } finally {
       if (durableRepo?.rootPermissionWarningPending) {
         durableRepo.rootPermissionWarningPending = false;
-        const warning = { warning_kind: "pi_sessions_root_permissions_tightened", source: "pi",
+        const warning = { warning_kind: "sessions_root_permissions_tightened", source: "pi",
           message: "Owned durable sessions root permissions tightened to 0700; other-user read access removed." };
         runtimeWarnings.push(warning); onEvent({ type: "runtime_warning", ...warning });
       }
@@ -1185,7 +1188,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
 
     // Session lifecycle parity with the legacy bridge. The harness already
     // durably persisted the transcript into its session object (in-memory for
-    // the default repo, jsonl on disk when piSessionsRoot is set); commitSession
+    // the default repo, jsonl on disk when sessionsRoot is set); commitSession
     // tracks LIVENESS so disposeProviderSession / idle-TTL eviction can reach
     // native sessions, keep-alive registers the session, and a failed/aborted
     // resumed turn rolls back to its pre-turn leaf.
@@ -1332,6 +1335,9 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     if (err?.code === "ERR_NATIVE_SESSION_AUTHORITY" || err?.code === "ERR_HANDOFF_DISPATCH_BUDGET") {
       return { ...failure, failureKind: err.code === "ERR_NATIVE_SESSION_AUTHORITY" ? "safety_native_session_authority" : "safety_handoff_dispatch_budget",
         retryable: false, providerSessionRecovery: undefined };
+    }
+    if (err?.code === "ERR_SESSIONS_ROOT_UNSUPPORTED") {
+      return { ...failure, failureKind: "safety_sessions_root_unsupported", retryable: false, providerSessionRecovery: undefined };
     }
     if (isJournalStorageError(err)) {
       return { ...failure, failureKind: "safety_journal_storage_failed", retryable: false, providerSessionRecovery: undefined,

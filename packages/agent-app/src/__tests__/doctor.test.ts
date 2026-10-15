@@ -304,6 +304,21 @@ const unavailableSandboxEngine: SandboxEngine = {
 };
 
 describe("validateMonoAgentFolder", () => {
+  it("reports the actionable pre-release sessions-root refusal without changing it", async () => {
+    const root = join(dir, "sessions"), oldPath = join(root, "mono-v2");
+    await mkdir(oldPath, { recursive: true });
+    await writeFile(join(oldPath, "evidence"), "fictional evidence");
+    await writeFile(join(dir, "IDENTITY.md"), "Fictional instructions");
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5", session: { root: "sessions" } },
+      context: { identityPath: "IDENTITY.md" } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false,
+      allowFilesystemWrites: false, statusExecFile: async () => ({ stdout: "" }) });
+    expect(sectionById(report, "core")).toMatchObject({ status: "error", details: [expect.stringContaining(
+      `Sessions root contains ${oldPath}, written by a pre-release build; restore a backup or remove it`)] });
+    expect(report.ok).toBe(false);
+    expect(await readFile(join(oldPath, "evidence"), "utf8")).toBe("fictional evidence");
+  });
+
   it("reports a ready config with runtime, fallback, and channel sections", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({

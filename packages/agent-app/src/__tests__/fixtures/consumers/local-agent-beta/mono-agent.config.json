@@ -14,7 +14,8 @@
       "mode": "continuous",
       "idleTimeoutMs": 1800000,
       "rollover": "daily",
-      "rolloverTimezone": "Europe/Rome"
+      "rolloverTimezone": "Europe/Rome",
+      "root": "./.local-agent-beta/sessions"
     }
   },
   "context": {
@@ -24,9 +25,7 @@
   },
   "providers": {
     "piAuthPath": "./pi-auth/auth.json",
-    "piNative": {
-      "piSessionsRoot": "./.local-agent-beta/sessions"
-    }
+    "piNative": {}
   },
   "memory": {
     "mode": "journal",

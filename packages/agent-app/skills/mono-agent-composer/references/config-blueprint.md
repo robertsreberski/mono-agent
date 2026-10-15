@@ -55,7 +55,11 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
       "contextWindowOverride": 128000      // optional persistent correction for bad provider metadata
     },
     "workspace": ".",
-    "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } // or "per-message"
+    "session": {
+      "root": ".mono-agent/sessions", // durable JSONL sessions; unset = in-memory
+      "mode": "continuous", // or "per-message"
+      "idleTimeoutMs": 1800000
+    }
   },
 
   // Per-channel admission/execution bounds. Each enabled channel owns one limiter.
@@ -77,8 +81,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
       // "cacheRetention": "short",      // opt out of default Anthropic 1h; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; provider SDK-policy retries before a response starts
-      "maxRetryDelayMs": 60000,            // ceiling for provider-requested Retry-After delays (ms); longer requests fail
-      "piSessionsRoot": ".mono-agent/sessions" // durable JSONL sessions → resume across restarts (unset = in-memory)
+      "maxRetryDelayMs": 60000            // ceiling for provider-requested Retry-After delays (ms); longer requests fail
     },
     // One entry per provider id; every field below is optional. Declare an
     // ollama/lmstudio entry only to override its endpoint or credential.
@@ -440,7 +443,7 @@ mono-agent config       # resolved config field-by-field, each value tagged env/
 mono-agent validate [--preset <id>] [--consumer <path>]     # per-section report; --preset also checks the preset's capabilities
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
-mono-agent restart --clear-sessions  # restart AND purge persisted pi sessions (fresh start; durable memory kept)
+mono-agent restart --clear-sessions  # restart AND purge persisted sessions (fresh start; durable memory kept)
 ```
 
 A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the local traceability source and artifact location plus one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.

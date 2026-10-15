@@ -237,7 +237,7 @@ it.skipIf(process.platform === "win32").each([
   else expect(names).toEqual([`${f.metadata.journalId}.jsonl`]);
 }, 60000);
 it("does not create a writer lock for an absent-journal deletion probe", async () => {
-  const f = await lifecycleFixture(), locks = join(f.root, "mono-v2", "locks");
+  const f = await lifecycleFixture(), locks = join(f.root, "locks");
   await f.bridge.deleteJournals([f.journals.target], { ...f.deletion, disposition: "D" });
   const before = (await readdir(locks)).sort();
   expect(await f.bridge.deletionBlocked([f.journals.target], authority)).toBe(false);

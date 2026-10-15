@@ -63,8 +63,8 @@ describe("loadProcessJobsSettings", () => {
   });
 
   it("keeps ordinary unconfigured startup permissive when no default durable state exists", async () => {
-    const input = await fixture({
-      providers: { piNative: { piSessionsRoot: ".mono-agent" } },
+    const input = await fixture({ runtime: { session: { root: ".mono-agent" } },
+      providers: { piNative: {} },
     });
     await expect(loadProcessJobsSettings(input)).resolves.toMatchObject({
       configured: false,
@@ -235,22 +235,22 @@ describe("loadProcessJobsSettings", () => {
       kind: "ACP sessions",
     },
     {
-      name: "inside Pi provider sessions",
-      value: {
+      name: "inside Sessions",
+      value: { runtime: { session: { root: ".state/sessions" } },
         artifacts: { dir: ".other/artifacts" },
-        providers: { piNative: { piSessionsRoot: ".state/sessions" } },
+        providers: { piNative: {} },
         processJobs: { stateDir: ".state/sessions/jobs" },
       },
-      kind: "Pi provider sessions",
+      kind: "Sessions",
     },
     {
-      name: "containing Pi provider sessions",
-      value: {
+      name: "containing Sessions",
+      value: { runtime: { session: { root: ".state/sessions" } },
         artifacts: { dir: ".other/artifacts" },
-        providers: { piNative: { piSessionsRoot: ".state/sessions" } },
+        providers: { piNative: {} },
         processJobs: { stateDir: ".state" },
       },
-      kind: "Pi provider sessions",
+      kind: "Sessions",
     },
   ])("rejects a process-job state directory $name the clear-sessions root", async ({ value, kind }) => {
     const input = await fixture(value);
@@ -269,9 +269,9 @@ describe("loadProcessJobsSettings", () => {
   });
 
   it("accepts custom state and reset roots that are safe siblings", async () => {
-    const input = await fixture({
+    const input = await fixture({ runtime: { session: { root: ".state/sessions" } },
       artifacts: { dir: ".state/artifacts" },
-      providers: { piNative: { piSessionsRoot: ".state/sessions" } },
+      providers: { piNative: {} },
       processJobs: { enabled: true, stateDir: ".state/jobs" },
     });
     await expect(loadProcessJobsSettings(input)).resolves.toMatchObject({
@@ -289,9 +289,9 @@ describe("loadProcessJobsSettings", () => {
   });
 
   it.skipIf(process.platform === "win32")("rejects a canonical symlink alias of a reset root", async () => {
-    const input = await fixture({
+    const input = await fixture({ runtime: { session: { root: ".reset/sessions" } },
       artifacts: { dir: ".other/artifacts" },
-      providers: { piNative: { piSessionsRoot: ".reset/sessions" } },
+      providers: { piNative: {} },
       processJobs: { stateDir: ".state/jobs" },
     });
     await mkdir(join(input.cwd, ".reset/sessions"), { recursive: true });
@@ -300,7 +300,7 @@ describe("loadProcessJobsSettings", () => {
 
     await expect(loadProcessJobsSettings(input)).rejects.toMatchObject({
       code: "invalid_json",
-      details: { path: "processJobs.stateDir", purgeRootKind: "Pi provider sessions" },
+      details: { path: "processJobs.stateDir", purgeRootKind: "Sessions" },
     });
   });
 

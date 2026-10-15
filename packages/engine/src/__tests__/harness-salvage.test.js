@@ -40,7 +40,7 @@ it("salvages large v2 journals read-only with bounded result excerpts", async ()
 it("salvages the requested v2 ID despite unrelated malformed, insecure and non-file journals", async () => {
   const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "requested" });
-  await session.close(); const bytes = await readFile(session.metadata.path); const directory = join(r, "mono-v2", "journals");
+  await session.close(); const bytes = await readFile(session.metadata.path); const directory = join(r, "journals");
   await writeFile(join(directory, "malformed.jsonl"), "not-json\n", { mode: 0o600 });
   await writeFile(join(directory, "insecure.jsonl"), bytes, { mode: 0o644 }); await mkdir(join(directory, "directory.jsonl"));
   expect((await salvageDurableNativeSession("requested", r)).completed).toEqual([]);

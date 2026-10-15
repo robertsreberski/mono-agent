@@ -230,7 +230,7 @@ async function manualFixture(options: {
     } };
   };
   const makeHarness = () => createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore,
-    session, piSessionsRoot: join(root, "pi"), runtimeOptionsForRequest,
+    session, sessionsRoot: join(root, "pi"), runtimeOptionsForRequest,
     ...(options.withContext1M ? {
       runtimeOptions: { context1MModels: { [`${model.provider}:${model.model}`]: true } },
       runtimeOptionsForManualCompaction: async (modelKey: string, context1M?: boolean) => ({ context1MModels: { [modelKey]: context1M ?? true } }),
@@ -479,7 +479,7 @@ describe("AgentHarness manual compaction", () => {
     expect(await revision()).toBe(committedRevision);
   });
 
-  it("skips an empty conversation and rejects hosts without durable Pi sessions", async () => {
+  it("skips an empty conversation and rejects hosts without durable sessions", async () => {
     const { fake, makeHarness } = await manualFixture({ seedHistory: false });
     await expect(makeHarness().compactConversation!("manual")).resolves.toMatchObject({ status: "skipped", reason: "nothing_to_compact" });
     expect(fake.calls).toEqual([]);
@@ -833,14 +833,14 @@ describe("AgentHarness continuous sessions", () => {
     await historyStore.append("conv-d", [
       { role: "assistant", content: HISTORY_MARKER, timestamp: "2026-06-01T00:00:00Z" },
     ]);
-    const piSessionsRoot = join(durableRoot, "pi-sessions");
+    const sessionsRoot = join(durableRoot, "pi-sessions");
     const fake = createSessionFakeRuntime(async (_prompt, options) => ({
       text: "answer",
       providerSessionId: options.sessionId as string,
     }));
     const harness = createAgentHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session,
-      piSessionsRoot,
+      sessionsRoot,
     });
 
     const first = await harness.run(request("conv-d", "first question"));
@@ -850,7 +850,7 @@ describe("AgentHarness continuous sessions", () => {
     expect((fake.calls[0]?.options.sessionId as string).length).toBeGreaterThan(0);
     const legacyConversationOnlyId = createHash("sha256").update("conv-d").digest("hex").slice(0, 32);
     expect(fake.calls[0]?.options.sessionId).not.toBe(legacyConversationOnlyId);
-    expect(fake.calls[0]?.options.piSessionsRoot).toBe(piSessionsRoot);
+    expect(fake.calls[0]?.options.sessionsRoot).toBe(sessionsRoot);
     // A cold durable reopen keeps canonical history out of the system prompt and
     // supplies it as leading structured messages. Pi can then seed create-on-miss
     // while skipping the leading messages for a true durable resume.
@@ -893,7 +893,7 @@ describe("AgentHarness continuous sessions", () => {
     }));
     const harness = createAgentHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session,
-      piSessionsRoot: join(durableRoot, "pi-sessions"),
+      sessionsRoot: join(durableRoot, "pi-sessions"),
     });
 
     await harness.run(request("conv-speaker", "and tomorrow?"));
@@ -925,7 +925,7 @@ describe("AgentHarness continuous sessions", () => {
 
     await createAgentHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session,
-      piSessionsRoot: join(durableRoot, "pi-sessions"),
+      sessionsRoot: join(durableRoot, "pi-sessions"),
     }).run(request("conv-forged", "next"));
 
     const replayed = fake.calls[0]?.options.messages?.[0]?.content as string;
@@ -938,7 +938,7 @@ describe("AgentHarness continuous sessions", () => {
     const root = await mkdtemp(join(tmpdir(), "agent-harness-cross-process-revision-"));
     tempDirs.push(root);
     const historyRoot = join(root, "history");
-    const piSessionsRoot = join(root, "pi");
+    const sessionsRoot = join(root, "pi");
     const fakeA = createSessionFakeRuntime(async (_prompt, options, call) => ({
       text: call === 1 ? "answer-from-a1" : "answer-from-a2",
       providerSessionId: options.sessionId as string,
@@ -953,7 +953,7 @@ describe("AgentHarness continuous sessions", () => {
       model,
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
-      piSessionsRoot,
+      sessionsRoot,
     });
     const harnessB = createAgentHarness({
       identityPath,
@@ -961,7 +961,7 @@ describe("AgentHarness continuous sessions", () => {
       model,
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
-      piSessionsRoot,
+      sessionsRoot,
     });
 
     await harnessA.run(request("conv-shared", "question-a1"));
@@ -985,7 +985,7 @@ describe("AgentHarness continuous sessions", () => {
     const root = await mkdtemp(join(tmpdir(), "agent-harness-reloaded-revision-"));
     tempDirs.push(root);
     const historyRoot = join(root, "history");
-    const piSessionsRoot = join(root, "pi");
+    const sessionsRoot = join(root, "pi");
     const fakeA = createSessionFakeRuntime(async (_prompt, options, call) => ({
       text: call === 1 ? "answer-from-a1" : "answer-from-reloaded-a",
       providerSessionId: options.sessionId as string,
@@ -1000,7 +1000,7 @@ describe("AgentHarness continuous sessions", () => {
       model,
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
-      piSessionsRoot,
+      sessionsRoot,
     });
 
     await harnessA.run(request("conv-reloaded", "question-a1"));
@@ -1011,7 +1011,7 @@ describe("AgentHarness continuous sessions", () => {
       model,
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
-      piSessionsRoot,
+      sessionsRoot,
     });
     await harnessB.run(request("conv-reloaded", "question-b"));
 
@@ -1024,7 +1024,7 @@ describe("AgentHarness continuous sessions", () => {
       model,
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
-      piSessionsRoot,
+      sessionsRoot,
     });
     await reloadedHarnessA.run(request("conv-reloaded", "question-a2"));
 
@@ -1038,7 +1038,7 @@ describe("AgentHarness continuous sessions", () => {
     ]));
   });
 
-  it("keeps a custom history store process-local even when extensions try to force durable Pi state", async () => {
+  it("keeps a custom history store process-local even when extensions try to force durable session state", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "warm-only" }));
@@ -1048,10 +1048,10 @@ describe("AgentHarness continuous sessions", () => {
       model,
       historyStore,
       session,
-      piSessionsRoot: "/tmp/configured-root",
+      sessionsRoot: "/tmp/configured-root",
       runtimeOptionsForRequest: () => ({
         runtimeOptions: {
-          piSessionsRoot: "/tmp/extension-root",
+          sessionsRoot: "/tmp/extension-root",
           sessionId: "extension-session",
           providerSessionId: "extension-provider",
           providerAttributionSessionId: "extension-attribution",
@@ -1060,7 +1060,7 @@ describe("AgentHarness continuous sessions", () => {
     });
 
     await harness.run(request("conv-custom-history"));
-    expect(fake.calls[0]?.options.piSessionsRoot).toBeUndefined();
+    expect(fake.calls[0]?.options.sessionsRoot).toBeUndefined();
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
     expect(fake.calls[0]?.options.providerSessionId).toBeUndefined();
     expect(fake.calls[0]?.options.providerAttributionSessionId).not.toBe("extension-attribution");
@@ -1068,7 +1068,7 @@ describe("AgentHarness continuous sessions", () => {
 
     await harness.run(request("conv-custom-history", "again"));
     expect(fake.calls[1]?.options.sessionId).toBe("warm-only");
-    expect(fake.calls[1]?.options.piSessionsRoot).toBeUndefined();
+    expect(fake.calls[1]?.options.sessionsRoot).toBeUndefined();
   });
 
   it.each([
@@ -1078,7 +1078,7 @@ describe("AgentHarness continuous sessions", () => {
     const identityPath = await identityFixture();
     const root = join(identityPath, "..");
     const historyRoot = join(root, "history");
-    const piSessionsRoot = join(root, "pi");
+    const sessionsRoot = join(root, "pi");
     const conversationId = "fallback-epoch";
     const fake = createSessionFakeRuntime(async (_prompt, options, call) => {
       if (call !== 2) return { text: `primary-answer-${call}`, providerSessionId: options.sessionId as string };
@@ -1095,13 +1095,13 @@ describe("AgentHarness continuous sessions", () => {
     });
     const historyStore = createCoordinatedDurableHistoryStore({
       root: historyRoot,
-      retireProviderSession: async (id) => fake.runtime.retireDurableSession(id, piSessionsRoot),
+      retireProviderSession: async (id) => fake.runtime.retireDurableSession(id, sessionsRoot),
     });
     await historyStore.append(conversationId, [{ role: "assistant", content: HISTORY_MARKER }]);
     const sessionEvents: Array<{ kind: string; reason?: string }> = [];
     const events: RuntimeEventLike[] = [];
     const harness = createAgentHarness({
-      identityPath, runtime: fake.runtime, model, historyStore, piSessionsRoot,
+      identityPath, runtime: fake.runtime, model, historyStore, sessionsRoot,
       session: { ...session, onSessionEvent: (event) => { sessionEvents.push(event); } },
     });
     const run = async (message: string) => await harness.run({
@@ -1119,7 +1119,7 @@ describe("AgentHarness continuous sessions", () => {
       expect(fake.syncedSessions).toEqual([firstId]);
       expect(fake.invalidatedSessions).toContain(firstId);
       expect(fake.disposedSessions).toContain(firstId);
-      expect(fake.retiredSessions).toContainEqual({ providerSessionId: firstId, sessionsRoot: piSessionsRoot });
+      expect(fake.retiredSessions).toContainEqual({ providerSessionId: firstId, sessionsRoot: sessionsRoot });
       expect(sessionEvents).toContainEqual(expect.objectContaining({ kind: "evicted", reason: "stale" }));
       const rotated = await readHistoryRecord(historyRoot, conversationId);
       expect(rotated.providerSession.epoch).not.toBe(firstRecord.providerSession.epoch);
@@ -1163,7 +1163,7 @@ describe("AgentHarness continuous sessions", () => {
     const fake = createSessionFakeRuntime(async (_prompt, options) => ({ text: "primary", providerSessionId: options.sessionId as string }));
     const historyStore = createCoordinatedDurableHistoryStore({ root: historyRoot });
     const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session,
-      piSessionsRoot: join(identityPath, "..", "pi") });
+      sessionsRoot: join(identityPath, "..", "pi") });
     try {
       await harness.run(request("primary", "first"));
       const first = await readHistoryRecord(historyRoot, "primary");
@@ -1187,15 +1187,15 @@ describe("AgentHarness continuous sessions", () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "backup" }));
     const { invalidateSession: _invalidate, ...runtime } = fake.runtime;
-    const piSessionsRoot = join(identityPath, "..", "pi");
+    const sessionsRoot = join(identityPath, "..", "pi");
     const historyStore = createCoordinatedDurableHistoryStore({ root: join(identityPath, "..", "history") });
-    const harness = createAgentHarness({ identityPath, runtime, model, historyStore, session, piSessionsRoot });
+    const harness = createAgentHarness({ identityPath, runtime, model, historyStore, session, sessionsRoot });
     try {
       await harness.run(request("cold-backup"));
       const id = fake.calls[0]?.options.sessionId;
       expect(typeof id).toBe("string");
       expect(fake.disposedSessions).toContain(id);
-      expect(fake.retiredSessions).toContainEqual({ providerSessionId: id, sessionsRoot: piSessionsRoot });
+      expect(fake.retiredSessions).toContainEqual({ providerSessionId: id, sessionsRoot: sessionsRoot });
       expect(fake.syncedSessions).toEqual([]);
     } finally {
       await harness.dispose?.();
@@ -1217,7 +1217,7 @@ describe("AgentHarness continuous sessions", () => {
       model,
       historyStore,
       session,
-      piSessionsRoot: join(root, "pi"),
+      sessionsRoot: join(root, "pi"),
     });
 
     const first = await harness.run(request("conv-sync-failure", "first question"));
@@ -1267,7 +1267,7 @@ describe("AgentHarness continuous sessions", () => {
         model,
         historyStore,
         session,
-        piSessionsRoot: join(root, "pi"),
+        sessionsRoot: join(root, "pi"),
       });
 
       const failed = await harness.run(request("conv-dirty-provider", "question"));
@@ -1307,7 +1307,7 @@ describe("AgentHarness continuous sessions", () => {
       model,
       historyStore,
       session,
-      piSessionsRoot: join(root, "pi"),
+      sessionsRoot: join(root, "pi"),
     });
 
     await harness.run(request("conv-verbatim", "first"));
@@ -1473,7 +1473,7 @@ describe("AgentHarness continuous sessions", () => {
       runtime: fake.runtime,
       model,
       runtimeOptions: {
-        piSessionsRoot: "/tmp/static-root",
+        sessionsRoot: "/tmp/static-root",
         sessionKeepAlive: true,
         sessionIdleTimeoutMs: 1234,
         sessionId: "static-session",
@@ -1481,7 +1481,7 @@ describe("AgentHarness continuous sessions", () => {
       } as never,
       runtimeOptionsForRequest: () => ({
         runtimeOptions: {
-          piSessionsRoot: "/tmp/request-root",
+          sessionsRoot: "/tmp/request-root",
           sessionKeepAlive: true,
           sessionIdleTimeoutMs: 5678,
           sessionId: "request-session",
@@ -1491,7 +1491,7 @@ describe("AgentHarness continuous sessions", () => {
     });
 
     await harness.run(request("conv-no-sessions"));
-    expect(fake.calls[0]?.options.piSessionsRoot).toBeUndefined();
+    expect(fake.calls[0]?.options.sessionsRoot).toBeUndefined();
     expect(fake.calls[0]?.options.sessionKeepAlive).toBeUndefined();
     expect(fake.calls[0]?.options.sessionIdleTimeoutMs).toBeUndefined();
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
@@ -2157,7 +2157,7 @@ describe("coordinated terminal recovery", () => {
     const sidecar = toolHistoryStatusSpy(identityPath, []);
     const finishRun = sidecar.writer.finishRun;
     sidecar.writer.finishRun = async (...args) => { if (failSidecar) throw new Error("injected sidecar failure"); await finishRun(...args); };
-    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, memory: { load: async () => undefined, recordInvocation: (turnId) => memoryInvocationReceipts.push(turnId) }, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, piSessionsRoot: join(root, "pi") });
+    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, memory: { load: async () => undefined, recordInvocation: (turnId) => memoryInvocationReceipts.push(turnId) }, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, sessionsRoot: join(root, "pi") });
     let harness = makeHarness();
     return { fake, retired, native, prefixes, receipts, memoryInvocationReceipts, historyStore, events, runtime,
       cancel() { controller.abort(new Error("injected cancel")); },

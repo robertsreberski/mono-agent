@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readdir, lstat, chmod, symlink, rename, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readdir, lstat, chmod, symlink, rename, mkdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork } from "node:child_process";
@@ -67,9 +67,24 @@ it("rejects insecure or symlinked roots and lock files", async () => {
 
 it("pins the root identity and never recreates a purged root", async () => {
   const r = await root(); const locks = await JournalLocks.open(r);
-  await rename(join(r, "mono-v2"), join(r, "quarantined"));
+  await rename(join(r, "locks"), join(r, "quarantined"));
   await expect(locks.acquireWriter("late")).rejects.toMatchObject({ code: "ENOENT" });
-  await expect(lstat(join(r, "mono-v2"))).rejects.toMatchObject({ code: "ENOENT" });
-  await mkdir(join(r, "mono-v2"), { mode: 0o700 });
+  await expect(lstat(join(r, "locks"))).rejects.toMatchObject({ code: "ENOENT" });
+  await mkdir(join(r, "locks"), { mode: 0o700 });
   await expect(locks.acquireWriter("late")).rejects.toThrow("ownership unavailable");
+});
+
+it("refuses pre-release mono-v2 roots without changing any evidence or permissions", async () => {
+  const r = await root(), old = join(r, "mono-v2");
+  await mkdir(old, { mode: 0o755 }); await writeFile(join(old, "evidence"), "fictional evidence", { mode: 0o644 });
+  await chmod(r, 0o755);
+  const before = await lstat(r), oldBefore = await lstat(old), fileBefore = await lstat(join(old, "evidence"));
+  await expect(JournalLocks.open(r)).rejects.toThrow(`Sessions root contains ${old}, written by a pre-release build; restore a backup or remove it after checking nothing in it is needed`);
+  const { JsonlSessionRepo } = await import("../session-store.js");
+  expect(() => new JsonlSessionRepo({ sessionsRoot: r })).toThrow("restore a backup or remove it");
+  expect(await lstat(r)).toEqual(before); expect(await lstat(old)).toEqual(oldBefore);
+  expect(await lstat(join(old, "evidence"))).toEqual(fileBefore);
+  expect(await readFile(join(old, "evidence"), "utf8")).toBe("fictional evidence");
+  expect(await readdir(r)).toEqual(["mono-v2"]);
+  await expect(lstat(join(r, "locks"))).rejects.toMatchObject({ code: "ENOENT" });
 });

@@ -16,17 +16,17 @@ idempotency key and a 4096-byte conversation id.
 | Model backends: Pi-only `<provider>:<model>` (OpenAI, OpenAI-Codex, Copilot, Anthropic, OpenRouter, OpenCode-through-Pi, Ollama, LM Studio, ...); a legacy `pi:` prefix is canonicalized away | config | `runtime.model` | `runtime.multi-backend` |
 | Configured local peer delegation | config | `peers.<name>.sourceId` maps a named local ACP target; explicitly allow `PeerAgent` in `tools.allowedTools`. `send` uses a caller-bound durable thread; `stop` cancels the active turn. Background requires a wake-capable origin and ProcessJobs; ACP-served calls are foreground only. Peer AskUser is unsupported (`interaction_required`), and peer text is not owner approval | `agent-app.peer-agent` |
 | Subagent delegation via the Agent tool | config | pi runtime only. Requires BOTH `subagents.enabled: true` and `Agent` in `tools.allowedTools`. Each definition needs exactly one of `prompt` or `promptPath`; omitted `allowedTools` means a read-only default set and `"*"` is rejected. Subagents are capped by `maxConcurrent` (5) and `maxPerTurn` (20), never receive Agent/AskUser/channel-send tools, and cannot spawn subagents | `runtime.subagents` |
-| Persistent subagent instances | config | `subagents.instances` controls root, live capacity, idle TTL and total child turns. `Agent({persist:true})` creates an instance and `AgentManage` continues or closes it in the same conversation, or cooperatively stops detached work with exclusive `stop:true`; registries and Pi transcripts survive restarts. Disabling instances preserves stateless Agent. With ProcessJobs on an exact-conversation Pi route, persistent Agent/AgentManage accept background:true, return a durable receipt and wake once; unresolved timeout/cancellation reports childStillBusy:true and retains ownership until actual settlement | `runtime.subagent-instances` |
+| Persistent subagent instances | config | `subagents.instances` controls root, live capacity, idle TTL and total child turns. `Agent({persist:true})` creates an instance and `AgentManage` continues or closes it in the same conversation, or cooperatively stops detached work with exclusive `stop:true`; registries and session transcripts survive restarts. Disabling instances preserves stateless Agent. With ProcessJobs on an exact-conversation Pi route, persistent Agent/AgentManage accept background:true, return a durable receipt and wake once; unresolved timeout/cancellation reports childStillBusy:true and retains ownership until actual settlement | `runtime.subagent-instances` |
 | Same-model retries before failover | config | `runtime.retry.primaryAttempts` (default 2) gives the primary a second attempt before the chain advances; per-route `runtime.fallbacks[].attempts` opts a backup in. Only transient provider failures retry — context overflow and bad credentials still advance. Set `primaryAttempts` to 1 to disable | `runtime.retry` |
 | Backup models on retryable provider failure | config | `runtime.fallbacks[]`, each route owning optional exact effort (omission = provider default) | `runtime.fallback-models` |
 | Effort, max turns, workspace | config + cli | `runtime.effort` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; `mono-agent init --effort <level>`). Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` validates effort against the model's advertised levels and warns, naming the nearest supported level, when a configured value is outside that set. Message text never changes effort. `runtime.maxTurns`, `runtime.workspace` | `runtime.effort`, `runtime.max-turns`, `runtime.workspace` |
-| OFF-default Web-only durable model switching; requires stopped older writers and consistent backups | config | `runtime.session.modelSwitch.enabled`, `providers.piNative.piSessionsRoot` | `runtime.web-model-switch` |
+| OFF-default Web-only durable model switching; requires stopped older writers and consistent backups | config | `runtime.session.modelSwitch.enabled`, `runtime.session.root` | `runtime.web-model-switch` |
 | Continuous provider sessions with idle eviction and optional daily rollover | config | `runtime.session.{mode,idleTimeoutMs,rollover,rolloverTimezone,rolloverNotice}` | `runtime.provider-sessions` |
 | Per-channel run admission/execution bounds | config | `concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns` | `runtime.concurrency` |
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.<id>.{type,baseUrl,enabled,trustPublicUrl,apiKeyEnv,models,maxAdvertisedModels}`; the legacy `providers.local[]` array is still accepted and migrated on load | `runtime.local-providers` |
 | Provider catalog (declares supported providers, widening model selection to each provider's full catalog) | config | the `providers` map, keyed by provider id — `providers.piAuthPath`, `providers.piNative`, and `providers.local` are reserved keys, never provider ids, and `providers.entries` is the resolved in-memory shape, not a JSON key. `ollama` and `lmstudio` are zero-config autodiscovered via localhost; a route naming any other provider that is not a Pi builtin fails config load until the map declares it with a `baseUrl` | `runtime.providers` |
 | Pi OAuth/API-key credentials and web-console re-authentication | config + cli + auto | `providers.piAuthPath`; `mono-agent auth login`; Agent settings lists only effective used providers and, when the protected operator capability is present, offers Pi-native GitHub/OpenAI device code, Anthropic redirect/code paste-back, or masked provider prompts through the same owner-only locked/no-clobber Pi-store transaction. Detection and successful live-request verification are separate; no `--device-auth` flag exists and Codex CLI `~/.codex/auth.json` is not covered | `runtime.pi-credentials` |
-| Pi-native transport, retry, and durable provider-session tuning | config | `providers.piNative.{transport,piMaxRetries,maxRetryDelayMs,piSessionsRoot}` | `runtime.pi-native-tuning` |
+| Pi-native transport, retry, and durable provider-session tuning | config | `providers.piNative.{transport,piMaxRetries,maxRetryDelayMs}`, `runtime.session.root` | `runtime.pi-native-tuning` |
 | Anthropic cache retention (default long, short opts out, model-supported, no guaranteed hit; 1h write 2× input, read 0.1×; short write 1.25×) | config | `providers.piNative.cacheRetention` (`MONO_AGENT_PI_CACHE_RETENTION`), short/long, default long overrides ambient Pi retention; verify measurement gates first | `runtime.prompt-cache-retention` |
 | Prompt-cache diagnostics (metadata-only request fingerprints in run artifacts, offline token-weighted cache summary) | config | `providers.piNative.promptCacheDiagnostics` (`MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`), default `false`; summarize with `scripts/summarize-prompt-cache.mjs` | `runtime.prompt-cache-diagnostics` |
 | Tool-output bloat guard, cost tracking | auto | built into every run | — |
@@ -160,7 +160,7 @@ or close. `stop_requested` preserves busy ownership; no live steering, rollback
 or force-kill is implied. Allow both tool names. With subagents enabled,
 `subagents.instances.enabled` defaults true; `root` defaults beside artifacts,
 `maxPerConversation` defaults 8, `idleTtlMs` defaults one day, and `maxTurns`
-defaults 60 child turns. Registries and Pi transcripts survive restarts and are
+defaults 60 child turns. Registries and session transcripts survive restarts and are
 removed by `restart --clear-sessions`. Instances are conversation-scoped and
 serialized; cross-conversation reuse is unsupported. With ProcessJobs enabled,
 persistent Agent/AgentManage can detach with `background: true`. Every child's
@@ -185,7 +185,7 @@ it does not perform live child discovery.
 Persistent children receive `AskParent({question, options?})` automatically unless
 global/profile policy denies it. The tool durably stores the question and ends
 the child turn; `Agent`/`AgentManage` return successful `awaiting_reply` with question
-details. Reply via ordinary `AgentManage({id, message})` in the same Pi session.
+details. Reply via ordinary `AgentManage({id, message})` in the same session.
 Failed answers retain the question; success clears it; another question replaces
 it. The Session envelope exposes bounded pending questions after restart.
 Parent/stateless runs have no AskParent, and children cannot use AskUser or
@@ -240,7 +240,7 @@ requires `writeMode: "capture"`. Do not enable without reviewed coverage/usefuln
 ## Web model changes are not fallback retries
 
 `runtime.session.modelSwitch.enabled` is OFF by default. Web-only durable model
-changes require continuous sessions and `providers.piNative.piSessionsRoot`.
+changes require continuous sessions and `runtime.session.root`.
 Stop all older writers and back up consistent host/native roots first;
 rollback restores those backups. Only persisted Web inbound message IDs authorize
 switch/summary work; pending messages are not replayed. This does not enable native

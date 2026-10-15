@@ -842,7 +842,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
       const result = await input.providers.meteredRuntime({ run: generateEngineTurnResponse }, { budget, stage: "reader", tag: {} }).run("Answer from evidence.", {
         model: { provider: "faux", model: "e2e-cap", reference: "faux:e2e-cap" },
         piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "fictional-test-key",
-        cwd: input.directory, piSessionsRoot: join(input.directory, "cap-sessions"),
+        cwd: input.directory, sessionsRoot: join(input.directory, "cap-sessions"),
         messages: [{ role: "user", content: "What color did Mira select?" }],
         allowedTools: ["MemoryRecall"], mcpServers: extension.runtimeOptions.mcpServers,
         abortSignal: new AbortController().signal, onEvent: (event: any) => events.push(event),

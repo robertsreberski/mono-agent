@@ -105,7 +105,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 - Pi Core 1.0 removes AgentHarness and SessionRepo. The Pi-native adapter now
   uses the mono-agent engine over the pinned `runAgentLoop`, not a fork of that loop.
   Compaction helpers retain the attributed old cut/estimator for parity.
-  The mono-agent engine in `@mono-agent/engine` uses `mono-v2/journals`: import
+  The mono-agent engine in `@mono-agent/engine` uses `journals`: import
   idle legacy v3/v4 main context with source-bound restartable staging, fsync the
   new transcript/publication before archiving the source, and cold-replay legacy files
   with open operations. Never test migration against real session directories.

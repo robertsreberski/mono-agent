@@ -15,14 +15,14 @@ async function setup() {
 }
 it("manual compactConversation on a real v5 conversation fails guarded dispatch without generic invalidation/retirement (P is defence-in-depth)", async () => {
   const f = await setup(), identityPath = join(f.base, "IDENTITY.md");
-  const journals = join(f.base, "native", "mono-v2", "journals"), [current] = await readdir(journals), currentBytes = await readFile(join(journals, current!));
+  const journals = join(f.base, "native", "journals"), [current] = await readdir(journals), currentBytes = await readFile(join(journals, current!));
   await writeFile(identityPath, "Fictional instructions");
   const faux = fauxProvider({ models: [{ id: "B", contextWindow: 100000, maxTokens: 4096 }] }), models = createModels(); models.setProvider(faux.provider);
   const transport = vi.spyOn(faux.provider, "streamSimple"), runtime = createMonoRuntime({ workspace: f.base, resolvePiApiKey: async () => undefined });
   const run = runtime.run.bind(runtime); runtime.run = (prompt, options) => run(prompt, { ...options, piResolvedModel: faux.getModel("B"), piResolvedModels: models });
   const invalidation = vi.spyOn(runtime, "invalidateSession"), retirement = vi.spyOn(runtime, "retireDurableSession"), execution = vi.spyOn(runtime, "run");
   const harness = createAgentHarness({ identityPath, runtime, model: { provider: "faux", model: "B", reference: "faux:B" }, historyStore: f.store,
-    piSessionsRoot: join(f.base, "native"), session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true }, runtimeOptions: { allowedTools: [], disallowedTools: [] } });
+    sessionsRoot: join(f.base, "native"), session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true }, runtimeOptions: { allowedTools: [], disallowedTools: [] } });
   try {
     await expect(harness.compactConversation!(bucket)).rejects.toMatchObject({ failureKind: "compaction_failed" });
     expect(execution).toHaveBeenCalledTimes(1); expect(transport).not.toHaveBeenCalled();

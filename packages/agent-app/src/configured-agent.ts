@@ -1,3 +1,4 @@
+import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import type { ConversationHistoryTurnInspection } from "@mono-agent/agent-harness";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
 import { implicitModelRuntimeOptions } from "./request-model-override.js";
@@ -923,7 +924,7 @@ export function buildSubagentsOptions(
       ...(askParentController === undefined ? {} : { askParentController }),
       ...(request.instance === undefined ? {} : {
         sessionId: request.instance.sessionId,
-        piSessionsRoot: request.instance.sessionsRoot,
+        sessionsRoot: request.instance.sessionsRoot,
         sessionKeepAlive: true,
         sessionIdleTimeoutMs: subagents.instances?.idleTtlMs ?? 86_400_000,
         ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
@@ -1153,17 +1154,18 @@ async function createConfiguredAgentHarnessInternal(
 ): Promise<AgentHarness> {
   const config = options.config;
   assertNoRetiredMonoAgentConfig(config);
+  await assertSupportedSessionsRoot(config.runtime.session.root);
   const switchConfig = config.runtime.session.modelSwitch;
   if (switchConfig?.enabled === true) {
     if (config.runtime.session.mode !== "continuous") throw new MonoAgentConfigError("invalid_json",
       "Web model switching requires continuous sessions.", { path: "runtime.session.mode" });
-    if (!config.providers?.piNative?.piSessionsRoot) throw new MonoAgentConfigError("invalid_json",
-      "Web model switching requires durable providers.piNative.piSessionsRoot.", { path: "providers.piNative.piSessionsRoot" });
+    if (!config.runtime.session.root) throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires durable runtime.session.root.", { path: "runtime.session.root" });
   }
   // Config opt-in is not inferred from runtime capabilities; native storage
   // authority remains lazy and owner-held.
   const nativeModelSwitch = switchConfig?.enabled === true
-    ? { native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
+    ? { native: createManagedNativeJournalStorage({ sessionsRoot: config.runtime.session.root! }) }
     : undefined;
   const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());
@@ -1431,14 +1433,14 @@ async function createConfiguredAgentHarnessInternal(
       ? {}
       : { terminalRecoverySettlementMs: options.terminalRecoverySettlementMs }),
   };
-  const piSessionsRoot = config.providers?.piNative?.piSessionsRoot;
+  const sessionsRoot = config.runtime.session.root;
   const retireDurableSession = runtime.retireDurableSession?.bind(runtime);
   const historyRoot = artifactDerivedRoots.history;
   const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
     root: historyRoot,
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
     ...(nativeModelSwitch === undefined ? {} : { nativeJournalStorage: nativeModelSwitch.native }),
-    ...(piSessionsRoot === undefined || retireDurableSession === undefined
+    ...(sessionsRoot === undefined || retireDurableSession === undefined
       ? {}
       : {
           ...(runtime.sessionTurnReconciliation !== "v1" || runtime.reconcileSessionTurn === undefined ? {} : {
@@ -1447,7 +1449,7 @@ async function createConfiguredAgentHarnessInternal(
               if (owner.sessionTurnReconciliation !== "v1" || owner.reconcileSessionTurn === undefined) throw new Error("Session owner cannot reconcile native turn evidence.");
               const selected = parseMonoRuntimeModelReference(request.modelKey);
               return await owner.reconcileSessionTurn({ descriptor: request.descriptor, purpose: request.purpose,
-                expectedInputs: request.expectedInputs, sessionsRoot: piSessionsRoot,
+                expectedInputs: request.expectedInputs, sessionsRoot: sessionsRoot,
                 expectedModel: { provider: selected.provider, id: selected.model } });
             },
           }),
@@ -1458,7 +1460,7 @@ async function createConfiguredAgentHarnessInternal(
             }
             // Durable retirement detaches an open Pi handle before unlinking;
             // ordinary invalidation alone rejects while a cancelled turn unwinds.
-            await owner.retireDurableSession(providerSessionId, piSessionsRoot);
+            await owner.retireDurableSession(providerSessionId, sessionsRoot);
             if (owner.invalidateSession !== undefined) await owner.invalidateSession(providerSessionId);
             else await owner.disposeSession?.(providerSessionId);
           },
@@ -1504,9 +1506,9 @@ async function createConfiguredAgentHarnessInternal(
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     ...(config.runtime.maxTurns === undefined ? {} : { maxTurns: config.runtime.maxTurns }),
-    ...(config.providers?.piNative?.piSessionsRoot === undefined
+    ...(config.runtime.session.root === undefined
       ? {}
-      : { piSessionsRoot: config.providers.piNative.piSessionsRoot }),
+      : { sessionsRoot: config.runtime.session.root }),
     session: sessionOptions,
     ...(config.concurrency?.maxConcurrentRuns === undefined && config.concurrency?.maxPendingRuns === undefined
       ? {}
@@ -1614,7 +1616,7 @@ async function createConfiguredAgentHarnessInternal(
       : createAgentHarness(harnessOptions, {
       nativeModelSwitch: {
         ...nativeModelSwitch,
-        sessionsRoot: piSessionsRoot ?? "",
+        sessionsRoot: sessionsRoot ?? "",
         deliveryId: persistedWebDeliveryId,
         // Reuse endpoint/effort/1M selection without changing request metadata
         // identity (which carries out-of-band host capabilities).
