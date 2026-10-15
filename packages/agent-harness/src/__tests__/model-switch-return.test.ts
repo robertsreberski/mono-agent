@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlSessionRepo } from "../../../engine/dist/session-store.js";
+import { JsonlSessionRepo } from "@mono-agent/agent-runtime/engine";
 import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 import { type RuntimeNativePreparationStorage } from "@mono-agent/agent-runtime/host/types";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";

@@ -52,6 +52,9 @@ if (packageNames.includes("@mono-agent/agent-app")) {
 
 if (packageNames.includes("@mono-agent/agent-runtime")) {
   await assertRemovedImport("@mono-agent/runtime-adapter", "ERR_MODULE_NOT_FOUND");
+  for (const removed of ["@mono-agent/engine", "@mono-agent/engine/sessions.js", "@mono-agent/engine/owned-fs.js"]) {
+    await assertRemovedImport(removed, "ERR_MODULE_NOT_FOUND");
+  }
   for (const entry of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai"]) {
     const api = await import(entry);
     assert.equal("resolveRuntimeBridge" in api, false);
@@ -69,7 +72,7 @@ if (packageNames.includes("@mono-agent/agent-runtime")) {
   );
 }
 
-if (packageNames.includes("@mono-agent/engine")) {
+if (packageNames.includes("@mono-agent/agent-runtime")) {
   await verifyEngineRoundTrip();
 }
 
@@ -344,7 +347,7 @@ async function runCapturedCli(command, args, cwd) {
 
 async function verifyEngineRoundTrip() {
   const entrypoints = {
-    "@mono-agent/engine": [
+    "@mono-agent/agent-runtime/engine": [
       "JsonlSessionRepo",
       "MemorySessionRepo",
       "createRunDriver",
@@ -364,7 +367,7 @@ async function verifyEngineRoundTrip() {
       "shouldCompact",
       "generateSummaryWithRequest"
     ],
-    "@mono-agent/engine/sessions.js": [
+    "@mono-agent/agent-runtime/engine/sessions.js": [
       "resolveDurableNativeSessionRepo",
       "resolveSession",
       "discardUncommittedSession",
@@ -388,7 +391,7 @@ async function verifyEngineRoundTrip() {
       "createSessionRegistry",
       "nativeSessionRegistry"
     ],
-    "@mono-agent/engine/owned-fs.js": [
+    "@mono-agent/agent-runtime/engine/owned-fs.js": [
       "OwnedFileDamagedError",
       "assertIdentity",
       "isOwned",
@@ -405,9 +408,9 @@ async function verifyEngineRoundTrip() {
     if (JSON.stringify(actual) !== JSON.stringify(expected.sort())) throw new Error(`Unexpected engine exports from ${specifier}: ${actual}`);
   }
   for (const removed of ["session-store.js", "legacy-import.js", "journal-types.js", "journal-schema.js", "run-driver.js", "retry-stream.js", "session-context.js", "context.js", "compaction-kit/compaction.js", "journal-reader.js"]) {
-    await assertRemovedImport(`@mono-agent/engine/${removed}`, "ERR_PACKAGE_PATH_NOT_EXPORTED");
+    await assertRemovedImport(`@mono-agent/agent-runtime/engine/${removed}`, "ERR_PACKAGE_PATH_NOT_EXPORTED");
   }
-  const { JsonlSessionRepo, projectContext } = await import("@mono-agent/engine");
+  const { JsonlSessionRepo, projectContext } = await import("@mono-agent/agent-runtime/engine");
   const sessionsRoot = await mkdtemp(join(tmpdir(), "engine-packed-"));
   const repo = new JsonlSessionRepo({ sessionsRoot });
   try {

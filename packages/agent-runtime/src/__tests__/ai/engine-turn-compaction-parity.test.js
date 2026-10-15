@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldCompact } from "../../../../engine/dist/compaction-kit/compaction.js";
+import { shouldCompact } from "../../engine/compaction-kit/compaction.js";
 import { resolveAgentCompactionPolicy } from "../../agent/compaction.js";
 import { piCompactionSettings } from "../../ai/providers/engine-turn/compaction-driver.js";
 

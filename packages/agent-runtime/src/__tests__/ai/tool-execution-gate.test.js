@@ -1,9 +1,9 @@
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { MemorySessionRepo } from "../../../../engine/dist/session-store.js";
+import { MemorySessionRepo } from "../../engine/session-store.js";
 import { describe, expect, it, vi } from "vitest";
 import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
-import { createPiSessionAdapter } from "../../../../engine/dist/session-adapter.js";
-import { ENGINE_CONTEXT } from "@mono-agent/engine";
+import { createPiSessionAdapter } from "../../engine/session-adapter.js";
+import { ENGINE_CONTEXT } from "@mono-agent/agent-runtime/engine";
 import { shouldRetryStructuredOutputFinalization } from "../../ai/providers/engine-turn/structured-output.js";
 import { createToolExecutionGate, isSharedTool } from "../../ai/providers/engine-turn/tool-execution-gate.js";
 

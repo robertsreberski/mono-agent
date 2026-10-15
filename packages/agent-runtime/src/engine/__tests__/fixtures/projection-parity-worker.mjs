@@ -16,7 +16,7 @@ const [source, runtimeSource, root, legacy] = process.argv.slice(2);
 const providerAdapter = existsSync(`${runtimeSource}/ai/providers/engine-turn.js`) ? "engine-turn" : "pi-native" /* Archived provider filename only. */;
 const historicPackage = "@mono-agent/harness"; // Archived P2b imports only.
 registerHooks({ resolve(specifier, context, nextResolve) {
-  for (const name of ["@mono-agent/engine", historicPackage]) if (specifier === name || specifier.startsWith(`${name}/`)) return {
+  for (const name of ["@mono-agent/agent-runtime/engine", historicPackage]) if (specifier === name || specifier.startsWith(`${name}/`)) return {
     url: pathToFileURL(`${source}/${specifier === name ? "index.js" : specifier.slice(name.length + 1)}`).href, shortCircuit: true,
   };
   return nextResolve(specifier, context);
@@ -141,7 +141,8 @@ async function captureMidRun(pn) {
 async function captureRecovery(pn) {
   const adapter = await import(pathToFileURL(`${runtimeSource}/ai/providers/${providerAdapter}.js`));
   const generateEngineTurnResponse = adapter.generateEngineTurnResponse;
-  const { recoverDurableNativeSession, resolveDurableNativeSessionRepo } = await pn("session-lifecycle");
+  const { recoverDurableNativeSession, resolveDurableNativeSessionRepo } = existsSync(`${runtimeSource}/engine/sessions.js`)
+    ? await import(pathToFileURL(`${runtimeSource}/engine/sessions.js`)) : await pn("session-lifecycle");
   clock = 1700000000000;
   const faux = fauxProvider({ provider: "recovery-fixture", models: [{ id: "A" }] }); const models = createModels(); models.setProvider(faux.provider);
   const controller = new AbortController();

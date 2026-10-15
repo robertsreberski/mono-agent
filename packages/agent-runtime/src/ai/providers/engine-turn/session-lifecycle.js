@@ -1,7 +1,6 @@
 // @ts-check
-import * as storage from "@mono-agent/engine/sessions.js";
+import * as storage from "../../../engine/sessions.js";
 import { validateNativeSessionAuthority } from "./session-authority.js";
-export { resolveDurableNativeSessionRepo, recoverDurableNativeSession, reconcileNativeSessionTurn, retireDurableNativeSession, detachDurableNativeSession } from "@mono-agent/engine/sessions.js";
 
 function sessionUnavailableResult({
   resolved,

@@ -2,9 +2,9 @@
 // Provider transport is fictional; recovery must never enter it or register a tool.
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { digestTurnInput } from "@mono-agent/engine";
-import { createTurnBinding } from "../../../../engine/dist/turn-evidence.js";
-import { JsonlSessionRepo } from "../../../../engine/dist/session-store.js";
+import { digestTurnInput } from "@mono-agent/agent-runtime/engine";
+import { createTurnBinding } from "../../../../agent-runtime/src/engine/turn-evidence.js";
+import { JsonlSessionRepo } from "../../../../agent-runtime/src/engine/session-store.js";
 import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/agent-runtime/host/config";
 import { createAgentHarness, createDurableHistoryStore } from "../../../../agent-harness/dist/index.js";

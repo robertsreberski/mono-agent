@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, copyFile, symlink, writeFile, rm } from "node:fs/promises";
 import { relative, join } from "node:path";
 import { fileURLToPath } from "node:url";
-const root = fileURLToPath(new URL("../../../../../", import.meta.url));
+const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
 const base = "10f501d4f1dc102db9951fcebb09a96001910452";
 const scratch = await mkdtemp(join(root, "node_modules", ".p3a-golden-base-"));
 try {
@@ -12,7 +12,7 @@ try {
   await writeFile(join(scratch, "package.json"), '{"type":"module"}');
   for (const name of ["harness", "agent-runtime"]) {
     const directory = join(scratch, "packages", name);
-    await symlink(relative(directory, join(root, "packages", name === "harness" ? "engine" : name, "node_modules")), join(directory, "node_modules"), "dir");
+    await symlink(relative(directory, join(root, "packages", "agent-runtime", "node_modules")), join(directory, "node_modules"), "dir");
   }
   for (const version of [3, 4]) {
     const storage = join(scratch, `storage-${version}`);

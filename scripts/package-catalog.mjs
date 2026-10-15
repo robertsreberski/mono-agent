@@ -80,7 +80,7 @@ export const packageCatalog = [
     dir: "agent-runtime",
     name: "@mono-agent/agent-runtime",
     category: "runtime",
-    responsibility: "Provides the Pi SDK runtime, typed host integration, sandbox/process protection, native tools, MCP, sessions, and compaction.",
+    responsibility: "Owns the Pi model-run loop, native journals/storage and compaction, typed host integration, sandbox/process protection, native tools and MCP.",
     allowedDependencyCategories: ["core", "runtime"],
     publishable: true,
   },
@@ -110,14 +110,6 @@ export const packageCatalog = [
     allowedDependencyCategories: [],
     publishable: true,
     tier: "plugin",
-  },
-  {
-    dir: "engine",
-    name: "@mono-agent/engine",
-    category: "runtime",
-    responsibility: "Owns the model-run loop, native journal, storage and compaction kit over Pi model dependencies.",
-    allowedDependencyCategories: [],
-    publishable: true,
   },
   {
     dir: "memory",

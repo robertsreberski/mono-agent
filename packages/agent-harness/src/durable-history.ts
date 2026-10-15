@@ -10,7 +10,7 @@ import type { TurnHistoryV3 } from "./durable-turn-history.js";
 import type { DurableTurnReceipt, PendingTurnPointer, PendingTurnPayload, PendingTurnInput, PendingTurnCandidate, DurableTurnFence } from "./durable-turn-contract.js";
 import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
 import type { PendingPayloadEntry } from "./durable-turn-payloads.js";
-import { OwnedFileDamagedError, isOwned } from "@mono-agent/engine/owned-fs.js";
+import { OwnedFileDamagedError, isOwned } from "@mono-agent/agent-runtime/engine/owned-fs.js";
 import { PENDING_TURN_DIRECTORY, DurableTurnAlreadyCommittedError, validateDurableTurnFence, serializeDurableTurnFence, createPendingTurnPayload, createPendingInitialInput, durableTurnFenceDigest, pendingPayloadName, serializePendingTurnPayload } from "./durable-turn-contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";

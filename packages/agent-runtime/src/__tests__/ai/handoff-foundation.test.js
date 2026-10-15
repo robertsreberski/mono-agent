@@ -1,5 +1,5 @@
-import { SessionStore } from "../../../../engine/dist/session-store.js";
-import { createTurnBinding } from "../../../../engine/dist/turn-evidence.js";
+import { SessionStore } from "../../engine/session-store.js";
+import { createTurnBinding } from "../../engine/turn-evidence.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { it, expect, vi, afterEach } from "vitest";
@@ -7,7 +7,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { produceNativeHandoffSummary } from "../../ai/providers/engine-turn/handoff-producer.js";
-import { detachDurableNativeSession, retireDurableNativeSession, resolveDurableNativeSessionRepo, reconcileNativeSessionTurn } from "../../ai/providers/engine-turn/session-lifecycle.js";
+import { detachDurableNativeSession, retireDurableNativeSession, resolveDurableNativeSessionRepo, reconcileNativeSessionTurn } from "../../engine/session-lifecycle.js";
 
 const summary = { intent: ["Fictional intent"], constraints: ["No approval"], decisions: [], completedWork: [], failures: [], openWork: ["Verify unknown effects"], nextActions: [], references: [] };
 const prepared = { status: "prepared", older: [], recent: [], ledger: [{ outcome: "unknown" }], coverage: [] };

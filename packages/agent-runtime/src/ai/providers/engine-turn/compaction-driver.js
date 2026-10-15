@@ -4,16 +4,8 @@
 // runtime owns triggers, fixed overhead, savings and one overflow-recovery attempt.
 // Mid-run compaction reuses these guards at completed model/tool boundaries.
 
-import {
-  calculateContextTokens,
-  compact as compactPreparedContext,
-  estimateContextTokens,
-  estimateTokens,
-  getLastAssistantUsage,
-  prepareCompaction,
-  shouldCompact,
-} from "@mono-agent/engine";
-import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "@mono-agent/engine";
+import { calculateContextTokens, compact as compactPreparedContext, estimateContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
+import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../engine/context.js";
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -27,7 +19,7 @@ import {
   parseContextLimitFromError,
 } from "../pi-errors.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
-import { projectContext } from "@mono-agent/engine";
+import { projectContext } from "../../../engine/request-projection.js";
 import { runHarnessPrompt } from "./turn-runner.js";
 
 // Per-process cache of real context-window ceilings discovered from overflow

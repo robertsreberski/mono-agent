@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createRuntime } from "../../runtime.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
 import { preparePiNativeDispatch, generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
-import { resolveDurableNativeSessionRepo } from "../../ai/providers/engine-turn/session-lifecycle.js";
+import { resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
 import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, freezeDispatchData } from "../../ai/providers/engine-turn/prepared-dispatch.js";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";

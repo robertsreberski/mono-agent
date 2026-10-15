@@ -6,7 +6,7 @@ import { fork } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
-import { OwnedFileDamagedError } from "@mono-agent/engine/owned-fs.js";
+import { OwnedFileDamagedError } from "@mono-agent/agent-runtime/engine/owned-fs.js";
 import { PendingTurnPayloadStore } from "../durable-turn-payloads.js";
 
 vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof fs>() }));

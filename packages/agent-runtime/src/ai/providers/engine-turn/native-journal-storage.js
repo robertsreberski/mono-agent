@@ -1,6 +1,5 @@
-import { createManagedNativeJournalStorage as storage } from "@mono-agent/engine/sessions.js";
+import { createManagedNativeJournalStorage as storage } from "../../../engine/native-journal-storage.js";
 import { checkNativeInheritedPrefix } from "./handoff-producer.js";
-export { NativeEvidenceCapacityError } from "@mono-agent/engine/sessions.js";
 
 /** @typedef {import('../../native-journal-types.js').RuntimeNativePreparationStorage} RuntimeNativePreparationStorage */
 /** Administrative storage capability; the host owns policy/authority. Keep one

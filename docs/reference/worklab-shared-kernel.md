@@ -19,6 +19,12 @@ This is an ecosystem decision, not a repository merge. The intended shape is:
   deployment. Worklab remains the orchestration workbench for tasks, goals, and
   teams.
 
+The runtime also owns the isolated execution/storage engine under `src/engine/`.
+Its public entrypoints are `@mono-agent/agent-runtime/engine`,
+`@mono-agent/agent-runtime/engine/sessions.js` and
+`@mono-agent/agent-runtime/engine/owned-fs.js`; the engine never imports provider,
+tool or host glue. Vendored compaction attribution ships in the runtime notices.
+
 ## Decision
 
 Kill Worklab's runtime fork by moving provider execution onto

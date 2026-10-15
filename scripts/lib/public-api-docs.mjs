@@ -167,7 +167,7 @@ export function findPackagePublicApiDocErrors({ root, catalog }) {
       continue;
     }
     const migration = readFileSync(migrationPath, "utf8");
-    const actualSubpaths = markedBlock(migration, JS_SUBPATH_INVENTORY_START, JS_SUBPATH_INVENTORY_END);
+    const actualSubpaths = markedBlock(migrationInventoryScope(migration), JS_SUBPATH_INVENTORY_START, JS_SUBPATH_INVENTORY_END);
     const deepJsSubpaths = codeExportEntries(inventory.manifest.exports)
       .map(([subpath]) => subpath)
       .filter((subpath) => subpath.startsWith("./") && subpath.endsWith(".js"));
@@ -258,8 +258,17 @@ export function updateReadmePublicApiInventory(readme, renderedInventory) {
   );
 }
 
+// A current inventory may precede frozen inventories in released migration
+// sections. Keep duplicate-marker validation within the current section, while
+// retaining support for older guides with a single unclassified inventory.
+function migrationInventoryScope(migration) {
+  const released = migration.search(/^## \d/mu);
+  const current = released === -1 ? migration : migration.slice(0, released);
+  return current.includes(JS_SUBPATH_INVENTORY_START) ? current : migration;
+}
+
 export function updateMigrationJsSubpathInventory(migration, renderedInventory) {
-  const existing = markedBlock(migration, JS_SUBPATH_INVENTORY_START, JS_SUBPATH_INVENTORY_END);
+  const existing = markedBlock(migrationInventoryScope(migration), JS_SUBPATH_INVENTORY_START, JS_SUBPATH_INVENTORY_END);
   if (existing === undefined) {
     return migration;
   }

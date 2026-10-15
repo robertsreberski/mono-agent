@@ -190,11 +190,11 @@ for (const staleReference of staleReferences) {
 
 for (const file of walkTextFiles(root)) {
   for (const specifier of retiredHostImports(file, readFileSync(file, "utf8"))) {
-    errors.push(`${relative(root, file)} imports removed host package ${specifier}.`);
+    errors.push(`${relative(root, file)} imports removed package ${specifier}.`);
   }
 }
 
-for (const file of walkTextFiles(join(root, "packages/engine/src"))) {
+for (const file of walkTextFiles(join(root, "packages/agent-runtime/src/engine"))) {
   if (file.includes("/__tests__/")) continue;
   for (const specifier of engineRuntimeImports(root, file, readFileSync(file, "utf8"))) {
     errors.push(`${relative(root, file)} must stay self-contained; disallowed import ${specifier}.`);

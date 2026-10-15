@@ -106,38 +106,37 @@ async function createNeutralSourceRoot() {
 describe("engine ownership and historical reference guard", () => {
   const oldPackage = `@mono-agent/${"harness"}`, oldDirectory = `packages/${"harness"}`;
   it("rejects old names in active source and documentation", () => {
-    expect(activeStaleReferenceLines("packages/engine/src/index.js", `import "${oldPackage}";`, oldPackage)).toEqual([1]);
+    expect(activeStaleReferenceLines("packages/agent-runtime/src/engine/index.js", `import "${oldPackage}";`, oldPackage)).toEqual([1]);
     expect(activeStaleReferenceLines("README.md", oldDirectory, oldDirectory)).toEqual([1]);
   });
   it("exempts only the identified archived import, not additional active lines", () => {
-    const file = "packages/engine/src/__tests__/fixtures/projection-parity-worker.mjs";
+    const file = "packages/agent-runtime/src/engine/__tests__/fixtures/projection-parity-worker.mjs";
     const historic = `const historicPackage = "${oldPackage}"; // Archived P2b imports only.`;
     expect(activeStaleReferenceLines(file, historic, oldPackage)).toEqual([]);
     expect(activeStaleReferenceLines(file, `${historic}\nimport "${oldPackage}";`, oldPackage)).toEqual([2]);
-    expect(activeStaleReferenceLines("packages/engine/src/index.js", historic, oldPackage)).toEqual([1]);
+    expect(activeStaleReferenceLines("packages/agent-runtime/src/engine/index.js", historic, oldPackage)).toEqual([1]);
   });
   it("preserves exact source provenance but rejects active additions in that file", () => {
     const line = `closure of \`${oldDirectory}/src/session-store.js\` at public P2b revision`;
     const text = `${line}\n\`10f501d4f1dc102db9951fcebb09a96001910452\``;
-    const file = "packages/engine/src/__tests__/fixtures/NATIVE-V2-BASE.md";
+    const file = "packages/agent-runtime/src/engine/__tests__/fixtures/NATIVE-V2-BASE.md";
     expect(activeStaleReferenceLines(file, text, oldDirectory)).toEqual([]);
     expect(activeStaleReferenceLines(file, text + `\n${oldDirectory}`, oldDirectory)).toEqual([3]);
     expect(activeStaleReferenceLines(file, line, oldDirectory)).toEqual([1]);
   });
   it("checks static, dynamic and relative engine imports, not just manifests", () => {
-    const root = "/fictional", file = root + "/packages/engine/src/index.js";
-    for (const specifier of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai", "@mono-agent/engine", "@mono-agent/engine/sessions.js", "@mono-agent/agent-contracts", "@mono-agent/agent-harness/owned.js",
-      "../../agent-runtime/src/index.js", "../../engine-extra/src/index.js", "../../scripts/helper.js", "../../.."]) {
+    const root = "/fictional", file = root + "/packages/agent-runtime/src/engine/index.js";
+    for (const specifier of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai", "@mono-agent/agent-runtime/engine", "@mono-agent/agent-runtime/engine/sessions.js", "@mono-agent/agent-contracts", "@mono-agent/agent-harness/owned.js", "#kernel/cost", "#kernel/types",
+      "../index.js", "../ai/index.js", "../../scripts/helper.js", "../../.."]) {
       for (const source of [`import { run } from "${specifier}";`, `export { run } from "${specifier}";`, `await import("${specifier}");`]) {
         expect(engineRuntimeImports(root, file, source)).toEqual([specifier]);
       }
     }
-    expect(engineRuntimeImports(root, file, 'import "./session-store.js"; import "../src/session-store.js"; import "@earendil-works/pi-agent-core"; import "node:fs";')).toEqual([]);
+    expect(engineRuntimeImports(root, file, 'import "./session-store.js"; import "./session-store.js"; import "@earendil-works/pi-agent-core"; import "node:fs";')).toEqual([]);
   });
 });
 
-describe("retired host package imports", () => {
-  const old = "@mono-agent/runtime-adapter";
+describe.each(["@mono-agent/runtime-adapter", "@mono-agent/engine", "@mono-agent/engine/sessions.js", "@mono-agent/engine/owned-fs.js"])("retired package imports: %s", (old) => {
   it.each([
     `import { createMonoRuntime } from "${old}";`,
     `export * from "${old}";`,

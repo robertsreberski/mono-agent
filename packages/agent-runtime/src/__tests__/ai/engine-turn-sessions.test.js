@@ -28,24 +28,15 @@ import {
   getCurrentSystemPrompt,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { digestTurnInput } from "@mono-agent/engine";
-import { createTurnBinding } from "../../../../engine/dist/turn-evidence.js";
-import * as sessionAdapter from "../../../../engine/dist/session-adapter.js";
+import { digestTurnInput } from "@mono-agent/agent-runtime/engine";
+import { createTurnBinding } from "../../engine/turn-evidence.js";
+import * as sessionAdapter from "../../engine/session-adapter.js";
 import * as harnessAdapter from "../../ai/providers/engine-turn/engine-adapter.js";
-import { ENGINE_CONTEXT } from "@mono-agent/engine";
+import { ENGINE_CONTEXT } from "@mono-agent/agent-runtime/engine";
 import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
-import {
-  recoverDurableNativeSession,
-  reconcileNativeSessionTurn,
-  cleanupSessionOnThrow,
-  commitSession,
-  discardUncommittedSession,
-  resolveDurableNativeSessionRepo,
-  resolveSession,
-  retireDurableNativeSession,
-  rollbackAbortedTurn,
-} from "../../ai/providers/engine-turn/session-lifecycle.js";
+import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo, retireDurableNativeSession } from "../../engine/session-lifecycle.js";
+import { cleanupSessionOnThrow, commitSession, discardUncommittedSession, resolveSession, rollbackAbortedTurn } from "../../ai/providers/engine-turn/session-lifecycle.js";
 import {
   disposeProviderSession,
   invalidateProviderSession,
@@ -396,7 +387,7 @@ describe("Sessions", () => {
       fileOpenSpy = vi.mocked(fsPromises.open);
       assertPresent(fileOpenSpy);
       fileOpenSpy.mockClear();
-      const { SessionStore } = await import("../../../../engine/dist/session-store.js");
+      const { SessionStore } = await import("../../engine/session-store.js");
       nativeSyncSpy = vi.spyOn(SessionStore.prototype, "sync");
       const bytes = readFileSync(findJsonlFiles(root)[0], "utf8");
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
@@ -954,7 +945,7 @@ describe("Sessions", () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "legacy-permissions-"));
     const directory = join(root, "legacy"); mkdirSync(directory);
     const source = join(directory, "fixture_fixture-session.jsonl");
-    await fsPromises.copyFile(new URL(`../../../../engine/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url), source);
+    await fsPromises.copyFile(new URL(`../../engine/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url), source);
     await fsPromises.chmod(root, 0o755);
     /** @type {any} */ let context = undefined; const warnings = [];
     faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("New fictional reply.")]); }, fauxAssistantMessage([fauxText("Next fictional reply.")])]);
@@ -968,7 +959,7 @@ describe("Sessions", () => {
       expect(transcriptOf(context)[0]).toContain("Summarize the fictional project.");
       expect((await fsPromises.stat(root)).mode & 0o777).toBe(0o700);
       for (const path of [join(root, "journals"), join(root, "locks")]) expect((await fsPromises.stat(path)).mode & 0o777).toBe(0o700);
-      expect(readFileSync(`${source}.migrated`)).toEqual(readFileSync(new URL(`../../../../engine/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url)));
+      expect(readFileSync(`${source}.migrated`)).toEqual(readFileSync(new URL(`../../engine/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url)));
       const resumed = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Continue again." }], sessionKeepAlive: true, sessionId: "fixture-session", sessionsRoot: root,
         onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
@@ -998,7 +989,7 @@ describe("Sessions", () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "legacy-clean-break-"));
     const directory = join(root, "legacy"); mkdirSync(directory);
     const source = join(directory, "fixture_fixture-session.jsonl");
-    await fsPromises.copyFile(new URL("../../../../engine/src/__tests__/fixtures/legacy-v4.jsonl", import.meta.url), source);
+    await fsPromises.copyFile(new URL("../../engine/__tests__/fixtures/legacy-v4.jsonl", import.meta.url), source);
     await fsPromises.appendFile(source, JSON.stringify({ kind: "value", op: "set", seq: 6, namespace: "pi.op.meta", key: "open", value: {} }) + "\n");
     const original = readFileSync(source); const controller = new AbortController();
     faux.setResponses([failure === "provider" ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional failure" }) : fauxAssistantMessage([fauxText("Failed turn draft.")])]);

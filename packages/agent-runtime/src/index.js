@@ -18,7 +18,8 @@ export { resolveEngineTurnAdapter, generateEngineTurnResponse, engineTurnAdapter
 export * from "./agent/index.js";
 
 export { produceNativeHandoffSummary, HANDOFF_SUMMARY_PROMPT } from "./ai/providers/engine-turn/handoff-producer.js";
-export { detachDurableNativeSession } from "./ai/providers/engine-turn/session-lifecycle.js";
+export { detachDurableNativeSession } from "./engine/session-lifecycle.js";
 
 // Administrative storage factory; never forwarded through runtime run options.
-export { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "./ai/providers/engine-turn/native-journal-storage.js";
+export { createManagedNativeJournalStorage } from "./ai/providers/engine-turn/native-journal-storage.js";
+export { NativeEvidenceCapacityError } from "./engine/native-journal-storage.js";

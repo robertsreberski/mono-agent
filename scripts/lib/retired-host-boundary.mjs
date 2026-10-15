@@ -6,10 +6,10 @@ export function retiredHostImports(file, text) {
   if (!/\.[cm]?[jt]sx?$/u.test(file)) return [];
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const imports = [];
-  const retired = `@mono-agent/${"runtime-adapter"}`;
+  const retired = ["runtime-adapter", "engine"].map((name) => `@mono-agent/${name}`);
   function record(node) {
     if (node && ts.isStringLiteralLike(node)
-      && (node.text === retired || node.text.startsWith(`${retired}/`))) imports.push(node.text);
+      && retired.some((name) => node.text === name || node.text.startsWith(`${name}/`))) imports.push(node.text);
   }
   function visit(node) {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) record(node.moduleSpecifier);

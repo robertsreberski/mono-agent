@@ -74,7 +74,6 @@
     "typescript": "^5.8.3",
     "vitest": "^3.1.4",
     "yaml": "^2.9.0",
-    "@mono-agent/engine": "workspace:0.25.1",
     "@mono-agent/agent-runtime": "workspace:0.25.1"
   }
 }

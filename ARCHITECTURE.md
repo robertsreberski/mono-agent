@@ -13,6 +13,7 @@ channel adapter
   -> agent-harness turn orchestration
   -> agent-runtime/host protected host integration
   -> agent-runtime provider implementation
+  -> agent-runtime/engine isolated loop, journal/storage and compaction
 
 optional side paths
   -> memory

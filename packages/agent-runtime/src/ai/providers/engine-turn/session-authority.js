@@ -1,7 +1,8 @@
 // @ts-check
-import { JsonlSessionRepo, projectInheritedContext } from "@mono-agent/engine";
+import { JsonlSessionRepo } from "../../../engine/session-store.js";
+import { projectInheritedContext } from "../../../engine/request-projection.js";
 
-import { normalizeDurableSessionsRoot } from "@mono-agent/engine/sessions.js";
+import { normalizeDurableSessionsRoot } from "../../../engine/sessions-root.js";
 
 const onlyKeys = (value, allowed) => value !== null && typeof value === "object" && !Array.isArray(value)
   && Object.keys(value).every((key) => allowed.includes(key));
@@ -38,4 +39,3 @@ export function validateNativeSessionAuthority(options, handleId, requestedId) {
     }
   } catch { throw failure(); }
 }
-export { assertNativeSessionAccess } from "@mono-agent/engine/sessions.js";
