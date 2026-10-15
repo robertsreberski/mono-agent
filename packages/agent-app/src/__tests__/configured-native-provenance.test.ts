@@ -43,8 +43,8 @@ async function fixture(options: { enabled?: boolean; fallback?: boolean; runtime
   const configPath = join(root, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify({
     runtime: { model: "pi:openai-codex:gpt-5.5", workspace: root, maxTurns: 4,
-      session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: enabled ? { enabled: true } : { enabled: false } } },
-    providers: { piNative: { piSessionsRoot: nativeRoot } }, context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
+      session: { root: nativeRoot, mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: enabled ? { enabled: true } : { enabled: false } } },
+    providers: { piNative: {} }, context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(root, "artifacts") }, traceability: { registryDir: join(root, "trace") },
   }));
   const loaded = await loadAppCoreConfig({ cwd: root, configPath, env: {} });
@@ -175,7 +175,7 @@ it.each([false, true])("consecutive persisted Web turns retain the current journ
   f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional second answer")]);
   await h.respond(f.request("fictional-seed", "A"), { append: async () => {} });
   const header = (await f.journalRecords()).find((row) => typeof row.journalId === "string" && typeof row.id === "string")!;
-  const path = join(f.root, "native", "mono-v2", "journals", `${header.journalId}.jsonl`), before = await readFile(path);
+  const path = join(f.root, "native", "journals", `${header.journalId}.jsonl`), before = await readFile(path);
   const retire = vi.spyOn(JsonlSessionRepo.prototype, "retireByHandle"), remove = vi.spyOn(JsonlSessionRepo.prototype, "delete");
   const second = await h.respond(f.request("fictional-second", "A"), { append: async () => {} });
   expect(second.text).toBe("Fictional second answer"); expect(f.transport).toHaveBeenCalledTimes(2);
@@ -190,7 +190,7 @@ it("fresh responder reopens the retained opt-in journal for the next persisted W
   f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional reopened answer")]);
   await first.respond(f.request("fictional-seed", "A"), { append: async () => {} });
   const header = (await f.journalRecords()).find((row) => typeof row.journalId === "string" && typeof row.id === "string")!;
-  const path = join(f.root, "native", "mono-v2", "journals", `${header.journalId}.jsonl`), before = await readFile(path);
+  const path = join(f.root, "native", "journals", `${header.journalId}.jsonl`), before = await readFile(path);
   await (first as AgentResponder & { dispose(): Promise<void> }).dispose();
   const retire = vi.spyOn(JsonlSessionRepo.prototype, "retireByHandle"), remove = vi.spyOn(JsonlSessionRepo.prototype, "delete"), reopened = await f.make();
   expect((await reopened.respond(f.request("fictional-second", "A"), { append: async () => {} })).text).toBe("Fictional reopened answer");
@@ -204,7 +204,7 @@ it("a second same-model persisted Web turn after a v5 switch keeps the single cu
   await h.respond(f.request("fictional-seed", "A"), { append: async () => {} });
   await h.respond(f.request("fictional-switch", "B"), { append: async () => {} });
   const before = await f.record(); expect(before.version).toBe(3);
-  const journals = join(f.root, "native", "mono-v2", "journals"), [current] = (await readdir(journals)).filter((name) => name.endsWith(".jsonl"));
+  const journals = join(f.root, "native", "journals"), [current] = (await readdir(journals)).filter((name) => name.endsWith(".jsonl"));
   const currentBytes = await readFile(join(journals, current!));
   const retire = vi.spyOn(JsonlSessionRepo.prototype, "retireByHandle"), remove = vi.spyOn(JsonlSessionRepo.prototype, "delete");
   expect((await h.respond(f.request("fictional-second-b", "B"), { append: async () => {} })).text).toBe("Fictional second B answer");

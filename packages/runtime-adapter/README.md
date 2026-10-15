@@ -207,7 +207,7 @@ resolvers cannot replace them. Backup success never certifies primary success.
 `RuntimeRunOptions.nativeSessionAuthority` and `nativeSessionProjection` are
 protected host-only opt-ins forwarded unchanged by the facade. The authority's
 `sessionsRoot` pins the dedicated native root; the resolver cannot replace
-`piSessionsRoot` on the session-eligible attempt while authority is present.
+`sessionsRoot` on the session-eligible attempt while authority is present.
 Detached retry/backup resolvers may choose their own roots. `assertCurrent`
 receives the actual normalized path (not an inode attestation) and must prove
 the held owner's ready binding/artifact and creation eligibility; an artifact reference alone grants no execution. Projection

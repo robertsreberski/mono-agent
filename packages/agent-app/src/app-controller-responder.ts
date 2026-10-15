@@ -252,7 +252,7 @@ export async function buildResponder(
     coreConfig.memory?.path,
     coreConfig.tools.mcpConfigPath,
     coreConfig.providers?.piAuthPath,
-    coreConfig.providers?.piNative?.piSessionsRoot,
+    coreConfig.runtime.session.root,
     coreConfig.traceability.registryDir,
     continuationStateDir,
     ...processJobsProtectedRoots,

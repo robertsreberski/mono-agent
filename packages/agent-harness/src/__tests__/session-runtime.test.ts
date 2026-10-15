@@ -56,7 +56,7 @@ describe("session runtime ownership", () => {
     const base = runtime();
     const alternate = runtime();
     const resolve = createSessionRuntimeResolver({ model, runtime: base, runtimeForModel: () => alternate });
-    await retireRunResultSession({ model, runtime: base, identityPath: "/unused", piSessionsRoot: "/sessions" },
+    await retireRunResultSession({ model, runtime: base, identityPath: "/unused", sessionsRoot: "/sessions" },
       resolve, undefined, true, "c", undefined, "legacy-current",
       { providerSessionId: "base-id", modelKey: "faux:base" },
       { providerSessionId: "late-id", modelKey: "faux:override" });
@@ -71,7 +71,7 @@ it("P disposal never invokes destructive callbacks even for a stale model mappin
   const base = runtime(), alternate = runtime();
   alternate.disposeSession.mockRejectedValueOnce(new Error("Fictional busy writer"));
   const resolve = createSessionRuntimeResolver({ model, runtime: base, runtimeForModel: () => alternate });
-  await retireRunResultSession({ model, runtime: base, identityPath: "/unused", piSessionsRoot: "/sessions" },
+  await retireRunResultSession({ model, runtime: base, identityPath: "/unused", sessionsRoot: "/sessions" },
     resolve, undefined, true, "fictional", undefined, "preserve", { providerSessionId: "fictional-predecessor", modelKey: "faux:override" });
   expect(alternate.disposeSession).toHaveBeenCalledWith("fictional-predecessor");
   expect(alternate.invalidateSession).not.toHaveBeenCalled(); expect(alternate.retireDurableSession).not.toHaveBeenCalled();

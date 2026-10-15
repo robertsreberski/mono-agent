@@ -338,7 +338,7 @@ assistant usage independently of these operation-scoped summary requests.
 
 | Active bridge | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|
-| **pi** | Yes (mono-agent engine + v2 native journal) | session repo | Yes only with `piSessionsRoot` and the durable history/session transaction contract |
+| **pi** | Yes (mono-agent engine + v2 native journal) | session repo | Yes only with `sessionsRoot` and the durable history/session transaction contract |
 
 The current registry contains only Pi. A confirmed warm session omits host replay.
 An unconfirmed durable reopen refreshes the handle and supplies canonical history:

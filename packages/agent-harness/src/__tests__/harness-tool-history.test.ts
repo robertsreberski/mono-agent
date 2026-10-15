@@ -720,7 +720,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       model,
       historyStore,
       session,
-      piSessionsRoot: join(root, "pi-sessions"),
+      sessionsRoot: join(root, "pi-sessions"),
       createRunId: () => `run-${String(++run)}`,
       toolHistory: {
         writer,
@@ -785,7 +785,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       model,
       historyStore,
       session,
-      piSessionsRoot: join(root, "empty-pi-sessions"),
+      sessionsRoot: join(root, "empty-pi-sessions"),
       createRunId: () => "empty-structured-run",
       toolHistory: {
         writer,

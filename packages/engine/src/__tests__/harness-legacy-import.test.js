@@ -32,7 +32,7 @@ async function assertImported(root, source, original) {
     expect(entries).toHaveLength(2);
     expect((await readFile(`${source}.migrated`)).equals(original)).toBe(true);
     await expect(stat(source)).rejects.toMatchObject({ code: "ENOENT" });
-    expect((await readdir(join(root, "mono-v2", "journals")))).toEqual([`${session.metadata.journalId}.jsonl`]);
+    expect((await readdir(join(root, "journals")))).toEqual([`${session.metadata.journalId}.jsonl`]);
     return session.metadata;
   } finally { await session.close(); }
 }
@@ -42,7 +42,7 @@ describe("restartable legacy Pi import", () => {
     it(`resumes v${version} after SIGKILL at ${phase} with one destination and byte-stable source evidence`, async () => {
       const { root, source, original } = await fixture(version);
       await killed(root, phase);
-      const journals = await readdir(join(root, "mono-v2", "journals"));
+      const journals = await readdir(join(root, "journals"));
       const published = journals.filter((name) => name.endsWith(".jsonl"));
       expect(published).toHaveLength(["published", "publication_synced", "archive_renamed", "archive_synced"].includes(phase) ? 1 : 0);
       if (!["archive_renamed", "archive_synced"].includes(phase)) {
@@ -60,7 +60,7 @@ describe("restartable legacy Pi import", () => {
       if (phase === "published") sync = vi.spyOn(SessionStore.prototype, "sync").mockRejectedValueOnce(new Error("Fictional post-rename fsync failure"));
     } });
     await expect(repo.open((await repo.list())[0])).rejects.toThrow("post-rename fsync failure"); sync.mockRestore();
-    const journals = await readdir(join(root, "mono-v2", "journals")); expect(journals.filter((name) => name.endsWith(".jsonl"))).toHaveLength(1);
+    const journals = await readdir(join(root, "journals")); expect(journals.filter((name) => name.endsWith(".jsonl"))).toHaveLength(1);
     expect((await readFile(source)).equals(original)).toBe(true);
     await expect(stat(`${source}.migrated`)).rejects.toMatchObject({ code: "ENOENT" });
     await assertImported(root, source, original);
@@ -69,7 +69,7 @@ describe("restartable legacy Pi import", () => {
     const { root, source, original } = await fixture();
     const repo = new JsonlSessionRepo({ sessionsRoot: root, onImportPhase: async (phase) => { if (phase === "archive_renamed") throw new Error("Fictional archive sync failure"); } });
     await expect(repo.open((await repo.list())[0])).rejects.toThrow("archive sync failure");
-    expect((await readdir(join(root, "mono-v2", "journals"))).filter((name) => name.endsWith(".jsonl"))).toHaveLength(1);
+    expect((await readdir(join(root, "journals"))).filter((name) => name.endsWith(".jsonl"))).toHaveLength(1);
     await assertImported(root, source, original);
   });
   it("rejects duplicate source IDs without archiving or publishing either", async () => {
@@ -91,7 +91,7 @@ describe("restartable legacy Pi import", () => {
   });
   it("rejects complete corrupt staging rather than discarding it as an interrupted import", async () => {
     const { root, source, original } = await fixture(); await killed(root, "context_synced");
-    const [name] = await readdir(join(root, "mono-v2", "journals")); const path = join(root, "mono-v2", "journals", name);
+    const [name] = await readdir(join(root, "journals")); const path = join(root, "journals", name);
     await appendFile(path, '{"schemaVersion":99}\n'); const corrupted = await readFile(path);
     const repo = new JsonlSessionRepo({ sessionsRoot: root });
     await expect(repo.open((await repo.list())[0])).rejects.toThrow("Invalid");
@@ -99,12 +99,12 @@ describe("restartable legacy Pi import", () => {
   });
   it("rebuilds an incomplete owned staged final record from the unchanged source", async () => {
     const { root, source, original } = await fixture(); await killed(root, "message_written");
-    const [name] = await readdir(join(root, "mono-v2", "journals")); await appendFile(join(root, "mono-v2", "journals", name), '{"schemaVersion":2');
+    const [name] = await readdir(join(root, "journals")); await appendFile(join(root, "journals", name), '{"schemaVersion":2');
     await assertImported(root, source, original);
   });
   it("reconciles a validated staged orphan alongside a published destination", async () => {
     const { root, source, original } = await fixture(); await killed(root, "published");
-    const [name] = await readdir(join(root, "mono-v2", "journals")); const path = join(root, "mono-v2", "journals", name);
+    const [name] = await readdir(join(root, "journals")); const path = join(root, "journals", name);
     await copyFile(path, `${path}.importing`); await assertImported(root, source, original);
   });
 });
@@ -229,4 +229,21 @@ it("keeps duplicate-source guards when one legacy filename has no attributable i
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
   await expect(repo.find("fixture-session")).rejects.toThrow("Invalid");
   await expect(repo.open((await repo.list())[0])).rejects.toThrow("Invalid");
+});
+
+it("skips reserved session directories during legacy discovery and import", async () => {
+  const { root, source, original } = await fixture();
+  for (const name of ["journals", "locks", "aliases"]) {
+    await mkdir(join(root, name), { mode: 0o700 });
+    await writeFile(join(root, name, "fixture_reserved.jsonl"), "invalid legacy evidence", { mode: 0o600 });
+  }
+  const discovered = await listLegacySessions(root);
+  expect(discovered.sessions.map(({ path }) => path)).toEqual([source]);
+  expect(discovered.unattributed).toEqual([]);
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const session = await repo.open(discovered.sessions[0]); await session.close();
+  expect(await readFile(`${source}.migrated`)).toEqual(original);
+  for (const name of ["journals", "locks", "aliases"]) {
+    expect(await readFile(join(root, name, "fixture_reserved.jsonl"), "utf8")).toBe("invalid legacy evidence");
+  }
 });

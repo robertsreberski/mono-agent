@@ -2085,8 +2085,8 @@ it("retires configured override history through the cached owning runtime", asyn
   const model = { provider: "faux", model: "base", reference: "faux:base" };
   const override = { provider: "faux", model: "override", reference: "faux:override" };
   const config: MonoAgentConfig = { ...original,
-    runtime: { ...original.runtime, model, session: { mode: "continuous", idleTimeoutMs: 60000 } },
-    providers: { piNative: { piSessionsRoot: join(dir, "pi") } } };
+    runtime: { ...original.runtime, model, session: { root: join(dir, "pi"), mode: "continuous", idleTimeoutMs: 60000 } },
+    providers: { piNative: {} } };
   const owner = () => ({ run: vi.fn(async (_prompt: string, options: RuntimeRunOptions) => ({ text: "answer", providerSessionId: String(options.sessionId) })),
     refreshSession: vi.fn(async () => undefined), syncSession: vi.fn(async () => true),
     invalidateSession: vi.fn(async () => true), disposeSession: vi.fn(async () => true), retireDurableSession: vi.fn(async () => undefined) });

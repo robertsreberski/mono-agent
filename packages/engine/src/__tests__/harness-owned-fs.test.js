@@ -80,8 +80,8 @@ it("cancels a repository delete waiting behind a foreign writer without touching
 it("keeps a stale native stage whose writer lock is insecure, unattributed, without failing the catalogue", async () => {
   const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r });
   await (await repo.create({ id: "fictional-healthy" })).close();
-  const journalId = (await import("../managed-journal.js")).managedJournalId("fictional-insecure-stage"), stage = join(r, "mono-v2", "journals", `${journalId}.jsonl.creating`);
-  const lock = join(r, "mono-v2", "locks", `${journalId}.sqlite`);
+  const journalId = (await import("../managed-journal.js")).managedJournalId("fictional-insecure-stage"), stage = join(r, "journals", `${journalId}.jsonl.creating`);
+  const lock = join(r, "locks", `${journalId}.sqlite`);
   await writeFile(stage, "", { mode: 0o600 }); await writeFile(lock, "", { mode: 0o644 });
   expect((await repo.list()).map((m) => m.id)).toEqual(["fictional-healthy"]);
   expect((await repo.catalogue()).unattributed).toEqual([{ name: `${journalId}.jsonl.creating` }]);
@@ -129,7 +129,7 @@ it("cancels open, create and list lock waits from the caller's signal without le
   } finally { held.release(); }
   await session.close();
   expect((await other.list()).map((m) => m.id)).toEqual(["fictional-held"]);
-  expect((await readdir(join(r, "mono-v2", "locks"))).sort()).toEqual(["catalog.sqlite", `${session.metadata.journalId}.sqlite`].sort());
+  expect((await readdir(join(r, "locks"))).sort()).toEqual(["catalog.sqlite", `${session.metadata.journalId}.sqlite`].sort());
   const reopened = await other.open(session.metadata, { signal: new AbortController().signal }); await reopened.close();
 });
 

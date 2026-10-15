@@ -105,7 +105,7 @@ export interface ParsedCliArgs {
   readonly expectedWebPlistIdentity?: string;
   readonly target?: InstallSkillTarget;
   readonly force: boolean;
-  /** restart: canonical spelling that clears pi sessions + active conversation history. */
+  /** restart: canonical spelling that clears sessions + active conversation history. */
   readonly clearSessions?: boolean;
   /** start: run the blocking foreground worker instead of backgrounding. */
   readonly foreground: boolean;

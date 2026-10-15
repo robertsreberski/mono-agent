@@ -641,7 +641,7 @@ it.each(["exclusive", "provider"])("posted-reply %s acquisition cancels through 
   const begin = mode === "exclusive" ? vi.spyOn(store.contextImport!, "beginExclusiveTurn") : vi.spyOn(store, "beginProviderSessionTurn");
   const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
   const runtime = observingRuntime(), harness = createAgentHarness({ identityPath, model: MODEL, runtime: runtime.runtime, historyStore: wrapped,
-    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode === "provider" ? { piSessionsRoot: join(root, "native") } : {}) });
+    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode === "provider" ? { sessionsRoot: join(root, "native") } : {}) });
   let settled = false;
   const pending = harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal }).then((result) => { settled = true; return result; });
   try {

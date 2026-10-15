@@ -1,5 +1,5 @@
 import { mapRunToSession } from "@mono-agent/observability";
-// Finite foreground worker: real public harness/runtime and Pi JSONL, scripted provider only.
+// Finite foreground worker: real public harness/runtime and session JSONL, scripted provider only.
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -23,7 +23,7 @@ const events = [];
 const sessionEvents = [];
 const records = [];
 const jsonl = [];
-const piSessionsRoot = join(root, "pi");
+const sessionsRoot = join(root, "pi");
 const modelRef = (name) => parseMonoRuntimeModelReference(`faux:${name}`);
 function observedRuntime(key) {
   const runtime = createMonoRuntime({ workspace: root });
@@ -46,7 +46,7 @@ const runtimeForSession = createSessionRuntimeResolver({ runtime, model,
 const history = createDurableHistoryStore({ root: join(root, "history"), retireProviderSession: async (id, key) => {
   const owner = runtimeForSession(key);
   await owner.invalidateSession(id);
-  await owner.retireDurableSession(id, piSessionsRoot);
+  await owner.retireDurableSession(id, sessionsRoot);
 } });
 if (legacyUnbound === "true") {
   await history.append("bound", []);
@@ -66,7 +66,7 @@ const harness = createAgentHarness({
   ...(unrouted === "true" ? {} : { runtimeForModel: (ref) => runtimeForSession(ref.reference) }),
   session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true,
     onSessionEvent: (event) => { sessionEvents.push(event); } },
-  historyStore: history, piSessionsRoot, effort: "none",
+  historyStore: history, sessionsRoot, effort: "none",
   toolPolicy: createToolPolicy({ allowedTools: ["Read"] }),
   runtimeOptionsForRequest: ({ request }) => {
     const ref = parseMonoRuntimeModelReference(request.metadata?.[origin]?.model ?? model.reference);
@@ -94,7 +94,7 @@ try {
     if (result.failure) throw new Error(JSON.stringify(result.failure));
     const key = createHash("sha256").update("mono-agent-history-v1\0bound").digest("hex");
     records.push(JSON.parse(await readFile(join(root, "history", `${key}.history.json`), "utf8")));
-    jsonl.push((await readdir(piSessionsRoot, { recursive: true })).filter((name) => name.endsWith(".jsonl")));
+    jsonl.push((await readdir(sessionsRoot, { recursive: true })).filter((name) => name.endsWith(".jsonl")));
   }
 } finally {
   await harness.dispose();

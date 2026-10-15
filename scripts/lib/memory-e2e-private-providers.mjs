@@ -39,11 +39,11 @@ export function validatePrivateRoute(route, allowed, registration, runtime) {
     || runtime?.isPiBuiltinProvider?.(route.split(":", 1)[0]) !== true) throw new PrivateError("private_provider_route_refused");
   return { provider: "agent-host", model: route, trace: false, timeoutMs: 60000 };
 }
-/** Native Pi uses MemorySessionRepo when piSessionsRoot is absent. Only that
+/** Native Pi uses MemorySessionRepo when sessionsRoot is absent. Only that
  * audited path is admitted: no external adapters, tools, recorder, observers,
  * artifact sink, durable sessions, fallback routing or provider debug flags. */
 export function assertPrivateRuntimeOptions(options) {
-  if (["piSessionsRoot", "persistArtifact", "onEvent", "onTrace", "toolLifecycleSink", "sessionRecovery", "sessionTurn", "detachedContext"].some((key) => options[key] !== undefined)
+  if (["sessionsRoot", "persistArtifact", "onEvent", "onTrace", "toolLifecycleSink", "sessionRecovery", "sessionTurn", "detachedContext"].some((key) => options[key] !== undefined)
     || (options.observers?.length ?? 0) !== 0 || (options.allowedTools?.length ?? 0) !== 0
     || Object.keys(options.mcpServers ?? {}).length !== 0) throw new PrivateError("private_isolation_required");
 }

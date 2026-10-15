@@ -21,10 +21,10 @@ async function config(backup: boolean): Promise<MonoAgentConfig> {
   const identityPath = join(dir, "IDENTITY.md");
   await writeFile(identityPath, "You are Mono.");
   return { runtime: { model: model("base"), maxTurns: 4, workspace: dir,
-    session: { mode: "continuous", idleTimeoutMs: 60000 }, compaction: { enabled: false },
+    session: { root: join(dir, "pi"), mode: "continuous", idleTimeoutMs: 60000 }, compaction: { enabled: false },
     retry: { primaryAttempts: backup ? 1 : 2, backoffMs: 0, maxBackoffMs: 0 },
     ...(backup ? { fallbacks: [{ model: model("backup") }] } : {}) },
-    providers: { piNative: { piSessionsRoot: join(dir, "pi") } },
+    providers: { piNative: {} },
     context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(dir, "artifacts"), retention: { maxAgeDays: 365, maxCount: 100, dryRun: false },
       memoryRetention: { maxAgeDays: 7, maxCount: 100, dryRun: false } },

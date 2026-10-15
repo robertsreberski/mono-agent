@@ -160,7 +160,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     signature: "mono-agent restart [--config <path>] [--clear-sessions]",
     lines: [
       "Restart the background instance for this config (starts it if stopped).",
-      "--clear-sessions clears persisted Pi sessions, active conversation history, and ACP authorizations",
+      "--clear-sessions clears persisted sessions, active conversation history, and ACP authorizations",
       "so the agent starts fresh. Durable memory and run artifacts are untouched.",
       "Linux currently refuses --clear-sessions without changing service or conversation state.",
     ],

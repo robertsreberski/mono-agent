@@ -74,7 +74,7 @@ export async function killAndRecover(scenario: Scenario, phase: string) {
   };
   const first = await recover(), second = await recover();
   const armed = [...killed.calls.filter((call) => call.armed), ...first.calls, ...second.calls];
-  const journal = async (name: string) => (await readFile(join(root, "native", "mono-v2", "journals", name))).toString("base64");
+  const journal = async (name: string) => (await readFile(join(root, "native", "journals", name))).toString("base64");
   return { root, before, killed, first, second, armed, journal };
 }
 

@@ -1,5 +1,5 @@
 import { ok as assertPresent } from "node:assert";
-// Pi-native session lifecycle integration.
+// Session lifecycle integration.
 //
 // Retargeted from the retired pi-sdk-sessions suite: these assert the SAME
 // session contract (resume seeding, session_not_found / session_busy fail-fast,
@@ -131,7 +131,7 @@ function findJsonlFiles(root) {
   return paths;
 }
 
-describe("pi-native sessions", () => {
+describe("Sessions", () => {
   it("fails closed and retires a durable turn cancelled during reply finalization", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-reply-cancel-recovery-"));
     const model = setup();
@@ -144,7 +144,7 @@ describe("pi-native sessions", () => {
         () => { controller.abort(); return fauxAssistantMessage([], { stopReason: "aborted" }); },
       ]);
       const cancelled = await generateEngineTurnResponse("stable", runOptions(model, {
-        piSessionsRoot: root, sessionKeepAlive: true, sessionRecovery: { runId: "reply-cancel", revision: 1 },
+        sessionsRoot: root, sessionKeepAlive: true, sessionRecovery: { runId: "reply-cancel", revision: 1 },
         abortSignal: controller.signal, messages: [{ role: "user", content: "Draft an email" }],
       }));
       sessionId = cancelled.providerSessionId;
@@ -155,7 +155,7 @@ describe("pi-native sessions", () => {
       // A two-operation cancelled tail cannot be silently reused.
       await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
       const blocked = await generateEngineTurnResponse("stable", runOptions(model, {
-        piSessionsRoot: root, sessionId, messages: [{ role: "user", content: "Must not resume pending tail" }],
+        sessionsRoot: root, sessionId, messages: [{ role: "user", content: "Must not resume pending tail" }],
       }));
       expect(blocked.failureKind).toBe("session_busy");
       // The host's existing fallback retires the unsafe tail and reseeds.
@@ -163,7 +163,7 @@ describe("pi-native sessions", () => {
       expect(countJsonlFiles(root)).toBe(0);
       faux.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("Fresh draft.")]); }]);
       const next = await generateEngineTurnResponse("stable", runOptions(model, {
-        piSessionsRoot: root, sessionId, sessionKeepAlive: true,
+        sessionsRoot: root, sessionId, sessionKeepAlive: true,
         messages: [{ role: "user", content: "New draft request" }],
       }));
       expect(next).toMatchObject({ error: null, text: "Fresh draft." });
@@ -196,7 +196,7 @@ describe("pi-native sessions", () => {
         },
         (context) => { next = structuredClone(context.messages); return fauxAssistantMessage([fauxText("resumed")]); },
       ]);
-      const base = { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true, allowedTools: ["Read"], compaction: { enabled: false } };
+      const base = { cwd: root, sessionsRoot: join(root, "pi"), sessionKeepAlive: true, allowedTools: ["Read"], compaction: { enabled: false } };
       const warm = await generateEngineTurnResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm" }] }));
       expect(warm.error).toBeNull();
       sessionId = warm.providerSessionId;
@@ -249,7 +249,7 @@ describe("pi-native sessions", () => {
     let sessionId;
     try {
       faux.setResponses([fauxAssistantMessage([fauxToolCall("Read", { file_path: "never-read" }, { id: "cancel-tool" })])]);
-      const options = runOptions(model, { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true,
+      const options = runOptions(model, { cwd: root, sessionsRoot: join(root, "pi"), sessionKeepAlive: true,
         sessionRecovery: { runId: "first", revision: 0 }, allowedTools: ["Read"], abortSignal: controller.signal,
         messages: [{ role: "user", content: "first cancelled ask" }],
         onEvent: (event) => {
@@ -263,7 +263,7 @@ describe("pi-native sessions", () => {
       await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
       /** @type {any} */ let context = undefined;
       faux.setResponses([(value) => { context = value; return fauxAssistantMessage([fauxText("next")]); }]);
-      const resumed = await generateEngineTurnResponse("stable", runOptions(model, { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true, sessionId,
+      const resumed = await generateEngineTurnResponse("stable", runOptions(model, { cwd: root, sessionsRoot: join(root, "pi"), sessionKeepAlive: true, sessionId,
         messages: [{ role: "user", content: "next" }], allowedTools: ["Read"] }));
       assertPresent(resumed);
       expect(resumed.error).toBeNull();
@@ -283,7 +283,7 @@ describe("pi-native sessions", () => {
     try {
       const model = setup();
       const controller = new AbortController(); controller.abort();
-      const result = await generateEngineTurnResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+      const result = await generateEngineTurnResponse("stable", runOptions(model, { sessionsRoot: root, sessionKeepAlive: true,
         sessionRecovery: { runId: "never-admitted", revision: 0 }, abortSignal: controller.signal, messages: [{ role: "user", content: "never sent" }] }));
       expect(result.cancelled).toBe(true);
       expect(result.providerSessionRecovery).toBeUndefined();
@@ -297,7 +297,7 @@ describe("pi-native sessions", () => {
     let sessionId;
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("answer")])]);
-      const result = await generateEngineTurnResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+      const result = await generateEngineTurnResponse("stable", runOptions(model, { sessionsRoot: root, sessionKeepAlive: true,
         sessionRecovery: { runId: "run", revision: 0 }, messages: [{ role: "user", content: "ask" }] }));
       sessionId = result.providerSessionId;
       expect(result.providerSessionRecovery).toBeDefined();
@@ -318,7 +318,7 @@ describe("pi-native sessions", () => {
     const model = setup();
     const controller = new AbortController();
     const { createPiSessionAdapter } = sessionAdapter;
-    const base = { cwd: root, piSessionsRoot: root, sessionKeepAlive: true, sessionId, compaction: { enabled: false } };
+    const base = { cwd: root, sessionsRoot: root, sessionKeepAlive: true, sessionId, compaction: { enabled: false } };
     const repo = resolveDurableNativeSessionRepo(root);
     /** @type {any} */ let baseline = undefined;
     let adapterSpy;
@@ -386,7 +386,7 @@ describe("pi-native sessions", () => {
     let nativeSyncSpy;
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("answer")])]);
-      const result = await generateEngineTurnResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+      const result = await generateEngineTurnResponse("stable", runOptions(model, { sessionsRoot: root, sessionKeepAlive: true,
         sessionRecovery: { runId: "run", revision: 0 }, messages: [{ role: "user", content: "ask" }] }));
       sessionId = result.providerSessionId;
       expect(result.providerSessionRecovery).toBeDefined();
@@ -548,7 +548,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "seed" }],
         sessionKeepAlive: true,
         sessionId: id,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(seeded.error).toBeNull();
 
@@ -563,7 +563,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "cancelled turn" }],
         sessionKeepAlive: true,
         sessionId: id,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       await started;
 
@@ -726,7 +726,7 @@ describe("pi-native sessions", () => {
       sessionId: "no-such-session",
     }));
     expect(result.failureKind).toBe("session_not_found");
-    expect(result.error).toBe("Pi session no-such-session is not live");
+    expect(result.error).toBe("session no-such-session is not live");
     expect(result.cancelled).toBe(false);
     expect(result.numTurns).toBe(0);
     expect(result.providerSessionId).toBe("no-such-session");
@@ -922,7 +922,7 @@ describe("pi-native sessions", () => {
     const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(first.error).toBeNull();
 
@@ -937,7 +937,7 @@ describe("pi-native sessions", () => {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId: first.providerSessionId,
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     assertPresent(resumed);
     expect(resumed.error).toBeNull();
@@ -961,19 +961,19 @@ describe("pi-native sessions", () => {
     try {
       const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Continue the fictional project." }],
-        sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
+        sessionKeepAlive: true, sessionId: "fixture-session", sessionsRoot: root,
         onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
       }));
       expect(result.error).toBeNull(); expect(transcriptOf(context)).toHaveLength(3);
       expect(transcriptOf(context)[0]).toContain("Summarize the fictional project.");
       expect((await fsPromises.stat(root)).mode & 0o777).toBe(0o700);
-      for (const path of [join(root, "mono-v2"), join(root, "mono-v2", "locks")]) expect((await fsPromises.stat(path)).mode & 0o777).toBe(0o700);
+      for (const path of [join(root, "journals"), join(root, "locks")]) expect((await fsPromises.stat(path)).mode & 0o777).toBe(0o700);
       expect(readFileSync(`${source}.migrated`)).toEqual(readFileSync(new URL(`../../../../engine/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url)));
       const resumed = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
-        messages: [{ role: "user", content: "Continue again." }], sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
+        messages: [{ role: "user", content: "Continue again." }], sessionKeepAlive: true, sessionId: "fixture-session", sessionsRoot: root,
         onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
       })); expect(resumed.error).toBeNull();
-      const tightened = warnings.filter((warning) => warning.warning_kind === "pi_sessions_root_permissions_tightened");
+      const tightened = warnings.filter((warning) => warning.warning_kind === "sessions_root_permissions_tightened");
       expect(tightened).toHaveLength(1); expect(tightened[0]).toMatchObject({ source: "pi", message: "Owned durable sessions root permissions tightened to 0700; other-user read access removed." });
       expect(JSON.stringify(tightened)).not.toContain(root);
     } finally { await disposeProviderSession("fixture-session").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
@@ -981,15 +981,15 @@ describe("pi-native sessions", () => {
 
   it("warns about tightened root access even when later storage setup fails", async () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "failed-permissions-")); const warnings = [];
-    await fsPromises.chmod(root, 0o755); mkdirSync(join(root, "mono-v2")); await fsPromises.chmod(join(root, "mono-v2"), 0o755);
+    await fsPromises.chmod(root, 0o755); mkdirSync(join(root, "locks")); await fsPromises.chmod(join(root, "locks"), 0o755);
     try {
       const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
-        messages: [{ role: "user", content: "Fictional input." }], sessionKeepAlive: true, sessionId: "failed-permissions", piSessionsRoot: root,
+        messages: [{ role: "user", content: "Fictional input." }], sessionKeepAlive: true, sessionId: "failed-permissions", sessionsRoot: root,
         onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
       }));
       expect(result.error).toBeTruthy(); expect(faux.state.callCount).toBe(0);
       expect((await fsPromises.stat(root)).mode & 0o777).toBe(0o700);
-      const tightened = warnings.filter((warning) => warning.warning_kind === "pi_sessions_root_permissions_tightened");
+      const tightened = warnings.filter((warning) => warning.warning_kind === "sessions_root_permissions_tightened");
       expect(tightened).toHaveLength(1); expect(JSON.stringify(tightened)).not.toContain(root);
     } finally { await disposeProviderSession("failed-permissions").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
   });
@@ -1005,7 +1005,7 @@ describe("pi-native sessions", () => {
     try {
       const failed = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [...(seed ? [{ role: "user", content: "Canonical seed." }, { role: "assistant", content: "Canonical reply." }] : []), { role: "user", content: "Failed first turn." }],
-        sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root, piMaxRetries: 0,
+        sessionKeepAlive: true, sessionId: "fixture-session", sessionsRoot: root, piMaxRetries: 0,
         ...(failure === "throw" ? { resolveCustomPricing: () => { throw new Error("Fictional post-turn throw"); } } : {}),
         ...(failure === "abort" ? { abortSignal: controller.signal, onEvent: (event) => { if (event.type === "capabilities_resolved") controller.abort(); } } : {}),
       }));
@@ -1013,7 +1013,7 @@ describe("pi-native sessions", () => {
       await disposeProviderSession("fixture-session"); /** @type {any} */ let context = undefined;
       faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Successful retry.")]); }]);
       const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
-        messages: [{ role: "user", content: "Next clean turn." }], sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
+        messages: [{ role: "user", content: "Next clean turn." }], sessionKeepAlive: true, sessionId: "fixture-session", sessionsRoot: root,
       }));
       expect(result.error).toBeNull(); expect(transcriptOf(context)).toEqual([...(seed ? ["user:Canonical seed.", "assistant:Canonical reply."] : []), "user:Next clean turn."]);
       expect(readFileSync(source)).toEqual(original); // clean break never archived or changed the open-operation source
@@ -1023,7 +1023,7 @@ describe("pi-native sessions", () => {
   it("does not issue a recovery receipt for an over-512 host run ID", async () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "bounded-recovery-")); faux.setResponses([fauxAssistantMessage([fauxText("Fictional reply.")])]);
     try {
-      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "bounded-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "x".repeat(513), revision: 0 } }));
+      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "bounded-handle", sessionKeepAlive: true, sessionsRoot: root, sessionRecovery: { runId: "x".repeat(513), revision: 0 } }));
       expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeUndefined();
       expect(readFileSync(findJsonlFiles(root)[0], "utf8")).toContain("synthetic:runtime:");
     } finally { await disposeProviderSession("bounded-handle").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
@@ -1031,13 +1031,13 @@ describe("pi-native sessions", () => {
 
   it("refuses duplicate host logical run IDs without dispatching or changing native context", async () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "unique-host-turn-"));
-    const base = runOptions(model, { sessionId: "unique-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "host-run", revision: 0 } });
+    const base = runOptions(model, { sessionId: "unique-handle", sessionKeepAlive: true, sessionsRoot: root, sessionRecovery: { runId: "host-run", revision: 0 } });
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("First reply.")])]);
       expect((await generateEngineTurnResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "First input." }] })).error).toBeNull();
       const dispatch = vi.fn(() => fauxAssistantMessage([fauxText("Must not dispatch.")])); faux.setResponses([dispatch]);
       const duplicate = await generateEngineTurnResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "Duplicate input." }] });
-      expect(duplicate.error).toContain("Invalid mono-agent harness journal"); expect(dispatch).not.toHaveBeenCalled(); expect(duplicate.providerSessionRecovery).toBeUndefined();
+      expect(duplicate.error).toContain("Invalid session journal"); expect(dispatch).not.toHaveBeenCalled(); expect(duplicate.providerSessionRecovery).toBeUndefined();
       /** @type {any} */ let context = undefined; faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Next reply.")]); }]);
       const next = await generateEngineTurnResponse("Fictional verification.", { ...base, sessionRecovery: { runId: "next-host-run", revision: 1 }, messages: [{ role: "user", content: "Next input." }] });
       assertPresent(next);
@@ -1048,7 +1048,7 @@ describe("pi-native sessions", () => {
   it("rejects settlement if durable queued input evidence is still pending", async () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "pending-recovery-")); faux.setResponses([fauxAssistantMessage([fauxText("Fictional reply.")])]);
     try {
-      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "pending-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "pending-run", revision: 0 } }));
+      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "pending-handle", sessionKeepAlive: true, sessionsRoot: root, sessionRecovery: { runId: "pending-run", revision: 0 } }));
       expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeDefined();
       const repo = resolveDurableNativeSessionRepo(root); const raw = await repo.open((await repo.list())[0]);
       await raw.beginTurn("synthetic:pending-input-proof"); await raw.write("input_queued", { inputId: "unplaced", state: "queued", placement: "next" });
@@ -1115,7 +1115,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "new-turn" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
 
       expect(result.error).toBeNull();
@@ -1144,7 +1144,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "rejected-turn" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(first.error).toBeNull();
       expect(countJsonlFiles(root)).toBe(1);
@@ -1160,7 +1160,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "clean-turn" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(second.error).toBeNull();
       expect(transcriptOf(freshContext)).toEqual(["user:clean-turn"]);
@@ -1179,7 +1179,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "durable-turn" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(first.error).toBeNull();
       expect(findJsonlFiles(root)).toHaveLength(1);
@@ -1204,7 +1204,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "durable-turn" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(first.error).toBeNull();
       const [jsonl] = findJsonlFiles(root);
@@ -1218,7 +1218,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "must-not-reopen" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(blocked.failureKind).toBe("session_busy");
       expect(invoked).toBe(false);
@@ -1230,7 +1230,7 @@ describe("pi-native sessions", () => {
     }
   });
 
-  it("does not cold-reopen a Pi JSONL while destructive invalidation is unlinking it", async () => {
+  it("does not cold-reopen a session JSONL while destructive invalidation is unlinking it", async () => {
     const model = setup();
     const sessionId = "host-invalidation-race-id";
     const root = mkdtempSync(join(tmpdir(), "pi-native-invalidation-race-"));
@@ -1246,7 +1246,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "rejected-turn" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(first.error).toBeNull();
       expect(findJsonlFiles(root)).toHaveLength(1);
@@ -1265,7 +1265,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "racing-turn" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(contender.failureKind).toBe("session_busy");
       expect(invoked).toBe(false);
@@ -1293,7 +1293,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "rejected-turn" }],
         sessionKeepAlive: true,
         sessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(first.error).toBeNull();
 
@@ -1331,7 +1331,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(first.error).toBeNull();
       expect(first.text).toBe("reply-1");
@@ -1354,7 +1354,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(second.error).toBeNull();
       expect(second.text).toBe("reply-2");
@@ -1399,7 +1399,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
         abortSignal: flipSignal,
       }));
       expect(aborted.cancelled).toBe(true);
@@ -1412,7 +1412,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       assertPresent(next);
       expect(next.error).toBeNull();
@@ -1425,9 +1425,9 @@ describe("pi-native sessions", () => {
     }
   });
 
-  it("an in-memory resume miss (no piSessionsRoot) still fast-fails with session_not_found — create-on-miss is durable-only (F9)", async () => {
+  it("an in-memory resume miss (no sessionsRoot) still fast-fails with session_not_found — create-on-miss is durable-only (F9)", async () => {
     // Guards the gate: create-on-miss fires ONLY on a durable-repo miss. Without
-    // piSessionsRoot a resume miss must keep the existing per-process
+    // sessionsRoot a resume miss must keep the existing per-process
     // session_not_found contract (no session is silently fabricated in memory).
     const model = setup();
     let invoked = false;
@@ -1449,7 +1449,7 @@ describe("pi-native sessions", () => {
     const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     }));
     expect(first.error).toBeNull();
     const sessionId = first.providerSessionId;
@@ -1472,7 +1472,7 @@ describe("pi-native sessions", () => {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId,
-      piSessionsRoot: sessionsRoot,
+      sessionsRoot: sessionsRoot,
     });
     const runA = generateEngineTurnResponse("system", optionsResume);
     const runB = generateEngineTurnResponse("system", optionsResume);
@@ -1538,7 +1538,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       });
       // Fire BOTH first turns without an intervening await so the create await
       // (the jsonl repo's async create) interleaves them through the window.
@@ -1588,7 +1588,7 @@ describe("pi-native sessions", () => {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: "lone-create-on-miss-id",
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(result.error).toBeNull();
       expect(result.failureKind).toBeNull();
@@ -1604,7 +1604,7 @@ describe("pi-native sessions", () => {
     // Defense in depth: providerSessionId can equal the caller-controlled
     // options.sessionId, and create-on-miss passes it to durableRepo.create({ id }),
     // which JsonlSessionRepo turns into the filename `${createdAt}_${id}.jsonl`. A
-    // traversal id like "../../../../tmp/pwn" would escape piSessionsRoot. The
+    // traversal id like "../../../../tmp/pwn" would escape sessionsRoot. The
     // bridge must NOT create-on-miss for an unsafe id — it falls through to the
     // existing session_not_found fast-fail, so a malicious id never names a file.
     const model = setup();
@@ -1619,7 +1619,7 @@ describe("pi-native sessions", () => {
         // Points outside `root`; if create-on-miss ran, JsonlSessionRepo would
         // write `<createdAt>_<...>/tmp/pwn.jsonl`, escaping the sessions root.
         sessionId: `../../../../${escapeDir.replace(/^\//, "")}/pwn`,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
 
       // Unsafe id → fast-fail, identical to the in-memory resume-miss contract.
@@ -1640,7 +1640,7 @@ describe("pi-native sessions", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-leak-"));
     try {
       // FRESH keep-alive run: no sessionId/providerSessionId, so the bridge creates a new
-      // durable jsonl session (piSessionsRoot set) at the top of the outer try,
+      // durable jsonl session (sessionsRoot set) at the top of the outer try,
       // BEFORE the run. We force a throw into the OUTER catch (F5's patch site)
       // by throwing from onEvent on the first event emitted after session
       // create (`provider_request_started`) — emitCaptured propagates it, and it
@@ -1651,7 +1651,7 @@ describe("pi-native sessions", () => {
       faux.setResponses([fauxAssistantMessage([fauxText("never reached")])]);
       const failed = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
-        piSessionsRoot: root,
+        sessionsRoot: root,
         sessionKeepAlive: true,
         onEvent: (event) => {
           if (event?.type === "provider_request_started") {
@@ -1678,7 +1678,7 @@ describe("pi-native sessions", () => {
       const resume = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionId: leakedSessionId,
-        piSessionsRoot: root,
+        sessionsRoot: root,
       }));
       expect(resume.error).toBeNull();
       expect(resume.text).toBe("reply-2");
@@ -1744,7 +1744,7 @@ describe("pi-native sessions", () => {
         (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("Updated draft.")]); },
       ]);
       const result = await generateEngineTurnResponse("system", runOptions(model, {
-        messages: [{ role: "user", content: "Draft an email" }], piSessionsRoot: root, sessionKeepAlive: true,
+        messages: [{ role: "user", content: "Draft an email" }], sessionsRoot: root, sessionKeepAlive: true,
         prompts: { emptyReplyFinalization: () => "Framework reply nudge" },
       }));
       sessionId = result.providerSessionId;
@@ -1753,7 +1753,7 @@ describe("pi-native sessions", () => {
       expect(persisted).toContain("Framework reply nudge");
       expect(result.events.some((event) => event.type === "user" && JSON.stringify(event).includes("Framework reply nudge"))).toBe(false);
       const resumed = await generateEngineTurnResponse("system", runOptions(model, {
-        messages: [{ role: "user", content: "Revise the draft" }], piSessionsRoot: root, sessionId, sessionKeepAlive: true,
+        messages: [{ role: "user", content: "Revise the draft" }], sessionsRoot: root, sessionId, sessionKeepAlive: true,
       }));
       expect(resumed).toMatchObject({ error: null, text: "Updated draft." });
       expect(transcriptOf(resumedContext)).toContain("user:Framework reply nudge");
@@ -1802,7 +1802,7 @@ describe("stateless Pi attribution ownership", () => {
     const id = `shared-attribution-${storage}`;
     const base = runOptions(model, {
       providerAttributionSessionId: id,
-      ...(storage === "durable" ? { piSessionsRoot: root } : {}),
+      ...(storage === "durable" ? { sessionsRoot: root } : {}),
     });
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("primary answer")])]);
@@ -1887,7 +1887,7 @@ describe("durable primary sessions through the fallback router", () => {
     const { model, attempts, router } = routedFixture();
     const id = "coordinated-router-epoch";
     const options = runOptions(model, {
-      cwd: root, piMaxRetries: 0, piSessionsRoot: sessionsRoot,
+      cwd: root, piMaxRetries: 0, sessionsRoot: sessionsRoot,
       sessionId: id, providerSessionId: id, providerAttributionSessionId: id, sessionKeepAlive: true,
       messages: [{ role: "user", content: "first turn" }],
     });
@@ -2071,7 +2071,7 @@ describe("stable native replay with host envelopes", () => {
         ]);
         const result = await run("stable system", runOptions(model, {
           cwd: root, allowedTools: ["Read"], sessionKeepAlive: true,
-          ...(execution === "fallback-configured" ? { piSessionsRoot: sessionsRoot } : {}),
+          ...(execution === "fallback-configured" ? { sessionsRoot: sessionsRoot } : {}),
           ...(sessionId === undefined ? {} : { sessionId }),
           messages: [
             ...(sessionId === undefined ? [] : [{ role: "assistant", content: "MUST-NOT-RESEED" }]),
@@ -2119,7 +2119,7 @@ it("validates sessionTurn independently before native session/model dispatch", a
   const model = setup(); const root = mkdtempSync(join(tmpdir(), "descriptor-validation-"));
   try {
     const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
-      messages: [{ role: "user", content: "Fictional input." }], sessionId: "owned", sessionKeepAlive: true, piSessionsRoot: root,
+      messages: [{ role: "user", content: "Fictional input." }], sessionId: "owned", sessionKeepAlive: true, sessionsRoot: root,
       sessionTurn: { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "wrong", baseRevision: 0 },
     }));
     expect(result).toMatchObject({ failureKind: "safety_session_turn_contract", retryable: false });
@@ -2133,7 +2133,7 @@ it("uses a protected descriptor without opting into terminal recovery", async ()
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer.")])]);
   try {
     const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
-      messages: [{ role: "user", content: "Fictional input." }], sessionId: "descriptor-handle", sessionKeepAlive: true, piSessionsRoot: root,
+      messages: [{ role: "user", content: "Fictional input." }], sessionId: "descriptor-handle", sessionKeepAlive: true, sessionsRoot: root,
       sessionTurn: { kind: "host", ownerKey: "logical-fictional", historyBucket: "physical-fictional", turnId: "host-turn", handleId: "descriptor-handle", baseRevision: 4 },
     })); expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeUndefined();
     const repo = resolveDurableNativeSessionRepo(root); const session = await repo.open((await repo.list())[0]);
@@ -2153,7 +2153,7 @@ it("classifies native journal fsync failure terminally instead of provider-unava
   });
   try {
     const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }],
-      sessionId: "storage-failed", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "storage-run", revision: 0 } }));
+      sessionId: "storage-failed", sessionKeepAlive: true, sessionsRoot: root, sessionRecovery: { runId: "storage-run", revision: 0 } }));
     expect(result.failureKind).toBe("safety_journal_storage_failed"); expect(result.providerSessionId).toBe("storage-failed"); expect(result.retryable).toBe(false); expect(result.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(0);
   } finally { spy.mockRestore(); await disposeProviderSession("storage-failed").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });
@@ -2168,7 +2168,7 @@ it.each([true, false])("cleans suspended keep-alive liveness and reopens as susp
     return fauxAssistantMessage([fauxText("Fictional next user response.")]);
   }]);
   try {
-    const options = runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], providerAttributionSessionId: "suspended", sessionKeepAlive: true, ...(durable ? { sessionId: "suspended", piSessionsRoot: root } : {}) });
+    const options = runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], providerAttributionSessionId: "suspended", sessionKeepAlive: true, ...(durable ? { sessionId: "suspended", sessionsRoot: root } : {}) });
     const first = await generateEngineTurnResponse("Fictional verification.", options);
     expect(first.failureKind).toBe("safety_native_suspended"); expect(first.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(1);
     const second = await generateEngineTurnResponse("Fictional verification.", { ...options, sessionId: "suspended", messages: [{ role: "user", content: "Fictional next message." }] });
@@ -2193,7 +2193,7 @@ it.each([[false, false], [false, true], [true, false], [true, true]])("rolls a l
   faux.setResponses([(context) => { baseline = structuredClone(context.messages); return fauxAssistantMessage([fauxText("Fictional approved baseline.")]); },
     fauxAssistantMessage([], { stopReason: "deferred", deferred }),
     (context) => { resumed = structuredClone(context.messages); return fauxAssistantMessage([fauxText("Fictional safe next turn.")]); }]);
-  const options = runOptions(model, { providerAttributionSessionId: id, sessionKeepAlive: true, ...(durable ? { sessionId: id, piSessionsRoot: root } : {}) });
+  const options = runOptions(model, { providerAttributionSessionId: id, sessionKeepAlive: true, ...(durable ? { sessionId: id, sessionsRoot: root } : {}) });
   try {
     const first = await generateEngineTurnResponse("Fictional verification.", { ...options, messages: [{ role: "user", content: "Fictional original user." }] }); expect(first.error).toBeNull();
     const suspended = await generateEngineTurnResponse("Fictional verification.", { ...options, sessionId: id, messages: [{ role: "user", content: "Fictional suspended user." }], ...(recovery ? { sessionRecovery: { runId: "suspended-attempt", revision: 1 } } : {}) });
@@ -2220,7 +2220,7 @@ it("classifies a resumed suspension sealing fsync failure terminally rather than
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")]), fauxAssistantMessage([], { stopReason: "deferred", deferred })]);
   let spy;
   try {
-    const options = runOptions(model, { sessionId: id, sessionKeepAlive: true, piSessionsRoot: root, messages: [{ role: "user", content: "Fictional input." }] });
+    const options = runOptions(model, { sessionId: id, sessionKeepAlive: true, sessionsRoot: root, messages: [{ role: "user", content: "Fictional input." }] });
     expect((await generateEngineTurnResponse("Fictional verification.", options)).error).toBeNull();
     spy = vi.spyOn(harnessAdapter, "createHarnessAdapter").mockImplementation(async (session, config) => {
       const raw = session.rawSession; const append = raw.io.append, sync = raw.io.sync; let failedSeal = false;
@@ -2237,7 +2237,7 @@ describe("protected native turn reconciliation", () => {
   function protectedOptions(model, root, suffix = "turn") {
     const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: `protected-${suffix}`, handleId: "protected-handle", baseRevision: 0,
       reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "initial-input" } };
-    const options = runOptions(model, { piSessionsRoot: root, sessionId: descriptor.handleId, sessionKeepAlive: true, sessionTurn: descriptor,
+    const options = runOptions(model, { sessionsRoot: root, sessionId: descriptor.handleId, sessionKeepAlive: true, sessionTurn: descriptor,
       messages: [{ role: "user", content: "Fictional request." }] });
     const request = { sessionsRoot: root, descriptor, purpose: "execution", expectedModel: { provider: model.provider, id: model.id, api: model.api },
       expectedInputs: [{ id: "initial-input", requestDigest: digestTurnInput("Fictional request."), placement: "initial" }] };
@@ -2361,7 +2361,7 @@ it("refuses reconciliation of a legacy recovery-pending handle without evicting 
   const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-recovery-pending-")); const id = "pending-handle";
   try {
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")])]);
-    const common = { piSessionsRoot: root, sessionId: id, sessionKeepAlive: true, messages: [{ role: "user", content: "Fictional request." }] };
+    const common = { sessionsRoot: root, sessionId: id, sessionKeepAlive: true, messages: [{ role: "user", content: "Fictional request." }] };
     await generateEngineTurnResponse("Fictional instructions.", runOptions(model, common));
     faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional provider failure" })]);
     const failed = await generateEngineTurnResponse("Fictional instructions.", runOptions(model, { ...common, sessionResume: true, sessionRecovery: { runId: "legacy-pending", revision: 0 } }));

@@ -881,7 +881,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     const config = resolveJsonMonoAgentConfig({
       cwd: "/repo",
       json: {
-  runtime: {
+  runtime: { session: { root: ".mono-agent/sessions" },
     model: "pi:openai-codex:gpt-5.5"
   },
   context: {
@@ -891,8 +891,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     piNative: {
       transport: "sse",
       piMaxRetries: 4,
-      maxRetryDelayMs: 30000,
-      piSessionsRoot: ".mono-agent/sessions"
+      maxRetryDelayMs: 30000
     }
   }
 },
@@ -902,7 +901,6 @@ describe("resolveJsonMonoAgentConfig", () => {
       transport: "sse",
       piMaxRetries: 4,
       maxRetryDelayMs: 30_000,
-      piSessionsRoot: join("/repo", ".mono-agent", "sessions"),
     });
   });
 
@@ -1811,7 +1809,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     const config = resolveJsonMonoAgentConfig({
       cwd: "/repo",
       json: {
-  runtime: {
+  runtime: { session: { root: ".mono-agent/sessions" },
     model: "pi:openai-codex:gpt-5.5"
   },
   context: {
@@ -1821,8 +1819,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     piNative: {
       transport: "websocket-cached",
       piMaxRetries: 4,
-      maxRetryDelayMs: 30000,
-      piSessionsRoot: ".mono-agent/sessions"
+      maxRetryDelayMs: 30000
     }
   }
 },
@@ -1833,7 +1830,6 @@ describe("resolveJsonMonoAgentConfig", () => {
       transport: "websocket-cached",
       piMaxRetries: 4,
       maxRetryDelayMs: 30_000,
-      piSessionsRoot: join("/repo", ".mono-agent", "sessions"),
     });
   });
 
@@ -1979,7 +1975,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     const config = resolveJsonMonoAgentConfig({
       cwd: "/repo",
       json: {
-  runtime: {
+  runtime: { session: { root: ".mono-agent/pi-sessions" },
     model: "pi:openai-codex:gpt-5.5"
   },
   context: {
@@ -1991,7 +1987,6 @@ describe("resolveJsonMonoAgentConfig", () => {
             transport: "websocket",
             piMaxRetries: 4,
             maxRetryDelayMs: 30_000,
-            piSessionsRoot: ".mono-agent/pi-sessions",
           },
         }
 },
@@ -2003,8 +1998,7 @@ describe("resolveJsonMonoAgentConfig", () => {
         transport: "websocket",
         piMaxRetries: 4,
         maxRetryDelayMs: 30_000,
-        piSessionsRoot: "/repo/.mono-agent/pi-sessions",
-      },
+        },
     });
   });
 

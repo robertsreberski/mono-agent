@@ -71,7 +71,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `native_switch_busy` drains only bounded inactive owners after claim release,
   never automatically replaying the message. Enable only with
   `runtime.session.modelSwitch: { "enabled": true }`,
-  continuous sessions and `providers.piNative.piSessionsRoot`. Both fresh and
+  continuous sessions and `runtime.session.root`. Both fresh and
   existing roots acquire native authority lazily under ownership. Back up host/native stores and stop every older writer
   first. Older binaries refuse native conversations and root scans, but this
   is not a universal old-writer admission barrier: mixed writers are prohibited.
@@ -830,7 +830,7 @@ cold-project tool records but suppress that new tool; `validate` reports
 `unsupported_route` rather than pretending coverage exists. Issue #626 does not
 change `RunHistory`'s pre-existing direct-ACP route wiring.
 
-The canonical data is not run JSONL, Pi JSONL, web SQLite, or message-history
+The canonical data is not run JSONL, session JSONL, web SQLite, or message-history
 JSON. The harness incrementally writes every managed-tool start and terminal
 result to `history/tool-history/tool-lifecycles.sqlite`, independently of
 successful-turn commit. A lifecycle record may therefore exist without a

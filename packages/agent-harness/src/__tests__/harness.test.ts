@@ -247,7 +247,7 @@ describe("AgentHarness", () => {
       runtime: fake.runtime,
       model,
       historyStore: durableWithoutRetirement,
-      piSessionsRoot: join(dir, "pi-sessions"),
+      sessionsRoot: join(dir, "pi-sessions"),
     }).importContext).toBeUndefined();
     expect(createAgentHarness({
       identityPath,
@@ -4469,7 +4469,7 @@ it.each([false, true])("does not admit P2 evidence for an uncertified selected s
   const historyStore = createDurableHistoryStore({ root: join(dir, "history"), retireProviderSession: async () => {}, reconcileProviderSessionTurn: inspect });
   const fake = createFakeRuntime(async () => ({ text: "Fictional custom owner answer." }));
   const uncertified = { ...fake.runtime, reconcileSessionTurn: matcher, async refreshSession() {}, async syncSession() { return true; } };
-  const harness = createAgentHarness({ identityPath, model, cwd: dir, piSessionsRoot: join(dir, "pi"), session: { mode: "continuous", idleTimeoutMs: 60_000 }, historyStore,
+  const harness = createAgentHarness({ identityPath, model, cwd: dir, sessionsRoot: join(dir, "pi"), session: { mode: "continuous", idleTimeoutMs: 60_000 }, historyStore,
     runtime: alternate ? { ...uncertified, sessionTurnReconciliation: "v1" } : uncertified, runtimeForModel: () => uncertified,
     ...(alternate ? { runtimeOptionsForRequest: () => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("openai:fictional-alternate") } }) } : {}) });
   expect(await harness.run({ conversationId: "fictional-owner", userMessage: "Fictional input.", abortSignal: new AbortController().signal,
@@ -4478,4 +4478,9 @@ it.each([false, true])("does not admit P2 evidence for an uncertified selected s
   expect(fake.calls[0]!.options.sessionTurn?.reconciliation).toBeUndefined();
   expect(inspect).not.toHaveBeenCalled(); expect(matcher).not.toHaveBeenCalled();
   expect((await historyStore.load("fictional-owner")).at(-1)?.content).toBe("Fictional custom owner answer."); await harness.dispose?.();
+});
+
+it("rejects the renamed harness root option before construction", () => {
+  expect(() => createAgentHarness({ piSessionsRoot: "/fictional/old", sessionsRoot: "/fictional/new" } as never))
+    .toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
 });

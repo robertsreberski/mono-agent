@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 const roots: string[] = [];
 const managedHandle = (epoch: string, id = bucket) => createHash("sha256").update("mono-agent-provider-session-v2\0").update(id).update("\0").update(epoch).digest("hex");
 const journalOf = (epoch: string, id = bucket) => createHash("sha256").update(`mono-host-journal-v1\0${managedHandle(epoch, id)}`).digest("hex");
-const journalNames = (f: { base: string }) => readdir(join(f.base, "native", "mono-v2", "journals"));
+const journalNames = (f: { base: string }) => readdir(join(f.base, "native", "journals"));
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function setup(id = bucket) {
   const root = await mkdtemp(join(tmpdir(), "mono-native-lifecycle-")); roots.push(root);
@@ -45,7 +45,7 @@ it("resets the entire owner chain and its switch artifacts before dropping membe
   const f = await setup(); await f.store.reset(bucket);
   const after = JSON.parse(await readFile(f.canonicalPath, "utf8"));
   expect(after.version).toBe(3); expect(after.messages).toEqual([]); expect(after.native).toBeUndefined(); expect(after.lastSwitch).toBeUndefined();
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toEqual([]);
+  expect(await readdir(join(f.base, "native", "journals"))).toEqual([]);
   expect(await readdir(join(f.base, "history", ".model-switches"))).toEqual([]);
   expect((await readdir(join(f.base, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
 });
@@ -53,7 +53,7 @@ it("retention deletes a whole inactive v4 victim without violating count quota",
   const f = await setup(), { store } = openStore(f.base, undefined, { maxConversations: 1 });
   await store.append("fictional-next-owner", [{ role: "assistant", content: "Fictional replacement" }]);
   expect((await store.stats()).conversations).toBe(1); expect(await store.load(bucket)).toEqual([]);
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toEqual([]);
+  expect(await readdir(join(f.base, "native", "journals"))).toEqual([]);
   expect(await readdir(join(f.base, "history", ".model-switches"))).toEqual([]);
 });
 it("stale current admission cold-rotates only its own epoch", async () => {
@@ -95,7 +95,7 @@ it("cleans a resurrected completed switch fence after cold rotation without rest
 it("logical reset deletes the v5 journal and leaves another logical owner untouched", async () => {
   const f = await setup(); await f.store.append("fictional-sibling-owner", [{ role: "assistant", content: "Fictional sibling" }]);
   await f.store.resetLogicalConversation(bucket); expect(await f.store.load("fictional-sibling-owner")).toHaveLength(1);
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toEqual([]);
+  expect(await readdir(join(f.base, "native", "journals"))).toEqual([]);
   expect(await readdir(join(f.base, "history"))).toContain(".native-history-root.json");
 });
 it("settles a v5 absent native turn once into a cold epoch without replay", async () => {
@@ -120,7 +120,7 @@ it("never recreates a cold epoch lost behind a published canonical receipt; reco
   const { store } = openStore(f.base, undefined, { onNativeHistoryPhase: async (phase) => { if (phase === "lifecycle_canonical_directory_synced") throw new Error("Interrupted cold cleanup"); } });
   await store.append(bucket, [{ role: "assistant", content: "Fictional committed update" }]);
   const current = JSON.parse(await readFile(f.canonicalPath, "utf8")), name = `${journalOf(current.providerSession.epoch)}.jsonl`;
-  await rm(join(f.base, "native", "mono-v2", "journals", name)); const fresh = openStore(f.base).store;
+  await rm(join(f.base, "native", "journals", name)); const fresh = openStore(f.base).store;
   const lease = await fresh.contextImport!.beginExclusiveTurn(bucket); await lease.abort();
   expect(await journalNames(f)).toEqual([]);
   expect((await readdir(join(f.base, "history"))).some((entry) => entry.startsWith(".native-history-op."))).toBe(false);
@@ -168,7 +168,7 @@ it("protects a busy v5 native victim at reservation instead of allowing unbounde
     expect(await readFile(f.canonicalPath)).toEqual(Buffer.from(JSON.stringify(f.before) + "\n"));
   } finally { await writer.close(); await repo.close(); }
   await store.append("fictional-quota-winner", [{ role: "assistant", content: "Fictional replacement" }]);
-  expect((await store.stats()).conversations).toBe(1); expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toEqual([]);
+  expect((await store.stats()).conversations).toBe(1); expect(await readdir(join(f.base, "native", "journals"))).toEqual([]);
 });
 const worker = fileURLToPath(new URL("./fixtures/managed-native-lifecycle-worker.mjs", import.meta.url));
 it.skipIf(process.platform === "win32").each([
@@ -255,7 +255,7 @@ it("payload read remains absent after fence removal and after its old target is 
   await f.store.append(bucket, [{ role: "assistant", content: "Cold replacement after completed receipt" }]);
   expect(await payloads.read(bucket, f.state.identity.switchId)).toBeUndefined();
   const oldTarget = journalOf(f.before.providerSession.epoch);
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).not.toContain(`${oldTarget}.jsonl`);
+  expect(await readdir(join(f.base, "native", "journals"))).not.toContain(`${oldTarget}.jsonl`);
 });
 
 
@@ -276,7 +276,7 @@ it("rolls over at the count limit by deleting an older v5 day under its held log
   const { store } = openStore(f.base, undefined, { maxConversations: 1, retireProviderSession: async () => {} });
   await store.append(newer, [{ role: "assistant", content: "Next fictional day" }]);
   expect(await store.load(newer)).toHaveLength(1); await expect(readFile(f.canonicalPath)).rejects.toMatchObject({ code: "ENOENT" });
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(0);
+  expect(await readdir(join(f.base, "native", "journals"))).toHaveLength(0);
   expect((await store.stats()).conversations).toBe(1); expect((await store.stats()).postCommitMaintenanceFailures).toBe(0);
 });
 it("preserves mixed-root LRU order instead of preferring legacy victims", async () => {
@@ -332,7 +332,7 @@ it.each(["switch_canonical_directory_synced", "switch_source_retired"])("ordinar
   expect((await recovering.load(bucket)).at(-1)?.content).toBe("Cold update after roll-forward");
   expect((await readdir(join(root, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
   expect((await readdir(join(root, "history", ".model-switches"))).filter((name) => name.endsWith(".fence.json"))).toEqual([]);
-  expect(await readdir(join(root, "native", "mono-v2", "journals"))).toHaveLength(1);
+  expect(await readdir(join(root, "native", "journals"))).toHaveLength(1);
 });
 it("does not probe sibling exact claims or native deletion while within limits", async () => {
   const f = await setup(`${bucket}#2000-01-01`), { store, native } = openStore(f.base, undefined, { maxConversations: 3 });
@@ -379,7 +379,7 @@ it("keeps a ready artifact without native reference fenced during ordinary admis
   const f = await fixture(root); await ready(f); const canonical = await readFile(f.canonicalPath), native = await readFile(f.nativePath);
   await expect(f.store.append(bucket, [{ role: "assistant", content: "Do not initiate configured switching" }])).rejects.toThrow("pending");
   expect(await readFile(f.canonicalPath)).toEqual(canonical); expect(await readFile(f.nativePath)).toEqual(native);
-  expect(await readdir(join(root, "native", "mono-v2", "journals"))).toHaveLength(1);
+  expect(await readdir(join(root, "native", "journals"))).toHaveLength(1);
 });
 
 
@@ -470,7 +470,7 @@ it("keeps a fresh failed D for recovery and prunes the next free victim in the s
 });
 
 it("manual/stale-map P disposal preserves the guarded current journal under the current host claim", async () => {
-  const f = await setup(), current = managedHandle(f.before.providerSession.epoch), path = join(f.base, "native", "mono-v2", "journals", `${journalOf(f.before.providerSession.epoch)}.jsonl`);
+  const f = await setup(), current = managedHandle(f.before.providerSession.epoch), path = join(f.base, "native", "journals", `${journalOf(f.before.providerSession.epoch)}.jsonl`);
   const bytes = await readFile(path);
   const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-manual-owner", { modelKey: "faux:B" });
   const { createMonoRuntime } = await import("@mono-agent/runtime-adapter");
@@ -479,7 +479,7 @@ it("manual/stale-map P disposal preserves the guarded current journal under the 
   try {
     // Host disposition, not a stale model label, prevents destructive runtime callbacks.
     await retireRunResultSession({ model: { provider: "faux", model: "A", reference: "faux:A" }, runtime,
-      identityPath: "/unused", piSessionsRoot: join(f.base, "native") }, () => runtime, undefined, true, bucket, undefined, "preserve",
+      identityPath: "/unused", sessionsRoot: join(f.base, "native") }, () => runtime, undefined, true, bucket, undefined, "preserve",
       { providerSessionId: current, modelKey: "faux:A" });
     expect(invalidation).not.toHaveBeenCalled(); expect(retirement).not.toHaveBeenCalled();
     expect(await readFile(path)).toEqual(bytes);
@@ -517,7 +517,7 @@ it.each(["intent", "lock", "marker", "fence", "temporary"])("preserves native in
 });
 
 it.each(["insecure", "malformed"])("explicit reset refuses a %s native journal without moving canonical, billing or journal bytes", async (damage) => {
-  const f = await setup(), name = `${journalOf(f.before.providerSession.epoch)}.jsonl`, path = join(f.base, "native", "mono-v2", "journals", name);
+  const f = await setup(), name = `${journalOf(f.before.providerSession.epoch)}.jsonl`, path = join(f.base, "native", "journals", name);
   if (damage === "insecure") await chmod(path, 0o644); else await writeFile(path, "{fictional-damaged-journal}\n");
   const canonical = await readFile(f.canonicalPath), journal = await readFile(path), billing = await readdir(join(f.base, "history", ".model-switches"));
   await expect(f.store.reset(bucket)).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(name) });
@@ -528,7 +528,7 @@ it.each(["insecure", "malformed"])("explicit reset refuses a %s native journal w
 });
 
 it("combined canonical and native damage refuses reset even when inventory cannot enroll the journal", async () => {
-  const f = await setup(), name = `${journalOf(f.before.providerSession.epoch)}.jsonl`, path = join(f.base, "native", "mono-v2", "journals", name);
+  const f = await setup(), name = `${journalOf(f.before.providerSession.epoch)}.jsonl`, path = join(f.base, "native", "journals", name);
   await chmod(path, 0o644); await writeFile(f.canonicalPath, "{fictional-damaged-canonical}\n");
   const canonical = await readFile(f.canonicalPath), journal = await readFile(path), names = await readdir(join(f.base, "history"));
   await expect(f.store.reset(bucket)).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(basename(f.canonicalPath)) });

@@ -12,12 +12,12 @@ afterEach(async () => { await nativeSessionRegistry.disposeAll(); for (const roo
 
 it("returns storage-only unavailable and persistence outcomes", async () => {
   expect(await resolveSession({}, { requestedSessionId: "missing", providerSessionId: "missing" })).toEqual({
-    status: "unavailable", unavailable: { failureKind: "session_not_found", code: "pi_session_not_found", sessionId: "missing", message: "Pi session missing is not live" },
+    status: "unavailable", unavailable: { failureKind: "session_not_found", code: "pi_session_not_found", sessionId: "missing", message: "session missing is not live" },
   });
   const entry = { busy: true };
   nativeSessionRegistry.set("busy", entry);
   expect(await resolveSession({}, { requestedSessionId: "busy", providerSessionId: "busy" })).toEqual({
-    status: "unavailable", unavailable: { failureKind: "session_busy", code: "pi_session_busy", sessionId: "busy", message: "Pi session busy is busy with another turn" },
+    status: "unavailable", unavailable: { failureKind: "session_busy", code: "pi_session_busy", sessionId: "busy", message: "session busy is busy with another turn" },
   });
   nativeSessionRegistry.delete("busy");
   const session = { buildContext: async () => { throw Object.assign(new Error("Fictional persistence failure"), { code: "ENOSPC" }); }, close: vi.fn() };

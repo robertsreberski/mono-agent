@@ -55,7 +55,7 @@ it.each(["detached", "foreground", "registry", "read", "write", "parse"])("G11: 
     faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentManage", request)]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("No continuation was started.")]); }]);
     const result = await generateEngineTurnResponse("Use AgentManage once, do not retry refusal.", { model, cwd: f.root,
-      sessionId: "privacy-parent", sessionKeepAlive: true, piSessionsRoot: resolve(f.root, "parent-sessions"),
+      sessionId: "privacy-parent", sessionKeepAlive: true, sessionsRoot: resolve(f.root, "parent-sessions"),
       messages: [{ role: "user", content: "Attempt the explicit acknowledgement once." }], allowedTools: ["Agent", "AgentManage"], subagents,
       piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     expect(result.error).toBeFalsy(); expect(input).toBeDefined();
@@ -94,7 +94,7 @@ it("G11: abandoned foreground lock I/O failure is path-free at the real Pi Agent
     faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentManage", { id: spec.id, inspect: true })]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("Unavailable.")]); }]);
     const result = await generateEngineTurnResponse("Inspect once.", { model, cwd: f.root, sessionId: "abandoned-privacy", sessionKeepAlive: true,
-      piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Inspect." }], allowedTools: ["Agent", "AgentManage"],
+      sessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Inspect." }], allowedTools: ["Agent", "AgentManage"],
       subagents: { instances: f.handle, run, backgroundSubagentController: { startInternal } }, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     expect(result.error).toBeFalsy(); expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key);
     expect(JSON.stringify(input)).toContain("subagent_owner_unavailable"); expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ it("G11: required session retirement failure is path-free at the real Pi Agent b
     faux.setResponses([fauxAssistantMessage([fauxToolCall("Agent", { name: "helper", persist: true, id: spec.id, prompt: "Continue once." })]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("Unavailable.")]); }]);
     const result = await generateEngineTurnResponse("Create once.", { model, cwd: f.root, sessionId: "retirement-privacy", sessionKeepAlive: true,
-      piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Create." }], allowedTools: ["Agent", "AgentManage"],
+      sessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Create." }], allowedTools: ["Agent", "AgentManage"],
       subagents: { instances: f.handle, definitions: [spec.definition], run }, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     expect(result.error).toBeFalsy(); expect(JSON.stringify(input)).toContain("subagent_owner_unavailable");
     expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key); expect(run).not.toHaveBeenCalled();

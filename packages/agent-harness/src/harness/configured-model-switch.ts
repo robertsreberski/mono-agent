@@ -54,7 +54,7 @@ export async function prepareConfiguredModelSwitch(input: {
   const supportedRuntime = checkInheritedPrefix
     && runtime.prepareNativeDispatch && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn;
   if (!supportedRuntime) return undefined;
-  if (resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "The configured native root is required.");
+  if (resolve(policy.sessionsRoot) !== resolve(host.durableSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "The configured native root is required.");
   const owner: ManagedProviderSessionPreparation = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId, host.request.abortSignal);
   let assertOwned = () => owner.assertOwned();
   let incoming: Awaited<ReturnType<typeof prepareHarnessRuntime>> | undefined;
@@ -123,7 +123,7 @@ export async function prepareConfiguredModelSwitch(input: {
             const outgoingRuntime = host.routing.runtimeForSession(from);
             if (!outgoingRuntime.prepareNativeDispatch) return undefined;
             const outgoingOptions: RuntimeRunOptions = { ...options.runtimeOptions, model: parseMonoRuntimeModelReference(from), messages: [],
-              abortSignal: host.request.abortSignal, allowedTools: [], disallowedTools: [], mcpServers: {}, skills: [], piSessionsRoot: host.durablePiSessionsRoot };
+              abortSignal: host.request.abortSignal, allowedTools: [], disallowedTools: [], mcpServers: {}, skills: [], sessionsRoot: host.durableSessionsRoot };
             for (const key of ["outputSchema", "piResolvedModel", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "liveInput", "detachedContext"]) delete (outgoingOptions as Record<string, unknown>)[key];
             const lease = await outgoingRuntime.prepareNativeDispatch("Produce only the requested structured conversation handoff.", outgoingOptions);
             if (!lease.checkHandoffSummary || !lease.produceHandoffSummary) { await lease.close(); return undefined; }
@@ -209,7 +209,7 @@ export async function prepareConfiguredModelSwitch(input: {
     return { context: prepared.context, protectedHandles,
       run: async (binding, notify) => {
         const refresh = async (turn: Awaited<ReturnType<typeof owner.admit>>) => { if (!runtime.refreshSession) throw new Error("Strict native refresh unavailable"); await runtime.refreshSession(turn.providerSessionId); };
-        if (ready) return warned(await runPreparedModelSwitch({ preparation: owner, incoming: prepared, ready, binding, sessionsRoot: host.durablePiSessionsRoot,
+        if (ready) return warned(await runPreparedModelSwitch({ preparation: owner, incoming: prepared, ready, binding, sessionsRoot: host.durableSessionsRoot,
           switching: switched, onAdmitted: (turn) => onTurn(turn, notify), beforeDispatch: refresh }));
         return warned(await prepared.run(async () => {
           const turn = await owner.admit(binding, recoversMissing ? { missingCurrentEpoch: missingEpoch! } : undefined); onTurn(turn, notify);
@@ -218,8 +218,8 @@ export async function prepareConfiguredModelSwitch(input: {
           const id = turn.providerSessionId;
           return { reconciliation: turn.reconciliation, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
             sessionId: id, providerSessionId: id, providerAttributionSessionId: id, sessionKeepAlive: true, sessionTurn: turn.reconciliation.descriptor,
-            ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durablePiSessionsRoot, hostAuthority: turn.native.authority,
-              assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
+            ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durableSessionsRoot, hostAuthority: turn.native.authority,
+              assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durableSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
         }));
       }, close: async () => { try { await prepared.close(); } finally { await owner.abort(); } } };
   } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError(error.damaged ? "native_switch_damaged" : "native_switch_busy", error.message, { retryable: error.retryable }); throw error; }

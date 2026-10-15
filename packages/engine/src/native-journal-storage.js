@@ -35,7 +35,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   if (typeof sessionsRoot !== "string" || !isAbsolute(sessionsRoot.trim())) throw new TypeError("Managed native root must be absolute");
   const root = normalizeDurableSessionsRoot(sessionsRoot), repo = resolveDurableNativeSessionRepo(root);
   const phase = async (name) => { await onPhase(name); };
-  const path = (id) => { if (!/^[A-Za-z0-9_-]+$/.test(id)) fail(); return join(root, "mono-v2", "journals", `${id}.jsonl`); };
+  const path = (id) => { if (!/^[A-Za-z0-9_-]+$/.test(id)) fail(); return join(root, "journals", `${id}.jsonl`); };
   /** Streaming digest of one exact journal; no record is retained.
    * @param {any} coordinate */
   const snapshot = async (coordinate) => {
@@ -306,7 +306,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       if (unreadableOwners && (!hex64(unreadableOwners.rootId)
         || !Array.isArray(unreadableOwners.conversationKeys) || unreadableOwners.conversationKeys.some((key) => !hex64(key)))) fail();
       const unknownKeys = new Set(unreadableOwners?.conversationKeys);
-      const directory = join(root, "mono-v2", "journals");
+      const directory = join(root, "journals");
       try { await lstat(directory); } catch (error) { if (missing(error)) { if (repo.directoryIdentity) fail(); return { bytes: 0, stagedBytes: 0, journals: {} }; } throw error; }
       const locks = await repo.ensureDirectory(); return locks.withCatalog(async () => { let bytes = 0, stagedBytes = 0;
       /** @type {Record<string,{retainedBytes:number,stagedBytes:number,damaged?:true}>} */ const journals = Object.create(null);

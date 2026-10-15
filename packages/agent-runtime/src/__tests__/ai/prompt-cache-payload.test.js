@@ -1,4 +1,4 @@
-// Cross-boundary proof: real host assembly -> native Pi session -> real OpenAI
+// Cross-boundary proof: real host assembly -> native session -> real OpenAI
 // request builder. fetch is fully replaced; no network/authentication is used.
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';

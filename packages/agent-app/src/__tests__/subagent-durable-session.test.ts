@@ -197,7 +197,7 @@ describe("app persistent subagent durable sessions", () => {
       expect(second.details.subagent.status).toBe("ok");
       expect(second.details.subagent.instance.turns).toBe(2);
       expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
-      expect(calls[1]?.piSessionsRoot).toBe(record.sessionsRoot);
+      expect(calls[1]?.sessionsRoot).toBe(record.sessionsRoot);
       expect(calls[1]?.sessionKeepAlive).toBe(true);
       expect(calls[1]?.providerAttributionSessionId).toBeUndefined();
       const users = context!.messages.filter((message) => message.role === "user");
@@ -271,7 +271,7 @@ describe("app persistent subagent durable sessions", () => {
       expect((await handle.get("critic"))?.status).toBe("idle");
       expect(second.details.subagent.instance.turns).toBe(2);
       expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
-      expect(calls[1]?.piSessionsRoot).toBe(record.sessionsRoot);
+      expect(calls[1]?.sessionsRoot).toBe(record.sessionsRoot);
       expect(calls[1]?.sessionKeepAlive).toBe(true);
       expect(calls[1]?.providerAttributionSessionId).toBeUndefined();
       const users = context!.messages.filter((message) => message.role === "user");

@@ -331,7 +331,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // attempt may have appended to; backup routes never inherit that session.
           if (!sessionEligibleAttempt) {
             // A stateless attempt must not present itself as the primary's
-            // session (Pi session id, OpenCode x-opencode-session header).
+            // session (session id, OpenCode x-opencode-session header).
             callOptions.providerAttributionSessionId = randomUUID();
           }
           if (i === 0 && retryIndex === 0 && !sessionEligibleAttempt) markPendingDetach(entry.model, i, retryIndex,
@@ -592,6 +592,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
      * @returns {Promise<RuntimeResult>}
      */
     async run(systemPrompt, options = {}) {
+      if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
       if (options.manualCompaction === true) {
         // A provider session belongs to exactly one route. Never retry/fail over
         // a mutating manual operation against a different model or session.
@@ -630,6 +631,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
     // Preparation is a primary-only single attempt, never a routed retry or
     // backup. A custom resolver must explicitly certify native ownership.
     async prepareNativeDispatch(systemPrompt, options) {
+      if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
       const primary = entries[0];
       if (resolveAttempt !== undefined && sessionTurnReconciliation !== "v1"
         || !primary || modelKey(options.model) !== modelKey(primary.model)
@@ -920,7 +922,7 @@ function mergeAttemptOptions(base, resolved) {
   const merged = withoutAttemptScopedOptions(base);
   if (resolved === undefined) return merged;
   for (const [key, value] of Object.entries(resolved)) {
-    if (RESOLVER_PROTECTED_OPTION_KEYS.has(key) || key === "piSessionsRoot" && base.nativeSessionAuthority !== undefined) {
+    if (RESOLVER_PROTECTED_OPTION_KEYS.has(key) || key === "sessionsRoot" && base.nativeSessionAuthority !== undefined) {
       throw new ResolverProtectedOptionError(key);
     }
     if (value !== undefined) merged[key] = value;

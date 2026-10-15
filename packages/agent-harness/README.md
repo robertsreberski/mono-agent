@@ -678,7 +678,7 @@ name is deletion authority. SIGKILL tests cover intent publication, summary
 start/returned-before-cache, artifact publication and ready-fence replacement,
 with two fresh-process recoveries per interruption.
 
-With continuous sessions, `piSessionsRoot`, and a fail-closed durable history
+With continuous sessions, `sessionsRoot`, and a fail-closed durable history
 store, the harness and responder also expose `compactConversation()`: a
 promptless provider-history transaction that compacts the exact idle
 conversation through the runtime's guarded Pi driver. It acquires the provider
@@ -1204,7 +1204,7 @@ It does not poll chats, serve UI, parse host settings files, own provider creden
 - [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
   explains when to use the harness instead of `agent-app`.
 - [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
-  documents queue-after-turn, admission, execution bounds, and durable Pi sessions.
+  documents queue-after-turn, admission, execution bounds, and durable sessions.
 - [Tool policy](https://docs.mono-agent.dev/tools/policy/) covers the fail-closed tool
   boundary passed into this package.
 - [`@mono-agent/runtime-adapter`](https://github.com/robertsreberski/mono-agent/tree/main/packages/runtime-adapter)

@@ -219,6 +219,12 @@ async function inspectSessionsRoot(
 ): Promise<PurgeSessionsResult> {
   if (root === undefined) return { removed: false, files: 0 };
   if (root.target === undefined) return { root: root.path, removed: false, files: 0 };
+  const oldPath = join(root.path, "mono-v2");
+  const oldLayout = await lstat(oldPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (oldLayout) throw new Error(`Sessions root contains ${oldPath}, written by a pre-release build; restore a backup or remove it after checking nothing in it is needed. No automatic migration is supported.`);
   return { root: root.path, removed: true, files: await countSessionFiles(root.path) };
 }
 

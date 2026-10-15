@@ -1,3 +1,4 @@
+import { assertSupportedSessionsRoot } from "./sessions-root.js";
 // Read-only, best-effort evidence from Pi v4 JSONL. Never open through the Pi repo:
 // its cold-open path repairs torn transactions by rewriting the source file.
 import { SessionStore } from "./session-store.js";
@@ -12,18 +13,19 @@ const MAX_FILE = 32 * 1024 * 1024;
 const MAX_LINE = 2 * 1024 * 1024;
 const safeId = /^[A-Za-z0-9_-]+$/u;
 const valid = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-const fail = () => { throw new Error("Durable Pi salvage unavailable"); };
+const fail = () => { throw new Error("Session salvage unavailable"); };
 
 /** @returns {Promise<{completed: {name:string, result:string}[], outcomeUnknown: {name:string}[], omittedCompleted:number, omittedUnknown:number, draftText?:string, additionalOutcomesUnknown:boolean}>} */
 export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   if (typeof sessionId !== "string" || !safeId.test(sessionId) || typeof sessionsRoot !== "string" || !sessionsRoot) fail();
   const root = resolve(sessionsRoot);
+  assertSupportedSessionsRoot(root);
   if (!(await lstat(root)).isDirectory()) fail();
   const canonicalRoot = await realpath(root);
   const suffix = `_${encodeURIComponent(sessionId)}.jsonl`;
   const matches = [];
   for (const dir of await readdir(root, { withFileTypes: true })) {
-    if (!dir.isDirectory()) continue;
+    if (!dir.isDirectory() || ["journals", "locks", "aliases"].includes(dir.name)) continue;
     const parent = join(root, dir.name);
     for (const file of await readdir(parent, { withFileTypes: true })) {
       if (!file.name.endsWith(suffix)) continue;
@@ -33,7 +35,7 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   }
   const owned = [];
   let skippedJournal = false;
-  const journals = join(root, "mono-v2", "journals");
+  const journals = join(root, "journals");
   let journalFiles = [];
   try { journalFiles = await readdir(journals, { withFileTypes: true }); }
   catch (error) { if (error.code !== "ENOENT") throw error; }

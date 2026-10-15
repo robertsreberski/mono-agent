@@ -74,7 +74,7 @@ describe("harness model owner lifecycle", () => {
     const { refreshSession: _refresh, ...withoutRefresh } = owner;
     const options: AgentHarnessOptions = { identityPath, runtime: base, model,
       runtimeForModel: () => mode === "missing" ? withoutRefresh : owner,
-      historyStore, piSessionsRoot: join(dir, "pi"), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 },
+      historyStore, sessionsRoot: join(dir, "pi"), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 },
       runtimeOptionsForRequest: () => ({ runtimeOptions: { model: alternate } }) };
     const harness = createAgentHarness(options);
     const response = await harness.run(request());
@@ -115,13 +115,13 @@ describe("harness model owner lifecycle", () => {
       providerSessionRetirement: "fail-closed", ...(ack === undefined ? {} : { readProviderSessionBinding: real.readProviderSessionBinding.bind(real) }),
       beginProviderSessionTurn: begin };
     const harness = createAgentHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
-      historyStore, piSessionsRoot: join(dir, "pi"), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 },
+      historyStore, sessionsRoot: join(dir, "pi"), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 },
       runtimeOptionsForRequest: () => ({ runtimeOptions: { model: alternate } }) });
     const response = await harness.run(request());
     if (ack === undefined) {
       expect(response.text).toBe("answer");
       expect(begin).not.toHaveBeenCalled();
-      expect(owner.run.mock.calls[0]?.[1].piSessionsRoot).toBeUndefined();
+      expect(owner.run.mock.calls[0]?.[1].sessionsRoot).toBeUndefined();
       expect((await harness.run(request())).text).toBe("answer");
       expect(owner.run.mock.calls[1]?.[1].sessionId).toBe("override-id");
     } else {

@@ -319,10 +319,10 @@ function resolveSnapshotRoots(
   // as the live resolvers: stale MONO_AGENT_PI_SESSIONS_ROOT and
   // MONO_AGENT_ARTIFACT_DIR values in the environment are silently ignored so
   // `restart --clear-sessions` purges exactly what the runtime uses.
-  const providers = optionalObject(json.providers, "providers");
-  const piNative = optionalObject(providers?.piNative, "providers.piNative");
+  const runtime = optionalObject(json.runtime, "runtime");
+  const session = optionalObject(runtime?.session, "runtime.session");
   const artifacts = optionalObject(json.artifacts, "artifacts");
-  const configuredSessions = optionalPath(piNative?.piSessionsRoot, "providers.piNative.piSessionsRoot");
+  const configuredSessions = optionalPath(session?.root, "runtime.session.root");
   const configuredArtifacts = optionalPath(artifacts?.dir, "artifacts.dir");
   return [
     configuredSessions === undefined ? undefined : resolve(input.cwd, configuredSessions),

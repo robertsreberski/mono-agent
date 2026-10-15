@@ -7,15 +7,15 @@ import { createConfiguredAgentHarness, createConfiguredAgentRuntime } from "@mon
 import { createDurableHistoryStore } from "@mono-agent/agent-harness";
 import { createMonoRuntime, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 const root = process.argv[2], bucket = "fictional-reconcile-bucket";
-const historyRoot = join(root, ".mono-agent", "history"), piSessionsRoot = join(root, "pi");
+const historyRoot = join(root, ".mono-agent", "history"), sessionsRoot = join(root, "pi");
 const historyKey = createHash("sha256").update("mono-agent-history-v1\0").update(bucket).digest("hex");
 const faux = fauxProvider({ provider: "faux", models: [{ id: "reconcile-fixture", reasoning: true, contextWindow: 100_000, maxTokens: 8_000 }], tokensPerSecond: process.env.MONO_AGENT_FIXTURE_CRASH_PHASE === "mid-stream" ? 100 : undefined });
 const models = createModels(); models.setProvider(faux.provider);
 const config = {
   runtime: { model: { provider: "faux", model: "reconcile-fixture", reference: "faux:reconcile-fixture" }, workspace: root,
-    session: { mode: "continuous", idleTimeoutMs: 60000 }, compaction: { enabled: false }, maxTurns: 4,
+    session: { root: sessionsRoot, mode: "continuous", idleTimeoutMs: 60000 }, compaction: { enabled: false }, maxTurns: 4,
     retry: { primaryAttempts: 1, backoffMs: 1000, maxBackoffMs: 15000 } },
-  providers: { piNative: { piSessionsRoot } }, context: { identityPath: join(root, "IDENTITY.md"), selectedSkills: [] },
+  providers: { piNative: {} }, context: { identityPath: join(root, "IDENTITY.md"), selectedSkills: [] },
   tools: { allowedTools: ["Bash"], disallowedTools: [] }, artifacts: { dir: join(root, ".mono-agent", "artifacts") },
 };
 const sandboxEngine = { id: "host-turn-smoke-fixture", async isAvailable() { return true; },
@@ -39,9 +39,9 @@ process.once("message", async ({ mode, crash }) => {
       const store = createDurableHistoryStore({ root: historyRoot,
         reconcileProviderSessionTurn: async (request) => {
           nativeInspections += 1; const selected = parseMonoRuntimeModelReference(request.modelKey);
-          return runtime.reconcileSessionTurn({ sessionsRoot: piSessionsRoot, descriptor: request.descriptor, purpose: request.purpose,
+          return runtime.reconcileSessionTurn({ sessionsRoot: sessionsRoot, descriptor: request.descriptor, purpose: request.purpose,
             expectedInputs: request.expectedInputs, expectedModel: { provider: selected.provider, id: selected.model } });
-        }, retireProviderSession: async (id) => { await runtime.retireDurableSession(id, piSessionsRoot); } });
+        }, retireProviderSession: async (id) => { await runtime.retireDurableSession(id, sessionsRoot); } });
       const recovery = await store.recoverProviderSessionTurn(bucket);
       await runtime.disposeAllSessions(); runtime = undefined;
       process.send({ recovery, record: await readRecord(), counter: await counter(), providerCalls: faux.state.callCount,
@@ -132,7 +132,7 @@ process.once("message", async ({ mode, crash }) => {
       } }) });
     if (result.failure && !(crash === "host-cancelled" && result.failure.kind === "cancelled")) throw new Error(JSON.stringify(result.failure));
     if (mode === "produce" && crash === "native-deleted") {
-      for (const name of await readdir(piSessionsRoot, { recursive: true })) if (name.endsWith(".jsonl")) await rm(join(piSessionsRoot, name));
+      for (const name of await readdir(sessionsRoot, { recursive: true })) if (name.endsWith(".jsonl")) await rm(join(sessionsRoot, name));
       faux.setResponses([fauxAssistantMessage([fauxText("Fictional explicit reseeded reply.")])]);
       const cold = await harness.run({ conversationId: bucket, userMessage: "Fictional explicit next request.", abortSignal: new AbortController().signal });
       if (cold.failure) throw new Error(JSON.stringify(cold.failure));

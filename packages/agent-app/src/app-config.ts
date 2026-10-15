@@ -93,8 +93,8 @@ export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Pro
 }
 
 /**
- * Resolve the durable pi-session store the runtime resumes from, the same way the
- * runtime does: from `providers.piNative.piSessionsRoot` in the config file. Returns undefined when
+ * Resolve the durable session store the runtime resumes from, the same way the
+ * runtime does: from `runtime.session.root` in the config file. Returns undefined when
  * neither is set — that means sessions are kept in-memory only, so there is nothing
  * on disk to purge. Tolerates an unreadable config like the resolvers above.
  */
@@ -102,8 +102,8 @@ export async function resolveAppSessionsRoot(input: MonoAgentAppConfigInput): Pr
   try {
     const { json } = await readMonoAgentConfigJson(input.configPath);
     const configDir =
-      typeof json.providers?.piNative?.piSessionsRoot === "string"
-        ? json.providers.piNative.piSessionsRoot.trim()
+      typeof json.runtime?.session?.root === "string"
+        ? json.runtime.session.root.trim()
         : "";
     if (configDir.length > 0) {
       return resolve(input.cwd, configDir);

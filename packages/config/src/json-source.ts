@@ -92,7 +92,6 @@ type MonoAgentPiNativeProviderJson = {
   readonly cacheRetention?: "short" | "long";
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
-  readonly piSessionsRoot?: string;
 };
 
 export type MonoAgentProvidersJson = {
@@ -148,6 +147,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     };
     readonly workspace?: string;
     readonly session?: {
+      readonly root?: string;
       readonly mode?: string;
       readonly idleTimeoutMs?: number;
       readonly rollover?: string;

@@ -233,7 +233,7 @@ describe("configured subagents", () => {
     expect(await run(request)).toMatchObject({ failureKind: "session_continuity_lost", error: expect.stringContaining("not retained") });
     runtime.run.mockResolvedValueOnce({ text: "retained", events: [], providerSessionId: "sub-example" } as never);
     expect(await run(request)).toMatchObject({ text: "retained", providerSessionId: "sub-example" });
-    expect(runtime.run.mock.calls[1]![1]).toMatchObject({ sessionKeepAlive: true, sessionId: "sub-example", piSessionsRoot: "/sessions", sessionIdleTimeoutMs: 86_400_000 });
+    expect(runtime.run.mock.calls[1]![1]).toMatchObject({ sessionKeepAlive: true, sessionId: "sub-example", sessionsRoot: "/sessions", sessionIdleTimeoutMs: 86_400_000 });
   });
 
   it("projects named and shorthand model choices", async () => {

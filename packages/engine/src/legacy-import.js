@@ -1,3 +1,4 @@
+import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import { managedJournalId } from "./managed-journal.js";
 // One-way idle MAIN branch import only. Never schedule or replay old operations.
 import { lstat, readdir, rename } from "node:fs/promises";
@@ -10,7 +11,7 @@ import { syncDir } from "./owned-fs-impl.js";
 
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 /** @returns {never} */
-const fail = () => { throw new Error("Invalid legacy Pi session"); };
+const fail = () => { throw new Error("Invalid legacy session"); };
 /** Valid legacy sources plus damaged legacy-named entries (unreadable,
  * malformed or of unknown format). Damage is never imported, archived or
  * deleted. Pi names sources `<time>_<id>.jsonl`, which attributes damage to that
@@ -18,12 +19,13 @@ const fail = () => { throw new Error("Invalid legacy Pi session"); };
  * @param {string} root @param {{includeArchives?:boolean, id?:string}} [options]
  * @returns {Promise<{sessions:any[], unattributed:{name:string, id?:string}[]}>} */
 export async function listLegacySessions(root, { includeArchives = false, id: requestedId } = {}) {
+  assertSupportedSessionsRoot(root);
   const sessions = [], unattributed = [];
   let dirs;
   try { dirs = await readdir(root, { withFileTypes: true }); }
   catch (error) { if (error.code === "ENOENT") return { sessions, unattributed }; throw error; }
   for (const dir of dirs) {
-    if (!dir.isDirectory() || dir.name === "mono-v2") continue;
+    if (!dir.isDirectory() || ["journals", "locks", "aliases"].includes(dir.name)) continue;
     let files;
     try { files = await readdir(join(root, dir.name), { withFileTypes: true }); }
     catch { unattributed.push({ name: dir.name }); continue; }

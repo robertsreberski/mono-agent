@@ -663,12 +663,6 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
     delete config.artifacts;
     delete config.traceability;
     delete config.observability;
-    const providers = config.providers as Record<string, unknown> | undefined;
-    if (providers?.piNative !== undefined && typeof providers.piNative === "object" && providers.piNative !== null) {
-      const piNative = { ...(providers.piNative as Record<string, unknown>) };
-      delete piNative.piSessionsRoot;
-      config.providers = { ...providers, piNative };
-    }
     // Core config no longer reads MONO_AGENT_PI_AUTH_PATH. Put the already
     // resolved path in the disposable JSON copy while retaining the env value
     // below as an explicit readiness-child protocol for lower-level readers.

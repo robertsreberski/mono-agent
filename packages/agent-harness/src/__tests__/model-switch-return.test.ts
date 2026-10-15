@@ -77,7 +77,7 @@ it("B -> A takes the outgoing structured summary with intervening B work, never 
   expect(JSON.stringify((f.outgoing.produceHandoffSummary.mock.calls as unknown[][])[0]![0])).toContain("Fictional source fact summarized at A -> B");
   expect(JSON.stringify(cached.artifact)).not.toContain("Fictional source fact summarized");
   const record = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(record.version).toBe(3);
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(1);
+  expect(await readdir(join(f.base, "native", "journals"))).toHaveLength(1);
   expect(record.providerSession.modelKey).toBe("faux:A"); expect(record.lastSwitch.artifact).toEqual(result.artifact);
   expect(await recoverPreparedModelSwitch(f.prep)).toEqual(result);
   let binding: HarnessPreparedBinding | undefined;
@@ -142,7 +142,7 @@ it("actually dispatches and reconciles the inherited structured handoff on same-
   const input = "Fictional explicit reopened input";
   const lease = await runtime.prepareNativeDispatch!("Fictional current rules", { model: { provider: "faux", model: "A", reference: "faux:A" },
     piResolvedModel: faux.getModel(), piResolvedModels: models, messages: [{ role: "user", content: input }],
-    abortSignal: new AbortController().signal, allowedTools: [], piSessionsRoot: nativeRoot, compaction: { enabled: false } });
+    abortSignal: new AbortController().signal, allowedTools: [], sessionsRoot: nativeRoot, compaction: { enabled: false } });
   const incoming = { snapshot: lease.snapshot, run: async (resolve: () => Promise<HarnessPreparedBinding>) => {
     const bound = await resolve();
     return await lease.run({ sessionId: bound.sessionId, providerSessionId: bound.providerSessionId, providerAttributionSessionId: bound.providerAttributionSessionId!,

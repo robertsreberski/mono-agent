@@ -45,7 +45,7 @@ async function fixture(flavour: "memory" | "custom" | "durable" | "exclusive" | 
   const runtime: MonoRuntimeLike = { ...routed, refreshSession: async () => {}, syncSession: async () => true, disposeSession: async () => true, retireDurableSession: async () => {} };
   const harness = createAgentHarness({ identityPath, model: primary, runtime, session,
     toolHistory: { reader, logicalConversationId: (id) => id, writer: { createSink: () => async () => ({ persistence: "persisted" as const }), async finishRun() {}, async resetConversation() {} } },
-    ...(historyStore ? { historyStore } : {}), ...(flavour === "durable" ? { piSessionsRoot: join(root, "native") } : {}) });
+    ...(historyStore ? { historyStore } : {}), ...(flavour === "durable" ? { sessionsRoot: join(root, "native") } : {}) });
   return { harness, historyStore, calls, exclusiveLoad, backupRun, reader, toolRoot: join(root, "tools"), fail: () => { failing = true; } };
 }
 

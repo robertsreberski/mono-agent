@@ -21,7 +21,7 @@ async function fixture(provider = "faux", api) {
   const faux = fauxProvider({ provider, ...(api ? { api } : {}), models: [{ id: "fixture", ...(api ? { api } : {}), contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
   const options = { model: { provider, model: "fixture", reference: `${provider}:fixture` }, piResolvedModel: faux.getModel(), piResolvedModels: models,
-    messages: [{ role: "user", content: "Current fictional input" }], piSessionsRoot: root, allowedTools: [], effort: "none", compaction: { enabled: false } };
+    messages: [{ role: "user", content: "Current fictional input" }], sessionsRoot: root, allowedTools: [], effort: "none", compaction: { enabled: false } };
   return { root, faux, models, options };
 }
 async function mcp() {

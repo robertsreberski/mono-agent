@@ -1,4 +1,4 @@
-// Controlled transport, real built app/registry/job store and durable Pi sessions.
+// Controlled transport, real built app/registry/job store and durable sessions.
 // Run after: pnpm --filter @mono-agent/agent-app... run build
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";

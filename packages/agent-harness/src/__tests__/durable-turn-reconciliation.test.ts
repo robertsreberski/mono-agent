@@ -483,7 +483,7 @@ it("keeps native accepted acknowledgement behind durable live payload and fence 
       inputs: request.expectedInputs.map((input) => ({ ...input, messageId: `fictional-envelope:${input.id}`, complete: true })) };
   });
   const harness = createAgentHarness({ identityPath, cwd: workspace, model: parseMonoRuntimeModelReference(modelKey),
-    historyStore: f.store, createRunId: () => "fictional-turn", piSessionsRoot: join(workspace, "pi"),
+    historyStore: f.store, createRunId: () => "fictional-turn", sessionsRoot: join(workspace, "pi"),
     session: { mode: "continuous", idleTimeoutMs: 60_000 }, runtime: {
       sessionTurnReconciliation: "v1", async reconcileSessionTurn() { return { status: "absent" }; },
       async refreshSession() {}, async syncSession() { return true; },

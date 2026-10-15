@@ -2289,7 +2289,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
   // wake delivery; then the resumed turn's delivery.
 }, 5 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
 
-it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-session disposal", async () => {
+it("G08: retained failure acknowledgement resumes the exact session JSONL after warm-session disposal", async () => {
   const owner = createMonoRuntime(); const releaseConfirmation = deferred<void>(); let delayed = false;
   const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root), { maxRuntimeMs: 3_000 });
   try {
@@ -2342,7 +2342,7 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
     // overran it under package load. Run it on frozen clocks instead.
     const resumed = await deliverWithFrozenClocks(f.service, () => send.execute("ack", request));
     expect((await done(f.service, resumed.details.jobId)).state).toBe("succeeded");
-    expect(calls).toHaveLength(2); expect(calls[1].sessionId).toBe(calls[0].sessionId); expect(calls[1].piSessionsRoot).toBe(record.sessionsRoot);
+    expect(calls).toHaveLength(2); expect(calls[1].sessionId).toBe(calls[0].sessionId); expect(calls[1].sessionsRoot).toBe(record.sessionsRoot);
     expect((await readdir(record.sessionsRoot, { recursive: true })).filter((file) => file.endsWith(".jsonl"))).toEqual(files);
     const after = await readFile(transcriptPath, "utf8"); expect(after.startsWith(before)).toBe(true);
     expect(after).toContain(request.message); expect(after).toContain("acknowledged continuation retained");

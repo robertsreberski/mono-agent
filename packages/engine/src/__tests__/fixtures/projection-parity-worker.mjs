@@ -65,7 +65,7 @@ const bytes = await readFile(raw.metadata.path, "utf8");
 await driver.close(); await raw.close();
 const reopened = await repo.open(raw.metadata); const ancestry = JSON.stringify(await reopened.getEntries()); await reopened.close();
 const importRoot = `${root}-import`;
-await rm(`${importRoot}/mono-v2`, { recursive: true, force: true });
+for (const name of ["journals", "locks", "aliases"]) await rm(`${importRoot}/${name}`, { recursive: true, force: true });
 const importRepo = new JsonlSessionRepo({ sessionsRoot: importRoot });
 const importMetadata = (await importRepo.list())[0];
 const importSession = await importRepo.open(importMetadata);
@@ -147,7 +147,7 @@ async function captureRecovery(pn) {
   const controller = new AbortController();
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional warm reply")]), () => { controller.abort(); return fauxAssistantMessage([fauxText("Fictional cancelled draft")], { stopReason: "aborted" }); }]);
   const options = { model: { provider: "recovery-fixture", model: "A", reference: "recovery-fixture:A" }, piResolvedModel: faux.getModel(), piResolvedModels: models,
-    cwd: "/fictional", piSessionsRoot: `${root}-recovery`, sessionId: "recovery-fixture", sessionKeepAlive: true, effort: "none", allowedTools: [], compaction: { enabled: false } };
+    cwd: "/fictional", sessionsRoot: `${root}-recovery`, sessionId: "recovery-fixture", sessionKeepAlive: true, effort: "none", allowedTools: [], compaction: { enabled: false } };
   const warm = await generateEngineTurnResponse("Fictional rules", { ...options, messages: [{ role: "user", content: "Fictional warm request" }] });
   if (warm.error) throw new Error("Fixture warm dispatch failed");
   const cancelled = await generateEngineTurnResponse("Fictional rules", { ...options, sessionRecovery: { runId: "fixture-recovery-turn", revision: 1 }, abortSignal: controller.signal, messages: [{ role: "user", content: "Fictional interrupted request" }] });

@@ -15,7 +15,7 @@ it("cancels a run waiting behind another process's native writer lock", async ()
   const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
   const options = (overrides) => ({ model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" }, piResolvedModel: faux.getModel(),
-    piResolvedModels: models, effort: "none", allowedTools: [], piSessionsRoot: root, sessionKeepAlive: true, ...overrides });
+    piResolvedModels: models, effort: "none", allowedTools: [], sessionsRoot: root, sessionKeepAlive: true, ...overrides });
   let holder, sessionId;
   try {
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional first reply.")])]);
@@ -48,7 +48,7 @@ it("refuses create-on-miss for a handle whose damaged legacy file is attributed 
   const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
   const options = (overrides) => ({ model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" }, piResolvedModel: faux.getModel(),
-    piResolvedModels: models, effort: "none", allowedTools: [], piSessionsRoot: root, sessionKeepAlive: true, ...overrides });
+    piResolvedModels: models, effort: "none", allowedTools: [], sessionsRoot: root, sessionKeepAlive: true, ...overrides });
   try {
     mkdirSync(join(root, "legacy"), { recursive: true });
     const damaged = join(root, "legacy", "t_fictional-legacy-damaged.jsonl"); writeFileSync(damaged, "{not json\n");
@@ -56,7 +56,7 @@ it("refuses create-on-miss for a handle whose damaged legacy file is attributed 
       messages: [{ role: "user", content: "Fictional ask." }] }));
     expect(refused.failureKind).toBe("native_journal_unreadable");
     expect(readFileSync(damaged, "utf8")).toBe("{not json\n");
-    expect(existsSync(join(root, "mono-v2", "journals")) ? readdirSync(join(root, "mono-v2", "journals")) : []).toEqual([]);
+    expect(existsSync(join(root, "journals")) ? readdirSync(join(root, "journals")) : []).toEqual([]);
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional unrelated reply.")])]);
     const unrelated = await generateEngineTurnResponse("stable", options({ sessionId: "fictional-unrelated", messages: [{ role: "user", content: "Fictional ask." }] }));
     expect(unrelated.error).toBeNull();

@@ -129,7 +129,7 @@ The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.
 
-Manual compaction on a durable Pi session uses the same guarded summary driver
+Manual compaction on a durable session uses the same guarded summary driver
 as automatic proactive compaction, but an explicit operator action bypasses the
 automatic trigger (including `compaction.enabled:false`). No new user prompt or
 assistant turn is generated. The host coordinates the provider transcript with
@@ -1052,8 +1052,8 @@ Returns:
 - `configureTools(next)` — update the tool runtime context after construction.
 - `syncSession(id)` — fsync provider-owned durable state before canonical history commits.
 - `refreshSession(id)` — guarantee the next resume cannot reuse process-local state; absence succeeds and cleanup uncertainty rejects.
-- `recoverSession(receipt, { appliedInputIds })` — validate and fsync an opted-in, settled durable Pi tail without executing the provider or appending a message. A host-owned `sessionRecovery: { runId, revision }` run option enables receipts (the run ID must be nonempty, at most 512 characters, and unique within its journal); retries/backups strip that option and every returned receipt. Root adoption tightens owned legacy permissions to 0700 and emits one path-free `pi_sessions_root_permissions_tightened` runtime warning. Pending recovery blocks native resume. Native interruption repair is storage-only and prompt-only; it does not adopt dirty host turns or replay effects. Provider suspension is reported as suspended, not resumed on reopen; no deferred continuation runs. Failed/aborted assistant messages stay on disk and are filtered except required repaired tool-call pairs; completed tool evidence retains its native bytes. False or uncertain recovery requires host retirement. See [session recovery](../../docs/runtime/sessions-concurrency.md).
-- `retireDurableSession(id, sessionsRoot, deletionOptions?)` — forward explicit host C/D authority through direct or routed runtimes, then delete and verify every exact-id durable Pi transcript, including cold duplicates. Retirement refreshes the matching registry entry, rejects later append admission, and drains admitted storage I/O before removing validated published/staged journals and matching legacy archives under catalogue/writer ownership. The writer lock survives until provider unwind; late appends cannot recreate deleted journals. Uncoordinated calls retain the legacy rollback behavior; opted-in admitted durable calls can retain a provisional tail for host recovery.
+- `recoverSession(receipt, { appliedInputIds })` — validate and fsync an opted-in, settled durable session tail without executing the provider or appending a message. A host-owned `sessionRecovery: { runId, revision }` run option enables receipts (the run ID must be nonempty, at most 512 characters, and unique within its journal); retries/backups strip that option and every returned receipt. Root adoption tightens owned legacy permissions to 0700 and emits one path-free `sessions_root_permissions_tightened` runtime warning. Pending recovery blocks native resume. Native interruption repair is storage-only and prompt-only; it does not adopt dirty host turns or replay effects. Provider suspension is reported as suspended, not resumed on reopen; no deferred continuation runs. Failed/aborted assistant messages stay on disk and are filtered except required repaired tool-call pairs; completed tool evidence retains its native bytes. False or uncertain recovery requires host retirement. See [session recovery](../../docs/runtime/sessions-concurrency.md).
+- `retireDurableSession(id, sessionsRoot, deletionOptions?)` — forward explicit host C/D authority through direct or routed runtimes, then delete and verify every exact-id durable session transcript, including cold duplicates. Retirement refreshes the matching registry entry, rejects later append admission, and drains admitted storage I/O before removing validated published/staged journals and matching legacy archives under catalogue/writer ownership. The writer lock survives until provider unwind; late appends cannot recreate deleted journals. Uncoordinated calls retain the legacy rollback behavior; opted-in admitted durable calls can retain a provisional tail for host recovery.
 - `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 #### `runtime.run(systemPrompt, options)`
@@ -1126,7 +1126,7 @@ Synchronous delegation completion events also carry measured non-zero token usag
 
 Hosts may inject a conversation-scoped `subagents.instances` facade to enable
 `Agent({persist: true, id?})` and `AgentManage({id, message?, close?, stop?})`. Continuations
-retain the child’s selected profile and use `sessionId`, `piSessionsRoot`, and
+retain the child’s selected profile and use `sessionId`, `sessionsRoot`, and
 `sessionKeepAlive` for true durable resume. Both tools share caps and deny child
 recursion. A persistent child's host injects `askParentController.submit(question)`
 to publish a bounded question durably before `AskParent` returns `terminate: true`.

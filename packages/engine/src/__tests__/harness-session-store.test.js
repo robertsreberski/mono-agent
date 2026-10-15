@@ -228,11 +228,11 @@ it("rejects complete corrupt records without repairing them", async () => {
 
 it("rejects replaced roots and symlink files without recreating or mutating them", async () => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "replaced" });
-  await rename(join(r, "mono-v2"), join(r, "quarantined"));
+  await rename(join(r, "locks"), join(r, "quarantined"));
   await expect(session.appendMessage(message)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(session.close()).rejects.toMatchObject({ code: "ENOENT" });
   await expect(repo.create({ id: "late" })).rejects.toMatchObject({ code: "ENOENT" });
-  await expect(stat(join(r, "mono-v2"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(join(r, "locks"))).rejects.toMatchObject({ code: "ENOENT" });
   const other = new JsonlSessionRepo({ sessionsRoot: await root() }); const victim = await other.create({ id: "symlink" }); await victim.close();
   const target = `${victim.metadata.path}.target`; await rename(victim.metadata.path, target); const bytes = await readFile(target);
   await symlink(target, victim.metadata.path);
@@ -250,10 +250,10 @@ it("retires a local writer only after draining storage and holds its lock until 
   /** @type {any} */ (release)?.(); await pending; await retired;
   await expect(stat(session.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(session.appendMessage(message)).rejects.toThrow("retired");
-  expect((await readdir(join(r, "mono-v2", "locks"))).length).toBe(2);
+  expect((await readdir(join(r, "locks"))).length).toBe(2);
   await expect(repo.create({ id: "retiring" })).rejects.toThrow("retired");
   await expect(session.close()).rejects.toThrow("retired");
-  expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+  expect(await readdir(join(r, "locks"))).toEqual(["catalog.sqlite"]);
   expect(await repo.listOwned()).toEqual([]);
   const fresh = await repo.create({ id: "retiring" }); await fresh.close(); await repo.delete(fresh.metadata);
 });
@@ -275,7 +275,7 @@ it("waits for foreign writer ownership before retirement and reclaims its releas
     const closed = once(child, "message"); const exit = once(child, "exit"); child.send({ close: true });
     expect((await closed)[0].phase).toBe("closed"); await exit; await retirement;
     await expect(stat(session.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+    expect(await readdir(join(r, "locks"))).toEqual(["catalog.sqlite"]);
   } finally { spy?.mockRestore(); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
 }, 10000);
 
@@ -285,13 +285,13 @@ it("retirement removes staging and published phases under one writer lock", asyn
   await repo.retireByHandle(s.metadata.id);
   await expect(stat(s.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(stat(staging)).rejects.toMatchObject({ code: "ENOENT" });
-  expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+  expect(await readdir(join(r, "locks"))).toEqual(["catalog.sqlite"]);
 });
 
 it("unknown aliases pin ownership and make retirement fail closed", async () => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const s = await repo.create({ id: "alias-guard" }); await s.close();
-  await mkdir(join(r, "mono-v2", "aliases"), { mode: 0o700 });
-  await writeFile(join(r, "mono-v2", "aliases", "future.json"), JSON.stringify({ journalId: s.metadata.journalId }), { mode: 0o600 });
+  await mkdir(join(r, "aliases"), { mode: 0o700 });
+  await writeFile(join(r, "aliases", "future.json"), JSON.stringify({ journalId: s.metadata.journalId }), { mode: 0o600 });
   await expect(repo.retireByHandle(s.metadata.id)).rejects.toThrow("Invalid");
   expect(await stat(s.metadata.path)).toBeTruthy();
   expect(await repo.journalDataGone(s.metadata)).toBe(false);
@@ -311,20 +311,20 @@ it("concurrent close releases a retired writer and reclaims its lock exactly onc
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "concurrent-close" });
   await repo.retire(session.metadata);
   await Promise.all([session.close(), session.close(), repo.close()]);
-  expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+  expect(await readdir(join(r, "locks"))).toEqual(["catalog.sqlite"]);
 });
 
 it("cleans its O_EXCL partial header after failure, and ignores orphan incomplete creations", async () => {
   const r = await root(); let failOnce = true;
   const repo = new JsonlSessionRepo({ sessionsRoot: r, onImportPhase: async (phase) => {
     if (phase === "stage_created" && failOnce) {
-      failOnce = false; const [name] = await readdir(join(r, "mono-v2", "journals"));
-      await appendFile(join(r, "mono-v2", "journals", name), '{"format":'); throw new Error("Fictional header write failure");
+      failOnce = false; const [name] = await readdir(join(r, "journals"));
+      await appendFile(join(r, "journals", name), '{"format":'); throw new Error("Fictional header write failure");
     }
   } });
   await expect(repo.create({ id: "first" })).rejects.toThrow("header write failure");
-  expect(await readdir(join(r, "mono-v2", "journals"))).toEqual([]);
-  await writeFile(join(r, "mono-v2", "journals", "orphan.jsonl.creating"), '{"format":', { mode: 0o600 });
+  expect(await readdir(join(r, "journals"))).toEqual([]);
+  await writeFile(join(r, "journals", "orphan.jsonl.creating"), '{"format":', { mode: 0o600 });
   const good = await repo.create({ id: "unrelated" }); await good.appendMessage(message); await good.close();
   expect((await repo.list()).map((m) => m.id)).toEqual(["unrelated"]);
   await repo.retireByHandle("unrelated"); expect(await repo.list()).toEqual([]);
@@ -370,9 +370,9 @@ it.each(["stage_created", "stage_synced"].flatMap((phase) => ["native", "legacy"
     const notice = await Promise.race([once(child, "message"), once(child, "exit").then(([code]) => { throw new Error(`Native creator exited: ${code}`); })]);
     expect(notice[0]).toEqual({ phase }); const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
-  const directory = join(r, "mono-v2", "journals"); const [abandoned] = await readdir(directory);
+  const directory = join(r, "journals"); const [abandoned] = await readdir(directory);
   expect(abandoned).toMatch(/\.jsonl\.creating$/); const journalId = abandoned.slice(0, -".jsonl.creating".length);
-  const lock = join(r, "mono-v2", "locks", `${journalId}.sqlite`); expect((await stat(lock)).isFile()).toBe(true);
+  const lock = join(r, "locks", `${journalId}.sqlite`); expect((await stat(lock)).isFile()).toBe(true);
   const bytes = await readFile(join(directory, abandoned), "utf8");
   if (phase === "stage_created") expect(bytes).toBe("");
   else expect(JSON.parse(bytes)).toMatchObject({ id: "fixture-session", journalId });
@@ -387,7 +387,7 @@ it.each(["stage_created", "stage_synced"].flatMap((phase) => ["native", "legacy"
 it("does not reclaim a native creation whose writer is still held", async () => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const locks = await repo.ensureDirectory();
   const journalId = (await import("../managed-journal.js")).managedJournalId("fictional-held-creation"); const writer = await locks.acquireWriter(journalId);
-  const path = join(r, "mono-v2", "journals", `${journalId}.jsonl.creating`);
+  const path = join(r, "journals", `${journalId}.jsonl.creating`);
   try {
     await writeFile(path, "", { mode: 0o600 }); expect(await repo.list()).toEqual([]);
     expect((await stat(path)).size).toBe(0); expect((await stat(writer.path)).isFile()).toBe(true);
@@ -404,11 +404,11 @@ it("does not reclaim context-bearing or future native creation artifacts", async
   expect(await repo.list()).toEqual([]); expect((await readFile(path)).equals(bytes)).toBe(true);
   expect((await repo.catalogue()).unattributed).toEqual([{ name: `${metadata.journalId}.jsonl.creating`, id: "context-preserved" }]);
   await expect(repo.create({ id: "context-preserved" })).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
-  expect((await stat(join(r, "mono-v2", "locks", `${metadata.journalId}.sqlite`))).isFile()).toBe(true);
+  expect((await stat(join(r, "locks", `${metadata.journalId}.sqlite`))).isFile()).toBe(true);
 });
 
 it("ignores stray entries and skips unattributed damaged journal-named files without blocking, reclaiming or deleting them", async () => {
-  const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r }), journals = join(r, "mono-v2", "journals");
+  const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r }), journals = join(r, "journals");
   const kept = await repo.create({ id: "fictional-kept" }); await kept.appendMessage(message); await kept.close();
   const gone = await repo.create({ id: "fictional-retired" }); await gone.close();
   const strays = { ".DS_Store": "fictional", "notes.txt~": "fictional", "11111111-1111-4111-8111-111111111111.jsonl": "",
@@ -437,7 +437,7 @@ it("rejects pre-write schema validation without I/O or poison and can close the 
   let appends = 0; store.io = { append: async () => { appends += 1; }, sync: async () => {} };
   const payload = { callId: "call", name: "Effect", messageId, admission: "observed" };
   await store.write("tool_call", payload, { operationId: "validation-op" }); const seq = store.seq;
-  await expect(store.write("tool_call", payload, { operationId: "validation-op" })).rejects.toThrow("Invalid mono-agent harness journal");
+  await expect(store.write("tool_call", payload, { operationId: "validation-op" })).rejects.toThrow("Invalid session journal");
   expect(store.failure).toBeNull(); expect(store.seq).toBe(seq); expect(appends).toBe(1);
   await store.closeOperation("validation-op", "failed"); await store.endTurn("validation-turn", "failed"); await store.sync();
   await store.beginTurn("next-validation-turn"); await store.endTurn("next-validation-turn", "completed"); await store.close();

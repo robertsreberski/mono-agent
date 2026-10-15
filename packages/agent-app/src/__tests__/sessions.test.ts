@@ -64,18 +64,18 @@ function inputFor(configPath: string, env: Record<string, string | undefined> = 
 }
 
 describe("resolveAppSessionsRoot", () => {
-  it("returns undefined when no pi sessions root is configured (in-memory)", async () => {
+  it("returns undefined when no sessions root is configured (in-memory)", async () => {
     const configPath = await writeConfig({ runtime: { model: "x:y" } });
     expect(await resolveAppSessionsRoot(inputFor(configPath))).toBeUndefined();
   });
 
-  it("resolves providers.piNative.piSessionsRoot relative to cwd", async () => {
-    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } });
+  it("resolves runtime.session.root relative to cwd", async () => {
+    const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } }, providers: { piNative: {} } });
     expect(await resolveAppSessionsRoot(inputFor(configPath))).toBe(join(dir, ".mono-agent", "sessions"));
   });
 
   it("ignores a stale MONO_AGENT_PI_SESSIONS_ROOT env override in favor of the config file", async () => {
-    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./from-config" } } });
+    const configPath = await writeConfig({ runtime: { session: { root: "./from-config" } }, providers: { piNative: {} } });
     const root = await resolveAppSessionsRoot(inputFor(configPath, { MONO_AGENT_PI_SESSIONS_ROOT: "./from-env" }));
     expect(root).toBe(join(dir, "from-config"));
   });
@@ -96,7 +96,7 @@ describe("purgeConversationState session accounting", () => {
   });
 
   it("removes the sessions store and counts the nested jsonl files", async () => {
-    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } });
+    const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } }, providers: { piNative: {} } });
     const root = join(dir, ".mono-agent", "sessions");
     // The runtime nests session files under a per-workspace subdirectory.
     const workspaceDir = join(root, "--workspace--");
@@ -113,26 +113,35 @@ describe("purgeConversationState session accounting", () => {
     await expect(stat(root)).rejects.toThrow();
   });
 
-  it.each([false, true])("purges all v2 artifacts but counts only published journals (quarantine recovery=%s)", async (recover) => {
+  it("refuses pre-release roots during purge without deleting session evidence", async () => {
+    const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } } });
+    const root = join(dir, ".mono-agent", "sessions"), old = join(root, "mono-v2");
+    await mkdir(old, { recursive: true });
+    await writeFile(join(old, "evidence.jsonl"), "fictional evidence");
+    await expect(purgeConversationState(inputFor(configPath))).rejects.toThrow(`Sessions root contains ${old}, written by a pre-release build; restore a backup or remove it`);
+    expect(await readFile(join(old, "evidence.jsonl"), "utf8")).toBe("fictional evidence");
+    expect(await readdir(root)).toEqual(["mono-v2"]);
+  });
+
+  it.each([false, true])("purges all session artifacts but counts only published journals (quarantine recovery=%s)", async (recover) => {
     const { JsonlSessionRepo } = await import("../../../engine/dist/index.js");
-    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } });
+    const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } }, providers: { piNative: {} } });
     const root = join(dir, ".mono-agent", "sessions");
     const repo = new JsonlSessionRepo({ sessionsRoot: root });
     const session = await repo.create({ id: "fictional-published" });
     await session.appendMessage({ role: "user", content: "Fictional request.", timestamp: 1 });
     await session.sync(); await session.close();
-    const v2 = join(root, "mono-v2");
-    await mkdir(join(v2, "aliases"), { mode: 0o700 });
-    await writeFile(join(v2, "aliases", "fictional.json"), '{"journalId":"fictional-staging"}', { mode: 0o600 });
-    await writeFile(join(v2, "journals", "fictional-staging.jsonl.importing"), "Fictional staging.", { mode: 0o600 });
-    await writeFile(join(v2, "journals", "fictional-staging.jsonl.creating"), "Fictional incomplete header.", { mode: 0o600 });
+    await mkdir(join(root, "aliases"), { mode: 0o700 });
+    await writeFile(join(root, "aliases", "fictional.json"), '{"journalId":"fictional-staging"}', { mode: 0o600 });
+    await writeFile(join(root, "journals", "fictional-staging.jsonl.importing"), "Fictional staging.", { mode: 0o600 });
+    await writeFile(join(root, "journals", "fictional-staging.jsonl.creating"), "Fictional incomplete header.", { mode: 0o600 });
     let quarantine = "";
     if (recover) {
       await expect(purgeConversationState(inputFor(configPath), { hooks: { afterRootQuarantined: (path) => {
         quarantine = path; throw new Error("fictional quarantine interruption");
       } } })).rejects.toThrow("quarantine interruption");
-      expect(await readdir(join(quarantine, "mono-v2", "locks"))).toContain("catalog.sqlite");
-      expect(await readdir(join(quarantine, "mono-v2", "journals"))).toContain("fictional-staging.jsonl.importing");
+      expect(await readdir(join(quarantine, "locks"))).toContain("catalog.sqlite");
+      expect(await readdir(join(quarantine, "journals"))).toContain("fictional-staging.jsonl.importing");
     }
     const result = await purgeConversationState(inputFor(configPath));
     expect(result.sessions.files).toBe(recover ? 0 : 1);
@@ -144,7 +153,7 @@ describe("purgeConversationState session accounting", () => {
 
   it.each([false, true])("operator whole-root wipe removes v4 chain journals and switch storage (recovery=%s)", async (recover) => {
     const { JsonlSessionRepo } = await import("../../../engine/dist/index.js");
-    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } }, artifacts: { dir: "./.mono-agent/artifacts" } });
+    const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } }, providers: { piNative: {} }, artifacts: { dir: "./.mono-agent/artifacts" } });
     const nativeRoot = join(dir, ".mono-agent", "sessions"), historyRoot = join(dir, ".mono-agent", "history");
     const id = "fictional-purge-owner", rootId = "1".repeat(64);
     const coordinates = { historyBucket: id, ownerKey: id, rootId, version: 1 as const };
@@ -175,11 +184,11 @@ describe("purgeConversationState session accounting", () => {
     await purgeConversationState(inputFor(configPath));
     await expect(stat(nativeRoot)).rejects.toMatchObject({ code: "ENOENT" }); await expect(stat(historyRoot)).rejects.toMatchObject({ code: "ENOENT" });
     for (const path of quarantines) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
-    for (const segment of chain) await expect(readFile(join(nativeRoot, "mono-v2", "journals", `${segment.journalId}.jsonl`))).rejects.toMatchObject({ code: "ENOENT" });
+    for (const segment of chain) await expect(readFile(join(nativeRoot, "journals", `${segment.journalId}.jsonl`))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("is a no-op when the configured store does not exist on disk yet", async () => {
-    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } });
+    const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } }, providers: { piNative: {} } });
     const result = (await purgeConversationState(inputFor(configPath))).sessions;
     expect(result.removed).toBe(false);
     expect(result.files).toBe(0);
@@ -261,8 +270,8 @@ describe("purgeConversationState history accounting", () => {
 describe("purgeConversationState process-root protection", () => {
   it.each([
     {
-      name: "Pi sessions",
-      config: { providers: { piNative: { piSessionsRoot: "./.state/sessions" } } },
+      name: "sessions",
+      config: { runtime: { session: { root: "./.state/sessions" } }, providers: { piNative: {} } },
       retainedRoot: ".state/sessions",
       invoke: async (configPath: string) => (await purgeConversationState(inputFor(configPath))).sessions,
     },
@@ -303,8 +312,8 @@ describe("purgeConversationState process-root protection", () => {
 
 describe("purgeConversationState", () => {
   it("clear-sessions removes bound history fences and transcripts for every model", async () => {
-    const configPath = await writeConfig({ artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } } });
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },  artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: {} } });
     const sessionsRoot = join(dir, ".state/sessions");
     const historyRoot = join(dir, ".state/history");
     await mkdir(sessionsRoot, { recursive: true });
@@ -328,9 +337,9 @@ describe("purgeConversationState", () => {
   });
 
   it("refuses a dormant retained-root overlap before deleting any conversation state", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
     });
     const sessionsRoot = join(dir, ".state", "sessions");
     const historyRoot = join(dir, ".state", "history");
@@ -365,9 +374,9 @@ describe("purgeConversationState", () => {
   });
 
   it("preserves every non-overlapping retained root and its registry while clearing sessions", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
     });
     const sessionsRoot = join(dir, ".state", "sessions");
     const historyRoot = join(dir, ".state", "history");
@@ -404,12 +413,12 @@ describe("purgeConversationState", () => {
   it.each([
     ["the agent state parent", "./.mono-agent"],
     ["the default process-job state root", "./.mono-agent/process-jobs"],
-  ])("protects stale unconfigured process-job state when Pi sessions use %s", async (_name, piSessionsRoot) => {
-    const configPath = await writeConfig({
+  ])("protects stale unconfigured process-job state when sessions use %s", async (_name, configuredRoot) => {
+    const configPath = await writeConfig({ runtime: { session: { root: configuredRoot } },
       artifacts: { dir: "./.mono-agent/artifacts" },
-      providers: { piNative: { piSessionsRoot } },
+      providers: { piNative: {} },
     });
-    const sessionsRoot = join(dir, piSessionsRoot);
+    const sessionsRoot = join(dir, configuredRoot);
     const historyRoot = join(dir, ".mono-agent", "history");
     const acpSessionsRoot = join(dir, ".mono-agent", "acp-sessions");
     const processJobsRoot = join(dir, ".mono-agent", "process-jobs");
@@ -437,9 +446,9 @@ describe("purgeConversationState", () => {
   });
 
   it("rejects an overlapping process-job root before deleting any conversation state", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
       processJobs: { enabled: true, stateDir: "./.state/history" },
     });
     const sessionsRoot = join(dir, ".state", "sessions");
@@ -466,9 +475,9 @@ describe("purgeConversationState", () => {
   });
 
   it("clears provider transcripts and active history while preserving long-term memory and run artifacts", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } },
       artifacts: { dir: "./.mono-agent/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } },
+      providers: { piNative: {} },
       memory: { mode: "lite", path: "./.mono-agent/memory", writeMode: "append-host-summary" },
       processJobs: { enabled: true, stateDir: "./.mono-agent/process-jobs" },
     });
@@ -512,9 +521,9 @@ describe("purgeConversationState", () => {
   });
 
   it.skipIf(process.platform === "win32")("rejects a target swap after validation without deleting any root or outside sentinel", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
     });
     const sessionsRoot = join(dir, ".state", "sessions");
     const movedSessionsRoot = join(dir, ".state", "sessions-original");
@@ -549,9 +558,9 @@ describe("purgeConversationState", () => {
   });
 
   it.skipIf(process.platform === "win32")("rejects an ancestor swap after validation without partial deletion", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
     });
     const stateRoot = join(dir, ".state");
     const movedStateRoot = join(dir, ".state-original");
@@ -589,9 +598,9 @@ describe("purgeConversationState", () => {
   });
 
   it("recovers an exact crash-after-rename quarantine on the next clear-sessions invocation", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
     });
     const sessionsRoot = join(dir, ".state", "sessions");
     const historyRoot = join(dir, ".state", "history");
@@ -630,9 +639,9 @@ describe("purgeConversationState", () => {
   });
 
   it("recovers a registered quarantine after the configured purge roots change", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.old/sessions" } },
       artifacts: { dir: "./.old/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+      providers: { piNative: {} },
     });
     const oldSessionsRoot = join(dir, ".old", "sessions");
     await mkdir(oldSessionsRoot, { recursive: true });
@@ -650,9 +659,9 @@ describe("purgeConversationState", () => {
     const newSessionsRoot = join(dir, ".new", "sessions");
     await mkdir(newSessionsRoot, { recursive: true });
     await writeFile(join(newSessionsRoot, "session.jsonl"), "new session\n");
-    await writeFile(configPath, JSON.stringify({
+    await writeFile(configPath, JSON.stringify({ runtime: { session: { root: "./.new/sessions" } },
       artifacts: { dir: "./.new/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.new/sessions" } },
+      providers: { piNative: {} },
     }));
 
     const result = await purgeConversationState(inputFor(configPath));
@@ -669,9 +678,9 @@ describe("purgeConversationState", () => {
       invoke: async (configPath: string) => await purgeConversationState(inputFor(configPath)),
     },
   ])("$name reconciles an older quarantine before validating malformed current config", async ({ invoke }) => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.old/sessions" } },
       artifacts: { dir: "./.old/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+      providers: { piNative: {} },
     });
     const pending = await createPendingSessionsQuarantine(configPath, "malformed-current-config");
     await writeFile(configPath, "{ not valid json");
@@ -689,9 +698,9 @@ describe("purgeConversationState", () => {
       invoke: async (configPath: string) => await purgeConversationState(inputFor(configPath)),
     },
   ])("$name refuses recovery when a pending path became a retained process root", async ({ invoke }) => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.old/sessions" } },
       artifacts: { dir: "./.old/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+      providers: { piNative: {} },
     });
     const pending = await createPendingSessionsQuarantine(configPath, "retained-recovery-path");
     const ownership = await seedRetainedProcessJobRoots([pending.originalRoot]);
@@ -709,9 +718,9 @@ describe("purgeConversationState", () => {
   });
 
   it.skipIf(process.platform === "win32")("standalone sessions recovery settles before rejecting an invalid replacement root", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.old/sessions" } },
       artifacts: { dir: "./.old/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+      providers: { piNative: {} },
     });
     const oldSessionsRoot = join(dir, ".old", "sessions");
     const outsideRoot = join(dir, "outside-standalone-sessions");
@@ -734,8 +743,8 @@ describe("purgeConversationState", () => {
       },
     })).rejects.toThrow(/simulated standalone sessions crash/u);
     await symlink(outsideRoot, replacementRoot, "dir");
-    await writeFile(configPath, JSON.stringify({
-      providers: { piNative: { piSessionsRoot: "./replacement-sessions" } },
+    await writeFile(configPath, JSON.stringify({ runtime: { session: { root: "./replacement-sessions" } },
+      providers: { piNative: {} },
     }));
 
     await expect(purgeConversationState(inputFor(configPath))).rejects.toThrow(/must be a real directory/u);
@@ -746,9 +755,9 @@ describe("purgeConversationState", () => {
   });
 
   it.skipIf(process.platform === "win32")("standalone history recovery settles before replacement-root attestation", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.old/sessions" } },
       artifacts: { dir: "./.old/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+      providers: { piNative: {} },
     });
     const oldSessionsRoot = join(dir, ".old", "sessions");
     const outsideRoot = join(dir, "outside-standalone-history");
@@ -783,9 +792,9 @@ describe("purgeConversationState", () => {
   });
 
   it("reconciles an old quarantine before rejecting a replacement root that contains the registry", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.old/sessions" } },
       artifacts: { dir: "./.old/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+      providers: { piNative: {} },
     });
     const oldSessionsRoot = join(dir, ".old", "sessions");
     const outsideRoot = join(dir, "outside-overlap-recovery");
@@ -819,9 +828,9 @@ describe("purgeConversationState", () => {
   });
 
   it("recovers a published manifest whose original root was never renamed", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.old/sessions" } },
       artifacts: { dir: "./.old/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+      providers: { piNative: {} },
     });
     const oldSessionsRoot = join(dir, ".old", "sessions");
     await mkdir(oldSessionsRoot, { recursive: true });
@@ -847,9 +856,9 @@ describe("purgeConversationState", () => {
   });
 
   it("recovers a stale manifest after its quarantine was already deleted", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.old/sessions" } },
       artifacts: { dir: "./.old/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+      providers: { piNative: {} },
     });
     const oldSessionsRoot = join(dir, ".old", "sessions");
     await mkdir(oldSessionsRoot, { recursive: true });
@@ -874,9 +883,9 @@ describe("purgeConversationState", () => {
   });
 
   it.skipIf(process.platform === "win32")("validates every pending manifest before deleting the first quarantine", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
     });
     const sessionsRoot = join(dir, ".state", "sessions");
     const historyRoot = join(dir, ".state", "history");
@@ -914,9 +923,9 @@ describe("purgeConversationState", () => {
   });
 
   it.skipIf(process.platform === "win32")("never follows or deletes a quarantine replacement symlink", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
     });
     const sessionsRoot = join(dir, ".state", "sessions");
     const historyRoot = join(dir, ".state", "history");
@@ -954,9 +963,9 @@ describe("purgeConversationState", () => {
   });
 
   it("rejects an atomic config replacement after validation before deleting any root", async () => {
-    const configPath = await writeConfig({
+    const configPath = await writeConfig({ runtime: { session: { root: "./.state/sessions" } },
       artifacts: { dir: "./.state/artifacts" },
-      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      providers: { piNative: {} },
     });
     const sessionsRoot = join(dir, ".state", "sessions");
     const historyRoot = join(dir, ".state", "history");
@@ -976,9 +985,9 @@ describe("purgeConversationState", () => {
     await expect(purgeConversationState(inputFor(configPath), {
       hooks: {
         afterValidation: async () => {
-          await writeFile(replacement, JSON.stringify({
+          await writeFile(replacement, JSON.stringify({ runtime: { session: { root: "./replacement/sessions" } },
             artifacts: { dir: "./replacement/artifacts" },
-            providers: { piNative: { piSessionsRoot: "./replacement/sessions" } },
+            providers: { piNative: {} },
           }));
           await rename(replacement, configPath);
         },
