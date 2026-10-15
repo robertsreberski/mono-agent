@@ -162,7 +162,7 @@ does not trigger failover. Mid-turn sandbox/safety failures are terminal because
 retrying them on another provider could weaken the established contract.
 
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with canonical replay and bounded transcript-tail context. With coordinated durable Pi history,
+stateless with canonical replay and bounded transcript-tail context. With coordinated durable session history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.

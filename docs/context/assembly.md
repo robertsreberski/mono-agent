@@ -139,7 +139,7 @@ Every configured memory tier also exposes the read-only `MemoryRecall` tool by d
 
 ## Conversation history
 
-Coverage: `auto`. History is kept in an **owner-only, disk-backed store**. The default retains the latest 64 messages for each exact conversation id, with aggregate retention bounded to 256 MiB, 10,000 conversations, and 365 days of inactivity. Live unpublished stages have a separate 256 MiB aggregate cap, so many prepared or crash-abandoned turns cannot grow the store without bound. A completed turn is staged before commit and atomically published; cancelled preparations do not evict committed history. Oldest inactive conversation files are pruned only after a successful publication. These bounds are independent of the provider's turn limit: changing `runtime.maxTurns` does not change the history window. When history uses the prompt path, the history section renders prior `system`/`user`/`assistant`/`tool` messages for the conversation in order; cold durable Pi reopens use the structured-message path described above.
+Coverage: `auto`. History is kept in an **owner-only, disk-backed store**. The default retains the latest 64 messages for each exact conversation id, with aggregate retention bounded to 256 MiB, 10,000 conversations, and 365 days of inactivity. Live unpublished stages have a separate 256 MiB aggregate cap, so many prepared or crash-abandoned turns cannot grow the store without bound. A completed turn is staged before commit and atomically published; cancelled preparations do not evict committed history. Oldest inactive conversation files are pruned only after a successful publication. These bounds are independent of the provider's turn limit: changing `runtime.maxTurns` does not change the history window. When history uses the prompt path, the history section renders prior `system`/`user`/`assistant`/`tool` messages for the conversation in order; cold durable session reopens use the structured-message path described above.
 
 An admitted, non-isolated turn that settles as `cancelled` or `failed` before the
 successful commit publishes a derived continuity account instead. The account
@@ -158,7 +158,7 @@ evidence appears only inside tag-safe JSON preceded by an explicit warning, and
 the notice never incorporates provider text or presents the partial answer as
 complete. A per-conversation publication barrier makes the next turn wait for
 the account and the provider recovery-or-retirement decision. Eligible durable
-Pi turns keep their native user/tool ancestry without a host-authored note; Pi
+sessions keep their native user/tool ancestry without a host-authored note; the runtime
 filters interrupted assistant output. Unsafe tails reseed from the account. See
 [terminal session recovery](/runtime/sessions-concurrency/). Isolated proactive/continuation turns and
 queued requests that never start keep their existing behavior. Hard process

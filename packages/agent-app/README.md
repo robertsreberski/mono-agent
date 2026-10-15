@@ -37,8 +37,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   commit. Cancellation preserves operator, shutdown, stale-session, signal,
   timeout, generic, and unrecorded-reason provenance; failure records a trusted
   host settlement category while bounding/redacting runtime/provider code and
-  detail as untrusted evidence. Eligible durable Pi recovery retains native context
-  without appending the account to Pi; cold reseed includes the account. The
+  detail as untrusted evidence. Eligible durable session recovery retains native context
+  without appending the account to the session; cold reseed includes the account. The
   coordinated native turns use canonical v3 receipts and owner-held,
   storage-only reconciliation across crashes. Read-only history loading does
   not recover or migrate. Interrupted work waits for the next explicit message;

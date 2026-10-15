@@ -99,7 +99,7 @@ messages call only `SuggestReplies`, `PublishReplyFile`, or `ProposeRestart`
 is not promoted. If that chain has no text, the existing whole-run streamed-text
 fallback still applies. This reply selection is shared by all channels.
 
-If a normally settled Pi turn has no reply text, the runtime requests the
+If a normally settled session turn has no reply text, the runtime requests the
 user-facing reply once more in the same session with all tools disabled. Thinking
 is never used as reply text. Cancelled, failed, max-turn-limited, silent,
 AskParent-pending, and structured-output turns are excluded. A second empty reply
@@ -1253,7 +1253,7 @@ JSON as `result.structuredResult`.
 `createRouterRuntime({ host, chain, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. Only the primary's first attempt can keep a provider session; retries and backups are stateless and their successful results withhold `providerSessionId`. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
 
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+stateless with bounded transcript-tail replay. With coordinated durable session history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.

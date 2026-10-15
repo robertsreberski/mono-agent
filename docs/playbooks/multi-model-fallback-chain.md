@@ -56,7 +56,7 @@ list is ordered and has no product-imposed count limit.
 
 :::caution
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+stateless with bounded transcript-tail replay. With coordinated durable session history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.

@@ -701,10 +701,10 @@ in favor of bridge-owned recovery (the legacy low-level `transformContext` /
   `runtime.compaction.contextWindowOverride` for a persistent metadata
   correction. Pass typed `compaction` fields to `resolveAgentCompactionPolicy`.
 
-### 4. Durable session resume: create-on-miss semantics
+### 4. Durable Pi session resume: create-on-miss semantics
 
 When a run supplies a `providerSessionId` (or the legacy `sessionId` alias) **and**
-durable storage is configured (`sessionsRoot`), Pi-native now **creates the
+durable storage is configured (`piSessionsRoot`), Pi-native now **creates the
 session with that id if no on-disk JSONL exists** (create-on-miss), instead of returning
 `session_not_found`. An existing JSONL is reopened and resumed as before.
 
@@ -746,7 +746,7 @@ repository instructions, not to define Codex collaboration profiles.
   in-tool with backoff before returning an error.
 - **Claude CLI**: the temporary `mcp.json` written for a CLI run is now created
   with `0600` (owner-only) permissions.
-- session lifecycle is hardened: aborts during setup are honored before the
+- Pi session lifecycle is hardened: aborts during setup are honored before the
   provider call, fresh durable sessions are deleted on setup/abort failure, and
   resumed sessions roll back to their pre-turn leaf on host-side (outer-catch)
   failures. These are correctness fixes with no API surface change.
