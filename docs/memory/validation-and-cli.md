@@ -595,13 +595,13 @@ for an existing local agent, with one backend-specific branch in step 6.
 
 2. Stop the old agent before changing its installed packages. Then upgrade the
    package that already owns the global `mono-agent` command and confirm the
-   exact published version. `create-mono-agent` and `@mono-agent/app` both
+   exact published version. `create-mono-agent` and `@mono-agent/agent-app` both
    provide that command, so do not install both globally:
 
    ```bash
    cd /path/to/agent
    mono-agent stop
-   npm ls -g --depth=0 create-mono-agent @mono-agent/app || true
+   npm ls -g --depth=0 create-mono-agent @mono-agent/agent-app || true
    ```
 
    If `create-mono-agent` is listed, upgrade that owner:
@@ -610,10 +610,10 @@ for an existing local agent, with one backend-specific branch in step 6.
    npm i -g "create-mono-agent@0.8.0"
    ```
 
-   Otherwise, if `@mono-agent/app` is listed, upgrade that owner instead:
+   Otherwise, if `@mono-agent/agent-app` is listed, upgrade that owner instead:
 
    ```bash
-   npm i -g "@mono-agent/app@0.8.0"
+   npm i -g "@mono-agent/agent-app@0.8.0"
    ```
 
    Then confirm the command resolves to the new version:

@@ -72,7 +72,7 @@ git diff --check
 
 `clean` precedes the build because `dist/` is gitignored and never cleared, so a
 reused checkout still holds compiled output for deleted sources and packs it —
-that is how `@mono-agent/channel-telegram@0.15.3` shipped `dist/ask.js` two
+that is how `@mono-agent/telegram-adapter@0.15.3` shipped `dist/ask.js` two
 releases after `src/ask.ts` was removed. `release:pack` fails closed and names
 the offending files if the clean was skipped; do not work around it by editing
 the tarball.

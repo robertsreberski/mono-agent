@@ -100,7 +100,7 @@ network.
 
 An earlier source revision extracted Phoenix transport into an optional package,
 but that extraction is not a published `@mono-agent/observability-phoenix@0.22.0`
-plugin. Static inspection of the published `@mono-agent/app@0.22.0` and
+plugin. Static inspection of the published `@mono-agent/agent-app@0.22.0` and
 `@mono-agent/observability@0.22.0` tarballs shows the older built-in
 observability implementation, while the public plugin lookup returned no package.
 Do not add a new plugin dependency or mix the retired source package with a newer

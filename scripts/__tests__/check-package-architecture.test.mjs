@@ -124,6 +124,18 @@ describe("engine ownership and historical reference guard", () => {
     expect(activeStaleReferenceLines(file, text + `\n${oldDirectory}`, oldDirectory)).toEqual([3]);
     expect(activeStaleReferenceLines(file, line, oldDirectory)).toEqual([1]);
   });
+  it.each([
+    `  const archive = execFileSync("git", ["archive", base, "${oldDirectory}/src", "packages/agent-runtime/src"], { cwd: root, maxBuffer: 16 * 1024 * 1024 });`,
+    `      join(scratch, "${oldDirectory}/src"), join(scratch, "packages/agent-runtime/src"), storage, legacy], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024 });`,
+  ])("exempts only the commit-pinned historical archive line: %s", (line) => {
+    const file = "packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs";
+    const pinned = 'const base = "10f501d4f1dc102db9951fcebb09a96001910452";';
+    expect(activeStaleReferenceLines(file, `${pinned}\n${line}`, oldDirectory)).toEqual([]);
+    expect(activeStaleReferenceLines(file, line, oldDirectory)).toEqual([1]);
+    const active = line.replace("packages/agent-runtime/src", "packages/turn/src");
+    expect(activeStaleReferenceLines(file, `${pinned}\n${active}`, oldDirectory)).toEqual([2]);
+    expect(activeStaleReferenceLines("packages/turn/src/engine/index.js", `${pinned}\n${line}`, oldDirectory)).toEqual([2]);
+  });
   it("checks static, dynamic and relative engine imports, not just manifests", () => {
     const root = "/fictional", file = root + "/packages/turn/src/engine/index.js";
     for (const specifier of ["@mono-agent/turn", "@mono-agent/turn/ai", "@mono-agent/turn/engine", "@mono-agent/turn/engine/sessions.js", "@mono-agent/contracts", "@mono-agent/conversation/owned.js", "#kernel/cost", "#kernel/types",

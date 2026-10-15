@@ -58,8 +58,8 @@ The boundary moves with every release, so registry truth and source truth are ch
 
 ```bash
 npm view create-mono-agent version engines time
-npm view @mono-agent/app@0.22.0 dependencies bin
-npm pack --dry-run --json @mono-agent/app@0.22.0
+npm view @mono-agent/agent-app@0.22.0 dependencies bin
+npm pack --dry-run --json @mono-agent/agent-app@0.22.0
 git log --oneline v0.22.0..main
 ```
 

@@ -15,8 +15,8 @@ export function activeStaleReferenceLines(file, text, reference) {
       && line === `const historicPackage = "${oldPackage}"; // Archived P2b imports only.`
       || file === `${fixtures}regenerate-projection-goldens.mjs`
       && text.includes('const base = "10f501d4f1dc102db9951fcebb09a96001910452";')
-      && (line === `  const archive = execFileSync("git", ["archive", base, "${oldDirectory}/src", "packages/turn/src"], { cwd: root, maxBuffer: 16 * 1024 * 1024 });`
-        || line === `      join(scratch, "${oldDirectory}/src"), join(scratch, "packages/turn/src"), storage, legacy], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024 });`);
+      && (line === `  const archive = execFileSync("git", ["archive", base, "${oldDirectory}/src", "packages/agent-runtime/src"], { cwd: root, maxBuffer: 16 * 1024 * 1024 });`
+        || line === `      join(scratch, "${oldDirectory}/src"), join(scratch, "packages/agent-runtime/src"), storage, legacy], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024 });`);
     return historical ? [] : [index + 1];
   });
 }
