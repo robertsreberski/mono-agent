@@ -1,5 +1,5 @@
-import { isDispatchProgress } from "../providers/pi-native/dispatch-progress.js";
-import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../providers/pi-native/prepared-dispatch.js";
+import { isDispatchProgress } from "../providers/engine-turn/dispatch-progress.js";
+import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../providers/engine-turn/prepared-dispatch.js";
 // Provider fallback router.
 //
 // Wraps `createRuntime` with an ordered chain of model references. If a run

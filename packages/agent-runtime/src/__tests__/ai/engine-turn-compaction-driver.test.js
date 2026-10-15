@@ -7,7 +7,7 @@ import {
   runProactiveCompaction,
   runReactiveCompaction,
   tryCompact,
-} from "../../ai/providers/pi-native/compaction-driver.js";
+} from "../../ai/providers/engine-turn/compaction-driver.js";
 import { buildHarnessSessionContext } from "../../../../engine/dist/session-context.js";
 
 // A session double whose buildContext / getEntries / (message count) are
@@ -96,11 +96,13 @@ function hookHarness({ sourceMessages = reducibleMessages(), summary = "short su
       const result = hookResult?.compaction;
       if (!result) throw new Error("hook did not provide compaction");
       persisted += 1;
+      const timestamp = Date.now();
       const compactedEntry = {
         type: "compaction",
         id: "compaction-1",
         parentId: branchEntries.at(-1)?.id || null,
-        timestamp: Date.now(),
+        timestamp,
+        checkpoint: { summaryMessage: { role: "compactionSummary", summary: result.summary, tokensBefore: result.tokensBefore, timestamp } },
         summary: result.summary,
         retainedTail: result.retainedTail,
         tokensBefore: result.tokensBefore,

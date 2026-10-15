@@ -12,7 +12,7 @@ import { openProcessJobStore } from "../dist/process-jobs-store.js";
 import { PROCESS_JOBS_DEFAULTS } from "../dist/process-jobs-config.js";
 import { createAgentTool } from "../../agent-runtime/src/agent/tools/agent-tool.js";
 import { createAgentManageTool } from "../../agent-runtime/src/agent/tools/agent-manage-tool.js";
-import { generatePiNativeResponse } from "../../agent-runtime/src/ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../agent-runtime/src/ai/providers/engine-turn.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
 
 const STEER_TEXT = "steered mid-turn: prefer the smaller diff";
@@ -62,7 +62,7 @@ try {
   let childLiveInput = "absent";
   const runtime = { recoverSession: owner.recoverSession.bind(owner), run: async (prompt, options) => {
     childLiveInput = options.liveInput === undefined ? "absent" : "supplied";
-    return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "controlled-faux-key" });
+    return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "controlled-faux-key" });
   } };
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model }, { conversationId: origin.conversationId, runId: "parent", instances }).subagents;
   subagents.backgroundSubagentController = service.internalController(origin, 0);

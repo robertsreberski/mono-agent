@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createStreamSubscriber } from "../../ai/providers/pi-native/stream-subscriber.js";
+import { createStreamSubscriber } from "../../ai/providers/engine-turn/stream-subscriber.js";
 import { createToolLifecycleEventGate } from "../../ai/tool-lifecycle.js";
 
 function freshRunState() {

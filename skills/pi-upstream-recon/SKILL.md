@@ -128,7 +128,7 @@ by hand.
 3. Targeted tests first:
 
 ```bash
-pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/pi-native.test.js \
+pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/engine-turn.test.js \
   src/__tests__/pi-auth.test.js src/__tests__/ai/failure.test.js \
   src/__tests__/ai/router.test.js --runInBand
 ```

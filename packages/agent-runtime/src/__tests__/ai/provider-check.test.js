@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { classifyProviderCheckFailure, runPiProviderCheck } from "../../ai/provider-check.js";
 
 describe("provider check", () => {
@@ -162,7 +162,7 @@ describe("provider check", () => {
 
   it("keeps ordinary runtime premature-length recovery semantics unchanged", async () => {
     const fixture = transportFixture(fauxAssistantMessage("four token reply", { stopReason: "length" }));
-    const outcome = await generatePiNativeResponse("Provider connectivity check. Reply OK.", {
+    const outcome = await generateEngineTurnResponse("Provider connectivity check. Reply OK.", {
       ...fixture.input.runtimeOptions,
       model: fixture.input.model,
       resolvePiApiKey: fixture.input.resolvePiApiKey,

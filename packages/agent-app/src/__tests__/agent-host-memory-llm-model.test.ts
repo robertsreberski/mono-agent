@@ -58,6 +58,7 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
     processStartId: "vitest-agent-host-memory-model",
   }),
   isSameProcessIncarnation: () => true,
+  isProcessIncarnationLive: () => true,
 }));
 
 const { createConfiguredMemory } = await import("../index.js");

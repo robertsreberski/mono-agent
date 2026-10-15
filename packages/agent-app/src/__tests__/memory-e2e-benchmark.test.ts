@@ -814,7 +814,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
 
   it("enforces the private output cap at real Pi dispatch and tool continuation, without compaction", async () => {
     const input = await fixture();
-    const { generatePiNativeResponse } = await import(new URL("../../../agent-runtime/src/ai/providers/pi-native.js", import.meta.url).href);
+    const { generateEngineTurnResponse } = await import(new URL("../../../agent-runtime/src/ai/providers/engine-turn.js", import.meta.url).href);
     const faux = fauxProvider({ provider: "faux", models: [{ id: "e2e-cap", maxTokens: 32000, contextWindow: 32000 }] });
     const models = createModels(); models.setProvider(faux.provider);
     const dispatched: Array<{ modelCap: number; outputCap: number | undefined }> = [];
@@ -839,7 +839,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
         fauxAssistantMessage([fauxText("No evidence was present in this test store.")]),
       ]);
       const events: any[] = [];
-      const result = await input.providers.meteredRuntime({ run: generatePiNativeResponse }, { budget, stage: "reader", tag: {} }).run("Answer from evidence.", {
+      const result = await input.providers.meteredRuntime({ run: generateEngineTurnResponse }, { budget, stage: "reader", tag: {} }).run("Answer from evidence.", {
         model: { provider: "faux", model: "e2e-cap", reference: "faux:e2e-cap" },
         piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "fictional-test-key",
         cwd: input.directory, piSessionsRoot: join(input.directory, "cap-sessions"),
@@ -855,7 +855,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
       expect(faux.getModel().maxTokens).toBe(32000); // never mutate the shared catalog
       expect(events.filter((value) => /compact/iu.test(value.type ?? ""))).toEqual([]);
       faux.setResponses([fauxAssistantMessage([fauxText("{}")])]);
-      await input.providers.captureLlm({ run: (system: string, options: any) => generatePiNativeResponse(system, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "fictional-test-key" }) }, {
+      await input.providers.captureLlm({ run: (system: string, options: any) => generateEngineTurnResponse(system, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "fictional-test-key" }) }, {
         model: { provider: "faux", model: "e2e-cap", reference: "faux:e2e-cap" }, workspace: input.directory,
         sessionsRoot: join(input.directory, "extract-sessions"), budget, tag: {},
       }).complete("Return an empty object.", { label: "capture:extract" });

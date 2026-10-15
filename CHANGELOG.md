@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+- Fix a parent-stopped background subagent whose late result kept its session
+  context staying blocked in recovery, with its process job holding a running
+  slot, when registry writes were slow. The late result now settles with its
+  final resumable outcome, and reopening the agent repairs instances already
+  stuck this way. Late results without proven context still require recovery,
+  and no tool is ever re-run.
+
+- Report interrupted Web turns and wait for the user instead of starting an
+  automatic paid turn. Carry recovery advisories once into the next explicit
+  user turn; leave background-job completion delivery unchanged.
+
+- Use provider SDK pre-response retries sized by `piMaxRetries`, including
+  connection losses before response headers. Keep started streams from being
+  repeated by that layer and disable driver retries; configured router rules
+  still apply. Codex can fall back from websocket to SSE independently of the
+  retry budget. Force single-shot SSE for provider checks and summaries.
+
+- Let the first model switch proceed while unrelated conversations are active
+  or have damaged recovery data, preserving their ownership and evidence.
+
+- Let cancelled admissions stop waiting for pending-turn drain locks before
+  recovery publication starts.
+
+- Limit legacy session header reads to matching filenames for individual
+  session creation, lookup, import and retirement.
+
+- Keep history owners protected on inconclusive process probes, and retry
+  transient self-identity failures.
+
+- Fix concurrent durable A2A record reads during acceptance and expiry
+  compaction. Keep active dispatches in doubt and expired keys permanently
+  bound without rejecting safe atomic replacements as unsafe state.
+
+- Add canonical `resolveEngineTurnAdapter`, `generateEngineTurnResponse` and
+  `engineTurnAdapter` runtime exports. Keep `resolveRuntimeBridge`,
+  `generatePiNativeResponse` and `piNativeRuntimeBridge` as deprecated,
+  identity-preserving aliases without runtime warnings; dispatch stays lazy
+  and retains model-reference validation.
+
+- Keep live macOS owners of locks, leases, process jobs and subagents after a
+  calendar-clock step or a timezone change. Record the boot-session UUID and
+  UTC process start on macOS, bound its probes to five seconds, and reclaim
+  only on `ESRCH` or proven PID reuse; signals still need an exact match.
+  Keep writing unchanged v1 records on Linux, Windows and other platforms.
+  Add `isProcessIncarnationLive()` and accept v1 and v2 in
+  `processIncarnationFromJson()`. Lock records and web-control leases keep the
+  old `incarnation` beside a new `stableIncarnation`, so older binaries never
+  treat new owners as ownerless; they keep their own clock and timezone
+  weakness, so stop older agents and CLIs while upgrading on macOS.
+  Process-job state fails closed for older binaries, so stop upgraded agents
+  before rolling back. Hold live owners recorded by older
+  macOS binaries by PID, and name the lock path and PID when one blocks.
+
 - Publish the new execution and storage package as `@mono-agent/engine`, with
   three focused entrypoints: root, `sessions.js` and `owned-fs.js`. Published
   runtime storage capabilities and journal formats stay compatible.
@@ -75,9 +128,9 @@
   unattributable remnants instead of silently claiming complete cleanup. Report
   damaged pending recovery data with repair guidance, not another-send advice,
   and reject invalid native mutation IDs asynchronously. Store durable markers
-  for interrupted `AskUser` questions, not quoted notice text; the restart Web
-  wake omits `AskUser` and includes interrupted-question and unapplied-message
-  notes. Answer interrupted questions in a new message, never by reviving or
+  for interrupted `AskUser` questions, not quoted notice text; the next explicit
+  Web user turn includes interrupted-question and unapplied-message notes.
+  Answer interrupted questions in a new message, never by reviving or
   replaying the tool. Report admitted messages not confirmed as applied once on
   recovery; do not replay them, and resend them if still needed.
 
@@ -271,7 +324,7 @@
   process starts on macOS, and boot UUIDs/start ticks on Linux; bound macOS
   probes to five seconds. Keep v1, unknown, unavailable and other-platform
   identity PID-only. Cache per owner/wait and preserve live ownership; torn
-  markers remain PID-only. Leave the existing app v1 identity API unchanged.
+  markers remain PID-only.
   Stop every older writer before upgrading; legacy coordination files remain
   readable, but pre-upgrade binaries cannot parse the new marker contents.
 

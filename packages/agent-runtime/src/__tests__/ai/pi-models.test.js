@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "../../ai/providers/pi-models.js";
 import { retryableProviderFailureInfo } from "../../ai/failure.js";
-import { thinkingLevelForEffort } from "../../ai/providers/pi-native/turn-runner.js";
+import { thinkingLevelForEffort } from "../../ai/providers/engine-turn/turn-runner.js";
 import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { checkPiProviderAuth, describePiProviderAuth, getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
 import { estimateCost } from "../../ai/cost.js";

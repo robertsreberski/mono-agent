@@ -123,17 +123,31 @@ appended to it), emits `provider_retry_started` rather than a failover event, an
 appends its own `failoverHistory` entry carrying `retryIndex` — each retry keeps
 its own request id and failure subkind.
 
-Retries compose with, and multiply against, two retry layers inside one Pi
-attempt. `providers.piNative.piMaxRetries` (default 2) is the single runtime
-retry knob. Zero disables both pi-ai transport retries and the harness's
-assistant-request retries: at most one provider request per assistant request
-in each router attempt. A nonzero value N retains the default three additional
-assistant-request retries, each with up to N transport retries. The maximum is
-`4 × (N + 1)` provider requests per assistant request per router attempt: 12
-with the default, or 24 across `primaryAttempts: 2` before advancing the chain.
-These are request-only retries; they never repeat a tool or the whole turn. A
-turn that makes several assistant requests can exceed this per-request bound.
-Provider checks and handoff summaries remain single-request. The harness's one-shot session-resume retry is disjoint: it
+Router attempts compose with provider-transport retries inside each Pi attempt.
+`providers.piNative.piMaxRetries` (0–8, default 2) sizes SDK retries before a
+response starts; zero disables budgeted retries. A connection lost before
+response headers may be re-sent even if the provider received the request:
+this is standard SDK behavior and may leave usage unreported.
+
+The shared HTTP retry policy handles connection errors, HTTP 408/409/429/5xx,
+and provider `x-should-retry`, `Retry-After` and `retry-after-ms` headers.
+Provider-requested delays above `maxRetryDelayMs` fail rather than sleeping past
+the cap. With this shared policy, each assistant request has at most `N + 1`
+pre-response requests per router attempt: 3 with the default, or 6 across
+`primaryAttempts: 2` before advancing the chain. **Codex differs:**
+`openai-codex` uses its own retry classification and exponential backoff, and can
+fall back from websocket to SSE independently of this retry budget. The shared
+policy's classification and request-count bound do not cover that fallback.
+
+The driver never retries a settled response; failed-response journaling and
+reported usage are preserved. A response that fails after streaming starts is
+not repeated by this SDK layer; configured router fallback or re-attempt rules
+still apply to failed turns. Durable native Web turns are primary-only, without
+router fallback or re-attempt. SDK retries do not replay tools or whole turns;
+several assistant requests can exceed a per-request budget. Provider checks,
+compaction summaries and handoff summaries force SSE with zero retries, avoiding
+Codex websocket-to-SSE re-sends and keeping each generation single-request.
+The harness's one-shot session-resume retry is disjoint: it
 fires on `session_not_found` / `session_busy`, which never retry at the router.
 
 ## What failover does

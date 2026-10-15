@@ -440,13 +440,13 @@ describe("console-requested restart parent interruption", () => {
         s.updateAgent({ ...s.agent(), source: { ...s.agent().source, pid: 456,
           startedAt: "2026-09-23T11:00:00.000Z" } });
         await settle(s.service);
-        await vi.waitFor(() => expect(turnCalls).toBe(2));
+        expect(turnCalls).toBe(1);
         expect(db.prepare("SELECT wake_key FROM parent_turn_interruptions").all()).toEqual([
           { wake_key: expect.stringMatching(/^parent-interruption:agent-one:/u) },
         ]);
         await settle(s.service);
         expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(1);
-        expect(turnCalls).toBe(2);
+        expect(turnCalls).toBe(1);
         expect(s.service.store.getThreadDetail(thread.id)?.messages.filter((message) =>
           message.parts.some((part) => part.type === "text" && part.text.includes("AgentManage inspect"))))
           .toHaveLength(1);

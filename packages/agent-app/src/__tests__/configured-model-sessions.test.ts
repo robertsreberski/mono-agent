@@ -6,9 +6,9 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeRunOptions, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 const execute = vi.hoisted(() => vi.fn());
-vi.mock("@mono-agent/agent-runtime/ai/runtime/registry.js", async (original) => ({
-  ...await original<typeof import("@mono-agent/agent-runtime/ai/runtime/registry.js")>(),
-  resolveRuntimeBridge: async () => ({ id: "session-attribution-test", execute }),
+vi.mock("../../../agent-runtime/src/ai/providers/engine-turn.js", async (original) => ({
+  ...await original<Record<string, unknown>>(),
+  engineTurnAdapter: { id: "session-attribution-test", execute },
 }));
 const { createRequestModelOverrideRuntimeExtension } = await import("../request-model-override.js");
 const { createConfiguredAgentHarness, createConfiguredAgentRuntime } = await import("../index.js");

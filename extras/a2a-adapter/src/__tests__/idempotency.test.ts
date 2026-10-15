@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -949,6 +949,90 @@ describe("durable A2A logical dispatch idempotency", () => {
     }
   });
 
+  it.each(["afterRecordLinkScan", "afterRecordRead"] as const)(
+    "keeps a concurrent admission in doubt when acceptance replaces the record at %s",
+    async (readHook) => {
+      const stateDir = await temporaryStateDir();
+      const options = testIdempotencyOptions(stateDir);
+      const published = deferred<void>();
+      const releasePublisher = deferred<void>();
+      const readerPaused = deferred<void>();
+      const releaseReader = deferred<void>();
+      const attempts: number[] = [];
+      let delegateCalls = 0;
+      const accepted = testTask("replacement-accepted-task", TaskState.TASK_STATE_SUBMITTED, "accepted");
+      const delegate = {
+        async sendMessage() {
+          delegateCalls += 1;
+          return accepted;
+        },
+      } as unknown as A2ARequestHandler;
+      const owner = await createIdempotentA2ARequestHandler({
+        delegate,
+        taskStore: new InMemoryTaskStore(),
+        options,
+        storeHooks: {
+          async afterAdmissionPublish() {
+            published.resolve();
+            await releasePublisher.promise;
+          },
+        },
+      });
+      const sibling = await createIdempotentA2ARequestHandler({
+        delegate,
+        taskStore: new InMemoryTaskStore(),
+        options,
+        storeHooks: {
+          async afterRecordOpen({ attempt }) {
+            attempts.push(attempt);
+          },
+          async [readHook]() {
+            if (attempts.length === 1) {
+              readerPaused.resolve();
+              await releaseReader.promise;
+            }
+          },
+        },
+      });
+      const request = testDirectRequest(`logical-acceptance-replacement-${readHook}`, "one admission");
+      request.configuration!.returnImmediately = true;
+      const ownerOutcome = captureOutcome(owner.sendMessage(request, testServerCallContext()));
+      let siblingOutcome: Promise<CapturedOutcome<Message | Task>> | undefined;
+
+      try {
+        await expectMilestoneBeforeSettlement(published.promise, ownerOutcome, "admission publication");
+        const recordPath = await onlyRecordPath(stateDir);
+        const originalIdentity = await stat(recordPath);
+        expect(originalIdentity.nlink).toBe(2);
+        siblingOutcome = captureOutcome(sibling.sendMessage(request, testServerCallContext()));
+        await expectMilestoneBeforeSettlement(readerPaused.promise, siblingOutcome, "concurrent read");
+        releasePublisher.resolve();
+        expect(await ownerOutcome).toMatchObject({ status: "fulfilled", value: accepted });
+        expect((await stat(recordPath)).ino).not.toBe(originalIdentity.ino);
+        expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({
+          status: "active",
+          acceptedResult: { id: accepted.id },
+        });
+        releaseReader.resolve();
+        const result = await siblingOutcome;
+        expect(result.status).toBe("rejected");
+        if (result.status !== "rejected" || !(result.reason instanceof Error)) {
+          throw new Error("Expected the replaced active admission to remain in doubt.");
+        }
+        expect(classifyA2AIdempotencyTransportError(result.reason.message)).toBe("in_doubt");
+        expect(attempts).toEqual([1, 2]);
+        expect(delegateCalls).toBe(1);
+        expect((await readdir(join(stateDir, "slots"))).filter((name) => /^slot-/u.test(name)))
+          .toHaveLength(1);
+      } finally {
+        releasePublisher.resolve();
+        releaseReader.resolve();
+        beginA2AIdempotencyShutdown(owner);
+        await Promise.allSettled([ownerOutcome, ...(siblingOutcome === undefined ? [] : [siblingOutcome])]);
+      }
+    },
+  );
+
   it("publishes a complete admission before a concurrent provider can observe it", async () => {
     const stateDir = await temporaryStateDir();
     const beforePublication = deferred<void>();
@@ -1448,6 +1532,131 @@ describe("durable A2A logical dispatch idempotency", () => {
       await pausedCreation;
     }
   });
+
+  it("securely reopens a canonical record compacted after its bytes are read", async () => {
+    const stateDir = await temporaryStateDir();
+    const options = testIdempotencyOptions(stateDir);
+    const key = "logical-compaction-after-read-1";
+    const request = testDirectRequest(key, "never reuse this receipt");
+    const seed = await createIdempotentA2ARequestHandler({
+      delegate: {
+        async sendMessage() {
+          return testTerminalMessage("compaction-after-read-seed", "seed result");
+        },
+      } as unknown as A2ARequestHandler,
+      taskStore: new InMemoryTaskStore(),
+      options,
+    });
+    await seed.sendMessage(request, testServerCallContext());
+    const recordPath = await onlyRecordPath(stateDir);
+    const record = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
+    record.updatedAtMs = Date.now() - 61_000;
+    await writeFile(recordPath, `${JSON.stringify(record)}\n`);
+
+    const bytesRead = deferred<void>();
+    const releaseReader = deferred<void>();
+    const attempts: number[] = [];
+    let successorCalls = 0;
+    const successor = {
+      async sendMessage() {
+        successorCalls += 1;
+        return testTerminalMessage("unexpected-after-read-successor", "must not run");
+      },
+    } as unknown as A2ARequestHandler;
+    const pausedCreation = captureOutcome(createIdempotentA2ARequestHandler({
+      delegate: successor,
+      taskStore: new InMemoryTaskStore(),
+      options,
+      storeHooks: {
+        async afterRecordOpen({ attempt }) {
+          attempts.push(attempt);
+        },
+        async afterRecordRead() {
+          if (attempts.length === 1) {
+            bytesRead.resolve();
+            await releaseReader.promise;
+          }
+        },
+      },
+    }));
+
+    try {
+      await expectMilestoneBeforeSettlement(bytesRead.promise, pausedCreation, "expired record read");
+      const oldIdentity = await stat(recordPath);
+      const sibling = await createIdempotentA2ARequestHandler({
+        delegate: successor,
+        taskStore: new InMemoryTaskStore(),
+        options,
+      });
+      expect((await stat(recordPath)).ino).not.toBe(oldIdentity.ino);
+      expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({ status: "tombstone" });
+      releaseReader.resolve();
+      const result = await pausedCreation;
+      expect(result.status).toBe("fulfilled");
+      if (result.status !== "fulfilled") {
+        throw result.reason;
+      }
+      expect(attempts.slice(0, 2)).toEqual([1, 2]);
+      for (const handler of [result.value, sibling]) {
+        const outcome = await captureOutcome(handler.sendMessage(request, testServerCallContext()));
+        expect(outcome.status).toBe("rejected");
+        if (outcome.status !== "rejected" || !(outcome.reason instanceof Error)) {
+          throw new Error("Expected the compacted receipt to stay expired.");
+        }
+        expect(classifyA2AIdempotencyTransportError(outcome.reason.message)).toBe("result_expired");
+      }
+      expect(successorCalls).toBe(0);
+    } finally {
+      releaseReader.resolve();
+      await pausedCreation;
+    }
+  });
+
+  it.each(["hard link", "symlink", "permissions"] as const)(
+    "still rejects an unsafe canonical record after reading its bytes: %s",
+    async (mutation) => {
+      const stateDir = await temporaryStateDir();
+      const options = testIdempotencyOptions(stateDir);
+      let delegateCalls = 0;
+      const delegate = {
+        async sendMessage() {
+          delegateCalls += 1;
+          return testTerminalMessage("unsafe-read-seed", "seed result");
+        },
+      } as unknown as A2ARequestHandler;
+      const seed = await createIdempotentA2ARequestHandler({
+        delegate,
+        taskStore: new InMemoryTaskStore(),
+        options,
+      });
+      await seed.sendMessage(testDirectRequest("logical-unsafe-read-1", "safe seed"), testServerCallContext());
+      const recordPath = await onlyRecordPath(stateDir);
+      let reads = 0;
+      await expect(createIdempotentA2ARequestHandler({
+        delegate,
+        taskStore: new InMemoryTaskStore(),
+        options,
+        storeHooks: {
+          async afterRecordRead() {
+            reads += 1;
+            if (mutation === "hard link") {
+              await link(recordPath, join(stateDir, "untrusted-link"));
+            } else if (mutation === "symlink") {
+              await rename(recordPath, join(stateDir, "unsafe-target"));
+              await symlink("unsafe-target", recordPath);
+            } else {
+              await chmod(recordPath, 0o644);
+            }
+          },
+        },
+      })).rejects.toMatchObject({
+        code: "idempotency_store_error",
+        details: { reason: "record identity or permissions are unsafe" },
+      });
+      expect(reads).toBe(1);
+      expect(delegateCalls).toBe(1);
+    },
+  );
 
   it("fails closed after bounded canonical record replacement churn", async () => {
     const stateDir = await temporaryStateDir();

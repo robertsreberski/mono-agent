@@ -180,8 +180,9 @@ describe("createRuntime + observers integration", () => {
   it("forwards host.observers and options.observers to bridge execute via the hub", async () => {
     const executeMock = vi.fn().mockResolvedValue({ text: "ok" });
     vi.resetModules();
-    vi.doMock("../../ai/runtime/registry.js", () => ({
-      resolveRuntimeBridge: async () => ({ id: "stub", execute: executeMock }),
+    vi.doMock("../../ai/providers/engine-turn.js", async (importOriginal) => ({
+      ...await importOriginal(),
+      engineTurnAdapter: { id: "stub", execute: executeMock },
     }));
     const { createRuntime } = await import("../../runtime.js");
     const hostObs = { recordEvent: vi.fn() };
@@ -201,6 +202,6 @@ describe("createRuntime + observers integration", () => {
     expect(hostObs.recordEvent).toHaveBeenCalledTimes(1);
     expect(callObs.recordEvent).toHaveBeenCalledTimes(1);
     expect(onEvent).toHaveBeenCalledTimes(1);
-    vi.doUnmock("../../ai/runtime/registry.js");
+    vi.doUnmock("../../ai/providers/engine-turn.js");
   });
 });

@@ -37,7 +37,7 @@ The composable factory behind an adapter (e.g. `createTelegramChannelDriver`, or
 
 ## Context compaction
 
-When a turn approaches the model's context window, the pi bridge drives `AgentHarness.compact()` — proactively at a model-window-derived trigger and reactively with one re-prompt only after a preview proves positive reduction. Rejected previews and empty or output-truncated summaries are not persisted. Summary preparation preserves bounded tool-result tails, confirmed built-in file operations and a supplemental focus on active constraints and unfinished work. Operation accounting separates summary cost from assistant requests. Pi supports native checkpoint/overflow compaction, which mono-agent deliberately disables. Configure the adaptive policy through `runtime.compaction.*`; numeric and generic provider overflows lower a learned process-local ceiling. Runs report request estimates and before/after effectiveness. Persistent overflow is `context_limit` and may advance to the next configured fallback. See [Tools and guards](/runtime/tools-and-guards/).
+When a turn approaches the model's context window, the pi bridge drives `compact()` (formerly `AgentHarness.compact()`) — proactively at a model-window-derived trigger and reactively with one re-prompt only after a preview proves positive reduction. Rejected previews and empty or output-truncated summaries are not persisted. Summary preparation preserves bounded tool-result tails, confirmed built-in file operations and a supplemental focus on active constraints and unfinished work. Operation accounting separates summary cost from assistant requests. Pi supports native checkpoint/overflow compaction, which mono-agent deliberately disables. Configure the adaptive policy through `runtime.compaction.*`; numeric and generic provider overflows lower a learned process-local ceiling. Runs report request estimates and before/after effectiveness. Persistent overflow is `context_limit` and may advance to the next configured fallback. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## Entity graph
 
@@ -75,7 +75,7 @@ The string that names a provider and model together, in the form `<provider>:<mo
 
 ## Provider session
 
-A continuous, per-conversation session against the provider, kept warm and evicted after idle time so follow-up turns resume without re-sending full history. Configured via `runtime.session.mode` and `runtime.session.idleTimeoutMs`; pi-native sessions can be persisted to JSONL via `providers.piNative.piSessionsRoot`. See [Sessions and concurrency](/runtime/sessions-concurrency/).
+A continuous, per-conversation session against the provider, kept warm and evicted after idle time so follow-up turns resume without re-sending full history. Configured via `runtime.session.mode` and `runtime.session.idleTimeoutMs`; native engine sessions can be persisted to JSONL via `providers.piNative.piSessionsRoot`. See [Sessions and concurrency](/runtime/sessions-concurrency/).
 
 ## Rapid-log
 
@@ -95,7 +95,7 @@ Reciprocal Rank Fusion — the method the journal and BuJo tiers use to combine 
 
 ## Runtime bridge
 
-The provider-specific glue (the pi-native bridge) that translates harness operations into a provider's API: it drives compaction, applies retry/session behavior, and emits the `provider_bridge_latency` event separating provider/tool/IO time from harness overhead. See [Providers](/runtime/providers/).
+The provider-specific glue (the engine-turn adapter) that translates harness operations into a provider's API: it drives compaction, applies retry/session behavior, and emits the `provider_bridge_latency` event separating provider/tool/IO time from harness overhead. See [Providers](/runtime/providers/).
 
 ## Salience
 

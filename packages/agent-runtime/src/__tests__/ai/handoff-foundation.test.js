@@ -1,13 +1,13 @@
 import { SessionStore } from "../../../../engine/dist/session-store.js";
 import { createTurnBinding } from "../../../../engine/dist/turn-evidence.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { it, expect, vi, afterEach } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { produceNativeHandoffSummary } from "../../ai/providers/pi-native/handoff-producer.js";
-import { detachDurableNativeSession, retireDurableNativeSession, resolveDurableNativeSessionRepo, reconcileNativeSessionTurn } from "../../ai/providers/pi-native/session-lifecycle.js";
+import { produceNativeHandoffSummary } from "../../ai/providers/engine-turn/handoff-producer.js";
+import { detachDurableNativeSession, retireDurableNativeSession, resolveDurableNativeSessionRepo, reconcileNativeSessionTurn } from "../../ai/providers/engine-turn/session-lifecycle.js";
 
 const summary = { intent: ["Fictional intent"], constraints: ["No approval"], decisions: [], completedWork: [], failures: [], openWork: ["Verify unknown effects"], nextActions: [], references: [] };
 const prepared = { status: "prepared", older: [], recent: [], ledger: [{ outcome: "unknown" }], coverage: [] };
@@ -15,12 +15,12 @@ const model = { provider: "fictional", id: "summary", api: "fictional-api", cont
 const response = (content = JSON.stringify(summary), stopReason = "stop") => ({ content: [{ type: "text", text: content }], stopReason, usage: { input: 20, output: 10, cost: { total: 0 } } });
 it("uses exactly one selected no-tools completion and returns accounting without retry/fallback", async () => {
   const completeSimple = vi.fn(async (..._args) => response());
-  expect(await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000, completionOptions: { maxRetries: 9 } })).toMatchObject({ status: "ready", summary, usage: { input: 20, output: 10 } });
+  expect(await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000, completionOptions: { transport: "websocket", maxRetries: 9 } })).toMatchObject({ status: "ready", summary, usage: { input: 20, output: 10 } });
   expect(completeSimple).toHaveBeenCalledTimes(1);
   expect(completeSimple.mock.calls[0][0]).toBe(model);
   expect(completeSimple.mock.calls[0][1].tools).toEqual([]);
   expect(completeSimple.mock.calls[0][2].maxTokens).toBe(1000);
-  expect(completeSimple.mock.calls[0][2].maxRetries).toBe(0);
+  expect(completeSimple.mock.calls[0][2]).toMatchObject({ transport: "sse", maxRetries: 0 });
 });
 it.each([["", "stop"], ["{}", "stop"], [JSON.stringify(summary), "length"], [JSON.stringify(summary), "aborted"], [JSON.stringify(summary), "error"]])("rejects malformed/empty/truncated/aborted/error summaries without repeat (%s, %s)", async (content, stopReason) => {
   const completeSimple = vi.fn(async () => response(content, stopReason));
@@ -59,7 +59,7 @@ it("refuses preserving detach during real native dispatch, then detaches the idl
     return faux.provider.streamSimple(selected, context, options);
   } });
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional complete response")])]);
-  const result = await generatePiNativeResponse("Fictional rules", { model: { provider: "detach-fixture", model: "fixture", reference: "detach-fixture:fixture" },
+  const result = await generateEngineTurnResponse("Fictional rules", { model: { provider: "detach-fixture", model: "fixture", reference: "detach-fixture:fixture" },
     piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "busy-fixture", piSessionsRoot: root,
     sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
   expect(result.error).toBeNull(); expect(/** @type {any} */ (await attempt).error.code).toBe("ERR_HARNESS_WRITER_BUSY");
@@ -72,7 +72,7 @@ it("accepts a successful non-truncated summary even when bytes/3 exceeds the com
   const completeSimple = vi.fn(async (..._args) => response(JSON.stringify(large)));
   const result = await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000 });
   expect(result).toMatchObject({ status: "ready", summary: large });
-  expect(completeSimple.mock.calls[0][2]).toMatchObject({ maxTokens: 1000, maxRetries: 0 });
+  expect(completeSimple.mock.calls[0][2]).toMatchObject({ maxTokens: 1000, transport: "sse", maxRetries: 0 });
 });
 it.each(["find", "create"])("refuses detach during in-flight cold %s before an idle handle exists", async (phase) => {
   const root = await mkdtemp(join(tmpdir(), "native-detach-cold-fixture-")); roots.push(root);
@@ -85,7 +85,7 @@ it.each(["find", "create"])("refuses detach during in-flight cold %s before an i
   const spy = vi.spyOn(repo, phase).mockImplementationOnce(async (...args) => { reached(); await gate; return original(...args); });
   const faux = fauxProvider({ provider: "cold-fixture", models: [{ id: "fixture" }] }); const models = createModels(); models.setProvider(faux.provider);
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional cold response")])]);
-  const running = generatePiNativeResponse("Fictional rules", { model: { provider: "cold-fixture", model: "fixture", reference: "cold-fixture:fixture" },
+  const running = generateEngineTurnResponse("Fictional rules", { model: { provider: "cold-fixture", model: "fixture", reference: "cold-fixture:fixture" },
     piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "cold-fixture", piSessionsRoot: root,
     sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
   try {

@@ -177,7 +177,7 @@ applied). When only `Agent` is allowed, it keeps its stateless schema and the
 Session envelope omits instance guidance. `Agent({name: "researcher", prompt: "Review the design", persist: true,
 id: "reviewer"})` creates an instance and runs its first turn.
 `AgentManage({id: "reviewer", message: "Now check this revision"})` resumes its own
-Pi-native durable session. The parent transcript is never seeded into the child.
+engine-turn durable session. The parent transcript is never seeded into the child.
 The selected model, effort, prompt, and profile are retained for that instance.
 The tool copy states that a child is stateless by default and that `persist`
 is for a child the parent will actually continue: a persistent instance holds
@@ -330,7 +330,7 @@ Both tools share one loss-aware process runner. It:
   and truncation metadata without copying the command or argv into timing
   telemetry.
 
-`background` is absent from both schemas unless an enabled Pi-native host
+`background` is absent from both schemas unless an enabled engine-turn host
 injects an available process-job controller for the exact request. With no
 controller, schemas and foreground behavior are unchanged. With one,
 `background: true` hands the already sandbox-prepared command to the host and
@@ -412,7 +412,7 @@ changes do not prove cache misses, and delta/unsupported prefix comparisons rema
 unknown. Summary requests keep Pi's existing disabled-cache setting.
 
 
-Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge owns the decision in all three cases:
+Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the engine-turn adapter, the bridge owns the decision in all three cases:
 
 - **Proactively** — before a turn when the running model is near its context window.
 - **Mid-run** — between completed model/tool rounds of a single turn, so a long
@@ -456,7 +456,7 @@ activity is reported separately as `context_compaction_midrun_armed`,
 request still exceeds the primary model's window, the run is classified as
 `context_limit`; the fallback router may then try the next configured model.
 
-This is automatic and configurable on the Pi-native bridge. Defaults resolve against the effective context window `W`: trigger ratio `0.90`, safety headroom
+This is automatic and configurable on the engine-turn adapter. Defaults resolve against the effective context window `W`: trigger ratio `0.90`, safety headroom
 `clamp(floor(W × 0.10), 16000, 48000)`, retained context
 `clamp(floor(W × 0.10), 4000, 20000)`, summary output
 `clamp(floor(W × 0.04), 2000, 12000)`, and minimum proactive savings
@@ -490,7 +490,7 @@ See [Local-first web research](/tools/web-research/) for the backend, extraction
 isolation, and config contract.
 
 :::tip
-This is distinct from provider-transport retries (`providers.piNative.piMaxRetries` / `maxRetryDelayMs`), which retry the model call itself. WebFetch retry is local to the tool's HTTP request. See [Fallback](/runtime/fallback/) for provider-level retry and failover.
+This is distinct from pre-response provider SDK retries (`providers.piNative.piMaxRetries` / `maxRetryDelayMs`), which retry the model call itself. WebFetch retry is local to the tool's HTTP request. See [Fallback](/runtime/fallback/) for provider-level retry and failover.
 :::
 
 ## Tool scheduling (code-only)

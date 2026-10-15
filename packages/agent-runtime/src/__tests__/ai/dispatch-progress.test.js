@@ -3,12 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { createDispatchProgress, isDispatchProgress, withDispatchProgress } from "../../ai/providers/pi-native/dispatch-progress.js";
-import * as sessionAdapter from "../../ai/providers/pi-native/harness-adapter.js";
-import * as sessionLifecycle from "../../ai/providers/pi-native/session-lifecycle.js";
+import { createDispatchProgress, isDispatchProgress, withDispatchProgress } from "../../ai/providers/engine-turn/dispatch-progress.js";
+import * as sessionAdapter from "../../ai/providers/engine-turn/engine-adapter.js";
+import * as sessionLifecycle from "../../ai/providers/engine-turn/session-lifecycle.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
-import { activateTurnHarness, startLiveInput } from "../../ai/providers/pi-native/turn-runner.js";
-import { generatePiNativeResponse, preparePiNativeDispatch } from "../../ai/providers/pi-native.js";
+import { activateTurnHarness, startLiveInput } from "../../ai/providers/engine-turn/turn-runner.js";
+import { generateEngineTurnResponse, preparePiNativeDispatch } from "../../ai/providers/engine-turn.js";
 
 const cleanups = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
@@ -54,7 +54,7 @@ it.each([false, true])("stamps real direct/prepared execution after replay seedi
   const options = { ...f.options, messages: [{ role: "assistant", content: "Fictional earlier answer" }, ...f.options.messages] };
   const lease = prepared ? await preparePiNativeDispatch("Fictional rules", options) : undefined;
   if (lease) cleanups.push(() => lease.close());
-  const result = lease ? await lease.run() : await generatePiNativeResponse("Fictional rules", options);
+  const result = lease ? await lease.run() : await generateEngineTurnResponse("Fictional rules", options);
   expect(result.dispatchProgress).toEqual({ version: 1, armed: true, toolAdmitted: false, liveInputTaken: false });
   expect(Object.isFrozen(result.dispatchProgress)).toBe(true);
 });
@@ -64,7 +64,7 @@ it.each(["abort", "invalid descriptor", "no output error", "tool then error"])("
   const controller = new AbortController(); if (path === "abort") controller.abort();
   const failure = fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional connection failure" });
   f.faux.setResponses(path === "tool then error" ? [fauxAssistantMessage([fauxToolCall("Read", { file_path: join(f.root, "fictional-missing.txt") })]), failure] : [failure]);
-  const result = await generatePiNativeResponse("Fictional rules", { ...f.options, messages: [{ role: "assistant", content: "Fictional restored output" }, ...f.options.messages], abortSignal: controller.signal,
+  const result = await generateEngineTurnResponse("Fictional rules", { ...f.options, messages: [{ role: "assistant", content: "Fictional restored output" }, ...f.options.messages], abortSignal: controller.signal,
     ...(path === "invalid descriptor" ? { sessionTurn: { kind: "invalid" } } : {}), ...(path === "tool then error" ? { allowedTools: ["Read"] } : {}) });
   expect(isDispatchProgress(result.dispatchProgress)).toBe(true);
   if (path !== "abort") expect(result.error).toBeTruthy();
@@ -76,7 +76,7 @@ it.each(["abort", "invalid descriptor", "no output error", "tool then error"])("
 it("stamps the native catch result without treating seeded history as output", async () => {
   const f = await fixture();
   vi.spyOn(f.faux.provider, "streamSimple").mockImplementation(() => { throw new Error("Fictional provider exception"); });
-  const result = await generatePiNativeResponse("Fictional rules", { ...f.options, messages: [{ role: "assistant", content: "Fictional seeded answer" }, ...f.options.messages] });
+  const result = await generateEngineTurnResponse("Fictional rules", { ...f.options, messages: [{ role: "assistant", content: "Fictional seeded answer" }, ...f.options.messages] });
   expect(result.error).toBeTruthy(); expect(result.dispatchProgress).toEqual({ version: 1, armed: true, toolAdmitted: false, liveInputTaken: false });
 });
 
@@ -113,7 +113,7 @@ it("retains before-tool evidence when native cleanup throws, blocking retry and 
   vi.spyOn(sessionLifecycle, "commitSession").mockRejectedValue(new Error("Fictional settlement failure after admission"));
   const cleanup = vi.spyOn(sessionLifecycle, "cleanupSessionOnThrow").mockRejectedValue(new Error("Connection error."));
   f.faux.setResponses([fauxAssistantMessage([fauxToolCall("Read", { file_path: join(f.root, "fictional-missing.txt") })])]);
-  const primaryRun = vi.fn((prompt, options) => generatePiNativeResponse(prompt, { ...f.options, ...options, allowedTools: ["Read"] })), backupRun = vi.fn();
+  const primaryRun = vi.fn((prompt, options) => generateEngineTurnResponse(prompt, { ...f.options, ...options, allowedTools: ["Read"] })), backupRun = vi.fn();
   const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 2 }, { provider: "anthropic", model: "fictional-backup", reference: "anthropic:fictional-backup" }], retry: { backoffMs: 0, maxBackoffMs: 0 },
     resolveAttempt: ({ attemptIndex }) => ({ runtime: { configureTools() {}, run: attemptIndex ? backupRun : primaryRun } }) });
   const events = [], result = await router.run("Fictional rules", { ...f.options, onEvent: (event) => events.push(event) });
@@ -129,7 +129,7 @@ it("counts a before-tool hook-blocked call conservatively without executing it",
   const f = await fixture(), blocked = vi.fn(() => ({ block: { reason: "Fictional blocked admission", terminate: true } })), execute = vi.fn();
   beforeToolHook(blocked, { execute });
   f.faux.setResponses([fauxAssistantMessage([fauxToolCall("Read", { file_path: join(f.root, "fictional-missing.txt") })])]);
-  const result = await generatePiNativeResponse("Fictional rules", { ...f.options, allowedTools: ["Read"] });
+  const result = await generateEngineTurnResponse("Fictional rules", { ...f.options, allowedTools: ["Read"] });
   expect(blocked, String(result.error)).toHaveBeenCalledOnce(); expect(result.dispatchProgress.toolAdmitted).toBe(true);
   expect(execute).not.toHaveBeenCalled();
 });
@@ -138,7 +138,7 @@ it("blocks a real faux-Pi backup after yielded live input and provider failure",
   const f = await fixture(), yielded = Promise.withResolvers(), backupRun = vi.fn();
   f.faux.setResponses([async () => { await yielded.promise; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Connection error." }); }]);
   const liveInput = { async *[Symbol.asyncIterator]() { yielded.resolve(); yield { id: "fictional-live", body: "Fictional guidance" }; } };
-  const primaryRun = vi.fn((prompt, options) => generatePiNativeResponse(prompt, { ...f.options, ...options }));
+  const primaryRun = vi.fn((prompt, options) => generateEngineTurnResponse(prompt, { ...f.options, ...options }));
   const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 2 }, { provider: "anthropic", model: "fictional-backup", reference: "anthropic:fictional-backup" }], retry: { backoffMs: 0, maxBackoffMs: 0 },
     resolveAttempt: ({ attemptIndex }) => ({ runtime: { configureTools() {}, run: attemptIndex ? backupRun : primaryRun } }) });
   const result = await router.run("Fictional rules", { ...f.options, liveInput });

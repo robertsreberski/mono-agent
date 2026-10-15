@@ -152,8 +152,8 @@ export function prepareHandoff(view, options) {
   const older = turns.slice(0, turns.length - recent.length);
   while (recent.length > 1 && estimateHandoffTokens({ ledger, recent }) > options.budget.historyAllowance / 2) older.push(recent.shift());
   const checkpoints = view.segments.flatMap((s) => s.entries.filter((e) => e.type === "compaction").map((e) => ({
-    journalId: s.descriptor.journalId, id: e.id, summary: renderHandoffMessage(e.checkpoint?.summaryMessage ?? { role: "compactionSummary", summary: e.summary }),
-    coverage: e.checkpoint?.coverage ?? null, inheritedCoverage: e.checkpoint?.inheritedCoverage ?? null,
+    journalId: s.descriptor.journalId, id: e.id, summary: renderHandoffMessage(e.checkpoint.summaryMessage),
+    coverage: e.checkpoint.coverage, inheritedCoverage: e.checkpoint.inheritedCoverage ?? null,
   })));
   // The inherited prior handoff is producer evidence only, never nested again.
   const prior = view.prior ? { summary: view.prior.summary, checkpoint: view.prior.checkpoint, recent: view.prior.recent, ledger: view.prior.ledger } : null;
@@ -181,7 +181,7 @@ export function buildHandoff(view, options) {
     // is dropped when a validated composed checkpoint covers it exactly.
     checkpoint = { summary: validateHandoffSummary(priorSummary), ledger: prior.ledger,
       suffix: [...(prior.summary || composed ? [] : prior.checkpoint.suffix), ...view.segments.flatMap((s) => s.entries.map((e) => ({ id: e.id, ...renderHandoffMessage(e.type === "message" ? e.message
-        : e.checkpoint?.summaryMessage ?? { role: "compactionSummary", summary: e.summary }) })))] };
+        : e.checkpoint.summaryMessage) })))] };
     recent = recent.slice(-1); // the complete suffix already carries every earlier group
   }
   const artifact = { version: 1, policy: HANDOFF_POLICY, coverage: prepared.coverage, summary, checkpoint,

@@ -10,7 +10,7 @@ import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime, createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
-import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../../agent-runtime/src/ai/providers/engine-turn.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -19,7 +19,8 @@ import { acquireContinuationStoreLock, writeJsonAtomic } from "../continuation-s
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { openProcessJobsService, type ProcessJobsServiceHandle, type ProcessJobWakeInput } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
-import { openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
+import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
+import { hasSubagentObligation } from "../subagent-execution-ownership.js";
 import { launchInternalProcessJob } from "../process-jobs-internal.js";
 // @ts-expect-error Private kernel test seam.
 import { createAgentTool, subagentUsageForRun } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
@@ -69,6 +70,69 @@ const done = async (service: ProcessJobsServiceHandle, id: string) => {
   if (job.kind !== "internal") throw new Error("Expected an internal subagent job");
   return job;
 };
+
+// Captured before any case fakes timers: these waits measure real durable I/O.
+const realSetTimeout = globalThis.setTimeout;
+const realDelay = (ms: number) => new Promise<void>((done) => { realSetTimeout(done, ms); });
+// The parent-stop proof polls the store every 20ms for at most 4s.
+const STOP_PROOF_POLL_MS = 20;
+const STOP_PROOF_WINDOW_MS = 4_000;
+/**
+ * A settled parent-stop receipt exists only when durable settlement beats the
+ * product's bounded stop window: a 4s proof poll inside the 6s tool deadline.
+ * Under package load the same settlement has taken longer, and the product then
+ * honestly answers with an incomplete receipt. Cases asserting the settled
+ * receipt freeze the stop clocks, wait in real time for the exact durable state
+ * the proof polls for, and only then let the proof observe it. The product
+ * deadline is unchanged, and the receipt must still arrive inside its window.
+ */
+async function stopObservingDurableSettlement(store: Awaited<ReturnType<typeof openProcessJobStore>>, jobId: string,
+  stop: () => Promise<any>): Promise<any> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  const frozenAt = Date.now();
+  try {
+    let answered = false;
+    const stopping = stop().finally(() => { answered = true; });
+    const deadline = performance.now() + DURABLE_DELIVERY_TIMEOUT_MS;
+    for (;;) {
+      const record = await store.get(jobId);
+      if (record && isTerminalProcessJobState(record.state) && !hasSubagentObligation(record)) break;
+      if (performance.now() >= deadline) throw new Error(`Process job ${jobId} did not settle durably within ${DURABLE_DELIVERY_TIMEOUT_MS}ms.`);
+      await realDelay(STOP_PROOF_POLL_MS);
+    }
+    while (!answered) {
+      // With only the 6s tool deadline pending, the proof is in real I/O: advance nothing.
+      if (vi.getTimerCount() > 1) await vi.advanceTimersByTimeAsync(STOP_PROOF_POLL_MS);
+      await realDelay(STOP_PROOF_POLL_MS);
+    }
+    const receipt = await stopping;
+    expect(Date.now() - frozenAt).toBeLessThan(STOP_PROOF_WINDOW_MS);
+    return receipt;
+  } finally { vi.useRealTimers(); }
+}
+
+// Registry latency that holds the late-settlement publication window open.
+const SLOW_REGISTRY_WRITE_MS = 150;
+// About forty registry transactions at that latency, with headroom for load.
+const SLOW_REGISTRY_TIMEOUT_MS = 45_000;
+
+/**
+ * Starts one job with the product's runtime clocks frozen and waits in real
+ * time for its durable wake delivery, so a test-configured short runtime limit
+ * meant for an earlier job cannot expire this one under load.
+ */
+async function deliverWithFrozenClocks(service: ProcessJobsServiceHandle, start: () => Promise<any>): Promise<any> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    const started = await start();
+    const deadline = performance.now() + DURABLE_DELIVERY_TIMEOUT_MS;
+    for (;;) {
+      if ((await service.get(started.details.jobId))?.wake.state === "delivered") return started;
+      if (performance.now() >= deadline) throw new Error(`Process job ${started.details.jobId} was not delivered within ${DURABLE_DELIVERY_TIMEOUT_MS}ms.`);
+      await realDelay(STOP_PROOF_POLL_MS);
+    }
+  } finally { vi.useRealTimers(); }
+}
 
 function processJobSettlement(service: ProcessJobsServiceHandle, jobId: string): Promise<void> {
   const settlement = (service as unknown as { readonly settlements: ReadonlyMap<string, Promise<void>> })
@@ -158,6 +222,120 @@ describe("parent stop", () => {
       successorGate.resolve({ text: "next" }); await done(f.service, successor.details.jobId);
     } finally { gate.resolve({ text: "cleanup" }); }
   }, 40_000);
+  it.each([true, false])("a late parent-stopped result is published with its final disposition while registry writes are slow (retained evidence=%s)", async (retained) => {
+    // True settlement used to bump the publication while the disposition was
+    // still the cancellation grace's provisional unknown one. A publication
+    // queued in that window released the old sequence, dropped the registry's
+    // active turn and left the retained publication stale for good. Slow
+    // registry writes hold that window open deterministically.
+    const slowRegistry: typeof writeJsonAtomic = async (...args: Parameters<typeof writeJsonAtomic>) => { await realDelay(SLOW_REGISTRY_WRITE_MS); return await writeJsonAtomic(...args); };
+    const f = await managedFixture(undefined, {}, false, slowRegistry); const gate = deferred<any>(); let request: any;
+    const run = vi.fn(async (input: any) => { request ??= input; return gate.promise; }); const { agent, send } = tools(f, run);
+    const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: SLOW_REGISTRY_TIMEOUT_MS });
+      await send.execute("stop", { id: "helper", stop: true });
+      // The cancellation grace has published its provisional disposition.
+      await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership).toMatchObject({
+        owner: { settlement: "running" }, disposition: { continuity: "unknown", reason: "cancelled" }, publication: { state: "confirmed" } }), { timeout: SLOW_REGISTRY_TIMEOUT_MS });
+      gate.resolve({ text: "late", subagentContinuity: { turnToken: retained ? request.turnToken : "wrong", state: "retained" } });
+      await vi.waitFor(async () => {
+        const job = await f.store.get(first.details.jobId);
+        expect(job !== undefined && isTerminalProcessJobState(job.state) && !hasSubagentObligation(job)).toBe(true);
+        expect(job?.subagentOwnership).toMatchObject({ owner: { settlement: "settled" },
+          disposition: retained ? { continuity: "retained", resumeAfterStop: true } : { continuity: "unknown", reason: "cancelled" },
+          publication: { state: "confirmed", receiptPending: false, receiptRecorded: job?.subagentOwnership?.publication.sequence } });
+      }, { timeout: SLOW_REGISTRY_TIMEOUT_MS });
+      expect((await done(f.service, first.details.jobId)).state).toBe("cancelled");
+      const record = await f.instances.get("helper");
+      expect(record).toMatchObject({ status: "idle", turns: 1 });
+      expect(f.wake).toHaveBeenCalledOnce();
+      expect(run).toHaveBeenCalledOnce();
+      if (!retained) {
+        // Unknown continuity still fails closed: never resumable, nothing re-run.
+        expect(record?.recoveryBlocked).toBe(true);
+        await expect(send.execute("resume", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
+        expect(run).toHaveBeenCalledOnce();
+        return;
+      }
+      expect(record?.recoveryBlocked).not.toBe(true); expect(record?.recovery).toBeUndefined();
+      // The slot was released exactly once: the resumed turn is admitted and runs.
+      const next = await send.execute("resume", { id: "helper", background: true, message: "next" });
+      await done(f.service, next.details.jobId);
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(f.wake).toHaveBeenCalledTimes(2);
+    } finally { gate.resolve({ text: "cleanup" }); }
+    // Inner waits: three slow-registry waits, two durable deliveries and the
+    // six-second stop receipt; the enclosing budget must exceed them.
+  }, 3 * SLOW_REGISTRY_TIMEOUT_MS + 2 * DURABLE_DELIVERY_TIMEOUT_MS + 15_000);
+  it("reopen recovers a stop certificate stranded behind an older provisional release", async () => {
+    // Reproduces the on-disk state the earlier race left: the registry settled
+    // this turn from an older release with provisional unknown continuity, while
+    // the job's newer retained stop certificate stayed pending forever.
+    const f = await managedFixture(); const gate = deferred<any>(); let request: any; const root = resolve(f.root, "children");
+    let stranded = false;
+    f.service.bindManagedSubagents!({ root,
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        const instances = await f.registry.open(publication.identity.conversationId, { existingOnly: true });
+        if (!stranded && phase === "intent" && publication.released && publication.disposition.resumeAfterStop) {
+          stranded = true;
+          const provisional = { ...publication, disposition: { status: "cancelled" as const, continuity: "unknown" as const, reason: "cancelled" as const } };
+          await instances.publishOwned("intent", provisional); await instances.publishOwned("confirm", provisional);
+          throw new Error("injected stale retained publication");
+        }
+        await instances.publishOwned(phase, publication);
+      } });
+    const run = vi.fn(async (input: any) => { request ??= input; return gate.promise; }); const { agent, send } = tools(f, run);
+    const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    await send.execute("stop", { id: "helper", stop: true });
+    await vi.waitFor(async () => expect((await f.store.get(started.details.jobId))?.subagentOwnership).toMatchObject({
+      owner: { settlement: "running" }, disposition: { continuity: "unknown" }, publication: { state: "confirmed" } }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    // The terminal cancelled-with-child-still-busy state owes the parent its one
+    // completion wake as soon as no publication is pending. Whether it lands
+    // before the late result is a race; hold the result until it is delivered.
+    await vi.waitFor(async () => expect((await f.store.get(started.details.jobId))?.wake).toMatchObject({ state: "delivered", attempts: 1 }),
+      { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    expect(f.wake).toHaveBeenCalledOnce();
+    expect(f.wake.mock.calls[0]![0]).toMatchObject({ projection: { state: "cancelled", childStillBusy: true } });
+    gate.resolve({ text: "late", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+    await vi.waitFor(() => expect(stranded).toBe(true), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    await f.service.stop();
+    // The older binary had also committed the retained certificate one sequence
+    // past the provisional release that reached the registry.
+    await f.store.mutate((records) => {
+      const ownership = records.get(started.details.jobId)!.subagentOwnership!;
+      ownership.publication.sequence++; ownership.publication.state = "pending";
+    });
+    const strandedRecord = await f.instances.get("helper");
+    expect(strandedRecord).toMatchObject({ status: "idle", turns: 1, recoveryBlocked: true, recovery: { continuity: "unknown" } });
+    expect(strandedRecord?.activeTurn).toBeUndefined();
+
+    const reopened = await openProcessJobsService(f.options); services.push(reopened);
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {},
+      ownerForReservation: (jobId) => ({ jobId, storeRoot: reopened.settings.stateDir }),
+      resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity),
+      checkOwnerIndex: (conversationId, known) => reopened.checkSubagentOwnerIndex!(conversationId, known) });
+    reopened.bindManagedSubagents!({ root,
+      verify: async (identity) => await (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => await (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication) });
+    await reopened.activateWakes();
+    // The wake was already delivered, so wait for the stranded certificate's
+    // durable publication itself rather than for wake delivery.
+    await vi.waitFor(async () => {
+      const job = await f.store.get(started.details.jobId);
+      expect(job !== undefined && isTerminalProcessJobState(job.state) && !hasSubagentObligation(job)).toBe(true);
+      expect(job?.subagentOwnership).toMatchObject({ disposition: { continuity: "retained", resumeAfterStop: true },
+        publication: { state: "confirmed", receiptPending: false, receiptRecorded: job?.subagentOwnership?.publication.sequence } });
+    }, { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    const record = await (await registry.open(origin.conversationId)).get("helper");
+    expect(record).toMatchObject({ status: "idle", turns: 1 }); expect(record?.recoveryBlocked).not.toBe(true); expect(record?.recovery).toBeUndefined();
+    // Reopen publishes the repaired certificate without a second completion wake.
+    expect((await f.store.get(started.details.jobId))?.wake).toMatchObject({ state: "delivered", attempts: 1 });
+    expect(f.wake).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
+    // Inner waits: five durable waits and the six-second stop receipt.
+  }, 5 * DURABLE_DELIVERY_TIMEOUT_MS + 15_000);
   it("rearms a newer terminal publication when cancellation grace completes under an older publication", async () => {
     const f = await managedFixture(undefined, { maxRuntimeMs: 60_000 });
     const releaseUnknownConfirm = deferred<void>();
@@ -213,20 +391,25 @@ describe("parent stop", () => {
       vi.useRealTimers();
 
       providerGate.resolve({ text: "late", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+      // Order the late true settlement before the held grace publication resumes.
+      await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership?.owner.settlement).toBe("settled"),
+        { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       releaseUnknownConfirm.resolve();
       const retainedSequence = await retainedConfirmHeld.promise;
+      // True settlement commits the retained stop certificate atomically, so the
+      // grace's own report publishes it before the job turns terminal; the
+      // terminal transition then completes under this older, unreleased
+      // publication.
       await vi.waitFor(async () => {
         const record = await f.store.get(first.details.jobId);
         expect(record).toMatchObject({
-          state: "cancelled",
-          childStillBusy: true,
+          state: "running",
           subagentOwnership: {
             owner: { settlement: "settled" },
             disposition: { status: "cancelled", continuity: "retained", resumeAfterStop: true },
-            publication: { state: "pending" },
+            publication: { state: "pending", sequence: retainedSequence },
           },
         });
-        expect(record!.subagentOwnership!.publication.sequence).toBeGreaterThan(retainedSequence);
       }, { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       expect(await f.instances.get("helper")).toMatchObject({ status: "running", turns: 0 });
       expect(f.wake).not.toHaveBeenCalled();
@@ -237,6 +420,10 @@ describe("parent stop", () => {
       await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership?.publication)
         .toMatchObject({ state: "confirmed", receiptPending: false }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       expect(await done(f.service, first.details.jobId)).toMatchObject({ state: "cancelled", childStillBusy: false });
+      // The terminal transition re-armed a newer, released publication.
+      const finalPublication = (await f.store.get(first.details.jobId))!.subagentOwnership!.publication;
+      expect(finalPublication.sequence).toBeGreaterThan(retainedSequence);
+      expect(finalPublication).toMatchObject({ state: "confirmed", receiptPending: false, receiptRecorded: finalPublication.sequence });
       const settledInstance = await f.instances.get("helper");
       expect(settledInstance).toMatchObject({ status: "idle", turns: 1 });
       expect(settledInstance?.recoveryBlocked).not.toBe(true);
@@ -340,9 +527,12 @@ describe("parent stop", () => {
     const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
     await vi.waitFor(() => expect(request).toBeDefined(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await f.service.cancel(started.details.jobId);
-    const stopping = send.execute("stop", { id: "helper", stop: true });
-    gate.resolve({ text: "partial", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
-    expect((await stopping).details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: false });
+    const receipt = await stopObservingDurableSettlement(f.store, started.details.jobId, () => {
+      const stopping = send.execute("stop", { id: "helper", stop: true });
+      gate.resolve({ text: "partial", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+      return stopping;
+    });
+    expect(receipt.details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: false });
     expect((await f.store.get(started.details.jobId))?.subagentOwnership?.parentStopRequested).not.toBe(true);
     await expect(send.execute("resume", { id: "helper", message: "no" })).rejects.toThrow("subagent_recovery_required");
   }, 30_000);
@@ -360,10 +550,11 @@ describe("parent stop", () => {
   it.each([undefined, { turnToken: "wrong", state: "retained" }])("missing/mismatched recovery evidence never authorizes resume: %j", async (continuity) => {
     const f = await managedFixture(); const entered = deferred<void>();
     const { agent, send } = tools(f, async (request: any) => { entered.resolve(); await new Promise<void>((resolve) => request.abortSignal.addEventListener("abort", () => resolve(), { once: true })); return { cancelled: true, subagentContinuity: continuity }; });
-    await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
-    expect((await send.execute("stop", { id: "helper", stop: true })).details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: true });
+    const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    const receipt = await stopObservingDurableSettlement(f.store, started.details.jobId, () => send.execute("stop", { id: "helper", stop: true }));
+    expect(receipt.details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: true });
     await expect(send.execute("resume", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
-  }, 15_000);
+  }, 30_000);
 });
 
 describe("parent steer", () => {
@@ -785,7 +976,7 @@ describe("managed background admission", () => {
       return fauxAssistantMessage([fauxText("done")]);
     }));
     try {
-      const result = await generatePiNativeResponse("system", { model: { provider: "faux", model: "parent", reference: "faux:parent" },
+      const result = await generateEngineTurnResponse("system", { model: { provider: "faux", model: "parent", reference: "faux:parent" },
         piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", cwd: f.root, allowedTools: ["Read"],
         messages: [{ role: "user", content: "Read notes while background work completes." }], liveInput: mailbox,
         onEvent: (event: any) => events.push(event), runId: origin.runId });
@@ -1260,7 +1451,7 @@ describe("managed detached production execution", () => {
     const run = vi.fn(async () => ({ text: "settled once" }));
     const { agent } = tools(f, run);
     const receipt = await agent.execute("F3", { persist: true, background: true, id: "helper", prompt: "work" });
-    await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await f.service.stop();
     const root = resolve(f.root, "children"); let clock = Date.now();
     const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => clock,
@@ -1403,7 +1594,10 @@ describe("managed detached production execution", () => {
       expect(run).toHaveBeenCalledTimes(2); expect(sessions).toEqual([sessions[0], sessions[0]]);
       expect((await f.service.get(original.details.jobId))?.state).toBe("timed_out"); expect(f.wake).toHaveBeenCalledTimes(admissionRejected ? 3 : 2);
     } finally { release.resolve(); }
-  }, 30_000);
+  // Inner waits: the 12s timeout-certificate wait plus three durable
+  // deliveries (original, queue holder, continuation) of up to
+  // DURABLE_DELIVERY_TIMEOUT_MS each. The enclosing budget must exceed them.
+  }, 12_000 + 3 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
   it("restores a continuing instance's acknowledgement and route when cancellation follows begin but precedes provider admission", async () => {
     const f = await managedFixture(undefined, { maxRuntimeMs: 3_000 });
     const releasePublication = deferred<void>(); let delayed = false;
@@ -1788,7 +1982,10 @@ describe("detached persistent subagents", () => {
       { timeoutMs: mode === "timeout" ? 1_500 : 60_000 });
     const receipt = await agent.execute("a", { persist: true, background: true, id: "helper", prompt: "work" });
     if (mode === "cancel") await f.service.cancel(receipt.details.jobId);
-    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 8000 });
+    // The 1.5s deadline (or the cancel) and the 5.1s cancellation grace are fixed
+    // product timers; durable delivery comes after them. That is the path
+    // DURABLE_DELIVERY_TIMEOUT_MS is sized for; 8s left about one second.
+    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const job = await f.service.get(receipt.details.jobId);
     expect(job).toMatchObject({ state: mode === "timeout" ? "timed_out" : "cancelled", childStillBusy: true });
     expect(JSON.stringify(f.wake.mock.calls[0])).toContain('childStillBusy');
@@ -1806,7 +2003,8 @@ describe("detached persistent subagents", () => {
     await expect(next.send.execute("reply", { id: "helper", message: "Small", close: true })).rejects.toThrow("subagent_recovery_required");
     expect((await f.instances.get("helper"))?.recovery).toMatchObject({ continuity: "unknown" });
     await f.instances.close("helper");
-  }, 30_000);
+    // Inner waits: two durable deliveries plus the fixed deadline and grace.
+  }, 2 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
 
   it("carries typed native session loss through the actual Agent finish seam", async () => {
     const f = await fixture();
@@ -1970,7 +2168,7 @@ it.each(["cooperative", "late"])("certified %s detached child timeout resumes re
     const calls: any[] = []; const lateNative = deferred<void>();
     const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: any) => {
       calls.push(options);
-      const result = await generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models,
+      const result = await generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models,
         resolvePiApiKey: async () => "faux-key" });
       if (mode === "late" && calls.length === 1) { lateNative.resolve(); await releaseLate.promise; }
       return result;
@@ -2047,7 +2245,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
     const models = createModels(); models.setProvider(faux.provider); const calls: any[] = []; const contexts: any[] = [];
     const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: any) => {
       calls.push(options);
-      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+      return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     } };
     const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
@@ -2068,7 +2266,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
         ? await agent.execute("start", { persist: true, background: true, id: "helper", prompt: "remember original context" })
         : await send.execute("continue", { id: "helper", background: true, message: "second tool-bearing turn" });
       await entered.promise;
-      const result = await send.execute("stop", { id: "helper", stop: true });
+      const result = await stopObservingDurableSettlement(f.store, started.details.jobId, () => send.execute("stop", { id: "helper", stop: true }));
       expect(result.details.stop).toMatchObject({ status: "stopped", resumable: true, childStillBusy: false, disposition: "cancelled", turns: turn + 1 });
       await done(f.service, started.details.jobId);
     }
@@ -2087,7 +2285,9 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
     await send.execute("close", { id: "helper", close: true });
     expect((await f.instances.get("helper"))?.status).toBe("closed");
   } finally { await owner.disposeAllSessions?.(); }
-}, 25_000);
+  // Inner waits per turn: the durable settlement observed by the stop and the
+  // wake delivery; then the resumed turn's delivery.
+}, 5 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
 
 it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-session disposal", async () => {
   const owner = createMonoRuntime(); const releaseConfirmation = deferred<void>(); let delayed = false;
@@ -2105,7 +2305,7 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
     const models = createModels(); models.setProvider(faux.provider); const calls: any[] = [];
     const runtime = { run: async (prompt: string, options: any) => {
       calls.push(options);
-      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+      return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     } };
     const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
@@ -2137,7 +2337,11 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
     let input: any;
     faux.setResponses([(value: any) => { input = value; return fauxAssistantMessage([fauxText("acknowledged continuation retained")]); }]);
     const request = { id: "helper", ack: inspected.details.recovery.ack, message: "explicit parent acknowledgement and new instructions", background: true };
-    const resumed = await send.execute("ack", request); expect((await done(f.service, resumed.details.jobId)).state).toBe("succeeded");
+    // The 3s runtime limit exists to time the first job out; the acknowledged
+    // continuation (cold JSONL reopen plus durable publication) shares it and
+    // overran it under package load. Run it on frozen clocks instead.
+    const resumed = await deliverWithFrozenClocks(f.service, () => send.execute("ack", request));
+    expect((await done(f.service, resumed.details.jobId)).state).toBe("succeeded");
     expect(calls).toHaveLength(2); expect(calls[1].sessionId).toBe(calls[0].sessionId); expect(calls[1].piSessionsRoot).toBe(record.sessionsRoot);
     expect((await readdir(record.sessionsRoot, { recursive: true })).filter((file) => file.endsWith(".jsonl"))).toEqual(files);
     const after = await readFile(transcriptPath, "utf8"); expect(after.startsWith(before)).toBe(true);
@@ -2149,7 +2353,8 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
     expect(calls).toHaveLength(2); expect(await readFile(transcriptPath, "utf8")).toBe(after); expect(f.wake).toHaveBeenCalledTimes(2);
     await send.execute("close", { id: "helper", close: true });
   } finally { releaseConfirmation.resolve(); await f.service.stop(); await owner.disposeAllSessions?.(); }
-}, 20_000);
+  // Inner waits: the 12s timeout-certificate wait and three durable waits.
+}, 12_000 + 3 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
 
 it.each([false, true])("real Pi fake transport: detached AskParent and background reply resume one JSONL, then close (managed=%s)", async (managed) => {
   const owner = createMonoRuntime();
@@ -2169,7 +2374,7 @@ it.each([false, true])("real Pi fake transport: detached AskParent and backgroun
     const gate = deferred<void>();
     const runtime = { run: async (prompt: string, options: any) => {
       await gate.promise;
-      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+      return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     } };
     const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;

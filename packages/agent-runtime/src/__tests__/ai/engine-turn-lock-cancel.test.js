@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
 
 it("cancels a run waiting behind another process's native writer lock", async () => {
@@ -19,7 +19,7 @@ it("cancels a run waiting behind another process's native writer lock", async ()
   let holder, sessionId;
   try {
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional first reply.")])]);
-    const first = await generatePiNativeResponse("stable", options({ messages: [{ role: "user", content: "Fictional first ask." }] }));
+    const first = await generateEngineTurnResponse("stable", options({ messages: [{ role: "user", content: "Fictional first ask." }] }));
     sessionId = first.providerSessionId; expect(first.error).toBeNull();
     await disposeProviderSession(sessionId); // drop liveness only; the journal stays durable
     holder = fork(new URL("./fixtures/native-writer-holder.mjs", import.meta.url), [root, sessionId], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
@@ -27,14 +27,14 @@ it("cancels a run waiting behind another process's native writer lock", async ()
 
     const controller = new AbortController(), started = Date.now();
     setTimeout(() => controller.abort(), 150);
-    const cancelled = await generatePiNativeResponse("stable", options({ sessionId, abortSignal: controller.signal,
+    const cancelled = await generateEngineTurnResponse("stable", options({ sessionId, abortSignal: controller.signal,
       messages: [{ role: "user", content: "Fictional blocked ask." }] }));
     expect(cancelled.cancelled).toBe(true);
     expect(Date.now() - started).toBeLessThan(5_000);
 
     const exited = once(holder, "exit"); holder.kill("SIGKILL"); await exited; holder = undefined;
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional resumed reply.")])]);
-    const resumed = await generatePiNativeResponse("stable", options({ sessionId, messages: [{ role: "user", content: "Fictional next ask." }] }));
+    const resumed = await generateEngineTurnResponse("stable", options({ sessionId, messages: [{ role: "user", content: "Fictional next ask." }] }));
     expect(resumed.error).toBeNull(); expect(resumed.text).toBe("Fictional resumed reply.");
   } finally {
     if (holder && holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
@@ -52,13 +52,13 @@ it("refuses create-on-miss for a handle whose damaged legacy file is attributed 
   try {
     mkdirSync(join(root, "legacy"), { recursive: true });
     const damaged = join(root, "legacy", "t_fictional-legacy-damaged.jsonl"); writeFileSync(damaged, "{not json\n");
-    const refused = await generatePiNativeResponse("stable", options({ sessionId: "fictional-legacy-damaged",
+    const refused = await generateEngineTurnResponse("stable", options({ sessionId: "fictional-legacy-damaged",
       messages: [{ role: "user", content: "Fictional ask." }] }));
     expect(refused.failureKind).toBe("native_journal_unreadable");
     expect(readFileSync(damaged, "utf8")).toBe("{not json\n");
     expect(existsSync(join(root, "mono-v2", "journals")) ? readdirSync(join(root, "mono-v2", "journals")) : []).toEqual([]);
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional unrelated reply.")])]);
-    const unrelated = await generatePiNativeResponse("stable", options({ sessionId: "fictional-unrelated", messages: [{ role: "user", content: "Fictional ask." }] }));
+    const unrelated = await generateEngineTurnResponse("stable", options({ sessionId: "fictional-unrelated", messages: [{ role: "user", content: "Fictional ask." }] }));
     expect(unrelated.error).toBeNull();
     await disposeProviderSession("fictional-unrelated");
   } finally { rmSync(root, { recursive: true, force: true }); }

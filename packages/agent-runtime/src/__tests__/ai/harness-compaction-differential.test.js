@@ -9,7 +9,7 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { createModels, fauxAssistantMessage, fauxProvider, fauxText } = await import("@earendil-works/pi-ai");
-  const { generatePiNativeResponse } = await import("../../ai/providers/pi-native.js");
+  const { generateEngineTurnResponse } = await import("../../ai/providers/engine-turn.js");
   const { disposeProviderSession } = await import("../../ai/runtime/sessions.js");
   const { JsonlSessionRepo } = await import("../../../../engine/dist/session-store.js");
   const baseline = JSON.parse(readFileSync(new URL("./fixtures/harness/runtime-compaction-baseline.json", import.meta.url), "utf8"));
@@ -31,7 +31,7 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
     : k === "api" && String(v).startsWith("faux:") ? "faux:fixture-api" : v));
   let result, raw;
   try {
-    result = await generatePiNativeResponse("Fictional system.", {
+    result = await generateEngineTurnResponse("Fictional system.", {
       model: { provider: "faux", model: "differential-model", reference: "faux:differential-model" },
       piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", allowedTools: [], messages: history,
       manualCompaction: true, sessionKeepAlive: true, piSessionsRoot: root,

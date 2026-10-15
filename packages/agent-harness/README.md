@@ -149,8 +149,8 @@ prove PID reuse with v2 identity. Linux and macOS use stable incarnation;
 other platforms and unavailable reads are PID-only, treating a live PID as live. Stop every older binary
 before the upgraded writer runs: new marker contents are not old-reader compatible.
 Operational filesystem errors propagate rather than becoming damage. First
-native-root bootstrap still refuses damaged recovery evidence anywhere in the
-root when it cannot prove those owners drained. Shared root and
+native-root bootstrap settles only the requesting conversation; unrelated
+active turns and damaged recovery evidence remain protected and charged. Shared root and
 logical-session coordination damage remains root-fatal. Redundant conversation
 shard locks are no longer created or validated; older writers' files stay intact.
 
@@ -215,9 +215,10 @@ inside a custom store's `load`. Publication waits for acquisition to settle even
 when cancellation fires synchronously inside a coordinator.
 Once a transaction or publication
 starts it finishes or rolls back: cancellation does not interrupt the publication
-barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
-(including an admission-triggered drain) remain deliberately non-cancellable;
-this signal is not a transaction deadline.
+barriers, storage-only recovery, or ownership cleanup. Admission-triggered
+draining honours cancellation while waiting for pre-mutation locks and between
+owners. Reset and administrative drain waits remain non-cancellable; the
+admission signal is not a transaction deadline.
 
 Explicit reset is not online repair. Damaged canonical records (including
 truncated JSON), coordination/recovery files, enrolled native journals and
@@ -742,7 +743,7 @@ permission to erase oversized evidence or cold-fallback after switch intent.
 | `CONVERSATION_HISTORY_VERSION_MAX_BYTES` | Maximum UTF-8 size of an opaque custom-store history version token (512 bytes) |
 | `acquireToolHistoryWriter()` / `ToolHistoryReader` | Persist managed-tool lifecycle pairs or query retained records through a host-authorized bounded projection |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
-| `ProcessIncarnation` / `currentProcessIncarnation()` / `readProcessIncarnation()` / `isSameProcessIncarnation()` | Share OS boot/start identity across agent-app ownership consumers; raw readers retain their existing unavailable/error behavior. Durable history does not use these v1 readers: it uses `readHistoryProcessIncarnation()` (v2) with a conservative PID-only fallback |
+| `ProcessIncarnation` / `currentProcessIncarnation()` / `readProcessIncarnation()` / `isSameProcessIncarnation()` / `isProcessIncarnationLive()` | Share OS boot/start identity across agent-app ownership consumers. macOS writes stable v2 evidence (boot-session UUID plus UTC process start), so calendar-clock steps and timezone changes never change a live owner's identity; Linux, Windows and other platforms keep writing v1 unchanged. Readers return `undefined` only when `ESRCH` proves the PID absent and throw on every other failure; macOS probes are bounded to five seconds. `isSameProcessIncarnation()` is the strict authorization check. `isProcessIncarnationLive()` is the reclaim check: a live PID with unavailable or incomparable evidence (including a macOS v1 record) stays live. `processIncarnationFromJson()` accepts v1 and v2. Durable history uses `readHistoryProcessIncarnation()` (v2) with a conservative PID-only fallback |
 | `loadSelectedSkills()` / `createSkillsCache()` | Load only host-selected skill bodies and reuse unchanged reads |
 
 Lightweight ownership/maintenance entrypoints can import the incarnation API
@@ -912,6 +913,7 @@ failClosedToolPolicy
 formatHostCapabilities
 historyProcessIncarnationFromJson
 isProcessAlive
+isProcessIncarnationLive
 isReadSkillCompatibleName
 isSameProcessIncarnation
 isStdioMcpServerSpec
@@ -946,6 +948,7 @@ ProcessIncarnation
 SameProcessIncarnation
 currentProcessIncarnation
 historyProcessIncarnationFromJson
+isProcessIncarnationLive
 isSameProcessIncarnation
 processIncarnationFromJson
 processIncarnationsEqual

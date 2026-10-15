@@ -1,4 +1,4 @@
-import { createDispatchProgress, withDispatchProgress } from "./pi-native/dispatch-progress.js";
+import { createDispatchProgress, withDispatchProgress } from "./engine-turn/dispatch-progress.js";
 import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, settleNativeSession } from "@mono-agent/engine/sessions.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
@@ -13,8 +13,8 @@ import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 //     is "open the session from a repo and hand it to a new harness". There is
 //     no separate live-session registry here.
 //   * The provider transport (pi-ai streamSimple) is invoked by the harness;
-//     retry/backoff is delegated to pi-ai via streamOptions.maxRetries instead
-//     of the legacy manual loop.
+//     pre-response retry/backoff is owned by pi-ai provider transport; the
+//     engine never retries a settled response or a partial paid stream.
 //   * Tool sandboxing, approval gates, allowlist/bloat filtering, and the MCP
 //     tool bridge are reused shared pieces — they are wired into the harness
 //     via its `tools` option, never reimplemented.
@@ -48,7 +48,7 @@ import { annotateProviderErrorMessage, installTransportErrorProbe } from "./tran
 import {
   runStructuredOutputFinalizationRetry,
   shouldRetryStructuredOutputFinalization,
-} from "./pi-native/structured-output.js";
+} from "./engine-turn/structured-output.js";
 import {
   abortedResult,
   buildDiagnostics,
@@ -61,7 +61,7 @@ import {
   usageFromMessages,
   hasMeasuredUsage,
   withSubagentUsage,
-} from "./pi-native/result-builder.js";
+} from "./engine-turn/result-builder.js";
 import {
   captureSessionRecovery,
   cleanupSessionOnThrow,
@@ -70,15 +70,15 @@ import {
   resolveDurableNativeSessionRepo,
   resolveSession,
   rollbackAbortedTurn,
-} from "./pi-native/session-lifecycle.js";
+} from "./engine-turn/session-lifecycle.js";
 import {
   resolveLiveCompactionPolicy,
   estimateSessionMessageTokens,
   tryCompact,
   runProactiveCompaction,
   runReactiveCompaction,
-} from "./pi-native/compaction-driver.js";
-import { armMidRunCompaction } from "./pi-native/mid-run-compaction.js";
+} from "./engine-turn/compaction-driver.js";
+import { armMidRunCompaction } from "./engine-turn/mid-run-compaction.js";
 import {
   activateTurnHarness,
   buildTurnHarness,
@@ -87,14 +87,14 @@ import {
   runHarnessPrompt,
   startLiveInput,
   thinkingLevelForEffort,
-} from "./pi-native/turn-runner.js";
-import { runEmptyReplyRetry, shouldRetryEmptyReply } from "./pi-native/empty-reply.js";
-import { finalReplyText } from "./pi-native/reply-text.js";
-import { resolvePiTransport } from "./pi-native/transport.js";
-import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
-import { appendStructuredOutputInstruction } from "./pi-native/structured-output.js";
-import { prepareNativeHandoffSummaryRequest, produceNativeHandoffSummary } from "./pi-native/handoff-producer.js";
-import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData, copyDispatchData } from "./pi-native/prepared-dispatch.js";
+} from "./engine-turn/turn-runner.js";
+import { runEmptyReplyRetry, shouldRetryEmptyReply } from "./engine-turn/empty-reply.js";
+import { finalReplyText } from "./engine-turn/reply-text.js";
+import { resolvePiTransport } from "./engine-turn/transport.js";
+import { withOpenCodeSessionHeaders } from "./engine-turn/provider-attribution.js";
+import { appendStructuredOutputInstruction } from "./engine-turn/structured-output.js";
+import { prepareNativeHandoffSummaryRequest, produceNativeHandoffSummary } from "./engine-turn/handoff-producer.js";
+import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData, copyDispatchData } from "./engine-turn/prepared-dispatch.js";
 
 /**
  * Resolve mono-agent's programmatic mode once per run. Tool builders mark
@@ -327,7 +327,7 @@ function splitUserContent(content) {
   return { text: texts.join("\n"), images };
 }
 
-export async function generatePiNativeResponse(systemPrompt, options = {}) {
+export async function generateEngineTurnResponse(systemPrompt, options = {}) {
   return await executePiNativeResponse(systemPrompt, options);
 }
 
@@ -628,12 +628,11 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     mcpClients = builtMcpClients;
     closeRunTools = builtCloseRunTools;
 
-    // Provider retry/backoff is delegated to pi-ai via streamOptions, replacing
-    // the legacy hand-rolled stream-retry loop.
+    // One pre-response SDK-policy retry layer in pi-ai; no driver response retry.
     const retryValue = typeof options.piMaxRetries === "string" && options.piMaxRetries.trim() !== ""
       ? Number(options.piMaxRetries) : options.piMaxRetries;
-    const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, retryValue)) : 2;
-    const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs))
+    const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, Math.trunc(retryValue))) : 2;
+    const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs)) && Number(options.maxRetryDelayMs) > 0
       ? Number(options.maxRetryDelayMs)
       : 60_000;
     // Steering controls user follow-up delivery, not tool scheduling. Keep it
@@ -1357,11 +1356,18 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
   }
 }
 
-export const piNativeRuntimeBridge = {
+export const engineTurnAdapter = {
   id: "pi",
   kind: "pi",
   capabilities: runtimeCapabilities("pi"),
   supports: (ref) => Boolean(ref?.provider && ref?.model),
-  execute: generatePiNativeResponse,
+  execute: generateEngineTurnResponse,
   prepareNativeDispatch: preparePiNativeDispatch,
 };
+
+/** @deprecated Use generateEngineTurnResponse.
+ * @type {typeof generateEngineTurnResponse} */
+export const generatePiNativeResponse = generateEngineTurnResponse;
+/** @deprecated Use engineTurnAdapter.
+ * @type {typeof engineTurnAdapter} */
+export const piNativeRuntimeBridge = engineTurnAdapter;

@@ -69,15 +69,16 @@ and typed runtime policies into the runtime instead.
 ## Runtime Selection
 
 **Diagram summary:** Hosts parse a canonical provider/model reference. The
-resolver validates that reference and directly imports the sole Pi bridge.
+runtime validates that reference before lazily importing the engine adapter.
 Capability metadata remains available without loading provider code.
 
 ```mermaid
 flowchart LR
   AuthoredRef["provider:model string"] --> Parse["parseRuntimeModelReference()"]
   Parse --> ModelRef["options.model: RuntimeModelRef"]
-  ModelRef --> Resolve["resolveRuntimeBridge(): validate reference"]
-  Resolve --> Pi["pi-native.js: AgentHarness"]
+  ModelRef --> Validate["model-ref.js: validate before load"]
+  Validate --> Resolve["Lazy engine adapter"]
+  Resolve --> Pi["engine-turn.js: engine adapter"]
   Pi --> Provider["Pi provider catalog"]
   Caps["runtimeCapabilities()"] --> Used["capabilitiesUsed: observed features"]
 ```
@@ -143,15 +144,16 @@ that it must validate for its domain.
 sequenceDiagram
   participant Host as Host app
   participant Runtime as createRuntime()
-  participant Registry as Pi resolver
+  participant AdapterModule as Engine adapter module
   participant Bridge as Provider bridge
   participant Kernel as Agent kernel
   participant Provider as Pi provider
   participant Observer as Observer hub
 
   Host->>Runtime: run(systemPrompt, options)
-  Runtime->>Registry: resolveRuntimeBridge(model)
-  Registry-->>Runtime: bridge.execute()
+  Runtime->>Runtime: assertEngineTurnModelRef(model)
+  Runtime->>AdapterModule: lazy import engine-turn.js
+  AdapterModule-->>Runtime: engineTurnAdapter
   Runtime->>Observer: create hub from host + call observers
   Runtime->>Bridge: execute(systemPrompt, normalized options)
 
@@ -197,10 +199,10 @@ flowchart TB
   Public --> AIExports["ai/index.js<br/>model refs, registry, observers"]
   Public --> AgentExports["agent/index.js<br/>allowlists, compaction,<br/>approvals, transcript"]
 
-  RuntimeFactory --> Registry["ai/runtime/registry.js"]
-  Registry --> Providers["ai/providers/*"]
+  RuntimeFactory --> AdapterModule["ai/providers/engine-turn.js"]
+  AdapterModule --> Providers["engine-turn/engine-adapter.js"]
 
-  Providers --> Pi["pi-native.js<br/>pi-models/messages/events"]
+  Providers --> Pi["engine-turn.js<br/>pi-models/messages/events"]
 
   AgentExports --> Tools["agent/tools/*"]
   Tools --> ToolContext["shared/tool-context.js<br/>per-instance ToolContext<br/>workspace, repoRoot, rg, sandbox, brand"]
@@ -221,8 +223,8 @@ Key responsibilities by subsystem:
 
 - `runtime.js`: binds host callbacks once, builds a per-instance `ToolContext`
   (`agent/tools/shared/tool-context.js`) threaded to every bridge call via
-  `options.toolContext`, and routes each call to the resolved bridge.
-- `ai/runtime/registry.js`: validates a model reference and directly loads Pi;
+  `options.toolContext`, and directly dispatches each validated call to the lazily loaded adapter.
+- `ai/runtime/registry.js`: optional lookup validates before lazily loading the adapter;
   its descriptor-list wrapper preserves lazy capability introspection.
 - `ai/runtime/router.js`: retries across an ordered fallback chain on retryable
   provider failures, carrying a transcript-tail resume snapshot forward.
@@ -239,7 +241,7 @@ Key responsibilities by subsystem:
 - `agent/compaction.js`: derives adaptive compaction budgets and clamped output
   limits directly from typed `toolLimits` / `compaction` inputs and the model;
   estimates fixed request overhead and classifies context-pressure errors. Pi
-  drives proactive compaction and reactive recovery through `AgentHarness.compact()`.
+  drives proactive compaction and reactive recovery through `compact()` (formerly `AgentHarness.compact()`).
 - `agent/transcript.js`: builds bounded resume snapshots from prior provider
   events so a fallback or continuation can keep context.
 - `agent/approval.js`: provides host-driven human-in-the-loop tool approval
@@ -324,7 +326,7 @@ meaningful transcript growth after a mid-run cut restores eligibility. Runs repo
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
 
-`ai/providers/pi-native/compaction-summary.js` prepares copies for the attributed harness
+`ai/providers/engine-turn/compaction-summary.js` prepares copies for the attributed harness
 `compact()`: bounded tool-result heads/tails, confirmed built-in file operations,
 and supplemental summary focus. Its model facade changes only summary context;
 model, options, request context and other model methods are forwarded. Each

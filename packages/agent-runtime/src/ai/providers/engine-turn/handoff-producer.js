@@ -29,7 +29,8 @@ export async function produceNativeHandoffSummary(input) {
   let response;
   const started = performance.now();
   try {
-    response = await input.completeSimple(input.model, context, { ...input.completionOptions, maxRetries: 0, signal: input.signal, maxTokens: input.outputReserve });
+    // Avoid Codex websocket-to-SSE re-sends of an unknown summary outcome.
+    response = await input.completeSimple(input.model, context, { ...input.completionOptions, transport: "sse", maxRetries: 0, signal: input.signal, maxTokens: input.outputReserve });
   } catch {
     return { status: "summary_rejected", reason: "request_outcome_unknown", durationMs: Math.round(performance.now() - started) };
   }

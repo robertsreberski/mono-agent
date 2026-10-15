@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../../engine/dist/context.js";
 import { compact, serializeConversation } from "../../../../engine/dist/compaction-kit/compaction.js";
-import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS } from "../../ai/providers/pi-native/compaction-summary.js";
+import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS } from "../../ai/providers/engine-turn/compaction-summary.js";
 
 const user = (text) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 });
 const call = (id, name, path) => ({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: { file_path: path } }], timestamp: 0 });
@@ -97,13 +97,13 @@ describe("summary request accounting", () => {
     expect(JSON.stringify(requests)).not.toContain("private summary");
   });
 
-  it("forwards model/options/rest identity and receiver, while unknown usage stays null", async () => {
-    const options = { maxTokens: 50, cacheRetention: "none" };
+  it("keeps summaries single-shot while forwarding model, other options, rest and receiver", async () => {
+    const options = { maxTokens: 50, cacheRetention: "none", transport: "websocket", maxRetries: 8 };
     const requestContext = { signal: new AbortController().signal };
     const originalContext = { systemPrompt: "original", messages: [user("private")] };
     const requests = [];
     const models = { marker: "bound", completeSimple: vi.fn(async function (m, context, opts, ctx) {
-      expect(this).toBe(models); expect(m).toBe(model); expect(opts).toBe(options); expect(ctx).toBe(requestContext);
+      expect(this).toBe(models); expect(m).toBe(model); expect(opts).toEqual({ ...options, transport: "sse", maxRetries: 0 }); expect(ctx).toBe(requestContext);
       expect(context.messages).toBe(originalContext.messages);
       return { ...answer(), usage: undefined };
     }), other() { return this.marker; } };

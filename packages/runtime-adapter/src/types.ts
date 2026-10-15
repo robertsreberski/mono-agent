@@ -931,7 +931,7 @@ export interface MonoRuntimeApprovalDecision {
   readonly reason?: string;
 }
 
-/** Payload passed to `onCompactionRecorded` after a successful context compaction (see ai/providers/pi-native.js). */
+/** Payload passed to `onCompactionRecorded` after a successful context compaction (see ai/providers/engine-turn.js). */
 export interface MonoRuntimeCompactionRecord {
   readonly task_run_id: string | null;
   readonly trigger: string;

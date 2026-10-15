@@ -31,9 +31,9 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { digestTurnInput } from "@mono-agent/engine";
 import { createTurnBinding } from "../../../../engine/dist/turn-evidence.js";
 import * as sessionAdapter from "../../../../engine/dist/session-adapter.js";
-import * as harnessAdapter from "../../ai/providers/pi-native/harness-adapter.js";
+import * as harnessAdapter from "../../ai/providers/engine-turn/engine-adapter.js";
 import { ENGINE_CONTEXT } from "@mono-agent/engine";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
 import {
   recoverDurableNativeSession,
@@ -45,7 +45,7 @@ import {
   resolveSession,
   retireDurableNativeSession,
   rollbackAbortedTurn,
-} from "../../ai/providers/pi-native/session-lifecycle.js";
+} from "../../ai/providers/engine-turn/session-lifecycle.js";
 import {
   disposeProviderSession,
   invalidateProviderSession,
@@ -143,7 +143,7 @@ describe("pi-native sessions", () => {
         fauxAssistantMessage([]),
         () => { controller.abort(); return fauxAssistantMessage([], { stopReason: "aborted" }); },
       ]);
-      const cancelled = await generatePiNativeResponse("stable", runOptions(model, {
+      const cancelled = await generateEngineTurnResponse("stable", runOptions(model, {
         piSessionsRoot: root, sessionKeepAlive: true, sessionRecovery: { runId: "reply-cancel", revision: 1 },
         abortSignal: controller.signal, messages: [{ role: "user", content: "Draft an email" }],
       }));
@@ -154,7 +154,7 @@ describe("pi-native sessions", () => {
       // The terminal proof intentionally certifies only the original operation.
       // A two-operation cancelled tail cannot be silently reused.
       await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
-      const blocked = await generatePiNativeResponse("stable", runOptions(model, {
+      const blocked = await generateEngineTurnResponse("stable", runOptions(model, {
         piSessionsRoot: root, sessionId, messages: [{ role: "user", content: "Must not resume pending tail" }],
       }));
       expect(blocked.failureKind).toBe("session_busy");
@@ -162,7 +162,7 @@ describe("pi-native sessions", () => {
       await expect(retireDurableNativeSession(sessionId, root)).resolves.toBeUndefined();
       expect(countJsonlFiles(root)).toBe(0);
       faux.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("Fresh draft.")]); }]);
-      const next = await generatePiNativeResponse("stable", runOptions(model, {
+      const next = await generateEngineTurnResponse("stable", runOptions(model, {
         piSessionsRoot: root, sessionId, sessionKeepAlive: true,
         messages: [{ role: "user", content: "New draft request" }],
       }));
@@ -197,17 +197,17 @@ describe("pi-native sessions", () => {
         (context) => { next = structuredClone(context.messages); return fauxAssistantMessage([fauxText("resumed")]); },
       ]);
       const base = { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true, allowedTools: ["Read"], compaction: { enabled: false } };
-      const warm = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm" }] }));
+      const warm = await generateEngineTurnResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm" }] }));
       expect(warm.error).toBeNull();
       sessionId = warm.providerSessionId;
-      const cancelled = await generatePiNativeResponse("stable", runOptions(model, {
+      const cancelled = await generateEngineTurnResponse("stable", runOptions(model, {
         ...base, sessionId, sessionRecovery: { runId: "cancel-run", revision: 1 }, abortSignal: controller.signal,
         messages: [{ role: "user", content: "cancelled ask" }],
       }));
       expect(cancelled.cancelled).toBe(true);
       expect(cancelled.providerSessionRecovery).toMatchObject({ runId: "cancel-run", revision: 1, providerSessionId: sessionId });
 
-      const blocked = await generatePiNativeResponse("stable", runOptions(model, { ...base, sessionId, messages: [{ role: "user", content: "must not run while pending" }] }));
+      const blocked = await generateEngineTurnResponse("stable", runOptions(model, { ...base, sessionId, messages: [{ role: "user", content: "must not run while pending" }] }));
       expect(blocked.failureKind).toBe("session_busy");
       cancelled.providerSessionRecovery.revision = 2;
       await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
@@ -220,7 +220,7 @@ describe("pi-native sessions", () => {
       const persisted = readFileSync(findJsonlFiles(join(root, "pi"))[0], "utf8");
       expect(persisted).toContain("faux-signature");
       await disposeProviderSession(sessionId);
-      const resumed = await generatePiNativeResponse("stable", runOptions(model, {
+      const resumed = await generateEngineTurnResponse("stable", runOptions(model, {
         ...base, sessionId, messages: [{ role: "assistant", content: "MUST-NOT-RESEED" }, { role: "user", content: "next ask" }],
       }));
       assertPresent(resumed);
@@ -256,14 +256,14 @@ describe("pi-native sessions", () => {
           if (event.type === "assistant" && event.message?.content?.some((block) => block.type === "tool_use")) controller.abort();
         },
       });
-      const cancelled = await generatePiNativeResponse("stable", options);
+      const cancelled = await generateEngineTurnResponse("stable", options);
       sessionId = cancelled.providerSessionId;
       expect(cancelled.cancelled).toBe(true);
       expect(cancelled.providerSessionRecovery).toBeDefined();
       await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
       /** @type {any} */ let context = undefined;
       faux.setResponses([(value) => { context = value; return fauxAssistantMessage([fauxText("next")]); }]);
-      const resumed = await generatePiNativeResponse("stable", runOptions(model, { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true, sessionId,
+      const resumed = await generateEngineTurnResponse("stable", runOptions(model, { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true, sessionId,
         messages: [{ role: "user", content: "next" }], allowedTools: ["Read"] }));
       assertPresent(resumed);
       expect(resumed.error).toBeNull();
@@ -283,7 +283,7 @@ describe("pi-native sessions", () => {
     try {
       const model = setup();
       const controller = new AbortController(); controller.abort();
-      const result = await generatePiNativeResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+      const result = await generateEngineTurnResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
         sessionRecovery: { runId: "never-admitted", revision: 0 }, abortSignal: controller.signal, messages: [{ role: "user", content: "never sent" }] }));
       expect(result.cancelled).toBe(true);
       expect(result.providerSessionRecovery).toBeUndefined();
@@ -297,7 +297,7 @@ describe("pi-native sessions", () => {
     let sessionId;
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("answer")])]);
-      const result = await generatePiNativeResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+      const result = await generateEngineTurnResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
         sessionRecovery: { runId: "run", revision: 0 }, messages: [{ role: "user", content: "ask" }] }));
       sessionId = result.providerSessionId;
       expect(result.providerSessionRecovery).toBeDefined();
@@ -326,7 +326,7 @@ describe("pi-native sessions", () => {
     try {
       if (resumed) {
         faux.setResponses([fauxAssistantMessage([fauxText("warm answer")])]);
-        const warm = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm ask" }] }));
+        const warm = await generateEngineTurnResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm ask" }] }));
         expect(warm.error).toBeNull();
         const raw = await repo.open((await repo.list(undefined, ENGINE_CONTEXT))[0], ENGINE_CONTEXT);
         baseline = await raw.getLeafId();
@@ -343,7 +343,7 @@ describe("pi-native sessions", () => {
         controller.abort();
         return fauxAssistantMessage([fauxText("interrupted prose")], { stopReason: "aborted" });
       }]);
-      const cancelled = await generatePiNativeResponse("stable", runOptions(model, {
+      const cancelled = await generateEngineTurnResponse("stable", runOptions(model, {
         ...base, sessionRecovery: { runId: "cancel", revision: resumed ? 1 : 0 }, abortSignal: controller.signal,
         messages: [{ role: "user", content: "cancelled ask" }],
       }));
@@ -360,7 +360,7 @@ describe("pi-native sessions", () => {
       }
       let nextContext;
       faux.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("next answer")]); }]);
-      const next = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "next ask" }] }));
+      const next = await generateEngineTurnResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "next ask" }] }));
       assertPresent(next);
       expect(next.failureKind).not.toBe("session_busy");
       assertPresent(next);
@@ -386,7 +386,7 @@ describe("pi-native sessions", () => {
     let nativeSyncSpy;
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("answer")])]);
-      const result = await generatePiNativeResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+      const result = await generateEngineTurnResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
         sessionRecovery: { runId: "run", revision: 0 }, messages: [{ role: "user", content: "ask" }] }));
       sessionId = result.providerSessionId;
       expect(result.providerSessionRecovery).toBeDefined();
@@ -544,7 +544,7 @@ describe("pi-native sessions", () => {
     const started = new Promise((resolve) => { markStarted = resolve; });
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("seed")])]);
-      const seeded = await generatePiNativeResponse("system", runOptions(model, {
+      const seeded = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "seed" }],
         sessionKeepAlive: true,
         sessionId: id,
@@ -559,7 +559,7 @@ describe("pi-native sessions", () => {
           return fauxAssistantMessage([fauxText("late answer")]);
         },
       ]);
-      const unwinding = generatePiNativeResponse("system", runOptions(model, {
+      const unwinding = generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "cancelled turn" }],
         sessionKeepAlive: true,
         sessionId: id,
@@ -612,7 +612,7 @@ describe("pi-native sessions", () => {
       fauxAssistantMessage([fauxThinking("checking context"), fauxText("reply")]),
     ]);
     const seen = [];
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       effort: "medium",
       onEvent: (event) => {
@@ -630,7 +630,7 @@ describe("pi-native sessions", () => {
   it("keeps a session alive and seeds a resumed run with the prior transcript", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
     }));
@@ -642,7 +642,7 @@ describe("pi-native sessions", () => {
     faux.setResponses([
       (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("reply-2")]); },
     ]);
-    const second = await generatePiNativeResponse("system", runOptions(model, {
+    const second = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId: first.providerSessionId,
@@ -670,7 +670,7 @@ describe("pi-native sessions", () => {
       "</cancelled_turn_history>",
     ].join("\n");
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [
         { role: "user", content: "inspect the migration" },
         { role: "assistant", content: account },
@@ -700,7 +700,7 @@ describe("pi-native sessions", () => {
       "</failed_turn_history>",
     ].join("\n");
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [
         { role: "user", content: "inspect the provider failure" },
         { role: "assistant", content: account },
@@ -721,7 +721,7 @@ describe("pi-native sessions", () => {
     const model = setup();
     let invoked = false;
     faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hello" }],
       sessionId: "no-such-session",
     }));
@@ -737,7 +737,7 @@ describe("pi-native sessions", () => {
   it("does not persist a failed resumed turn; the next resume sees the last good transcript", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
     }));
@@ -747,7 +747,7 @@ describe("pi-native sessions", () => {
     faux.setResponses([
       fauxAssistantMessage([], { stopReason: "error", errorMessage: "boom" }),
     ]);
-    const failed = await generatePiNativeResponse("system", runOptions(model, {
+    const failed = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId,
@@ -759,7 +759,7 @@ describe("pi-native sessions", () => {
     faux.setResponses([
       (context) => { retryContext = context; return fauxAssistantMessage([fauxText("reply-3")]); },
     ]);
-    const third = await generatePiNativeResponse("system", runOptions(model, {
+    const third = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-3" }],
       sessionKeepAlive: true,
       sessionId,
@@ -780,7 +780,7 @@ describe("pi-native sessions", () => {
     // session is moved back to the pre-turn leaf.
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
     }));
@@ -788,7 +788,7 @@ describe("pi-native sessions", () => {
     const sessionId = first.providerSessionId;
 
     faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
-    const failed = await generatePiNativeResponse("system", runOptions(model, {
+    const failed = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId,
@@ -802,7 +802,7 @@ describe("pi-native sessions", () => {
     faux.setResponses([
       (context) => { retryContext = context; return fauxAssistantMessage([fauxText("reply-3")]); },
     ]);
-    const third = await generatePiNativeResponse("system", runOptions(model, {
+    const third = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-3" }],
       sessionKeepAlive: true,
       sessionId,
@@ -825,7 +825,7 @@ describe("pi-native sessions", () => {
     // the cancelled turn never leaks into the next resume.
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
     }));
@@ -834,7 +834,7 @@ describe("pi-native sessions", () => {
 
     const lateSignal = { aborted: false, reason: undefined, addEventListener() {}, removeEventListener() {} };
     faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
-    const cancelled = await generatePiNativeResponse("system", runOptions(model, {
+    const cancelled = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId,
@@ -848,7 +848,7 @@ describe("pi-native sessions", () => {
     faux.setResponses([
       (context) => { retryContext = context; return fauxAssistantMessage([fauxText("reply-3")]); },
     ]);
-    const third = await generatePiNativeResponse("system", runOptions(model, {
+    const third = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-3" }],
       sessionKeepAlive: true,
       sessionId,
@@ -866,14 +866,14 @@ describe("pi-native sessions", () => {
   it("registers no session without sessionKeepAlive", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
     }));
     expect(first.error).toBeNull();
 
     let invoked = false;
     faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
-    const resume = await generatePiNativeResponse("system", runOptions(model, {
+    const resume = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionId: first.providerSessionId,
     }));
@@ -884,7 +884,7 @@ describe("pi-native sessions", () => {
   it("rejects a concurrent resume of a busy session with session_busy", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
     }));
@@ -896,14 +896,14 @@ describe("pi-native sessions", () => {
     faux.setResponses([
       async () => { await gate; return fauxAssistantMessage([fauxText("reply-2")]); },
     ]);
-    const blockedRun = generatePiNativeResponse("system", runOptions(model, {
+    const blockedRun = generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId,
     }));
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    const contended = await generatePiNativeResponse("system", runOptions(model, {
+    const contended = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2b" }],
       sessionId,
     }));
@@ -919,7 +919,7 @@ describe("pi-native sessions", () => {
   it("reopens a durable jsonl session from disk after the live entry is dropped", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
       piSessionsRoot: sessionsRoot,
@@ -933,7 +933,7 @@ describe("pi-native sessions", () => {
     faux.setResponses([
       (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("reply-2")]); },
     ]);
-    const resumed = await generatePiNativeResponse("system", runOptions(model, {
+    const resumed = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId: first.providerSessionId,
@@ -959,7 +959,7 @@ describe("pi-native sessions", () => {
     /** @type {any} */ let context = undefined; const warnings = [];
     faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("New fictional reply.")]); }, fauxAssistantMessage([fauxText("Next fictional reply.")])]);
     try {
-      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Continue the fictional project." }],
         sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
         onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
@@ -969,7 +969,7 @@ describe("pi-native sessions", () => {
       expect((await fsPromises.stat(root)).mode & 0o777).toBe(0o700);
       for (const path of [join(root, "mono-v2"), join(root, "mono-v2", "locks")]) expect((await fsPromises.stat(path)).mode & 0o777).toBe(0o700);
       expect(readFileSync(`${source}.migrated`)).toEqual(readFileSync(new URL(`../../../../engine/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url)));
-      const resumed = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+      const resumed = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Continue again." }], sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
         onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
       })); expect(resumed.error).toBeNull();
@@ -983,7 +983,7 @@ describe("pi-native sessions", () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "failed-permissions-")); const warnings = [];
     await fsPromises.chmod(root, 0o755); mkdirSync(join(root, "mono-v2")); await fsPromises.chmod(join(root, "mono-v2"), 0o755);
     try {
-      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Fictional input." }], sessionKeepAlive: true, sessionId: "failed-permissions", piSessionsRoot: root,
         onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
       }));
@@ -1003,7 +1003,7 @@ describe("pi-native sessions", () => {
     const original = readFileSync(source); const controller = new AbortController();
     faux.setResponses([failure === "provider" ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional failure" }) : fauxAssistantMessage([fauxText("Failed turn draft.")])]);
     try {
-      const failed = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+      const failed = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [...(seed ? [{ role: "user", content: "Canonical seed." }, { role: "assistant", content: "Canonical reply." }] : []), { role: "user", content: "Failed first turn." }],
         sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root, piMaxRetries: 0,
         ...(failure === "throw" ? { resolveCustomPricing: () => { throw new Error("Fictional post-turn throw"); } } : {}),
@@ -1012,7 +1012,7 @@ describe("pi-native sessions", () => {
       expect(failure === "abort" ? failed.cancelled : Boolean(failed.error)).toBe(true);
       await disposeProviderSession("fixture-session"); /** @type {any} */ let context = undefined;
       faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Successful retry.")]); }]);
-      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Next clean turn." }], sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
       }));
       expect(result.error).toBeNull(); expect(transcriptOf(context)).toEqual([...(seed ? ["user:Canonical seed.", "assistant:Canonical reply."] : []), "user:Next clean turn."]);
@@ -1023,7 +1023,7 @@ describe("pi-native sessions", () => {
   it("does not issue a recovery receipt for an over-512 host run ID", async () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "bounded-recovery-")); faux.setResponses([fauxAssistantMessage([fauxText("Fictional reply.")])]);
     try {
-      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "bounded-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "x".repeat(513), revision: 0 } }));
+      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "bounded-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "x".repeat(513), revision: 0 } }));
       expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeUndefined();
       expect(readFileSync(findJsonlFiles(root)[0], "utf8")).toContain("synthetic:runtime:");
     } finally { await disposeProviderSession("bounded-handle").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
@@ -1034,12 +1034,12 @@ describe("pi-native sessions", () => {
     const base = runOptions(model, { sessionId: "unique-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "host-run", revision: 0 } });
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("First reply.")])]);
-      expect((await generatePiNativeResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "First input." }] })).error).toBeNull();
+      expect((await generateEngineTurnResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "First input." }] })).error).toBeNull();
       const dispatch = vi.fn(() => fauxAssistantMessage([fauxText("Must not dispatch.")])); faux.setResponses([dispatch]);
-      const duplicate = await generatePiNativeResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "Duplicate input." }] });
+      const duplicate = await generateEngineTurnResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "Duplicate input." }] });
       expect(duplicate.error).toContain("Invalid mono-agent harness journal"); expect(dispatch).not.toHaveBeenCalled(); expect(duplicate.providerSessionRecovery).toBeUndefined();
       /** @type {any} */ let context = undefined; faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Next reply.")]); }]);
-      const next = await generatePiNativeResponse("Fictional verification.", { ...base, sessionRecovery: { runId: "next-host-run", revision: 1 }, messages: [{ role: "user", content: "Next input." }] });
+      const next = await generateEngineTurnResponse("Fictional verification.", { ...base, sessionRecovery: { runId: "next-host-run", revision: 1 }, messages: [{ role: "user", content: "Next input." }] });
       assertPresent(next);
       expect(next.error).toBeNull(); expect(transcriptOf(context)).toEqual(["user:First input.", "assistant:First reply.", "user:Next input."]);
     } finally { await disposeProviderSession("unique-handle").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
@@ -1048,7 +1048,7 @@ describe("pi-native sessions", () => {
   it("rejects settlement if durable queued input evidence is still pending", async () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "pending-recovery-")); faux.setResponses([fauxAssistantMessage([fauxText("Fictional reply.")])]);
     try {
-      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "pending-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "pending-run", revision: 0 } }));
+      const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "pending-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "pending-run", revision: 0 } }));
       expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeDefined();
       const repo = resolveDurableNativeSessionRepo(root); const raw = await repo.open((await repo.list())[0]);
       await raw.beginTurn("synthetic:pending-input-proof"); await raw.write("input_queued", { inputId: "unplaced", state: "queued", placement: "next" });
@@ -1111,7 +1111,7 @@ describe("pi-native sessions", () => {
       faux.setResponses([
         (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("new-reply")]); },
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "new-turn" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1140,7 +1140,7 @@ describe("pi-native sessions", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-invalidate-"));
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("hidden-reply")])]);
-      const first = await generatePiNativeResponse("system", runOptions(model, {
+      const first = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "rejected-turn" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1156,7 +1156,7 @@ describe("pi-native sessions", () => {
       faux.setResponses([
         (context) => { freshContext = context; return fauxAssistantMessage([fauxText("clean-reply")]); },
       ]);
-      const second = await generatePiNativeResponse("system", runOptions(model, {
+      const second = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "clean-turn" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1175,7 +1175,7 @@ describe("pi-native sessions", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sync-"));
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("reply")])]);
-      const first = await generatePiNativeResponse("system", runOptions(model, {
+      const first = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "durable-turn" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1200,7 +1200,7 @@ describe("pi-native sessions", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sync-failure-"));
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("reply")])]);
-      const first = await generatePiNativeResponse("system", runOptions(model, {
+      const first = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "durable-turn" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1214,7 +1214,7 @@ describe("pi-native sessions", () => {
 
       let invoked = false;
       faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
-      const blocked = await generatePiNativeResponse("system", runOptions(model, {
+      const blocked = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "must-not-reopen" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1242,7 +1242,7 @@ describe("pi-native sessions", () => {
     const started = new Promise((resolve) => { deleteStarted = resolve; });
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("poisoned")])]);
-      const first = await generatePiNativeResponse("system", runOptions(model, {
+      const first = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "rejected-turn" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1261,7 +1261,7 @@ describe("pi-native sessions", () => {
 
       let invoked = false;
       faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
-      const contender = await generatePiNativeResponse("system", runOptions(model, {
+      const contender = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "racing-turn" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1289,7 +1289,7 @@ describe("pi-native sessions", () => {
     const originalDelete = repo.delete;
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("poisoned")])]);
-      const first = await generatePiNativeResponse("system", runOptions(model, {
+      const first = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "rejected-turn" }],
         sessionKeepAlive: true,
         sessionId,
@@ -1327,7 +1327,7 @@ describe("pi-native sessions", () => {
 
       // Turn 1: requested id is set but nothing exists yet → create-on-miss.
       faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-      const first = await generatePiNativeResponse("system", runOptions(model, {
+      const first = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
@@ -1350,7 +1350,7 @@ describe("pi-native sessions", () => {
       faux.setResponses([
         (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("reply-2")]); },
       ]);
-      const second = await generatePiNativeResponse("system", runOptions(model, {
+      const second = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
@@ -1395,7 +1395,7 @@ describe("pi-native sessions", () => {
       };
       let invoked = false;
       faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
-      const aborted = await generatePiNativeResponse("system", runOptions(model, {
+      const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
@@ -1408,7 +1408,7 @@ describe("pi-native sessions", () => {
       // The conversation must NOT be wedged: a fresh (non-aborted) resume of the
       // SAME derived id must create-on-miss again and succeed — NOT session_busy.
       faux.setResponses([fauxAssistantMessage([fauxText("reply-after")])]);
-      const next = await generatePiNativeResponse("system", runOptions(model, {
+      const next = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
         sessionId: derivedId,
@@ -1432,7 +1432,7 @@ describe("pi-native sessions", () => {
     const model = setup();
     let invoked = false;
     faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hello" }],
       sessionId: "derived-but-no-durable-root",
       sessionKeepAlive: true,
@@ -1446,7 +1446,7 @@ describe("pi-native sessions", () => {
     const model = setup();
     // Fresh keep-alive turn with a durable jsonl on disk.
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
       piSessionsRoot: sessionsRoot,
@@ -1474,12 +1474,19 @@ describe("pi-native sessions", () => {
       sessionId,
       piSessionsRoot: sessionsRoot,
     });
-    const runA = generatePiNativeResponse("system", optionsResume);
-    const runB = generatePiNativeResponse("system", optionsResume);
+    const runA = generateEngineTurnResponse("system", optionsResume);
+    const runB = generateEngineTurnResponse("system", optionsResume);
 
-    // Let one claim busy and the other observe it, then release the gated turn.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    /** @type {any} */ (release)?.();
+    // Keep the winner busy until the loser actually settles. A fixed sleep can
+    // release the winner before a slow cold reopen finishes, turning the loser
+    // into an ordinary sequential resume rather than a concurrent-turn refusal.
+    try {
+      const loser = await Promise.race([runA, runB]);
+      expect(loser.failureKind).toBe("session_busy");
+    } finally {
+      /** @type {any} */ (release)?.();
+      await Promise.allSettled([runA, runB]);
+    }
     const settled = await Promise.allSettled([runA, runB]);
     expect(settled.every((entry) => entry.status === "fulfilled")).toBe(true);
     const results = settled.map((entry) => { if (entry.status !== "fulfilled") throw entry.reason; return entry.value; });
@@ -1535,8 +1542,8 @@ describe("pi-native sessions", () => {
       });
       // Fire BOTH first turns without an intervening await so the create await
       // (the jsonl repo's async create) interleaves them through the window.
-      const runA = generatePiNativeResponse("system", optionsCreate);
-      const runB = generatePiNativeResponse("system", optionsCreate);
+      const runA = generateEngineTurnResponse("system", optionsCreate);
+      const runB = generateEngineTurnResponse("system", optionsCreate);
 
       // Keep the winner busy until the loser actually settles. A fixed sleep
       // can release the winner before a slow lookup finishes, turning the loser
@@ -1577,7 +1584,7 @@ describe("pi-native sessions", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-lonecreate-"));
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
         sessionId: "lone-create-on-miss-id",
@@ -1606,7 +1613,7 @@ describe("pi-native sessions", () => {
     try {
       let invoked = false;
       faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "hello" }],
         sessionKeepAlive: true,
         // Points outside `root`; if create-on-miss ran, JsonlSessionRepo would
@@ -1642,7 +1649,7 @@ describe("pi-native sessions", () => {
       // the orphaned jsonl persists on disk and a later run resolving the same
       // root would reopen it as a silently-resumable session.
       faux.setResponses([fauxAssistantMessage([fauxText("never reached")])]);
-      const failed = await generatePiNativeResponse("system", runOptions(model, {
+      const failed = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         piSessionsRoot: root,
         sessionKeepAlive: true,
@@ -1668,7 +1675,7 @@ describe("pi-native sessions", () => {
       faux.setResponses([
         (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("reply-2")]); },
       ]);
-      const resume = await generatePiNativeResponse("system", runOptions(model, {
+      const resume = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionId: leakedSessionId,
         piSessionsRoot: root,
@@ -1685,14 +1692,14 @@ describe("pi-native sessions", () => {
   it("bills a resumed run only for this run's messages, not the restored transcript", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
     }));
     expect(first.numTurns).toBe(1);
 
     faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
-    const second = await generatePiNativeResponse("system", runOptions(model, {
+    const second = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId: first.providerSessionId,
@@ -1707,7 +1714,7 @@ describe("pi-native sessions", () => {
   it("disposeProviderSession drops the live native session", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
     }));
@@ -1717,7 +1724,7 @@ describe("pi-native sessions", () => {
 
     let invoked = false;
     faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
-    const resume = await generatePiNativeResponse("system", runOptions(model, {
+    const resume = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionId: first.providerSessionId,
     }));
@@ -1736,7 +1743,7 @@ describe("pi-native sessions", () => {
         fauxAssistantMessage([fauxText("Here is the draft.")]),
         (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("Updated draft.")]); },
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Draft an email" }], piSessionsRoot: root, sessionKeepAlive: true,
         prompts: { emptyReplyFinalization: () => "Framework reply nudge" },
       }));
@@ -1745,7 +1752,7 @@ describe("pi-native sessions", () => {
       const persisted = findJsonlFiles(root).map((path) => readFileSync(path, "utf8")).join("\n");
       expect(persisted).toContain("Framework reply nudge");
       expect(result.events.some((event) => event.type === "user" && JSON.stringify(event).includes("Framework reply nudge"))).toBe(false);
-      const resumed = await generatePiNativeResponse("system", runOptions(model, {
+      const resumed = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Revise the draft" }], piSessionsRoot: root, sessionId, sessionKeepAlive: true,
       }));
       expect(resumed).toMatchObject({ error: null, text: "Updated draft." });
@@ -1765,7 +1772,7 @@ describe("pi-native sessions", () => {
       fauxAssistantMessage([fauxThinking("thinking only")]),
       fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: 7 }, { id: "so-1" })]),
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "give structured output" }],
       outputSchema: {
         type: "object",
@@ -1799,7 +1806,7 @@ describe("stateless Pi attribution ownership", () => {
     });
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("primary answer")])]);
-      const first = await generatePiNativeResponse("system", { ...base, sessionKeepAlive: true,
+      const first = await generateEngineTurnResponse("system", { ...base, sessionKeepAlive: true,
         messages: [{ role: "user", content: "primary question" }] });
       expect(first.error).toBeNull();
       expect(first.providerSessionId).toBe(id);
@@ -1807,7 +1814,7 @@ describe("stateless Pi attribution ownership", () => {
       for (const outcome of ["success", "throw", "cancel"]) {
         const controller = new AbortController();
         faux.setResponses([fauxAssistantMessage([fauxText("stateless answer")])]);
-        const result = await generatePiNativeResponse("system", { ...base,
+        const result = await generateEngineTurnResponse("system", { ...base,
           messages: [{ role: "user", content: "stateless question" }], abortSignal: controller.signal,
           onEvent: (event) => {
             if (outcome === "throw" && event.type === "provider_request_started") throw new Error("setup failed");
@@ -1835,7 +1842,7 @@ describe("stateless Pi attribution ownership", () => {
 
       let resumedContext;
       faux.setResponses([(context) => { resumedContext = context; return fauxAssistantMessage([fauxText("resumed answer")]); }]);
-      const resumed = await generatePiNativeResponse("system", { ...base, sessionId: id, sessionKeepAlive: true,
+      const resumed = await generateEngineTurnResponse("system", { ...base, sessionId: id, sessionKeepAlive: true,
         messages: [{ role: "user", content: "resume question" }] });
       assertPresent(resumed);
       expect(resumed.error).toBeNull();
@@ -2045,7 +2052,7 @@ describe("stable native replay with host envelopes", () => {
         return { options: { piResolvedModel: faux.getModel(model.model), piResolvedModels: fauxModels } };
       },
     });
-    const run = execution === "direct" ? generatePiNativeResponse : router.run.bind(router);
+    const run = execution === "direct" ? generateEngineTurnResponse : router.run.bind(router);
     const sessionsRoot = join(root, "pi");
     let sessionId;
     let previous;
@@ -2111,7 +2118,7 @@ describe("stable native replay with host envelopes", () => {
 it("validates sessionTurn independently before native session/model dispatch", async () => {
   const model = setup(); const root = mkdtempSync(join(tmpdir(), "descriptor-validation-"));
   try {
-    const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+    const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
       messages: [{ role: "user", content: "Fictional input." }], sessionId: "owned", sessionKeepAlive: true, piSessionsRoot: root,
       sessionTurn: { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "wrong", baseRevision: 0 },
     }));
@@ -2125,7 +2132,7 @@ it("uses a protected descriptor without opting into terminal recovery", async ()
   const model = setup(); const root = mkdtempSync(join(tmpdir(), "descriptor-owned-"));
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer.")])]);
   try {
-    const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+    const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
       messages: [{ role: "user", content: "Fictional input." }], sessionId: "descriptor-handle", sessionKeepAlive: true, piSessionsRoot: root,
       sessionTurn: { kind: "host", ownerKey: "logical-fictional", historyBucket: "physical-fictional", turnId: "host-turn", handleId: "descriptor-handle", baseRevision: 4 },
     })); expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeUndefined();
@@ -2145,7 +2152,7 @@ it("classifies native journal fsync failure terminally instead of provider-unava
     return original(session, options);
   });
   try {
-    const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }],
+    const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }],
       sessionId: "storage-failed", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "storage-run", revision: 0 } }));
     expect(result.failureKind).toBe("safety_journal_storage_failed"); expect(result.providerSessionId).toBe("storage-failed"); expect(result.retryable).toBe(false); expect(result.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(0);
   } finally { spy.mockRestore(); await disposeProviderSession("storage-failed").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
@@ -2162,13 +2169,13 @@ it.each([true, false])("cleans suspended keep-alive liveness and reopens as susp
   }]);
   try {
     const options = runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], providerAttributionSessionId: "suspended", sessionKeepAlive: true, ...(durable ? { sessionId: "suspended", piSessionsRoot: root } : {}) });
-    const first = await generatePiNativeResponse("Fictional verification.", options);
+    const first = await generateEngineTurnResponse("Fictional verification.", options);
     expect(first.failureKind).toBe("safety_native_suspended"); expect(first.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(1);
-    const second = await generatePiNativeResponse("Fictional verification.", { ...options, sessionId: "suspended", messages: [{ role: "user", content: "Fictional next message." }] });
+    const second = await generateEngineTurnResponse("Fictional verification.", { ...options, sessionId: "suspended", messages: [{ role: "user", content: "Fictional next message." }] });
     expect(second.error).toBeNull(); expect(second.providerSessionId).toBe("suspended"); expect(faux.state.callCount).toBe(2);
     await disposeProviderSession("suspended");
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional clean fresh response.")])]);
-    const third = await generatePiNativeResponse("Fictional verification.", options); expect(third.error).toBeNull(); expect(third.providerSessionId).toBe("suspended");
+    const third = await generateEngineTurnResponse("Fictional verification.", options); expect(third.error).toBeNull(); expect(third.providerSessionId).toBe("suspended");
     if (durable) {
       const repo = resolveDurableNativeSessionRepo(root); const session = await repo.open((await repo.list())[0]);
       expect(await session.getOpenOperations()).toEqual([]); await session.close();
@@ -2188,8 +2195,8 @@ it.each([[false, false], [false, true], [true, false], [true, true]])("rolls a l
     (context) => { resumed = structuredClone(context.messages); return fauxAssistantMessage([fauxText("Fictional safe next turn.")]); }]);
   const options = runOptions(model, { providerAttributionSessionId: id, sessionKeepAlive: true, ...(durable ? { sessionId: id, piSessionsRoot: root } : {}) });
   try {
-    const first = await generatePiNativeResponse("Fictional verification.", { ...options, messages: [{ role: "user", content: "Fictional original user." }] }); expect(first.error).toBeNull();
-    const suspended = await generatePiNativeResponse("Fictional verification.", { ...options, sessionId: id, messages: [{ role: "user", content: "Fictional suspended user." }], ...(recovery ? { sessionRecovery: { runId: "suspended-attempt", revision: 1 } } : {}) });
+    const first = await generateEngineTurnResponse("Fictional verification.", { ...options, messages: [{ role: "user", content: "Fictional original user." }] }); expect(first.error).toBeNull();
+    const suspended = await generateEngineTurnResponse("Fictional verification.", { ...options, sessionId: id, messages: [{ role: "user", content: "Fictional suspended user." }], ...(recovery ? { sessionRecovery: { runId: "suspended-attempt", revision: 1 } } : {}) });
     expect(suspended.failureKind).toBe("safety_native_suspended"); expect(suspended.providerSessionRecovery).toBeUndefined();
     if (durable) {
       const repo = resolveDurableNativeSessionRepo(root); const raw = await repo.open((await repo.list())[0]);
@@ -2197,7 +2204,7 @@ it.each([[false, false], [false, true], [true, false], [true, true]])("rolls a l
       expect(await raw.getOpenTurns()).toEqual([]); expect(await raw.getOpenOperations()).toEqual([]); expect(await raw.getRepairEntries()).toEqual([]);
       if (recovery) expect((await raw.getTurn("suspended-attempt")).payload.status).toBe("failed"); await raw.close();
     }
-    const next = await generatePiNativeResponse("Fictional verification.", { ...options, sessionId: id, messages: [{ role: "user", content: "Fictional next user." }] }); expect(next.error).toBeNull();
+    const next = await generateEngineTurnResponse("Fictional verification.", { ...options, sessionId: id, messages: [{ role: "user", content: "Fictional next user." }] }); expect(next.error).toBeNull();
     assertPresent(resumed);
     expect(resumed.slice(0, baseline.length)).toEqual(baseline); expect(JSON.stringify(resumed)).toContain("Fictional approved baseline.");
     expect(JSON.stringify(resumed)).not.toContain("Fictional suspended user."); expect(JSON.stringify(resumed)).not.toContain("suspended, not resumed");
@@ -2214,14 +2221,14 @@ it("classifies a resumed suspension sealing fsync failure terminally rather than
   let spy;
   try {
     const options = runOptions(model, { sessionId: id, sessionKeepAlive: true, piSessionsRoot: root, messages: [{ role: "user", content: "Fictional input." }] });
-    expect((await generatePiNativeResponse("Fictional verification.", options)).error).toBeNull();
+    expect((await generateEngineTurnResponse("Fictional verification.", options)).error).toBeNull();
     spy = vi.spyOn(harnessAdapter, "createHarnessAdapter").mockImplementation(async (session, config) => {
       const raw = session.rawSession; const append = raw.io.append, sync = raw.io.sync; let failedSeal = false;
       raw.io.append = async (text) => { const record = JSON.parse(text); if (record.kind === "turn_end" && record.payload.status === "failed") failedSeal = true; return append(text); };
       raw.io.sync = async () => { if (failedSeal) throw Object.assign(new Error("503 timeout in fictional failed-seal fsync"), { code: "ENOSPC" }); return sync(); };
       return original(session, config);
     });
-    const failed = await generatePiNativeResponse("Fictional verification.", options);
+    const failed = await generateEngineTurnResponse("Fictional verification.", options);
     expect(failed).toMatchObject({ failureKind: "safety_journal_storage_failed", retryable: false }); expect(failed.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(2);
   } finally { spy?.mockRestore(); await disposeProviderSession(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });
@@ -2244,7 +2251,7 @@ describe("protected native turn reconciliation", () => {
       : outcome === "suspended" ? fauxAssistantMessage([], { stopReason: "deferred", deferred }) : fauxAssistantMessage([fauxText("Fictional answer.")])]);
     if (outcome === "cancelled") options.onEvent = (event) => { if (event.type === "capabilities_resolved") abort.abort(); };
     try {
-      const result = await generatePiNativeResponse("Fictional instructions.", options);
+      const result = await generateEngineTurnResponse("Fictional instructions.", options);
       if (outcome === "suspended") expect(result.failureKind).toBe("safety_native_suspended");
       expect(result.providerSessionRecovery).toBeUndefined(); expect((await resolveDurableNativeSessionRepo(root).listOwned()).length).toBe(1);
       const before = faux.state.callCount; const matched = await reconcileNativeSessionTurn(request);
@@ -2272,7 +2279,7 @@ describe("protected native turn reconciliation", () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-match-")); const { options, request } = protectedOptions(model, root);
     try {
       expect(await reconcileNativeSessionTurn(request)).toEqual({ status: "absent" });
-      faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer.")])]); await generatePiNativeResponse("Fictional instructions.", options);
+      faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer.")])]); await generateEngineTurnResponse("Fictional instructions.", options);
       const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0], bytes = readFileSync(metadata.path);
       expect(await reconcileNativeSessionTurn({ ...request, descriptor: { ...request.descriptor, ownerKey: "foreign-owner" } })).toMatchObject({ status: "mismatch", reason: "ownerKey" });
       expect(readFileSync(metadata.path).equals(bytes)).toBe(true);
@@ -2284,7 +2291,7 @@ describe("protected native turn reconciliation", () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-fault-")); const first = protectedOptions(model, root, "one"), second = protectedOptions(model, root, "two");
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")]), fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional deterministic error." })]);
     try {
-      await generatePiNativeResponse("Fictional instructions.", first.options); await generatePiNativeResponse("Fictional instructions.", second.options);
+      await generateEngineTurnResponse("Fictional instructions.", first.options); await generateEngineTurnResponse("Fictional instructions.", second.options);
       const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0];
       expect(await reconcileNativeSessionTurn(second.request)).toMatchObject({ status: "matched", outcome: "failed" });
       expect(await reconcileNativeSessionTurn(first.request)).toMatchObject({ status: "mismatch", reason: "turn_advanced" });
@@ -2294,7 +2301,7 @@ describe("protected native turn reconciliation", () => {
         const adapter = await original(session, config);
         session.rawSession.io.sync = async () => { throw Object.assign(new Error("Fictional fsync failure"), { code: "ENOSPC" }); }; return adapter;
       });
-      const poisoned = await generatePiNativeResponse("Fictional instructions.", third.options); spy.mockRestore();
+      const poisoned = await generateEngineTurnResponse("Fictional instructions.", third.options); spy.mockRestore();
       expect(poisoned).toMatchObject({ failureKind: "safety_journal_storage_failed", retryable: false }); expect(poisoned.providerSessionId).toBeUndefined();
       expect((await repo.listOwned()).map((item) => item.journalId)).toEqual([metadata.journalId]);
     } finally { await disposeProviderSession(first.options.sessionId); rmSync(root, { recursive: true, force: true }); }
@@ -2309,7 +2316,7 @@ describe("protected native turn reconciliation", () => {
       faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "maximum context length exceeded" })]);
     }
     try {
-      const result = await generatePiNativeResponse("Fictional instructions.", options); expect(result.failureKind).toBe(kind);
+      const result = await generateEngineTurnResponse("Fictional instructions.", options); expect(result.failureKind).toBe(kind);
       const count = faux.state.callCount; const recovered = await reconcileNativeSessionTurn(request);
       expect(recovered).toMatchObject({ status: "matched", outcome: "failed" }); expect(recovered.commitCandidate).toBeUndefined(); expect(recovered.seal.result.failureKind).toBe(kind);
       expect(await reconcileNativeSessionTurn(request)).toEqual(recovered); expect(faux.state.callCount).toBe(count);
@@ -2319,7 +2326,7 @@ describe("protected native turn reconciliation", () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-checkpoint-")); const first = protectedOptions(model, root, "seed");
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional context.")])]);
     try {
-      await generatePiNativeResponse("Fictional instructions.", first.options);
+      await generateEngineTurnResponse("Fictional instructions.", first.options);
       const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0]; const raw = await repo.open(metadata, { repair: false });
       const descriptor = { ...first.request.descriptor, turnId: "manual-checkpoint", reconciliation: { ...first.request.descriptor.reconciliation, purpose: "compaction", initialInputId: null } };
       const config = { model: first.request.expectedModel }; await raw.beginTurn(descriptor.turnId, config, "synthetic", createTurnBinding(descriptor, config.model));
@@ -2337,7 +2344,7 @@ describe("protected native turn reconciliation", () => {
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional reply.")])]);
     let spy;
     try {
-      await generatePiNativeResponse("Fictional instructions.", first.options); const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0];
+      await generateEngineTurnResponse("Fictional instructions.", first.options); const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0];
       const bytes = readFileSync(metadata.path); writeFileSync(metadata.path, Buffer.concat([bytes, Buffer.from("{ invalid complete record }\n")]));
       await expect(reconcileNativeSessionTurn(first.request)).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
       expect(readFileSync(metadata.path).equals(Buffer.concat([bytes, Buffer.from("{ invalid complete record }\n")]))).toBe(true); writeFileSync(metadata.path, bytes);
@@ -2355,9 +2362,9 @@ it("refuses reconciliation of a legacy recovery-pending handle without evicting 
   try {
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")])]);
     const common = { piSessionsRoot: root, sessionId: id, sessionKeepAlive: true, messages: [{ role: "user", content: "Fictional request." }] };
-    await generatePiNativeResponse("Fictional instructions.", runOptions(model, common));
+    await generateEngineTurnResponse("Fictional instructions.", runOptions(model, common));
     faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional provider failure" })]);
-    const failed = await generatePiNativeResponse("Fictional instructions.", runOptions(model, { ...common, sessionResume: true, sessionRecovery: { runId: "legacy-pending", revision: 0 } }));
+    const failed = await generateEngineTurnResponse("Fictional instructions.", runOptions(model, { ...common, sessionResume: true, sessionRecovery: { runId: "legacy-pending", revision: 0 } }));
     expect(failed.providerSessionRecovery).toBeDefined();
     const request = { sessionsRoot: root, purpose: "execution", descriptor: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "native-query", handleId: id, baseRevision: 0,
       reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } }, expectedModel: { provider: model.provider, id: model.id, api: model.api }, expectedInputs: [{ id: "fictional-input", placement: "initial", requestDigest: digestTurnInput("Fictional request.") }] };

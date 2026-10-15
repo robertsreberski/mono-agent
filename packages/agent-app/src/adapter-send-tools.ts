@@ -250,8 +250,9 @@ function resolveAskUserToolSettings(
 }
 
 /**
- * Restriction-only per-request marker. A Web parent-interruption wake sets
- * `metadata.web.suppressInteractionTools`; it can only remove AskUser, never add tools.
+ * Restriction-only per-request marker retained for older Web builds and host
+ * continuations. Current Web restart recovery waits for explicit user input.
+ * `metadata.web.suppressInteractionTools` can only remove AskUser, never add tools.
  */
 export function requestSuppressesInteractionTools(metadata: Record<string, unknown> | undefined): boolean {
   const web = metadata?.web;
