@@ -35,6 +35,24 @@ steering, journal/storage and compaction over upstream `runAgentLoop`; provider
 code remains Pi-owned. The existing `@mono-agent/agent-harness` package still
 owns host conversation/history orchestration.
 
+Pi 1.2.0 compatibility notes:
+
+- Use `azure:<model>` instead of `azure-openai-responses:<model>` for built-in
+  Azure routes. The `azure-openai-responses` API id and `AZURE_OPENAI_*`
+  environment variables are unchanged; Azure now also supports Foundry Chat
+  Completions, including DeepSeek V4 Pro.
+- Claude Haiku 5.5 and other refreshed catalog rows are available without local
+  backfills. Effort levels and long-prompt cost tiers follow Pi's catalog.
+- Provider output-limit estimation is more conservative (3.5 characters/token).
+  Session storage, historical imports and the engine compaction estimator stay
+  unchanged. New Pi response/tool timings are normalized out of message envelopes
+  before hooks and persistence, not added to the stored session format.
+- Provider checks, compaction summaries and handoff summaries remain single-shot
+  SSE with zero transport retries. Anthropic can downgrade preferred strict tools
+  once after a definite schema-limit rejection; connection failures and started
+  responses do not enter that fallback. Runtime assistant-level retries remain
+  disabled, including the new transient upstream-provider error patterns.
+
 Native transcripts use `mono-v2/journals/<journalId>.jsonl` under `piSessionsRoot`.
 The immutable journal ID is independent of the epoch-bound provider handle;
 logical ownership remains explicitly unbound until a host descriptor binds it. Idle
@@ -783,24 +801,6 @@ key-resolution contract is unchanged**: an `apiKeys` map entry wins, else the ho
 `pi_auth_failed` runtime warning and proceeds keyless (a builtin provider then
 falls back to its own env vars, exactly as returning `undefined` from the old hook
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
-
-Pi 1.2.0 compatibility notes:
-
-- Use `azure:<model>` instead of `azure-openai-responses:<model>` for built-in
-  Azure routes. The `azure-openai-responses` API id and `AZURE_OPENAI_*`
-  environment variables are unchanged; Azure now also supports Foundry Chat
-  Completions, including DeepSeek V4 Pro.
-- Claude Haiku 5.5 and other refreshed catalog rows are available without local
-  backfills. Effort levels and long-prompt cost tiers follow Pi's catalog.
-- Provider output-limit estimation is more conservative (3.5 characters/token).
-  Session storage, historical imports and the engine compaction estimator stay
-  unchanged. New Pi response/tool timings are normalized out of message envelopes
-  before hooks and persistence, not added to the stored session format.
-- Provider checks, compaction summaries and handoff summaries remain single-shot
-  SSE with zero transport retries. Anthropic can downgrade preferred strict tools
-  once after a definite schema-limit rejection; connection failures and started
-  responses do not enter that fallback. Runtime assistant-level retries remain
-  disabled, including the new transient upstream-provider error patterns.
 
 Current dependency pins: **`@earendil-works/pi-ai` and
 `@earendil-works/pi-agent-core` are both `1.2.0`** (the initial Pi 0.80
