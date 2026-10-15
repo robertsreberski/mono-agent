@@ -1,4 +1,4 @@
-import { assertNativeSessionAccess } from "./session-authority.js";
+import { assertNativeSessionAccess } from "../../../engine/session-authority.js";
 // @ts-check
 // Turn execution for the pi-native bridge.
 //

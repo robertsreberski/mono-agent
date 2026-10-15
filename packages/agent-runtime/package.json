@@ -102,6 +102,18 @@
     "./host/sandbox": {
       "types": "./types/host/sandbox.d.ts",
       "default": "./dist/host/sandbox.js"
+    },
+    "./engine": {
+      "types": "./types/engine/index.d.ts",
+      "default": "./src/engine/index.js"
+    },
+    "./engine/sessions.js": {
+      "types": "./types/engine/sessions.d.ts",
+      "default": "./src/engine/sessions.js"
+    },
+    "./engine/owned-fs.js": {
+      "types": "./types/engine/owned-fs.d.ts",
+      "default": "./src/engine/owned-fs.js"
     }
   },
   "main": "./src/index.js",
@@ -115,6 +127,7 @@
   "files": [
     "src/**/*.js",
     "!src/__tests__/**",
+    "!src/engine/__tests__/**",
     "types/**/*.d.ts",
     "ARCHITECTURE.md",
     "MIGRATION.md",
@@ -123,7 +136,8 @@
     "THIRD_PARTY_NOTICES.md",
     "dist/host/**/*.js",
     "!dist/host/**/__tests__/**",
-    "dist/host/srt-embed-runner.mjs"
+    "dist/host/srt-embed-runner.mjs",
+    "ENGINE.md"
   ],
   "engines": {
     "node": ">=24.15.0"
@@ -142,8 +156,8 @@
     "turndown": "7.2.4",
     "unpdf": "1.8.1",
     "zod": "^4.3.6",
-    "@mono-agent/engine": "workspace:0.25.1",
-    "@mono-agent/agent-contracts": "workspace:0.25.1"
+    "@mono-agent/agent-contracts": "workspace:0.25.1",
+    "@earendil-works/pi-agent-core": "1.2.0"
   },
   "devDependencies": {
     "@types/turndown": "5.0.6"

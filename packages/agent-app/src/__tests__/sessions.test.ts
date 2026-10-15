@@ -162,7 +162,7 @@ describe("purgeConversationState session accounting", () => {
   });
 
   it.each([false, true])("purges all session artifacts but counts only published journals (quarantine recovery=%s)", async (recover) => {
-    const { JsonlSessionRepo } = await import("../../../engine/dist/index.js");
+    const { JsonlSessionRepo } = await import("@mono-agent/agent-runtime/engine");
     const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } }, providers: { piNative: {} } });
     const root = join(dir, ".mono-agent", "sessions");
     const repo = new JsonlSessionRepo({ sessionsRoot: root });
@@ -190,7 +190,7 @@ describe("purgeConversationState session accounting", () => {
   });
 
   it.each([false, true])("operator whole-root wipe removes v4 chain journals and switch storage (recovery=%s)", async (recover) => {
-    const { JsonlSessionRepo } = await import("../../../engine/dist/index.js");
+    const { JsonlSessionRepo } = await import("@mono-agent/agent-runtime/engine");
     const configPath = await writeConfig({ runtime: { session: { root: "./.mono-agent/sessions" } }, providers: { piNative: {} }, artifacts: { dir: "./.mono-agent/artifacts" } });
     const nativeRoot = join(dir, ".mono-agent", "sessions"), historyRoot = join(dir, ".mono-agent", "history");
     const id = "fictional-purge-owner", rootId = "1".repeat(64);

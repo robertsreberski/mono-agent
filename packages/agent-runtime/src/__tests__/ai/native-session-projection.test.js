@@ -3,19 +3,19 @@ import { mkdtemp, rm, readFile, readdir, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { digestTurnInput } from "@mono-agent/engine";
-import { createHandoffBudget } from "../../../../engine/dist/handoff.js";
-import { assertNativeProjectionBinding } from "../../../../engine/dist/session-authority.js";
+import { digestTurnInput } from "@mono-agent/agent-runtime/engine";
+import { createHandoffBudget } from "../../engine/handoff.js";
+import { assertNativeProjectionBinding } from "../../engine/session-authority.js";
 import { createRuntime } from "../../runtime.js";
 import * as turnRunner from "../../ai/providers/engine-turn/turn-runner.js";
 import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
-import { createPiSessionAdapter } from "../../../../engine/dist/session-adapter.js";
+import { createPiSessionAdapter } from "../../engine/session-adapter.js";
 import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
 import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../ai/providers/engine-turn/compaction-driver.js";
-import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo,
-  discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../ai/providers/engine-turn/session-lifecycle.js";
-import { JsonlSessionRepo } from "../../../../engine/dist/session-store.js";
+import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
+import { discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../ai/providers/engine-turn/session-lifecycle.js";
+import { JsonlSessionRepo } from "../../engine/session-store.js";
 
 const roots = [];
 afterEach(async () => { await refreshProviderSession(handle); for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }); });

@@ -1,4 +1,5 @@
-import { createSessionRegistry as createRegistry, nativeSessionRegistry } from "@mono-agent/engine/sessions.js";
+import { createSessionRegistry as createRegistry } from "../../engine/session-registry.js";
+import { nativeSessionRegistry } from "../../engine/session-lifecycle.js";
 const allRegistries = new Set([nativeSessionRegistry]);
 /** @param {Parameters<typeof createRegistry>[0]} [options] */
 export function createSessionRegistry(options) {

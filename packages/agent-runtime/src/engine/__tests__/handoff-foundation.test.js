@@ -149,7 +149,7 @@ it("refuses mandatory latest/ledger overflow, host-cap extensions and oversized 
   expect(buildHandoff(view([await segment("A")]), { ...options, summary: {} })).toEqual({ status: "summary_rejected", reason: "malformed_summary" });
 });
 it("enforces one context-builder seam in production source (definition and compatibility export remain)", async () => {
-  const root = fileURLToPath(new URL("../../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../", import.meta.url));
   expect(await findContextBuilderBypasses(root)).toEqual([]);
 });
 
@@ -250,12 +250,12 @@ it("lifecycle inspection is synchronous and performs no context payload reads", 
 });
 
 it("source enforcement catches JS/TS imports and re-exports in other packages and apps", async () => {
-  const root = fileURLToPath(new URL("../../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../", import.meta.url));
   const fake = await mkdtemp(join(root, "node_modules", ".p3a-source-check-"));
   try {
     const paths = ["packages/other/src/bypass.ts", "packages/other/src/session-context.js", "packages/another/src/index.js", "apps/chat/src/bypass.tsx"];
-    for (const path of paths) { const directory = path.slice(0, path.lastIndexOf("/")); await mkdir(join(fake, directory), { recursive: true }); await writeFile(join(fake, path), 'import { buildHarnessSessionContext as bypass } from "@mono-agent/engine";'); }
-    await writeFile(join(fake, paths[2]), 'export { buildHarnessSessionContext } from "@mono-agent/engine";');
+    for (const path of paths) { const directory = path.slice(0, path.lastIndexOf("/")); await mkdir(join(fake, directory), { recursive: true }); await writeFile(join(fake, path), 'import { buildHarnessSessionContext as bypass } from "@mono-agent/agent-runtime/engine";'); }
+    await writeFile(join(fake, paths[2]), 'export { buildHarnessSessionContext } from "@mono-agent/agent-runtime/engine";');
     expect(await findContextBuilderBypasses(fake)).toEqual(paths.sort());
   } finally { await rm(fake, { recursive: true, force: true }); }
 });

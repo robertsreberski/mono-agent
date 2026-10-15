@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { OwnedFileDamagedError } from "@mono-agent/engine/owned-fs.js";
+import { OwnedFileDamagedError } from "@mono-agent/agent-runtime/engine/owned-fs.js";
 import { PendingTurnPayloadStore } from "../durable-turn-payloads.js";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";

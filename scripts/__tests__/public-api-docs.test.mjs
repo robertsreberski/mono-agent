@@ -10,6 +10,7 @@ import {
   renderJsSubpathInventory,
   renderPublicApiInventory,
   updateReadmePublicApiInventory,
+  updateMigrationJsSubpathInventory,
 } from "../lib/public-api-docs.mjs";
 
 const temporaryRoots = [];
@@ -172,6 +173,15 @@ describe("package Public API documentation", () => {
     ]);
   });
 
+  it("updates only the current migration inventory and preserves released snapshots", () => {
+    const block = (value) => `<!-- public-api-js-subpaths:start -->\n${value}\n<!-- public-api-js-subpaths:end -->`;
+    const released = `## 0.1.0\n\n${block("frozen")}\n`;
+    const migration = `# Migration\n\n## Unreleased\n\n${block("stale")}\n\n${released}`;
+    const updated = updateMigrationJsSubpathInventory(migration, block("current"));
+    expect(updated).toBe(migration.replace(block("stale"), block("current")));
+    expect(updated.endsWith(released)).toBe(true);
+  });
+
   it("derives MIGRATION deep .js counts and paths from the export map", async () => {
     const fixture = await createPackageFixture({
       exports: {
@@ -199,7 +209,7 @@ describe("package Public API documentation", () => {
     );
     await writeFile(
       join(fixture.root, "packages/example/MIGRATION.md"),
-      `# Migration\n\n${rendered}\n`,
+      `# Migration\n\n## Unreleased\n\n${rendered}\n\n## 0.1.0\n\n${rendered.replace("**2 named", "**1 named")}\n`,
     );
     expect(findPackagePublicApiDocErrors(fixture)).toEqual([]);
 

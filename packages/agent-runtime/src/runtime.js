@@ -36,8 +36,8 @@ import {
 } from "./ai/runtime/sessions.js";
 import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
-import { recoverDurableNativeSession, reconcileNativeSessionTurn, retireDurableNativeSession } from "./ai/providers/engine-turn/session-lifecycle.js";
-import { salvageDurableNativeSession } from "./ai/providers/engine-turn/session-salvage.js";
+import { recoverDurableNativeSession, reconcileNativeSessionTurn, retireDurableNativeSession } from "./engine/session-lifecycle.js";
+import { salvageDurableNativeSession } from "./engine/session-salvage.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
 import { snapshotNativeDispatchOptions } from "./ai/providers/engine-turn/prepared-dispatch.js";

@@ -6,7 +6,7 @@ const native = vi.hoisted(() => ({
   inspectCurrentJournal: vi.fn(), inventory: vi.fn(),
 }));
 const inherited = vi.hoisted(() => vi.fn());
-vi.mock("@mono-agent/engine/sessions.js", () => ({ createManagedNativeJournalStorage: () => native, NativeEvidenceCapacityError: class extends Error {} }));
+vi.mock("../../engine/native-journal-storage.js", () => ({ createManagedNativeJournalStorage: () => native, NativeEvidenceCapacityError: class extends Error {} }));
 vi.mock("../../ai/providers/engine-turn/handoff-producer.js", () => ({ checkNativeInheritedPrefix: inherited }));
 import { createManagedNativeJournalStorage } from "../../ai/providers/engine-turn/native-journal-storage.js";
 

@@ -1,3 +1,4 @@
+// Private fault-injection seams load JS source; use the matching generated declarations.
 import { afterEach, expect, it, vi } from "vitest";
 import { chmod, lstat, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -204,9 +205,9 @@ it("rejects hard-linked or symlinked fences and replaced storage directories wit
 });
 
 it("stores an actual P3a checkpoint proposal, including optional ledger fields, without a producer call", async () => {
-  const { MemorySessionRepo } = await import("@mono-agent/engine");
-  const { createEvidenceView } = await import("../../../engine/dist/evidence-view.js");
-  const { buildHandoff, createHandoffBudget } = await import("../../../engine/dist/handoff.js");
+  const { MemorySessionRepo } = await import("@mono-agent/agent-runtime/engine");
+  const { createEvidenceView } = await import(new URL("../../../agent-runtime/src/engine/evidence-view.js", import.meta.url).href) as typeof import("../../../agent-runtime/types/engine/evidence-view.js");
+  const { buildHandoff, createHandoffBudget } = await import(new URL("../../../agent-runtime/src/engine/handoff.js", import.meta.url).href) as typeof import("../../../agent-runtime/types/engine/handoff.js");
   const repository = new MemorySessionRepo(), native = await repository.create({ id: source.handleId, cwd: "/fictional" });
   await native.beginTurn("fictional-open-turn", {}, "synthetic", undefined);
   await native.appendMessage({ role: "user", content: "Fictional interrupted request", timestamp: 17 }, "00000000-0000-4000-8000-000000000007");

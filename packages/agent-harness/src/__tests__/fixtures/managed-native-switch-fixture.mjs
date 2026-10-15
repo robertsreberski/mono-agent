@@ -1,6 +1,6 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { JsonlSessionRepo } from "../../../../engine/dist/session-store.js";
+import { JsonlSessionRepo } from "../../../../agent-runtime/src/engine/session-store.js";
 import { createManagedNativeJournalStorage } from "@mono-agent/agent-runtime";
 import { createDurableHistoryStore } from "../../../dist/durable-history.js";
 import { createModelSwitchState } from "../../../dist/model-switch-billing.js";

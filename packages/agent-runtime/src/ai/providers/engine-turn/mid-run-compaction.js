@@ -4,8 +4,8 @@
 // the engine owns checkpoint preparation and durable placement.
 
 import { randomUUID } from "node:crypto";
-import { estimateTokens, shouldCompact } from "@mono-agent/engine";
-import { projectContext } from "@mono-agent/engine";
+import { estimateTokens, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
+import { projectContext } from "../../../engine/request-projection.js";
 import {
   createCompactionAccounting,
   createCompactionEmitter,

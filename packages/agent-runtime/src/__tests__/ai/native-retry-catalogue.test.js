@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
-import { resolveDurableNativeSessionRepo } from "../../ai/providers/engine-turn/session-lifecycle.js";
+import { resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
 
 let faux, fauxModels;

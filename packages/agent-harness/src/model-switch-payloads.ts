@@ -1,5 +1,5 @@
 import { lstat, mkdir, rm } from "node:fs/promises";
-import { OwnedFileDamagedError, assertIdentity, isOwned, listOwned, publishAtomic, readOwned, sameIdentity as same, syncDir, unchanged } from "@mono-agent/engine/owned-fs.js";
+import { OwnedFileDamagedError, assertIdentity, isOwned, listOwned, publishAtomic, readOwned, sameIdentity as same, syncDir, unchanged } from "@mono-agent/agent-runtime/engine/owned-fs.js";
 import { randomBytes, createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 import { MODEL_SWITCH_DIRECTORY, MAX_MODEL_SWITCH_BYTES, ModelSwitchMessageConsumedError, MAX_MODEL_SWITCH_FENCE_BYTES, boundedSwitchBytes, canonicalSwitchJSON,

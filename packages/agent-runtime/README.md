@@ -10,7 +10,7 @@ Pi runtime and the ~39 providers it reaches.
 
 Category: `runtime`
 Tier: `core`
-Catalog responsibility: Provides the Pi SDK runtime, typed host integration, sandbox/process protection, native tools, MCP, sessions, and compaction.
+Catalog responsibility: Owns the Pi model-run loop, native journals/storage and compaction, typed host integration, sandbox/process protection, native tools and MCP.
 
 <!-- package-metadata:end -->
 
@@ -284,7 +284,7 @@ host's explicit C/D disposition and ownership assertion. The optional third
 retirement; the ordinary two-argument call keeps its existing behavior.
 No default runtime
 creates guarded journals or enables switching; see the
-[engine guarded journal contract](../engine/README.md#opt-in-evidence-projection-and-handoffs).
+[engine guarded journal contract](./ENGINE.md#opt-in-evidence-projection-and-handoffs).
 
 Opt-in `nativeSessionAuthority` requires a protected reconciled host turn,
 kept-alive durable root, matching guarded header and exact current handle. Its
@@ -364,7 +364,7 @@ normalized-event evidence retained for other backends. Prepared native dispatch
 remains primary-only.
 
 The provider bridge imports the model-run loop, native journal/storage and
-compaction kit from `@mono-agent/engine`. The separate `agent-harness` host
+compaction kit from `@mono-agent/agent-runtime/engine`. The separate `agent-harness` host
 package owns conversation/history orchestration. Native session lifecycle,
 authority, registry factories and recovery are engine storage contracts; runtime
 keeps thin façades, result/warning construction, prefix preflight and process-wide
@@ -878,6 +878,70 @@ RuntimeBridgeId
 listRuntimeBridges
 resolveEngineTurnAdapter
 runtimeCapabilities
+```
+
+**`@mono-agent/agent-runtime/engine`**
+
+```text
+ENGINE_CONTEXT
+HANDOFF_SUMMARY_FIELDS
+JsonlSessionRepo
+MemorySessionRepo
+calculateContextTokens
+compact
+createRunDriver
+digestTurnInput
+estimateContextTokens
+estimateHandoffTokens
+estimateTokens
+generateSummaryWithRequest
+getLastAssistantUsage
+prepareCompaction
+projectContext
+projectInheritedContext
+shouldCompact
+validateHandoffSummary
+```
+
+**`@mono-agent/agent-runtime/engine/owned-fs.js`**
+
+```text
+OwnedFileDamagedError
+assertIdentity
+isOwned
+listOwned
+publishAtomic
+readOwned
+sameIdentity
+syncDir
+unchanged
+```
+
+**`@mono-agent/agent-runtime/engine/sessions.js`**
+
+```text
+NativeEvidenceCapacityError
+NativeSuspendedError
+assertNativeSessionAccess
+captureSessionRecovery
+cleanupSessionOnThrow
+commitSession
+createManagedNativeJournalStorage
+createSessionRegistry
+detachDurableNativeSession
+discardUncommittedSession
+isJournalStorageError
+nativeSessionRegistry
+normalizeDurableSessionsRoot
+reconcileNativeSessionTurn
+recoverDurableNativeSession
+resolveDurableNativeSessionRepo
+resolveSession
+retireDurableNativeSession
+rollbackAbortedTurn
+salvageDurableNativeSession
+settleNativeSession
+validateSessionTurn
 ```
 
 **`@mono-agent/agent-runtime/host`**
@@ -1766,7 +1830,7 @@ These are stable but treated as advanced API. Most consumers should reach for `c
 
 ## Dependency Boundary
 
-This package depends on `@mono-agent/engine` for native execution/storage and
+This package owns native execution/storage under `src/engine/` and depends on
 `@mono-agent/agent-contracts` for host contracts and coded errors. Its runtime core
 uses `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
 `@modelcontextprotocol/sdk`, `@vscode/ripgrep`, and `zod`.

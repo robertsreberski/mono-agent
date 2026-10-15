@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-vi.mock("@mono-agent/engine/sessions.js", { spy: true });
-import * as storage from "@mono-agent/engine/sessions.js";
+vi.mock("@mono-agent/agent-runtime/engine/sessions.js", { spy: true });
+import * as storage from "@mono-agent/agent-runtime/engine/sessions.js";
 import { resolveSession, commitSession, captureSessionRecovery } from "../../ai/providers/engine-turn/session-lifecycle.js";
 import { createManagedNativeJournalStorage } from "../../ai/providers/engine-turn/native-journal-storage.js";
 import { checkNativeInheritedPrefix } from "../../ai/providers/engine-turn/handoff-producer.js";

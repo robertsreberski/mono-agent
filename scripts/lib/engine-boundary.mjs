@@ -2,7 +2,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const oldPackage = `@mono-agent/${"harness"}`;
 const oldDirectory = `packages/${"harness"}`;
-const fixtures = "packages/engine/src/__tests__/fixtures/";
+const fixtures = "packages/agent-runtime/src/engine/__tests__/fixtures/";
 
 // Exact archived-source lines only, never whole active files.
 export function activeStaleReferenceLines(file, text, reference) {
@@ -22,7 +22,7 @@ export function activeStaleReferenceLines(file, text, reference) {
 }
 
 export function engineRuntimeImports(root, file, text) {
-  const engine = resolve(root, "packages/engine");
+  const engine = resolve(root, "packages/agent-runtime/src/engine");
   const imports = [...text.matchAll(/\b(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']/gu)].map((match) => match[1]);
   return imports.filter((specifier) => {
     if (/^@mono-agent\//u.test(specifier)) return true;

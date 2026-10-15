@@ -13,7 +13,7 @@ import { createMonoRuntime } from "@mono-agent/agent-runtime/host";
 import { type MonoRuntimeLike } from "@mono-agent/agent-runtime/host/types";
 import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
-import { JsonlSessionRepo } from "../../../engine/dist/session-store.js";
+import { JsonlSessionRepo } from "@mono-agent/agent-runtime/engine";
 import { loadAppCoreConfig } from "../app-config.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];

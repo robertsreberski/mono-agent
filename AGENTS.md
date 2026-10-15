@@ -2,7 +2,7 @@
 
 ## Project
 
-This repository is a config-first agent framework built from npm packages under the `@mono-agent` scope. The v1 shape centers on `@mono-agent/agent-app` composing the consolidated `@mono-agent/agent-runtime`, modular built-in channel adapters, config-loaded extras, skills/MCP/harness integration, observability, and optional memory.
+This repository is a config-first agent framework built from npm packages under the `@mono-agent` scope. The v1 shape centers on `@mono-agent/agent-app` composing the consolidated `@mono-agent/agent-runtime` (including its isolated `src/engine`), modular built-in channel adapters, config-loaded extras, skills/MCP/harness integration, observability, and optional memory.
 
 ## Repository shape
 

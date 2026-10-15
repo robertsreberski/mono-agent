@@ -1,5 +1,8 @@
 import { createDispatchProgress, withDispatchProgress } from "./engine-turn/dispatch-progress.js";
-import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, settleNativeSession } from "@mono-agent/engine/sessions.js";
+import { validateSessionTurn } from "../../engine/journal-schema.js";
+import { isJournalStorageError } from "../../engine/storage-error.js";
+import { NativeSuspendedError } from "../../engine/interruption.js";
+import { settleNativeSession } from "../../engine/session-settlement.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
@@ -62,15 +65,8 @@ import {
   hasMeasuredUsage,
   withSubagentUsage,
 } from "./engine-turn/result-builder.js";
-import {
-  captureSessionRecovery,
-  cleanupSessionOnThrow,
-  commitSession,
-  discardUncommittedSession,
-  resolveDurableNativeSessionRepo,
-  resolveSession,
-  rollbackAbortedTurn,
-} from "./engine-turn/session-lifecycle.js";
+import { captureSessionRecovery, cleanupSessionOnThrow, commitSession, discardUncommittedSession, resolveSession, rollbackAbortedTurn } from "./engine-turn/session-lifecycle.js";
+import { resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
 import {
   resolveLiveCompactionPolicy,
   estimateSessionMessageTokens,

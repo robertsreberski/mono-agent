@@ -1,7 +1,7 @@
 import { lstat, mkdir, rm } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
-import { OwnedFileDamagedError, assertIdentity, isOwned, listOwned, publishAtomic, readOwned, sameIdentity, syncDir, unchanged } from "@mono-agent/engine/owned-fs.js";
+import { OwnedFileDamagedError, assertIdentity, isOwned, listOwned, publishAtomic, readOwned, sameIdentity, syncDir, unchanged } from "@mono-agent/agent-runtime/engine/owned-fs.js";
 import {
   MAX_PENDING_TURN_BYTES, PENDING_TURN_DIRECTORY,
   parsePendingTurnPayload, pendingPayloadName, serializePendingTurnPayload, sha256, validateTurnPointer,

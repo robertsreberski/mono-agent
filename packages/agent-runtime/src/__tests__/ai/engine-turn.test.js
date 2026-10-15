@@ -26,7 +26,7 @@ import {
   fauxToolCall,
   getCurrentTools,
 } from "@earendil-works/pi-ai";
-import { MemorySessionRepo } from "../../../../engine/dist/session-store.js";
+import { MemorySessionRepo } from "../../engine/session-store.js";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -36,8 +36,8 @@ import {
   splitPromptMessages,
 } from "../../ai/providers/engine-turn.js";
 import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
-import { createPiSessionAdapter } from "../../../../engine/dist/session-adapter.js";
-import { ENGINE_CONTEXT } from "@mono-agent/engine";
+import { createPiSessionAdapter } from "../../engine/session-adapter.js";
+import { ENGINE_CONTEXT } from "@mono-agent/agent-runtime/engine";
 import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/engine-turn/result-builder.js";
 import {
   createLiveInputPromptEpoch,

@@ -1,7 +1,7 @@
 // @ts-check
 // Runtime integration for the mono-agent engine over the pinned Pi loop.
 
-import { createRunDriver } from "@mono-agent/engine";
+import { createRunDriver } from "../../../engine/run-driver.js";
 
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
 import { createToolExecutionGate, isSharedTool } from "./tool-execution-gate.js";
