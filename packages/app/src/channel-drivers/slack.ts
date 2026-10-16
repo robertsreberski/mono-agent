@@ -1,25 +1,24 @@
+import type { SlackChannelOverrides } from "../channels/types.js";
 import type {
-  AgentContinuationOriginContext,
-  ChannelInteractionSink,
-  NotifyDeliveryResult,
+AgentContinuationOriginContext,
+ChannelInteractionSink,
+NotifyDeliveryResult,
 } from "@mono-agent/contracts";
 import { ConversationHarnessFailureError } from "@mono-agent/conversation";
 import type {
-  SlackAdapterConfig,
-  SlackAdapterStartOptions,
-  SlackAdapterStartResult,
-  SlackRuntimeControls,
+SlackAdapterConfig,
+SlackAdapterStartOptions,SlackRuntimeControls
 } from "@mono-agent/channel-slack";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { buildChannelRuntimeControls } from "../channel-runtime-controls.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver, ContinuationChannelSynthesisResult } from "../channels.js";
+import type { ChannelDriver,ContinuationChannelSynthesisResult } from "../channels/types.js";
 import {
-  appendPostedMessage,
-  compactPostedMessageIndex,
-  lookupProducingConversation,
+appendPostedMessage,
+compactPostedMessageIndex,
+lookupProducingConversation,
 } from "../posted-message-index.js";
 import { unconfiguredChannelView } from "./shared.js";
 
@@ -52,12 +51,6 @@ const UNCONFIGURED_SLACK_CONFIG: SlackAdapterConfig = {
     includeBotMessages: true,
   },
 };
-
-export interface SlackChannelOverrides {
-  readonly createApi?: SlackAdapterStartOptions["createApi"];
-  readonly webSocketFactory?: SlackAdapterStartOptions["webSocketFactory"];
-  readonly startAdapter?: (options: SlackAdapterStartOptions) => Promise<SlackAdapterStartResult>;
-}
 
 export function createSlackChannelDriver(
   overrides: SlackChannelOverrides = {},

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
-import { reconcileSubagentExecutionOwnership, type SubagentOwnershipRecoveryCapabilities } from "../subagent-ownership-recovery.js";
-import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "../subagent-execution-ownership.js";
+import { describe,expect,it,vi } from "vitest";
+import { reconcileSubagentExecutionOwnership,type SubagentOwnershipRecoveryCapabilities } from "../subagent-ownership-recovery.js";
+import { hasSubagentObligation,hasUnresolvedSubagentOwnership,isSubagentExecutionOwnership } from "../subagent-execution-ownership.js";
+import { type SubagentExecutionOwnership } from "../subagents/types.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 const incarnation: ProcessIncarnation = { schema: "mono-agent.process-incarnation.v1", bootSessionId: "boot", processStartId: "birth" };
 function fixture() {

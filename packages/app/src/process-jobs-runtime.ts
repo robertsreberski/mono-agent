@@ -1,29 +1,29 @@
 import { persistentSubagentsEnabled } from "./subagent-instances.js";
 import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname,isAbsolute,join,relative,resolve,sep } from "node:path";
 
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { failClosedSandboxPolicy, mergeSandboxPolicies, protectSandboxRoots } from "@mono-agent/turn/host/sandbox";
-import { type RuntimeModelReference, type SandboxEngine, type SandboxPolicy } from "@mono-agent/turn/host/types";
+import { failClosedSandboxPolicy,mergeSandboxPolicies,protectSandboxRoots } from "@mono-agent/turn/host/sandbox";
+import { type RuntimeModelReference,type SandboxEngine,type SandboxPolicy } from "@mono-agent/turn/host/types";
 
-import type { ChannelId } from "./channels.js";
-import type { AgentRootOwnership, AgentRootRequestLease } from "./agent-root-coordinator.js";
+import type { ChannelId } from "./channels/types.js";
+import type { AgentRootOwnership,AgentRootRequestLease } from "./agent-root-coordinator.js";
 import {
-  attestProcessJobsRootRegistrySnapshot,
-  processJobsProtectionPolicyRoots,
-  type ProcessJobsRootRegistrySnapshot,
+attestProcessJobsRootRegistrySnapshot,
+processJobsProtectionPolicyRoots,
+type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
 import {
-  processJobWakeContextForRequest,
-  registerProcessJobSteeringTarget,
-  type ProcessJobSteeringTargetLease,
+processJobWakeContextForRequest,
+registerProcessJobSteeringTarget,
+type ProcessJobSteeringTargetLease,
 } from "./process-jobs-context.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 import {
-  isProcessJobOriginRecord,
-  type ProcessJobOriginRecord,
+isProcessJobOriginRecord,
+type ProcessJobOriginRecord,
 } from "./process-jobs-store.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 

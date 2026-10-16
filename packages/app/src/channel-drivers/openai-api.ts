@@ -1,13 +1,12 @@
+import type { OpenAIApiChannelOverrides } from "../channels/types.js";
 import type {
-  OpenAIApiAdapterConfig,
-  OpenAIApiAdapterOptions,
-  OpenAIApiAdapterStartResult,
+OpenAIApiAdapterConfig
 } from "@mono-agent/channel-openai-api";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver } from "../channels/types.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type OpenAIApiAdapterModule = typeof import("@mono-agent/channel-openai-api");
@@ -25,10 +24,6 @@ const UNCONFIGURED_OPENAI_API_CONFIG: OpenAIApiAdapterConfig = {
   allowNonLoopback: false,
   modelId: "agent",
 };
-
-export interface OpenAIApiChannelOverrides {
-  readonly adapterFactory?: (options: OpenAIApiAdapterOptions) => Promise<OpenAIApiAdapterStartResult>;
-}
 
 export function createOpenAIApiChannelDriver(
   overrides: OpenAIApiChannelOverrides = {},

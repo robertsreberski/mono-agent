@@ -1,4 +1,4 @@
-import { link, lstat, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { link,lstat,mkdir,mkdtemp,rename,rm,symlink,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,40 +11,40 @@ import { createConversationHarness, createConversationResponder, createInMemoryH
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { SlackAdapter } from "@mono-agent/channel-slack";
 import type {
-  SlackChatPostMessageParams,
-  SlackChatPostMessageResult,
-  SlackChatUpdateParams,
-  SlackEventCallback,
-  SlackRequestOptions,
-  SlackWebApi,
+SlackChatPostMessageParams,
+SlackChatPostMessageResult,
+SlackChatUpdateParams,
+SlackEventCallback,
+SlackRequestOptions,
+SlackWebApi,
 } from "@mono-agent/channel-slack";
 import type {
-  TelegramRequestOptions,
-  TelegramSendMessageParams,
-  TelegramSentMessage,
+TelegramRequestOptions,
+TelegramSendMessageParams,
+TelegramSentMessage,
 } from "@mono-agent/channel-telegram";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
 
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver } from "../channels/types.js";
 import { startMonoAgentApp } from "../app.js";
 import {
-  createAdapterSendProxy,
-  safeAdapterSendProxyErrorMessage,
+createAdapterSendProxy,
+safeAdapterSendProxyErrorMessage,
 } from "../adapter-send-proxy.js";
 import {
-  ADAPTER_SEND_TOOLS_MCP_SERVER_NAME,
-  adapterSendToolsChildConfigFromEnv,
-  adapterSendToolNames,
-  adapterSendToolsMcpEnv,
-  adapterSendToolsMcpServerSpec,
-  createAdapterSendToolsRuntimeExtension,
-  createAdapterSendToolsClients,
-  createAdapterSendToolsServer,
-  isAdapterSendToolAllowed,
-  resolveAdapterSendToolsSettings,
+ADAPTER_SEND_TOOLS_MCP_SERVER_NAME,
+adapterSendToolsChildConfigFromEnv,
+adapterSendToolNames,
+adapterSendToolsMcpEnv,
+adapterSendToolsMcpServerSpec,
+createAdapterSendToolsRuntimeExtension,
+createAdapterSendToolsClients,
+createAdapterSendToolsServer,
+isAdapterSendToolAllowed,
+resolveAdapterSendToolsSettings,
 } from "../adapter-send-tools.js";
 import type { AdapterSendToolsSettings } from "../adapter-send-tools.js";
-import { lookupProducingConversation, resolvePostedMessageIndexPath } from "../posted-message-index.js";
+import { lookupProducingConversation,resolvePostedMessageIndexPath } from "../posted-message-index.js";
 import { startInteractionBridge } from "../interaction-bridge.js";
 import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
 

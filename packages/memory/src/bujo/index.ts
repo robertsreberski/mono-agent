@@ -122,13 +122,11 @@ export type {
 export {
   auditBujoMemoryHealth,
   BUJO_MEMORY_HEALTH_SCHEMA_VERSION,
-  MEMORY_HEALTH_ISSUE_CODES,
 } from "./audit.js";
 export type {
   BujoMemoryHealthOptions,
   BujoMemoryHealthReport,
   MemoryHealthCounts,
-  MemoryHealthIssueCode,
   MemoryHealthStatus,
 } from "./audit.js";
 export { MARKER_FOR, parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "./grammar.js";
@@ -215,3 +213,6 @@ export { writeFutureLog, writeIndex } from "./projections.js";
 
 export { rankDeliberateRecallHits } from "./recency.js";
 export { automaticIntentEligible } from "./recall.js";
+
+export { MEMORY_HEALTH_ISSUE_CODES } from "../health-metadata.js";
+export type { MemoryHealthIssueCode } from "../health-metadata.js";

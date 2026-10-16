@@ -1,28 +1,29 @@
-import type { AgentResponder, ChannelInteractionSink, NotifyDeliveryResult } from "@mono-agent/contracts";
+import type { TelegramChannelOverrides } from "../channels/types.js";
+import type { AgentResponder,ChannelInteractionSink,NotifyDeliveryResult } from "@mono-agent/contracts";
 import { describeRunFailureKind } from "@mono-agent/observability";
 import type {
-  TelegramAdapterConfig,
-  TelegramAdapterErrorTextInput,
-  TelegramAdapterStartOptions,
-  TelegramAdapterStartResult,
-  TelegramChatId,
-  TelegramDestination,
-  TelegramTranscriptionConfig,
-  TelegramRuntimeControls,
+TelegramAdapterConfig,
+TelegramAdapterErrorTextInput,
+TelegramAdapterStartOptions,
+TelegramAdapterStartResult,
+TelegramChatId,
+TelegramDestination,
+TelegramTranscriptionConfig,
+TelegramRuntimeControls,
 } from "@mono-agent/channel-telegram";
 
 import { buildChannelRuntimeControls } from "../channel-runtime-controls.js";
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver, ChannelStartInput } from "../channels.js";
-import { telegramTargetFromConversation, type TelegramDestinationTarget } from "../telegram-destination.js";
+import type { ChannelDriver,ChannelStartInput } from "../channels/types.js";
+import { telegramTargetFromConversation,type TelegramDestinationTarget } from "../telegram-destination.js";
 import {
-  bindTelegramProjectTurn,
-  createTelegramProjectsService,
-  type TelegramProjectsService,
+bindTelegramProjectTurn,
+createTelegramProjectsService,
+type TelegramProjectsService,
 } from "../telegram-projects.js";
-import { openTelegramTopicDirectory, telegramBotIdFromToken } from "../telegram-topic-directory.js";
+import { openTelegramTopicDirectory,telegramBotIdFromToken } from "../telegram-topic-directory.js";
 import type { TelegramProjectsBridgePort } from "../interaction-bridge.js";
 import { unconfiguredChannelView } from "./shared.js";
 
@@ -41,14 +42,6 @@ const UNCONFIGURED_TELEGRAM_CONFIG: TelegramAdapterConfig = {
   groupMode: "any",
   stripMentionText: true,
 };
-
-export interface TelegramChannelOverrides {
-  readonly botFactory?: TelegramAdapterStartOptions["botFactory"];
-  readonly runnerFactory?: TelegramAdapterStartOptions["runnerFactory"];
-  readonly startAdapter?: (options: TelegramAdapterStartOptions) => Promise<TelegramAdapterStartResult>;
-  /** Test seam: where `telegram.projects` reaches the web console. */
-  readonly projectsWeb?: import("@mono-agent/web").DeliverWebNotificationOptions;
-}
 
 export function createTelegramChannelDriver(
   overrides: TelegramChannelOverrides = {},

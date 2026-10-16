@@ -1,4 +1,3 @@
-import type { BackgroundLifecycleTarget, BackgroundLockAcquireOptions } from "../../launchd-lifecycle-lock.js";
 import type { MaintenanceActivityRequest } from "../../launchd-maintenance-activity.js";
 import type { LaunchctlRunner,LaunchdPaths } from "../../launchd.js";
 import type { LaunchdLogInspection,LaunchdLogMaintenanceIntent } from "../../launchd-logs.js";
@@ -62,9 +61,4 @@ export interface LaunchdLogMaintenanceDeps {
   readonly recordMaintenancePhase?: (
     phase: "inspecting" | "stopping" | "stopped" | "rotating" | "restoring" | "complete",
   ) => Promise<void>;
-}
-
-/** Lifecycle admission is needed only by the outer operation. */
-export interface LaunchdLogMaintenanceLifecycleDeps extends LaunchdLogMaintenanceDeps {
-  readonly acquireLifecycleLock: (target: BackgroundLifecycleTarget, options?: BackgroundLockAcquireOptions) => Promise<(() => Promise<void>) | undefined>;
 }

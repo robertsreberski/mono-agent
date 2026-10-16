@@ -1,8 +1,10 @@
-import { retainSubagentCommandReceipt, subagentCommandReceipt, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
+import { retainSubagentCommandReceipt,subagentCommandReceipt } from "./subagent-command-receipts.js";
+import { type SubagentCommandReceipts } from "./subagents/types.js";
 import { randomUUID } from "node:crypto";
-import type { OwnedForegroundProcessRequest, OwnedForegroundProcesses, ProcessJobProcessHandle, ProcessJobProcessResult } from "@mono-agent/turn/host/types";
+import type { OwnedForegroundProcessRequest,OwnedForegroundProcesses,ProcessJobProcessHandle,ProcessJobProcessResult } from "@mono-agent/turn/host/types";
 import type { ProcessIncarnation } from "./process-incarnation.js";
-import { SUBAGENT_SEEN_CALLS_MAX_BYTES, SUBAGENT_SEEN_CALLS_MAX_COUNT, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
+import { SUBAGENT_SEEN_CALLS_MAX_BYTES,SUBAGENT_SEEN_CALLS_MAX_COUNT } from "./subagent-execution-ownership.js";
+import { type SubagentExecutionOwnership } from "./subagents/types.js";
 
 interface SubagentOwnedCommandsPort {
   readonly deadlineAt: number;

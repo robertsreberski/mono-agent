@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach,describe,expect,it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/contracts";
 import { MAX_INFO_BODY_BYTES } from "@mono-agent/contracts";
@@ -7,7 +7,7 @@ import type { TuiAdapterConfig } from "@mono-agent/channel-operator";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { OperatorClient } from "@mono-agent/web";
 
-import type { ChannelStartInput, RunningChannel } from "../channels.js";
+import type { ChannelStartInput,RunningChannel } from "../channels/types.js";
 import { createTuiChannelDriver } from "../channels.js";
 
 /**

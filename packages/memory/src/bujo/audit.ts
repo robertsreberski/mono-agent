@@ -1,3 +1,4 @@
+import { MEMORY_HEALTH_ISSUE_CODES, type MemoryHealthIssueCode } from "../health-metadata.js";
 import { join } from "node:path";
 
 import {
@@ -48,35 +49,7 @@ export const BUJO_MEMORY_HEALTH_SCHEMA_VERSION = 1;
 
 export type MemoryHealthStatus = "healthy" | "in_progress" | "degraded" | "unhealthy" | "unknown";
 
-export const MEMORY_HEALTH_ISSUE_CODES = [
-  "manifest_missing",
-  "manifest_invalid",
-  "configured_identity_mismatch",
-  "database_missing",
-  "database_unavailable",
-  "native_module_unavailable",
-  "health_check_failed",
-  "sqlite_integrity_failed",
-  "metadata_mismatch",
-  "fts_mismatch",
-  "vector_mismatch",
-  "orphaned_rows",
-  "canonical_mismatch",
-  "canonical_invalid",
-  "mutation_in_progress",
-  "intake_invalid",
-  "intake_pending",
-  "dead_letters",
-  "outbox_invalid",
-  "outbox_pending",
-  "work_stalled",
-  "temporary_artifacts",
-  "runtime_missing",
-  "runtime_stale",
-  "runtime_invalid",
-] as const;
 
-export type MemoryHealthIssueCode = (typeof MEMORY_HEALTH_ISSUE_CODES)[number];
 
 export interface MemoryHealthCounts {
   readonly pending: number;

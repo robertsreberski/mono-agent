@@ -1,9 +1,9 @@
 import { packageRenameError } from "@mono-agent/turn/host/config";
 import { readSettingsJson } from "@mono-agent/contracts";
-import type { ChannelConfigViewSection, SettingsJson, SettingsJsonValue } from "@mono-agent/contracts";
+import type { ChannelConfigViewSection,SettingsJson,SettingsJsonValue } from "@mono-agent/contracts";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type { ChannelDriver } from "./channels.js";
+import type { ChannelDriver } from "./channels/types.js";
 
 type ChannelPluginConfigErrorCode =
   | "invalid_plugin_config"

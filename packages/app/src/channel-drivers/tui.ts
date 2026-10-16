@@ -1,38 +1,37 @@
+import type { TuiChannelOverrides } from "../channels/types.js";
 import { currentProcessJobWakeRecovery } from "../process-jobs-context.js";
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { AgentMessageStream, ProcessJobOperator, ProviderAuthOperator } from "@mono-agent/contracts";
-import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/contracts";
+import type { AgentMessageStream,ProcessJobOperator,ProviderAuthOperator } from "@mono-agent/contracts";
+import { MAX_INFO_BODY_BYTES,MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/contracts";
 import { resolveConfiguredProviders } from "@mono-agent/config";
 
 import type {
-  TuiAdapterConfig,
-  TuiAdapterInfo,
-  TuiAdapterOptions,
-  TuiRestartAuthority,
-  TuiAdapterStartResult,
-  TuiModelCatalogProvider,
-  TuiModelOption,
-  TuiProviderInfo,
+TuiAdapterConfig,
+TuiAdapterInfo,
+TuiAdapterOptions,
+TuiRestartAuthority,TuiModelCatalogProvider,
+TuiModelOption,
+TuiProviderInfo
 } from "@mono-agent/channel-operator";
-import { discoverLocalProviderModels, discoverLocalProviders } from "@mono-agent/turn/host";
-import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
-import type { DiscoveredLocalModel, LocalProviderDefinition, RuntimeModelReference } from "@mono-agent/turn/host/types";
+import { discoverLocalProviderModels,discoverLocalProviders } from "@mono-agent/turn/host";
+import { modelReferenceKey,parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import type { DiscoveredLocalModel,LocalProviderDefinition,RuntimeModelReference } from "@mono-agent/turn/host/types";
 import {
-  ACP_BRIDGE_SOURCE_SCHEMA,
-  ACP_BRIDGE_VERSION,
-  ACP_PROTOCOL_VERSION,
-  deliverWebNotification,
+ACP_BRIDGE_SOURCE_SCHEMA,
+ACP_BRIDGE_VERSION,
+ACP_PROTOCOL_VERSION,
+deliverWebNotification,
 } from "@mono-agent/web";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
-import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
+import type { ChannelDriver,ChannelStartInput,RunningChannel } from "../channels/types.js";
 import { appPackageVersion } from "../package-version.js";
 import { buildProviderModelCatalog } from "../provider-model-catalog.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
-import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../skill-registry.js";
+import { createSkillRegistryMonitor,MAX_SKILL_REGISTRY_BYTES } from "../skill-registry.js";
 import type { CronOperatorRegistry } from "../cron-operator-service.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/channel-operator");
@@ -40,23 +39,6 @@ type TuiAdapterModule = typeof import("@mono-agent/channel-operator");
 let tuiModule: TuiAdapterModule | undefined;
 const loadTuiModule = async (): Promise<TuiAdapterModule> =>
   (tuiModule ??= await import("@mono-agent/channel-operator"));
-
-export interface TuiChannelOverrides {
-  readonly adapterFactory?: (options: TuiAdapterOptions) => Promise<TuiAdapterStartResult>;
-  /** Test seam: replaces the real local-provider model discovery call. */
-  readonly discoverModels?: (
-    providers: readonly LocalProviderDefinition[] | undefined,
-  ) => Promise<readonly DiscoveredLocalModel[]>;
-  /**
-   * Test seam: replaces the zero-config local-provider probe. This one MUST be
-   * injectable — the real implementation reaches localhost:11434 and
-   * localhost:1234, so a developer with Ollama running would otherwise get
-   * different test results from one who does not.
-   */
-  readonly discoverProviders?: typeof discoverLocalProviders;
-  /** Test/embedding seam for the owner-private local web ingress. */
-  readonly deliverNotification?: typeof deliverWebNotification;
-}
 
 /**
  * Producer-side payload budgets for `/v1/info`.

@@ -1,42 +1,42 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir,mkdtemp,realpath,rm,writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { listTraceSources } from "@mono-agent/observability";
 import * as bujoMemory from "@mono-agent/memory/bujo";
 import type {
-  AgentResponder,
-  ChannelAskSnapshot,
-  ChannelInteractionHub,
-  ChannelInteractionSink,
+AgentResponder,
+ChannelAskSnapshot,
+ChannelInteractionHub,
+ChannelInteractionSink,
 } from "@mono-agent/contracts";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 import type {
-  TelegramAdapterErrorText,
-  TelegramAdapterStartOptions,
+TelegramAdapterErrorText,
+TelegramAdapterStartOptions,
 } from "@mono-agent/channel-telegram";
 import type { SlackAdapterStartOptions } from "@mono-agent/channel-slack";
-import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
+import type { RuntimeResult,RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
 import { startMonoAgentApp } from "../app.js";
 import { MonoAgentAppController } from "../app-controller.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
-import { loadAppCoreConfig, resolveAppTraceSourceId } from "../app-config.js";
+import { loadAppCoreConfig,resolveAppTraceSourceId } from "../app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
 import {
-  createSlackChannelDriver,
-  createTelegramChannelDriver,
-  defaultChannelDrivers,
+createSlackChannelDriver,
+createTelegramChannelDriver,
+defaultChannelDrivers,
 } from "../channels.js";
-import type { ChannelDriver, ChannelStartInput } from "../channels.js";
+import type { ChannelDriver,ChannelStartInput } from "../channels/types.js";
 import { startContinuationService } from "../continuation-service.js";
-import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations.js";
+import { canonicalContinuationJson,continuationDigest,type ContinuationStatusSnapshot } from "../continuations.js";
 
 const builtMemoryHealthWorkerUrl = new URL("../../dist/memory-health-worker.js", import.meta.url);
 const malformedMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-malformed.mjs", import.meta.url);

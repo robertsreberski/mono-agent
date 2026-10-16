@@ -5,11 +5,11 @@ import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 import { loadAppCoreConfig } from "./app-config.js";
 import { legacyEmbeddingModelOption } from "./memory-embedding-identity.js";
 import {
-  traceMemoryHealthFromBujo,
-  unknownBujoMemoryHealth,
-  unknownNoMemoryHealth,
+traceMemoryHealthFromBujo,
+unknownBujoMemoryHealth,
+unknownNoMemoryHealth,
 } from "./app-controller-utils.js";
-import type { MonoAgentAppLogger } from "./channels.js";
+import type { MonoAgentAppLogger } from "./channels/types.js";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import type { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 

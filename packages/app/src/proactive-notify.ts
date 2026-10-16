@@ -1,10 +1,10 @@
 import type {
-  NotifyDeliveryContext,
-  NotifyDeliveryResult,
-  ProcessJobProjection,
+NotifyDeliveryContext,
+NotifyDeliveryResult,
+ProcessJobProjection,
 } from "@mono-agent/contracts";
 
-import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import type { ChannelDriver,ChannelId,MonoAgentAppLogger,RunningChannel } from "./channels/types.js";
 
 // The delivery-result contract moved to @mono-agent/contracts; keep the
 // historical export from this module.

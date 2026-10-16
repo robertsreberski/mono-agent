@@ -18,7 +18,6 @@ uniquePids,
 unloadLaunchdService,
 } from "./background-lifecycle-utils.js";
 import type { PollOptions } from "./background-lifecycle-utils.js";
-import type { LaunchdLogMaintenanceLifecycleDeps } from "./service/background/log-maintenance-types.js";
 import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import * as ui from "./ui.js";
 
@@ -305,31 +304,6 @@ function safeReporterText(raw: string): string {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 512);
-}
-
-/** Run one authenticated, crash-recoverable stopped-writer log rotation pass. */
-export async function maintainLaunchdLogsOperation(
-  target: BackgroundLifecycleTarget,
-  deps: LaunchdLogMaintenanceLifecycleDeps,
-  poll: PollOptions,
-  acquireSharedLogLock: () => Promise<(() => Promise<void>) | undefined>,
-): Promise<number> {
-  const release = await deps.acquireLifecycleLock(target);
-  if (release === undefined) return 0;
-  try {
-    return await maintainLaunchdLogsWithLifecycleLockOperation(
-      target,
-      deps,
-      poll,
-      acquireSharedLogLock,
-    );
-  } finally {
-    await release().catch((error: unknown) => {
-      deps.stderr(ui.errorLine(
-        `Could not release lifecycle lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
-      ));
-    });
-  }
 }
 
 /** Acquire the shared lease after the caller already owns this agent's lifecycle. */

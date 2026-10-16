@@ -1,32 +1,29 @@
-import { chmod, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod,lstat,mkdir,mkdtemp,realpath,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach,describe,expect,it,vi } from "vitest";
 
 import type { ProcessJobProjection } from "@mono-agent/contracts";
 import { MonoAgentConfigError } from "@mono-agent/config";
 
 import {
-  activateProcessJobWakes,
-  ensureProcessJobsService,
-  prepareProcessJobsProtection,
-  stopProcessJobsService,
-  type ProcessJobsControllerPort,
+activateProcessJobWakes,
+ensureProcessJobsService,
+prepareProcessJobsProtection,
+stopProcessJobsService,
+type ProcessJobsControllerPort,
 } from "../app-controller-process-jobs.js";
 import {
-  agentRootLeasePath,
-  acquireAgentRootOwnership,
-  type AgentRootOwnership,
+agentRootLeasePath,
+acquireAgentRootOwnership,
+type AgentRootOwnership,
 } from "../agent-root-coordinator.js";
-import {
-  createSlackChannelDriver,
-  createTelegramChannelDriver,
-  type ChannelStartInput,
-} from "../channels.js";
+import { createSlackChannelDriver,createTelegramChannelDriver } from "../channels.js";
+import { type ChannelStartInput } from "../channels/types.js";
 import type {
-  OpenProcessJobsServiceOptions,
-  ProcessJobsServiceHandle,
+OpenProcessJobsServiceOptions,
+ProcessJobsServiceHandle,
 } from "../process-jobs-service.js";
 
 const processJobsService = vi.hoisted(() => ({

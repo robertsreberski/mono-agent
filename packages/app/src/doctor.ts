@@ -57,7 +57,7 @@ import { adapterSendToolNames,isAdapterSendToolAllowed,resolveAdapterSendToolsSe
 import { canonicalToolName,isAllowAllTools,isKnownToolName,isMcpToolName,renamedToolMessage,renamedToolName,suggestToolName } from "./modules/known-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
-import type { ChannelDriver } from "./channels.js";
+import type { ChannelDriver } from "./channels/types.js";
 import { loadContinuationSettings } from "./continuation-config.js";
 import { applyOriginContextGroupCommit } from "./continuation-origin-store.js";
 import { readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";

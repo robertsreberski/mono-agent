@@ -1,15 +1,15 @@
 import { classifyNotifySuppression } from "@mono-agent/contracts";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
-import type { CronJobConfig, CronJobResult } from "@mono-agent/trigger-cron";
+import type { CronJobConfig,CronJobResult } from "@mono-agent/trigger-cron";
 import type {
-  WebhookEndpointConfig,
-  WebhookInvocationRequest,
-  WebhookInvocationStatus,
+WebhookEndpointConfig,
+WebhookInvocationRequest,
+WebhookInvocationStatus,
 } from "@mono-agent/trigger-webhook";
 
-import type { MonoAgentAppLogger } from "../channels.js";
+import type { MonoAgentAppLogger } from "../channels/types.js";
 import type { NotifyDestination } from "../notify-destinations.js";
-import type { NotifyDeliveryResult } from "../proactive-notify.js";
+import type { NotifyDeliveryResult } from "../channels/types.js";
 
 /**
  * Suppress delivery, and say so when the model went off-contract to get there.

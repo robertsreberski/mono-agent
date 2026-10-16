@@ -1,15 +1,14 @@
+import type { WebhookChannelOverrides } from "../channels/types.js";
 import type {
-  WebhookAdapterConfig,
-  WebhookAdapterOptions,
-  WebhookAdapterStartResult,
+WebhookAdapterConfig
 } from "@mono-agent/trigger-webhook";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver } from "../channels/types.js";
 import { findTriggerOverrideIssues } from "../trigger-overrides.js";
-import { deliverNativeWebhookNotification, inferUniqueNotifyDestination } from "./native-notify.js";
+import { deliverNativeWebhookNotification,inferUniqueNotifyDestination } from "./native-notify.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type WebhookAdapterModule = typeof import("@mono-agent/trigger-webhook");
@@ -30,10 +29,6 @@ const UNCONFIGURED_WEBHOOK_CONFIG: WebhookAdapterConfig = {
   path: "/webhook/invoke",
   defaultMode: "sync",
 };
-
-export interface WebhookChannelOverrides {
-  readonly adapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
-}
 
 const DEFAULT_WEBHOOK_MAX_RUN_MS = 20 * 60 * 1000;
 

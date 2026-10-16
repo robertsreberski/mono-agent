@@ -2,32 +2,32 @@ import type { WorkerActivityTracker } from "./worker-activity.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
 
-import { isAppCoreConfigError, loadAppCoreConfig } from "./app-config.js";
+import { isAppCoreConfigError,loadAppCoreConfig } from "./app-config.js";
 import {
-  isAdapterSendToolAllowed,
-  resolveAdapterSendToolsSettings,
+isAdapterSendToolAllowed,
+resolveAdapterSendToolsSettings,
 } from "./adapter-send-tools.js";
-import { loadInteractionSettings, startInteractionBridge } from "./interaction-bridge.js";
+import { loadInteractionSettings,startInteractionBridge } from "./interaction-bridge.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import { loadContinuationSettings } from "./continuation-config.js";
-import { ContinuationSynthesisUnavailableError, startContinuationService } from "./continuation-service.js";
+import { ContinuationSynthesisUnavailableError,startContinuationService } from "./continuation-service.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type {
-  ContinuationHistoryRecordResult,
-  ContinuationNativeDeliveryResult,
-  ContinuationSynthesisInput,
+ContinuationHistoryRecordResult,
+ContinuationNativeDeliveryResult,
+ContinuationSynthesisInput,
 } from "./continuations.js";
 import { channelIdForConversation } from "./proactive-notify.js";
 import {
-  continuationSynthesisPrompt,
-  isActionableContinuationPayload,
-  isPermanentDeliveryReason,
-  normalizeContinuationOrigin,
-  reasonOf,
+continuationSynthesisPrompt,
+isActionableContinuationPayload,
+isPermanentDeliveryReason,
+normalizeContinuationOrigin,
+reasonOf,
 } from "./app-controller-utils.js";
 import type { ContinuationRunningChannel } from "./app-controller-utils.js";
-import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
-import type { NotifyDeliveryResult } from "./proactive-notify.js";
+import type { ChannelId,MonoAgentAppLogger,RunningChannel } from "./channels/types.js";
+import type { NotifyDeliveryResult } from "./channels/types.js";
 
 interface ContinuationControllerPort {
   readonly activityTracker?: WorkerActivityTracker;

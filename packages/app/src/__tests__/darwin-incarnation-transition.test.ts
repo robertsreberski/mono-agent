@@ -1,19 +1,19 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn,type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod,mkdir,mkdtemp,readFile,realpath,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
 
 import {
-  baselineOwnerRecord,
-  baselineOwnerRecordBytes,
-  baselineProcessJobIncarnationsAccepted,
-  baselineSubagentIncarnationAccepted,
-  baselineWebLeaseAccepted,
+baselineOwnerRecord,
+baselineOwnerRecordBytes,
+baselineProcessJobIncarnationsAccepted,
+baselineSubagentIncarnationAccepted,
+baselineWebLeaseAccepted,
 } from "./fixtures/baseline-a3cb9a611-incarnation-readers.js";
 
 // Records written by new binaries must stay readable by old ones (sidecar), and
@@ -28,10 +28,11 @@ vi.mock("../process-incarnation.js", async (original) => {
   };
 });
 
-import { acquireOwnerPrivateLock, type LegacyLockHolder } from "../owner-private-lock.js";
+import { acquireOwnerPrivateLock,type LegacyLockHolder } from "../owner-private-lock.js";
 import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
-import { openProcessJobStore, type DurableProcessJobRecord } from "../process-jobs-store.js";
-import { isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "../subagent-execution-ownership.js";
+import { openProcessJobStore,type DurableProcessJobRecord } from "../process-jobs-store.js";
+import { isSubagentExecutionOwnership } from "../subagent-execution-ownership.js";
+import { type SubagentExecutionOwnership } from "../subagents/types.js";
 
 const hostPlatform = process.platform, platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 const V1 = { schema: "mono-agent.process-incarnation.v1", bootSessionId: "darwin:1700000000:0", processStartId: "posix-lstart:Mon Jan 5 13:34:56 2026" } as const;

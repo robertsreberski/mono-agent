@@ -1,20 +1,20 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash,randomUUID } from "node:crypto";
 import { opendir } from "node:fs/promises";
-import { join, dirname, resolve } from "node:path";
+import { join,dirname,resolve } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { discoverAcpBridgeAgents, discoverOperatorAgents } from "@mono-agent/web";
+import { discoverAcpBridgeAgents,discoverOperatorAgents } from "@mono-agent/web";
 import * as z from "zod/v4";
 
-import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeTextAtomic } from "./continuation-store-fs.js";
-import { PeerSessionGoneError, runPeerAcpTurn } from "./peer-acp-client.js";
-import { PeerQuestionRelay, type PeerQuestion, type PeerTurnEvent } from "./peer-question-relay.js";
+import { acquireContinuationStoreLock,ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,writeTextAtomic } from "./continuation-store-fs.js";
+import { PeerSessionGoneError,runPeerAcpTurn } from "./peer-acp-client.js";
+import { PeerQuestionRelay,type PeerQuestion,type PeerTurnEvent } from "./peer-question-relay.js";
 import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import { processJobOriginForRequest } from "./process-jobs-runtime.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
-import type { ChannelId } from "./channels.js";
+import type { ChannelId } from "./channels/types.js";
 import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 

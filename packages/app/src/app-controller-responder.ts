@@ -62,7 +62,7 @@ historyToolRouteSupport,
 reasonOf,
 runtimeRouteSupportsMcpApps,
 } from "./app-controller-utils.js";
-import type { ChannelId,MonoAgentAppLogger } from "./channels.js";
+import type { ChannelId,MonoAgentAppLogger } from "./channels/types.js";
 import { loadContinuationSettings } from "./continuation-config.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";

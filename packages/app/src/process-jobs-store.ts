@@ -1,45 +1,47 @@
-import { validWakeFence, validWakeCertificates, type WakeAttemptFence } from "./process-jobs-wake-fence.js";
-import { isSubagentVerificationTarget, isSubagentVerificationObservation, type SubagentVerificationTarget, type SubagentVerificationObservation } from "./subagent-verification-observer.js";
-import { isSubagentCommandReceipts, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
-import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import { linkSync, unlinkSync, type Stats } from "node:fs";
+import { validWakeFence,validWakeCertificates,type WakeAttemptFence } from "./process-jobs-wake-fence.js";
+import { isSubagentVerificationTarget,isSubagentVerificationObservation,type SubagentVerificationTarget,type SubagentVerificationObservation } from "./subagent-verification-observer.js";
+import { isSubagentCommandReceipts } from "./subagent-command-receipts.js";
+import { type SubagentCommandReceipts } from "./subagents/types.js";
+import { hasSubagentObligation,hasUnresolvedSubagentOwnership,isSubagentExecutionOwnership } from "./subagent-execution-ownership.js";
+import { type SubagentExecutionOwnership } from "./subagents/types.js";
+import { createHmac,randomBytes,randomUUID } from "node:crypto";
+import { linkSync,unlinkSync,type Stats } from "node:fs";
 import {
-  chmod,
-  lstat,
-  mkdir,
-  opendir,
-  readdir,
-  realpath,
-  rename,
-  rm,
+chmod,
+lstat,
+mkdir,
+opendir,
+readdir,
+realpath,
+rename,
+rm,
 } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename,dirname,isAbsolute,join,relative,resolve,sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import {
-  isProcessJobErrorCode,
-  isProcessJobState,
-  isProcessJobSubagentProgress,
-  isPeerProcessJobQuestion,
-  type PeerProcessJobQuestion,
-  type InternalProcessJobTool,
-  type ProcessJobSubagentProgress,
-  processJobPublicError,
-  type ProcessJobErrorCode,
-  type ProcessJobProjection,
-  type ProcessJobState,
+isProcessJobErrorCode,
+isProcessJobState,
+isProcessJobSubagentProgress,
+isPeerProcessJobQuestion,
+type PeerProcessJobQuestion,
+type InternalProcessJobTool,
+type ProcessJobSubagentProgress,
+processJobPublicError,
+type ProcessJobErrorCode,
+type ProcessJobProjection,
+type ProcessJobState,
 } from "@mono-agent/contracts";
 
-import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
+import { PROCESS_JOBS_CAPS,type ProcessJobsSettings } from "./process-jobs-config.js";
 import {
-  processIncarnationFromJson,
-  type ProcessIncarnation,
+processIncarnationFromJson,
+type ProcessIncarnation,
 } from "./process-incarnation.js";
 import { secureFileReplace } from "./secure-file-replace.js";
 import {
-  readBoundedOwnerOnlyFile,
-  syncDirectory,
+readBoundedOwnerOnlyFile,
+syncDirectory,
 } from "./continuation-store-fs.js";
 
 export const PROCESS_JOB_RECORD_SCHEMA = 1;

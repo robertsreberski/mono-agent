@@ -1,43 +1,37 @@
 import type { WorkerActivityTracker } from "./worker-activity.js";
-import { loadAppCoreConfig, isAppCoreConfigError } from "./app-config.js";
-import type {
-  ChannelDriver,
-  ChannelId,
-  ChannelStatus,
-  MonoAgentAppLogger,
-  RunningChannel,
-} from "./channels.js";
+import { loadAppCoreConfig,isAppCoreConfigError } from "./app-config.js";
+import type { ChannelDriver,ChannelId,ChannelStatus,MonoAgentAppLogger,RunningChannel } from "./channels/types.js";
 import {
-  routeProcessJobSurfaceUpdate,
-  routeProcessJobWake,
+routeProcessJobSurfaceUpdate,
+routeProcessJobWake,
 } from "./process-job-channel-routing.js";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import { runWithProcessJobWakeContext } from "./process-jobs-context.js";
 import {
-  openProcessJobsService,
-  ProcessJobServiceError,
-  type ProcessJobsHealth,
-  type ProcessJobsServiceHandle,
+openProcessJobsService,
+ProcessJobServiceError,
+type ProcessJobsHealth,
+type ProcessJobsServiceHandle,
 } from "./process-jobs-service.js";
 import { reasonOf } from "./app-controller-utils.js";
 import {
-  assertAgentRootLeaseOutsideWorkspace,
-  type AgentRootOwnership,
+assertAgentRootLeaseOutsideWorkspace,
+type AgentRootOwnership,
 } from "./agent-root-coordinator.js";
 import {
-  attestProcessJobsRootRegistrySnapshot,
-  failedProcessJobsRootRegistryProtection,
-  loadProcessJobsRootRegistryProtection,
-  registerProcessJobsRoot,
-  type ProcessJobsRootRegistrationProof,
-  type ProcessJobsRootRegistrySnapshot,
+attestProcessJobsRootRegistrySnapshot,
+failedProcessJobsRootRegistryProtection,
+loadProcessJobsRootRegistryProtection,
+registerProcessJobsRoot,
+type ProcessJobsRootRegistrationProof,
+type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
 import { hasExactProcessJobStateMarkers } from "./process-jobs-store.js";
 import {
-  unsafeProcessJobsProtectionStatus,
-  resolveProcessJobsProtectionPosture,
-  type ProcessJobsProtectionPosture,
+unsafeProcessJobsProtectionStatus,
+resolveProcessJobsProtectionPosture,
+type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
 
 export interface ProcessJobsControllerPort {

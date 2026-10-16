@@ -1,14 +1,15 @@
 import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import type { ConversationHistoryTurnInspection } from "@mono-agent/conversation";
-import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
+import { persistedWebDeliveryId,serializeNativeSwitchHarness } from "./configured-native-switch.js";
 import { implicitModelRuntimeOptions } from "./request-model-override.js";
 import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
-import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/conversation";
+import { composeHostTurnEnvelope,formatHostCapabilities,HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/conversation";
 import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
 import type { OwnedForegroundProcesses } from "@mono-agent/turn/host/types";
-import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
+import { createSubagentInstanceRegistry,isLiveSubagentInstance,persistentSubagentsEnabled,subagentInstancesRoot } from "./subagent-instances.js";
+import { type InstanceRegistryHandle } from "./subagents/types.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
   createConversationHarness,
@@ -37,20 +38,20 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
-import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, normalizeOptionalString, setToolActivityPathRoots } from "@mono-agent/contracts";
+import { isNativeNotifyRequest,isSilentTurnAlreadyVisible,normalizeOptionalString,setToolActivityPathRoots } from "@mono-agent/contracts";
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import { isProviderAuthFailureText } from "@mono-agent/turn/ai";
 import type { AgentResponder, MemoryStore } from "@mono-agent/contracts";
 import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
+import type { LlmComplete,LlmCompleteOptions } from "@mono-agent/memory/bujo";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import type {
-  RunRecorder,
-  RunSummary,
-  RuntimeResultLike,
+RunRecorder,
+RunSummary,
+RuntimeResultLike,
 } from "@mono-agent/observability";
-import { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
+import { createMonoRuntime,describeMonoRuntimeSupport,monoRuntimeSupportsLiveInput,monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 import { createSrtSandboxEngine, mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
@@ -61,64 +62,64 @@ import type { SandboxEngine, SandboxPolicy } from "@mono-agent/turn/host/types";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import { createToolOutputArtifactsRuntimeExtension } from "./tool-output-artifacts.js";
 import {
-  acquireAgentRootOwnership,
-  assertAgentRootLeaseOutsideWorkspace,
-  releaseAgentRootOwnershipWhenIdle,
-  type AgentRootOwnership,
+acquireAgentRootOwnership,
+assertAgentRootLeaseOutsideWorkspace,
+releaseAgentRootOwnershipWhenIdle,
+type AgentRootOwnership,
 } from "./agent-root-coordinator.js";
-import type { ChannelId } from "./channels.js";
+import type { ChannelId } from "./channels/types.js";
 import { textFromMemoryRuntimeResult } from "./memory-llm-result.js";
-import { resolveMemoryRecallSettings } from "./memory-recall.js";
+import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import {
-  createMemoryJournalRuntimeExtension,
-  isMemoryJournalCapableStore,
-  isMemoryJournalToolAllowed,
+createMemoryJournalRuntimeExtension,
+isMemoryJournalCapableStore,
+isMemoryJournalToolAllowed,
 } from "./memory-journal.js";
-import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "./modules/known-tools.js";
+import { BUILTIN_TOOL_NAMES,canonicalToolName,isAllowAllTools } from "./modules/known-tools.js";
 import { createPeerAgentRuntimeExtension } from "./peer-agent.js";
 import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import {
-  createSharedMemoryRecallRuntimeExtension,
-  isSharedRecallStore,
-  MemoryRetrievalService,
+createSharedMemoryRecallRuntimeExtension,
+isSharedRecallStore,
+MemoryRetrievalService,
 } from "./memory-retrieval.js";
 import {
-  createMemoryRememberRuntimeExtension,
-  isRememberCapableStore,
-  isRememberToolAllowed,
+createMemoryRememberRuntimeExtension,
+isRememberCapableStore,
+isRememberToolAllowed,
 } from "./memory-remember.js";
 import {
-  clearSessionsSandboxPolicy,
-  composeRuntimeOptionExtensions,
-  createClearSessionsRuntimeExtension,
-  type ClearSessionsRuntimeBoundaryOptions,
+clearSessionsSandboxPolicy,
+composeRuntimeOptionExtensions,
+createClearSessionsRuntimeExtension,
+type ClearSessionsRuntimeBoundaryOptions,
 } from "./runtime-option-extensions.js";
 import {
-  configuredRuntimeFallbackModels,
-  runtimeUsesFallbackRouter,
+configuredRuntimeFallbackModels,
+runtimeUsesFallbackRouter,
 } from "./runtime-routes.js";
 import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import {
-  resolveProcessJobsProtectionPosture,
-  type ProcessJobsProtectionPosture,
+resolveProcessJobsProtectionPosture,
+type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
 import {
-  createProcessJobsRuntimeExtension,
-  processJobsAvailableForRequest,
-  backgroundSubagentsAvailableForRequest,
-  processJobsSandboxPolicy,
-  PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR,
-  PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR,
+createProcessJobsRuntimeExtension,
+processJobsAvailableForRequest,
+backgroundSubagentsAvailableForRequest,
+processJobsSandboxPolicy,
+PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR,
+PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR,
 } from "./process-jobs-runtime.js";
 import {
-  attestProcessJobsRootRegistrySnapshot,
-  loadProcessJobsRootRegistryProtection,
-  processJobsProtectionPolicyRoots,
-  registerProcessJobsRoot,
-  type ProcessJobsRootRegistrySnapshot,
+attestProcessJobsRootRegistrySnapshot,
+loadProcessJobsRootRegistryProtection,
+processJobsProtectionPolicyRoots,
+registerProcessJobsRoot,
+type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
-import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
+import { activeProjectSkillSelections,isRetiredProjectSkillName } from "./project-skills.js";
 import { isReadSkillDenied } from "./skill-registry.js";
 
 type StaticRuntimeOptions = NonNullable<ConversationHarnessOptions["runtimeOptions"]>;

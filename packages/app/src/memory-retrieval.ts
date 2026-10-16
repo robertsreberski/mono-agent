@@ -1,36 +1,31 @@
-import { createHash, randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createHash,randomUUID } from "node:crypto";
+import { createServer,type IncomingMessage,type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type {
-  MemoryBlock,
-  MemoryCompletedTurn,
-  MemoryCompletedTurnResult,
-  MemoryLoadOptions,
-  MemoryStore,
+MemoryBlock,
+MemoryCompletedTurn,
+MemoryCompletedTurnResult,
+MemoryLoadOptions,
+MemoryStore,
 } from "@mono-agent/contracts";
 import {
-  AUTO_RECALL_BACKEND_HITS,
-  AUTO_RECALL_MAX_BYTES,
-  formatPossiblyRelevantBlock,
-  POSSIBLY_RELEVANT_HEADING,
-  POSSIBLY_RELEVANT_MAX_BYTES,
-  selectPossiblyRelevantRecallHits,
-  type JournalBrowseInput,
-  type JournalBrowseSnapshot,
+AUTO_RECALL_BACKEND_HITS,
+AUTO_RECALL_MAX_BYTES,
+formatPossiblyRelevantBlock,POSSIBLY_RELEVANT_MAX_BYTES,
+selectPossiblyRelevantRecallHits,
+type JournalBrowseInput,
+type JournalBrowseSnapshot
 } from "@mono-agent/memory/bujo";
 
-import { formatMemoryBackground, formatMemoryProfile, type LabelRecallStore } from "./memory-guidance.js";
+import { formatMemoryBackground,formatMemoryProfile } from "./memory-guidance.js";
+import { type LabelRecallStore } from "./memory/recall-contract.js";
 import { isHostProcessJobWakeRecall } from "./process-jobs-context.js";
-import { readLabelSections, type LabelContext, type LabelSectionRequest } from "./memory-label-sections.js";
-import {
-  createMemoryRecallServer,
-  MEMORY_RECALL_MCP_SERVER_NAME,
-  type MemoryRecallOutcome,
-  type MemoryRecallRuntimeExtension,
-  type RecallCapableStore,
-} from "./memory-recall.js";
+import { readLabelSections } from "./memory-label-sections.js";
+import { type LabelContext,type LabelSectionRequest } from "./memory/recall-contract.js";
+import { createMemoryRecallServer,MEMORY_RECALL_MCP_SERVER_NAME } from "./memory-recall.js";
+import { type MemoryRecallOutcome,type MemoryRecallRuntimeExtension,type RecallCapableStore } from "./memory/recall-contract.js";
 
 export interface SharedRecallStore extends MemoryStore, RecallCapableStore, LabelRecallStore {
   /** Local-tier chronology. External recall backends intentionally omit it. */

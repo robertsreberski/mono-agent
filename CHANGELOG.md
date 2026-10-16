@@ -23,6 +23,9 @@
   `excludedPathSummary` and `cachedRgPath` exports; `resolveRgPath` remains in
   `/tools`.
 
+- Add `@mono-agent/memory/health-metadata` for ordered health issue codes
+  without loading SQLite, the memory store, or provider SDKs.
+
 - Remove unused public exports and dead helpers from `@mono-agent/contracts`,
   `@mono-agent/config`, `@mono-agent/turn`, `@mono-agent/conversation`, and
   `@mono-agent/app` without compatibility aliases. Keep documented extension

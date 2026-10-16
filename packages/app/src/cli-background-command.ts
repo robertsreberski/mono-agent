@@ -66,7 +66,7 @@ import { clearLaunchdSnapshotRefusal,writeLaunchdSnapshotRefusal } from "./launc
 import { selectBackgroundOperationalEnvironment,selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
-import type { ChannelStatus } from "./channels.js";
+import type { ChannelStatus } from "./channels/types.js";
 import { loadCliEnvFile } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 import type { ValidationSection,ValidationStatus } from "./doctor-types.js";

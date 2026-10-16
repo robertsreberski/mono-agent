@@ -1,38 +1,39 @@
-import { maintainLaunchdLogsOperation } from "../background-log-maintenance.js";
-import { ensureManagedBackgroundRuntime, defaultManagedBackgroundRuntimeDeps, verifyManagedRuntimeLaunch } from "../background-runtime.js";
+import { errorLine } from "../ui.js";
+import { maintainLaunchdLogsWithLifecycleLockOperation } from "../background-log-maintenance.js";
+import { ensureManagedBackgroundRuntime,defaultManagedBackgroundRuntimeDeps,verifyManagedRuntimeLaunch } from "../background-runtime.js";
 import { runWebCommand } from "../web-command.js";
-import { allowUnattendedMaintenanceStop, MAINTENANCE_MAX_DEFERRAL_MS, type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
+import { allowUnattendedMaintenanceStop,MAINTENANCE_MAX_DEFERRAL_MS,type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
 import type { WorkerActivityProbe } from "../worker-activity-snapshot.js";
 import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
 import { execFile } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod,lstat,mkdir,mkdtemp,readFile,readdir,realpath,rename,rm,symlink,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join,resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe,expect,it,vi } from "vitest";
 
-import { listTraceSources, registerTraceSource } from "@mono-agent/observability";
-import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
+import { listTraceSources,registerTraceSource } from "@mono-agent/observability";
+import type { RecordedRunListItem,TraceSourceListItem } from "@mono-agent/observability";
 
-import { canonicalBackgroundConfigPath, acquireFilesystemLifecycleLock, ensureBackgroundReady, defaultBackgroundDeps, forceRestartBackground, maintainLaunchdController, unattendedLogDeps, managedLaunchdLogMaintenanceEnvironment, resolveInstanceTarget, restartBackground, startBackground, statusBackground, stopBackground, tailLogs } from "../background.js";
-import { acquireSharedLaunchdLogLock, sharedLaunchdLogLockTarget } from "../launchd-lifecycle-lock.js";
+import { canonicalBackgroundConfigPath,acquireFilesystemLifecycleLock,ensureBackgroundReady,defaultBackgroundDeps,forceRestartBackground,maintainLaunchdController,unattendedLogDeps,managedLaunchdLogMaintenanceEnvironment,resolveInstanceTarget,restartBackground,startBackground,statusBackground,stopBackground,tailLogs } from "../background.js";
+import { acquireSharedLaunchdLogLock,sharedLaunchdLogLockTarget } from "../launchd-lifecycle-lock.js";
 import { withLaunchdMaintenanceControllerLock } from "../launchd-maintenance-gate.js";
-import type { BackgroundDeps, InstanceTarget } from "../background.js";
+import type { BackgroundDeps,InstanceTarget } from "../background.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
-import { invalidateApprovedBackgroundSnapshots, resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
+import { invalidateApprovedBackgroundSnapshots,resolveApprovedBackgroundSnapshot,stageApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
 import { encodeBackgroundSnapshot } from "../background-snapshot.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
-import { buildLaunchdProgramArguments, deriveLaunchdLabel } from "../launchd.js";
+import { buildLaunchdProgramArguments,deriveLaunchdLabel } from "../launchd.js";
 import { recordManagedSnapshotRefusal } from "../cli-background-command.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 import type { OwnerPrivateLock } from "../owner-private-lock.js";
-import { readLaunchdSnapshotRefusal, clearLaunchdSnapshotRefusal } from "../launchd-snapshot-refusal.js";
+import { readLaunchdSnapshotRefusal,clearLaunchdSnapshotRefusal } from "../launchd-snapshot-refusal.js";
 import {
-  readLaunchdLogMonitorStatus,
-  removeLaunchdLogMonitorStatus,
-  writeLaunchdLogMonitorStatus,
+readLaunchdLogMonitorStatus,
+removeLaunchdLogMonitorStatus,
+writeLaunchdLogMonitorStatus,
 } from "../launchd-log-monitor-status.js";
 
 const POLL = { timeoutMs: 5_000, intervalMs: 100 };
@@ -3946,10 +3947,22 @@ describe("approval invalidation commit points and recovery", () => {
 });
 
 async function runLogMaintenanceFixture(
-  target: Parameters<typeof maintainLaunchdLogsOperation>[0],
+  target: Parameters<typeof maintainLaunchdLogsWithLifecycleLockOperation>[0],
   deps: Parameters<typeof unattendedLogDeps>[1],
-  poll: Parameters<typeof maintainLaunchdLogsOperation>[2],
+  poll: Parameters<typeof maintainLaunchdLogsWithLifecycleLockOperation>[2],
 ): Promise<number> {
-  return await maintainLaunchdLogsOperation(target, unattendedLogDeps(target, deps), poll,
-    async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"));
+  // Production's controller already owns lifecycle admission before entering the log operation.
+  const maintenanceDeps = unattendedLogDeps(target, deps);
+  const release = await maintenanceDeps.acquireLifecycleLock(target);
+  if (release === undefined) return 0;
+  try {
+    return await maintainLaunchdLogsWithLifecycleLockOperation(target, maintenanceDeps, poll,
+      async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"));
+  } finally {
+    await release().catch((error: unknown) => {
+      maintenanceDeps.stderr(errorLine(
+        `Could not release lifecycle lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
+  }
 }

@@ -1,7 +1,7 @@
 import type { PeerProcessJobQuestion } from "@mono-agent/contracts";
-import type { ManagedSubagentAdmission, ManagedSubagentExecution } from "./subagent-managed-turn.js";
+import type { ManagedSubagentAdmission,ManagedSubagentExecution } from "./subagents/types.js";
 import type { SubagentProgressEvent } from "./process-job-subagent-progress.js";
-import type { ProcessJobProcessResult, ProcessJobStartResult } from "@mono-agent/turn/host/types";
+import type { ProcessJobProcessResult,ProcessJobStartResult } from "@mono-agent/turn/host/types";
 
 /** App-private closure lane. Only the safe identity and lifecycle enter the store. */
 export interface InternalProcessJobRequest {

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,6 +22,22 @@ for (const name of packageNames) {
 }
 const importSpecifiers = packageNames.flatMap((name) =>
   publicExportSpecifiers(name, packageManifests.get(name)));
+
+// Prove the installed lightweight entry before loading any memory/storage modules.
+if (packageNames.includes("@mono-agent/memory")) {
+  const targetUrl = import.meta.resolve("@mono-agent/memory/health-metadata");
+  const count = execFileSync(process.execPath, ["--input-type=module", "--eval", `
+    import { registerHooks } from "node:module";
+    const target = ${JSON.stringify(targetUrl)};
+    registerHooks({ load(url, context, next) {
+      if (url !== target) throw new Error("Health metadata imported another module: " + url);
+      return next(url, context);
+    } });
+    const metadata = await import(target);
+    console.log(metadata.MEMORY_HEALTH_ISSUE_CODES.length);
+  `], { encoding: "utf8" });
+  assert.equal(count.trim(), "25");
+}
 
 for (const specifier of importSpecifiers) {
   if (specifier.endsWith("/package.json")) {

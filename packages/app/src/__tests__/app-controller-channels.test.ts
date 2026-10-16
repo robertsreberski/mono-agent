@@ -1,15 +1,15 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach,describe,expect,it,vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/contracts";
-import type { TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/channel-operator";
+import type { TuiAdapterOptions,TuiAdapterStartResult } from "@mono-agent/channel-operator";
 
-import { startChannel, type ChannelsControllerPort } from "../app-controller-channels.js";
+import { startChannel,type ChannelsControllerPort } from "../app-controller-channels.js";
 import { createTuiChannelDriver } from "../channels.js";
-import type { ChannelDriver, ChannelStartInput, ChannelStatus } from "../channels.js";
+import type { ChannelDriver,ChannelStartInput,ChannelStatus } from "../channels/types.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 
 const fixtures: string[] = [];

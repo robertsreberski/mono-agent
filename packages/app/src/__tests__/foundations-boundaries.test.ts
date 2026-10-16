@@ -28,3 +28,11 @@ describe("app foundation dependency direction", () => {
     expect(await source("launchd-log-monitor-status.ts")).not.toContain("background-log-maintenance.js");
   });
 });
+
+it("keeps domain contracts erased and independent of their implementation", async () => {
+  for (const file of ["channels/types.ts", "memory/recall-contract.ts", "subagents/types.ts"]) {
+    const text = await source(file);
+    expect(text).not.toMatch(/^import (?!type\b)/mu);
+    expect(text).not.toMatch(/from ["'][^"']*(?:channels|memory-recall|memory-guidance|memory-label-sections|subagent-instances|subagent-execution-ownership|subagent-command-receipts)\.js["']/u);
+  }
+});

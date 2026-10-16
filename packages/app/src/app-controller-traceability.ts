@@ -1,45 +1,45 @@
-import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
+import { effectiveSandboxReport,inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
-  pruneTraceSources,
-  reconcileStaleRunArtifacts,
-  registerTraceSource,
+pruneTraceSources,
+reconcileStaleRunArtifacts,
+registerTraceSource,
 } from "@mono-agent/observability";
-import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
+import type { TraceSourceHandle,TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
 import {
-  loadAppCoreConfig,
-  resolveAppArtifactDir,
-  resolveAppTraceGlobalDiscovery,
-  resolveAppTraceHeartbeatMs,
-  resolveAppTraceRegistryDir,
-  resolveAppTraceSourceId,
-  resolveAppTraceSourceLabel,
-  resolveGlobalTraceRegistryDir,
-  resolveTraceTmpdirRoot,
-  shouldMirrorTraceSourceGlobally,
+loadAppCoreConfig,
+resolveAppArtifactDir,
+resolveAppTraceGlobalDiscovery,
+resolveAppTraceHeartbeatMs,
+resolveAppTraceRegistryDir,
+resolveAppTraceSourceId,
+resolveAppTraceSourceLabel,
+resolveGlobalTraceRegistryDir,
+resolveTraceTmpdirRoot,
+shouldMirrorTraceSourceGlobally,
 } from "./app-config.js";
-import type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
+import type { AppTraceDefaults,MonoAgentAppConfigInput } from "./app-config.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
-import { resolveMemoryRecallSettings } from "./memory-recall.js";
+import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import {
-  nextDailyRolloverAt,
-  reasonOf,
-  sandboxStatusFromState,
+nextDailyRolloverAt,
+reasonOf,
+sandboxStatusFromState,
 } from "./app-controller-utils.js";
 import type {
-  SandboxStatus,
-  SessionTraceMetadata,
-  TraceabilityStatus,
+SandboxStatus,
+SessionTraceMetadata,
+TraceabilityStatus,
 } from "./app-controller-types.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
-import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "./channels.js";
+import type { ChannelDriver,ChannelId,ChannelStatus,MonoAgentAppLogger } from "./channels/types.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
-  unsafeProcessJobsProtectionStatus,
-  type ProcessJobsProtectionPosture,
+unsafeProcessJobsProtectionStatus,
+type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
 
 interface TraceabilityControllerPort {

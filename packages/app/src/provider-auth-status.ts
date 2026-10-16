@@ -1,19 +1,19 @@
 import type {
-  ProviderAuthMethod,
-  ProviderAuthProviderStatus,
-  ProviderAuthStatusSnapshot,
-  ProviderAuthUsage,
+ProviderAuthMethod,
+ProviderAuthProviderStatus,
+ProviderAuthStatusSnapshot,
+ProviderAuthUsage,
 } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
-  checkPiProviderAuth,
-  describePiProviderAuth,
+checkPiProviderAuth,
+describePiProviderAuth,
 } from "@mono-agent/turn/ai";
-import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import { modelReferenceKey,parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { type RuntimeModelReference } from "@mono-agent/turn/host/types";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type { ChannelDriver } from "./channels.js";
+import type { ChannelDriver } from "./channels/types.js";
 import { inspectPiAuthStore } from "./pi-auth-store-inspection.js";
 import { hasUsablePiOAuthClientId } from "./provider-setup.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";

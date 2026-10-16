@@ -1,13 +1,10 @@
 import type { AgentContinuationOriginContext } from "@mono-agent/contracts";
 import { ConversationHarnessFailureError } from "@mono-agent/conversation";
 import { SerialQueueFullError } from "@mono-agent/channel-slack";
-import { describe, expect, it, vi } from "vitest";
+import { describe,expect,it,vi } from "vitest";
 
-import {
-  createSlackChannelDriver,
-  type ChannelStartInput,
-  type ContinuationChannelSynthesisResult,
-} from "../channels.js";
+import { createSlackChannelDriver } from "../channels.js";
+import { type ChannelStartInput,type ContinuationChannelSynthesisResult } from "../channels/types.js";
 
 interface SlackContinuationInput {
   readonly continuationId: string;

@@ -1,20 +1,20 @@
 import { realpath } from "node:fs/promises";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe,expect,it,vi } from "vitest";
 
-import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/contracts";
-import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/contracts";
-import type { EffortLevel, MonoAgentConfig } from "@mono-agent/config";
-import type { DiscoveredLocalModel, DiscoveredProvider, LocalProviderDefinition, ProviderDefinition } from "@mono-agent/turn/host/types";
+import type { AgentMessageStream,AgentReplyPart,AgentRequestBase,AgentResponder,ProcessJobOperator,ProcessJobProjection,RunningChannel } from "@mono-agent/contracts";
+import { MAX_INFO_BODY_BYTES,MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/contracts";
+import type { EffortLevel,MonoAgentConfig } from "@mono-agent/config";
+import type { DiscoveredLocalModel,DiscoveredProvider,LocalProviderDefinition,ProviderDefinition } from "@mono-agent/turn/host/types";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
-import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/channel-operator";
+import type { TuiAdapterConfig,TuiAdapterInfo,TuiAdapterOptions,TuiAdapterStartResult } from "@mono-agent/channel-operator";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
 import { WebConsoleError } from "@mono-agent/web";
 
-import type { ChannelDriver, ChannelStartInput } from "../channels.js";
+import type { ChannelDriver,ChannelStartInput } from "../channels/types.js";
 import { createTuiChannelDriver } from "../channels.js";
-import { MAX_DISCOVERED_INFO_MODEL_BYTES, startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
-import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER, MAX_CATALOG_ID_BYTES, MAX_PAGE_SIZE } from "../provider-model-catalog.js";
+import { MAX_DISCOVERED_INFO_MODEL_BYTES,startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
+import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER,MAX_CATALOG_ID_BYTES,MAX_PAGE_SIZE } from "../provider-model-catalog.js";
 
 const noopResponder: AgentResponder = {
   async respond() {
