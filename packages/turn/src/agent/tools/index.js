@@ -12,10 +12,6 @@ export { grepToolImpl } from "./grep.js";
 export {
   bashToolImpl,
   bashToolRun,
-  normalizeBackgroundBashTimeoutMs,
-  normalizeBackgroundTimeoutMs,
-  normalizeBashTimeoutMs,
-  normalizeProcessTimeoutMs,
 } from "./bash.js";
 export { execToolImpl, execToolRun } from "./exec.js";
 export { webFetchToolImpl, performWebFetch } from "./web-fetch.js";
@@ -26,3 +22,5 @@ export { inspectLocalWeb } from "./local/config.js";
 
 export { isPathAllowed, isWorkdirAllowed } from "./shared/path-resolver.js";
 export { resolveRgPath } from "./shared/ripgrep.js";
+
+export { normalizeBackgroundBashTimeoutMs, normalizeBackgroundTimeoutMs, normalizeBashTimeoutMs, normalizeProcessTimeoutMs } from "./shared/command-timeouts.js";

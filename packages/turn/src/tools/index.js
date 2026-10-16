@@ -8,10 +8,6 @@ export { grepToolImpl } from "../agent/tools/grep.js";
 export {
   bashToolImpl,
   bashToolRun,
-  normalizeBackgroundBashTimeoutMs,
-  normalizeBackgroundTimeoutMs,
-  normalizeBashTimeoutMs,
-  normalizeProcessTimeoutMs,
 } from "../agent/tools/bash.js";
 export { execToolImpl, execToolRun } from "../agent/tools/exec.js";
 export { webFetchToolImpl, performWebFetch } from "../agent/tools/web-fetch.js";
@@ -24,3 +20,5 @@ export { isPathAllowed, isWorkdirAllowed } from "../agent/tools/shared/path-reso
 export { resolveRgPath } from "../agent/tools/shared/ripgrep.js";
 
 export * from "../agent/tools/shared/tool-context.js";
+
+export { normalizeBackgroundBashTimeoutMs, normalizeBackgroundTimeoutMs, normalizeBashTimeoutMs, normalizeProcessTimeoutMs } from "../agent/tools/shared/command-timeouts.js";

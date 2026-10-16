@@ -1,75 +1,20 @@
 // @ts-check
 
+import { commandAdmission, commandWorkdir } from "./shared/command-admission.js";
+import { runForegroundCommand } from "./shared/foreground-command.js";
+import { normalizeBashTimeoutMs, normalizeProcessTimeoutMs, normalizeBackgroundTimeoutMs, normalizeBackgroundBashTimeoutMs } from "./shared/command-timeouts.js";
 import { sandboxFailureDiagnostic } from "./shared/sandbox-diagnostics.js";
 
-import { existsSync } from "node:fs";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_BASH_OUTPUT_CHARS } from "./shared/constants.js";
 import { capChars } from "./shared/output-truncation.js";
 import {
-  isPathAllowed,
-  isWorkdirAllowed,
-  workspaceRoot,
-} from "./shared/path-resolver.js";
-import {
   combinedProcessOutput,
   DEFAULT_PROCESS_BUFFER_BYTES,
-  runPreparedProcess,
 } from "./shared/process-runner.js";
 import { cleanBashEnvironment } from "./shared/bash-environment.js";
 import { handOffProcessJob } from "./shared/process-jobs.js";
-import { runOwnedForegroundProcess } from "./shared/owned-foreground-process.js";
 import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
-
-const DEFAULT_BASH_TIMEOUT_MS = 120_000;
-
-/**
- * Legacy Bash timeout normalization. Values up to 600 are seconds; larger
- * values are milliseconds. New callers should use `timeout_ms`.
- */
-export function normalizeBashTimeoutMs(value, fallback = DEFAULT_BASH_TIMEOUT_MS) {
-  const cap = finitePositiveInteger(fallback, DEFAULT_BASH_TIMEOUT_MS);
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return cap;
-  const floored = Math.floor(n);
-  const milliseconds = floored <= 600 ? floored * 1_000 : floored;
-  return Math.max(1_000, Math.min(milliseconds, cap));
-}
-
-/**
- * Exact millisecond timeout used by Bash.timeout_ms and Exec.timeout_ms.
- */
-export function normalizeProcessTimeoutMs(value, fallback = DEFAULT_BASH_TIMEOUT_MS) {
-  const cap = finitePositiveInteger(fallback, DEFAULT_BASH_TIMEOUT_MS);
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return cap;
-  return Math.max(1, Math.min(Math.floor(n), cap));
-}
-
-/**
- * Background process-job timeout: positive-integer milliseconds with no
- * foreground ceiling. A background budget belongs to the host's `processJobs`
- * settings (`maxRuntimeMs`), which clamp it on their own side; reusing the
- * foreground default as a cap here silently discarded the long runtime a caller
- * deliberately asked for. `undefined` means "no explicit request", leaving the
- * host default in force.
- */
-export function normalizeBackgroundTimeoutMs(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  return Math.max(1, Math.floor(n));
-}
-
-/**
- * Legacy Bash `timeout` for a background job: the same seconds-vs-milliseconds
- * heuristic as {@link normalizeBashTimeoutMs}, minus the foreground ceiling.
- */
-export function normalizeBackgroundBashTimeoutMs(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  const floored = Math.floor(n);
-  return Math.max(1_000, floored <= 600 ? floored * 1_000 : floored);
-}
 
 /**
  * Compatibility wrapper retained for direct callers and tests.
@@ -111,12 +56,8 @@ export async function bashToolRun(
     toolCallId,
   } = options ?? {};
   const startedAt = Date.now();
-  if (wake_on_completion !== undefined && (background !== true || typeof wake_on_completion !== "boolean")) {
-    return failed("Error: wake_on_completion requires background=true and a boolean value.", "process_job_invalid", startedAt);
-  }
-  if (background === true && !processJobsController) {
-    return failed("Error: Background process jobs are unavailable for this request.", "background_unsupported", startedAt);
-  }
+  const admissionFailure = commandAdmission({ background, wakeOnCompletion: wake_on_completion, processJobsController });
+  if (admissionFailure) return failed(admissionFailure.text, admissionFailure.code, startedAt);
   if (typeof command !== "string") {
     return failed("Error: Bash command must be a string.", "invalid_command", startedAt);
   }
@@ -126,17 +67,9 @@ export async function bashToolRun(
   const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
-  const pathOptions = { sandboxPolicy: policy, ctx: resolvedCtx };
-  if (workdir && !isWorkdirAllowed(workdir, pathOptions)) {
-    return failed(`Error: Working directory not allowed: ${workdir}`, "workdir_denied", startedAt);
-  }
-  const cwd = workspaceRoot(workdir, resolvedCtx);
-  if (!isPathAllowed(cwd, workdir, pathOptions)) {
-    return failed(`Error: Working directory not allowed: ${cwd}`, "workdir_denied", startedAt);
-  }
-  if (!existsSync(cwd)) {
-    return failed(`Error: Working directory not found: ${cwd}`, "workdir_not_found", startedAt);
-  }
+  const workingDirectory = commandWorkdir(workdir, { sandboxPolicy: policy, ctx: resolvedCtx });
+  if (workingDirectory.failure) return failed(workingDirectory.failure.text, workingDirectory.failure.code, startedAt);
+  const cwd = workingDirectory.cwd;
 
   const maxChars = finitePositiveInteger(max_output_chars, DEFAULT_MAX_BASH_OUTPUT_CHARS);
   const legacyTimeoutUsed = timeout_ms === undefined && timeout !== undefined;
@@ -182,25 +115,9 @@ export async function bashToolRun(
       : { ...handedOff, outcome: { ...handedOff.outcome, legacyTimeoutUsed: true } };
   }
 
-  let result;
-  let cleanupError;
-  try {
-    result = ownedForegroundProcessController
-      ? await runOwnedForegroundProcess({ controller: ownedForegroundProcessController,
-        tool: "Bash", callId: toolCallId, prepared, timeoutMs, signal })
-      : await runPreparedProcess(prepared, { timeoutMs, signal, maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES });
-  } catch (error) {
-    if (!ownedForegroundProcessController) throw error;
-    return failed("Error: Owned foreground command could not be completed safely.", "owned_process_unavailable", startedAt);
-  } finally {
-    try {
-      // The owned lane keeps cleanup authority, including after rejection or an
-      // unresolved process-group exit. Never clean its sandbox from the tool.
-      if (!ownedForegroundProcessController) await prepared.cleanup?.();
-    } catch (error) {
-      cleanupError = error;
-    }
-  }
+  const foreground = await runForegroundCommand({ prepared, controller: ownedForegroundProcessController, tool: "Bash", callId: toolCallId, timeoutMs, signal });
+  if (foreground.failure) return failed(foreground.failure.text, foreground.failure.code, startedAt);
+  const { result, cleanupError } = foreground;
 
   const baseOutcome = processOutcome(result, {
     status: "ok",

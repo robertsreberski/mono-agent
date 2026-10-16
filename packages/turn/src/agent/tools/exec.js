@@ -1,24 +1,18 @@
 // @ts-check
 
+import { commandAdmission, commandWorkdir } from "./shared/command-admission.js";
+import { runForegroundCommand } from "./shared/foreground-command.js";
+import { normalizeBackgroundTimeoutMs, normalizeProcessTimeoutMs } from "./shared/command-timeouts.js";
 import { sandboxFailureDiagnostic } from "./shared/sandbox-diagnostics.js";
 
-import { existsSync } from "node:fs";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_BASH_OUTPUT_CHARS } from "./shared/constants.js";
-import { normalizeBackgroundTimeoutMs, normalizeProcessTimeoutMs } from "./bash.js";
 import { capChars } from "./shared/output-truncation.js";
-import {
-  isPathAllowed,
-  isWorkdirAllowed,
-  workspaceRoot,
-} from "./shared/path-resolver.js";
 import {
   combinedProcessOutput,
   DEFAULT_PROCESS_BUFFER_BYTES,
-  runPreparedProcess,
 } from "./shared/process-runner.js";
 import { handOffProcessJob } from "./shared/process-jobs.js";
-import { runOwnedForegroundProcess } from "./shared/owned-foreground-process.js";
 import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const MAX_EXEC_ARGS = 256;
@@ -63,12 +57,8 @@ export async function execToolRun(
     toolCallId,
   } = options ?? {};
   const startedAt = Date.now();
-  if (wake_on_completion !== undefined && (background !== true || typeof wake_on_completion !== "boolean")) {
-    return failed("Error: wake_on_completion requires background=true and a boolean value.", "process_job_invalid", startedAt);
-  }
-  if (background === true && !processJobsController) {
-    return failed("Error: Background process jobs are unavailable for this request.", "background_unsupported", startedAt);
-  }
+  const admissionFailure = commandAdmission({ background, wakeOnCompletion: wake_on_completion, processJobsController });
+  if (admissionFailure) return failed(admissionFailure.text, admissionFailure.code, startedAt);
   const executableProblem = validateExecutable(executable);
   if (executableProblem) return failed(executableProblem, "invalid_executable", startedAt);
   const argsProblem = validateArgs(args);
@@ -77,17 +67,9 @@ export async function execToolRun(
   const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
-  const pathOptions = { sandboxPolicy: policy, ctx: resolvedCtx };
-  if (workdir && !isWorkdirAllowed(workdir, pathOptions)) {
-    return failed(`Error: Working directory not allowed: ${workdir}`, "workdir_denied", startedAt);
-  }
-  const cwd = workspaceRoot(workdir, resolvedCtx);
-  if (!isPathAllowed(cwd, workdir, pathOptions)) {
-    return failed(`Error: Working directory not allowed: ${cwd}`, "workdir_denied", startedAt);
-  }
-  if (!existsSync(cwd)) {
-    return failed(`Error: Working directory not found: ${cwd}`, "workdir_not_found", startedAt);
-  }
+  const workingDirectory = commandWorkdir(workdir, { sandboxPolicy: policy, ctx: resolvedCtx });
+  if (workingDirectory.failure) return failed(workingDirectory.failure.text, workingDirectory.failure.code, startedAt);
+  const cwd = workingDirectory.cwd;
 
   const timeoutMs = normalizeProcessTimeoutMs(timeout_ms, toolLimits?.bashTimeoutMs);
   const maxChars = positiveInteger(max_output_chars, DEFAULT_MAX_BASH_OUTPUT_CHARS);
@@ -125,25 +107,9 @@ export async function execToolRun(
     });
   }
 
-  let result;
-  let cleanupError;
-  try {
-    result = ownedForegroundProcessController
-      ? await runOwnedForegroundProcess({ controller: ownedForegroundProcessController,
-        tool: "Exec", callId: toolCallId, prepared, timeoutMs, signal })
-      : await runPreparedProcess(prepared, { timeoutMs, signal, maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES });
-  } catch (error) {
-    if (!ownedForegroundProcessController) throw error;
-    return failed("Error: Owned foreground command could not be completed safely.", "owned_process_unavailable", startedAt);
-  } finally {
-    try {
-      // The owned lane keeps cleanup authority, including after rejection or an
-      // unresolved process-group exit. Never clean its sandbox from the tool.
-      if (!ownedForegroundProcessController) await prepared.cleanup?.();
-    } catch (error) {
-      cleanupError = error;
-    }
-  }
+  const foreground = await runForegroundCommand({ prepared, controller: ownedForegroundProcessController, tool: "Exec", callId: toolCallId, timeoutMs, signal });
+  if (foreground.failure) return failed(foreground.failure.text, foreground.failure.code, startedAt);
+  const { result, cleanupError } = foreground;
 
   const outcome = {
     status: "ok",
