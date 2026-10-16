@@ -158,7 +158,6 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
     { label: "release:validate", command: "pnpm", args: ["run", "release:validate", "--", "--tag", releaseTag] },
     { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
     { label: "build", command: "pnpm", args: ["run", "build"] },
-    { label: "scan:dead-code", command: "pnpm", args: ["run", "scan:dead-code"] },
     { label: "check:doc-snippets", command: "pnpm", args: ["run", "check:doc-snippets"] },
     { label: "check:deep-imports", command: "pnpm", args: ["run", "check:deep-imports"] },
     {
@@ -167,6 +166,7 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
       args: ["run", "verify:consumers", "--skip-build"],
       runner: "verifyConsumers",
     },
+    { label: "scan:dead-code", command: "pnpm", args: ["run", "scan:dead-code"] },
     { label: "release:pack", command: "pnpm", args: ["run", "release:pack", "--", "--tag", releaseTag] },
     { label: "release:consumer", command: "pnpm", args: packedConsumerArgs },
     { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },

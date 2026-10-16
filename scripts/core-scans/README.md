@@ -17,7 +17,7 @@ step in the existing CI verify job and local `verify:all` gate. Madge remains
 pinned in the launcher and fetched with `pnpm dlx`, outside the CI guard.
 Run `pnpm run build` before dead-code scanning: Knip resolves cross-package
 consumers through manifest runtime/declaration entry points. CI and `verify:all`
-run the guard immediately after building. The launcher refuses an unbuilt tree
+run the guard after the contiguous build-time doc/import/consumer gate sequence. The launcher refuses an unbuilt tree
 with exit 2 and a build instruction, invalidating stale reports instead of
 reporting misleading findings. It checks every core manifest export condition,
 subpath and top-level types/main target. Existence is not a freshness proof;
