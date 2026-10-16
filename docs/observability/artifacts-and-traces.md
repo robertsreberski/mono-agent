@@ -208,9 +208,13 @@ the canonical row on explicit request.
 The protected tool-history directory fails closed on every unsupported entry,
 including stray files such as `.DS_Store`. The synchronous main-thread reader
 is intentional: fixed query, result, record, and projection caps bound its work,
-while reader lock waits have a 250 ms busy timeout. The writer uses 200 ms so a
-normal `SQLITE_BUSY` rejection has margin to reach the foreground caller before
-its 250 ms deferral boundary.
+while reader lock waits have a 250 ms busy timeout. The writer bounds its lock
+waits at 200 ms of elapsed time so a normal `SQLITE_BUSY` rejection has margin to
+reach the foreground caller before its 250 ms deferral boundary. SQLite's own
+busy timeout counts requested sleeps rather than elapsed time, which macOS timer
+coalescing can stretch several-fold, so the writer checks a real clock between
+lock attempts. When scheduling slack still exceeds the 50 ms margin, the receipt
+is an honest `deferred` and the rejection is reported once it settles.
 
 Configured hosts acquire the single writer lazily and allow one bounded
 restart-handoff wait of at most 10 seconds. After an acquisition failure, new
