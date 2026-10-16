@@ -715,6 +715,15 @@ mismatch are explicit; busy ownership, corruption and I/O uncertainty reject.
 Recovery invokes no model, tool, summary or deferred continuation. Interrupted
 manual checkpoints replay exact persisted envelopes, not new summaries.
 
+Operations are listed in start order, but the final operation is the last one
+to close. Nested compaction closes before its enclosing prompt; a failed child
+does not invalidate that prompt's completed seal. Pending publication recovers
+through the same validation while preserving any recorded host failure.
+Legacy manual no-ops with a completed seal over one failed or aborted manual
+compaction can settle as failed only when all tips equal the baseline, no input
+was admitted or consumed, and no interruption or nested work exists. Other
+contradictions remain errors.
+
 For execution reconciliation, `expectedInputs` must contain exactly one
 `initial` entry for the descriptor's original input, even when it was never
 consumed. Include **every native live admission** for this turn: queued,

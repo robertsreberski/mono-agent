@@ -164,6 +164,59 @@ describe("compact-first scheduled wake admission", () => {
     } finally { release(); await service.stop(); }
   });
 
+  it.each(["process", "endpoint"])("reprepares after the %s changes during compaction", async (change) => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z"), agent = fakeDiscoveredAgent();
+    let release!: () => void, compactions = 0, turns = 0;
+    const compactionsAtTurn: number[] = [];
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const service = await WebService.create({ stateDir: join(root, "state"), clock: () => new Date(now),
+      discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [agent],
+      fetchImpl: operatorFetch({ supportsManualCompaction: true, onCompact: async () => {
+        compactions += 1; if (compactions === 1) await gate;
+        return { status: "succeeded", trigger: "manual", operationId: `generation-${compactions}` };
+      }, onTurn: () => { turns += 1; compactionsAtTurn.push(compactions); } }),
+    });
+    try {
+      const thread = service.createThread("agent-one");
+      service.createWakeSchedule(thread.id, { kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00", compactFirst: true });
+      now += 60_000; dispatch(service); await waitFor(() => compactions === 1);
+      agent = change === "process" ? { ...agent, source: { ...agent.source, pid: 456, startedAt: "2027-01-02T10:00:00.000Z" } }
+        : { ...agent, baseUrl: "http://127.0.0.1:45124/gui" };
+      await service.refreshAgents(); release();
+      await waitFor(() => !(service as unknown as { hostWakeReservations: Set<string> }).hostWakeReservations.has(thread.id));
+      dispatch(service);
+      await waitFor(() => turns === 1 && service.store.getThread(thread.id)?.runState.status === "complete");
+      dispatch(service); expect(compactions).toBe(2); expect(turns).toBe(1);
+      expect(compactionsAtTurn).toEqual([2]);
+    } finally { release(); await service.stop(); }
+  });
+
+  it.each(["paused", "deleted", "rescheduled"])("does not launch a %s schedule after compaction", async (change) => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z");
+    let release!: () => void, compactions = 0, turns = 0;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const service = await WebService.create({ stateDir: join(root, "state"), clock: () => new Date(now),
+      discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()],
+      fetchImpl: operatorFetch({ supportsManualCompaction: true, onCompact: async () => {
+        compactions += 1; await gate;
+        return { status: "succeeded", trigger: "manual", operationId: "changed-schedule" };
+      }, onTurn: () => { turns += 1; } }),
+    });
+    try {
+      const thread = service.createThread("agent-one");
+      service.createWakeSchedule(thread.id, { kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00", compactFirst: true });
+      now += 60_000; dispatch(service); await waitFor(() => compactions === 1);
+      const revision = service.wakeSchedule(thread.id)!.revision;
+      service.changeWakeSchedule(thread.id, revision, change === "deleted" ? { delete: true } : change === "paused" ? { state: "paused" }
+        : { definition: { kind: "once", timezone: "UTC", localAt: "2027-01-02T11:00", compactFirst: true } });
+      release();
+      await waitFor(() => !(service as unknown as { hostWakeReservations: Set<string> }).hostWakeReservations.has(thread.id));
+      dispatch(service); expect(turns).toBe(0); expect(compactions).toBe(1);
+    } finally { release(); await service.stop(); }
+  });
+
   it.each(["failed", "nothing_to_compact", "model_changed", "unknown", "unsupported"])("still runs once after %s compaction", async (outcome) => {
     const root = await temporaryRoot(); roots.push(root);
     let now = Date.parse("2027-01-02T09:59:00Z");

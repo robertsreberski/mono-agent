@@ -222,6 +222,111 @@ it.each(["execution", "turn-tip", "current-tip", "operation-tip", "operation-bas
     expect(f.retire).not.toHaveBeenCalled();
   });
 
+it.each([
+  ["completed", false], ["failed", false], ["aborted", false],
+  ["completed", true], ["failed", true], ["aborted", true],
+] as const)("settles a prompt enclosing %s compaction with failed host disposition %s", async (childStatus, hostFailed) => {
+  const f = await fixture(), prior = [{ role: "assistant" as const, content: "Fictional preserved history." }];
+  await f.store.append(bucket, prior);
+  const turn = await f.begin(), descriptor = turn.reconciliation!.descriptor;
+  const initial = createPendingInitialInput({ id: descriptor.reconciliation!.initialInputId!, persistText: "Fictional request.", timestamp }, "Fictional request.");
+  await turn.reconciliation!.admit(initial);
+  if (hostFailed) await turn.reconciliation!.claim("failed", {
+    outcome: "failed", text: "Fictional host publication failure.", timestamp, error: null, failureKind: "failed",
+  });
+  await turn.abort();
+  const sessionsRoot = join(f.root, "native"), repo = new JsonlSessionRepo({ sessionsRoot });
+  const raw = await repo.create({ id: descriptor.handleId });
+  const model = { provider: "openai", id: "fictional-model", api: "openai-responses" };
+  await raw.beginTurn(descriptor.turnId, { model }, "host", { ...descriptor, version: 1, model });
+  await raw.openOperation("parent", { model });
+  const nativeInput = { id: initial.id, complete: true, placement: "initial", requestDigest: initial.requestDigest };
+  const messageId = await raw.appendMessage({ role: "user", content: "Fictional request." }, undefined, nativeInput);
+  await raw.write("input_consumed", { inputId: initial.id, messageId }, { operationId: "parent" });
+  for (const id of ["child-one", "child-two"]) {
+    await raw.openOperation(id, { model }, "compaction", "threshold"); await raw.closeOperation(id, childStatus);
+  }
+  await raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional completed answer." }], stopReason: "stop" });
+  await raw.closeOperation("parent", "completed");
+  await raw.endTurn(descriptor.turnId, "completed", {
+    text: "Fictional completed answer.", error: null, failureKind: null, cancelled: false, stopReason: "stop",
+  });
+  await raw.close();
+  const runtime = createMonoRuntime({ workspace: f.root });
+  f.inspect.mockImplementation(async (request) => runtime.reconcileSessionTurn!({
+    sessionsRoot, descriptor: request.descriptor, purpose: request.purpose,
+    expectedInputs: request.expectedInputs, expectedModel: {
+      provider: parseMonoRuntimeModelReference(request.modelKey).provider,
+      id: parseMonoRuntimeModelReference(request.modelKey).model,
+    },
+  }));
+  f.retire.mockClear();
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toMatchObject({ status: "recovered", outcome: hostFailed ? "failed" : "completed" });
+  const recovered = await f.store.load(bucket);
+  expect(recovered[0]).toEqual(prior[0]); expect(recovered).toHaveLength(3);
+  expect(recovered[2]!.content).toBe(hostFailed ? "Fictional host publication failure." : "Fictional completed answer.");
+  expect(await readdir(join(f.root, ".pending-turns"))).toEqual([]);
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" });
+  expect(await f.store.load(bucket)).toEqual(recovered); expect(f.inspect).toHaveBeenCalledOnce();
+  expect(f.retire).toHaveBeenCalledTimes(hostFailed ? 1 : 0);
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "next-turn" }], tokensPerSecond: 1000000 });
+  const models = createModels(); models.setProvider(faux.provider);
+  let calls = 0;
+  faux.setResponses([() => { calls += 1; return fauxAssistantMessage([fauxText("Fictional next answer.")]); }]);
+  const identityPath = join(f.root, "IDENTITY.md"); await writeFile(identityPath, "You are a fictional fixture.");
+  const harness = createAgentHarness({ identityPath, cwd: f.root, historyStore: f.store,
+    model: parseMonoRuntimeModelReference("faux:next-turn"), runtime, sessionsRoot,
+    session: { mode: "continuous", idleTimeoutMs: 60_000 },
+    runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", compaction: { enabled: false } } });
+  try {
+    expect(calls).toBe(0);
+    const next = await harness.run({ conversationId: bucket, userMessage: "Fictional next request.", abortSignal: new AbortController().signal });
+    expect(next.failure).toBeUndefined(); expect(next.text).toBe("Fictional next answer."); expect(calls).toBe(1);
+  } finally { await harness.dispose?.(); await runtime.disposeAllSessions?.(); }
+});
+
+it.each(["nested", "sequential"])("selects the last closed prompt with %s operation order", async (order) => {
+  const f = await fixture(), turn = await f.begin(); await turn.abort();
+  f.inspect.mockImplementation(async (request) => {
+    const result = evidence(request); if (result.status !== "matched") throw new Error("fixture");
+    const parent = { ...result.operations[0]!, startSeq: 1, endSeq: 8 };
+    const child = { ...parent, operationId: "child", type: "compaction" as const, parentOperationId: parent.operationId, startSeq: 2, endSeq: 3, status: "failed" as const };
+    const later = { ...parent, operationId: "later-prompt", startSeq: 9, endSeq: 10 };
+    return { ...result, operations: order === "nested" ? [parent, child] : [parent, child, later],
+      finalOperationId: order === "nested" ? parent.operationId : later.operationId };
+  });
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toMatchObject({ outcome: "completed" });
+});
+
+it.each(["wrong-final", "duplicate-end", "fractional-end", "missing-parent", "parent-ends-first", "overlapping-roots",
+  "overlapping-children", "completed-compaction-final", "failed-prompt", "open-child"])(
+  "rejects contradictory nested operation evidence: %s", async (difference) => {
+    const f = await fixture(), turn = await f.begin(); await turn.abort();
+    const before = await readFile(f.fencePath);
+    f.inspect.mockImplementation(async (request) => {
+      const result = evidence(request); if (result.status !== "matched") throw new Error("fixture");
+      const parent = { ...result.operations[0]!, startSeq: 1, endSeq: 8 };
+      const child = { ...parent, operationId: "child", type: "compaction" as const, parentOperationId: parent.operationId, startSeq: 2, endSeq: 3 };
+      const nested = { ...result, operations: [parent, child] };
+      switch (difference) {
+        case "wrong-final": return { ...nested, finalOperationId: child.operationId };
+        case "duplicate-end": return { ...nested, operations: [parent, { ...child, endSeq: 8 }] };
+        case "fractional-end": return { ...nested, operations: [parent, { ...child, endSeq: 3.5 }] };
+        case "missing-parent": return { ...nested, operations: [parent, { ...child, parentOperationId: "foreign" }] };
+        case "parent-ends-first": return { ...nested, operations: [parent, { ...child, endSeq: 9 }] };
+        case "overlapping-roots": return { ...nested, operations: [parent, { ...child, parentOperationId: null }] };
+        case "overlapping-children": return { ...nested, operations: [parent, { ...child, endSeq: 6 }, { ...child, operationId: "sibling", startSeq: 4, endSeq: 5 }] };
+        case "completed-compaction-final": return { ...nested, operations: [{ ...parent, type: "compaction" }] };
+        case "failed-prompt": return { ...nested, operations: [{ ...parent, status: "failed" }, child] };
+        case "open-child": return { ...nested, operations: [parent, { ...child, endSeq: null, status: null }] };
+        default: throw new Error("fixture");
+      }
+    });
+    await expect(f.store.recoverProviderSessionTurn(bucket)).rejects.toThrow();
+    expect(await readFile(f.fencePath)).toEqual(before); expect(await f.store.load(bucket)).toEqual([]);
+    expect(f.retire).not.toHaveBeenCalled();
+  });
+
 it("recognizes the rename receipt after cleanup failure without a second native inspection or duplicate append", async () => {
   const f = await fixture(); const turn = await f.begin(); fault.unlinkFence = true;
   await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();

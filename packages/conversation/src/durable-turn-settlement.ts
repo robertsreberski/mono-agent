@@ -54,19 +54,32 @@ export function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extrac
     const admitted = expected.get(input.id);
     if (!admitted || input.requestDigest !== admitted.requestDigest || input.placement !== admitted.placement) throw new Error("Native admitted input mismatch");
   }
-  const operations = new Set<string>(); let startSeq = -1;
+  type Operation = MatchedTurn["operations"][number];
+  const operations = new Set<string>(), sequences = new Set<number>();
+  const active: Operation[] = [];
+  let startSeq = -1, finalOperation: Operation | undefined;
   for (const operation of result.operations) {
+    while (active.length && active.at(-1)!.endSeq! < operation.startSeq) active.pop();
+    const parent = active.at(-1);
     if (operations.has(operation.operationId) || !Number.isSafeInteger(operation.startSeq) || operation.startSeq <= startSeq
-      || operation.endSeq === null || operation.endSeq <= operation.startSeq || operation.status === null
-      || (operation.parentOperationId !== null && !operations.has(operation.parentOperationId))) throw new Error("Native ordered operation evidence mismatch");
+      || operation.startSeq < 0 || operation.endSeq === null || !Number.isSafeInteger(operation.endSeq)
+      || operation.endSeq <= operation.startSeq || operation.status === null
+      || sequences.has(operation.startSeq) || sequences.has(operation.endSeq)
+      || operation.parentOperationId !== (parent?.operationId ?? null)
+      || (parent && (active.length !== 1 || parent.type !== "prompt" || operation.type !== "compaction"
+        || operation.endSeq >= parent.endSeq!))) throw new Error("Native ordered operation evidence mismatch");
     operations.add(operation.operationId); startSeq = operation.startSeq;
+    sequences.add(operation.startSeq); sequences.add(operation.endSeq); active.push(operation);
+    // Nested compactions start after their prompt and finish before it.
+    // The journal's final operation is the last one closed, not started.
+    if (!finalOperation || operation.endSeq > finalOperation.endSeq!) finalOperation = operation;
   }
-  if (result.finalOperationId !== (result.operations.at(-1)?.operationId ?? null)) throw new Error("Native final operation mismatch");
-  const finalOperation = result.operations.at(-1);
+  if (result.finalOperationId !== (finalOperation?.operationId ?? null)) throw new Error("Native final operation mismatch");
   // Manual compaction can close without an operation when the retained tail
   // is already too small. Its completed turn seal still proves the no-op;
   // execution always requires the final completed prompt operation.
   if (result.outcome === "completed" && ((!finalOperation && payload.identity.purpose !== "compaction")
+    || (finalOperation && payload.identity.purpose === "execution" && finalOperation.type !== "prompt")
     || (finalOperation && finalOperation.status !== "completed") || !result.seal
     || result.seal.outcome !== "completed") && !isLegacyFailedCompactionNoop(payload, result)) throw new Error("Native completion is not sealed");
 }

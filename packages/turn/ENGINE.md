@@ -132,6 +132,11 @@ are SHA-256 of JSON-serialized native content (plain strings normalize to a
 single text part); only original/live host inputs are consumed, not internal
 finalization prompts. Import and ordinary reopen share final-operation and
 suspension account selection, excluding administrative completion scopes.
+Operation evidence is ordered by start sequence; the final operation is the
+one with the greatest end sequence. A nested compaction starts after its parent
+prompt and closes before it, so it never replaces that prompt's final result.
+Unsealed-turn recovery with no open operations accounts the last closed
+operation using the same journal identity.
 The host owns canonical history, dirty-turn adoption and model-switch policy.
 Configured Web switching publishes a structured handoff before admitting the
 incoming turn and retires only the outgoing journal after canonical publication.

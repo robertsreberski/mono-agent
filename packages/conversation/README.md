@@ -152,6 +152,11 @@ active turns and damaged recovery evidence remain protected and charged. Shared 
 logical-session coordination damage remains root-fatal. Redundant conversation
 shard locks are no longer created or validated; older writers' files stay intact.
 
+Settlement validates the last operation to close, even when a nested compaction
+started later than its enclosing prompt. A failed child compaction does not
+invalidate a completed prompt. Already-failed host publication retains its
+failure disposition during recovery; tools and model calls are never replayed.
+
 Terminal live `claim` candidate replacement also reuses already-admitted inputs,
 so it is staging-exempt but remains bounded by the pending-payload format limit.
 New input admission and canonical commit quotas remain enforced.
