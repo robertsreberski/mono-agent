@@ -1,4 +1,4 @@
-import type { WorkerActivityTracker } from "./worker-activity.js";
+import type { WorkerActivityTracker } from "./durable-state/worker-activity.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
 

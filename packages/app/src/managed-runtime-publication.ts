@@ -2,8 +2,8 @@ import { lstat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import process from "node:process";
 
-import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
-import type { OwnerPrivateLock } from "./owner-private-lock.js";
+import { acquireOwnerPrivateLock } from "./durable-state/owner-private-lock.js";
+import type { OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const BARRIER_SCHEMA = "mono-agent.managed-runtime-publication-barrier.v1";

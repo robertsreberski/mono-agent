@@ -10,7 +10,7 @@ import {
   type OwnerPrivateLock,
 } from "./owner-private-lock.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
-import { accountHomeDirectory } from "./account-home.js";
+import { accountHomeDirectory } from "../account-home.js";
 
 const AGENT_ROOT_LEASE_SCHEMA = "mono-agent.agent-root-lease.v1";
 const AGENT_ROOT_LEASE_OWNERLESS_GRACE_MS = 5 * 60_000;

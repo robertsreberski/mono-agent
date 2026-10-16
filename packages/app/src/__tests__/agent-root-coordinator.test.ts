@@ -29,7 +29,7 @@ import {
   acquireAgentRootOwnership,
   assertAgentRootLeaseOutsideWorkspace,
   releaseAgentRootOwnershipWhenIdle,
-} from "../agent-root-coordinator.js";
+} from "../durable-state/agent-root-coordinator.js";
 
 const temporaryDirectories: string[] = [];
 

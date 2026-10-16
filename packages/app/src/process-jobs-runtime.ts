@@ -8,7 +8,7 @@ import { failClosedSandboxPolicy,mergeSandboxPolicies,protectSandboxRoots } from
 import { type RuntimeModelReference,type SandboxEngine,type SandboxPolicy } from "@mono-agent/turn/host/types";
 
 import type { ChannelId } from "./channels/types.js";
-import type { AgentRootOwnership,AgentRootRequestLease } from "./agent-root-coordinator.js";
+import type { AgentRootOwnership,AgentRootRequestLease } from "./durable-state/agent-root-coordinator.js";
 import {
 attestProcessJobsRootRegistrySnapshot,
 processJobsProtectionPolicyRoots,

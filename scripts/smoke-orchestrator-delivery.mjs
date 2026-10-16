@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../packages/app/dist/agent-root-coordinator.js";
+import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../packages/app/dist/durable-state/agent-root-coordinator.js";
 import { registerProcessJobsRoot } from "../packages/app/dist/process-jobs-root-registry.js";
 import { PROCESS_JOBS_DEFAULTS } from "../packages/app/dist/process-jobs-config.js";
 import { openProcessJobsService } from "../packages/app/dist/process-jobs-service.js";

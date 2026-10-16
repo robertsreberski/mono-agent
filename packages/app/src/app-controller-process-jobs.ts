@@ -1,4 +1,4 @@
-import type { WorkerActivityTracker } from "./worker-activity.js";
+import type { WorkerActivityTracker } from "./durable-state/worker-activity.js";
 import { loadAppCoreConfig,isAppCoreConfigError } from "./app-config.js";
 import type { ChannelDriver,ChannelId,ChannelStatus,MonoAgentAppLogger,RunningChannel } from "./channels/types.js";
 import {
@@ -18,7 +18,7 @@ import { reasonOf } from "./app-controller-utils.js";
 import {
 assertAgentRootLeaseOutsideWorkspace,
 type AgentRootOwnership,
-} from "./agent-root-coordinator.js";
+} from "./durable-state/agent-root-coordinator.js";
 import {
 attestProcessJobsRootRegistrySnapshot,
 failedProcessJobsRootRegistryProtection,

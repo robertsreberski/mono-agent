@@ -1,8 +1,8 @@
 import { ensureStartable } from "./service/start-preflight.js";
 import { type PreflightResult } from "./service/start-preflight.js";
 import { resolveAppSessionsRoot } from "./app-config.js";
-import { WorkerActivityTracker } from "./worker-activity.js";
-import { publishWorkerActivity } from "./worker-activity-snapshot.js";
+import { WorkerActivityTracker } from "./durable-state/worker-activity.js";
+import { publishWorkerActivity } from "./durable-state/activity-snapshot.js";
 import { readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { stat } from "node:fs/promises";
 import { dirname,resolve } from "node:path";
@@ -54,7 +54,7 @@ sameBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
-import { legacyLockHolderMessage,type LegacyLockHolder } from "./owner-private-lock.js";
+import { legacyLockHolderMessage,type LegacyLockHolder } from "./durable-state/owner-private-lock.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { startManagedLaunchdLogMonitor } from "./background-log-maintenance.js";
 import type {

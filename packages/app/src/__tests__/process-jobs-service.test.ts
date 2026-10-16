@@ -1,4 +1,4 @@
-import { WorkerActivityTracker } from "../worker-activity.js";
+import { WorkerActivityTracker } from "../durable-state/worker-activity.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationHarness, createConversationResponder, createInMemoryHistoryStore, createLiveInputMailbox, createToolPolicy } from "@mono-agent/conversation";

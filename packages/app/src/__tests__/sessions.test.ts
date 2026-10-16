@@ -21,7 +21,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
 }));
 
 import { loadAppCoreConfig, resolveAppSessionsRoot } from "../app-config.js";
-import { acquireAgentRootOwnership, agentRootLeasePath } from "../agent-root-coordinator.js";
+import { acquireAgentRootOwnership, agentRootLeasePath } from "../durable-state/agent-root-coordinator.js";
 import {
   loadProcessJobsRootRegistryProtection,
   processJobsRootRegistryPaths,

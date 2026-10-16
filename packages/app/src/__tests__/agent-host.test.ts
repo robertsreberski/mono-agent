@@ -58,8 +58,8 @@ const agentRootOwnershipSpies = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+vi.mock("../durable-state/agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../durable-state/agent-root-coordinator.js")>(),
   acquireAgentRootOwnership: agentRootOwnershipSpies.acquire,
   releaseAgentRootOwnershipWhenIdle: async (ownership: { release(): void }) => {
     ownership.release();

@@ -7,8 +7,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { startMonoAgentApp } from "../../../dist/app-controller.js";
-import { WorkerActivityTracker } from "../../../dist/worker-activity.js";
-import { probeWorkerActivity, publishWorkerActivity } from "../../../dist/worker-activity-snapshot.js";
+import { WorkerActivityTracker } from "../../../dist/durable-state/worker-activity.js";
+import { probeWorkerActivity, publishWorkerActivity } from "../../../dist/durable-state/activity-snapshot.js";
 import { allowUnattendedMaintenanceStop, readLaunchdMaintenanceActivityStatus } from "../../../dist/launchd-maintenance-activity.js";
 
 const target = (root) => ({ label: "com.mono-agent.smoke-01234567", paths: {

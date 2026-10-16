@@ -18,7 +18,7 @@ import {
 agentRootLeasePath,
 acquireAgentRootOwnership,
 type AgentRootOwnership,
-} from "../agent-root-coordinator.js";
+} from "../durable-state/agent-root-coordinator.js";
 import { createSlackChannelDriver,createTelegramChannelDriver } from "../channels.js";
 import { type ChannelStartInput } from "../channels/types.js";
 import type {

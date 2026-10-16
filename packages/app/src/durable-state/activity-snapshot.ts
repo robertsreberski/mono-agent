@@ -1,8 +1,8 @@
 import process from "node:process";
-import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
-import type { LaunchdPaths } from "./launchd.js";
+import type { BackgroundLifecycleTarget } from "../launchd-lifecycle-lock.js";
+import type { LaunchdPaths } from "../launchd.js";
 import { currentProcessIncarnation,isSameProcessIncarnation,processIncarnationFromJson,type ProcessIncarnation,type SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
-import { assertPrivateLaunchdStateWritable,readPrivateLaunchdState,removePrivateLaunchdState,writePrivateLaunchdState } from "./private-launchd-state.js";
+import { assertPrivateLaunchdStateWritable,readPrivateLaunchdState,removePrivateLaunchdState,writePrivateLaunchdState } from "../private-launchd-state.js";
 import { activityBusy,type WorkerActivityCounts,type WorkerActivityTracker } from "./worker-activity.js";
 
 const DIRECTORY = "worker-activity";

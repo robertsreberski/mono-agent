@@ -66,7 +66,7 @@ const { createConfiguredMemoryForApp } = await import("../configured-agent.js");
 const {
   acquireAgentRootOwnership,
   releaseAgentRootOwnershipWhenIdle,
-} = await import("../agent-root-coordinator.js");
+} = await import("../durable-state/agent-root-coordinator.js");
 const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,

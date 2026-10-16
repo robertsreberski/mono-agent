@@ -17,7 +17,7 @@ preflightFirstRunManagedMemory,
 } from "./first-run-managed-memory.js";
 import type { FirstRunManagedMemoryHooks } from "./first-run-managed-memory.js";
 import { assertManagedProjectSkillInitSafe } from "./project-skills.js";
-import { readVerifiedFile,secureFileReplace } from "./secure-file-replace.js";
+import { readVerifiedFile,secureFileReplace } from "./durable-state/secure-file-replace.js";
 
 interface InitMonoAgentFolderOptions {
   /** Folder the agent is constructed in. Defaults to process.cwd(). */

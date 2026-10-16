@@ -25,13 +25,13 @@ import {
   SecretEnvConcurrentModificationError,
   secretEnvConcurrentModificationCause,
 } from "../init.js";
-import { acquireOwnerPrivateLock } from "../owner-private-lock.js";
+import { acquireOwnerPrivateLock } from "../durable-state/owner-private-lock.js";
 import {
   PROJECT_SKILL_MANIFEST_PATH,
   updateManagedProjectSkills,
 } from "../project-skills.js";
 import { redactSecrets } from "../redact-secrets.js";
-import { secureFileReplace } from "../secure-file-replace.js";
+import { secureFileReplace } from "../durable-state/secure-file-replace.js";
 import { defaultAnswers } from "../wizard/answers.js";
 
 const roots: string[] = [];

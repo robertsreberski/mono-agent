@@ -3,7 +3,7 @@ import { maintainLaunchdLogsWithLifecycleLockOperation } from "../background-log
 import { ensureManagedBackgroundRuntime,defaultManagedBackgroundRuntimeDeps,verifyManagedRuntimeLaunch } from "../background-runtime.js";
 import { runWebCommand } from "../web-command.js";
 import { allowUnattendedMaintenanceStop,MAINTENANCE_MAX_DEFERRAL_MS,type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
-import type { WorkerActivityProbe } from "../worker-activity-snapshot.js";
+import type { WorkerActivityProbe } from "../durable-state/activity-snapshot.js";
 import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
 import { execFile } from "node:child_process";
 import { chmod,lstat,mkdir,mkdtemp,readFile,readdir,realpath,rename,rm,symlink,writeFile } from "node:fs/promises";
@@ -28,7 +28,7 @@ import { buildLaunchdProgramArguments,deriveLaunchdLabel } from "../launchd.js";
 import { recordManagedSnapshotRefusal } from "../cli-background-command.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
-import type { OwnerPrivateLock } from "../owner-private-lock.js";
+import type { OwnerPrivateLock } from "../durable-state/owner-private-lock.js";
 import { readLaunchdSnapshotRefusal,clearLaunchdSnapshotRefusal } from "../launchd-snapshot-refusal.js";
 import {
 readLaunchdLogMonitorStatus,

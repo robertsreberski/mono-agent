@@ -11,7 +11,7 @@ import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/turn/host";
-import { acquireAgentRootOwnership } from "../../../dist/agent-root-coordinator.js";
+import { acquireAgentRootOwnership } from "../../../dist/durable-state/agent-root-coordinator.js";
 import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
 import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../../../dist/process-jobs-config.js";

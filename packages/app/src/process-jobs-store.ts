@@ -38,7 +38,7 @@ import {
 processIncarnationFromJson,
 type ProcessIncarnation,
 } from "@mono-agent/conversation/process-incarnation";
-import { secureFileReplace } from "./secure-file-replace.js";
+import { secureFileReplace } from "./durable-state/secure-file-replace.js";
 import {
 readBoundedOwnerOnlyFile,
 syncDirectory,

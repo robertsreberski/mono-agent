@@ -66,7 +66,7 @@ acquireAgentRootOwnership,
 assertAgentRootLeaseOutsideWorkspace,
 releaseAgentRootOwnershipWhenIdle,
 type AgentRootOwnership,
-} from "./agent-root-coordinator.js";
+} from "./durable-state/agent-root-coordinator.js";
 import type { ChannelId } from "./channels/types.js";
 import { textFromMemoryRuntimeResult } from "./memory-llm-result.js";
 import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";

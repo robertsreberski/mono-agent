@@ -19,7 +19,7 @@ import { basename,dirname,join,relative,resolve,sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type { GeneratedFile } from "./setup/types.js";
-import { readVerifiedFile,secureFileReplace } from "./secure-file-replace.js";
+import { readVerifiedFile,secureFileReplace } from "./durable-state/secure-file-replace.js";
 
 export const PROJECT_SKILL_VERSION = "2.0.0";
 export const PROJECT_SKILL_MANIFEST_PATH = "skills/.mono-agent-managed.json";

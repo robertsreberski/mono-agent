@@ -2,7 +2,7 @@ import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import { launchdServiceInfo,type LaunchctlRunner,type LaunchdPaths } from "./launchd.js";
 import { LAUNCHD_LOG_MAX_BYTES,type LaunchdLogInspection } from "./launchd-logs.js";
 import { readPrivateLaunchdState,writePrivateLaunchdState } from "./private-launchd-state.js";
-import { probeWorkerActivity,type WorkerActivityProbe } from "./worker-activity-snapshot.js";
+import { probeWorkerActivity,type WorkerActivityProbe } from "./durable-state/activity-snapshot.js";
 
 export const MAINTENANCE_MAX_DEFERRAL_MS = 4 * 60 * 60 * 1_000;
 const MAINTENANCE_MAX_DEFERRALS = 48;

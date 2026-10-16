@@ -8,8 +8,8 @@ const order = vi.hoisted(() => [] as string[]);
 const releaseOwnership = vi.hoisted(() => vi.fn());
 const releaseOwnershipWhenIdle = vi.hoisted(() => vi.fn(async () => true));
 
-vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+vi.mock("../durable-state/agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../durable-state/agent-root-coordinator.js")>(),
   acquireAgentRootOwnership: async (cwd: string) => {
     order.push("ownership");
     return {

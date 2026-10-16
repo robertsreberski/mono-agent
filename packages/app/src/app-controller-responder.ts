@@ -1,6 +1,6 @@
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { createSuggestRepliesService,isSuggestRepliesToolAllowed } from "./suggest-replies.js";
-import { trackResponderActivity,type WorkerActivityTracker } from "./worker-activity.js";
+import { trackResponderActivity,type WorkerActivityTracker } from "./durable-state/worker-activity.js";
 import { createProviderUsageRuntimeExtension } from "./provider-usage-tool.js";
 import { readJsonSection,readSettingsJson,type ProviderUsageOperator } from "@mono-agent/contracts";
 import { createConsoleProjectsRuntimeExtension } from "./console-projects.js";
@@ -71,7 +71,7 @@ import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
-import type { AgentRootOwnership } from "./agent-root-coordinator.js";
+import type { AgentRootOwnership } from "./durable-state/agent-root-coordinator.js";
 import {
 failedProcessJobsRootRegistryProtection,
 processJobsProtectionPolicyRoots,

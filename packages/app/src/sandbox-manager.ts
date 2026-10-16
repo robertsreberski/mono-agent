@@ -33,8 +33,8 @@ import {
   processIncarnationFromJson,
 } from "@mono-agent/conversation/process-incarnation";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
-import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
-import type { OwnerPrivateLock } from "./owner-private-lock.js";
+import { acquireOwnerPrivateLock } from "./durable-state/owner-private-lock.js";
+import type { OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 
 const execFileAsync = promisify(execFile);
 

@@ -15,7 +15,7 @@ import { createConfiguredAgentResponder, createConfiguredAgentResponderForApp, w
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
 import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "../configured-native-switch.js";
-import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../agent-root-coordinator.js";
+import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../durable-state/agent-root-coordinator.js";
 import { completionOnlyRuntime } from "../configured-runtime-capabilities.js";
 import { loadAppCoreConfig } from "../app-config.js";
 // White-box fixture uses Web's existing persisted inbound identity, not an APP ledger.

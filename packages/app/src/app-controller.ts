@@ -1,4 +1,4 @@
-import { WorkerActivityTracker } from "./worker-activity.js";
+import { WorkerActivityTracker } from "./durable-state/worker-activity.js";
 import { createAgentProviderUsage } from "./provider-usage-scope.js";
 import { createProviderUsageService } from "./provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
@@ -56,7 +56,7 @@ import {
 acquireAgentRootOwnership,
 releaseAgentRootOwnershipWhenIdle,
 type AgentRootOwnership,
-} from "./agent-root-coordinator.js";
+} from "./durable-state/agent-root-coordinator.js";
 import type {
 ProcessJobsRootRegistrationProof,
 ProcessJobsRootRegistrySnapshot,

@@ -39,7 +39,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
 import {
   acquireAgentRootOwnership,
   agentRootLeasePath,
-} from "../agent-root-coordinator.js";
+} from "../durable-state/agent-root-coordinator.js";
 import {
   PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR,
   PROCESS_JOBS_ROOT_REGISTRY_DIRECTORY,

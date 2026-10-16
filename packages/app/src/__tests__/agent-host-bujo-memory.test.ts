@@ -172,7 +172,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     const runtime = createRecordingRuntime();
     const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
       llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
-    const { acquireAgentRootOwnership } = await import("../agent-root-coordinator.js");
+    const { acquireAgentRootOwnership } = await import("../durable-state/agent-root-coordinator.js");
     const held = await acquireAgentRootOwnership(dir);
     let disposed = 0;
     const operatorRuntime = { ...runtime, disposeAllSessions: async () => { disposed++; throw new Error("fictional cleanup failure"); } };
@@ -224,7 +224,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
       llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
     const child = spawn(process.execPath, ["--input-type=module", "-e", `
-      import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from ${JSON.stringify(new URL("../../dist/agent-root-coordinator.js", import.meta.url).href)};
+      import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from ${JSON.stringify(new URL("../../dist/durable-state/agent-root-coordinator.js", import.meta.url).href)};
       const lease = await acquireAgentRootOwnership(${JSON.stringify(dir)}, { homeDir: ${JSON.stringify(coordinatorHome.path)} });
       process.stdout.write('ready\\n');
       process.stdin.once('data', async () => { await releaseAgentRootOwnershipWhenIdle(lease); process.exit(0); });

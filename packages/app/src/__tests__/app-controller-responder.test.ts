@@ -29,7 +29,7 @@ import {
   agentRootLeasePath,
   acquireAgentRootOwnership,
   type AgentRootOwnership,
-} from "../agent-root-coordinator.js";
+} from "../durable-state/agent-root-coordinator.js";
 import {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,

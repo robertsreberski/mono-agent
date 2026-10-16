@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openProcessJobsService } from "../packages/app/dist/process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../packages/app/dist/process-jobs-config.js";
-import { acquireAgentRootOwnership } from "../packages/app/dist/agent-root-coordinator.js";
+import { acquireAgentRootOwnership } from "../packages/app/dist/durable-state/agent-root-coordinator.js";
 import { loadProcessJobsRootRegistryProtection, registerProcessJobsRoot } from "../packages/app/dist/process-jobs-root-registry.js";
 import { startInteractionBridge } from "../packages/app/dist/interaction-bridge.js";
 import { openProcessJobStore } from "../packages/app/dist/process-jobs-store.js";

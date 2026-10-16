@@ -83,7 +83,7 @@ import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packa
 import { removeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { clearLaunchdSnapshotRefusal,readLaunchdSnapshotRefusal,SNAPSHOT_REFUSAL_MESSAGE } from "./launchd-snapshot-refusal.js";
 import { acquireManagedRuntimePublicationBarrier } from "./managed-runtime-publication.js";
-import type { OwnerPrivateLock } from "./owner-private-lock.js";
+import type { OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
 import {
 acquireFilesystemLifecycleLock,

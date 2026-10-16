@@ -34,7 +34,7 @@ import type { NotifyDeliveryResult } from "./channels/types.js";
 import { PROCESS_JOBS_CAPS,type ProcessJobsSettings } from "./process-jobs-config.js";
 import { ProcessJobOutputTail } from "./process-job-output-tail.js";
 import { consumeSilentProcessJobWake,offerClaimedProcessJobLiveInput,recordProcessJobWakeAdmission,revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
-import { acquireOwnerPrivateLock,legacyLockHolderMessage,type LegacyLockHolder,type OwnerPrivateLock } from "./owner-private-lock.js";
+import { acquireOwnerPrivateLock,legacyLockHolderMessage,type LegacyLockHolder,type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import {
 attestProcessJobsRootRegistration,
 type ProcessJobsRootRegistrationProof,

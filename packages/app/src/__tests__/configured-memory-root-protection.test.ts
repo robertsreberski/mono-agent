@@ -50,7 +50,7 @@ const { resolveProcessJobsProtectionPosture } = await import("../process-jobs-pr
 const {
   acquireAgentRootOwnership,
   agentRootLeasePath,
-} = await import("../agent-root-coordinator.js");
+} = await import("../durable-state/agent-root-coordinator.js");
 const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,

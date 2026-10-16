@@ -45,7 +45,7 @@ const {
   PROCESS_JOBS_GENERATION_CHANGED_ERROR,
   agentRootLeasePath,
   acquireAgentRootOwnership,
-} = await import("../agent-root-coordinator.js");
+} = await import("../durable-state/agent-root-coordinator.js");
 const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
