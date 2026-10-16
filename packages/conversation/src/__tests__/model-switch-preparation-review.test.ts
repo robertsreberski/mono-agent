@@ -7,7 +7,7 @@ import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type RuntimeNativeDispatchSnapshot, type RuntimeSessionTurnReconciliationResult, type RuntimeHandoffProducerResult } from "@mono-agent/turn/host/types";
 import type { RunRecorder } from "@mono-agent/observability";
 import { fixture, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
-import type { ConversationHistoryTurnInspection } from "../types.js";
+import type { ConversationHistoryTurnInspection } from "../history/contracts.js";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
 import { createModelSwitchState } from "../model-switch-billing.js";

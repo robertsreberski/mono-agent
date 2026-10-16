@@ -10,13 +10,7 @@ import { isValidMcpServerName } from "@mono-agent/turn/host/config";
 
 import type { HistoryMessage } from "../context/index.js";
 import { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "../mcp-server-transport.js";
-import type {
-  AgentHarnessContinuationClaimCapability,
-  AgentHarnessContinuationContextOptions,
-  AgentHarnessMcpRequestContextOptions,
-  AgentHarnessProgressCapability,
-  AgentHarnessRequest,
-} from "../types.js";
+import type { AgentHarnessContinuationClaimCapability, AgentHarnessContinuationContextOptions, AgentHarnessMcpRequestContextOptions, AgentHarnessProgressCapability, AgentHarnessRequest } from "./contracts.js";
 import { AgentHarnessError } from "./error.js";
 import {
   fileIdentity,

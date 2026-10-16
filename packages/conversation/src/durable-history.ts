@@ -1,3 +1,4 @@
+import type { NativeHistoryAuthorityLease, ManagedModelSwitchStorageLease, ManagedProviderSessionPreparation, CurrentJournalPresence, ProviderSessionPreparationSnapshot, ModelSwitchStorageSupport, ModelSwitchStorageSource } from "./history/contracts.js";
 import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, RuntimeNativeEpochContext, RuntimeNativeJournalRef } from "@mono-agent/turn/host/types";
 import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
 import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
@@ -30,20 +31,9 @@ import {
 } from "@mono-agent/contracts";
 
 import type { HistoryMessage } from "./context/index.js";
-import type {
-  ConversationHistoryProviderSessionTurn,
-  ConversationHistoryExclusiveTurn,
-  ConversationHistoryContextImport,
-  ConversationHistoryStore,
-  ConversationHistoryTurnInspector,
-  ConversationHistoryTurnRecovery,
-  ConversationHistoryTurnDrainOptions,
-  ConversationHistoryTurnDrainResult,
-  PreparedHistoryAppend,
-  ProviderSessionTurnCommitOptions,
-  ProviderSessionTurnBinding,
-} from "./types.js";
-import { assertSessionModelKey, ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
+import type { ConversationHistoryProviderSessionTurn, ConversationHistoryExclusiveTurn, ConversationHistoryContextImport, ConversationHistoryStore, ConversationHistoryTurnInspector, ConversationHistoryTurnRecovery, ConversationHistoryTurnDrainOptions, ConversationHistoryTurnDrainResult, PreparedHistoryAppend, ProviderSessionTurnCommitOptions, ProviderSessionTurnBinding } from "./history/contracts.js";
+import { assertSessionModelKey } from "./sessions/model-key.js";
+import { ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
 import { currentHistoryProcessIncarnation, historyOwnerIncarnation, historyOwnerLiveness } from "./history-process-liveness.js";
 import { historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./history-process-incarnation.js";
 
@@ -139,27 +129,6 @@ export interface DurableHistoryStoreOptions {
 }
 
 /** Administrative authority only; does not upgrade native headers or enable dispatch. */
-export interface NativeHistoryAuthorityLease {
-  readonly status: "owned";
-  readonly authority: RuntimeNativeJournalAuthority;
-  assertOwned(): Promise<void>;
-  release(): Promise<void>;
-}
-
-/** Administrative storage only; never a dispatch/capability advertisement. */
-export interface ManagedModelSwitchStorageLease {
-  readonly status: "owned";
-  read(): ReturnType<ModelSwitchPayloadStore["read"]>;
-  admit(producer: SummaryAttempt["producer"]): Promise<ModelSwitchState>;
-  finish(producer: SummaryAttempt["producer"], outcome: "unknown" | "rejected"): Promise<ModelSwitchState>;
-  advanceUnfit(): Promise<ModelSwitchState>;
-  assertMessageUnconsumed(messageDigest: string): Promise<void>;
-  authorizeMessage(messageDigest: string): Promise<ModelSwitchState>;
-  accept(artifact: Record<string, unknown>): Promise<HandoffReference>;
-  recoverArtifact(): Promise<HandoffReference | undefined>;
-  /** Releases the claim, never the durable fence or evidence. */
-  release(): Promise<void>;
-}
 /** Claim-only host preparation. No incoming fence/admission or configured opt-in.
  * Child leases borrow this owner; releasing one never releases the preparation.
  * Admission consumes the preparation only after the canonical model is ready.
@@ -188,46 +157,6 @@ export class NativeHistoryAuthorityBusyError extends Error {
     this.name = "NativeHistoryAuthorityBusyError"; this.code = damaged ? "ERR_NATIVE_HISTORY_AUTHORITY_DAMAGED" : "ERR_NATIVE_HISTORY_AUTHORITY_BUSY"; this.retryable = !damaged;
   }
 }
-
-export interface ManagedProviderSessionPreparation {
-  readonly recovery: ConversationHistoryTurnRecovery;
-  read(): Promise<ProviderSessionPreparationSnapshot>;
-  /** Caller-supplied provenance is used only for a legacy source's API/model;
-   * its account is explicitly null, never inferred from current credentials.
-   * A definitively missing current journal captures canonical history instead. */
-  captureNativeEvidence(legacyProvenance?: import("@mono-agent/turn/host/types").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
-    readonly source: CanonicalJournalDescriptor | null; readonly view: import("@mono-agent/turn/host/types").RuntimeNativeEvidenceView;
-  }>;
-  readHandoff(switchId: string, reference: HandoffReference): Promise<{ readonly artifact: Readonly<Record<string, unknown>>;
-    readonly budget: import("@mono-agent/turn/host/types").RuntimeHandoffBudget }>;
-  assertOwned(): Promise<void>;
-  acquireNativeHistoryAuthority(): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
-  beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
-  rollForwardModelSwitch(switchId: string, options?: { readonly onPhase?: (phase: string) => Promise<void> }): Promise<{ readonly status: "pending" | "committed" | "absent" }>;
-  /** Storage-only release of a non-ready intent (no target journal exists yet).
-   * Its billing state stays retained and charged; no producer or provider runs. */
-  abandonModelSwitch(switchId: string): Promise<void>;
-  /** missingCurrentEpoch is owner-approved recovery of an externally missing current
-   * journal: when that exact epoch is still canonical, admission first rotates it
-   * through the existing same-model cold path (v3 retire/new epoch, v5 durable C).
-   * Every model change goes through the structured switch; there is no cold one. */
-  admit(binding: ProviderSessionTurnBinding, options?: { readonly missingCurrentEpoch?: string }): Promise<ConversationHistoryProviderSessionTurn & { readonly native?: NativeTurnHistory["native"]; assertOwned(): Promise<void> }>;
-  /** @internal Read-only probe of the canonical current journal under this owner.
-   * `absent` means no current journal is expected yet (or no probe capability). */
-  inspectCurrentJournal?(): Promise<CurrentJournalPresence>;
-  abort(): Promise<void>;
-}
-export type CurrentJournalPresence = { readonly status: "absent" | "present" }
-  | { readonly status: "missing"; readonly epoch: string }
-  | { readonly status: "unreadable"; readonly reason: string };
-export interface ProviderSessionPreparationSnapshot {
-  readonly history: readonly HistoryMessage[];
-  readonly source: Awaited<ReturnType<DurableConversationHistoryStore["modelSwitchStorageSource"]>>;
-  readonly native?: NativeTurnHistory["native"];
-  readonly lastSwitch?: NativeTurnHistory["lastSwitch"];
-  readonly pending?: ModelSwitchState;
-}
-export type ModelSwitchStorageSupport = { readonly status: "unsupported"; readonly reason: "id_limit" | "unbound" };
 
 export interface DurableHistoryStoreStats {
   readonly conversations: number;
@@ -606,10 +535,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
   /** Read-only support probe. Long IDs continue today's ordinary cold replay:
    * unsupported storage is a result, not a switch-time contract error. */
-  async modelSwitchStorageSource(conversationId: string): Promise<ModelSwitchStorageSupport | {
-    readonly status: "supported"; readonly sourceCanonicalDigest: string; readonly sourceRevision: number;
-    readonly fromModelKey: string; readonly sourceEpoch: string; readonly ownerKey: string;
-  }> {
+  async modelSwitchStorageSource(conversationId: string): Promise<ModelSwitchStorageSource> {
     const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
     if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
     const rootIdentity = await this.ensureRoot(), record = await this.readRecord(id, rootIdentity);

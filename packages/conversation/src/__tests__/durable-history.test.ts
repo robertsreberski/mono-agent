@@ -37,6 +37,7 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
     .replace('"@mono-agent/contracts"', JSON.stringify(contractsUrl))
     .replace('"@mono-agent/turn/engine/owned-fs.js"', JSON.stringify(new URL("../../../turn/src/engine/owned-fs.js", import.meta.url).href))
     .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href))
+    .replace('"./sessions/model-key.js"', JSON.stringify(new URL("../../dist/sessions/model-key.js", import.meta.url).href))
     .replace('"./durable-turn-payloads.js"', JSON.stringify(new URL("../../dist/durable-turn-payloads.js", import.meta.url).href))
     .replaceAll('"./durable-turn-settlement.js"', JSON.stringify(new URL("../../dist/durable-turn-settlement.js", import.meta.url).href))
     .replaceAll('"./durable-turn-history.js"', JSON.stringify(new URL("../../dist/durable-turn-history.js", import.meta.url).href))

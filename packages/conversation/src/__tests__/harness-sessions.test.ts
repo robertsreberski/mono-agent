@@ -21,7 +21,7 @@ import {
   toolHistoryLogicalConversationId,
 } from "../index.js";
 import type { ConversationHistoryStore } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../types.js";
+import type { AgentHarnessSessionOptions } from "../harness/contracts.js";
 import type { SkillsCache } from "../skills/index.js";
 
 const tempDirs: string[] = [];

@@ -10,7 +10,7 @@ import {
 } from "@mono-agent/contracts";
 
 import { assistantTextFromRuntimeEvent, bucketConversationId, createAgentResponder, streamEventFromRuntimeEvent } from "../responder.js";
-import type { AgentHarness, AgentHarnessRequest, AgentHarnessResponse } from "../types.js";
+import type { AgentHarness, AgentHarnessRequest, AgentHarnessResponse } from "../harness/contracts.js";
 
 function okResponse(conversationId: string): AgentHarnessResponse {
   return {

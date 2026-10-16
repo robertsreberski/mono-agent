@@ -9,7 +9,7 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@ear
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/turn/host/types";
 import type { DurableHistoryStoreOptions } from "../durable-history.js";
-import type { ConversationHistoryTurnInspection } from "../types.js";
+import type { ConversationHistoryTurnInspection } from "../history/contracts.js";
 import { PendingTurnPayloadStore } from "../durable-turn-payloads.js";
 import { createPendingTurnPayload, createPendingInitialInput, createPendingLiveInput } from "../durable-turn-contract.js";
 const fault = vi.hoisted(() => ({ unlinkFence: false, beforePendingSync: undefined as ((path: string) => Promise<void>) | undefined }));

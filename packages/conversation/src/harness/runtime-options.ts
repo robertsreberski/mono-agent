@@ -1,7 +1,7 @@
 import { mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
 import type { RuntimeModelReference, SandboxPolicy } from "@mono-agent/turn/host/types";
 
-import type { AgentHarnessRuntimeOptionsExtension } from "../types.js";
+import type { AgentHarnessRuntimeOptionsExtension } from "./contracts.js";
 import { isRecord } from "./value-utils.js";
 
 const ENDPOINT_CLEAR_KEYS: ReadonlySet<string> = new Set([

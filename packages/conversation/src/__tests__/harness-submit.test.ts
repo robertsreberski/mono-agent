@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
 import { createAgentHarness } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../types.js";
+import type { AgentHarnessSessionOptions } from "../harness/contracts.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;

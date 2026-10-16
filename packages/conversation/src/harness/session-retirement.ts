@@ -1,6 +1,6 @@
 import { uniqueSessionHandles, type ProviderSessionHandle, type SessionRuntimeResolver } from "../session-runtime.js";
 import type { RuntimeSessionRecord, RuntimeSessionStore } from "../sessions.js";
-import type { AgentHarnessOptions } from "../types.js";
+import type { AgentHarnessOptions } from "./contracts.js";
 
 /**
  * Invalidates provider sessions attached to a turn that canonical host history

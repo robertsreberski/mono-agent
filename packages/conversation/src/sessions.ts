@@ -1,4 +1,4 @@
-import { assertSessionModelKey } from "./session-runtime.js";
+import { assertSessionModelKey } from "./sessions/model-key.js";
 
 export type RuntimeSessionEvictReason = "idle_timeout" | "stale" | "replaced" | "disposed";
 

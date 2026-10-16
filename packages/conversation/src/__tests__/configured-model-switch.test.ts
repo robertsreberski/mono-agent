@@ -10,7 +10,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { MonoAgentHarness } from "../harness.js";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { switchConversationKey } from "../durable-model-switch-contract.js";
-import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
+import type { AgentHarnessOptions, AgentHarnessRequest } from "../harness/contracts.js";
 
 const closes: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); vi.restoreAllMocks(); });

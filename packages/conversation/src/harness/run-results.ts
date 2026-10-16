@@ -8,11 +8,7 @@ import type {
 import type { RuntimeResult } from "@mono-agent/turn/host/types";
 
 import type { BuiltAgentContext } from "../context/index.js";
-import type {
-  AgentHarnessFailure,
-  AgentHarnessRequest,
-  AgentHarnessResponse,
-} from "../types.js";
+import type { AgentHarnessFailure, AgentHarnessRequest, AgentHarnessResponse } from "./contracts.js";
 import { AgentHarnessError } from "./error.js";
 import { externalResponseSummary } from "./external-summary.js";
 import { errorToDetails, isRecord } from "./value-utils.js";

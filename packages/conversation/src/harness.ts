@@ -30,19 +30,9 @@ import type {
   RuntimeSessionSnapshot,
   RuntimeSessionStore,
 } from "./sessions.js";
-import type {
-  AgentHarness,
-  AgentHarnessFailure,
-  AgentHarnessOptions,
-  AgentHarnessRequest,
-  AgentHarnessResponse,
-  AgentHarnessSessionEvent,
-  ConversationHistoryProviderSessionTurn,
-  ConversationHistoryTurnReconciliation,
-  ConversationHistoryExclusiveTurn,
-  PreparedHistoryAppend,
-} from "./types.js";
-import type { AgentHarnessContinuationClaimCapability } from "./types.js";
+import type { AgentHarness, AgentHarnessFailure, AgentHarnessOptions, AgentHarnessRequest, AgentHarnessResponse, AgentHarnessSessionEvent } from "./harness/contracts.js";
+import type { ConversationHistoryProviderSessionTurn, ConversationHistoryTurnReconciliation, ConversationHistoryExclusiveTurn, PreparedHistoryAppend } from "./history/contracts.js";
+import type { AgentHarnessContinuationClaimCapability } from "./harness/contracts.js";
 import { createSkillsCache } from "./skills/index.js";
 import type { SkillsCache } from "./skills/index.js";
 import { applyHarnessAttachments } from "./harness/attachments.js";
@@ -89,7 +79,8 @@ import { prepareConfiguredModelSwitch, type InternalNativeSwitchPolicy, type Con
 import { coldReplayMessages, runHarnessRuntime } from "./harness/runtime-execution.js";
 import { mergeRuntimeOptions } from "./harness/runtime-options.js";
 import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./harness/session-events.js";
-import { createSessionRuntimeResolver, ProviderSessionModelChangedError, sessionModelKey, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
+import { createSessionRuntimeResolver, ProviderSessionModelChangedError, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
+import { sessionModelKey } from "./sessions/model-key.js";
 import { retireRunResultSession } from "./harness/session-retirement.js";
 import { validateOptions, validateRequest } from "./harness/validation.js";
 import { errorToDetails } from "./harness/value-utils.js";

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentAttachment } from "@mono-agent/contracts";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
-import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
+import type { AgentHarnessOptions, AgentHarnessRequest } from "./contracts.js";
 import { fileIdentity, type AttachmentFileIdentity } from "./file-authority.js";
 import { errorMessageText } from "./value-utils.js";
 

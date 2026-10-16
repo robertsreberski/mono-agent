@@ -1,4 +1,4 @@
-import type { AgentHarness, AgentHarnessFailure, AgentHarnessSessionBoundary } from "./types.js";
+import type { AgentHarness, AgentHarnessFailure, AgentHarnessSessionBoundary } from "./harness/contracts.js";
 import { AgentHarnessError } from "./harness/error.js";
 import type {
   AgentLiveInputRequest,

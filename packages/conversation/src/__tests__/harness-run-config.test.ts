@@ -12,7 +12,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { createAgentHarness } from "../index.js";
 import { requestOverridesModel, runSourceFromRequest } from "../harness.js";
 import { requestSessionModel } from "../harness/request-routing.js";
-import type { AgentHarnessRecorderFactoryInput, AgentHarnessRequest } from "../types.js";
+import type { AgentHarnessRecorderFactoryInput, AgentHarnessRequest } from "../harness/contracts.js";
 
 const tempDirs: string[] = [];
 const model = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;

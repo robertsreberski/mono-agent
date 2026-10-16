@@ -1,7 +1,7 @@
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { RuntimeSessionRecord, RuntimeSessionSnapshot } from "../sessions.js";
-import type { AgentHarnessSessionBoundary, AgentHarnessSessionEvent } from "../types.js";
+import type { AgentHarnessSessionBoundary, AgentHarnessSessionEvent } from "./contracts.js";
 
 export function withSessionBoundaryTimestamp(event: AgentHarnessSessionBoundary, timestamp: string): RuntimeEventLike {
   return event.timestamp === undefined ? { ...event, timestamp } : { ...event };

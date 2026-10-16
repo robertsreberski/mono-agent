@@ -37,21 +37,8 @@ export type {
 export { CONVERSATION_HISTORY_VERSION_MAX_BYTES } from "./sessions.js";
 export { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "./mcp-server-transport.js";
 export { AgentHarnessFailureError, createAgentResponder } from "./responder.js";
-export type {
-  AgentHarness,
-  AgentHarnessOptions,
-  AgentHarnessRequest,
-  AgentHarnessResponse,
-  AgentHarnessRuntimeOptionsExtension,
-  AgentHarnessRuntimeOptionsInput,
-  AgentHarnessToolHistoryOptions,
-  AgentHarnessTurnHistoryEnricher,
-  ConversationHistoryTurnInspection,
-  ConversationHistoryExclusiveTurn,
-  ConversationHistoryStore,
-  ExternalRunSummary,
-  ProviderSessionTurnBinding,
-} from "./types.js";
+export type { AgentHarness, AgentHarnessOptions, AgentHarnessRequest, AgentHarnessResponse, AgentHarnessRuntimeOptionsExtension, AgentHarnessRuntimeOptionsInput, AgentHarnessToolHistoryOptions, AgentHarnessTurnHistoryEnricher, ExternalRunSummary } from "./harness/contracts.js";
+export type { ConversationHistoryTurnInspection, ConversationHistoryExclusiveTurn, ConversationHistoryStore, ProviderSessionTurnBinding } from "./history/contracts.js";
 export {
   isReadSkillCompatibleName,
   loadSkillIndexFromDirectory,

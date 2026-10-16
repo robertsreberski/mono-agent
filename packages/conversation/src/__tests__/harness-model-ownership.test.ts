@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
-import type { AgentHarnessOptions, ConversationHistoryStore } from "../types.js";
+import type { AgentHarnessOptions } from "../harness/contracts.js";
+import type { ConversationHistoryStore } from "../history/contracts.js";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
 const model = { provider: "faux", model: "base", reference: "faux:base" };

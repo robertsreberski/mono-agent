@@ -10,7 +10,7 @@ import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/typ
 
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
 import type { ConversationHistoryStore, HistoryMessage } from "../index.js";
-import type { PreparedHistoryAppend } from "../types.js";
+import type { PreparedHistoryAppend } from "../history/contracts.js";
 import {
   FAILED_TURN_HISTORY_KEY_PREFIX,
   TURN_CONTINUITY_MAX_BYTES,

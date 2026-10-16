@@ -9,7 +9,7 @@ import type {
   SkillIndexEntry,
   SkillIndexSummary,
 } from "../context/index.js";
-import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
+import type { AgentHarnessOptions, AgentHarnessRequest } from "./contracts.js";
 import type { SkillsCache } from "../skills/index.js";
 import { AgentHarnessError } from "./error.js";
 import { representedContinuityToolRecordIds } from "./turn-continuity.js";

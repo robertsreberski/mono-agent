@@ -1,6 +1,6 @@
 import { assertAgentContinuationOriginContext } from "@mono-agent/contracts";
 
-import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
+import type { AgentHarnessOptions, AgentHarnessRequest } from "./contracts.js";
 
 export function validateOptions(options: AgentHarnessOptions): void {
   const history = options.historyStore;

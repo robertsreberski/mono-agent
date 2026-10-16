@@ -1,7 +1,7 @@
 import { loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
 import { randomUUID } from "node:crypto";
 import { createPendingInitialInput, createPendingLiveInput, assertDetachedTurnDescriptor } from "../durable-turn-contract.js";
-import { sessionModelKey } from "../session-runtime.js";
+import { sessionModelKey } from "../sessions/model-key.js";
 import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
 import { monoRuntimeSupportsLiveInput } from "@mono-agent/turn/host";
 import { sandboxPolicyToRuntimeOptions } from "@mono-agent/turn/host/sandbox";
@@ -10,14 +10,8 @@ import { type RuntimeMessage, type RuntimeResult, type RuntimeRunOptions, type R
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, neutralizeTurnEnvelope } from "../context/turn-envelope.js";
 import type { Semaphore } from "../semaphore.js";
-import type {
-  AgentHarnessContinuationClaimCapability,
-  AgentHarnessOptions,
-  AgentHarnessProgressCapability,
-  AgentHarnessRequest,
-  AgentHarnessRuntimeOptionsExtension,
-  ConversationHistoryTurnReconciliation,
-} from "../types.js";
+import type { AgentHarnessContinuationClaimCapability, AgentHarnessOptions, AgentHarnessProgressCapability, AgentHarnessRequest, AgentHarnessRuntimeOptionsExtension } from "./contracts.js";
+import type { ConversationHistoryTurnReconciliation } from "../history/contracts.js";
 import type { SessionRuntimeResolver } from "../session-runtime.js";
 import type { LiveInputMailbox } from "../live-input.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "../tool-policy/index.js";

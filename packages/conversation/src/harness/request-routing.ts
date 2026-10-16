@@ -2,8 +2,8 @@ import { deriveRunSource } from "@mono-agent/observability";
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 
-import { sessionModelKey } from "../session-runtime.js";
-import type { AgentHarnessRequest } from "../types.js";
+import { sessionModelKey } from "../sessions/model-key.js";
+import type { AgentHarnessRequest } from "./contracts.js";
 import { isRecord } from "./value-utils.js";
 
 type ModelOverrideOrigin = "webhook" | "cron" | "web" | "tui" | "telegram" | "slack";

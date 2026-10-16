@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { assertSessionModelKey } from "./session-runtime.js";
+import { assertSessionModelKey } from "./sessions/model-key.js";
 import { validateTurnHistoryV3 } from "./durable-turn-history.js";
 import type { TurnHistoryV3 } from "./durable-turn-history.js";
 import type { HistoryMessage } from "./context/index.js";

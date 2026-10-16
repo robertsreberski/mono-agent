@@ -1,6 +1,6 @@
 import type { RunSummary } from "@mono-agent/observability";
 
-import type { ExternalRunSummary } from "../types.js";
+import type { ExternalRunSummary } from "./contracts.js";
 
 export function externalResponseSummary(summary: RunSummary): ExternalRunSummary | undefined {
   let descriptors: PropertyDescriptorMap;

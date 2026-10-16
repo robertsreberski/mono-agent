@@ -1,5 +1,5 @@
 import type { RuntimeSessionStore } from "../sessions.js";
-import type { AgentHarnessOptions } from "../types.js";
+import type { AgentHarnessOptions } from "./contracts.js";
 
 const VERBATIM_DELIVERY_STIMULUS = "[A scheduled or triggered task produced the message below, delivered to you proactively.]";
 

@@ -6,7 +6,8 @@ import {
   type AgentContextImportResult,
 } from "@mono-agent/contracts";
 
-import type { AgentHarnessOptions, ConversationHistoryContextImport } from "../types.js";
+import type { AgentHarnessOptions } from "./contracts.js";
+import type { ConversationHistoryContextImport } from "../history/contracts.js";
 
 export function eligibleContextImport(options: AgentHarnessOptions): ConversationHistoryContextImport | undefined {
   const support = options.historyStore?.contextImport;

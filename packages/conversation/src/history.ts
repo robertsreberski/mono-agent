@@ -1,6 +1,6 @@
 import type { HistoryMessage } from "./context/index.js";
 
-import type { ConversationHistoryStore, InMemoryHistoryStoreOptions } from "./types.js";
+import type { ConversationHistoryStore, InMemoryHistoryStoreOptions } from "./history/contracts.js";
 
 class InMemoryConversationHistoryStore implements ConversationHistoryStore {
   private readonly maxMessages: number;

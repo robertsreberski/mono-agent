@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
-import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
+import type { AgentHarnessOptions, AgentHarnessRequest } from "./contracts.js";
 import type { AppliedLiveInput } from "../live-input.js";
 import { senderLabel } from "./speaker-context.js";
 import { compactOneLine } from "./value-utils.js";
