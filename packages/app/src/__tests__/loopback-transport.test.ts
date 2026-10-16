@@ -25,9 +25,9 @@ function options() {
 async function listen(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
 }
-async function raw(url: string, body?: string, host?: string): Promise<{ status: number; text: string }> {
+async function raw(url: string, body?: string, host?: string, headers: Readonly<Record<string, string>> = {}): Promise<{ status: number; text: string }> {
   return await new Promise((resolve, reject) => {
-    const req = request(url, { method: body === undefined ? "GET" : "POST", headers: { ...(host === undefined ? {} : { host }), "content-type": "application/json" } }, (res) => {
+    const req = request(url, { method: body === undefined ? "GET" : "POST", headers: { ...(host === undefined ? {} : { host }), "content-type": "application/json", ...headers } }, (res) => {
       let text = "";
       res.setEncoding("utf8");
       res.on("data", (chunk: string) => { text += chunk; });
@@ -60,13 +60,43 @@ describe("loopback MCP transport", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves path/Host denial, malformed body and byte limit responses", async () => {
+  it("preserves path/Host denial and malformed body responses", async () => {
     const endpoint = await createLoopbackMcpEndpoint(options());
     try {
       expect(await raw(new URL("/other", endpoint.url).href)).toEqual({ status: 404, text: "Not found" });
       expect(await raw(endpoint.url, undefined, "localhost:1234")).toEqual({ status: 404, text: "Not found" });
       expect((await raw(endpoint.url, "{")).status).toBe(500);
-      expect((await raw(endpoint.url, "x".repeat(1_000_001))).status).toBe(500);
+    } finally { await endpoint.close(); }
+  });
+
+  it("accepts valid MCP at the byte limit and rejects one byte over with the exact size error", async () => {
+    const base = options();
+    const createServer = vi.fn(base.createServer);
+    const endpoint = await createLoopbackMcpEndpoint({ ...base, createServer });
+    const initialize = { jsonrpc: "2.0", id: 1, method: "initialize", params: {
+      protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "byte-limit-test", version: "1" },
+    } };
+    const json = JSON.stringify(initialize);
+    const atLimit = json + " ".repeat(1_000_000 - Buffer.byteLength(json));
+    const overLimit = `${atLimit} `;
+    const headers = { accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-03-26" };
+    expect(Buffer.byteLength(atLimit)).toBe(1_000_000);
+    expect(Buffer.byteLength(overLimit)).toBe(1_000_001);
+    expect(JSON.parse(overLimit)).toEqual(initialize);
+    try {
+      const accepted = await raw(endpoint.url, atLimit, undefined, headers);
+      expect(accepted.status).toBe(200);
+      expect(JSON.parse(accepted.text)).toMatchObject({ jsonrpc: "2.0", id: 1, result: { serverInfo: { name: "loopback-test" } } });
+      expect(createServer).toHaveBeenCalledOnce();
+      // HTTP intentionally redacts internal errors to an empty 500. Observe
+      // the real constructor to pin the caller's error label without exposing it.
+      const error = vi.spyOn(globalThis, "Error");
+      try {
+        expect(await raw(endpoint.url, overLimit, undefined, headers)).toEqual({ status: 500, text: "" });
+        expect(error).toHaveBeenCalledOnce();
+        expect(error).toHaveBeenCalledWith("bounded body");
+        expect(createServer).toHaveBeenCalledOnce();
+      } finally { error.mockRestore(); }
     } finally { await endpoint.close(); }
   });
 
