@@ -102,6 +102,13 @@ export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Pro
   return resolve(input.cwd, ".mono-agent", "artifacts");
 }
 
+const OLD_SESSIONS_ROOT_PATH = "providers.piNative.piSessionsRoot";
+
+function retiredPaths(error: MonoAgentConfigError): readonly unknown[] {
+  const paths = error.details.paths;
+  return Array.isArray(paths) ? paths : [error.details.path];
+}
+
 /**
  * Resolve the durable session store the runtime resumes from, the same way the
  * runtime does: from `runtime.session.root` in the config file. Returns undefined when
@@ -109,7 +116,12 @@ export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Pro
  * on disk to purge. Tolerates an unreadable config like the resolvers above.
  */
 export async function resolveAppSessionsRoot(input: MonoAgentAppConfigInput): Promise<string | undefined> {
-  const source = await readMonoAgentConfigJson(input.configPath).catch(() => undefined);
+  const source = await readMonoAgentConfigJson(input.configPath).catch((error: unknown) => {
+    // Other unreadable configs are tolerated, but a renamed sessions root must stop a
+    // purge before it runs rather than resolve to "no sessions".
+    if (error instanceof MonoAgentConfigError && retiredPaths(error).includes(OLD_SESSIONS_ROOT_PATH)) throw error;
+    return undefined;
+  });
   assertNoOldSessionsRoot(source?.json);
   const json = source?.json;
   const configDir = typeof json?.runtime?.session?.root === "string" ? json.runtime.session.root.trim() : "";

@@ -71,6 +71,11 @@ describe("readMonoAgentConfigJson", () => {
       "`runtime.permissionMode` was removed because the Pi runtime never enforced it. Delete the key; configure `sandbox` for enforced tool isolation.",
     ],
     [
+      "providers.piNative.piSessionsRoot",
+      { providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } },
+      "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
+    ],
+    [
       "runtime.executionMode",
       { runtime: { executionMode: "sdk" } },
       "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
