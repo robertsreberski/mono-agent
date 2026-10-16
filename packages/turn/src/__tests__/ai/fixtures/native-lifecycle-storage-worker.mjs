@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createManagedNativeJournalStorage } from "../../../ai/providers/engine-turn/native-journal-storage.js";
+import { createManagedNativeJournalStorage } from "../../../execution/pi/storage-capability.js";
 const [root, stop] = process.argv.slice(2);
 const { current, cold, deletion, operation } = JSON.parse(await readFile(join(root, "lifecycle-proof.json"), "utf8"));
 const storage = createManagedNativeJournalStorage({ sessionsRoot: root, onPhase: async (phase) => {

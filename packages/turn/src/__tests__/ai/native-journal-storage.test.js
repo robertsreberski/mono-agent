@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
-import { createManagedNativeJournalStorage } from "../../ai/providers/engine-turn/native-journal-storage.js";
+import { createManagedNativeJournalStorage } from "../../execution/pi/storage-capability.js";
 import { NativeEvidenceCapacityError } from "../../engine/native-journal-storage.js";
 const roots = [], repos = [];
 const authority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };

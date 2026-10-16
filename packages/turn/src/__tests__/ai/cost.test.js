@@ -14,7 +14,7 @@ vi.mock("@earendil-works/pi-ai/providers/all", () => ({ getBuiltinModel: vi.fn()
 // undefined to drive the unknown level.
 const { getBuiltinModel: realGetBuiltinModel } = await vi.importActual("@earendil-works/pi-ai/providers/all");
 const { getBuiltinModel } = await import("@earendil-works/pi-ai/providers/all");
-const { resolvePricing, estimateCost } = await import("../../ai/cost.js");
+const { resolvePricing, estimateCost } = await import("../../telemetry/cost.js");
 
 beforeEach(() => {
   getBuiltinModel.mockReset();

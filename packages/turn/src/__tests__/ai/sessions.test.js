@@ -6,7 +6,7 @@ import {
   invalidateProviderSession,
   refreshProviderSession,
   syncProviderSession,
-} from "../../ai/runtime/sessions.js";
+} from "../../runtime/session-fanout.js";
 
 describe("createSessionRegistry", () => {
   beforeEach(() => {

@@ -12,7 +12,7 @@ import { createSubagentInstanceRegistry } from "../../../dist/subagent-instances
 import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { createAgentTool } from "../../../../turn/src/tools/delegation/agent-tool.js";
-import { generateEngineTurnResponse } from "../../../../turn/src/ai/providers/engine-turn.js";
+import { generateEngineTurnResponse } from "../../../../turn/src/execution/pi/run.js";
 import { createToolContext, updateToolContext } from "../../../../turn/src/tools/shared/tool-context.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";

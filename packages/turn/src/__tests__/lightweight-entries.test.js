@@ -10,8 +10,8 @@ function resolvedGraph(entry, profile) {
       const result = nextResolve(specifier, context);
       seen.add(result.url);
       const turn = result.url.includes("/packages/turn/");
-      const execution = /\\/ai\\/(?:provider-check\\.js|providers\\/engine-turn\\.js)|\\/tools\\/(?:pi-tools\\.js|commands\\/(?:bash|exec)\\.js|mcp\\/)/u.test(result.url);
-      const configForbidden = /\\/src\\/(?:runtime\\.js|ai\\/runtime\\/router\\.js|engine\\/|agent\\/tools\\/|tools\\/)/u.test(result.url);
+      const execution = /\\/providers\\/pi\\/provider-check\\.js|\\/execution\\/pi\\/run\\.js|\\/tools\\/(?:pi-tools\\.js|commands\\/(?:bash|exec)\\.js|mcp\\/(?:tools|connection|apps|content)\\.js)/u.test(result.url);
+      const configForbidden = /\\/src\\/(?:runtime\\/(?:create-runtime|router)\\.js|execution\\/|engine\\/|tools\\/)/u.test(result.url);
       if (turn && (execution || (${JSON.stringify(profile)} === "config" && configForbidden))) {
         blocked.push(result.url);
         throw new Error("Lightweight import reached execution: " + result.url);
@@ -28,10 +28,10 @@ function resolvedGraph(entry, profile) {
 it.each(["@mono-agent/turn/host/config", "@mono-agent/config"])("keeps built %s on the metadata-only resolved graph", (entry) => {
   const seen = resolvedGraph(entry, "config");
   expect(seen.some((url) => url.endsWith("/dist/host/config.js"))).toBe(true);
-  expect(seen.some((url) => url.endsWith("/src/ai/pi-interop.js"))).toBe(true);
+  expect(seen.some((url) => url.endsWith("/src/providers/pi/catalog.js"))).toBe(true);
 });
 
 it("does not load expert execution just by importing the root factories", () => {
   const seen = resolvedGraph("@mono-agent/turn", "root");
-  expect(seen.some((url) => url.endsWith("/src/runtime.js"))).toBe(true);
+  expect(seen.some((url) => url.endsWith("/src/runtime/create-runtime.js"))).toBe(true);
 });

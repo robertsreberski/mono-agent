@@ -4,12 +4,12 @@ const executeMock = vi.fn();
 const adapterLoadMock = vi.fn();
 const assertEngineTurnModelRefMock = vi.fn();
 
-vi.mock("../ai/providers/engine-turn/model-ref.js", async (importOriginal) => {
+vi.mock("../execution/pi/model-ref.js", async (importOriginal) => {
   const actual = await importOriginal();
   return { assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
 });
 
-vi.mock("../ai/providers/engine-turn.js", async (importOriginal) => {
+vi.mock("../execution/pi/run.js", async (importOriginal) => {
   adapterLoadMock();
   const actual = await importOriginal();
   return {
@@ -19,12 +19,12 @@ vi.mock("../ai/providers/engine-turn.js", async (importOriginal) => {
 });
 
 const resolverMock = vi.fn(() => { throw new Error("Runtime must not dispatch through a resolver"); });
-vi.mock("../ai/runtime/registry.js", () => ({
+vi.mock("../runtime/bridges.js", () => ({
   resolveEngineTurnAdapter: (...args) => resolverMock(...args),
   resolveEngineTurnAdapter: (...args) => resolverMock(...args),
 }));
 
-const { createRuntime } = await import("../runtime.js");
+const { createRuntime } = await import("../runtime/create-runtime.js");
 const adapterLoadsAtRuntimeImport = adapterLoadMock.mock.calls.length;
 
 function modelRef(provider, model) {

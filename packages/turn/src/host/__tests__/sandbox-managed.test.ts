@@ -16,7 +16,7 @@ import {
   managedSrtInstallRoot,
   resolveSrtLaunch,
   verifyManagedSrtInstall,
-} from "../sandbox-managed.js";
+} from "../sandbox/managed.js";
 
 const lockResource = fileURLToPath(new URL("../../../../app/resources/srt/package-lock.json", import.meta.url));
 const tempDirs: string[] = [];

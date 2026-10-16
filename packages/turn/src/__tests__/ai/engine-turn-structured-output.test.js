@@ -5,7 +5,7 @@ import {
   shouldRetryStructuredOutputFinalization,
   structuredOutputFinalizationPrompt,
   structuredOutputRetryDiagnostics,
-} from "../../ai/providers/engine-turn/structured-output.js";
+} from "../../execution/pi/structured-output.js";
 
 describe("appendStructuredOutputInstruction", () => {
   it("returns the prompt unchanged when there is no output schema", () => {

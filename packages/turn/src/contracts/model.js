@@ -10,7 +10,7 @@
 
 /**
  * @typedef {"pi"} RuntimeBridgeId
- * Direct Pi bridge id returned by src/ai/runtime/registry.js.
+ * Direct Pi bridge id returned by src/runtime/bridges.js.
  */
 
 /**

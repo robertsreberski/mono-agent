@@ -8,11 +8,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // becomes deciding once Pi's turn builder chooses request sandbox over its
 // configured ToolContext sandbox.
 // @ts-expect-error -- package-private JavaScript deciding sink has no public declaration.
-import { buildTurnTools } from "../../ai/providers/engine-turn/turn-runner.js";
+import { buildTurnTools } from "../../execution/pi/turn-runner.js";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "@mono-agent/turn/host/types";
-import { createSandboxPolicy } from "../sandbox.js";
-import { monoSandboxImpl } from "../sandbox-impl.js";
+import { createSandboxPolicy } from "../sandbox/index.js";
+import { monoSandboxImpl } from "../sandbox/implementation.js";
 import type { RuntimeRunOptions, RuntimeToolOptions } from "../types.js";
 
 const tempDirs: string[] = [];

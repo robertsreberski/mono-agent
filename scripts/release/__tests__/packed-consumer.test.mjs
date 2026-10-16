@@ -125,11 +125,11 @@ describe("packed consumer verification", () => {
 
   test("ships four concrete host entrypoints without a forwarding package", () => {
     const runtime = JSON.parse(fs.readFileSync(new URL("../../../packages/turn/package.json", import.meta.url), "utf8"));
-    for (const [subpath, file] of [["host", "index"], ["host/config", "config"], ["host/types", "types"], ["host/sandbox", "sandbox"]]) {
+    for (const [subpath, file] of [["host", "index"], ["host/config", "config"], ["host/types", "types"], ["host/sandbox", "sandbox/index"]]) {
       expect(runtime.exports[`./${subpath}`]).toEqual({ types: `./types/host/${file}.d.ts`, default: `./dist/host/${file}.js` });
       expect(Object.keys(runtime.exports[`./${subpath}`])).toEqual(["types", "default"]);
     }
-    expect(runtime.files).toContain("dist/host/srt-embed-runner.mjs");
+    expect(runtime.files).toContain("dist/host/sandbox/srt-embed-runner.mjs");
     expect(runtime.dependencies).not.toHaveProperty("@mono-agent/runtime-adapter");
     expect(fs.existsSync(new URL("../../../packages/runtime-adapter", import.meta.url))).toBe(false);
   });

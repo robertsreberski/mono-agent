@@ -5,14 +5,14 @@ import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { createAssistantMessageEventStream, createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { streamSimple as sdkCodexStreamSimple } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js";
-import * as sessionAdapter from "../../ai/providers/engine-turn/engine-adapter.js";
-import { generateEngineTurnResponse, preparePiNativeDispatch } from "../../ai/providers/engine-turn.js";
-import { isTransientRequestFailure } from "../../ai/providers/engine-turn/request-retry.js";
+import * as sessionAdapter from "../../execution/pi/driver-adapter.js";
+import { generateEngineTurnResponse, preparePiNativeDispatch } from "../../execution/pi/run.js";
+import { isTransientRequestFailure } from "../../execution/pi/request-retry.js";
 import { projectContext } from "../../engine/request-projection.js";
 
 // Production backoff is 1 s, 2 s, 4 s. Keep the real policy and only shrink it.
 const backoff = vi.hoisted(() => ({ baseDelayMs: 0 }));
-vi.mock("../../ai/providers/engine-turn/request-retry.js", async (importOriginal) => {
+vi.mock("../../execution/pi/request-retry.js", async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, requestRetryPolicy: (params) => ({ ...actual.requestRetryPolicy(params), baseDelayMs: backoff.baseDelayMs }) };
 });
@@ -164,7 +164,7 @@ it("retries mid-stream failures on primary-only prepared native dispatch", async
 });
 
 it("classifies transient transport/server failures only", async () => {
-  const { requestRetryPolicy: realPolicy } = await vi.importActual("../../ai/providers/engine-turn/request-retry.js");
+  const { requestRetryPolicy: realPolicy } = await vi.importActual("../../execution/pi/request-retry.js");
   for (const text of ["WebSocket error", "WebSocket closed 1006", "WebSocket closed 1011 internal error", "WebSocket stream closed before response.completed",
     "WebSocket idle timeout after 300000ms", "terminated", "socket hang up", "Connection error.", "read ECONNRESET", "Overloaded", "502 Bad Gateway",
     "429 Too Many Requests", "Anthropic stream ended before message_stop"]) expect(isTransientRequestFailure(text), text).toBe(true);

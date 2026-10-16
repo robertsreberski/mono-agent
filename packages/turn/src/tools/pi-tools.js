@@ -2,7 +2,7 @@
 import { isAbsolute, resolve, dirname, basename } from "node:path";
 import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { isInsidePath } from "./shared/path-resolver.js";
-import { statsForCompletedChange, fileChangeSummary, readFileChangeSnapshot } from "../ai/file-change-stats.js";
+import { statsForCompletedChange, fileChangeSummary, readFileChangeSnapshot } from "../telemetry/file-change-stats.js";
 import { normalizeBashTimeoutMs, normalizeProcessTimeoutMs, readToolImpl, writeToolImpl, editToolImpl, globToolImpl, grepToolImpl, bashToolRun, execToolRun } from "./index.js";
 import { objectSchema } from "./shared/tool-schema.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -14,7 +14,7 @@ import { passthroughSandbox } from "../agent/sandbox-seam.js";
 import { filterEnvelopeNextActions, webFailureEnvelope } from "./web/web-actionable.js";
 import { createAgentTool } from "./delegation/agent-tool.js";
 import { createAskParentTool } from "./delegation/ask-parent-tool.js";
-import { silentTurnRefusalReason } from "../ai/silent-turn.js";
+import { silentTurnRefusalReason } from "../runtime/silent-turn.js";
 import { createAgentManageTool } from "./delegation/agent-manage-tool.js";
 import { wrapToolsWithApprovalGate } from "../agent/approval.js";
 

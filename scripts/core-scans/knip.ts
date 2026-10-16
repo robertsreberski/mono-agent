@@ -9,7 +9,7 @@ const paths = {
   "@mono-agent/turn/host": turnHost("index"),
   "@mono-agent/turn/host/config": turnHost("config"),
   "@mono-agent/turn/host/types": turnHost("types"),
-  "@mono-agent/turn/host/sandbox": turnHost("sandbox"),
+  "@mono-agent/turn/host/sandbox": turnHost("sandbox/index"),
 };
 
 // Exact names/citations for documented, indirect, fixture-control and deferred surfaces.
@@ -27,7 +27,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/ai/cost.js",
+    "file": "packages/turn/src/telemetry/cost.js",
     "names": [
       "normalizePricing",
       "zeroPricing",
@@ -37,7 +37,7 @@ export const retainedExports = [
       "parseReference"
     ],
     "reason": "documented extension: custom host pricing resolvers",
-    "citation": "packages/turn/src/ai/cost.js:178-183",
+    "citation": "packages/turn/src/telemetry/cost.js:178-183",
     "taggedNames": [
       "zeroPricing",
       "pricingHasRates",
@@ -45,7 +45,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/ai/observer.js",
+    "file": "packages/turn/src/telemetry/observer.js",
     "names": [
       "createMetricsObserver"
     ],
@@ -73,7 +73,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/runtime/registry.js",
+    "file": "packages/turn/src/runtime/bridges.js",
     "names": [
       "resolveEngineTurnAdapter",
       "listRuntimeBridges"
@@ -83,7 +83,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/runtime/model-refs.js",
+    "file": "packages/turn/src/runtime/model-reference.js",
     "names": [
       "parseRuntimeModelReference"
     ],
@@ -92,7 +92,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/failure.js",
+    "file": "packages/turn/src/telemetry/failure.js",
     "names": [
       "classifyFailure",
       "FAILURE_KINDS"
@@ -102,7 +102,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/cost.js",
+    "file": "packages/turn/src/telemetry/cost.js",
     "names": [
       "resolvePricing",
       "estimateCost"
@@ -195,7 +195,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/providers/codex/app-server-client.js",
+    "file": "packages/turn/src/providers/codex/app-server-client.js",
     "names": [
       "createCodexAppServerClient"
     ],
@@ -226,12 +226,12 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/host/provider-discovery.ts",
+    "file": "packages/turn/src/host/providers/provider-discovery.ts",
     "names": [
       "clearLocalProviderDiscoveryCache"
     ],
     "reason": "test isolation control for process-global local provider discovery cache",
-    "citation": "packages/turn/src/host/provider-discovery.ts",
+    "citation": "packages/turn/src/host/providers/provider-discovery.ts",
     "taggedNames": [
       "clearLocalProviderDiscoveryCache"
     ]
@@ -248,25 +248,25 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/ai/providers/transport-errors.js",
+    "file": "packages/turn/src/providers/pi/transport-errors.js",
     "names": [
       "resetTransportErrorProbeForTests",
       "recordTransportErrorForTests"
     ],
     "reason": "test isolation control for process-global transport error probe",
-    "citation": "packages/turn/src/ai/providers/transport-errors.js",
+    "citation": "packages/turn/src/providers/pi/transport-errors.js",
     "taggedNames": [
       "resetTransportErrorProbeForTests",
       "recordTransportErrorForTests"
     ]
   },
   {
-    "file": "packages/turn/src/ai/runtime/sessions.js",
+    "file": "packages/turn/src/runtime/session-fanout.js",
     "names": [
       "createSessionRegistry"
     ],
     "reason": "test isolation control for process-global runtime registry fan-out",
-    "citation": "packages/turn/src/ai/runtime/sessions.js",
+    "citation": "packages/turn/src/runtime/session-fanout.js",
     "taggedNames": [
       "createSessionRegistry"
     ]
@@ -323,8 +323,9 @@ export default {
       paths,
       entry: [
         "src/index.js!",
-        "src/host/{index,config,types,sandbox}.ts!",
-        "src/host/srt-embed-runner.mjs!",
+        "src/host/{index,config,types}.ts!",
+        "src/host/sandbox/index.ts!",
+        "src/host/sandbox/srt-embed-runner.mjs!",
         "src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs",
       ],
       project: ["src/**/*.{js,mjs,ts,mts}!", "!src/**/__tests__/**!"],

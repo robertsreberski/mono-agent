@@ -8,8 +8,8 @@ import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../conversation/src/index.ts';
 import { resolveJsonMonoAgentConfig } from '../../../../config/src/index.ts';
-import { generateEngineTurnResponse } from '../../ai/providers/engine-turn.js';
-import { disposeProviderSession } from '../../ai/runtime/sessions.js';
+import { generateEngineTurnResponse } from '../../execution/pi/run.js';
+import { disposeProviderSession } from '../../runtime/session-fanout.js';
 import { createToolContext } from "../../tools/shared/tool-context.js";
 
 // Direct tool construction in this file binds one explicit context.

@@ -7,7 +7,7 @@ import {
   listRuntimeBridges,
   resolveEngineTurnAdapter,
   runtimeCapabilities,
-} from "../../ai/runtime/registry.js";
+} from "../../runtime/bridges.js";
 
 describe("runtime smoke matrix", () => {
   it("loads every registered bridge through the public resolver", async () => {

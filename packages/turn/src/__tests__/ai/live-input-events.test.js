@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { instrumentLiveInputAppliedEvents } from "../../ai/runtime/live-input-events.js";
+import { instrumentLiveInputAppliedEvents } from "../../runtime/live-input-events.js";
 
 function replayableLiveInput(messages, hooks = {}) {
   let generation = 0;

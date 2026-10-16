@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { emptyReplyFinalizationPrompt, runEmptyReplyRetry, shouldRetryEmptyReply } from "../../ai/providers/engine-turn/empty-reply.js";
+import { emptyReplyFinalizationPrompt, runEmptyReplyRetry, shouldRetryEmptyReply } from "../../execution/pi/empty-reply.js";
 
 const eligible = { finalText: "", stopReason: "stop", outputSchema: undefined, runError: undefined, externalAbort: false, maxTurnsHit: false, silent: false, pendingQuestion: false };
 

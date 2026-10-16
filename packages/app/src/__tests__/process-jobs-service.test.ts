@@ -5,7 +5,7 @@ import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore, c
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import { withProjectContext } from "@mono-agent/web";
 // @ts-expect-error Real native engine test seam; only provider transport is scripted.
-import { generateEngineTurnResponse } from "../../../turn/src/ai/providers/engine-turn.js";
+import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
 import { createToolContext } from "@mono-agent/turn/tools";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

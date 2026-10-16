@@ -416,11 +416,15 @@ The package validates each model reference and lazily loads the sole Pi bridge:
 
 | Source area | Responsibility |
 | --- | --- |
-| `src/runtime.js` | Host binding, per-instance tool context, bridge dispatch, and observer flushing |
-| `src/ai/runtime/` | Model-reference parsing, the direct Pi resolver, capabilities, sessions, and fallback routing |
-| `src/ai/providers/` | Pi provider integrations |
-| `src/agent/tools/` | Managed tools, MCP adaptation, output limits, and the injectable sandbox seam |
-| `src/agent/` | Approvals, allowlists, transcript snapshots, and compaction policy helpers |
+| `src/contracts/` | Erased shared model/event/policy/process/session/native-storage contracts |
+| `src/runtime/` | Host binding, routing, model references, capability metadata, live-input policy and session fanout |
+| `src/telemetry/` | Pricing, failure classification, observers, file-change statistics and capability accounting |
+| `src/providers/` | Pi authentication/catalog/wire adaptation and the Codex web-search client |
+| `src/execution/pi/` | Pi turn orchestration, tools/events/results, preparation and compaction coordination |
+| `src/tools/` | File, command, web, delegation and MCP domains plus shared context/path/output mechanics |
+| `src/host/` | Typed projections, metadata-only config, runtime construction and concrete sandbox/provider owners |
+| `src/agent/` | Approval gates, transcript snapshots, compaction policy, result-size guards and the injectable sandbox seam |
+| `src/engine/` | Native execution, session authority, claims, journal storage, recovery and projection |
 
 The detailed lifecycle, provider-session differences, and host boundary are in
 the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/turn/ARCHITECTURE.md).

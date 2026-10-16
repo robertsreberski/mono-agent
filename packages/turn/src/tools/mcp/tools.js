@@ -3,7 +3,7 @@ import { MAX_TOOL_RESULT_BYTES, wrapToolsWithBloatGuard } from "../../agent/tool
 import { connectMcpClient, closeConnectedMcpClient } from "./connection.js";
 import { objectSchema } from "../shared/tool-schema.js";
 import { MCP_TEXT_RESULT_LIMIT, MCP_IMAGE_INLINE_MAX_BYTES, normalizeMcpToolParams, coerceMcpContent, mcpContentWasTruncated, compactRawMcpResult } from "./content.js";
-import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "../../agent/mcp-timeouts.js";
+import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "./timeouts.js";
 import { registerMcpAppForToolResult } from "./apps.js";
 
 function mcpToolName(serverName, toolName, reservedNames) {

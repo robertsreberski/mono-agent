@@ -25,7 +25,7 @@ import type {
   AgentReplyPartFailure,
   AgentToolEnvironment,
 } from "@mono-agent/contracts";
-import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox-contracts.js";
+import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox/contracts.js";
 import type { RuntimeToolLifecycleTerminalState } from "#turn/contracts/events";
 import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeJournalPresence, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeHandoffProposal, RuntimeNativePreparationStorage } from "#turn/contracts/native-storage";
 
@@ -218,7 +218,7 @@ export type RuntimeResult = Readonly<Pick<RuntimeContracts.RuntimeResult, "dispa
 
 /**
  * Typed per-run tool-output limits (mirrors agent-runtime's RuntimeToolLimits,
- * ai/types.js). Omitted fields use the kernel defaults.
+ * contracts/runtime.js). Omitted fields use the turn defaults.
  */
 export type RuntimeToolLimits = Readonly<Policies.RuntimeToolLimits>;
 
@@ -484,7 +484,7 @@ export interface MonoRuntimeApprovalDecision {
 }
 
 
-/** Payload passed to `onCompactionRecorded` after a successful context compaction (see ai/providers/engine-turn.js). */
+/** Payload passed to `onCompactionRecorded` after a successful context compaction (see execution/pi/run.js). */
 export interface MonoRuntimeCompactionRecord {
   readonly task_run_id: string | null;
   readonly trigger: string;

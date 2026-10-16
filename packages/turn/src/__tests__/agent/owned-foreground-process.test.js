@@ -7,7 +7,7 @@ import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { bashToolRun } from "../../tools/commands/bash.js";
 import { runOwnedForegroundProcess } from "../../tools/commands/owned-foreground-process.js";
 import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
-import { buildTurnTools } from "../../ai/providers/engine-turn/turn-runner.js";
+import { buildTurnTools } from "../../execution/pi/turn-runner.js";
 
 const roots = [];
 let ctx = createToolContext();

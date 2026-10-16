@@ -814,7 +814,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
 
   it("enforces the private output cap at real Pi dispatch and tool continuation, without compaction", async () => {
     const input = await fixture();
-    const { generateEngineTurnResponse } = await import(new URL("../../../turn/src/ai/providers/engine-turn.js", import.meta.url).href);
+    const { generateEngineTurnResponse } = await import(new URL("../../../turn/src/execution/pi/run.js", import.meta.url).href);
     const faux = fauxProvider({ provider: "faux", models: [{ id: "e2e-cap", maxTokens: 32000, contextWindow: 32000 }] });
     const models = createModels(); models.setProvider(faux.provider);
     const dispatched: Array<{ modelCap: number; outputCap: number | undefined }> = [];

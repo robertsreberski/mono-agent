@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runHarnessPrompt } from "../../ai/providers/engine-turn/prompt-operation.js";
+import { runHarnessPrompt } from "../../execution/pi/prompt-operation.js";
 
 describe("prompt operation", () => {
   it("omits empty options and always waits for idle", async () => {

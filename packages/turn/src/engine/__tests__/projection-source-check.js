@@ -24,7 +24,7 @@ export async function findContextBuilderBypasses(root) {
     const path = relative(root, file).split("\\").join("/");
     if (["packages/turn/src/engine/session-context.js", "packages/turn/src/engine/request-projection.js"].includes(path)) continue;
     let text = await readFile(file, "utf8");
-    if (["packages/turn/src/engine/index.js", "packages/turn/src/ai/providers/engine-turn/engine-adapter.js"].includes(path)) {
+    if (["packages/turn/src/engine/index.js", "packages/turn/src/execution/pi/driver-adapter.js"].includes(path)) {
       text = text.replace(/export \{ buildHarnessSessionContext \} from [^;]+;/g, "");
     }
     if (/\bbuildHarnessSessionContext\b/.test(text)) bypasses.push(path);

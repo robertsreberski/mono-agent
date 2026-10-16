@@ -17,7 +17,7 @@ vi.mock("#turn/runtime/router", () => ({ createRouterRuntime: kernelMocks.create
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution } from "@mono-agent/turn/host/types";
 import type { RuntimeRunOptions, RuntimeToolOptions } from "../types.js";
-import { monoSandboxImpl } from "../sandbox-impl.js";
+import { monoSandboxImpl } from "../sandbox/implementation.js";
 
 const model = {
   provider: "faux",

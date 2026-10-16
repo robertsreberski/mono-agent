@@ -1,6 +1,6 @@
 // @ts-check
 
-import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "./mcp-timeouts.js";
+import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "../tools/mcp/timeouts.js";
 
 // Pure runtime compaction policy and context-pressure heuristics.
 // The engine owns compaction execution over native session evidence.

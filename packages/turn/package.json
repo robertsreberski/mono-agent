@@ -44,8 +44,8 @@
       "default": "./dist/host/types.js"
     },
     "./host/sandbox": {
-      "types": "./types/host/sandbox.d.ts",
-      "default": "./dist/host/sandbox.js"
+      "types": "./types/host/sandbox/index.d.ts",
+      "default": "./dist/host/sandbox/index.js"
     },
     "./engine": {
       "types": "./types/engine/index.d.ts",
@@ -67,7 +67,7 @@
   "main": "./src/index.js",
   "types": "./types/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.types.json && tsc -p tsconfig.host.build.json && node -e \"require('node:fs').copyFileSync('src/host/srt-embed-runner.mjs','dist/host/srt-embed-runner.mjs')\"",
+    "build": "tsc -p tsconfig.types.json && tsc -p tsconfig.host.build.json && node -e \"require('node:fs').copyFileSync('src/host/sandbox/srt-embed-runner.mjs','dist/host/sandbox/srt-embed-runner.mjs')\"",
     "typecheck": "tsc -p tsconfig.types.json --noEmit && tsc -p tsconfig.host.json --noEmit",
     "prepack": "pnpm run build",
     "test": "vitest run"
@@ -84,7 +84,7 @@
     "THIRD_PARTY_NOTICES.md",
     "dist/host/**/*.js",
     "!dist/host/**/__tests__/**",
-    "dist/host/srt-embed-runner.mjs",
+    "dist/host/sandbox/srt-embed-runner.mjs",
     "ENGINE.md"
   ],
   "engines": {
@@ -116,12 +116,12 @@
       "default": "./src/contracts/runtime.js"
     },
     "#turn/telemetry/cost": {
-      "types": "./types/ai/cost.d.ts",
-      "default": "./src/ai/cost.js"
+      "types": "./types/telemetry/cost.d.ts",
+      "default": "./src/telemetry/cost.js"
     },
     "#turn/contracts/native-storage": {
-      "types": "./types/ai/native-journal-types.d.ts",
-      "default": "./src/ai/native-journal-types.js"
+      "types": "./types/contracts/native-storage.d.ts",
+      "default": "./src/contracts/native-storage.js"
     },
     "#turn/contracts/events": {
       "types": "./types/contracts/events.d.ts",
@@ -148,28 +148,28 @@
       "default": "./src/contracts/policy.js"
     },
     "#turn/runtime/create-runtime": {
-      "types": "./types/runtime.d.ts",
-      "default": "./src/runtime.js"
+      "types": "./types/runtime/create-runtime.d.ts",
+      "default": "./src/runtime/create-runtime.js"
     },
     "#turn/runtime/router": {
-      "types": "./types/ai/runtime/router.d.ts",
-      "default": "./src/ai/runtime/router.js"
+      "types": "./types/runtime/router.d.ts",
+      "default": "./src/runtime/router.js"
     },
     "#turn/runtime/model-reference": {
-      "types": "./types/ai/runtime/model-refs.d.ts",
-      "default": "./src/ai/runtime/model-refs.js"
+      "types": "./types/runtime/model-reference.d.ts",
+      "default": "./src/runtime/model-reference.js"
     },
     "#turn/runtime/bridges": {
-      "types": "./types/ai/runtime/registry.d.ts",
-      "default": "./src/ai/runtime/registry.js"
+      "types": "./types/runtime/bridges.d.ts",
+      "default": "./src/runtime/bridges.js"
     },
     "#turn/providers/pi/catalog": {
-      "types": "./types/ai/pi-interop.d.ts",
-      "default": "./src/ai/pi-interop.js"
+      "types": "./types/providers/pi/catalog.d.ts",
+      "default": "./src/providers/pi/catalog.js"
     },
     "#turn/providers/pi/context-1m": {
-      "types": "./types/ai/context-1m.d.ts",
-      "default": "./src/ai/context-1m.js"
+      "types": "./types/providers/pi/context-1m.d.ts",
+      "default": "./src/providers/pi/context-1m.js"
     }
   }
 }

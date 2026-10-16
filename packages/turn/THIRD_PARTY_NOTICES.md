@@ -7,7 +7,7 @@ https://files.pythonhosted.org/packages/be/5c/d5b006bdb8a67bbd4e983cb7a1c6ac84f7
 
 SHA-256: `c6263e5ac09f7079d5a0c78bfe7baea03aa0dbb64c0c4224eef40c9d0cb691bc`.
 
-The native JS modules under `src/agent/tools/local/` adapt Hound's
+The native JS modules under `src/tools/web/local/` adapt Hound's
 Python algorithms, not its Python runtime, server, or anti-detection transports.
 `extract.js` adapts `trafilatura_extractor.py` title/stage fallback and
 `extractor.py` noise removal, using Defuddle/Readability/Turndown instead of

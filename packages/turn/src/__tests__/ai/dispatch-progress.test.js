@@ -3,12 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { createDispatchProgress, isDispatchProgress, withDispatchProgress } from "../../ai/providers/engine-turn/dispatch-progress.js";
-import * as sessionAdapter from "../../ai/providers/engine-turn/engine-adapter.js";
-import * as sessionLifecycle from "../../ai/providers/engine-turn/session-lifecycle.js";
-import { createRouterRuntime } from "../../ai/runtime/router.js";
-import { activateTurnHarness, startLiveInput } from "../../ai/providers/engine-turn/turn-runner.js";
-import { generateEngineTurnResponse, preparePiNativeDispatch } from "../../ai/providers/engine-turn.js";
+import { createDispatchProgress, isDispatchProgress, withDispatchProgress } from "../../execution/pi/dispatch-progress.js";
+import * as sessionAdapter from "../../execution/pi/driver-adapter.js";
+import * as sessionLifecycle from "../../execution/pi/session-results.js";
+import { createRouterRuntime } from "../../runtime/router.js";
+import { activateTurnHarness, startLiveInput } from "../../execution/pi/turn-runner.js";
+import { generateEngineTurnResponse, preparePiNativeDispatch } from "../../execution/pi/run.js";
 
 const cleanups = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });

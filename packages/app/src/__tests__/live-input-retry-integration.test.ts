@@ -7,7 +7,7 @@ import { createLiveInputMailbox } from "@mono-agent/conversation";
 import type { RuntimeLiveInputMessage } from "@mono-agent/turn/host/types";
 
 const { instrumentLiveInputAppliedEvents } = await import(
-  new URL("../../../turn/src/ai/runtime/live-input-events.js", import.meta.url).href
+  new URL("../../../turn/src/runtime/live-input-events.js", import.meta.url).href
 ) as {
   instrumentLiveInputAppliedEvents(
     input: AsyncIterable<RuntimeLiveInputMessage>,

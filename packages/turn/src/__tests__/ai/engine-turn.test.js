@@ -34,22 +34,22 @@ import {
   generateEngineTurnResponse,
   resolvePiToolExecutionMode,
   splitPromptMessages,
-} from "../../ai/providers/engine-turn.js";
-import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
-import * as engineAdapter from "../../ai/providers/engine-turn/engine-adapter.js";
+} from "../../execution/pi/run.js";
+import { createHarnessAdapter } from "../../execution/pi/driver-adapter.js";
+import * as engineAdapter from "../../execution/pi/driver-adapter.js";
 import { createPiSessionAdapter } from "../../engine/session-adapter.js";
 import { readTurnEvidence } from "../../engine/turn-evidence.js";
 import { ENGINE_CONTEXT } from "@mono-agent/turn/engine";
-import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/engine-turn/result-builder.js";
+import { failureKindForPiError, withSubagentUsage } from "../../execution/pi/result-builder.js";
 import {
   createLiveInputPromptEpoch,
   startLiveInput,
-} from "../../ai/providers/engine-turn/turn-runner.js";
+} from "../../execution/pi/turn-runner.js";
 import { createToolContext } from "../../tools/shared/tool-context.js";
 import { getPiBuiltinTools } from "../../tools/pi-tools.js";
 import { recoverDurableNativeSession, resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
 import { repairInterruptedSession } from "../../engine/interruption.js";
-import { disposeProviderSession, refreshProviderSession, syncProviderSession } from "../../ai/runtime/sessions.js";
+import { disposeProviderSession, refreshProviderSession, syncProviderSession } from "../../runtime/session-fanout.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 

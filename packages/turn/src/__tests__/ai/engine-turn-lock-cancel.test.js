@@ -7,8 +7,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
-import { disposeProviderSession } from "../../ai/runtime/sessions.js";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { disposeProviderSession } from "../../runtime/session-fanout.js";
 
 it("cancels a run waiting behind another process's native writer lock", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-native-lock-cancel-"));

@@ -103,10 +103,10 @@ export type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAt
 
 export type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "./process-jobs.js";
 
-export type { PreparedSandboxCommand, SandboxCommandSpec, SandboxEffectiveState, SandboxEngine, SandboxFallback, SandboxMode, SandboxNetworkMode, SandboxPolicy } from "./sandbox-contracts.js";
+export type { PreparedSandboxCommand, SandboxCommandSpec, SandboxEffectiveState, SandboxEngine, SandboxFallback, SandboxMode, SandboxNetworkMode, SandboxPolicy } from "./sandbox/contracts.js";
 
-export type { DiscoveredLocalModel, LocalProviderDefinition, LocalProviderModelDefinition, LocalProviderRuntimeOptions, ModelEffortLevels, ProviderDefinition } from "./provider-contracts.js";
+export type { DiscoveredLocalModel, LocalProviderDefinition, LocalProviderModelDefinition, LocalProviderRuntimeOptions, ModelEffortLevels, ProviderDefinition } from "./providers/contracts.js";
 
-export type { DiscoveredProvider } from "./provider-contracts.js";
+export type { DiscoveredProvider } from "./providers/contracts.js";
 
 export type { OwnedForegroundProcessRequest, OwnedForegroundProcesses } from "./owned-foreground-processes.js";

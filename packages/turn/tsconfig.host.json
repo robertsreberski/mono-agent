@@ -10,10 +10,10 @@
         "./types/contracts/runtime.d.ts"
       ],
       "#turn/telemetry/cost": [
-        "./types/ai/cost.d.ts"
+        "./types/telemetry/cost.d.ts"
       ],
       "#turn/contracts/native-storage": [
-        "./types/ai/native-journal-types.d.ts"
+        "./types/contracts/native-storage.d.ts"
       ],
       "#turn/contracts/events": [
         "./types/contracts/events.d.ts"
@@ -34,22 +34,22 @@
         "./types/contracts/policy.d.ts"
       ],
       "#turn/runtime/create-runtime": [
-        "./types/runtime.d.ts"
+        "./types/runtime/create-runtime.d.ts"
       ],
       "#turn/runtime/router": [
-        "./types/ai/runtime/router.d.ts"
+        "./types/runtime/router.d.ts"
       ],
       "#turn/runtime/model-reference": [
-        "./types/ai/runtime/model-refs.d.ts"
+        "./types/runtime/model-reference.d.ts"
       ],
       "#turn/runtime/bridges": [
-        "./types/ai/runtime/registry.d.ts"
+        "./types/runtime/bridges.d.ts"
       ],
       "#turn/providers/pi/catalog": [
-        "./types/ai/pi-interop.d.ts"
+        "./types/providers/pi/catalog.d.ts"
       ],
       "#turn/providers/pi/context-1m": [
-        "./types/ai/context-1m.d.ts"
+        "./types/providers/pi/context-1m.d.ts"
       ]
     }
   },

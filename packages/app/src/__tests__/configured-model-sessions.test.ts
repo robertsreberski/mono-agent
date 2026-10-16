@@ -6,7 +6,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeRunOptions, RuntimeModelReference } from "@mono-agent/turn/host/types";
 
 const execute = vi.hoisted(() => vi.fn());
-vi.mock("../../../turn/src/ai/providers/engine-turn.js", async (original) => ({
+vi.mock("../../../turn/src/execution/pi/run.js", async (original) => ({
   ...await original<Record<string, unknown>>(),
   engineTurnAdapter: { id: "session-attribution-test", execute },
 }));

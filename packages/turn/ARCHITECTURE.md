@@ -28,7 +28,7 @@ support without adding a forwarding package. Config remains a separate package.
 
 **Diagram summary:** A host constructs `createRuntime()` or `createRouterRuntime()`.
 The runtime selects the Pi provider bridge while sharing observability,
-failure normalization, and capability-specific agent-kernel services. It returns
+failure normalization, and capability-specific agent/tool services. It returns
 a provider-neutral result for the host to interpret.
 
 ```mermaid
@@ -178,51 +178,49 @@ that validation and all state-machine side effects.
 
 ## Main Subsystems
 
-**Diagram summary:** The public barrels lead to the runtime factory, fallback
-router, Pi resolver, and agent-kernel helpers. The resolver owns one lazy
-provider loader. Shared agent modules own tools, context, approvals,
-compaction, transcript snapshots, and result-size guards; shared AI modules own
-failure, cost, observation, and capability metadata.
+**Diagram summary:** High-level factories, expert AI, direct tools, and agent
+policy are separate public entries. Runtime coordination and telemetry are
+separate from provider integration and Pi execution. Shared leaf contracts feed
+both JavaScript execution and typed host projections without implementation
+back edges. Native session ownership remains in `engine/`.
 
 ```mermaid
 flowchart TB
-  Public["Public API<br/>src/index.js"] --> RuntimeFactory["runtime.js<br/>createRuntime()"]
-  Public --> Router["ai/runtime/router.js<br/>createRouterRuntime()"]
-  Public --> AIExports["ai/index.js<br/>model refs, registry, observers"]
-  Public --> AgentExports["agent/index.js<br/>compaction policy"]
-
-  RuntimeFactory --> AdapterModule["ai/providers/engine-turn.js"]
-  AdapterModule --> Providers["engine-turn/engine-adapter.js"]
-
-  Providers --> Pi["engine-turn.js<br/>pi-models/messages/events"]
-
-  AgentExports --> Tools["agent/tools/*"]
-  Tools --> ToolContext["shared/tool-context.js<br/>per-instance ToolContext<br/>workspace, repoRoot, rg, sandbox, brand"]
-  Tools --> PiBridge["tools/pi-bridge.js<br/>built-ins + MCP adaptation"]
-
-  AgentExports --> Compaction["agent/compaction.js"]
-  AgentExports --> Transcript["agent/transcript.js"]
-  AgentExports --> Approval["agent/approval.js"]
-  AgentExports --> Bloat["agent/tool-bloat.js"]
-
-  AIExports --> Failure["ai/failure.js"]
-  AIExports --> Cost["ai/cost.js"]
-  AIExports --> Observer["ai/observer.js"]
-  AIExports --> Capabilities["ai/runtime/capabilities*.js"]
+  Root["Root: high-level factories"] --> Factory["runtime/create-runtime.js"]
+  Root --> Router["runtime/router.js"]
+  Router --> Factory
+  Factory -. lazy dispatch .-> PiRun["execution/pi/run.js"]
+  AI["ai/index.js: expert entry"] --> PiRun
+  AI --> Providers["providers/pi/* and providers/codex/*"]
+  AI --> Telemetry["telemetry/*"]
+  PiRun --> Execution["execution/pi/* + compaction/*"]
+  Execution --> Engine["engine/*: native execution/storage ownership"]
+  Execution --> Builtins["tools/pi-tools.js"]
+  Execution --> MCP["tools/mcp/*: invocation, connection, content, apps"]
+  ToolsEntry["tools/index.js: direct entry"] --> Tools["tools/files, commands, web, delegation, shared"]
+  Builtins --> Tools
+  Tools --> Context["tools/shared/tool-context.js"]
+  Agent["agent/index.js"] --> Policy["agent/compaction.js + transcript.js"]
+  Host["host/create-runtime.ts"] --> Factory
+  Host --> Sandbox["host/sandbox/*: concrete injected implementation"]
+  Config["host/config.ts"] --> Metadata["providers/pi/catalog.js + context-1m.js"]
+  Contracts["contracts/*: erased shared facts"] -. types .-> Factory
+  Contracts -. types .-> Host
 ```
 
 Key responsibilities by subsystem:
 
-- `runtime.js`: binds host callbacks once, builds a per-instance `ToolContext`
-  (`agent/tools/shared/tool-context.js`) threaded to every bridge call via
+- `runtime/create-runtime.js`: binds host callbacks once, builds a per-instance `ToolContext`
+  (`tools/shared/tool-context.js`) threaded to every bridge call via
   `options.toolContext`, and directly dispatches each validated call to the lazily loaded adapter.
-- `ai/runtime/registry.js`: optional lookup validates before lazily loading the adapter;
+- `runtime/bridges.js`: optional lookup validates before lazily loading the adapter;
   its descriptor-list wrapper preserves lazy capability introspection.
-- `ai/runtime/router.js`: retries across an ordered fallback chain on retryable
+- `runtime/router.js`: retries across an ordered fallback chain on retryable
   provider failures, carrying a transcript-tail resume snapshot forward.
-- `ai/providers/*`: owns provider-specific request shapes, event conversion,
-  structured-output extraction, native subagent wiring, usage, and diagnostics.
-- `agent/tools/*`: implements built-in tools, path/workdir guards, sandbox
+- `providers/*`: owns provider integration, authentication, catalog metadata and wire adaptation.
+- `execution/pi/*`: owns turn orchestration, normalized results/events, structured-output
+  extraction and compaction coordination over native engine evidence.
+- `tools/{files,commands,web,delegation,mcp,shared}`: implements built-in tools, path/workdir guards, sandbox
   policy checks, MCP tool adaptation, Playwright artifact routing, and output
   limits.
 - `agent/sandbox-seam.js`: the injectable `RuntimeSandbox` interface (policy
@@ -238,7 +236,7 @@ Key responsibilities by subsystem:
   events so a fallback or continuation can keep context.
 - `agent/approval.js`: provides host-driven human-in-the-loop tool approval
   gates where the backend supports runtime tool dispatch.
-- `ai/failure.js`: normalizes spawn, usage-limit, provider, cancellation, and
+- `telemetry/failure.js`: normalizes spawn, usage-limit, provider, cancellation, and
   retryability decisions into stable failure kinds.
 
 ## Host Responsibilities
@@ -318,7 +316,7 @@ meaningful transcript growth after a mid-run cut restores eligibility. Runs repo
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
 
-`ai/providers/engine-turn/compaction-summary.js` prepares copies for the attributed harness
+`execution/pi/compaction/compaction-summary.js` prepares copies for the attributed harness
 `compact()`: bounded tool-result heads/tails, confirmed built-in file operations,
 and supplemental summary focus. Its model facade changes only summary context;
 model, options, request context and other model methods are forwarded. Each

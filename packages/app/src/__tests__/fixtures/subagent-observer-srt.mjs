@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm, symlink } from "node:fs/promis
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSandboxPolicy, createSrtSandboxEngine } from "@mono-agent/turn/host/sandbox";
-import { monoSandboxImpl } from "../../../../turn/dist/host/sandbox-impl.js";
+import { monoSandboxImpl } from "../../../../turn/dist/host/sandbox/implementation.js";
 import { createToolContext } from "../../../../turn/src/tools/shared/tool-context.js";
 import { getPiBuiltinTools } from "../../../../turn/src/tools/pi-tools.js";
 import { acquireAgentRootOwnership } from "../../../dist/agent-root-coordinator.js";

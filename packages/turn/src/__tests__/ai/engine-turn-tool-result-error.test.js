@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-const { toolResultErrorOverride } = await import("../../ai/providers/engine-turn/turn-runner.js");
+const { toolResultErrorOverride } = await import("../../execution/pi/turn-runner.js");
 
 describe("toolResultErrorOverride", () => {
   it("leaves genuinely successful results alone", () => {

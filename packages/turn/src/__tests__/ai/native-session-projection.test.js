@@ -6,15 +6,15 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCal
 import { digestTurnInput } from "@mono-agent/turn/engine";
 import { createHandoffBudget } from "../../engine/handoff.js";
 import { assertNativeProjectionBinding } from "../../engine/session-authority.js";
-import { createRuntime } from "../../runtime.js";
-import * as turnRunner from "../../ai/providers/engine-turn/turn-runner.js";
-import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
-import { refreshProviderSession } from "../../ai/runtime/sessions.js";
+import { createRuntime } from "../../runtime/create-runtime.js";
+import * as turnRunner from "../../execution/pi/turn-runner.js";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { refreshProviderSession } from "../../runtime/session-fanout.js";
 import { createPiSessionAdapter } from "../../engine/session-adapter.js";
-import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
-import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../ai/providers/engine-turn/compaction-driver.js";
+import { createHarnessAdapter } from "../../execution/pi/driver-adapter.js";
+import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../execution/pi/compaction/compaction-driver.js";
 import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
-import { discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../ai/providers/engine-turn/session-lifecycle.js";
+import { discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../execution/pi/session-results.js";
 import { JsonlSessionRepo } from "../../engine/session-store.js";
 
 const roots = [];

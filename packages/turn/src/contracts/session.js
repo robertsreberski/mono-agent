@@ -1,6 +1,6 @@
 // Shared structural contract; no host implementation or process runner imports.
 
-/** @typedef {import("../ai/native-journal-types.js").RuntimeNativeJournalAuthority} RuntimeNativeJournalAuthority */
+/** @typedef {import("./native-storage.js").RuntimeNativeJournalAuthority} RuntimeNativeJournalAuthority */
 
 /** Host-owned native turn identity; distinct from terminal-recovery authority. */
 /** Physical canonical-history bucket; null for instance-owned execution. */

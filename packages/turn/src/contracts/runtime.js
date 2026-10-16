@@ -56,7 +56,7 @@
  * @property {AbortSignal} [abortSignal]
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact] Host-owned synchronous artifact writer bound to this run.
  * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment] Host-only environment for Bash, Exec, and nested subagents in this run.
- * @property {import("../agent/sandbox-seam.js").SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
+ * @property {import("../agent/sandbox-seam.js").SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, tools/shared/tool-context.js).
  * @property {import("../agent/sandbox-seam.js").RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
  * @property {import("../agent/sandbox-seam.js").RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
  * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits.
@@ -74,7 +74,7 @@
  * @property {import("./process.js").OwnedForegroundProcesses} [ownedForegroundProcesses] Host-bound awaited command ownership; no child background capability.
  * @property {import("./process.js").ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {{chainDepth: number, maxChainDepth: number, remainingStarts: number, unavailableReason?: string}} [processJobsAvailability] Host-owned request lineage diagnostics, including when the controller is unavailable.
- * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
+ * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
  *   bridge in this package today.
  * @property {string} [systemPromptPrefix] Set by createRouterRuntime alongside diagnosticsSeed; the router also
@@ -242,7 +242,7 @@
  * @property {unknown} [runtimeWarnings]
  * @property {Object} [diagnostics]
  * @property {Object} [capabilitiesUsed]
- * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
+ * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object}>} [failoverHistory] Set by createRouterRuntime (runtime/router.js) on every failed/skipped attempt.
  */
 
 /**
@@ -250,7 +250,7 @@
  * Capability flags a bridge reports for a given model reference. Structural,
  * not sealed: bridges may report extra provider-specific flags (e.g.
  * supports_fast_mode) alongside the common ones from COMMON_CAPABILITIES
- * (ai/runtime/capabilities.js).
+ * (runtime/capabilities.js).
  * @property {string} [kind]
  * @property {string} [runtime]
  * @property {boolean} [streaming]
@@ -313,7 +313,7 @@
 
 /**
  * @typedef {Object} CompactionRecordedPayload
- * Payload passed to a host's `onCompactionRecorded` callback (ai/providers/engine-turn.js)
+ * Payload passed to a host's `onCompactionRecorded` callback (execution/pi/run.js)
  * after a successful context compaction, so the host can persist the row.
  * @property {string|null} task_run_id
  * @property {string} trigger
@@ -339,12 +339,12 @@
  * @property {string} [qaOutputDir]
  * @property {import("../agent/sandbox-seam.js").SandboxPolicy} [sandboxPolicy]
  * @property {import("../agent/sandbox-seam.js").RuntimeSandboxEngine} [sandboxEngine]
- * @property {import("../agent/sandbox-seam.js").RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject host integration's implementation from packages/turn/src/host/sandbox.ts.
+ * @property {import("../agent/sandbox-seam.js").RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject host integration's implementation from packages/turn/src/host/sandbox/index.ts.
  * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
- * @property {(parsed: {provider: string, model: string}) => (import("../ai/cost.js").NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
- * @property {import("../pi-auth.js").PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
+ * @property {(parsed: {provider: string, model: string}) => (import("../telemetry/cost.js").NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
+ * @property {import("../providers/pi/auth.js").PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact]
  * @property {(record: CompactionRecordedPayload) => void} [onCompactionRecorded]
  * @property {(payload: ApprovalRequestPayload) => Promise<ApprovalDecision>} [onToolApprovalRequest]
@@ -392,9 +392,9 @@
  * @property {any} [nativeSessionProjection]
  */
 
-/** @typedef {import("../ai/native-journal-types.js").RuntimeHandoffProducerRequest} NativeHandoffProducerRequest */
-/** @typedef {import("../ai/native-journal-types.js").RuntimeHandoffSummary} NativeHandoffSummary */
-/** @typedef {import("../ai/native-journal-types.js").RuntimeHandoffProducerResult} NativeHandoffProducerResult */
+/** @typedef {import("./native-storage.js").RuntimeHandoffProducerRequest} NativeHandoffProducerRequest */
+/** @typedef {import("./native-storage.js").RuntimeHandoffSummary} NativeHandoffSummary */
+/** @typedef {import("./native-storage.js").RuntimeHandoffProducerResult} NativeHandoffProducerResult */
 
 /**
  * @typedef {Object} NativePreparedDispatch
