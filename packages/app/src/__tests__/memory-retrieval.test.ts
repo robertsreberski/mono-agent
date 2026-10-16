@@ -1,3 +1,4 @@
+import type { Server } from "node:http";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { createConversationHarness } from "@mono-agent/conversation";
 import { createBujoMemoryStore, extractCapturePlanStrict, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import { MemorySearchError } from "@mono-agent/memory/search";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { memoryGuidanceScopes } from "../memory-guidance.js";
 import { createSharedMemoryRecallRuntimeExtension, MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
@@ -1268,4 +1269,45 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     await expect(service.recallOriginalOutcomeForTurn("turn-1"))
       .resolves.toMatchObject({ available: true, query: "squash merges" });
   });
+});
+
+it("releases the memory turn even when endpoint close fails, without repeating close", async () => {
+  const service = new MemoryRetrievalService(fakeStore());
+  const released = vi.spyOn(service, "releaseTurn");
+  let http: Server | undefined;
+  let closeConnections: (() => void) | undefined;
+  const extension = await createSharedMemoryRecallRuntimeExtension(service, {
+    listen: async (server) => {
+      http = server;
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+      closeConnections = server.closeAllConnections.bind(server);
+      server.closeAllConnections = () => { throw new Error("close failed"); };
+    },
+  })({ runId: "close-failure" });
+  try {
+    await expect(extension.cleanup()).rejects.toThrow("close failed");
+    expect(released).toHaveBeenCalledWith("close-failure");
+    await expect(extension.cleanup()).resolves.toBeUndefined();
+    expect(released).toHaveBeenCalledTimes(1);
+  } finally {
+    if (http !== undefined) {
+      http.closeAllConnections = closeConnections!;
+      http.closeAllConnections();
+      await new Promise<void>((resolve) => http!.close(() => resolve()));
+    }
+    released.mockRestore();
+  }
+});
+
+it("releases failed-startup memory even when diagnostics throw", async () => {
+  const service = new MemoryRetrievalService(fakeStore());
+  const released = vi.spyOn(service, "releaseTurn");
+  const extension = await createSharedMemoryRecallRuntimeExtension(service, {
+    listen: async () => { throw new Error("startup failed"); },
+    onUnavailable: () => { throw new Error("logger failed"); },
+  })({ runId: "startup-failure" });
+  expect(extension.runtimeOptions.mcpServers).toEqual({});
+  expect(released).toHaveBeenCalledWith("startup-failure");
+  await expect(extension.cleanup()).resolves.toBeUndefined();
+  released.mockRestore();
 });

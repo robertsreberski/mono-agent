@@ -1,52 +1,50 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash,randomUUID } from "node:crypto";
 import {
-  close as closeFd,
-  constants,
-  fstat,
-  openSync,
-  read as readFd,
-  type Dirent,
-  type Stats,
+close as closeFd,
+constants,
+fstat,
+openSync,
+read as readFd,
+type Dirent,
+type Stats,
 } from "node:fs";
 import {
-  lstat,
-  open as openFile,
-  mkdir,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
+lstat,
+open as openFile,
+mkdir,
+readFile,
+readdir,
+realpath,
+rename,
+rm,
+stat,
+writeFile,
 } from "node:fs/promises";
-import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename,extname,isAbsolute,join,relative,resolve,sep } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
-  CodedError,
-  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
-  type AgentReplyArtifactOpenRequest,
-  type ChannelLogger,
-  type AgentReplyArtifactStream,
-  type AgentReplyAttachmentPart,
-  type AgentReplyPart,
-  type AgentReplyPartFailure,
-  type AgentResponder,
+CodedError,
+DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+type AgentReplyArtifactOpenRequest,
+type ChannelLogger,
+type AgentReplyArtifactStream,
+type AgentReplyAttachmentPart,
+type AgentReplyPart,
+type AgentReplyPartFailure,
+type AgentResponder,
 } from "@mono-agent/contracts";
+import { createLoopbackMcpEndpoint } from "./mcp/loopback-transport.js";
 import type { ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
 
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import {
-  createReplyPartBudget,
-  mergeReplyParts,
-  type ReplyPartBudget,
+createReplyPartBudget,
+mergeReplyParts,
+type ReplyPartBudget,
 } from "./reply-part-budget.js";
 
 const PRIVATE_CAPABILITY_URL = Symbol.for("@mono-agent/private-capability-url");
@@ -613,54 +611,22 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
     owner?.runIds.add(runId);
     runOwners.set(runId, owner);
     await cleanupExpired().catch(() => undefined);
-    const endpointPath = `/mcp/${randomUUID()}`;
-    let port: number | undefined;
-    const http = createServer((incoming, response) => {
-      if (incoming.url !== endpointPath || !isLoopbackHost(incoming.headers.host) || port === undefined) {
-        response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-        response.end("Not found");
-        return;
-      }
-      const boundPort = port;
-      void (async () => {
-        const parsedBody = incoming.method === "POST" ? await readJsonBody(incoming) : undefined;
-        const server = createPublishServer(async (input) => {
-          return await publish({ runId, conversationId: request.conversationId }, input);
-        });
-        const transport = new WebStandardStreamableHTTPServerTransport({
-          enableJsonResponse: true,
-          allowedHosts: [`127.0.0.1:${boundPort}`],
-          enableDnsRebindingProtection: true,
-        });
-        try {
-          await server.connect(transport as never);
-          const webResponse = await transport.handleRequest(nodeRequestAsWebRequest(incoming), { parsedBody });
-          if (webResponse === undefined) throw new Error("Reply artifact MCP transport is unavailable.");
-          await writeWebResponse(response, webResponse);
-        } finally {
-          await server.close().catch(() => undefined);
-        }
-      })().catch(() => {
-        if (!response.headersSent) response.writeHead(500);
-        response.end();
-      });
+    const endpoint = await createLoopbackMcpEndpoint({
+      createServer: () => createPublishServer(async (input) => {
+        return await publish({ runId, conversationId: request.conversationId }, input);
+      }),
+      startingResponse: { status: 404, message: "Not found" },
+      bodyLimitMessage: "Reply artifact MCP request exceeds 1 MB.",
+      unavailableTransportMessage: "Reply artifact MCP transport is unavailable.",
     });
-
-    await listenLoopback(http);
-    port = (http.address() as AddressInfo).port;
-    let closed = false;
-    const serverSpec = privateLoopbackHttpServerSpec(`http://127.0.0.1:${port}${endpointPath}`);
+    const serverSpec = privateLoopbackHttpServerSpec(endpoint.url);
     return {
       runtimeOptions: {
         mcpServers: {
           [REPLY_ARTIFACT_MCP_SERVER_NAME]: serverSpec,
         },
       },
-      cleanup: async () => {
-        if (closed) return;
-        closed = true;
-        await closeHttpServer(http);
-      },
+      cleanup: endpoint.close,
       settleCleanup: async () => {
         if (runOwners.get(runId) === undefined) await discardRun(runId);
       },
@@ -1422,67 +1388,4 @@ async function inventoryTreeBytes(root: string): Promise<number> {
 
 function addStorageBytes(left: number, right: number): number {
   return left > Number.MAX_SAFE_INTEGER - right ? Number.MAX_SAFE_INTEGER : left + right;
-}
-
-function isLoopbackHost(host: string | undefined): boolean {
-  return host !== undefined && /^127\.0\.0\.1:\d+$/u.test(host);
-}
-
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += buffer.byteLength;
-    if (bytes > 1_000_000) throw new Error("Reply artifact MCP request exceeds 1 MB.");
-    chunks.push(buffer);
-  }
-  if (chunks.length === 0) return undefined;
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-}
-
-function nodeRequestAsWebRequest(request: IncomingMessage): Request {
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(request.headers)) {
-    if (Array.isArray(value)) for (const item of value) headers.append(name, item);
-    else if (value !== undefined) headers.set(name, value);
-  }
-  return new Request(`http://${String(request.headers.host)}${request.url ?? "/"}`, {
-    method: request.method ?? "GET",
-    headers,
-  });
-}
-
-async function writeWebResponse(response: import("node:http").ServerResponse, webResponse: Response): Promise<void> {
-  const headers: Record<string, string> = {};
-  webResponse.headers.forEach((value, name) => { headers[name] = value; });
-  response.writeHead(webResponse.status, headers);
-  if (webResponse.body === null) {
-    response.end();
-    return;
-  }
-  const reader = webResponse.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    response.write(Buffer.from(value));
-  }
-  response.end();
-}
-
-async function listenLoopback(server: Server): Promise<void> {
-  await new Promise<void>((resolveListen, reject) => {
-    const onError = (error: Error): void => reject(error);
-    server.once("error", onError);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", onError);
-      resolveListen();
-    });
-  });
-}
-
-async function closeHttpServer(server: Server): Promise<void> {
-  server.closeAllConnections?.();
-  if (!server.listening) return;
-  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 }
