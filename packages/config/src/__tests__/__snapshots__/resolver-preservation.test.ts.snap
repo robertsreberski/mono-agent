@@ -1,0 +1,258 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`resolver extraction preservation > preserves complete shapes and ordered views: defaults 1`] = `
+{
+  "config": "9963e1ff7b2690aefca888adc0ac3383745cf50c9b809c3852932d83a527a166",
+  "redacted": "9963e1ff7b2690aefca888adc0ac3383745cf50c9b809c3852932d83a527a166",
+  "view": "5717786bdf9f9fc3a635726734bb41303c36dad090573cf56e9fe74facb4d5c4",
+}
+`;
+
+exports[`resolver extraction preservation > preserves complete shapes and ordered views: domains 1`] = `
+{
+  "config": "e186f97e1047e2321cb0d966e7c4c74e26073b4d5a8a51a3d61c297ef3638717",
+  "redacted": "6a00155c7c0bd886cd977b80fde102d7233f2bc3b8a98bbfb83209ea905bfa19",
+  "view": "e8562398b545d21d1adcb94f2ce336603582ac2acd19139ecc0849aa0bdff22c",
+}
+`;
+
+exports[`resolver extraction preservation > preserves complete shapes and ordered views: providers 1`] = `
+{
+  "config": "da242ccafb79508919e708a907d77c28572cf4e3ede508ef6a6e51012501a9fa",
+  "redacted": "04d773f23e10a774ddf34bfd187f50240776d6993b4ec0307824c9f2d59e3582",
+  "view": "28b59cf95c7a3b07f7ad0ef0a181c934a85861646d57d08401576ca7ebfccd96",
+}
+`;
+
+exports[`resolver extraction preservation > preserves complete shapes and ordered views: sparse 1`] = `
+{
+  "config": "6476d0f099cb53a2e576d78420991cecf30e3510f6b441041e3bffd2e5b5489f",
+  "redacted": "e226ea3b916353841affdacb68f93031e7faaee53f4a7fea765b18e0ff771a58",
+  "view": "524e210120b96e7d221d512749ad586b8d6d485fd06b795ee9db0f1db8c808ea",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: artifacts before providers 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "artifacts.replyFiles.maxFileBytes",
+  },
+  "message": "artifacts.replyFiles.maxFileBytes must be a positive safe integer in bytes (1–20971520).",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: context1M before coverage 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "runtime.model.context1M",
+  },
+  "message": "runtime.model.context1M requires a boolean on an eligible built-in GPT model, not a configured provider shadow.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: coverage after domains 1`] = `
+{
+  "code": "invalid_model_reference",
+  "details": {
+    "code": "invalid_model_reference",
+    "path": "runtime.model",
+    "providerId": "fictional",
+    "reason": "add "providers": { "fictional": { "type": "openai_compat", "baseUrl": "https://..." } } to mono-agent.config.json",
+  },
+  "message": "Provider "fictional" used by runtime.model is not available; add "providers": { "fictional": { "type": "openai_compat", "baseUrl": "https://..." } } to mono-agent.config.json.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: cwd before model 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+  },
+  "message": "cwd must be a non-empty path.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: effort before subagents 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "runtime.effort",
+    "reason": "fictional",
+  },
+  "message": "runtime.effort must be one of: none, minimal, low, medium, high, xhigh, max, ultra.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: fallback before retry 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "runtime.fallbacks",
+  },
+  "message": "runtime.fallbacks must be an array.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: identity before memory 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "context.identityPath",
+  },
+  "message": "context.identityPath is required.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: memory before tools 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "memory",
+  },
+  "message": "memory must be an object.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: model before identity 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "runtime.model",
+  },
+  "message": "runtime.model is required.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: providers before effort 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "providers",
+  },
+  "message": "providers must be an object.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: retired before cwd 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "runtime.permissionMode",
+    "paths": [
+      "runtime.permissionMode",
+    ],
+  },
+  "message": "\`runtime.permissionMode\` was removed because the Pi runtime never enforced it. Delete the key; configure \`sandbox\` for enforced tool isolation.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: retired ordered diagnostics 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "runtime.permissionMode",
+    "paths": [
+      "runtime.permissionMode",
+      "observability",
+    ],
+  },
+  "message": "\`runtime.permissionMode\` was removed because the Pi runtime never enforced it. Delete the key; configure \`sandbox\` for enforced tool isolation. \`observability.exporters\` was removed with first-party Phoenix/OTLP export. Remove the active exporter block before upgrading. Local run artifacts are unchanged and mono-agent does not select a replacement. If a final export is required, perform it before upgrading with the known-good version you already operate.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: retry before duplicate 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "runtime.retry",
+  },
+  "message": "runtime.retry must be an object.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: sandbox before artifacts 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "sandbox",
+  },
+  "message": "sandbox must be an object.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: subagents before timeout 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "subagents",
+  },
+  "message": "subagents must be an object.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: tool list before switch root 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "tools.allowedTools",
+  },
+  "message": "tools.allowedTools must be an array of strings.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: tools before sandbox 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "tools.computerUse",
+  },
+  "message": "tools.computerUse must be an object. See docs/tools/computer-use.md#restricting-cua-driver.",
+  "name": "MonoAgentConfigError",
+}
+`;
+
+exports[`resolver extraction preservation > preserves first error: web before filesystem 1`] = `
+{
+  "code": "invalid_json",
+  "details": {
+    "code": "invalid_json",
+    "path": "tools.web.search.endpoint",
+  },
+  "message": "tools.web.search.endpoint must be an unauthenticated loopback HTTP URL.",
+  "name": "MonoAgentConfigError",
+}
+`;

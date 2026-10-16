@@ -1,7 +1,6 @@
 export {
   MAX_AGENT_NAME_LENGTH,
   redactMonoAgentConfig,
-  resolveConfiguredProviders,
   resolveJsonMonoAgentConfig,
 } from "./config.js";
 
@@ -45,3 +44,5 @@ export { modelReferenceFromConfigJson } from "./json-types.js";
 
 export { assertNoRetiredMonoAgentConfig } from "./retired-fields.js";
 export { MonoAgentConfigError } from "./errors.js";
+
+export { resolveConfiguredProviders } from "./parse/providers.js";

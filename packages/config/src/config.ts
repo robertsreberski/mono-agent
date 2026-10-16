@@ -2,13 +2,11 @@ import { homedir } from "node:os";
 
 import { resolve } from "node:path";
 
-import { supportsPiContext1M } from "@mono-agent/turn/host/config";
 
-import { isAutodiscoverableProviderId,isPiBuiltinProvider,isPrivateBaseUrl,localProviderDefinitionFor,MODEL_REFERENCE_ECHO_MAX_BYTES,MODEL_REFERENCE_REASON_MAX_BYTES,modelReferenceKey,parseMonoRuntimeModelReference,RuntimeAdapterError,sanitizeModelReferenceText,validateLocalProviderDefinition,validateProviderDefinition } from "@mono-agent/turn/host/config";
+import { isPrivateBaseUrl,localProviderDefinitionFor,modelReferenceKey,parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
-import { PI_TRANSPORTS } from "@mono-agent/turn/host/types";
 
-import type { LocalProviderDefinition,LocalProviderModelDefinition,PiTransport,ProviderDefinition,RuntimeModelReference } from "@mono-agent/turn/host/types";
+import type { LocalProviderDefinition,ProviderDefinition,RuntimeModelReference } from "@mono-agent/turn/host/types";
 
 import { createSandboxPolicy,SANDBOX_FALLBACKS,SANDBOX_MODES,SANDBOX_NETWORK_MODES,SandboxPolicyError } from "@mono-agent/turn/host/sandbox";
 
@@ -22,7 +20,6 @@ readCsv,
 readInteger,
 redactedSecret,
 } from "@mono-agent/contracts";
-
 
 import {
 ALLOW_ALL_TOOLS,
@@ -39,13 +36,22 @@ renamedToolName,
 
 import type { MonoAgentConfigJson } from "./json-types.js";
 
-import type { EffortLevel,MemoryBackend,MemoryConsolidationConfig,MemoryEmbeddingsCircuitBreakerConfig,MemoryEmbeddingsConfig,MemoryEmbeddingsInstructions,MemoryEmbeddingsProvider,MemoryLlmConfig,MemoryLlmProvider,MemoryMode,MemoryWriteMode,MonoAgentConfig,MonoAgentInlineSubagentsConfig,MonoAgentSubagentConfig,MonoAgentSubagentModelChoice,MonoAgentSubagentsConfig,PiNativeProviderConfig,RedactedMonoAgentConfig,ResolvedProviders,RuntimeFallbackConfig,RuntimeRetryConfig,SessionMode,SessionRollover,SkillDisclosureMode,WebFetchRenderMode,WebSearchBackend } from "./types.js";
+import type { EffortLevel,MemoryBackend,MemoryConsolidationConfig,MemoryEmbeddingsCircuitBreakerConfig,MemoryEmbeddingsConfig,MemoryEmbeddingsInstructions,MemoryEmbeddingsProvider,MemoryLlmConfig,MemoryLlmProvider,MemoryMode,MemoryWriteMode,MonoAgentConfig,MonoAgentInlineSubagentsConfig,MonoAgentSubagentConfig,MonoAgentSubagentModelChoice,MonoAgentSubagentsConfig,RedactedMonoAgentConfig,SkillDisclosureMode,WebFetchRenderMode,WebSearchBackend } from "./types.js";
 
 import { invalidJson,MonoAgentConfigError } from "./errors.js";
 
 import { assertNoRetiredMonoAgentConfig } from "./retired-fields.js";
 
-import { isRecord } from "./parse/scalars.js";
+
+import { assertConfiguredProviderCoverage,collectContext1MDeclarations,DEFAULT_PI_AUTH_PATH,readConfiguredProviders,readPiNativeProviderConfig,resolveConfiguredProviders,subagentProviderRoutes } from "./parse/providers.js";
+
+import { assertJsonScalarFields,jsonBoolean,jsonChoice,jsonContainer,jsonInteger,jsonOptionalBoolean,jsonOptionalInteger,jsonRecord,jsonString,jsonStringArray,requireJsonString } from "./parse/scalars.js";
+
+import { modelReferenceEcho,modelReferenceReason,parseModel,readModelSelection } from "./parse/model-reference.js";
+
+import { assertUniqueFallbackRoutes,readEffort,readFallbacks,readMaxTurns,readRetryConfig,readRuntimeCompactionConfig,readSessionConfig } from "./parse/runtime.js";
+
+import { normalizeCwd,readOptionalPath,readPath,readUserPath } from "./parse/paths.js";
 
 const PEER_NAME = /^[a-z][a-z0-9-]{0,39}$/u;
 
@@ -89,8 +95,6 @@ interface ResolveJsonMonoAgentConfigInput {
   readonly cwd: string;
 }
 
-const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
-
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 
 const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
@@ -123,34 +127,7 @@ const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
 
-const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
-
 export const MAX_AGENT_NAME_LENGTH = 80;
-
-/**
- * JSON scalar coercion for direct `mono-agent.config.json` parsing.
- *
- * The shared `@mono-agent/contracts` coercers operate on strings, so a
- * JSON scalar is rendered to its string form before validation. Numbers and
- * booleans stringify exactly the way the previous JSON-to-string projection
- * rendered them, which keeps every range, enum and choice diagnostic identical
- * apart from naming the JSON path instead of a variable nobody set. Objects and
- * arrays are never scalars: they fail closed with the path the operator edits.
- */
-function jsonString(value: unknown, path: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  throw new MonoAgentConfigError("invalid_json", `${path} must be a string.`, { path });
-}
-
-function requireJsonString(value: unknown, path: string): string {
-  const normalized = normalizeOptionalString(jsonString(value, path));
-  if (normalized === undefined) {
-    throw new MonoAgentConfigError("invalid_json", `${path} is required.`, { path });
-  }
-  return normalized;
-}
 
 function replyFileByteLimit(value: unknown, path: string, fallback: number, maximum: number): number {
   if (value === undefined) return fallback;
@@ -158,114 +135,6 @@ function replyFileByteLimit(value: unknown, path: string, fallback: number, maxi
     throw new MonoAgentConfigError("invalid_json", `${path} must be a positive safe integer in bytes (1–${maximum}).`, { path });
   }
   return value;
-}
-
-function jsonInteger(
-  value: unknown,
-  path: string,
-  fallback: number,
-  bounds?: { readonly min: number; readonly max: number },
-): number {
-  return readInteger(jsonString(value, path), path, fallback, invalidJson, bounds);
-}
-
-function jsonOptionalInteger(
-  value: unknown,
-  path: string,
-  bounds: { readonly min: number; readonly max: number },
-): number | undefined {
-  if (value === undefined) return undefined;
-  return readInteger(jsonString(value, path), path, bounds.min, invalidJson, bounds);
-}
-
-function jsonOptionalNumber(
-  value: unknown,
-  path: string,
-  bounds: { readonly min: number; readonly max: number },
-): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || value < bounds.min || value > bounds.max) {
-      throw new MonoAgentConfigError(
-        "invalid_json",
-        `${path} must be a number between ${bounds.min} and ${bounds.max}.`,
-        { path, reason: "out_of_range" },
-      );
-    }
-    return value;
-  }
-  const normalized = normalizeOptionalString(jsonString(value, path));
-  if (normalized === undefined) return undefined;
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed) || parsed < bounds.min || parsed > bounds.max) {
-    throw new MonoAgentConfigError(
-      "invalid_json",
-      `${path} must be a number between ${bounds.min} and ${bounds.max}.`,
-      { path, reason: "out_of_range" },
-    );
-  }
-  return parsed;
-}
-
-function jsonBoolean(value: unknown, path: string, fallback: boolean): boolean {
-  return readBoolean(jsonString(value, path), path, fallback, invalidJson);
-}
-
-function jsonOptionalBoolean(value: unknown, path: string): boolean | undefined {
-  if (value === undefined) return undefined;
-  return readBoolean(jsonString(value, path), path, false, invalidJson);
-}
-
-function jsonChoice<T extends string>(
-  value: unknown,
-  path: string,
-  choices: readonly T[],
-  fallback: T,
-): T {
-  return readChoice(jsonString(value, path), path, choices, fallback, invalidJson);
-}
-
-/**
- * Read a JSON string array. Arrays are kept element-wise so values containing
- * commas survive intact; a lone comma-separated string is still split for
- * tolerance. Anything else fails closed with the JSON path.
- */
-function jsonStringArray(value: unknown, path: string): string[] {
-  if (value === undefined) return [];
-  if (typeof value === "string") return readCsv(value);
-  if (Array.isArray(value)) {
-    return value.map((entry) => {
-      if (typeof entry !== "string") {
-        throw new MonoAgentConfigError("invalid_json", `${path} must be an array of strings.`, { path });
-      }
-      return entry;
-    }).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
-  }
-  throw new MonoAgentConfigError("invalid_json", `${path} must be an array of strings.`, { path });
-}
-
-/**
- * Narrow an optional JSON block to a record. Missing stays missing; anything
- * present but not an object fails closed with the block path.
- */
-function jsonRecord(value: unknown, path: string): Record<string, unknown> | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  throw new MonoAgentConfigError("invalid_json", `${path} must be an object.`, { path });
-}
-
-/**
- * Tolerant container access for the pure parent blocks (`runtime`, `context`,
- * `tools`, ...). A malformed parent behaves as absent so the required-field
- * and default logic below still produces the authoritative diagnostic.
- */
-function jsonContainer(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return undefined;
 }
 
 export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInput): MonoAgentConfig {
@@ -514,109 +383,6 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
   return config;
 }
 
-/**
- * Normalize loaded/programmatic provider config into one deterministic view.
- * Loaded configs carry `entries`; the `local` fallback preserves compatibility
- * for embedders that still construct the pre-map shape by hand.
- */
-export function resolveConfiguredProviders(
-  config: Pick<MonoAgentConfig, "providers">,
-): ResolvedProviders {
-  const rawEntries = config.providers?.entries ?? config.providers?.local ?? [];
-  const byId = new Map<string, ProviderDefinition>();
-  for (const rawEntry of rawEntries) {
-    const entry = validateProviderDefinition(rawEntry);
-    if (byId.has(entry.id)) {
-      throw new MonoAgentConfigError(
-        "invalid_json",
-        `Provider id "${entry.id}" is configured more than once. Remove the duplicate definition.`,
-        { providerId: entry.id },
-      );
-    }
-    byId.set(entry.id, entry);
-  }
-  const entries = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
-  return {
-    entries,
-    byId: new Map(entries.map((entry) => [entry.id, entry])),
-    piAuthPath: config.providers?.piAuthPath ?? DEFAULT_PI_AUTH_PATH,
-    ...(config.providers?.piNative === undefined ? {} : { piNative: config.providers.piNative }),
-  };
-}
-
-/** One authored model reference to validate, with the config path that owns it. */
-interface ProviderCoverageRoute {
-  readonly model: RuntimeModelReference;
-  /** Config path used verbatim in the failure message, e.g. `runtime.model`. */
-  readonly path: string;
-}
-
-/**
- * Every authored `subagents.definitions[].model` is a real route: the harness
- * builds a runtime for it exactly like a fallback, so it must pass the same
- * provider gate. Left unchecked, a typo'd provider id loaded fine and only blew
- * up mid-turn, inside a subagent, where the failure is hardest to attribute.
- */
-function subagentProviderRoutes(
-  subagents: MonoAgentConfig["subagents"] | undefined,
-): readonly ProviderCoverageRoute[] {
-  return [...(subagents?.models ?? []).map((choice, index) => ({
-    model: choice.model, path: `subagents.models[${index}].model`,
-  })), ...(subagents?.definitions ?? []).flatMap((definition, index) =>
-    definition.model === undefined
-      ? []
-      : [{ model: definition.model, path: `subagents.definitions[${index}].model` }],
-  )];
-}
-
-/**
- * Fail early when a route names neither Pi's builtin catalog, an explicitly
- * configured provider, nor one of the two zero-config local discovery ids.
- * `additionalRoutes` carries model references authored outside
- * `runtime.model`/`runtime.fallbacks[]` (today: subagent profiles).
- */
-function assertConfiguredProviderCoverage(
-  model: RuntimeModelReference,
-  fallbacks: readonly RuntimeFallbackConfig[] | undefined,
-  providers: ResolvedProviders,
-  additionalRoutes: readonly ProviderCoverageRoute[] = [],
-): void {
-  const routes: readonly ProviderCoverageRoute[] = [
-    { model, path: "runtime.model" },
-    ...(fallbacks ?? []).map((fallback, index) => ({
-      model: fallback.model,
-      path: `runtime.fallbacks[${index}].model`,
-    })),
-    ...additionalRoutes,
-  ];
-  for (const route of routes) {
-    const providerId = route.model.provider;
-    const configured = providers.byId.get(providerId);
-    // `enabled: false` is deliberately NOT a load error: for a local provider it
-    // is a diagnosable state that `doctor` reports as waiting, and turning that
-    // into a crash would break a working contract. What it must do is stop the
-    // provider being advertised as selectable, which the catalog now enforces.
-    if (isPiBuiltinProvider(providerId) || isAutodiscoverableProviderId(providerId)) {
-      continue;
-    }
-    // A provider Pi does not know needs an endpoint to be reachable. Accepting a
-    // bare `{}` here produced a config that validated, advertised an empty
-    // catalog, and only failed at turn time with `pi model not found` -- and the
-    // old repair text recommended exactly that bare entry.
-    if (configured?.baseUrl !== undefined && configured.baseUrl.length > 0) {
-      continue;
-    }
-    const repair = configured === undefined
-      ? `add \"providers\": { \"${providerId}\": { \"type\": \"openai_compat\", \"baseUrl\": \"https://...\" } } to mono-agent.config.json`
-      : `give providers.${providerId} a \"baseUrl\" (and \"type\"), because Pi has no built-in catalog for it`;
-    throw new MonoAgentConfigError(
-      "invalid_model_reference",
-      `Provider "${providerId}" used by ${route.path} is not available; ${repair}.`,
-      { providerId, path: route.path, reason: repair },
-    );
-  }
-}
-
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
   assertNoRetiredMonoAgentConfig(config);
   const { web: configuredWeb, ...toolsWithoutWeb } = config.tools;
@@ -687,129 +453,6 @@ function redactApiKeyBlock<T extends { readonly apiKey?: string }>(
     ...rest,
     ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
   };
-}
-
-/**
- * The concrete repair for a rejected model reference (`codex:x` -> `openai-codex:x`, a tier
- * alias, the `<provider>:<model>` grammar) is built by the kernel parser and nested by the
- * runtime adapter in `details.reason`. Config used to keep only the adapter's generic outer
- * sentence, which is the one string every operator surface prints — so the repair the code
- * already knew was thrown away before anyone saw it. Unwrap one layer so the message carries
- * the innermost, actionable text.
- */
-function modelReferenceReason(error: unknown): string {
-  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
-    ? error.details.reason
-    : error instanceof Error
-      ? error.message
-      : String(error);
-  // The adapter already bounds its own reason; re-bounding is a no-op there and is what
-  // covers the branches above it, where the text is an arbitrary thrown value.
-  return sanitizeModelReferenceText(reason, MODEL_REFERENCE_REASON_MAX_BYTES);
-}
-
-/**
- * Bound and neutralize the operator's own value before quoting it back at them. Naming the
- * rejected value is the half of the message that tells an operator *which* field to open, so
- * it stays -- but it is untrusted, unbounded text on its way into durable operator-shared
- * output, and it is treated as such.
- */
-function modelReferenceEcho(raw: string): string {
-  return sanitizeModelReferenceText(raw, MODEL_REFERENCE_ECHO_MAX_BYTES);
-}
-
-function parseModel(raw: string, path: string): MonoAgentConfig["runtime"]["model"] {
-  try {
-    return parseMonoRuntimeModelReference(raw);
-  } catch (error) {
-    const reason = modelReferenceReason(error);
-    throw new MonoAgentConfigError(
-      "invalid_model_reference",
-      `${path} \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
-      { path, reason },
-    );
-  }
-}
-
-function readFallbacks(value: unknown): readonly RuntimeFallbackConfig[] {
-  if (value === undefined) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_json", "runtime.fallbacks must be an array.", {
-      path: "runtime.fallbacks",
-    });
-  }
-  const parsed = value;
-  return parsed.map((entry, index) => {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new MonoAgentConfigError(
-        "invalid_json",
-        `runtime.fallbacks entry ${index + 1} must be an object with a model.`,
-        { path: "runtime.fallbacks", index },
-      );
-    }
-    const record = entry as Record<string, unknown>;
-    const unknownKeys = Object.keys(record).filter(
-      (key) => key !== "model" && key !== "effort" && key !== "attempts" && key !== "context1M",
-    );
-    if (unknownKeys.length > 0) {
-      throw new MonoAgentConfigError(
-        "invalid_json",
-        `runtime.fallbacks entry ${index + 1} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.sort().join(", ")}. Only model, effort, attempts, and context1M are supported.`,
-        { path: "runtime.fallbacks", index, unknownKeys: unknownKeys.sort() },
-      );
-    }
-    if (typeof record.model !== "string" || record.model.trim().length === 0) {
-      throw new MonoAgentConfigError(
-        "invalid_model_reference",
-        `runtime.fallbacks entry ${index + 1} must contain a non-empty model reference.`,
-        { path: "runtime.fallbacks", index },
-      );
-    }
-    const model = parseFallbackModel(record.model, index);
-    const attempts = readFallbackAttempts(record.attempts, index);
-    if (record.effort === undefined) {
-      return attempts === undefined ? { model } : { model, attempts };
-    }
-    if (typeof record.effort !== "string") {
-      throw new MonoAgentConfigError(
-        "invalid_json",
-        `runtime.fallbacks entry ${index + 1} effort must be one of: ${EFFORT_LEVELS.join(", ")}.`,
-        { path: "runtime.fallbacks", index },
-      );
-    }
-    const normalizedEffort = normalizeOptionalString(record.effort);
-    if (normalizedEffort === undefined) {
-      throw new MonoAgentConfigError(
-        "invalid_json",
-        `runtime.fallbacks entry ${index + 1} effort must be one of: ${EFFORT_LEVELS.join(", ")}.`,
-        { path: "runtime.fallbacks", index },
-      );
-    }
-    const effort = readChoice<EffortLevel>(
-      normalizedEffort,
-      `runtime.fallbacks[${index}].effort`,
-      EFFORT_LEVELS,
-      "medium",
-      invalidJson,
-    );
-    return attempts === undefined ? { model, effort } : { model, effort, attempts };
-  });
-}
-
-function readFallbackAttempts(value: unknown, index: number): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 10) {
-    throw new MonoAgentConfigError(
-      "invalid_json",
-      `runtime.fallbacks entry ${index + 1} attempts must be an integer between 1 and 10.`,
-      { path: "runtime.fallbacks", index },
-    );
-  }
-  return value;
 }
 
 const SUBAGENT_NAME_RE = /^[a-z0-9][a-z0-9-]*$/u;
@@ -1049,74 +692,6 @@ function invalidSubagents(detail: string): MonoAgentConfigError {
   });
 }
 
-function readRetryConfig(runtime: Record<string, unknown> | undefined): RuntimeRetryConfig {
-  const retry = jsonRecord(runtime?.retry, "runtime.retry") ?? {};
-  return {
-    primaryAttempts: readRetryInteger(retry.primaryAttempts, "runtime.retry.primaryAttempts", 2, 1, 10),
-    backoffMs: readRetryInteger(retry.backoffMs, "runtime.retry.backoffMs", 1_000, 0, 60_000),
-    maxBackoffMs: readRetryInteger(retry.maxBackoffMs, "runtime.retry.maxBackoffMs", 15_000, 0, 300_000),
-  };
-}
-
-function readRetryInteger(
-  value: unknown,
-  path: string,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  const normalized = normalizeOptionalString(jsonString(value, path));
-  if (normalized === undefined) {
-    return fallback;
-  }
-  const parsed = Number(normalized);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw new MonoAgentConfigError(
-      "invalid_json",
-      `${path} must be an integer between ${min} and ${max}.`,
-      { path },
-    );
-  }
-  return parsed;
-}
-
-function parseFallbackModel(raw: string, index: number): MonoAgentConfig["runtime"]["model"] {
-  const path = `runtime.fallbacks[${index}].model`;
-  try {
-    return parseMonoRuntimeModelReference(raw.trim());
-  } catch (error) {
-    const reason = modelReferenceReason(error);
-    throw new MonoAgentConfigError(
-      "invalid_model_reference",
-      `${path} \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
-      { path, index, reason },
-    );
-  }
-}
-
-function assertUniqueFallbackRoutes(
-  primary: MonoAgentConfig["runtime"]["model"],
-  canonical: readonly RuntimeFallbackConfig[],
-): void {
-  const seen = new Map<string, string>([[modelReferenceKey(primary), "runtime.model"]]);
-  const routes = canonical.map((entry, index) => ({ model: entry.model, path: `runtime.fallbacks[${index}]` }));
-  for (const route of routes) {
-    const key = modelReferenceKey(route.model);
-    const first = seen.get(key);
-    if (first !== undefined) {
-      throw new MonoAgentConfigError(
-        "invalid_json",
-        `Duplicate runtime route \`${key}\` at ${route.path}; it is already selected at ${first}.`,
-        { route: key, path: route.path, duplicateOf: first },
-      );
-    }
-    seen.set(key, route.path);
-  }
-}
-
 function readAgentName(raw: string | undefined): string | undefined {
   if (raw === undefined) {
     return undefined;
@@ -1274,59 +849,6 @@ function readWebBrowserCommand(raw: string | undefined): string {
   return value;
 }
 
-function readMaxTurns(value: unknown): number | undefined {
-  const maxTurns = jsonInteger(value, "runtime.maxTurns", 0, { min: 0, max: 100 });
-  return maxTurns === 0 ? undefined : maxTurns;
-}
-
-function readRuntimeCompactionConfig(
-  value: unknown,
-): NonNullable<MonoAgentConfig["runtime"]["compaction"]> {
-  const compaction = jsonRecord(value, "runtime.compaction") ?? {};
-  const triggerRatio = jsonOptionalNumber(
-    compaction.triggerRatio,
-    "runtime.compaction.triggerRatio",
-    { min: 0.2, max: 0.95 },
-  );
-  const keepRecentTokens = jsonOptionalInteger(
-    compaction.keepRecentTokens,
-    "runtime.compaction.keepRecentTokens",
-    { min: 4_000, max: 200_000 },
-  );
-  const summaryMaxTokens = jsonOptionalInteger(
-    compaction.summaryMaxTokens,
-    "runtime.compaction.summaryMaxTokens",
-    { min: 1_000, max: 64_000 },
-  );
-  const minSavingsTokens = jsonOptionalInteger(
-    compaction.minSavingsTokens,
-    "runtime.compaction.minSavingsTokens",
-    { min: 0, max: 500_000 },
-  );
-  const contextWindowOverride = jsonOptionalInteger(
-    compaction.contextWindowOverride,
-    "runtime.compaction.contextWindowOverride",
-    { min: 32_000, max: 10_000_000 },
-  );
-  return {
-    enabled: jsonBoolean(
-      compaction.enabled,
-      "runtime.compaction.enabled",
-      true,
-    ),
-    ...(triggerRatio === undefined ? {} : { triggerRatio }),
-    ...(keepRecentTokens === undefined ? {} : { keepRecentTokens }),
-    ...(summaryMaxTokens === undefined ? {} : { summaryMaxTokens }),
-    ...(minSavingsTokens === undefined ? {} : { minSavingsTokens }),
-    fixedOverheadEnabled: jsonBoolean(
-      compaction.fixedOverheadEnabled,
-      "runtime.compaction.fixedOverheadEnabled",
-      true,
-    ),
-    ...(contextWindowOverride === undefined ? {} : { contextWindowOverride }),
-  };
-}
-
 function readArtifactRetentionConfig(value: unknown): MonoAgentConfig["artifacts"]["retention"] {
   const retention = jsonRecord(value, "artifacts.retention") ?? {};
   return {
@@ -1464,47 +986,6 @@ function sandboxPolicyErrorPath(error: SandboxPolicyError): string {
   return "sandbox.mode";
 }
 
-function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig["runtime"]["session"] {
-  const session = jsonRecord(value, "runtime.session") ?? {};
-  const root = readOptionalPath(jsonString(session.root, "runtime.session.root"), cwd);
-  const mode = jsonChoice<SessionMode>(session.mode, "runtime.session.mode", [
-    "continuous",
-    "per-message",
-  ], "continuous");
-  const idleTimeoutMs = jsonInteger(
-    session.idleTimeoutMs,
-    "runtime.session.idleTimeoutMs",
-    DEFAULT_SESSION_IDLE_TIMEOUT_MS,
-    { min: 1_000, max: 86_400_000 },
-  );
-  const rollover = jsonChoice<SessionRollover>(session.rollover, "runtime.session.rollover", [
-    "none",
-    "daily",
-  ], "none");
-  const rolloverTimezone = normalizeOptionalString(jsonString(session.rolloverTimezone, "runtime.session.rolloverTimezone"));
-  // Unset stays undefined so hosts can keep their existing display policy;
-  // explicit false is preserved for operators who want to suppress notices.
-  const rolloverNotice = jsonOptionalBoolean(session.rolloverNotice, "runtime.session.rolloverNotice");
-  // Unset stays undefined so the harness default (false, no behavior change) is
-  // preserved byte-for-byte; only parse the boolean when an operator opts in.
-  const isolateProactive = jsonOptionalBoolean(session.isolateProactive, "runtime.session.isolateProactive");
-  const switchJson = jsonRecord(session.modelSwitch, "runtime.session.modelSwitch");
-  if (switchJson) assertJsonScalarFields(switchJson, "runtime.session.modelSwitch", { enabled: "boolean" });
-  const enabled = switchJson === undefined ? undefined : jsonOptionalBoolean(switchJson.enabled, "runtime.session.modelSwitch.enabled");
-  if (enabled === true && mode !== "continuous") throw new MonoAgentConfigError(
-    "invalid_json", "Model switching requires continuous sessions.", { path: "runtime.session.mode" });
-  return {
-    mode,
-    idleTimeoutMs,
-    ...(root === undefined ? {} : { root }),
-    ...(enabled === true ? { modelSwitch: { enabled } } : {}),
-    rollover,
-    ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
-    ...(rolloverNotice === undefined ? {} : { rolloverNotice }),
-    ...(isolateProactive === undefined ? {} : { isolateProactive }),
-  };
-}
-
 /**
  * A JSON memory field counts as configured when it is present and non-blank,
  * mirroring how blank strings used to fall through to defaults.
@@ -1512,15 +993,6 @@ function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig["runtim
 function hasMemoryJsonField(value: unknown): boolean {
   if (typeof value === "string") return value.trim().length > 0;
   return value !== undefined;
-}
-
-function assertJsonScalarFields(record: Record<string, unknown>, path: string, fields: Readonly<Record<string, "string" | "number" | "boolean">>): void {
-  for (const [field, kind] of Object.entries(fields)) {
-    if (record[field] !== undefined && typeof record[field] !== kind) {
-      const fieldPath = `${path}.${field}`;
-      throw new MonoAgentConfigError("invalid_json", `${fieldPath} must be a ${kind}.`, { path: fieldPath });
-    }
-  }
 }
 
 function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"] | undefined {
@@ -2015,213 +1487,6 @@ function readTraceabilityConfig(
   };
 }
 
-/** Read an optional integer field from a parsed object, bounded and integer-checked. */
-function readObjectInteger(
-  object: Record<string, unknown>,
-  key: string,
-  source: string,
-  bounds: { readonly min: number; readonly max: number },
-): number | undefined {
-  const value = object[key];
-  if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < bounds.min || value > bounds.max) {
-    throw new MonoAgentConfigError(
-      "invalid_json",
-      `${source}.${key} must be an integer between ${bounds.min} and ${bounds.max}.`,
-      { path: `${source}.${key}` },
-    );
-  }
-  return value;
-}
-
-interface ConfiguredProviderEnvelope {
-  readonly entries: readonly ProviderDefinition[];
-  readonly piAuthPath?: string;
-  readonly piNative?: Readonly<Record<string, unknown>>;
-}
-
-const RESERVED_PROVIDER_KEYS = new Set(["local", "piAuthPath", "piNative"]);
-
-const PROVIDER_ENTRY_KEYS = new Set([
-  "apiKey",
-  "apiKeyEnv",
-  "baseUrl",
-  "enabled",
-  "maxAdvertisedModels",
-  "models",
-  "trustPublicUrl",
-  "type",
-]);
-
-function readConfiguredProviders(value: unknown): ConfiguredProviderEnvelope {
-  const parsed = jsonRecord(value, "providers") ?? {};
-
-  const entries = new Map<string, { readonly provider: ProviderDefinition; readonly path: string }>();
-  for (const id of Object.keys(parsed).filter((key) => !RESERVED_PROVIDER_KEYS.has(key)).sort()) {
-    addConfiguredProvider(entries, normalizeProviderFromUnknown(id, parsed[id], `providers.${id}`, false), `providers.${id}`);
-  }
-
-  // The `local` array is the legacy single-shape form of the same provider map.
-  const legacyFromMap = parsed.local;
-  if (legacyFromMap !== undefined) {
-    if (!Array.isArray(legacyFromMap)) {
-      throw new MonoAgentConfigError("invalid_json", "providers.local must be an array.", { path: "providers.local" });
-    }
-    legacyFromMap.forEach((provider, index) => {
-      const path = `providers.local[${index}]`;
-      const normalized = normalizeLegacyProviderFromUnknown(provider, path);
-      addConfiguredProvider(entries, normalized, path);
-    });
-  }
-
-  const piAuthPath = parsed.piAuthPath === undefined
-    ? undefined
-    : readObjectString(parsed, "piAuthPath", "providers", false);
-  const piNative = parsed.piNative === undefined
-    ? undefined
-    : readProviderPiNative(parsed.piNative);
-  return {
-    entries: [...entries.values()].map(({ provider }) => provider).sort((a, b) => a.id.localeCompare(b.id)),
-    ...(piAuthPath === undefined ? {} : { piAuthPath }),
-    ...(piNative === undefined ? {} : { piNative }),
-  };
-}
-
-function normalizeLegacyProviderFromUnknown(
-  value: unknown,
-  source: string,
-): LocalProviderDefinition {
-  if (!isRecord(value) || Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_json", `${source} must be an object.`, { path: source });
-  }
-  const id = readObjectString(value, "id", source, true) as string;
-  const provider = normalizeProviderFromUnknown(id, value, source, true);
-  return provider as LocalProviderDefinition;
-}
-
-function normalizeProviderFromUnknown(
-  id: string,
-  value: unknown,
-  source: string,
-  requireType: boolean,
-): ProviderDefinition {
-  if (!isRecord(value) || Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_json", `${source} must be an object.`, { path: source });
-  }
-  const unknownKeys = Object.keys(value).filter((key) =>
-    !(requireType && key === "id") && !PROVIDER_ENTRY_KEYS.has(key),
-  ).sort();
-  if (unknownKeys.length > 0) {
-    throw new MonoAgentConfigError(
-      "invalid_json",
-      `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`,
-      { path: source, unknownKeys },
-    );
-  }
-  const type = readObjectString(value, "type", source, requireType) as ProviderDefinition["type"];
-  const baseUrl = readObjectString(value, "baseUrl", source, false);
-  const apiKeyEnv = readObjectString(value, "apiKeyEnv", source, false);
-  // Credential names stay unresolved at load: the runtime resolves them against
-  // the effective environment when the provider is used. Only an inline literal
-  // lands in `apiKey` here, so secrets never flow through the loader.
-  const apiKey = readObjectString(value, "apiKey", source, false);
-  const models = readLocalProviderModels(value.models, source);
-  const maxAdvertisedModels = readObjectInteger(value, "maxAdvertisedModels", source, { min: 1, max: 200 });
-  const provider: ProviderDefinition = {
-    id,
-    ...(type === undefined ? {} : { type }),
-    ...(baseUrl === undefined ? {} : { baseUrl }),
-    enabled: readObjectBoolean(value, "enabled", true, source),
-    trustPublicUrl: readObjectBoolean(value, "trustPublicUrl", false, source),
-    ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
-    ...(apiKey === undefined ? {} : { apiKey }),
-    ...(models.length === 0 ? {} : { models }),
-    ...(maxAdvertisedModels === undefined ? {} : { maxAdvertisedModels }),
-  };
-  try {
-    return requireType
-      ? validateLocalProviderDefinition(provider as LocalProviderDefinition)
-      : validateProviderDefinition(provider);
-  } catch (error) {
-    if (error instanceof RuntimeAdapterError) {
-      throw new MonoAgentConfigError("invalid_json", error.message, {
-        path: source,
-        reason: error.message,
-      });
-    }
-    throw error;
-  }
-}
-
-function addConfiguredProvider(
-  entries: Map<string, { readonly provider: ProviderDefinition; readonly path: string }>,
-  provider: ProviderDefinition,
-  path: string,
-): void {
-  const existing = entries.get(provider.id);
-  if (existing !== undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_json",
-      `Provider id "${provider.id}" is configured twice at ${existing.path} and ${path}. Remove one definition.`,
-      { path, providerId: provider.id, paths: [existing.path, path] },
-    );
-  }
-  entries.set(provider.id, { provider, path });
-}
-
-function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>> {
-  const source = "providers.piNative";
-  const record = readPlainObject(value, source);
-  if (record.promptCacheDiagnostics !== undefined && typeof record.promptCacheDiagnostics !== "boolean") {
-    throw new MonoAgentConfigError("invalid_json", "providers.piNative.promptCacheDiagnostics must be a boolean.", {
-      path: "providers.piNative.promptCacheDiagnostics",
-    });
-  }
-  if (record.cacheRetention !== undefined && !["short", "long"].includes(record.cacheRetention as string)) {
-    throw new MonoAgentConfigError("invalid_json", "providers.piNative.cacheRetention must be short or long.", {
-      path: "providers.piNative.cacheRetention",
-    });
-  }
-  if (Object.hasOwn(record, "piSessionsRoot")) throw new MonoAgentConfigError(
-    "invalid_json", "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
-    { path: "providers.piNative.piSessionsRoot" });
-  const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs"]);
-  const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
-  if (unknownKeys.length > 0) {
-    throw new MonoAgentConfigError("invalid_json", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
-      path: source,
-      unknownKeys,
-    });
-  }
-  return record;
-}
-
-function readLocalProviderModels(value: unknown, source: string): readonly LocalProviderModelDefinition[] {
-  if (value === undefined) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_json", `${source}.models must be an array.`, { path: source });
-  }
-  return value.map((model, index) => {
-    const modelSource = `${source}.models[${index}]`;
-    if (!isRecord(model) || Array.isArray(model)) {
-      throw new MonoAgentConfigError("invalid_json", `${modelSource} must be an object.`, { path: modelSource });
-    }
-    const name = readObjectString(model, "name", modelSource, true) as string;
-    const alias = readObjectString(model, "alias", modelSource, false);
-    const displayName = readObjectString(model, "displayName", modelSource, false);
-    return {
-      name,
-      ...(alias === undefined ? {} : { alias }),
-      ...(displayName === undefined ? {} : { displayName }),
-      enabled: readObjectBoolean(model, "enabled", true, modelSource),
-      ...(model.capabilities === undefined ? {} : { capabilities: readPlainObject(model.capabilities, `${modelSource}.capabilities`) }),
-      ...(model.pricing === undefined ? {} : { pricing: readPlainObject(model.pricing, `${modelSource}.pricing`) }),
-    };
-  });
-}
-
 function withRedactedProviders(
   redacted: RedactedMonoAgentConfig,
   config: MonoAgentConfig,
@@ -2260,14 +1525,6 @@ function redactProviderDefinition<T extends ProviderDefinition>(provider: T): Om
   };
 }
 
-function readEffort(raw: string | undefined): EffortLevel | undefined {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return undefined;
-  }
-  return readChoice<EffortLevel>(normalized, "runtime.effort", EFFORT_LEVELS, EFFORT_LEVELS[0], invalidJson);
-}
-
 function readConcurrencyConfig(value: unknown): MonoAgentConfig["concurrency"] | undefined {
   const concurrency = jsonRecord(value, "concurrency");
   if (concurrency === undefined) {
@@ -2290,46 +1547,6 @@ function readConcurrencyConfig(value: unknown): MonoAgentConfig["concurrency"] |
     ...(maxConcurrentRuns === undefined ? {} : { maxConcurrentRuns }),
     ...(maxPendingRuns === undefined ? {} : { maxPendingRuns }),
   };
-}
-
-function readPiNativeProviderConfig(
-  value: Readonly<Record<string, unknown>> | undefined,
-): PiNativeProviderConfig {
-  const piNative = value ?? {};
-  const transport = normalizeOptionalString(jsonString(piNative.transport, "providers.piNative.transport")) === undefined
-    ? undefined
-    : readChoice<PiTransport>(
-        jsonString(piNative.transport, "providers.piNative.transport"),
-        "providers.piNative.transport",
-        PI_TRANSPORTS,
-        "auto",
-        invalidJson,
-      );
-  const promptCacheDiagnostics = jsonOptionalBoolean(piNative.promptCacheDiagnostics, "providers.piNative.promptCacheDiagnostics");
-  const cacheRetention = jsonChoice<"short" | "long">(
-    piNative.cacheRetention, "providers.piNative.cacheRetention", ["short", "long"], "long",
-  );
-  const piMaxRetriesValue = normalizeOptionalString(jsonString(piNative.piMaxRetries, "providers.piNative.piMaxRetries"));
-  const piMaxRetries = jsonOptionalInteger(piMaxRetriesValue, "providers.piNative.piMaxRetries", { min: 0, max: 8 });
-  const maxRetryDelayMs = jsonOptionalInteger(piNative.maxRetryDelayMs, "providers.piNative.maxRetryDelayMs", { min: 100, max: 3_600_000 });
-  return {
-    ...(transport === undefined ? {} : { transport }),
-    ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
-    cacheRetention,
-    ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
-    ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
-  };
-}
-
-function readPath(raw: string | undefined, cwd: string, defaultPath?: string): string {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    if (defaultPath !== undefined) {
-      return defaultPath;
-    }
-    throw new MonoAgentConfigError("invalid_json", "Path value is required.");
-  }
-  return resolve(cwd, normalized);
 }
 
 // JSON arrays stay element-wise so roots containing commas retain their
@@ -2364,78 +1581,6 @@ function readFileToolRoots(value: unknown, path: string): string[] {
     `${path} must be a comma-separated path list or an array of strings.`,
     { path, reason: "invalid_string_array" },
   );
-}
-
-function readUserPath(raw: string | undefined, cwd: string, defaultPath?: string): string {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    if (defaultPath !== undefined) {
-      return defaultPath;
-    }
-    throw new MonoAgentConfigError("invalid_json", "Path value is required.");
-  }
-  if (normalized === "~") {
-    return homedir();
-  }
-  if (normalized.startsWith("~/") || normalized.startsWith("~\\")) {
-    return resolve(homedir(), normalized.slice(2));
-  }
-  return resolve(cwd, normalized);
-}
-
-function readOptionalPath(raw: string | undefined, cwd: string): string | undefined {
-  const normalized = normalizeOptionalString(raw);
-  return normalized === undefined ? undefined : resolve(cwd, normalized);
-}
-
-function readObjectString(
-  object: Record<string, unknown>,
-  key: string,
-  source: string,
-  required: boolean,
-): string | undefined {
-  const value = object[key];
-  if (value === undefined) {
-    if (required) {
-      throw new MonoAgentConfigError("invalid_json", `${source}.${key} is required.`, { path: `${source}.${key}` });
-    }
-    return undefined;
-  }
-  if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
-    throw new MonoAgentConfigError("invalid_json", `${source}.${key} must be a non-empty trimmed string.`, { path: `${source}.${key}` });
-  }
-  return value;
-}
-
-function readObjectBoolean(
-  object: Record<string, unknown>,
-  key: string,
-  defaultValue: boolean,
-  source: string,
-): boolean {
-  const value = object[key];
-  if (value === undefined) {
-    return defaultValue;
-  }
-  if (typeof value === "boolean") {
-    return value;
-  }
-  throw new MonoAgentConfigError("invalid_json", `${source}.${key} must be a boolean.`, { path: `${source}.${key}` });
-}
-
-function readPlainObject(value: unknown, source: string): Record<string, unknown> {
-  if (!isRecord(value) || Array.isArray(value)) {
-    throw new MonoAgentConfigError("invalid_json", `${source} must be an object.`, { path: source });
-  }
-  return { ...value };
-}
-
-function normalizeCwd(value: string): string {
-  const normalized = normalizeOptionalString(value);
-  if (normalized === undefined) {
-    throw new MonoAgentConfigError("invalid_json", "cwd must be a non-empty path.");
-  }
-  return resolve(normalized);
 }
 
 function selectedWebProvider(selection: string | readonly string[], name: string): boolean {
@@ -2507,53 +1652,6 @@ function readParallelWebConfig(value: unknown, path: string): { readonly apiKeyE
   // it from the effective environment at call time, so anonymous access is an
   // omitted field rather than a load error.
   return { apiKeyEnv: name };
-}
-
-/** Validate the object form before reading its ref; never coerce unknown values. */
-function readModelSelection(value: unknown, path: string): string {
-  if (typeof value === "string" || value === undefined) return requireJsonString(value, path);
-  if (value === null || typeof value !== "object" || Array.isArray(value)
-    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
-    throw new MonoAgentConfigError("invalid_json", `${path} must be a string or a model/context1M object.`, { path });
-  }
-  const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "model" && key !== "context1M")
-    || typeof record.model !== "string" || record.model.length === 0
-    || (record.context1M !== undefined && typeof record.context1M !== "boolean")) {
-    throw new MonoAgentConfigError("invalid_json", `${path} accepts only model (string) and optional context1M (boolean).`, { path });
-  }
-  return record.model;
-}
-
-function collectContext1MDeclarations(json: MonoAgentConfigJson, providers: ResolvedProviders): Record<string, boolean> {
-  const declarations: Array<{ model: unknown; value: unknown; path: string }> = [];
-  const objectDeclaration = (value: unknown, path: string) => {
-    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      const record = value as Record<string, unknown>;
-      readModelSelection(value, path);
-      declarations.push({ model: record.model, value: record.context1M, path: `${path}.context1M` });
-    }
-  };
-  objectDeclaration(json.runtime?.model, "runtime.model");
-  json.runtime?.fallbacks?.forEach((route, index) => declarations.push({ model: route.model, value: route.context1M, path: `runtime.fallbacks[${index}].context1M` }));
-  json.subagents?.definitions?.forEach((definition, index) => objectDeclaration(definition.model, `subagents.definitions[${index}].model`));
-  json.subagents?.models?.forEach((choice, index) => { if (typeof choice !== "string") declarations.push({ model: choice.model, value: choice.context1M, path: `subagents.models[${index}].context1M` }); });
-  const result: Record<string, boolean> = {};
-  const paths: Record<string, string> = {};
-  for (const declaration of declarations) {
-    if (declaration.value === undefined) continue;
-    const ref = parseModel(requireJsonString(declaration.model, declaration.path), declaration.path);
-    const key = modelReferenceKey(ref);
-    if (typeof declaration.value !== "boolean" || !supportsPiContext1M(key) || providers.byId.get(ref.provider)?.type !== undefined) {
-      throw new MonoAgentConfigError("invalid_json", `${declaration.path} requires a boolean on an eligible built-in GPT model, not a configured provider shadow.`, { path: declaration.path });
-    }
-    if (Object.hasOwn(result, key) && result[key] !== declaration.value) {
-      throw new MonoAgentConfigError("invalid_json", `${declaration.path} conflicts with ${paths[key]} for the same model.`, { path: declaration.path });
-    }
-    result[key] = declaration.value;
-    paths[key] = declaration.path;
-  }
-  return result;
 }
 
 function readComputerUseConfig(value: unknown, cwd: string): MonoAgentConfig["tools"]["computerUse"] {
