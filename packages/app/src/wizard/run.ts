@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename,join } from "node:path";
 import { emitKeypressEvents } from "node:readline";
 
 import * as p from "@clack/prompts";
@@ -9,64 +9,55 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { findModule } from "../modules/catalog.js";
 import { hasSensitivePersistedEnvironmentValue } from "../first-run-readiness.js";
 import {
-  DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
-  discoverMemoryEmbeddingModels,
-  memoryEmbeddingEndpointProblem,
-  type ManagedMemoryEmbeddingProvider,
-  probeMemoryEmbeddingSelection,
+DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
+discoverMemoryEmbeddingModels,
+memoryEmbeddingEndpointProblem,
+type ManagedMemoryEmbeddingProvider,
+probeMemoryEmbeddingSelection,
 } from "../memory-embedding-service.js";
 import { DEFAULT_MODEL } from "../modules/base.js";
 import {
-  ADAPTER_SEND_TOOL_NAMES,
-  ALLOW_ALL_TOOLS,
-  isAllowAllTools,
+ADAPTER_SEND_TOOL_NAMES,
+ALLOW_ALL_TOOLS,
+isAllowAllTools,
 } from "../modules/known-tools.js";
 import {
-  isProviderSetupPiApiKeyAction,
-  planProviderSetup,
-  providerSetupActionCommandLine,
-  type ProviderCredentialState,
+isProviderSetupPiApiKeyAction,
+planProviderSetup,
+providerSetupActionCommandLine,
+type ProviderCredentialState,
 } from "../provider-setup.js";
+import { alwaysOnTools,composeWizardPlan,defaultAnswers,effectiveFallbacks,humanizeAgentName,recommendedToolSelection,referencedSetupModelRefs } from "./answers.js";
+import { type WizardAnswers,type WizardPlan } from "../setup/wizard-types.js";
+import { findPreset,presetAnswers } from "./presets.js";
 import {
-  alwaysOnTools,
-  composeWizardPlan,
-  defaultAnswers,
-  effectiveFallbacks,
-  humanizeAgentName,
-  recommendedToolSelection,
-  referencedSetupModelRefs,
-  type WizardAnswers,
-  type WizardPlan,
-} from "./answers.js";
-import { findPreset, presetAnswers } from "./presets.js";
-import {
-  assertConcreteWizardModelRef,
-  canonicalWizardModelRef,
-  channelSelectOptions,
-  creationReviewOptions,
-  CUSTOM_PI_MODEL_OPTION,
-  effortSelectOptions,
-  fallbackModelSelectOptions,
-  memorySelectOptions,
-  MODEL_AUTOCOMPLETE_MAX_ITEMS,
-  modelSelectOptions,
-  piModelSelectOptions,
-  presetSelectOptions,
-  toolMultiselectOptions,
-  validateWizardAgentName,
-  validateWizardAgentPurpose,
-  wizardCancelIntentForKey,
-  WizardBack,
-  WizardCancelled,
-  WizardExitRequested,
+assertConcreteWizardModelRef,
+canonicalWizardModelRef,
+channelSelectOptions,
+creationReviewOptions,
+CUSTOM_PI_MODEL_OPTION,
+effortSelectOptions,
+fallbackModelSelectOptions,
+memorySelectOptions,
+MODEL_AUTOCOMPLETE_MAX_ITEMS,
+modelSelectOptions,
+piModelSelectOptions,
+presetSelectOptions,
+toolMultiselectOptions,
+validateWizardAgentName,
+validateWizardAgentPurpose,
+wizardCancelIntentForKey,
+WizardBack,
+WizardCancelled,
+WizardExitRequested,
 } from "./prompts.js";
 import {
-  discoverWizardModelCandidates,
-  formatModelDiscoveryStatus,
-  guidedPiProviderProblem,
-  hasDurablePiEnvironmentCredential,
-  type ModelDiscoveryResult,
-  type WizardModelCandidate,
+discoverWizardModelCandidates,
+formatModelDiscoveryStatus,
+guidedPiProviderProblem,
+hasDurablePiEnvironmentCredential,
+type ModelDiscoveryResult,
+type WizardModelCandidate,
 } from "./model-discovery.js";
 
 /** The outcome of a wizard run: collected answers, or a clean cancellation. */

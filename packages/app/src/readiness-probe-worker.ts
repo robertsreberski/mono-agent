@@ -1,28 +1,12 @@
-import { isMainThread, parentPort, workerData } from "node:worker_threads";
+import { toolActionInEvent } from "./setup/readiness-events.js";
+import { isMainThread,parentPort,workerData } from "node:worker_threads";
 
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { PI_TRANSPORTS } from "@mono-agent/turn/host/types";
-import type { CreateMonoRuntimeOptions, MonoRuntimeLike, PiTransport, RuntimeEventLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
+import type { CreateMonoRuntimeOptions,MonoRuntimeLike,PiTransport,RuntimeModelReference,RuntimeResult,RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
 import { redactSecrets } from "./redact-secrets.js";
-
-const TOOL_EVENT_TYPES = new Set([
-  "bash",
-  "collab_agent_tool_call",
-  "command_execution",
-  "dynamic_tool_call",
-  "file_change",
-  "image_generation",
-  "image_view",
-  "mcp_tool_call",
-  "sleep",
-  "subagent_activity",
-  "tool_call",
-  "tool_result",
-  "tool_use",
-  "web_search",
-]);
 
 /** @internal Clone-safe input accepted from the readiness parent. */
 interface ReadinessWorkerData {
@@ -162,45 +146,6 @@ export function safeWorkerMessage(
     secrets: additionalSecrets,
     environment,
   });
-}
-
-function normalizedEventType(value: unknown): string {
-  return typeof value === "string"
-    ? value.replace(/([a-z0-9])([A-Z])/gu, "$1_$2").replace(/[./-]+/gu, "_").toLowerCase()
-    : "";
-}
-
-/** @internal Fail-closed no-tool event detector used by the live readiness worker. */
-export function toolActionInEvent(event: RuntimeEventLike): string | undefined {
-  const eventType = normalizedEventType(event.type);
-  if (TOOL_EVENT_TYPES.has(eventType)) {
-    return eventType;
-  }
-  const item = event.item;
-  if (typeof item === "object" && item !== null && !Array.isArray(item)) {
-    const itemType = normalizedEventType((item as Record<string, unknown>).type);
-    if (TOOL_EVENT_TYPES.has(itemType)) {
-      return itemType;
-    }
-  }
-  const message = event.message;
-  if (typeof message !== "object" || message === null || Array.isArray(message)) {
-    return undefined;
-  }
-  const content = (message as Record<string, unknown>).content;
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  for (const block of content) {
-    if (typeof block !== "object" || block === null || Array.isArray(block)) {
-      continue;
-    }
-    const blockType = normalizedEventType((block as Record<string, unknown>).type);
-    if (blockType === "tool_use" || blockType === "tool_call" || blockType === "tool_result") {
-      return blockType;
-    }
-  }
-  return undefined;
 }
 
 function post(port: ReadinessWorkerPort | null, message: ReadinessWorkerOutput): void {

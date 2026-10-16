@@ -1,92 +1,15 @@
+import type { WizardFallback,WizardAnswers,ComposeContext,SecretChecklistItem,WizardPlan } from "../setup/wizard-types.js";
 import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import {
-  MAX_AGENT_NAME_LENGTH,
-  type MonoAgentConfigJson,
+MAX_AGENT_NAME_LENGTH,
+type MonoAgentConfigJson,
 } from "@mono-agent/config";
 
 import { monoAgentConfigWithSchema } from "../config-reference.js";
-import {
-  ADAPTER_SEND_TOOL_NAMES,
-  APP_TOOL_NAMES,
-  ALLOW_ALL_TOOLS,
-  baseConfig,
-  BUILTIN_TOOL_NAMES,
-  type CapabilityModule,
-  DEFAULT_MODEL,
-  DEFAULT_SAFE_TOOLS,
-  findModule,
-  type GeneratedFile,
-  type ModuleInputValues,
-  type ModuleValidateExpectation,
-  resolveModuleInputs,
-} from "../modules/index.js";
+import { ADAPTER_SEND_TOOL_NAMES,APP_TOOL_NAMES,ALLOW_ALL_TOOLS,baseConfig,BUILTIN_TOOL_NAMES,type CapabilityModule,DEFAULT_MODEL,DEFAULT_SAFE_TOOLS,findModule,type ModuleValidateExpectation,resolveModuleInputs } from "../modules/index.js";
+import { type GeneratedFile } from "../setup/types.js";
 import { CHILD_ONLY_TOOL_NAMES } from "../modules/known-tools.js";
 import { managedProjectSkillFiles } from "../project-skills.js";
-
-/**
- * The complete set of choices the wizard (or a preset) makes. This is the single
- * input to {@link composeWizardPlan}: everything the composer needs to emit a full
- * `mono-agent.config.json`, `.env.example`, and follow-up files is derived from it.
- */
-export interface WizardFallback {
-  readonly model: string;
-  readonly effort?: string;
-}
-
-export interface WizardAnswers {
-  /** Public display identity. Omitted only by legacy/programmatic callers. */
-  readonly name?: string;
-  /** Concise role statement used to generate the initial Identity. */
-  readonly purpose?: string;
-  readonly model: string;
-  /** Optional primary-route effort; omitted means provider default. */
-  readonly effort?: string;
-  /** Ordered fallback routes; omitted effort means provider default. */
-  readonly fallbacks: readonly WizardFallback[];
-  /** Channel module ids, e.g. `["channel:webhook","channel:telegram"]`. */
-  readonly channels: readonly string[];
-  /** Memory module id, or `undefined` for no memory section. */
-  readonly memory?: string;
-  readonly sandbox: boolean;
-  /** Final tool selection written into `tools.allowedTools`. */
-  readonly allowedTools: readonly string[];
-  /** Per module id → non-secret input overrides. Secret inputs are stripped by the composer. */
-  readonly moduleInputs: Readonly<Record<string, ModuleInputValues>>;
-}
-
-/** Folder-derived context the base skeleton needs (not from wizard inputs). */
-export interface ComposeContext {
-  readonly dirBasename: string;
-  readonly skillsRootExists: boolean;
-}
-
-/**
- * One secret the composed agent still needs. The CLI prints the checklist as
- * `- <label>: <description>` and points the operator at `<envVar>` in `.env`.
- */
-export interface SecretChecklistItem {
-  readonly moduleId: string;
-  readonly label: string;
-  readonly envVar: string;
-  readonly description: string;
-  readonly required: boolean;
-}
-
-/**
- * The single artifact of config generation: the JSON to write (with `$schema`),
- * the optional `.env.example`, follow-up files, the secret checklist, the selected
- * modules, the validate expectations, and any authoring warnings.
- */
-export interface WizardPlan {
-  readonly configJson: MonoAgentConfigJson;
-  /** Joined module `envExampleLines` plus a trailing newline; `undefined` when none. */
-  readonly envExample?: string;
-  readonly files: readonly GeneratedFile[];
-  readonly secrets: readonly SecretChecklistItem[];
-  readonly selectedModules: readonly CapabilityModule[];
-  readonly validateExpectations: readonly ModuleValidateExpectation[];
-  readonly warnings: readonly string[];
-}
 
 /**
  * Every runtime/LLM reference that generic provider setup must account for.

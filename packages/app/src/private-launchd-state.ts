@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { constants as fsConstants, type Stats } from "node:fs";
-import { access, lstat, mkdir, open, rm } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { constants as fsConstants,type Stats } from "node:fs";
+import { access,lstat,mkdir,open,rm } from "node:fs/promises";
+import { dirname,resolve } from "node:path";
 import process from "node:process";
 
-import type { BackgroundLifecycleTarget } from "./background.js";
+import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import { deriveLaunchdMaintenanceLabel } from "./launchd.js";
 import type { LaunchdPaths } from "./launchd.js";
 import { secureFileReplace } from "./secure-file-replace.js";

@@ -1,22 +1,22 @@
 import { createHmac } from "node:crypto";
-import { constants as fsConstants, lstatSync, type BigIntStats } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { constants as fsConstants,lstatSync,type BigIntStats } from "node:fs";
+import { chmod,lstat,mkdir,mkdtemp,open,readFile,realpath,rm,writeFile } from "node:fs/promises";
+import { join,resolve } from "node:path";
 
 import { accountHomeDirectory } from "./account-home.js";
-import { loadAppCoreConfig, type PrivateBackgroundRuntimePaths } from "./app-config.js";
+import { loadAppCoreConfig,type PrivateBackgroundRuntimePaths } from "./app-config.js";
 import {
-  loadBackgroundSnapshotKey,
-  loadOrCreateBackgroundSnapshotKey,
+loadBackgroundSnapshotKey,
+loadOrCreateBackgroundSnapshotKey,
 } from "./background-snapshot-key.js";
 import {
-  fingerprintBackgroundOperationalEnvironment,
-  fingerprintSystemdBackgroundOperationalEnvironment,
-  isBackgroundOperationalEnvName,
-  isSystemdBackgroundOperationalEnvName,
-  selectBackgroundOperationalEnvironment,
+fingerprintBackgroundOperationalEnvironment,
+fingerprintSystemdBackgroundOperationalEnvironment,
+isBackgroundOperationalEnvName,
+isSystemdBackgroundOperationalEnvName,
+selectBackgroundOperationalEnvironment,
 } from "./background-environment.js";
-import { readCliConfigSnapshot, readCliDotenvSnapshot } from "./first-run-readiness.js";
+import { readCliConfigSnapshot,readCliDotenvSnapshot } from "./service/background/source-inputs.js";
 
 export const BACKGROUND_SNAPSHOT_SCHEMA = "mono-agent.background-snapshot.v1";
 const MAX_ENCODED_BACKGROUND_SNAPSHOT_LENGTH = 32_768;

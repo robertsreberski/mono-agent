@@ -1,9 +1,11 @@
+import { type RunWebCommandOptions } from "./service/web/types.js";
+import { webHealthcheck,webHealthStatus } from "./service/web/health.js";
 import { formatManagedRuntimeProgress } from "./managed-runtime-progress.js";
 import type { ManagedBackgroundRuntimeInput } from "./background-runtime.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { networkInterfaces } from "node:os";
-import { readFile, rm } from "node:fs/promises";
+import { readFile,rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -13,63 +15,61 @@ import { isLoopbackHost } from "@mono-agent/contracts";
 import type { WebTheme } from "@mono-agent/web";
 
 import {
-  DEFAULT_WEB_HOST,
-  DEFAULT_WEB_PORT,
-  DEFAULT_WEB_THEME,
-  decodeManagedWebDefinition,
-  invalidWebConsoleName,
-  isWebTheme,
-  LEGACY_DEFAULT_WEB_HOST,
-  WEB_THEMES,
+DEFAULT_WEB_HOST,
+DEFAULT_WEB_PORT,
+DEFAULT_WEB_THEME,
+decodeManagedWebDefinition,
+invalidWebConsoleName,
+isWebTheme,WEB_THEMES
 } from "./web-service-definition.js";
 import type { ManagedWebDefinition } from "./web-service-definition.js";
 
 import { resolveGlobalTraceRegistryDir } from "./app-config.js";
 import {
-  acquireFilesystemLifecycleLock,
-  ensureOwnerPrivateLaunchdDirectory,
-  inspectOwnerPrivateLaunchdPlist,
-  readOwnerPrivateLaunchdPlist,
-  writeOwnerPrivateLaunchdFile,
+acquireFilesystemLifecycleLock,
+ensureOwnerPrivateLaunchdDirectory,
+inspectOwnerPrivateLaunchdPlist,
+readOwnerPrivateLaunchdPlist,
+writeOwnerPrivateLaunchdFile,
 } from "./background.js";
 import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
 import { ensureManagedBackgroundRuntime } from "./background-runtime.js";
 import {
-  bootout,
-  bootstrap,
-  buildEnvironmentArguments,
-  buildWebMaintenancePlistXml,
-  buildWebPlistXml,
-  defaultPathEnv,
-  INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
-  launchdMaintenanceEntrypointPathForCli,
-  launchdServiceInfo,
-  launchdWebMaintenanceInfo,
-  makeLaunchctlRunner,
-  WEB_LAUNCHD_LABEL,
-  WEB_MAINTENANCE_LAUNCHD_LABEL,
-  webMaintenanceCalendarMinute,
+bootout,
+bootstrap,
+buildEnvironmentArguments,
+buildWebMaintenancePlistXml,
+buildWebPlistXml,
+defaultPathEnv,
+INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+launchdMaintenanceEntrypointPathForCli,
+launchdServiceInfo,
+launchdWebMaintenanceInfo,
+makeLaunchctlRunner,
+WEB_LAUNCHD_LABEL,
+WEB_MAINTENANCE_LAUNCHD_LABEL,
+webMaintenanceCalendarMinute,
 } from "./launchd.js";
 import type {
-  LaunchctlRunner,
-  LaunchdPaths,
-  LaunchdServiceInfo,
-  LaunchdWebMaintenanceDefinition,
-  LaunchdWebMaintenanceInfo,
+LaunchctlRunner,
+LaunchdPaths,
+LaunchdServiceInfo,
+LaunchdWebMaintenanceDefinition,
+LaunchdWebMaintenanceInfo,
 } from "./launchd.js";
 import {
-  beginLaunchdLogMaintenanceIntent,
-  clearLaunchdLogMaintenanceIntent,
-  inspectLaunchdLogs,
-  markLaunchdLogMaintenanceRestoring,
-  markLaunchdLogMaintenanceStopped,
-  readLaunchdLogMaintenanceIntent,
-  rotateStoppedLaunchdLogs,
+beginLaunchdLogMaintenanceIntent,
+clearLaunchdLogMaintenanceIntent,
+inspectLaunchdLogs,
+markLaunchdLogMaintenanceRestoring,
+markLaunchdLogMaintenanceStopped,
+readLaunchdLogMaintenanceIntent,
+rotateStoppedLaunchdLogs,
 } from "./launchd-logs.js";
 import {
-  inspectLegacyManagedWebLogArtifacts,
-  maintainLegacyManagedWebLogArtifacts,
-  startManagedWebLogMonitor,
+inspectLegacyManagedWebLogArtifacts,
+maintainLegacyManagedWebLogArtifacts,
+startManagedWebLogMonitor,
 } from "./managed-web-logs.js";
 import type { ManagedWebLogMonitorDependencies } from "./managed-web-logs.js";
 import { managedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";
@@ -77,10 +77,10 @@ import { verifyManagedRuntimeMaintenanceEntrypoint } from "./managed-runtime-mai
 import { managedWebPaths } from "./web-maintenance-paths.js";
 import type { ManagedWebPaths } from "./web-maintenance-paths.js";
 import {
-  readWebLogMaintenanceStatus,
-  readWebLogMonitorStatus,
-  writeWebLogMaintenanceStatus,
-  writeWebLogMonitorStatus,
+readWebLogMaintenanceStatus,
+readWebLogMonitorStatus,
+writeWebLogMaintenanceStatus,
+writeWebLogMonitorStatus,
 } from "./web-log-maintenance-status.js";
 import * as ui from "./ui.js";
 
@@ -127,22 +127,6 @@ interface ResetWebStateOptions {
 interface PrepareWebStateOptions {
   readonly stateDir?: string;
   readonly env?: Record<string, string | undefined>;
-}
-
-export interface RunWebCommandOptions {
-  readonly positionals: readonly string[];
-  readonly env: Record<string, string | undefined>;
-  readonly host?: string;
-  readonly port?: number;
-  readonly theme?: string;
-  readonly name?: string;
-  readonly loopback?: boolean;
-  readonly shareTailnet?: boolean;
-  readonly json?: boolean;
-  readonly follow?: boolean;
-  readonly lines?: number;
-  readonly all?: boolean;
-  readonly yes?: boolean;
 }
 
 export interface CommandResult {
@@ -1820,34 +1804,6 @@ async function waitForWebReady(
 function healthUrl(host: string, port: number): string {
   const checkHost = host === "0.0.0.0" || host === "::" || host === "[::]" ? "127.0.0.1" : urlHost(host);
   return `http://${checkHost}:${String(port)}/healthz`;
-}
-
-export async function webHealthcheck(url: string): Promise<boolean> {
-  return (await webHealthStatus(url)) !== "unavailable";
-}
-
-async function webHealthStatus(url: string): Promise<"ok" | "degraded" | "unavailable"> {
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-    if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-      return "unavailable";
-    }
-    const body = await response.json() as unknown;
-    if (!isRecord(body) || body.version !== 1) return "unavailable";
-    if (hasExactKeys(body, ["status", "version", "push"])) {
-      return body.status === "ok" && (body.push === "ok" || body.push === "degraded")
-        ? body.push
-        : "unavailable";
-    }
-    // Accept the pre-push health contract so a newer CLI can still manage an
-    // older installed web service during upgrades.
-    return hasExactKeys(body, ["status", "version"])
-      && (body.status === "ok" || body.status === "degraded")
-      ? body.status
-      : "unavailable";
-  } catch {
-    return "unavailable";
-  }
 }
 
 export async function ensureTailscaleServe(

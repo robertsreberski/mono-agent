@@ -1,6 +1,7 @@
+import type { GeneratedFile } from "../setup/types.js";
 import type { MonoAgentConfigJson } from "@mono-agent/config";
 
-import type { ValidationStatus } from "../doctor.js";
+import type { ValidationStatus } from "../doctor-types.js";
 
 /** The kind of capability a module contributes, used to group the wizard's steps. */
 export type ModuleKind = "channel" | "memory" | "sandbox" | "provider";
@@ -39,13 +40,6 @@ export type ModuleInput = PublicModuleInput | SecretModuleInput;
 
 /** Resolved input values keyed by {@link ModuleInput.id}. */
 export type ModuleInputValues = Readonly<Record<string, string | undefined>>;
-
-/** An auxiliary file a module scaffolds beside the config (e.g. a cron job markdown). */
-export interface GeneratedFile {
-  /** Path relative to the agent folder. */
-  readonly path: string;
-  readonly contents: string;
-}
 
 /**
  * A capability a module promises once its secrets are filled in. The composer

@@ -6,32 +6,32 @@ import { fileURLToPath } from "node:url";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
-import { canonicalBackgroundConfigPath, resolveInstanceTarget } from "./background.js";
+import { canonicalBackgroundConfigPath,resolveInstanceTarget } from "./background.js";
 import {
-  selectSystemdBackgroundOperationalEnvironment,
-  SYSTEMD_BACKGROUND_WORKER_ENV,
+selectSystemdBackgroundOperationalEnvironment,
+SYSTEMD_BACKGROUND_WORKER_ENV,
 } from "./background-environment.js";
 import {
-  captureBackgroundSnapshot,
-  encodeBackgroundSnapshot,
-  loadDurableBackgroundEnvironment,
+captureBackgroundSnapshot,
+encodeBackgroundSnapshot,
+loadDurableBackgroundEnvironment,
 } from "./background-snapshot.js";
 import type { ParsedCliArgs } from "./cli-args.js";
-import { ensureStartable } from "./cli-background-command.js";
+import { ensureStartable } from "./service/start-preflight.js";
 import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
-  inspectSystemd, isSystemdUserManagerUnavailable, readSystemdDefinition, startSystemd, stopSystemd, systemdLogs,
-  systemdUnitName, withSystemdLock, SYSTEMD_WEB_IDENTITY,
+inspectSystemd,isSystemdUserManagerUnavailable,readSystemdDefinition,startSystemd,stopSystemd,systemdLogs,
+systemdUnitName,withSystemdLock,SYSTEMD_WEB_IDENTITY,
 } from "./systemd.js";
-import type { SystemdDefinition, SystemdDeps, SystemdService } from "./systemd.js";
-import type { RunWebCommandOptions } from "./web-command.js";
+import type { SystemdDefinition,SystemdDeps,SystemdService } from "./systemd.js";
+import type { RunWebCommandOptions } from "./service/web/types.js";
 import * as ui from "./ui.js";
 import {
-  DEFAULT_WEB_HOST,
-  DEFAULT_WEB_PORT,
-  DEFAULT_WEB_THEME,
-  decodeManagedWebDefinition,
-  LEGACY_DEFAULT_WEB_HOST,
+DEFAULT_WEB_HOST,
+DEFAULT_WEB_PORT,
+DEFAULT_WEB_THEME,
+decodeManagedWebDefinition,
+LEGACY_DEFAULT_WEB_HOST,
 } from "./web-service-definition.js";
 
 const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
@@ -219,7 +219,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
     }
     const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" || host === "[::]" ? "[::1]" : host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
     const url = `http://${probeHost}:${port}/`;
-    const { webHealthcheck } = await import("./web-command.js");
+    const { webHealthcheck } = await import("./service/web/health.js");
     const ready = async () => await webHealthcheck(`${url}healthz`);
     if (action === "status") {
       const service = await inspectSystemd(identity, deps);

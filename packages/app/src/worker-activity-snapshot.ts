@@ -1,9 +1,9 @@
 import process from "node:process";
-import type { BackgroundLifecycleTarget } from "./background.js";
+import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import type { LaunchdPaths } from "./launchd.js";
-import { currentProcessIncarnation, isSameProcessIncarnation, processIncarnationFromJson, type ProcessIncarnation, type SameProcessIncarnation } from "./process-incarnation.js";
-import { assertPrivateLaunchdStateWritable, readPrivateLaunchdState, removePrivateLaunchdState, writePrivateLaunchdState } from "./private-launchd-state.js";
-import { activityBusy, type WorkerActivityCounts, type WorkerActivityTracker } from "./worker-activity.js";
+import { currentProcessIncarnation,isSameProcessIncarnation,processIncarnationFromJson,type ProcessIncarnation,type SameProcessIncarnation } from "./process-incarnation.js";
+import { assertPrivateLaunchdStateWritable,readPrivateLaunchdState,removePrivateLaunchdState,writePrivateLaunchdState } from "./private-launchd-state.js";
+import { activityBusy,type WorkerActivityCounts,type WorkerActivityTracker } from "./worker-activity.js";
 
 const DIRECTORY = "worker-activity";
 interface WorkerActivitySnapshot {

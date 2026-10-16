@@ -1,24 +1,21 @@
-import { constants as fsConstants, type Stats } from "node:fs";
-import { lstat, open, opendir, unlink } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { constants as fsConstants,type Stats } from "node:fs";
+import { lstat,open,opendir,unlink } from "node:fs/promises";
+import { basename,join } from "node:path";
 import process from "node:process";
 
-import type {
-  AdditionalLaunchdLogInspection,
-  AdditionalLaunchdLogMaintenanceResult,
-  ManagedLaunchdLogMonitor,
-} from "./background-log-maintenance.js";
+import type { AdditionalLaunchdLogInspection,AdditionalLaunchdLogMaintenanceResult } from "./service/background/log-maintenance-types.js";
+import type { ManagedLaunchdLogMonitor } from "./background-log-maintenance.js";
 import {
-  inspectLaunchdLogs,
-  LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS,
+inspectLaunchdLogs,
+LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS,
 } from "./launchd-logs.js";
 import type { LaunchdLogInspection } from "./launchd-logs.js";
 import {
-  kickstart,
-  launchdServiceInfo,
-  WEB_MAINTENANCE_LAUNCHD_LABEL,
+kickstart,
+launchdServiceInfo,
+WEB_MAINTENANCE_LAUNCHD_LABEL,
 } from "./launchd.js";
-import type { LaunchctlRunner, LaunchdPaths } from "./launchd.js";
+import type { LaunchctlRunner,LaunchdPaths } from "./launchd.js";
 
 const LEGACY_SCAN_ENTRY_LIMIT = 256;
 const LEGACY_CANDIDATE_LIMIT = 32;

@@ -1,11 +1,12 @@
 import type { EffortLevel } from "@mono-agent/config";
 
-import { defaultAnswers, type WizardAnswers, type WizardFallback } from "./answers.js";
+import { defaultAnswers } from "./answers.js";
+import { type WizardAnswers,type WizardFallback } from "../setup/wizard-types.js";
 import { findPreset } from "./presets.js";
 import {
-  assertConcreteWizardModelRef,
-  canonicalWizardModelRef,
-  validateWizardAgentName,
+assertConcreteWizardModelRef,
+canonicalWizardModelRef,
+validateWizardAgentName,
 } from "./prompts.js";
 
 /** Channels `mono-agent init --with <csv>` can switch on, by their short flag name. */

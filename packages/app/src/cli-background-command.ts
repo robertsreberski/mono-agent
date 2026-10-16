@@ -1,82 +1,79 @@
+import { ensureStartable } from "./service/start-preflight.js";
+import { type PreflightResult } from "./service/start-preflight.js";
 import { resolveAppSessionsRoot } from "./app-config.js";
 import { WorkerActivityTracker } from "./worker-activity.js";
 import { publishWorkerActivity } from "./worker-activity-snapshot.js";
 import { readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname,resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { listRecordedRuns } from "@mono-agent/observability";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
-import { createSupervisedRestartLatch, type SupervisedRestartLatch } from "./supervised-restart-latch.js";
+import { createSupervisedRestartLatch,type SupervisedRestartLatch } from "./supervised-restart-latch.js";
 import type { PreparedSupervisedRestartInputs } from "./supervised-restart.js";
 import { acquireFilesystemLifecycleLock } from "./launchd-lifecycle-lock.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
-import { resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
+import { resolveApprovedBackgroundSnapshot,stageApprovedBackgroundSnapshot,type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import { createSupervisedRestartAuthority } from "./supervised-restart-authority.js";
 import { sandboxEffectiveStateWarning } from "@mono-agent/turn/host/sandbox";
 
 import { startMonoAgentApp } from "./app.js";
-import type { MonoAgentApp, SandboxStatus } from "./app.js";
+import type { MonoAgentApp,SandboxStatus } from "./app.js";
 import { startVerifiedManagedMonoAgentApp } from "./app-controller.js";
 import {
-  acquireBackgroundWorkerLease,
-  canonicalBackgroundConfigPath,
-  defaultBackgroundDeps,
-  forceRestartBackground,
-  maintainLaunchdController,
-  managedBackgroundEnvironment,
-  resolveInstanceTarget,
-  restartBackground,
-  startBackground,
-  statusBackground,
-  stopBackground,
-  tailLogs,
+acquireBackgroundWorkerLease,
+canonicalBackgroundConfigPath,
+defaultBackgroundDeps,
+forceRestartBackground,
+maintainLaunchdController,
+managedBackgroundEnvironment,
+resolveInstanceTarget,
+restartBackground,
+startBackground,
+statusBackground,
+stopBackground,
+tailLogs,
 } from "./background.js";
-import type { BackgroundDeps, InstanceTarget } from "./background.js";
+import type { BackgroundDeps,InstanceTarget } from "./background.js";
 import type { LaunchdMaintenanceCommandArgs } from "./launchd-maintenance-command.js";
 import {
-  assertLaunchdMaintenanceLifecycleLease,
-  withLaunchdMaintenanceControllerLock,
+assertLaunchdMaintenanceLifecycleLease,
+withLaunchdMaintenanceControllerLock,
 } from "./launchd-maintenance-gate.js";
 import type { LaunchdMaintenanceLifecycleLease } from "./launchd-maintenance-gate.js";
 import {
-  captureBackgroundSnapshot,
-  captureDurableBackgroundInputs,
-  assertBackgroundInputVersionsUnchanged,
-  decodeBackgroundSnapshot,
-  loadDurableBackgroundEnvironment,
-  materializeBackgroundRuntimeInputs,
-  sameBackgroundSnapshot,
+captureBackgroundSnapshot,
+captureDurableBackgroundInputs,
+assertBackgroundInputVersionsUnchanged,
+decodeBackgroundSnapshot,
+loadDurableBackgroundEnvironment,
+materializeBackgroundRuntimeInputs,
+sameBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
-import { legacyLockHolderMessage, type LegacyLockHolder } from "./owner-private-lock.js";
+import { legacyLockHolderMessage,type LegacyLockHolder } from "./owner-private-lock.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { startManagedLaunchdLogMonitor } from "./background-log-maintenance.js";
 import type {
-  ManagedLaunchdLogMonitor,
-  ManagedLaunchdLogMonitorDependencies,
+ManagedLaunchdLogMonitor,
+ManagedLaunchdLogMonitorDependencies,
 } from "./background-log-maintenance.js";
 import { writeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
-import { clearLaunchdSnapshotRefusal, writeLaunchdSnapshotRefusal } from "./launchd-snapshot-refusal.js";
-import { selectBackgroundOperationalEnvironment, selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
+import { clearLaunchdSnapshotRefusal,writeLaunchdSnapshotRefusal } from "./launchd-snapshot-refusal.js";
+import { selectBackgroundOperationalEnvironment,selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
 import type { ChannelStatus } from "./channels.js";
 import { loadCliEnvFile } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
-import { validateMonoAgentFolder } from "./doctor.js";
-import type {
-  ValidationReport,
-  ValidationSection,
-  ValidationStatus,
-} from "./doctor.js";
-import { readCliConfigSnapshot } from "./first-run-readiness.js";
-import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
-import { purgeConversationState, type PurgeConversationStateResult } from "./sessions.js";
-import { deriveLaunchdLabel, launchdManagedWorkerInfo, launchdPathsFor, makeLaunchctlRunner } from "./launchd.js";
+import type { ValidationSection,ValidationStatus } from "./doctor-types.js";
+import { readCliConfigSnapshot } from "./service/background/source-inputs.js";
+import { buildRunsHealthDisplay,RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
+import { purgeConversationState,type PurgeConversationStateResult } from "./sessions.js";
+import { deriveLaunchdLabel,launchdManagedWorkerInfo,launchdPathsFor,makeLaunchctlRunner } from "./launchd.js";
 import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";
 
@@ -101,56 +98,7 @@ function colorDetail(status: ValidationStatus, detail: string): string {
   return ui.style.dim(detail);
 }
 
-/**
- * Outcome of the start/restart preflight. `code` is the process exit status to
- * return when refusing: 2 for a missing config file (a usage problem, matching
- * the arg-parse convention) and 1 for a config that loads but has errors.
- */
-export type PreflightResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly code: 2; readonly kind: "missing-config"; readonly configPath: string }
-  | { readonly ok: false; readonly code: 1; readonly kind: "validation"; readonly report: ValidationReport };
-
 type PreflightFailure = Extract<PreflightResult, { ok: false }>;
-
-/**
- * Gate for `start`/`restart`: refuse unless the directory has a present, valid
- * config. First the config FILE must exist (env vars alone are not enough — a
- * folder without a config is not a configured agent). Then run the structural
- * validation with `liveness:false` (network probes only yield `waiting`, never
- * `error`, so skipping them keeps the verdict while avoiding bounded network
- * timeouts) and refuse on any `error` section. `waiting` (e.g. Ollama not up yet) is runtime-soft and never blocks.
- */
-export async function ensureStartable(
-  args: Pick<ParsedCliArgs, "configPath">,
-  env: Record<string, string | undefined> = process.env,
-  options: {
-    readonly cwd?: string;
-    readonly configPath?: string;
-    readonly verifiedRuntimeProvenanceDetail?: string;
-  } = {},
-): Promise<PreflightResult> {
-  const cwd = options.cwd ?? process.cwd();
-  const configPath = options.configPath ?? resolve(cwd, args.configPath ?? "mono-agent.config.json");
-  if (!(await pathExists(configPath))) {
-    return { ok: false, code: 2, kind: "missing-config", configPath };
-  }
-  const report = await validateMonoAgentFolder({
-    env,
-    cwd,
-    configPath,
-    liveness: false,
-    ignoreDuplicateKeys: true,
-
-    ...(options.verifiedRuntimeProvenanceDetail === undefined
-      ? {}
-      : { verifiedRuntimeProvenanceDetail: options.verifiedRuntimeProvenanceDetail }),
-  });
-  if (!report.structurallyValid) {
-    return { ok: false, code: 1, kind: "validation", report };
-  }
-  return { ok: true };
-}
 
 function printPreflightFailure(result: PreflightFailure): void {
   if (result.kind === "missing-config") {
@@ -165,15 +113,6 @@ function printPreflightFailure(result: PreflightFailure): void {
     }
   }
   process.stderr.write(ui.hint("Run `mono-agent validate` for the full report, fix the errors, then retry."));
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export async function runStart(

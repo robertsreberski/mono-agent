@@ -2,17 +2,17 @@ import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { promisify } from "node:util";
 import * as privateState from "../private-launchd-state.js";
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access,chmod,lstat,mkdir,mkdtemp,readFile,readdir,rm,symlink,writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { WorkerActivityTracker, trackResponderActivity } from "../worker-activity.js";
+import { afterEach,describe,expect,it,vi } from "vitest";
+import { WorkerActivityTracker,trackResponderActivity } from "../worker-activity.js";
 import { allowUnattendedMaintenanceStop } from "../launchd-maintenance-activity.js";
-import { probeWorkerActivity, publishWorkerActivity } from "../worker-activity-snapshot.js";
+import { probeWorkerActivity,publishWorkerActivity } from "../worker-activity-snapshot.js";
 import { writePrivateLaunchdState } from "../private-launchd-state.js";
 import { currentProcessIncarnation } from "../process-incarnation.js";
-import type { BackgroundLifecycleTarget } from "../background.js";
+import type { BackgroundLifecycleTarget } from "../launchd-lifecycle-lock.js";
 import type { AgentResponder } from "@mono-agent/contracts";
-import { bindProcessJobWakeContextToResponder, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { bindProcessJobWakeContextToResponder,runWithProcessJobWakeContext } from "../process-jobs-context.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();

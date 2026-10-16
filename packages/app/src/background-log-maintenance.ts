@@ -1,22 +1,25 @@
-import { logEmergencySize, logPermissionRepairNeeded, maintenanceCeilingReached, type MaintenanceActivityRequest } from "./launchd-maintenance-activity.js";
+import type { AdditionalLaunchdLogInspection,LaunchdLogMaintenanceDeps } from "./service/background/log-maintenance-types.js";
+import type { ManagedLaunchdLogMonitorOutcome,ManagedLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
+import { logEmergencySize,logPermissionRepairNeeded,maintenanceCeilingReached,type MaintenanceActivityRequest } from "./launchd-maintenance-activity.js";
 import {
-  bootstrap,
-  deriveLaunchdMaintenanceLabel,
-  kickstart,
-  launchdServiceInfo,
+bootstrap,
+deriveLaunchdMaintenanceLabel,
+kickstart,
+launchdServiceInfo,
 } from "./launchd.js";
-import type { LaunchctlRunner, LaunchdPaths } from "./launchd.js";
-import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
+import type { LaunchctlRunner,LaunchdPaths } from "./launchd.js";
+import type { LaunchdLogInspection,LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
 import { LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS } from "./launchd-logs.js";
 import {
-  lifecycleFailure,
-  maintenanceErrorMessage,
-  pollUntil,
-  uniquePids,
-  unloadLaunchdService,
+lifecycleFailure,
+maintenanceErrorMessage,
+pollUntil,
+uniquePids,
+unloadLaunchdService,
 } from "./background-lifecycle-utils.js";
 import type { PollOptions } from "./background-lifecycle-utils.js";
-import type { BackgroundDeps, BackgroundLifecycleTarget } from "./background.js";
+import type { LaunchdLogMaintenanceLifecycleDeps } from "./service/background/log-maintenance-types.js";
+import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import * as ui from "./ui.js";
 
 interface ManagedLaunchdLogInspectionDependencies {
@@ -40,71 +43,6 @@ export interface ManagedLaunchdLogMonitorDependencies extends ManagedLaunchdLogI
 
 export interface ManagedLaunchdLogMonitor {
   stop(): void;
-}
-
-export interface AdditionalLaunchdLogInspection {
-  readonly needsMaintenance: boolean;
-  readonly canMaintain: boolean;
-  readonly issues: readonly string[];
-}
-
-export interface AdditionalLaunchdLogMaintenanceResult {
-  readonly refusals: readonly string[];
-}
-
-/** Narrow mutation port shared by agent maintenance and the isolated web helper. */
-export interface LaunchdLogMaintenanceDeps {
-  /** Agent helper only; deliberately absent from web and explicit lifecycle mutations. */
-  readonly maintenanceNotNeeded?: () => Promise<void>;
-  readonly maintenanceCompleted?: () => Promise<void>;
-  readonly unattendedLogStop?: (request: MaintenanceActivityRequest) => Promise<boolean>;
-  readonly runner: LaunchctlRunner;
-  readonly getuid: () => number;
-  readonly now: () => number;
-  readonly sleep: (ms: number) => Promise<void>;
-  readonly stderr: (text: string) => void;
-  readonly inspectLaunchdLogs: BackgroundDeps["inspectLaunchdLogs"];
-  readonly rotateStoppedLaunchdLogs: BackgroundDeps["rotateStoppedLaunchdLogs"];
-  readonly readLaunchdLogMaintenanceIntent: BackgroundDeps["readLaunchdLogMaintenanceIntent"];
-  readonly beginLaunchdLogMaintenanceIntent: BackgroundDeps["beginLaunchdLogMaintenanceIntent"];
-  readonly markLaunchdLogMaintenanceStopped: BackgroundDeps["markLaunchdLogMaintenanceStopped"];
-  readonly markLaunchdLogMaintenanceRestoring: BackgroundDeps["markLaunchdLogMaintenanceRestoring"];
-  readonly clearLaunchdLogMaintenanceIntent: BackgroundDeps["clearLaunchdLogMaintenanceIntent"];
-  readonly verifyLaunchdPlist: BackgroundDeps["verifyLaunchdPlist"];
-  readonly isAlive: (pid: number) => boolean;
-  /** Optional bounded compatibility seam; it cannot read or mutate intent/journal state. */
-  readonly inspectAdditionalLaunchdLogArtifacts?: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-  ) => Promise<AdditionalLaunchdLogInspection>;
-  /** Runs only after durable stopped-writer proof and before core rotation. */
-  readonly maintainAdditionalLaunchdLogArtifacts?: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-  ) => Promise<AdditionalLaunchdLogMaintenanceResult>;
-  readonly recordAdditionalLaunchdLogRefusals?: (refusals: readonly string[]) => Promise<void>;
-  readonly recordMaintenancePhase?: (
-    phase: "inspecting" | "stopping" | "stopped" | "rotating" | "restoring" | "complete",
-  ) => Promise<void>;
-}
-
-export type ManagedLaunchdLogMonitorOutcome =
-  | "deferred-busy"
-  | "idle"
-  | "shared-only"
-  | "pending-artifact"
-  | "cooldown"
-  | "stopped"
-  | "helper-unloaded"
-  | "helper-running"
-  | "requested"
-  | "request-failed"
-  | "inspection-failed";
-
-export interface ManagedLaunchdLogMonitorStatus {
-  readonly version: 1;
-  readonly lastInspectionAt: string;
-  readonly wakeCount: number;
-  readonly lastOutcome: ManagedLaunchdLogMonitorOutcome;
-  readonly cooldownDeadline: string;
 }
 
 interface ManagedLaunchdLogWakeState {
@@ -372,7 +310,7 @@ function safeReporterText(raw: string): string {
 /** Run one authenticated, crash-recoverable stopped-writer log rotation pass. */
 export async function maintainLaunchdLogsOperation(
   target: BackgroundLifecycleTarget,
-  deps: BackgroundDeps,
+  deps: LaunchdLogMaintenanceLifecycleDeps,
   poll: PollOptions,
   acquireSharedLogLock: () => Promise<(() => Promise<void>) | undefined>,
 ): Promise<number> {
@@ -397,7 +335,7 @@ export async function maintainLaunchdLogsOperation(
 /** Acquire the shared lease after the caller already owns this agent's lifecycle. */
 export async function maintainLaunchdLogsWithLifecycleLockOperation(
   target: BackgroundLifecycleTarget,
-  deps: BackgroundDeps,
+  deps: LaunchdLogMaintenanceDeps,
   poll: PollOptions,
   acquireSharedLogLock: () => Promise<(() => Promise<void>) | undefined>,
 ): Promise<number> {

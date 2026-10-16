@@ -1,11 +1,11 @@
 import type { Stats } from "node:fs";
-import { link, lstat, mkdir, mkdtemp, open, readdir, realpath, rmdir, unlink } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { link,lstat,mkdir,mkdtemp,open,readdir,realpath,rmdir,unlink } from "node:fs/promises";
+import { basename,dirname,isAbsolute,join,relative,resolve,sep } from "node:path";
 
 import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 
 import { probeMemoryEmbeddingSelection } from "./memory-embedding-service.js";
-import type { WizardPlan } from "./wizard/answers.js";
+import type { WizardPlan } from "./setup/wizard-types.js";
 
 const DEFAULT_MANAGED_MEMORY_DIMENSION = 768;
 const BUJO_REPLAY_AUTHORITY_FILE = ".replay-projection-v1.json";
