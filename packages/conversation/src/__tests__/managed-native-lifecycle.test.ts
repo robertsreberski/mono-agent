@@ -201,7 +201,7 @@ it.skipIf(process.platform === "win32").each([
 it.each(["count", "bytes"])("protects busy exact sibling claims before reserving %s quota", async (quota) => {
   const older = `${bucket}#2000-01-01`, f = await setup(older), before = await readFile(f.canonicalPath), stats = await f.store.stats();
   const { store } = openStore(f.base, undefined, quota === "count" ? { maxConversations: 1 } : { maxStoreBytes: stats.bytes + 100 });
-  const internals = store as unknown as { acquireExactConversationClaim(id: string, tryOnly: boolean): Promise<{ release(): Promise<void> }> };
+  const internals = (store as unknown as { claims: { acquireExactConversationClaim(id: string, tryOnly: boolean): Promise<{ release(): Promise<void> }> } }).claims;
   const busy = await internals.acquireExactConversationClaim(older, true);
   try { for (let retry = 0; retry < 2; retry++) {
     await expect(store.append(`${bucket}#2000-01-02`, [{ role: "assistant", content: "Same-owner sibling update" }])).rejects.toThrow("quota");
@@ -336,7 +336,7 @@ it.each(["switch_canonical_directory_synced", "switch_source_retired"])("ordinar
 });
 it("does not probe sibling exact claims or native deletion while within limits", async () => {
   const f = await setup(`${bucket}#2000-01-01`), { store, native } = openStore(f.base, undefined, { maxConversations: 3 });
-  const exact = vi.spyOn(store as unknown as { acquireExactConversationClaim: (id: string, tryOnly: boolean) => Promise<unknown> }, "acquireExactConversationClaim");
+  const exact = vi.spyOn((store as unknown as { claims: { acquireExactConversationClaim: (id: string, tryOnly: boolean) => Promise<unknown> } }).claims, "acquireExactConversationClaim");
   const blocked = vi.spyOn(native, "deletionBlocked");
   await store.append("fictional-no-pruning", [{ role: "assistant", content: "Within limits" }]);
   expect(exact).not.toHaveBeenCalled(); expect(blocked).not.toHaveBeenCalled(); expect((await store.stats()).conversations).toBe(2);

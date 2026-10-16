@@ -13,8 +13,10 @@ import { currentHistoryProcessIncarnation, historyOwnerLiveness } from "../histo
 
 type Owner = { release(): Promise<void> };
 type Internals = {
+  claims: {
   acquireLogicalConversation(id: string, tryOnly?: boolean, signal?: AbortSignal): Promise<Owner>;
   acquireExactConversationClaim(id: string, tryOnly?: boolean, signal?: AbortSignal): Promise<Owner>;
+  };
 };
 const roots: string[] = [], children: ChildProcess[] = [], id = "fictional-incarnation-owner";
 const key = (id: string) => createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");
@@ -75,7 +77,7 @@ it("resolves a foreign incarnation once per owner per wait, polls kill(0), and r
 });
 for (const kind of ["logical", "exact"] as const) {
   const acquire = (f: Awaited<ReturnType<typeof fixture>>, signal?: AbortSignal) => kind === "logical"
-    ? f.internal.acquireLogicalConversation(id, !signal, signal) : f.internal.acquireExactConversationClaim(id, !signal, signal);
+    ? f.internal.claims.acquireLogicalConversation(id, !signal, signal) : f.internal.claims.acquireExactConversationClaim(id, !signal, signal);
   it(`${kind} reclaims a stale incarnation even though its PID belongs to this live process`, async () => {
     const f = await fixture(); seedClaim(f.path, kind, process.pid, f.stale);
     const owner = await acquire(f), row = claim(f.path, kind)!;
@@ -123,7 +125,7 @@ it("capacity recovery applies incarnation proof and retains old-format live rows
     for (let index = 0; index < 1_024; index++) insert.run(key(`fictional-capacity-${index}`), process.pid, "a".repeat(32), 0, index === 0 ? null : JSON.stringify(f.stale));
     db.exec("COMMIT");
   });
-  await (await f.internal.acquireLogicalConversation(id, true)).release();
+  await (await f.internal.claims.acquireLogicalConversation(id, true)).release();
   expect(database(f.path, (db) => db.prepare("SELECT count(*) AS count FROM session_claims").get()!.count)).toBe(1);
 });
 it("reclaims a valid marker with a stale v2 incarnation and a reused live PID", async () => {

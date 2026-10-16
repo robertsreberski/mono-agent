@@ -8,8 +8,8 @@ const [root, id, mode] = process.argv.slice(2);
 const store = createDurableHistoryStore({ root, ...(mode === "incarnation" ? { reconcileProviderSessionTurn: async () => ({ status: "absent" }), retireProviderSession: async () => { throw new Error("Unexpected retirement before kill"); } } : {}) });
 const alive = setInterval(() => {}, 60_000);
 if (mode === "cancel") {
-  const controller = new AbortController(), acquire = store.acquireLogicalConversation.bind(store), rootTransaction = store.acquireRootTransaction.bind(store);
-  store.acquireLogicalConversation = async (...args) => {
+  const controller = new AbortController(), acquire = store.claims.acquireLogicalConversation.bind(store.claims), rootTransaction = store.acquireRootTransaction.bind(store);
+  store.claims.acquireLogicalConversation = async (...args) => {
     const held = await acquire(...args);
     held.release = async () => { process.send({ phase: "unwind" }); await once(process, "disconnect"); };
     return held;
@@ -28,7 +28,7 @@ if (mode === "logical") {
   } });
   release = () => owner.abort();
 } else if (mode === "exact") {
-  const owner = await store.acquireExactConversationClaim(id); release = () => owner.release();
+  const owner = await store.claims.acquireExactConversationClaim(id); release = () => owner.release();
 } else {
   const key = createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");
   const shard = (Number.parseInt(key.slice(0, 8), 16) % 16).toString(16).padStart(2, "0");

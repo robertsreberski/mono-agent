@@ -36,6 +36,8 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
   const durableSource = (await readFile(new URL("../durable-history.ts", import.meta.url), "utf8"))
     .replaceAll('"@mono-agent/contracts"', JSON.stringify(contractsUrl))
     .replaceAll('"@mono-agent/turn/engine/owned-fs.js"', JSON.stringify(new URL("../../../turn/src/engine/owned-fs.js", import.meta.url).href))
+    .replaceAll('"./history/canonical/claims.js"', JSON.stringify(new URL("../../dist/history/canonical/claims.js", import.meta.url).href))
+    .replaceAll('"./history/canonical/files.js"', JSON.stringify(new URL("../../dist/history/canonical/files.js", import.meta.url).href))
     .replaceAll('"./history/canonical/codec.js"', JSON.stringify(new URL("../../dist/history/canonical/codec.js", import.meta.url).href))
     .replaceAll('"./history/canonical/identity.js"', JSON.stringify(new URL("../../dist/history/canonical/identity.js", import.meta.url).href))
     .replaceAll('"./history/canonical/record-contracts.js"', JSON.stringify(new URL("../../dist/history/canonical/record-contracts.js", import.meta.url).href))

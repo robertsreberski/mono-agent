@@ -1,41 +1,38 @@
-import { AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES,AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES,AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,AGENT_CONTEXT_IMPORT_VERSION,type AgentContextImportRequest,type AgentContextImportResult } from "@mono-agent/contracts";
-import { OwnedFileDamagedError,isOwned } from "@mono-agent/turn/engine/owned-fs.js";
-import type { RuntimeNativeEpochContext,RuntimeNativeJournalAuthority,RuntimeNativeJournalStorage } from "@mono-agent/turn/host/types";
-import { createHash,randomBytes } from "node:crypto";
-import { constants as fsConstants,type Stats } from "node:fs";
-import { chmod,lstat,mkdir,open,readdir,rename,rm } from "node:fs/promises";
-import { basename,dirname,isAbsolute,join,parse,resolve,sep } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { setTimeout as delay } from "node:timers/promises";
+import { AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES, AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES, AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES, AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, AGENT_CONTEXT_IMPORT_VERSION, type AgentContextImportRequest, type AgentContextImportResult } from "@mono-agent/contracts";
+import { OwnedFileDamagedError, isOwned } from "@mono-agent/turn/engine/owned-fs.js";
+import type { RuntimeNativeEpochContext, RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage } from "@mono-agent/turn/host/types";
+import { randomBytes } from "node:crypto";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { lstat, open, readdir, rename, rm } from "node:fs/promises";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type { HistoryMessage } from "./context/index.js";
-import type { ModelSwitchState,NativeTurnHistory } from "./durable-model-switch-contract.js";
-import { MAX_NATIVE_EPOCH_BYTES,MODEL_SWITCH_DIRECTORY,ModelSwitchCapacityError,recognizesModelSwitchBinding,switchDigest,switchHash,validateFrozenHandoffBudget,validateModelSwitchState,validateNativeTurnHistory,validateSwitchReference } from "./durable-model-switch-contract.js";
-import type { DurableTurnFence,DurableTurnReceipt,PendingTurnCandidate,PendingTurnInput,PendingTurnPayload } from "./durable-turn-contract.js";
-import { DurableTurnAlreadyCommittedError,PENDING_TURN_DIRECTORY,createPendingInitialInput,createPendingTurnPayload,durableTurnFenceDigest,pendingPayloadName,serializePendingTurnPayload } from "./durable-turn-contract.js";
-import { recognizesTurnCommit,validateTurnHistoryV3 } from "./durable-turn-history.js";
+import type { ModelSwitchState, NativeTurnHistory } from "./durable-model-switch-contract.js";
+import { MAX_NATIVE_EPOCH_BYTES, MODEL_SWITCH_DIRECTORY, ModelSwitchCapacityError, recognizesModelSwitchBinding, switchDigest, switchHash, validateFrozenHandoffBudget, validateModelSwitchState, validateNativeTurnHistory, validateSwitchReference } from "./durable-model-switch-contract.js";
+import type { DurableTurnFence, DurableTurnReceipt, PendingTurnCandidate, PendingTurnInput, PendingTurnPayload } from "./durable-turn-contract.js";
+import { DurableTurnAlreadyCommittedError, PENDING_TURN_DIRECTORY, createPendingInitialInput, createPendingTurnPayload, durableTurnFenceDigest, pendingPayloadName, serializePendingTurnPayload } from "./durable-turn-contract.js";
+import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-history.js";
 import type { PendingPayloadEntry } from "./durable-turn-payloads.js";
 import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
-import { pendingTurnDescriptor,projectTurnSettlement,turnCandidateDigest,turnInputDigest } from "./durable-turn-settlement.js";
-import { historyProcessIncarnationFromJson,type HistoryProcessIncarnation } from "./history-process-incarnation.js";
-import { currentHistoryProcessIncarnation,historyOwnerIncarnation,historyOwnerLiveness } from "./history-process-liveness.js";
-import { TruncatedHistoryRecordError,cloneMessage,historyRecordVersion,isRecord,lastCommitBinding,modelBinding,nativeExtension,parseDirtyFence,parseHistoryFile,preserveNativeHistory,serializeDirtyFence,serializeHistoryFile,validateAndCloneMessage,validateAppendMessages } from "./history/canonical/codec.js";
-import { currentJournal,deriveProviderSessionId,digestRunId,historyKey,logicalConversationIdForFence,normalizeConversationId,normalizeRunId,requiresExactConversationClaim } from "./history/canonical/identity.js";
-import { DEFAULT_MAX_MESSAGES,MAX_DIRTY_FENCE_BYTES,MAX_MESSAGE_ENVELOPE_BYTES,MAX_STORE_FILE_BYTES,STORE_VERSION,type CanonicalHistoryFile,type DirtyFence,type LoadedHistoryRecord } from "./history/canonical/record-contracts.js";
-import type { ConversationHistoryContextImport,ConversationHistoryExclusiveTurn,ConversationHistoryProviderSessionTurn,ConversationHistoryStore,ConversationHistoryTurnDrainOptions,ConversationHistoryTurnDrainResult,ConversationHistoryTurnInspector,ConversationHistoryTurnRecovery,CurrentJournalPresence,ManagedModelSwitchStorageLease,ManagedProviderSessionPreparation,ModelSwitchStorageSource,ModelSwitchStorageSupport,NativeHistoryAuthorityLease,PreparedHistoryAppend,ProviderSessionTurnBinding,ProviderSessionTurnCommitOptions } from "./history/contracts.js";
+import { pendingTurnDescriptor, projectTurnSettlement, turnCandidateDigest, turnInputDigest } from "./durable-turn-settlement.js";
+import { historyOwnerLiveness } from "./history-process-liveness.js";
+import { ACTIVE_MARKER_PATTERN, HistoryClaims, HistoryOwnerBusyError, LOCKS_DIRECTORY, LOGICAL_SESSION_LOCK_SHARDS, MAX_ACTIVE_MARKER_BYTES, MAX_SESSION_CLAIM_FILE_BYTES, ROOT_LOCK_FILE, TornCoordinationFileError, acquireCrossProcessLock, acquireExistingCrossProcessLock, acquireHistoryConversationQueue, acquireHistoryRootQueue, assertSessionClaimJournalIfPresent, ensureOwnerOnlyLockFile, isHistoryConversationQueued, isLogicalSessionShardJournalName, isLogicalSessionShardLockName, readActiveMarker, type ActiveMarker, type CrossProcessLock, type HeldConversation, type HeldExactConversationClaim, type HeldLogicalConversation } from "./history/canonical/claims.js";
+import { TruncatedHistoryRecordError, cloneMessage, historyRecordVersion, isRecord, lastCommitBinding, modelBinding, nativeExtension, parseDirtyFence, parseHistoryFile, preserveNativeHistory, serializeDirtyFence, serializeHistoryFile, validateAndCloneMessage, validateAppendMessages } from "./history/canonical/codec.js";
+import { ConcurrentHistoryMutationError, assertDirectoryIdentity, assertSameIdentity, assertSecureHistoryDirectory, assertSecureHistoryFile, createAndVerifyRoot, entryAbsentOrThrowOperational, fsyncDirectory, isErrno, noFollowFlag, type DirectoryIdentity } from "./history/canonical/files.js";
+import { currentJournal, deriveProviderSessionId, digestRunId, historyKey, logicalConversationIdForFence, normalizeConversationId, normalizeRunId, requiresExactConversationClaim } from "./history/canonical/identity.js";
+import { DEFAULT_MAX_MESSAGES, DIRTY_FENCE_PATTERN, DIRTY_FENCE_TEMP_PATTERN, MAX_DIRTY_FENCE_BYTES, MAX_MESSAGE_ENVELOPE_BYTES, MAX_STORE_FILE_BYTES, STORE_VERSION, type CanonicalHistoryFile, type DirtyFence, type LoadedHistoryRecord } from "./history/canonical/record-contracts.js";
+import type { ConversationHistoryContextImport, ConversationHistoryExclusiveTurn, ConversationHistoryProviderSessionTurn, ConversationHistoryStore, ConversationHistoryTurnDrainOptions, ConversationHistoryTurnDrainResult, ConversationHistoryTurnInspector, ConversationHistoryTurnRecovery, CurrentJournalPresence, ManagedModelSwitchStorageLease, ManagedProviderSessionPreparation, ModelSwitchStorageSource, ModelSwitchStorageSupport, NativeHistoryAuthorityLease, PreparedHistoryAppend, ProviderSessionTurnBinding, ProviderSessionTurnCommitOptions } from "./history/contracts.js";
 import { belongsToLogicalConversation } from "./history/conversation-id.js";
 import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
 import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
-import { MAX_NATIVE_HISTORY_ROOT_BYTES,NATIVE_HISTORY_ROOT_FILE,NATIVE_HISTORY_ROOT_TEMP,NativeHistoryRootStore } from "./native-history-root.js";
-import { ProviderSessionModelChangedError,uniqueSessionHandles,type ProviderSessionHandle } from "./session-runtime.js";
+import { MAX_NATIVE_HISTORY_ROOT_BYTES, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, NativeHistoryRootStore } from "./native-history-root.js";
+import { ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
 import { assertSessionModelKey } from "./sessions/model-key.js";
 
 const DEFAULT_MAX_STORE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_CONVERSATIONS = 10_000;
 const DEFAULT_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1_000;
 const HISTORY_FILE_SUFFIX = ".history.json";
-const LOCKS_DIRECTORY = ".locks";
 const TOOL_HISTORY_DIRECTORY = "tool-history";
-const ROOT_LOCK_FILE = "root.sqlite";
 const NATIVE_OPERATION_PATTERN = /^\.native-history-op\.([a-f0-9]{64})\.json$/u;
 const MAX_NATIVE_OPERATION_BYTES = 2 * MAX_STORE_FILE_BYTES + 4096;
 type NativeHistoryIo = {
@@ -48,21 +45,11 @@ interface NativeHistoryOperation {
   readonly source: NativeTurnHistory; readonly next: CanonicalHistoryFile | null;
   readonly timestamp: number;
 }
-const LOGICAL_SESSION_LOCK_SHARDS = 16;
-const MAX_SESSION_CLAIMS_PER_SHARD = 1_024;
-const MAX_SESSION_CLAIM_FILE_BYTES = 1024 * 1024;
-const MAX_SESSION_CLAIM_JOURNAL_BYTES = 2 * MAX_SESSION_CLAIM_FILE_BYTES;
-const LOGICAL_SESSION_SHARD_LOCK_PATTERN = /^logical-session-shard-([a-f0-9]{2})\.sqlite$/u;
-const LOGICAL_SESSION_SHARD_JOURNAL_PATTERN = /^logical-session-shard-([a-f0-9]{2})\.sqlite-journal$/u;
 const TEMP_FILE_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.[a-f0-9]{24}\.tmp$/u;
 const HISTORY_FILE_PATTERN = /^[a-f0-9]{64}\.history\.json$/u;
 /** One rule for canonical stages: a damaged one is charged and kept, never reclaimed. */
 const damagedStage = (info: Stats): boolean => !isOwned(info) || info.size > MAX_STORE_FILE_BYTES;
 const LEGACY_CONVERSATION_LOCK_PATTERN = /^[a-f0-9]{64}\.sqlite$/u;
-const ACTIVE_MARKER_PATTERN = /^([a-f0-9]{64})\.([0-9]+)\.([a-f0-9]{32})\.active$/u;
-const DIRTY_FENCE_PATTERN = /^([a-f0-9]{64})\.dirty\.json$/u;
-const DIRTY_FENCE_TEMP_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.([a-f0-9]{24})\.dirty\.tmp$/u;
-const MAX_ACTIVE_MARKER_BYTES = 4 * 1024;
 // JSON can escape every decoded byte as six bytes. The remaining allowance
 // covers both message envelopes, the fixed provenance, timestamp and v2 record.
 const MAX_CONTEXT_IMPORT_RECORD_BYTES = 6 * (
@@ -70,13 +57,6 @@ const MAX_CONTEXT_IMPORT_RECORD_BYTES = 6 * (
   + AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
   + AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
 ) + (2 * MAX_MESSAGE_ENVELOPE_BYTES) + (64 * 1024);
-
-// Config reloads can briefly leave old and new harness instances alive in the
-// same owner process. Module-level queues serialize both same-conversation
-// read/modify/write work and root-wide retention accounting across instances.
-const PROCESS_APPEND_QUEUES = new Map<string, Promise<void>>();
-const PROCESS_LOGICAL_SESSION_QUEUES = new Map<string, Promise<void>>();
-const PROCESS_ROOT_QUEUES = new Map<string, Promise<void>>();
 const PROCESS_POST_COMMIT_FAILURES = new Map<string, { count: number; lastError?: string }>();
 
 export interface DurableHistoryStoreOptions {
@@ -155,11 +135,6 @@ export interface DurableHistoryStoreStats {
   };
 }
 
-interface DirectoryIdentity {
-  readonly dev: number;
-  readonly ino: number;
-}
-
 interface ActiveStage {
   readonly logicalConversationKey?: string;
   readonly conversationKey: string;
@@ -167,43 +142,6 @@ interface ActiveStage {
   readonly temporaryPath: string;
   readonly bytes: number;
 }
-
-interface ActiveMarker {
-  readonly path: string;
-  readonly conversationKey: string;
-  readonly pid: number;
-  readonly token: string;
-  readonly damaged?: true;
-  readonly incarnation?: HistoryProcessIncarnation | undefined;
-}
-
-interface HeldConversation {
-  readonly logical: HeldLogicalConversation;
-  assertOwned(): Promise<void>;
-  readonly marker: ActiveMarker;
-  readonly rootIdentity: DirectoryIdentity;
-  release(): Promise<void>;
-}
-
-interface HeldLogicalConversation {
-  assertOwned(): Promise<void>;
-  readonly logicalConversationId: string;
-  readonly rootIdentity: DirectoryIdentity;
-  release(): Promise<void>;
-}
-
-interface HeldExactConversationClaim {
-  readonly conversationId: string;
-  readonly rootIdentity: DirectoryIdentity;
-  release(): Promise<void>;
-}
-
-class HistoryOwnerBusyError extends Error {
-  readonly code = "ERR_HARNESS_WRITER_BUSY";
-  readonly retryable = true;
-}
-/** Only emitted after securely reading a marker/fence; never an I/O error. */
-class TornCoordinationFileError extends Error {}
 function rethrowResetAcquisition(error: unknown): never {
   if (error instanceof OwnedFileDamagedError) throw new HistoryResetDamagedError([error.entryName], error);
   throw error;
@@ -226,10 +164,6 @@ interface RootAccounting {
   native?: Promise<Awaited<ReturnType<RuntimeNativeJournalStorage["inventory"]>>>;
   switches?: Promise<Awaited<ReturnType<ModelSwitchPayloadStore["inventory"]>> & { nativeBytes: number; nativeStagedBytes: number }>;
   operations?: Promise<{ bytes: number; reserved: number; keys: Set<string> }>;
-}
-
-interface CrossProcessLock {
-  release(): Promise<void>;
 }
 
 interface CommittedEntry {
@@ -259,6 +193,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private readonly maxStagedBytes: number;
   private readonly maxConversations: number;
   private readonly maxAgeMs: number;
+  private readonly claims: HistoryClaims;
   private readonly now: () => number;
   private readonly retireProviderSession: ((providerSessionId: string, modelKey?: string) => Promise<void>) | undefined;
   private rootReady: Promise<DirectoryIdentity> | undefined;
@@ -307,6 +242,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     this.inspectProviderTurn = options.reconcileProviderSessionTurn;
     this.providerSessionReconciliation = this.inspectProviderTurn === undefined ? undefined : "v1";
     this.root = root;
+    this.claims = new HistoryClaims({
+      root,
+      ensureRoot: () => this.ensureRoot(),
+      ensureLocksRoot: () => this.ensureLocksRoot(),
+      noteDamagedEntry: (name) => this.noteDamagedEntry(name),
+    });
     this.maxMessages = maxMessages;
     this.maxStoreBytes = maxStoreBytes;
     this.maxStagedBytes = maxStagedBytes;
@@ -861,7 +802,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async resumeInactiveNativeDeletions(rootIdentity: DirectoryIdentity, nativeIo: NativeHistoryIo,
     committingOwner: HeldLogicalConversation, phase: "prepare" | "maintenance"): Promise<void> {
     if (!this.nativeJournalStorage) return;
-    const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+    const active = new Set((await this.claims.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     const fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
     for (const key of [...fences.damaged.keys(), ...fences.incomplete.keys()]) active.add(key);
     for (const operation of await this.nativeOperationOwners(rootIdentity)) {
@@ -871,9 +812,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined;
       try {
         try {
-          owner = committingOwner.logicalConversationId === logicalId ? committingOwner : await this.acquireLogicalConversation(logicalId, true);
-          if (requiresExactConversationClaim(id)) exact = await this.acquireExactConversationClaim(id, true);
-          if (!await this.legacyLockAvailable(historyKey(id))) continue;
+          owner = committingOwner.logicalConversationId === logicalId ? committingOwner : await this.claims.acquireLogicalConversation(logicalId, true);
+          if (requiresExactConversationClaim(id)) exact = await this.claims.acquireExactConversationClaim(id, true);
+          if (!await this.claims.legacyLockAvailable(historyKey(id))) continue;
           await this.finishNativeOperation(operation, rootIdentity, () => owner!.assertOwned(), nativeIo);
         } finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
       } catch (error) {
@@ -923,7 +864,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try { await this.nativeHistoryRoot(rootIdentity).read(); }
     catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) throw error; throw new HistoryResetDamagedError([NATIVE_HISTORY_ROOT_FILE], error); }
     try {
-      const markers = await this.scanActiveMarkers(false), fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
+      const markers = await this.claims.scanActiveMarkers(false), fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
       const names = markers.filter((entry) => entry.conversationKey === key && entry.damaged).map((entry) => entry.path);
       if (fences.damaged.has(key)) names.push(fences.damaged.get(key)!);
       if (names.length) throw new HistoryResetDamagedError(names);
@@ -963,7 +904,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   async resetLogicalConversation(logicalConversationId: string): Promise<void> {
     const logicalId = normalizeConversationId(logicalConversationId);
     await this.assertResetReadable(logicalId, await this.ensureRoot());
-    const heldLogical = await this.acquireLogicalConversation(logicalId).catch(rethrowResetAcquisition);
+    const heldLogical = await this.claims.acquireLogicalConversation(logicalId).catch(rethrowResetAcquisition);
     let heldExact: HeldExactConversationClaim | undefined;
     try {
       const rootIdentity = heldLogical.rootIdentity;
@@ -974,7 +915,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // long-held physical shard transaction, avoiding both sibling blocking
       // and same-shard re-entrancy while the reset visits rollover children.
       if (requiresExactConversationClaim(logicalId)) {
-        heldExact = await this.acquireExactConversationClaim(logicalId);
+        heldExact = await this.claims.acquireExactConversationClaim(logicalId);
       }
       const conversationIds = new Set<string>();
       const unattributableNames = new Set<string>();
@@ -1180,7 +1121,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async beginExclusiveTurn(conversationId: string, signal?: AbortSignal): Promise<ConversationHistoryExclusiveTurn> {
     signal?.throwIfAborted();
     const normalizedId = normalizeConversationId(conversationId);
-    const heldLogical = await this.acquireLogicalConversation(logicalConversationIdForFence(normalizedId), false, signal);
+    const heldLogical = await this.claims.acquireLogicalConversation(logicalConversationIdForFence(normalizedId), false, signal);
     let heldExact: HeldExactConversationClaim | undefined;
     let marker: ActiveMarker | undefined;
     let settled = false;
@@ -1201,7 +1142,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         });
         if (releaseRoot !== undefined) {
           try {
-            await this.removeActiveMarker(marker).catch((error) => errors.push(error));
+            await this.claims.removeActiveMarker(marker).catch((error) => errors.push(error));
           } finally {
             await releaseRoot().catch((error) => errors.push(error));
           }
@@ -1215,7 +1156,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     };
     try {
       if (requiresExactConversationClaim(normalizedId)) {
-        heldExact = await this.acquireExactConversationClaim(normalizedId, false, signal);
+        heldExact = await this.claims.acquireExactConversationClaim(normalizedId, false, signal);
       }
       this.requireNativeCapability(await this.readRecord(normalizedId, heldLogical.rootIdentity), "native epoch transition", "exclusive host-only mutation");
       const settlementOwner = await this.acquireConversation(normalizedId, heldLogical, heldExact, false, signal);
@@ -1232,7 +1173,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         );
         requireSettledFence(await this.findDirtyFence(historyKey(normalizedId), locksIdentity));
         signal?.throwIfAborted();
-        marker = await this.createActiveMarker(historyKey(normalizedId), locksIdentity);
+        marker = await this.claims.createActiveMarker(historyKey(normalizedId), locksIdentity);
       } finally {
         await releaseRoot();
       }
@@ -1796,7 +1737,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let candidates;
     try {
       signal?.throwIfAborted();
-      const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+      const active = new Set((await this.claims.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
       // The root transaction excludes new marker publication. Dead owners' torn
       // temps carry no authoritative payload and need no parsed conversation ID.
       await this.pendingPayloads(rootIdentity).collectInactiveTemps(new Set([...active, ...(excludedKey ? [excludedKey] : [])]), {
@@ -2048,7 +1989,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     try {
       const entries = await this.scanCommittedEntries(rootIdentity, false);
-      const active = await this.scanActiveMarkers(true);
+      const active = await this.claims.scanActiveMarkers(true);
       const maintenance = PROCESS_POST_COMMIT_FAILURES.get(this.root);
       const switches = await this.modelSwitchFootprint(rootIdentity);
       const operations = await this.nativeOperationFootprint(rootIdentity);
@@ -2132,7 +2073,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private createNativePreparedAppend(stage: ActiveStage, operation: NativeHistoryOperation, held: HeldConversation, keepOwner: boolean, onSettled?: () => void, settles = false): PreparedHistoryAppend {
     let state: "prepared" | "committed" | "aborted" = "prepared", pending = Promise.resolve();
     const serialize = (action: () => Promise<void>) => { const current = pending.then(action, action); pending = current.catch(() => {}); return current; };
-    const release = async () => { if (!keepOwner) { await this.removeActiveMarker(held.marker); await held.release(); onSettled?.(); } };
+    const release = async () => { if (!keepOwner) { await this.claims.removeActiveMarker(held.marker); await held.release(); onSettled?.(); } };
     return {
       commit: async () => await serialize(async () => {
         if (state === "committed") return; if (state === "aborted") throw new Error("Cannot commit an aborted history append.");
@@ -2158,7 +2099,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       abort: async () => await serialize(async () => {
         if (state !== "prepared") return; state = "aborted";
         const unlock = await this.acquireRootTransaction(held.rootIdentity);
-        try { await rm(stage.temporaryPath, { force: true }); await fsyncDirectory(this.root, held.rootIdentity); await this.removeActiveMarker(held.marker); }
+        try { await rm(stage.temporaryPath, { force: true }); await fsyncDirectory(this.root, held.rootIdentity); await this.claims.removeActiveMarker(held.marker); }
         finally { await unlock(); await held.release(); onSettled?.(); }
       }),
     };
@@ -2199,7 +2140,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       (await this.scanCommittedEntries(rootIdentity, true))
         .map((entry) => entry.name.slice(0, -HISTORY_FILE_SUFFIX.length)),
     );
-    const activeKeys = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+    const activeKeys = new Set((await this.claims.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     for (const key of (await this.nativeOperationFootprint(rootIdentity)).keys) committedKeys.add(key);
     const reclaimable = fences
       .filter((fence) => (
@@ -2363,7 +2304,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           recordPostCommitMaintenanceFailure(this.root, error);
         } finally {
           if (published && !keepOwner) {
-            await this.removeActiveMarker(held.marker).catch((error) => {
+            await this.claims.removeActiveMarker(held.marker).catch((error) => {
               recordPostCommitMaintenanceFailure(this.root, error);
             });
           }
@@ -2390,7 +2331,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           // a transient stage-unlink failure must not leave a live-PID marker
           // consuming retention and staging capacity until daemon restart.
           try {
-            await this.removeActiveMarker(held.marker);
+            await this.claims.removeActiveMarker(held.marker);
           } catch (error) {
             cleanupErrors.push(error);
           }
@@ -2509,10 +2450,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined, published = false;
           try {
             owner = logicalConversationIdForFence(record.conversationId) === committingOwner.logicalConversationId
-              ? committingOwner : await this.acquireLogicalConversation(logicalConversationIdForFence(record.conversationId), true);
-            if (requiresExactConversationClaim(record.conversationId)) exact = await this.acquireExactConversationClaim(record.conversationId, true);
+              ? committingOwner : await this.claims.acquireLogicalConversation(logicalConversationIdForFence(record.conversationId), true);
+            if (requiresExactConversationClaim(record.conversationId)) exact = await this.claims.acquireExactConversationClaim(record.conversationId, true);
             const operation: NativeHistoryOperation = { version: 3, disposition: "D", source: this.nativeCanonical(record), next: null, timestamp: 0 };
-            const assertOwned = async () => { await owner!.assertOwned(); if ((await this.scanActiveMarkers(false)).some((marker) => marker.conversationKey === historyKey(record.conversationId))) throw new Error("Retention victim acquired ownership"); };
+            const assertOwned = async () => { await owner!.assertOwned(); if ((await this.claims.scanActiveMarkers(false)).some((marker) => marker.conversationKey === historyKey(record.conversationId))) throw new Error("Retention victim acquired ownership"); };
             await assertOwned(); await this.publishNativeOperation(operation, rootIdentity); published = true;
             await this.finishNativeOperation(operation, rootIdentity, assertOwned, nativeIo);
             replan = true;
@@ -2538,7 +2479,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const key = historyKey(record.conversationId);
         await this.removePendingConversation(key, rootIdentity, async () => {
           await assertDirectoryIdentity(this.root, rootIdentity);
-          if ((await this.scanActiveMarkers(false)).some((marker) => marker.conversationKey === key)
+          if ((await this.claims.scanActiveMarkers(false)).some((marker) => marker.conversationKey === key)
             || await this.findDirtyFence(key, await this.ensureLocksRoot())) throw new Error("Retention victim acquired pending ownership.");
         });
         count--; bytes -= entry.size;
@@ -2564,7 +2505,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }> {
     const entries = await this.scanCommittedEntries(rootIdentity, true);
     const protectedNames = new Set(
-      (await this.scanActiveMarkers(true)).map((marker) => `${marker.conversationKey}${HISTORY_FILE_SUFFIX}`),
+      (await this.claims.scanActiveMarkers(true)).map((marker) => `${marker.conversationKey}${HISTORY_FILE_SUFFIX}`),
     );
     // Pending execution/compaction owners cannot be quota/age-evicted before
     // explicit settlement. No native inspection occurs under this transaction.
@@ -2614,11 +2555,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // actually needed. Stop as soon as both quota excess and age are covered.
       if (projectedCount - candidates.length <= this.maxConversations && projectedBytes - removableBytes <= this.maxStoreBytes
         && this.now() - entry.mtimeMs <= this.maxAgeMs) break;
-      if (!await this.legacyLockAvailable(entry.name.slice(0, 64))) continue;
+      if (!await this.claims.legacyLockAvailable(entry.name.slice(0, 64))) continue;
       const record = records.get(entry.name);
       if (record?.native !== undefined && requiresExactConversationClaim(record.conversationId)) {
         let exact: HeldExactConversationClaim | undefined;
-        try { exact = await this.acquireExactConversationClaim(record.conversationId, true); }
+        try { exact = await this.claims.acquireExactConversationClaim(record.conversationId, true); }
         catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; continue; }
         finally { await exact?.release(); }
       }
@@ -2656,7 +2597,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async scanStagedBytes(rootIdentity: DirectoryIdentity): Promise<number> {
     await assertDirectoryIdentity(this.root, rootIdentity);
     const activeConversationKeys = new Set(
-      (await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey),
+      (await this.claims.scanActiveMarkers(true)).map((marker) => marker.conversationKey),
     );
     // Published pending inputs remain charged after a crash/marker removal.
     // They are not abandoned canonical staging and require owner-held recovery.
@@ -2696,7 +2637,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   ): Promise<CommittedEntry[]> {
     await assertDirectoryIdentity(this.root, rootIdentity);
     const names = (await readdir(this.root)).sort();
-    const activeConversationKeys = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+    const activeConversationKeys = new Set((await this.claims.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     const entries: CommittedEntry[] = [];
     let removedTemp = false;
     for (const name of names) {
@@ -2769,7 +2710,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
 
   private async acquireRootTransaction(rootIdentity: DirectoryIdentity, signal?: AbortSignal): Promise<() => Promise<void>> {
-    const releaseProcess = await acquireQueue(PROCESS_ROOT_QUEUES, this.root, signal);
+    const releaseProcess = await acquireHistoryRootQueue(this.root, signal);
     try {
       await assertDirectoryIdentity(this.root, rootIdentity);
       const locksIdentity = await this.ensureLocksRoot();
@@ -2811,7 +2752,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (exactFence !== undefined && exactFence.conversationId !== conversationId) {
       throw new Error("Physical conversation does not belong to the held exact-conversation claim.");
     }
-    const heldLogical = logicalFence ?? await this.acquireLogicalConversation(expectedLogicalId, tryOnly, signal);
+    const heldLogical = logicalFence ?? await this.claims.acquireLogicalConversation(expectedLogicalId, tryOnly, signal);
     const ownsLogicalFence = logicalFence === undefined;
     const conversationKey = historyKey(conversationId);
     let heldExact = exactFence;
@@ -2823,11 +2764,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try {
       signal?.throwIfAborted();
       if (requiresExactConversationClaim(conversationId) && heldExact === undefined) {
-        heldExact = await this.acquireExactConversationClaim(conversationId, tryOnly, signal);
+        heldExact = await this.claims.acquireExactConversationClaim(conversationId, tryOnly, signal);
         ownsExactFence = true;
       }
-      if (tryOnly && PROCESS_APPEND_QUEUES.has(this.queueKey(conversationId))) throw new HistoryOwnerBusyError("Physical history owner is busy.");
-      releaseProcess = await acquireQueue(PROCESS_APPEND_QUEUES, this.queueKey(conversationId), signal);
+      if (tryOnly && isHistoryConversationQueued(this.queueKey(conversationId))) throw new HistoryOwnerBusyError("Physical history owner is busy.");
+      releaseProcess = await acquireHistoryConversationQueue(this.queueKey(conversationId), signal);
       rootIdentity = await this.ensureRoot();
       const locksIdentity = await this.ensureLocksRoot();
       // Logical/exact owner rows already serialize every physical mutation.
@@ -2850,7 +2791,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await this.retireInactiveDirtyFences(rootIdentity, locksIdentity, conversationKey);
         // Cancellation ends here: marker publication and recovery finish uncancelled.
         signal?.throwIfAborted();
-        marker = await this.createActiveMarker(conversationKey, locksIdentity);
+        marker = await this.claims.createActiveMarker(conversationKey, locksIdentity);
       } finally {
         await releaseRoot();
       }
@@ -2890,7 +2831,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const releaseRoot = await this.acquireRootTransaction(rootIdentity).catch(() => undefined);
         if (releaseRoot !== undefined) {
           try {
-            await this.removeActiveMarker(marker).catch(() => undefined);
+            await this.claims.removeActiveMarker(marker).catch(() => undefined);
           } finally {
             await releaseRoot();
           }
@@ -2907,204 +2848,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async acquireLogicalConversation(
-    logicalConversationId: string,
-    tryOnly = false,
-    signal?: AbortSignal,
-  ): Promise<HeldLogicalConversation> {
-    signal?.throwIfAborted();
-    if (tryOnly && PROCESS_LOGICAL_SESSION_QUEUES.has(`${this.root}\0${historyKey(logicalConversationId)}`)) throw new HistoryOwnerBusyError("Logical history owner is busy.");
-    const releaseProcess = await acquireQueue(
-      PROCESS_LOGICAL_SESSION_QUEUES,
-      `${this.root}\0${historyKey(logicalConversationId)}`,
-      signal,
-    );
-    try {
-      const rootIdentity = await this.ensureRoot();
-      const locksIdentity = await this.ensureLocksRoot();
-      const lock = await acquireSessionClaim(
-        join(this.root, LOCKS_DIRECTORY, logicalSessionShardLockName(historyKey(logicalConversationId))),
-        locksIdentity,
-        sessionClaimKey("logical", logicalConversationId),
-        tryOnly,
-        signal,
-      );
-      let released = false;
-      return {
-        logicalConversationId,
-        rootIdentity,
-        assertOwned: async (): Promise<void> => {
-          if (released) throw new Error("History logical ownership has been released.");
-          await assertDirectoryIdentity(this.root, rootIdentity);
-          await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), locksIdentity);
-        },
-        release: async (): Promise<void> => {
-          if (released) return;
-          released = true;
-          try {
-            await lock.release();
-          } finally {
-            releaseProcess();
-          }
-        },
-      };
-    } catch (error) {
-      releaseProcess();
-      throw error;
-    }
-  }
-
-  private async acquireExactConversationClaim(
-    conversationId: string,
-    tryOnly = false,
-    signal?: AbortSignal,
-  ): Promise<HeldExactConversationClaim> {
-    signal?.throwIfAborted();
-    const rootIdentity = await this.ensureRoot();
-    const locksIdentity = await this.ensureLocksRoot();
-    const lock = await acquireSessionClaim(
-      join(this.root, LOCKS_DIRECTORY, logicalSessionShardLockName(historyKey(conversationId))),
-      locksIdentity,
-      sessionClaimKey("exact", conversationId),
-      tryOnly,
-      signal,
-    );
-    let released = false;
-    return {
-      conversationId,
-      rootIdentity,
-      release: async (): Promise<void> => {
-        if (released) return;
-        released = true;
-        await lock.release();
-      },
-    };
-  }
-
   private async releaseConversation(held: HeldConversation, rootIdentity: DirectoryIdentity): Promise<void> {
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     try {
-      await this.removeActiveMarker(held.marker);
+      await this.claims.removeActiveMarker(held.marker);
     } finally {
       await releaseRoot();
       await held.release();
     }
-  }
-
-  private async createActiveMarker(
-    conversationKey: string,
-    locksIdentity: DirectoryIdentity,
-  ): Promise<ActiveMarker> {
-    const token = randomBytes(16).toString("hex"), incarnation = await currentHistoryProcessIncarnation();
-    const marker: ActiveMarker = {
-      path: join(this.root, LOCKS_DIRECTORY, `${conversationKey}.${process.pid}.${token}.active`),
-      conversationKey,
-      pid: process.pid,
-      token, incarnation,
-    };
-    const body = Buffer.from(`${JSON.stringify({
-      version: 1,
-      conversationKey,
-      pid: process.pid,
-      token, incarnation,
-    })}\n`, "utf8");
-    let handle;
-    let complete = false;
-    try {
-      handle = await open(
-        marker.path,
-        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(),
-        0o600,
-      );
-      await handle.writeFile(body);
-      await handle.chmod(0o600);
-      await handle.sync();
-      const info = await handle.stat();
-      assertSecureHistoryFile(info, marker.path);
-      if (info.size !== body.byteLength) throw new Error(`History active marker ${marker.path} was not written completely.`);
-      complete = true;
-    } finally {
-      await handle?.close().catch(() => undefined);
-      if (!complete) await rm(marker.path, { force: true }).catch(() => undefined);
-    }
-    try {
-      await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
-      return marker;
-    } catch (error) {
-      await rm(marker.path, { force: true }).catch(() => undefined);
-      throw error;
-    }
-  }
-
-  private async removeActiveMarker(marker: ActiveMarker): Promise<void> {
-    const locksIdentity = await this.ensureLocksRoot();
-    await rm(marker.path, { force: true });
-    await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
-  }
-
-  private async scanActiveMarkers(cleanDead: boolean): Promise<readonly ActiveMarker[]> {
-    const locksRoot = join(this.root, LOCKS_DIRECTORY);
-    const locksIdentity = await this.ensureLocksRoot();
-    await assertDirectoryIdentity(locksRoot, locksIdentity);
-    const markers: ActiveMarker[] = [], ownerLive = historyOwnerLiveness();
-    let removed = false;
-    for (const name of (await readdir(locksRoot)).sort()) {
-      if (
-        name === ROOT_LOCK_FILE
-        || isLogicalSessionShardLockName(name)
-      ) {
-        const path = join(locksRoot, name);
-        assertSecureHistoryFile(await lstat(path), path);
-        continue;
-      }
-      if (isLogicalSessionShardJournalName(name)) {
-        await assertSessionClaimJournalIfPresent(join(locksRoot, name));
-        continue;
-      }
-      // Fences are owner-scoped and classified by scanDirtyFences.
-      if (DIRTY_FENCE_PATTERN.test(name) || DIRTY_FENCE_TEMP_PATTERN.test(name)) continue;
-      const match = ACTIVE_MARKER_PATTERN.exec(name);
-      if (match === null) continue; // unrelated names are never read or deleted
-      const path = join(locksRoot, name);
-      let marker: ActiveMarker = { path, conversationKey: match[1]!, pid: Number.parseInt(match[2]!, 10), token: match[3]! };
-      try {
-        marker = await readActiveMarker(path);
-      } catch (error) {
-        await this.assertLocksIdentity(locksIdentity);
-        if (entryAbsentOrThrowOperational(error)) continue;
-        // Only a successful owned-file read may prove a torn liveness marker.
-        // A dead writer cannot finish it; there is no recoverable payload here.
-        if (error instanceof TornCoordinationFileError && cleanDead && !await ownerLive(marker.pid)) {
-          await rm(path); removed = true; continue;
-        }
-        if (error instanceof TornCoordinationFileError) { markers.push(marker); continue; }
-        this.noteDamagedEntry(name); markers.push({ ...marker, damaged: true }); continue;
-      }
-      // Valid markers and owned torn markers are both reclaimable after owner death.
-      if (cleanDead && !await ownerLive(marker.pid, marker.incarnation)) { await rm(path); removed = true; }
-      else markers.push(marker);
-    }
-    if (removed) await fsyncDirectory(locksRoot, locksIdentity);
-    return markers;
-  }
-
-  /** Probe only a needed recovery/retention owner through SQLite, never raw
-   * open/close: closing a raw fd can release this process's fcntl locks. */
-  private async legacyLockAvailable(key: string): Promise<boolean> {
-    const identity = await this.ensureLocksRoot(); let lock: CrossProcessLock | undefined;
-    try { lock = await acquireExistingCrossProcessLock(join(this.root, LOCKS_DIRECTORY, `${key}.sqlite`), identity, true); return true; }
-    catch (error) {
-      await this.assertLocksIdentity(identity);
-      if (entryAbsentOrThrowOperational(error)) return true;
-      if (!(error instanceof HistoryOwnerBusyError)) this.noteDamagedEntry(`${key}.sqlite`);
-      return false;
-    }
-    finally { await lock?.release(); }
-  }
-
-  private async assertLocksIdentity(identity: DirectoryIdentity): Promise<void> {
-    await assertDirectoryIdentity(this.root, await this.ensureRoot());
-    await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), identity);
   }
 
   /** A malformed or insecure conversation-keyed fence is that owner's damage:
@@ -3150,7 +2901,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           remove = true;
         }
       } catch (error) {
-        await this.assertLocksIdentity(locksIdentity);
+        await this.claims.assertLocksIdentity(locksIdentity);
         if (entryAbsentOrThrowOperational(error)) continue;
         const temporaryOwner = tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name);
         if (error instanceof TornCoordinationFileError && temporaryOwner && cleanDeadTemps
@@ -3179,7 +2930,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     excludedConversationKey: string,
   ): Promise<void> {
     if (this.retireProviderSession === undefined) return;
-    const activeKeys = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+    const activeKeys = new Set((await this.claims.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     const fences = await this.scanDirtyFences(locksIdentity, true);
     if (fences.length === 0) return;
     const inventory = await this.switchInventory(rootIdentity);
@@ -3525,33 +3276,6 @@ function normalizeNonNegativeInteger(value: number, name: string): number {
   return value;
 }
 
-async function acquireQueue(queues: Map<string, Promise<void>>, key: string, signal?: AbortSignal): Promise<() => void> {
-  signal?.throwIfAborted();
-  const prior = (queues.get(key) ?? Promise.resolve()).catch(() => undefined);
-  let releaseGate!: () => void;
-  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-  const tail = prior.then(() => gate);
-  queues.set(key, tail);
-  let released = false, onAbort: (() => void) | undefined;
-  const release = (): void => {
-    if (released) return;
-    released = true; releaseGate();
-    // An aborted tail still depends on the live predecessor; successors cannot bypass it.
-    void prior.finally(() => { if (queues.get(key) === tail) queues.delete(key); });
-  };
-  try {
-    await new Promise<void>((resolve, reject) => {
-      onAbort = () => reject(signal!.reason);
-      signal?.addEventListener("abort", onAbort, { once: true });
-      if (signal?.aborted) onAbort();
-      void prior.then(resolve);
-    });
-    signal?.throwIfAborted();
-    return release;
-  } catch (error) { release(); throw error; }
-  finally { if (onAbort) signal?.removeEventListener("abort", onAbort); }
-}
-
 function recordPostCommitMaintenanceFailure(root: string, error: unknown): void {
   const previous = PROCESS_POST_COMMIT_FAILURES.get(root);
   PROCESS_POST_COMMIT_FAILURES.set(root, {
@@ -3651,30 +3375,6 @@ function retainHistoryMessages(messages: readonly HistoryMessage[], maxMessages:
   return retained.flat();
 }
 
-function sessionClaimKey(kind: "exact" | "logical", conversationId: string): string {
-  return createHash("sha256")
-    .update("mono-agent-history-session-claim-v1\0")
-    .update(kind, "utf8")
-    .update("\0")
-    .update(conversationId, "utf8")
-    .digest("hex");
-}
-
-function logicalSessionShardLockName(logicalConversationKey: string): string {
-  const shard = Number.parseInt(logicalConversationKey.slice(0, 8), 16) % LOGICAL_SESSION_LOCK_SHARDS;
-  return `logical-session-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
-}
-
-function isLogicalSessionShardLockName(name: string): boolean {
-  const match = LOGICAL_SESSION_SHARD_LOCK_PATTERN.exec(name);
-  return match !== null && Number.parseInt(match[1] as string, 16) < LOGICAL_SESSION_LOCK_SHARDS;
-}
-
-function isLogicalSessionShardJournalName(name: string): boolean {
-  const match = LOGICAL_SESSION_SHARD_JOURNAL_PATTERN.exec(name);
-  return match !== null && Number.parseInt(match[1] as string, 16) < LOGICAL_SESSION_LOCK_SHARDS;
-}
-
 function createProviderSessionEpoch(): string {
   return randomBytes(32).toString("hex");
 }
@@ -3707,414 +3407,6 @@ async function writePreparedFile(
   await assertDirectoryIdentity(root, rootIdentity);
 }
 
-async function acquireCrossProcessLock(
-  path: string,
-  directoryIdentity: DirectoryIdentity,
-  tryOnly = false,
-  signal?: AbortSignal,
-): Promise<CrossProcessLock> {
-  signal?.throwIfAborted();
-  const directory = dirname(path);
-  await ensureOwnerOnlyLockFile(path, directoryIdentity);
-  for (;;) {
-    signal?.throwIfAborted();
-    await assertDirectoryIdentity(directory, directoryIdentity);
-    assertSecureHistoryFile(await lstat(path), path);
-    let database: DatabaseSync | undefined;
-    try {
-      signal?.throwIfAborted();
-      database = new DatabaseSync(path);
-      // MEMORY avoids world-umask-dependent journal sidecars while retaining
-      // SQLite's kernel-backed cross-process RESERVED lock semantics.
-      database.exec("PRAGMA journal_mode=MEMORY");
-      database.exec("BEGIN IMMEDIATE");
-      assertSecureHistoryFile(await lstat(path), path);
-      signal?.throwIfAborted();
-      let released = false;
-      return {
-        release: async (): Promise<void> => {
-          if (released) return;
-          released = true;
-          try {
-            database?.exec("ROLLBACK");
-          } catch {
-            // close() is the authoritative kernel-lock release after an
-            // unexpected SQLite transaction-state error.
-          }
-          try {
-            database?.close();
-          } catch {
-            // The connection is no longer reusable; never turn lock cleanup
-            // into an ambiguous failure after a semantic history commit.
-          }
-          database = undefined;
-        },
-      };
-    } catch (error) {
-      try {
-        database?.close();
-      } catch {
-        // Closing a failed lock attempt is best-effort.
-      }
-      if (isRecord(error) && typeof error.errcode === "number" && [11, 26].includes(error.errcode & 0xff)) throw new OwnedFileDamagedError(basename(path), error);
-      if (!isSqliteBusy(error)) throw error;
-      if (tryOnly) throw new HistoryOwnerBusyError("Legacy history owner is busy.");
-      // There is deliberately no age timeout: a live provider turn owns this
-      // conversation until it settles. On process death SQLite's OS lock is
-      // released automatically, while the durable dirty bit remains.
-      await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
-    }
-  }
-}
-
-async function acquireSessionClaim(
-  path: string,
-  directoryIdentity: DirectoryIdentity,
-  claimKey: string,
-  tryOnly = false,
-  signal?: AbortSignal,
-): Promise<CrossProcessLock> {
-  signal?.throwIfAborted();
-  if (!/^[a-f0-9]{64}$/u.test(claimKey)) {
-    throw new Error("History session claim key must be an opaque SHA-256 digest.");
-  }
-  const directory = dirname(path);
-  const token = randomBytes(16).toString("hex");
-  await ensureOwnerOnlyLockFile(
-    path,
-    directoryIdentity,
-    true,
-    MAX_SESSION_CLAIM_FILE_BYTES,
-  );
-  const incarnation = await currentHistoryProcessIncarnation(), ownerLive = historyOwnerLiveness();
-  for (;;) {
-    signal?.throwIfAborted();
-    await assertDirectoryIdentity(directory, directoryIdentity);
-    assertSecureHistoryFile(await lstat(path), path);
-    await assertSessionClaimJournalIfPresent(`${path}-journal`);
-    let database: DatabaseSync | undefined;
-    let transactionOpen = false;
-    try {
-      signal?.throwIfAborted();
-      database = new DatabaseSync(path);
-      database.exec("PRAGMA journal_mode=DELETE");
-      database.exec("PRAGMA synchronous=FULL");
-      database.exec("PRAGMA busy_timeout=0");
-      database.exec(`
-        CREATE TABLE IF NOT EXISTS session_claims (
-          claim_key TEXT PRIMARY KEY,
-          pid INTEGER NOT NULL,
-          token TEXT NOT NULL,
-          acquired_at_ms INTEGER NOT NULL,
-          incarnation TEXT
-        ) WITHOUT ROWID
-      `);
-      database.exec("BEGIN IMMEDIATE");
-      transactionOpen = true;
-      if (!database.prepare("PRAGMA table_info(session_claims)").all().some((column) => column.name === "incarnation")) {
-        database.exec("ALTER TABLE session_claims ADD COLUMN incarnation TEXT");
-        // Publish the additive schema even when a legacy owner is still live.
-        database.exec("COMMIT"); transactionOpen = false;
-        signal?.throwIfAborted();
-        database.exec("BEGIN IMMEDIATE"); transactionOpen = true;
-      }
-      const prior = database.prepare(`
-        SELECT claim_key,pid,token,acquired_at_ms,incarnation FROM session_claims WHERE claim_key=?
-      `).get(claimKey) as Record<string, unknown> | undefined;
-      if (prior !== undefined) {
-        const owner = parseSessionClaimOwner(prior, path);
-        if (owner.claimKey !== claimKey) {
-          throw new Error(`History session claim ${path} changed during acquisition.`);
-        }
-        const priorPid = owner.pid;
-        const priorToken = owner.token;
-        if (await ownerLive(priorPid, owner.incarnation)) {
-          database.exec("ROLLBACK");
-          transactionOpen = false;
-          database.close();
-          database = undefined;
-          if (tryOnly) throw new HistoryOwnerBusyError("Exact history claim is busy.");
-          // Ownership is explicit and exact-keyed. Polling only observes that
-          // live owner; unrelated keys can claim the same database meanwhile.
-          await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
-          continue;
-        }
-        const removed = database.prepare(`
-          DELETE FROM session_claims WHERE claim_key=? AND pid=? AND token=?
-        `).run(claimKey, priorPid, priorToken);
-        if (Number(removed.changes) !== 1) {
-          throw new Error("History session claim changed during dead-owner recovery.");
-        }
-      } else {
-        const count = sessionClaimCount(database, path);
-        if (count > MAX_SESSION_CLAIMS_PER_SHARD) {
-          throw new Error(
-            `History session claims exceed the ${MAX_SESSION_CLAIMS_PER_SHARD}-claim shard limit.`,
-          );
-        }
-        if (count === MAX_SESSION_CLAIMS_PER_SHARD) {
-          const owners = database.prepare(`
-            SELECT claim_key,pid,token,acquired_at_ms,incarnation FROM session_claims ORDER BY claim_key
-          `).all() as Record<string, unknown>[];
-          if (owners.length !== count) {
-            throw new Error(`History session claim registry ${path} changed during capacity recovery.`);
-          }
-          const removeDead = database.prepare(`
-            DELETE FROM session_claims WHERE claim_key=? AND pid=? AND token=?
-          `);
-          for (const row of owners) {
-            const owner = parseSessionClaimOwner(row, path);
-            if (await ownerLive(owner.pid, owner.incarnation)) continue;
-            const removed = removeDead.run(owner.claimKey, owner.pid, owner.token);
-            if (Number(removed.changes) !== 1) {
-              throw new Error("History session claim changed during capacity recovery.");
-            }
-          }
-          if (sessionClaimCount(database, path) >= MAX_SESSION_CLAIMS_PER_SHARD) {
-            throw new Error(
-              `History session claims exceed the ${MAX_SESSION_CLAIMS_PER_SHARD}-claim shard limit.`,
-            );
-          }
-        }
-      }
-      database.prepare(`
-        INSERT INTO session_claims (claim_key,pid,token,acquired_at_ms,incarnation)
-        VALUES (?,?,?,?,?)
-      `).run(claimKey, process.pid, token, Date.now(), JSON.stringify(incarnation) ?? null);
-      database.exec("COMMIT");
-      transactionOpen = false;
-      database.close();
-      database = undefined;
-      let released = false;
-      const lock = {
-        release: async (): Promise<void> => {
-          if (released) return;
-          await releaseSessionClaim(
-            path,
-            directoryIdentity,
-            claimKey,
-            token,
-          );
-          released = true;
-        },
-      };
-      if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
-      return lock;
-    } catch (error) {
-      if (transactionOpen) {
-        try { database?.exec("ROLLBACK"); } catch { /* close releases the short transaction */ }
-      }
-      try { database?.close(); } catch { /* no reuse after a failed claim attempt */ }
-      if (isRecord(error) && typeof error.errcode === "number" && [11, 26].includes(error.errcode & 0xff)) throw new OwnedFileDamagedError(basename(path), error);
-      if (!isSqliteBusy(error)) throw error;
-      if (tryOnly) throw new HistoryOwnerBusyError("History claim shard is busy.");
-      await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
-    }
-  }
-}
-
-async function releaseSessionClaim(
-  path: string,
-  directoryIdentity: DirectoryIdentity,
-  claimKey: string,
-  token: string,
-): Promise<void> {
-  const directory = dirname(path);
-  for (;;) {
-    await assertDirectoryIdentity(directory, directoryIdentity);
-    assertSecureHistoryFile(await lstat(path), path);
-    await assertSessionClaimJournalIfPresent(`${path}-journal`);
-    let database: DatabaseSync | undefined;
-    let transactionOpen = false;
-    try {
-      database = new DatabaseSync(path);
-      database.exec("PRAGMA journal_mode=DELETE");
-      database.exec("PRAGMA synchronous=FULL");
-      database.exec("PRAGMA busy_timeout=0");
-      database.exec("BEGIN IMMEDIATE");
-      transactionOpen = true;
-      const owner = database.prepare(`
-        SELECT claim_key,pid,token,acquired_at_ms FROM session_claims WHERE claim_key=?
-      `).get(claimKey) as Record<string, unknown> | undefined;
-      const parsedOwner = owner === undefined ? undefined : parseSessionClaimOwner(owner, path);
-      if (
-        parsedOwner?.claimKey !== claimKey
-        || parsedOwner.pid !== process.pid
-        || parsedOwner.token !== token
-      ) {
-        throw new Error("History session claim ownership changed before release.");
-      }
-      const removed = database.prepare(`
-        DELETE FROM session_claims WHERE claim_key=? AND pid=? AND token=?
-      `).run(claimKey, process.pid, token);
-      if (Number(removed.changes) !== 1) {
-        throw new Error("History session claim was not released exactly once.");
-      }
-      database.exec("COMMIT");
-      transactionOpen = false;
-      database.close();
-      return;
-    } catch (error) {
-      if (transactionOpen) {
-        try { database?.exec("ROLLBACK"); } catch { /* close releases the short transaction */ }
-      }
-      try { database?.close(); } catch { /* no reuse after a failed release attempt */ }
-      if (!isSqliteBusy(error)) throw error;
-      await delay(8 + Math.floor(Math.random() * 17));
-    }
-  }
-}
-
-function parseSessionClaimOwner(
-  row: Record<string, unknown>,
-  path: string,
-): { readonly claimKey: string; readonly pid: number; readonly token: string; readonly incarnation?: HistoryProcessIncarnation | undefined } {
-  const claimKey = row.claim_key;
-  const pid = Number(row.pid);
-  const token = row.token;
-  const acquiredAtMs = Number(row.acquired_at_ms);
-  if (
-    typeof claimKey !== "string"
-    || !/^[a-f0-9]{64}$/u.test(claimKey)
-    || !Number.isSafeInteger(pid)
-    || pid <= 0
-    || typeof token !== "string"
-    || !/^[a-f0-9]{32}$/u.test(token)
-    || !Number.isSafeInteger(acquiredAtMs)
-    || acquiredAtMs < 0
-  ) {
-    throw new Error(`History session claim ${path} has an invalid owner.`);
-  }
-  return { claimKey, pid, token, incarnation: historyOwnerIncarnation(row.incarnation) };
-}
-
-function sessionClaimCount(database: DatabaseSync, path: string): number {
-  const row = database.prepare("SELECT count(*) AS count FROM session_claims")
-    .get() as Record<string, unknown>;
-  const count = Number(row.count);
-  if (!Number.isSafeInteger(count) || count < 0) {
-    throw new Error(`History session claim registry ${path} has an invalid row count.`);
-  }
-  return count;
-}
-
-async function assertSessionClaimJournalIfPresent(path: string): Promise<void> {
-  let info: Stats;
-  try {
-    info = await lstat(path);
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) return;
-    throw error;
-  }
-  assertSecureTransientHistoryFile(info, path);
-  if (info.size > MAX_SESSION_CLAIM_JOURNAL_BYTES) {
-    throw new Error(`History session claim journal ${path} is unexpectedly large.`);
-  }
-}
-
-async function acquireExistingCrossProcessLock(
-  path: string,
-  directoryIdentity: DirectoryIdentity,
-  tryOnly = false,
-  signal?: AbortSignal,
-): Promise<CrossProcessLock | undefined> {
-  signal?.throwIfAborted();
-  try {
-    const info = await lstat(path);
-    assertSecureHistoryFile(info, path);
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) return undefined;
-    throw error;
-  }
-  return await acquireCrossProcessLock(path, directoryIdentity, tryOnly, signal);
-}
-
-async function ensureOwnerOnlyLockFile(
-  path: string,
-  directoryIdentity: DirectoryIdentity,
-  syncCreatedDirectory = true,
-  maxBytes = 64 * 1024,
-): Promise<boolean> {
-  const directory = dirname(path);
-  await assertDirectoryIdentity(directory, directoryIdentity);
-  let handle;
-  let created = false;
-  try {
-    try {
-      handle = await open(
-        path,
-        fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(),
-        0o600,
-      );
-      created = true;
-      await handle.chmod(0o600);
-      await handle.sync();
-    } catch (error) {
-      if (!isErrno(error, "EEXIST")) throw error;
-    }
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-  const info = await lstat(path);
-  assertSecureHistoryFile(info, path);
-  if (info.size > maxBytes) throw new Error(`History lock file ${path} is unexpectedly large.`);
-  if (created && syncCreatedDirectory) await fsyncDirectory(directory, directoryIdentity);
-  return created;
-}
-
-function isSqliteBusy(error: unknown): boolean {
-  return error instanceof Error && /database is locked|database is busy/iu.test(error.message);
-}
-
-async function readActiveMarker(path: string): Promise<ActiveMarker> {
-  const before = await lstat(path);
-  assertSecureHistoryFile(before, path);
-  if (before.size > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
-  let handle, contentsRead = false;
-  try {
-    handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
-    const opened = await handle.stat();
-    assertSecureHistoryFile(opened, path);
-    assertSameIdentity(before, opened, path);
-    const bytes = await handle.readFile();
-    if (bytes.byteLength > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
-    const after = await handle.stat();
-    assertSecureHistoryFile(after, path); assertSameIdentity(opened, after, path);
-    contentsRead = true;
-    let value: unknown;
-    try {
-      value = JSON.parse(bytes.toString("utf8"));
-    } catch {
-      throw new Error(`History active marker ${path} is not valid JSON.`);
-    }
-    if (
-      !isRecord(value)
-      || !["conversationKey,pid,token,version", "conversationKey,incarnation,pid,token,version"].includes(Object.keys(value).sort().join(","))
-      || value.version !== 1
-      || typeof value.conversationKey !== "string"
-      || !/^[a-f0-9]{64}$/u.test(value.conversationKey)
-      || !Number.isSafeInteger(value.pid)
-      || (value.pid as number) <= 0
-      || typeof value.token !== "string"
-      || !/^[a-f0-9]{32}$/u.test(value.token)
-    ) {
-      throw new Error(`History active marker ${path} has an unsupported schema.`);
-    }
-    if (basename(path) !== `${value.conversationKey}.${value.pid}.${value.token}.active`) throw new Error(`History active marker ${path} does not match its filename.`);
-    return {
-      path,
-      conversationKey: value.conversationKey,
-      pid: value.pid as number,
-      token: value.token, incarnation: historyProcessIncarnationFromJson(value.incarnation),
-    };
-  } catch (error) {
-    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error });
-    throw error;
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-}
-
 async function readDirtyFence(path: string): Promise<DirtyFence> {
   const before = await lstat(path);
   assertSecureHistoryFile(before, path);
@@ -4139,13 +3431,6 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
   }
 }
 
-async function createAndVerifyRoot(root: string): Promise<DirectoryIdentity> {
-  await createDirectoryPathWithoutSymlinks(root);
-  const info = await lstat(root);
-  assertSecureHistoryDirectory(info, root);
-  return { dev: info.dev, ino: info.ino };
-}
-
 async function createAndVerifyLocksRoot(root: string): Promise<DirectoryIdentity> {
   const identity = await createAndVerifyRoot(root);
   for (let shard = 0; shard < LOGICAL_SESSION_LOCK_SHARDS; shard += 1) {
@@ -4164,135 +3449,6 @@ async function createAndVerifyLocksRoot(root: string): Promise<DirectoryIdentity
   return identity;
 }
 
-async function createDirectoryPathWithoutSymlinks(path: string): Promise<void> {
-  const absolute = resolve(path);
-  const parsed = parse(absolute);
-  const segments = absolute.slice(parsed.root.length).split(sep).filter(Boolean);
-  let current = parsed.root;
-  for (const segment of segments) {
-    current = join(current, segment);
-    let created = false;
-    let info: Stats;
-    try {
-      info = await lstat(current);
-    } catch (error) {
-      if (!isErrno(error, "ENOENT")) throw error;
-      try {
-        await mkdir(current, { mode: 0o700 });
-        created = true;
-      } catch (mkdirError) {
-        if (!isErrno(mkdirError, "EEXIST")) throw mkdirError;
-      }
-      if (created) {
-        await chmod(current, 0o700);
-        await fsyncParentDirectory(current);
-      }
-      info = await lstat(current);
-    }
-    // macOS exposes root-owned compatibility links such as /var -> /private/var.
-    // Those are outside the caller's control; user-owned links anywhere in the
-    // configured path remain fail-closed.
-    if (info.isSymbolicLink()) {
-      const uid = process.getuid?.();
-      if (uid === undefined || info.uid !== 0 || uid === 0) {
-        throw new Error(`History path component ${current} must not be a user-controlled symbolic link.`);
-      }
-      continue;
-    }
-    if (!info.isDirectory()) throw new Error(`History path component ${current} must be a directory.`);
-  }
-}
-
-function assertSecureHistoryDirectory(info: Stats, path: string): void {
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new Error(`History root ${path} must be a non-symlink directory.`);
-  }
-  assertOwnedByCurrentUser(info, path);
-  if (process.platform !== "win32" && (info.mode & 0o777) !== 0o700) {
-    throw new Error(`History root ${path} must have owner-only mode 0700.`);
-  }
-}
-
-function assertSecureHistoryFile(info: Stats, path: string): void {
-  if (info.isSymbolicLink() || !info.isFile()) {
-    throw new Error(`History path ${path} must be a non-symlink regular file.`);
-  }
-  assertOwnedByCurrentUser(info, path);
-  if (info.nlink !== 1) throw new Error(`History file ${path} must have exactly one hard link.`);
-  if (process.platform !== "win32" && (info.mode & 0o777) !== 0o600) {
-    throw new Error(`History file ${path} must have owner-only mode 0600.`);
-  }
-}
-
-function assertSecureTransientHistoryFile(info: Stats, path: string): void {
-  if (info.isSymbolicLink() || !info.isFile()) {
-    throw new Error(`History path ${path} must be a non-symlink regular file.`);
-  }
-  assertOwnedByCurrentUser(info, path);
-  // A concurrent SQLite DELETE-journal commit may unlink the path immediately
-  // after lstat; APFS can report that transient inode with zero remaining
-  // links. Multiple links are never legitimate and remain fail-closed.
-  if (info.nlink > 1) throw new Error(`History file ${path} must not have multiple hard links.`);
-  if (process.platform !== "win32" && (info.mode & 0o777) !== 0o600) {
-    throw new Error(`History file ${path} must have owner-only mode 0600.`);
-  }
-}
-
-function assertOwnedByCurrentUser(info: Stats, path: string): void {
-  const uid = process.getuid?.();
-  if (uid !== undefined && info.uid !== uid) throw new Error(`History path ${path} must be owned by the current user.`);
-}
-
-async function assertDirectoryIdentity(path: string, expected: DirectoryIdentity): Promise<void> {
-  const info = await lstat(path);
-  assertSecureHistoryDirectory(info, path);
-  if (info.dev !== expected.dev || info.ino !== expected.ino) {
-    throw new Error(`History root ${path} changed while it was in use.`);
-  }
-}
-
-function assertSameIdentity(before: Stats, after: Stats, path: string): void {
-  if (before.dev !== after.dev || before.ino !== after.ino) {
-    throw new ConcurrentHistoryMutationError(`History file ${path} changed while it was being read.`);
-  }
-}
-
-class ConcurrentHistoryMutationError extends Error {}
-
-async function fsyncDirectory(path: string, expected: DirectoryIdentity): Promise<void> {
-  let handle;
-  try {
-    handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | noFollowFlag());
-    const info = await handle.stat();
-    assertSecureHistoryDirectory(info, path);
-    if (info.dev !== expected.dev || info.ino !== expected.ino) {
-      throw new Error(`History root ${path} changed while it was in use.`);
-    }
-    await handle.sync();
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-}
-
-async function fsyncParentDirectory(path: string): Promise<void> {
-  const parent = dirname(path);
-  let handle;
-  try {
-    handle = await open(parent, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | noFollowFlag());
-    await handle.sync();
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-}
-
-function noFollowFlag(): number {
-  return fsConstants.O_NOFOLLOW ?? 0;
-}
-
-function isErrno(error: unknown, code: string): boolean {
-  return (error as NodeJS.ErrnoException)?.code === code;
-}
-
 function requireSettledFence(fence: DirtyFence | undefined): void {
   if (fence?.kind === "execution" || fence?.kind === "compaction") {
     throw new Error("Pending provider turn requires explicit owner-held reconciliation");
@@ -4305,22 +3461,4 @@ function switchCanonicalRecord(existing: LoadedHistoryRecord, state: ModelSwitch
     native: { authority, projection: state.artifact! }, ...lastCommitBinding(existing),
     lastSwitch: { version: 1, switchId: state.identity.switchId, intentDigest: switchDigest(state.identity), fromEpoch: state.identity.sourceEpoch,
       toEpoch: state.identity.targetEpoch, artifact: state.artifact! } };
-}
-
-/** Owned-file readers may wrap OS failures; preserve operational errors at bootstrap. */
-function causedErrno(error: unknown): string | undefined {
-  const seen = new Set<unknown>();
-  while (error && typeof error === "object" && !seen.has(error)) {
-    seen.add(error);
-    if ("code" in error && typeof error.code === "string" && /^E[A-Z]+$/u.test(error.code)) return error.code;
-    error = "cause" in error ? error.cause : undefined;
-  }
-  return undefined;
-}
-
-/** Absence is not damage; resource/device failures retain their original cause. */
-function entryAbsentOrThrowOperational(error: unknown): boolean {
-  const code = causedErrno(error);
-  if (code && !["ENOENT", "EACCES", "EPERM", "ELOOP"].includes(code)) throw error;
-  return code === "ENOENT";
 }

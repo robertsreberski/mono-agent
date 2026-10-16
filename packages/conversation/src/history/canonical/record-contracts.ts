@@ -47,3 +47,6 @@ export interface DirtyFence {
   readonly runIdDigest: string;
   readonly mtimeMs?: number;
 }
+
+export const DIRTY_FENCE_PATTERN = /^([a-f0-9]{64})\.dirty\.json$/u;
+export const DIRTY_FENCE_TEMP_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.([a-f0-9]{24})\.dirty\.tmp$/u;
