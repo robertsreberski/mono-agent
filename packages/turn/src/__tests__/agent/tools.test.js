@@ -1,4 +1,4 @@
-import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
@@ -21,7 +21,7 @@ import {
   webFetchToolImpl,
   webSearchToolImpl,
   writeToolImpl,
-} from "../../agent/tools/index.js";
+} from "../../tools/index.js";
 
 const tempDirs = [];
 let ctx = createToolContext();

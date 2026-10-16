@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
 import { buildTurnTools, thinkingLevelForEffort } from "../../ai/providers/engine-turn/turn-runner.js";
 
 describe("thinkingLevelForEffort", () => {

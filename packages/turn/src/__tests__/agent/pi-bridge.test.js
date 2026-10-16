@@ -1,14 +1,14 @@
-import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import sharp from "sharp";
 import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
-import { coerceMcpContent, normalizeMcpToolParams } from "../../agent/tools/mcp/content.js";
-import { closePiMcpClients, initPiMcpTools } from "../../agent/tools/mcp/tools.js";
-import { getPiBuiltinTools, normalizePiBuiltinToolParams } from "../../agent/tools/pi-tools.js";
-import { prepareMcpStdioCommand, resolveMcpStdioCwd } from "../../agent/tools/mcp/connection.js";
+import { coerceMcpContent, normalizeMcpToolParams } from "../../tools/mcp/content.js";
+import { closePiMcpClients, initPiMcpTools } from "../../tools/mcp/tools.js";
+import { getPiBuiltinTools, normalizePiBuiltinToolParams } from "../../tools/pi-tools.js";
+import { prepareMcpStdioCommand, resolveMcpStdioCwd } from "../../tools/mcp/connection.js";
 import { createApprovalManager } from "../../agent/approval.js";
 
 function makeSink(runDir) {

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { createAgentTool, SUBAGENT_HARD_DENY } from "../../agent/tools/agent-tool.js";
-import { createAgentManageTool } from "../../agent/tools/agent-manage-tool.js";
-import { getPiBuiltinTools } from "../../agent/tools/pi-tools.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createAgentTool, SUBAGENT_HARD_DENY } from "../../tools/delegation/agent-tool.js";
+import { createAgentManageTool } from "../../tools/delegation/agent-manage-tool.js";
+import { getPiBuiltinTools } from "../../tools/pi-tools.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
 
 const ctx = createToolContext();
 

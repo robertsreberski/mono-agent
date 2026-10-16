@@ -45,8 +45,8 @@ import {
   createLiveInputPromptEpoch,
   startLiveInput,
 } from "../../ai/providers/engine-turn/turn-runner.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
-import { getPiBuiltinTools } from "../../agent/tools/pi-tools.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
+import { getPiBuiltinTools } from "../../tools/pi-tools.js";
 import { recoverDurableNativeSession, resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
 import { repairInterruptedSession } from "../../engine/interruption.js";
 import { disposeProviderSession, refreshProviderSession, syncProviderSession } from "../../ai/runtime/sessions.js";

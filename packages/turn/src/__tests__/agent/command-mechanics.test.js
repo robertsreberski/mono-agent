@@ -4,14 +4,14 @@ import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runner = vi.hoisted(() => ({ run: vi.fn() }));
-vi.mock("../../agent/tools/shared/process-runner.js", async (original) => ({
+vi.mock("../../tools/commands/process-runner.js", async (original) => ({
   ...await original(), runPreparedProcess: runner.run,
 }));
-import { bashToolRun } from "../../agent/tools/bash.js";
-import { execToolRun } from "../../agent/tools/exec.js";
+import { bashToolRun } from "../../tools/commands/bash.js";
+import { execToolRun } from "../../tools/commands/exec.js";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
-import { normalizeBashTimeoutMs, normalizeProcessTimeoutMs, normalizeBackgroundTimeoutMs, normalizeBackgroundBashTimeoutMs } from "../../agent/tools/shared/command-timeouts.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
+import { normalizeBashTimeoutMs, normalizeProcessTimeoutMs, normalizeBackgroundTimeoutMs, normalizeBackgroundBashTimeoutMs } from "../../tools/commands/command-timeouts.js";
 
 const result = { code: 0, signal: null, stdout: "fictional output", stderr: "", aborted: false,
   timedOut: false, bufferExceeded: false, truncated: false, bytes: 16, storedBytes: 16,

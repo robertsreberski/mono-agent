@@ -34,14 +34,14 @@ import {
   refreshProviderSession,
   syncProviderSession,
 } from "./ai/runtime/sessions.js";
-import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
+import { createToolContext, updateToolContext } from "./tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
 import { recoverDurableNativeSession, reconcileNativeSessionTurn, retireDurableNativeSession } from "./engine/session-lifecycle.js";
 import { salvageDurableNativeSession } from "./engine/session-salvage.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
 import { snapshotNativeDispatchOptions } from "./ai/providers/engine-turn/prepared-dispatch.js";
-import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
+import { createWebSearchRunState } from "./tools/web/web-search-state.js";
 
 /**
  * @typedef {import("./contracts/runtime.js").TurnHostOptions} TurnHostOptions

@@ -1,17 +1,17 @@
 import { createFakeSandbox, testSandboxPolicy } from "../helpers/fake-sandbox.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
-import { bashToolRun, execToolRun } from "../../agent/tools/index.js";
-import { getPiBuiltinTools } from "../../agent/tools/pi-tools.js";
+import { bashToolRun, execToolRun } from "../../tools/index.js";
+import { getPiBuiltinTools } from "../../tools/pi-tools.js";
 import {
   killProcessGroup,
   startPreparedProcess,
-} from "../../agent/tools/shared/process-runner.js";
+} from "../../tools/commands/process-runner.js";
 
 const tempDirs = [];
 
@@ -406,7 +406,7 @@ describe("Exec", () => {
 
   it("keeps the attestable group leader alive when its owning host pipe disappears", async () => {
     if (process.platform === "win32") return;
-    const runnerUrl = new URL("../../agent/tools/shared/process-runner.js", import.meta.url).href;
+    const runnerUrl = new URL("../../tools/commands/process-runner.js", import.meta.url).href;
     const parentSource = [
       `import { startPreparedProcess } from ${JSON.stringify(runnerUrl)};`,
       "const target = \"setTimeout(() => process.stdout.write('x'.repeat(65536)), 200); setTimeout(() => {}, 5000)\";",

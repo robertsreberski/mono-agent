@@ -10,7 +10,7 @@ function resolvedGraph(entry, profile) {
       const result = nextResolve(specifier, context);
       seen.add(result.url);
       const turn = result.url.includes("/packages/turn/");
-      const execution = /\\/ai\\/(?:provider-check\\.js|providers\\/engine-turn\\.js)|\\/agent\\/tools\\/(?:pi-tools|bash|exec)\\.js|\\/agent\\/tools\\/mcp\\//u.test(result.url);
+      const execution = /\\/ai\\/(?:provider-check\\.js|providers\\/engine-turn\\.js)|\\/tools\\/(?:pi-tools\\.js|commands\\/(?:bash|exec)\\.js|mcp\\/)/u.test(result.url);
       const configForbidden = /\\/src\\/(?:runtime\\.js|ai\\/runtime\\/router\\.js|engine\\/|agent\\/tools\\/|tools\\/)/u.test(result.url);
       if (turn && (execution || (${JSON.stringify(profile)} === "config" && configForbidden))) {
         blocked.push(result.url);

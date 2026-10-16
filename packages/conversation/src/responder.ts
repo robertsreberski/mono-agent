@@ -745,7 +745,7 @@ const MAX_STRUCTURED_CONTENT_CHARS = 16_000;
  * Lift a bounded machine-readable result out of the transcript block's raw result.
  *
  * The pi bridge stores the untouched MCP payload at `raw_result.details.raw`
- * (`turn/src/agent/tools/pi-tools.js`), while `content` keeps only the
+ * (`turn/src/tools/pi-tools.js`), while `content` keeps only the
  * flattened text. `content` is therefore lossy for any tool whose real answer is
  * structured — AskUser's `interactionId`/`answered` live nowhere else — so consumers
  * that must reason about the outcome read this instead of parsing prose.

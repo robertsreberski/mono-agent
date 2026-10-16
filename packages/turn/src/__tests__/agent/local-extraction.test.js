@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { extractLocalHtml, htmlToMarkdown } from "../../agent/tools/local/extract.js";
-import { extractHtmlLinks } from "../../agent/tools/local/links.js";
-import { performWebFetch } from "../../agent/tools/web-fetch.js";
+import { extractLocalHtml, htmlToMarkdown } from "../../tools/web/local/extract.js";
+import { extractHtmlLinks } from "../../tools/web/local/links.js";
+import { performWebFetch } from "../../tools/web/web-fetch.js";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 
 const url = "https://example.com/docs/intro";

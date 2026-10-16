@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 
-import { ollamaProvider } from "../../agent/tools/web-search-providers/ollama.js";
+import { ollamaProvider } from "../../tools/web/search-providers/ollama.js";
 import {
   __resetWebSearchThrottleForTests,
   performWebSearch,
-} from "../../agent/tools/web-search.js";
-import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
-import { __resetSharedSearchCacheForTests } from "../../agent/tools/web-controller.js";
+} from "../../tools/web/web-search.js";
+import { createWebSearchRunState } from "../../tools/web/web-search-state.js";
+import { __resetSharedSearchCacheForTests } from "../../tools/web/web-controller.js";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { mkdtempSync } from "node:fs";
 import { resolve } from "node:path";
@@ -101,7 +101,7 @@ describe("hosted Ollama apiKeyEnv resolution", () => {
     // A rotation must change the identity (otherwise operators sharing a
     // process read each other's cached results); the value itself must never
     // appear in it.
-    const { ollamaCacheIdentity } = await import("../../agent/tools/web-controller.js");
+    const { ollamaCacheIdentity } = await import("../../tools/web/web-controller.js");
     const config = { baseUrl: "https://ollama.com", apiKeyEnv: ENV_NAME };
     process.env[ENV_NAME] = "key-one";
     const first = ollamaCacheIdentity(config);

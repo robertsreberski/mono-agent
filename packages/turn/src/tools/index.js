@@ -1,24 +1,24 @@
 // Direct tools, host context and diagnostic entry.
 
-export { readToolImpl } from "../agent/tools/read.js";
-export { writeToolImpl } from "../agent/tools/write.js";
-export { editToolImpl } from "../agent/tools/edit.js";
-export { globToolImpl } from "../agent/tools/glob.js";
-export { grepToolImpl } from "../agent/tools/grep.js";
+export { readToolImpl } from "./files/read.js";
+export { writeToolImpl } from "./files/write.js";
+export { editToolImpl } from "./files/edit.js";
+export { globToolImpl } from "./files/glob.js";
+export { grepToolImpl } from "./files/grep.js";
 export {
   bashToolImpl,
   bashToolRun,
-} from "../agent/tools/bash.js";
-export { execToolImpl, execToolRun } from "../agent/tools/exec.js";
-export { webFetchToolImpl, performWebFetch } from "../agent/tools/web-fetch.js";
-export { webSearchToolImpl, performWebSearch } from "../agent/tools/web-search.js";
-export { inspectCodexSubscriptionSearch } from "../agent/tools/codex-subscription-search.js";
-export { inspectParallelWeb } from "../agent/tools/parallel-mcp.js";
-export { inspectLocalWeb } from "../agent/tools/local/config.js";
+} from "./commands/bash.js";
+export { execToolImpl, execToolRun } from "./commands/exec.js";
+export { webFetchToolImpl, performWebFetch } from "./web/web-fetch.js";
+export { webSearchToolImpl, performWebSearch } from "./web/web-search.js";
+export { inspectCodexSubscriptionSearch } from "./web/codex-subscription-search.js";
+export { inspectParallelWeb } from "./web/parallel-mcp.js";
+export { inspectLocalWeb } from "./web/local/config.js";
 
-export { isPathAllowed, isWorkdirAllowed } from "../agent/tools/shared/path-resolver.js";
-export { resolveRgPath } from "../agent/tools/shared/ripgrep.js";
+export { isPathAllowed, isWorkdirAllowed } from "./shared/path-resolver.js";
+export { resolveRgPath } from "./shared/ripgrep.js";
 
-export * from "../agent/tools/shared/tool-context.js";
+export * from "./shared/tool-context.js";
 
-export { normalizeBackgroundBashTimeoutMs, normalizeBackgroundTimeoutMs, normalizeBashTimeoutMs, normalizeProcessTimeoutMs } from "../agent/tools/shared/command-timeouts.js";
+export { normalizeBackgroundBashTimeoutMs, normalizeBackgroundTimeoutMs, normalizeBashTimeoutMs, normalizeProcessTimeoutMs } from "./commands/command-timeouts.js";

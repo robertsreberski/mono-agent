@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 // Package-private integration seam: this verifies the exact Pi runner used by
 // Exec/Bash without making that runner a new public @mono-agent export.
 // @ts-expect-error The JavaScript runtime source intentionally has no public package subpath.
-import { startPreparedProcess } from "../../../turn/src/agent/tools/shared/process-runner.js";
+import { startPreparedProcess } from "../../../turn/src/tools/commands/process-runner.js";
 import { PROCESS_JOBS_DEFAULTS, type ProcessJobsSettings } from "../process-jobs-config.js";
 import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import type { ProcessJobOriginRecord } from "../process-jobs-store.js";

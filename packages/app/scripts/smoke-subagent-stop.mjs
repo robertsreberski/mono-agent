@@ -10,8 +10,8 @@ import { createSubagentInstanceRegistry } from "../dist/subagent-instances.js";
 import { openProcessJobsService } from "../dist/process-jobs-service.js";
 import { openProcessJobStore } from "../dist/process-jobs-store.js";
 import { PROCESS_JOBS_DEFAULTS } from "../dist/process-jobs-config.js";
-import { createAgentTool } from "../../turn/src/agent/tools/agent-tool.js";
-import { createAgentManageTool } from "../../turn/src/agent/tools/agent-manage-tool.js";
+import { createAgentTool } from "../../turn/src/tools/delegation/agent-tool.js";
+import { createAgentManageTool } from "../../turn/src/tools/delegation/agent-manage-tool.js";
 import { generateEngineTurnResponse } from "../../turn/src/ai/providers/engine-turn.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../turn/node_modules/@earendil-works/pi-ai/dist/index.js";
 

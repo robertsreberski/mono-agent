@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { performWebFetch } from "../../agent/tools/web-fetch.js";
+import { performWebFetch } from "../../tools/web/web-fetch.js";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
-import { classifyWebAccessInterstitial } from "../../agent/tools/web-access-interstitial.js";
-import { assertWebReadableEvidence } from "../../agent/tools/web-readable-evidence.js";
+import { classifyWebAccessInterstitial } from "../../tools/web/web-access-interstitial.js";
+import { assertWebReadableEvidence } from "../../tools/web/web-readable-evidence.js";
 
 const url = "https://example.test/hotel/harbor-lodge";
 const ctx = { workspace: process.cwd(), sandbox: passthroughSandbox };

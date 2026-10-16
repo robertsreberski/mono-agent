@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
-import { bashToolImpl } from "../../agent/tools/bash.js";
-import { prepareMcpStdioCommand } from "../../agent/tools/mcp/connection.js";
-import { webFetchToolImpl } from "../../agent/tools/web-fetch.js";
-import { webSearchToolImpl } from "../../agent/tools/web-search.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { bashToolImpl } from "../../tools/commands/bash.js";
+import { prepareMcpStdioCommand } from "../../tools/mcp/connection.js";
+import { webFetchToolImpl } from "../../tools/web/web-fetch.js";
+import { webSearchToolImpl } from "../../tools/web/web-search.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
 import { testSandboxPolicy } from "../helpers/fake-sandbox.js";
 
 const tempDirs = [];

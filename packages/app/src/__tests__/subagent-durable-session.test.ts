@@ -9,9 +9,9 @@ import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 // @ts-expect-error Private kernel test seam; no new public tool export.
-import { createAgentTool } from "../../../turn/src/agent/tools/agent-tool.js";
+import { createAgentTool } from "../../../turn/src/tools/delegation/agent-tool.js";
 // @ts-expect-error Private kernel test seam; no new public tool export.
-import { createAgentManageTool } from "../../../turn/src/agent/tools/agent-manage-tool.js";
+import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
 // @ts-expect-error Private provider seam uses the real Pi harness and durable repository.
 import { generateEngineTurnResponse } from "../../../turn/src/ai/providers/engine-turn.js";
 

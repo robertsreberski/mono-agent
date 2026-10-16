@@ -5,7 +5,7 @@ import { validateSessionTurn } from "../../engine/journal-schema.js";
 import { isJournalStorageError } from "../../engine/storage-error.js";
 import { NativeSuspendedError } from "../../engine/interruption.js";
 import { settleNativeSession } from "../../engine/session-settlement.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
 // This is the SOLE pi runtime path: the hand-rolled pi bridge (formerly
@@ -37,8 +37,8 @@ import { runtimeCapabilities } from "../runtime/capabilities.js";
 import {
   resolveAgentCompactionPolicy,
 } from "../../agent/compaction.js";
-import { subagentInvocationCount, subagentUsageForRun } from "../../agent/tools/agent-tool.js";
-import { closePiMcpClients } from "../../agent/tools/mcp/tools.js";
+import { subagentInvocationCount, subagentUsageForRun } from "../../tools/delegation/agent-tool.js";
+import { closePiMcpClients } from "../../tools/mcp/tools.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { withContext1M, withContext1MModels } from "../context-1m.js";

@@ -85,7 +85,7 @@
 /**
  * @typedef {RuntimeRunOptions
  *   & Pick<TurnHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
- *   & {runtimeBrand: import("../runtime-brand.js").RuntimeBrand, toolContext?: import("../agent/tools/shared/tool-context.js").ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
+ *   & {runtimeBrand: import("../runtime-brand.js").RuntimeBrand, toolContext?: import("../tools/shared/tool-context.js").ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
  * } RuntimeRequest
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
  * second (options) argument: the host-supplied RuntimeRunOptions, merged by

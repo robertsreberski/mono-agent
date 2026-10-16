@@ -10,7 +10,7 @@ const processRunnerHooks = vi.hoisted(() => ({
   run: undefined as ((command: { readonly command: string; readonly args?: readonly string[] }) => unknown) | undefined,
 }));
 
-vi.mock("../../../turn/src/agent/tools/shared/process-runner.js", async (importOriginal) => {
+vi.mock("../../../turn/src/tools/commands/process-runner.js", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,

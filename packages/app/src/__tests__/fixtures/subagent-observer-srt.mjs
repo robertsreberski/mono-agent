@@ -6,8 +6,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSandboxPolicy, createSrtSandboxEngine } from "@mono-agent/turn/host/sandbox";
 import { monoSandboxImpl } from "../../../../turn/dist/host/sandbox-impl.js";
-import { createToolContext } from "../../../../turn/src/agent/tools/shared/tool-context.js";
-import { getPiBuiltinTools } from "../../../../turn/src/agent/tools/pi-tools.js";
+import { createToolContext } from "../../../../turn/src/tools/shared/tool-context.js";
+import { getPiBuiltinTools } from "../../../../turn/src/tools/pi-tools.js";
 import { acquireAgentRootOwnership } from "../../../dist/agent-root-coordinator.js";
 import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
 import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
@@ -123,7 +123,7 @@ try {
       // Failure-only diagnostic, still the real SRT and exact gated process path.
       // It does not replace or pass the primary Pi-bridge assertion below.
       const { observeSubagentVerification, registerSubagentVerification } = await import("../../../dist/subagent-verification-observer.js");
-      const { startPreparedProcess } = await import("../../../../turn/src/agent/tools/shared/process-runner.js");
+      const { startPreparedProcess } = await import("../../../../turn/src/tools/commands/process-runner.js");
       const diagnosticAccess = { workspace: worktree, readableRoots: extraReadRoots, sandboxPolicy: policy, sandboxEngine: engine,
         runProbe: async (prepared, timeoutMs) => {
           const handle = startPreparedProcess(prepared, { timeoutMs, maxBufferBytes: 16384, exactEnvironment: true, waitForProcessGroup: true });

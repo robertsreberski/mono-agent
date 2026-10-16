@@ -8,10 +8,10 @@ import { assertNativeSessionAccess } from "../../../engine/session-authority.js"
 // state; run state (harness, removeAbortHandler, externalAbort) lives on the
 // caller-owned runState.
 
-import { createStructuredOutputTool, getPiBuiltinTools } from "../../../agent/tools/pi-tools.js";
-import { initPiMcpTools, closePiMcpClients } from "../../../agent/tools/mcp/tools.js";
-import { createNodeReplController } from "../../../agent/tools/node-repl.js";
-import { createWebToolController } from "../../../agent/tools/web-controller.js";
+import { createStructuredOutputTool, getPiBuiltinTools } from "../../../tools/pi-tools.js";
+import { initPiMcpTools, closePiMcpClients } from "../../../tools/mcp/tools.js";
+import { createNodeReplController } from "../../../tools/commands/node-repl.js";
+import { createWebToolController } from "../../../tools/web/web-controller.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
 import { createHarnessAdapter } from "./engine-adapter.js";
 import { requestRetryPolicy } from "./request-retry.js";

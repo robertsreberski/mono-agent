@@ -54,7 +54,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/agent/tools/shared/tool-context.js",
+    "file": "packages/turn/src/tools/shared/tool-context.js",
     "names": [
       "createToolContext",
       "updateToolContext"
@@ -64,7 +64,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/agent/tools/read.js",
+    "file": "packages/turn/src/tools/files/read.js",
     "names": [
       "readToolImpl"
     ],
@@ -200,27 +200,27 @@ export const retainedExports = [
       "createCodexAppServerClient"
     ],
     "reason": "consumed: runtime Codex broker; tested client subpath retained until turn entry regrouping",
-    "citation": "packages/turn/src/agent/tools/codex-subscription-search.js:7",
+    "citation": "packages/turn/src/tools/web/codex-subscription-search.js:7",
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/agent/tools/codex-subscription-search.js",
+    "file": "packages/turn/src/tools/web/codex-subscription-search.js",
     "names": [
       "__resetCodexSubscriptionSearchForTests"
     ],
     "reason": "test isolation control for process-global Codex broker/cache",
-    "citation": "packages/turn/src/agent/tools/codex-subscription-search.js",
+    "citation": "packages/turn/src/tools/web/codex-subscription-search.js",
     "taggedNames": [
       "__resetCodexSubscriptionSearchForTests"
     ]
   },
   {
-    "file": "packages/turn/src/agent/tools/web-search-providers/shared.js",
+    "file": "packages/turn/src/tools/web/search-providers/shared.js",
     "names": [
       "__resetWebSearchThrottleForTests"
     ],
     "reason": "test isolation control for process-global WebSearch throttle",
-    "citation": "packages/turn/src/agent/tools/web-search-providers/shared.js",
+    "citation": "packages/turn/src/tools/web/search-providers/shared.js",
     "taggedNames": [
       "__resetWebSearchThrottleForTests"
     ]
@@ -237,12 +237,12 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/agent/tools/web-controller.js",
+    "file": "packages/turn/src/tools/web/web-controller.js",
     "names": [
       "__resetSharedSearchCacheForTests"
     ],
     "reason": "test isolation control for process-global shared search cache",
-    "citation": "packages/turn/src/agent/tools/web-controller.js",
+    "citation": "packages/turn/src/tools/web/web-controller.js",
     "taggedNames": [
       "__resetSharedSearchCacheForTests"
     ]

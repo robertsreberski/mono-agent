@@ -56,7 +56,7 @@ import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { resolveRuntimeBrand } from "../../runtime-brand.js";
 import { createObserverHub } from "../observer.js";
 import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
-import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
+import { createWebSearchRunState } from "../../tools/web/web-search-state.js";
 
 /**
  * @typedef {import("../../contracts/model.js").RuntimeModelRef} RuntimeModelRef

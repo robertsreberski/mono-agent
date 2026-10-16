@@ -2,11 +2,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execToolRun } from "../../agent/tools/exec.js";
+import { execToolRun } from "../../tools/commands/exec.js";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
-import { bashToolRun } from "../../agent/tools/bash.js";
-import { runOwnedForegroundProcess } from "../../agent/tools/shared/owned-foreground-process.js";
-import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
+import { bashToolRun } from "../../tools/commands/bash.js";
+import { runOwnedForegroundProcess } from "../../tools/commands/owned-foreground-process.js";
+import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
 import { buildTurnTools } from "../../ai/providers/engine-turn/turn-runner.js";
 
 const roots = [];

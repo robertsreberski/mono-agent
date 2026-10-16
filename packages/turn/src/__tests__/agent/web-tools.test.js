@@ -1,24 +1,24 @@
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
-import { renderWithAgentBrowser } from "../../agent/tools/web-browser-render.js";
+import { renderWithAgentBrowser } from "../../tools/web/web-browser-render.js";
 import {
   __resetSharedSearchCacheForTests,
   createWebToolController,
-} from "../../agent/tools/web-controller.js";
-import { markdownToText } from "../../agent/tools/web-document-extractor.js";
-import { performWebFetch } from "../../agent/tools/web-fetch.js";
+} from "../../tools/web/web-controller.js";
+import { markdownToText } from "../../tools/web/web-document-extractor.js";
+import { performWebFetch } from "../../tools/web/web-fetch.js";
 import {
   __resetWebSearchThrottleForTests,
   canonicalizeSearchUrl,
   mergeRankedResults,
   parseStartpageResults,
   performWebSearch,
-} from "../../agent/tools/web-search.js";
-import { claimWebSearchRequest, countWebSearchDispatch, createWebSearchRunState, refundWebSearchRequests, webSearchBudgetSnapshot } from "../../agent/tools/web-search-state.js";
+} from "../../tools/web/web-search.js";
+import { claimWebSearchRequest, countWebSearchDispatch, createWebSearchRunState, refundWebSearchRequests, webSearchBudgetSnapshot } from "../../tools/web/web-search-state.js";
 import {
   boundWebSearchEntries,
   boundWebSearchSnippet,
@@ -26,7 +26,7 @@ import {
   WEB_SEARCH_BODY_MAX_BYTES,
   WEB_SEARCH_SNIPPET_MAX_CHARS,
   WEB_SEARCH_SNIPPET_TRUNCATION_MARKER,
-} from "../../agent/tools/web-search-output.js";
+} from "../../tools/web/web-search-output.js";
 import { applyToolBloatGuard, MAX_TOOL_RESULT_BYTES } from "../../agent/tool-bloat.js";
 
 const tempDirs = [];

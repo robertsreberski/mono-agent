@@ -6,7 +6,7 @@ const {
   DEFAULT_SUBAGENT_TOOLS,
   subagentInvocationCount,
   subagentUsageForRun,
-} = await import("../../agent/tools/agent-tool.js");
+} = await import("../../tools/delegation/agent-tool.js");
 
 const PROFILE = {
   name: "researcher",

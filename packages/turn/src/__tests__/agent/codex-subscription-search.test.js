@@ -4,7 +4,7 @@ import {
   __resetCodexSubscriptionSearchForTests,
   inspectCodexSubscriptionSearch,
   searchCodexSubscription,
-} from "../../agent/tools/codex-subscription-search.js";
+} from "../../tools/web/codex-subscription-search.js";
 
 afterEach(async () => {
   await __resetCodexSubscriptionSearchForTests();
