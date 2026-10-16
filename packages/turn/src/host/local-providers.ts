@@ -3,7 +3,7 @@ import net from "node:net";
 
 import { listPiBuiltinModels } from "#turn/providers/pi/catalog";
 
-import { RuntimeAdapterError } from "./model-reference.js";
+import { TurnHostError } from "./model-reference.js";
 import { isPlainObject } from "./runtime-helpers.js";
 import type { RuntimeModelReference } from "./runtime-contracts.js";
 
@@ -239,7 +239,7 @@ export function runtimeOptionsForLocalProvider(
 export function validateLocalProviderDefinition(provider: LocalProviderDefinition): LocalProviderDefinition {
   const normalized = validateProviderDefinition(provider);
   if (normalized.type === undefined) {
-    throw new RuntimeAdapterError("invalid_local_provider", "Local provider type is required.", {
+    throw new TurnHostError("invalid_local_provider", "Local provider type is required.", {
       providerId: normalized.id,
     });
   }
@@ -256,7 +256,7 @@ export function validateProviderDefinition(provider: ProviderDefinition): Provid
   const type = provider.type === undefined ? undefined : normalizeProviderType(provider.type);
   const inferredLocalType = type ?? AUTODISCOVERABLE_PROVIDER_TYPES.get(id);
   if (provider.baseUrl !== undefined && inferredLocalType === undefined) {
-    throw new RuntimeAdapterError(
+    throw new TurnHostError(
       "invalid_local_provider",
       "Provider baseUrl requires type=openai_compat unless the provider is ollama or lmstudio.",
       { providerId: id },
@@ -275,7 +275,7 @@ export function validateProviderDefinition(provider: ProviderDefinition): Provid
     || maxAdvertisedModels < 1
     || maxAdvertisedModels > MAX_ADVERTISED_MODELS
   ) {
-    throw new RuntimeAdapterError(
+    throw new TurnHostError(
       "invalid_local_provider",
       `Provider maxAdvertisedModels must be an integer between 1 and ${MAX_ADVERTISED_MODELS}.`,
       { providerId: id, maxAdvertisedModels },
@@ -473,12 +473,12 @@ function validateProviderBaseUrl(
   try {
     parsed = new URL(baseUrl);
   } catch {
-    throw new RuntimeAdapterError("invalid_local_provider", "Local provider baseUrl must be a valid URL.", {
+    throw new TurnHostError("invalid_local_provider", "Local provider baseUrl must be a valid URL.", {
       baseUrl,
     });
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new RuntimeAdapterError("invalid_local_provider", "Local provider baseUrl must use http(s)://.", {
+    throw new TurnHostError("invalid_local_provider", "Local provider baseUrl must use http(s)://.", {
       baseUrl,
     });
   }
@@ -486,14 +486,14 @@ function validateProviderBaseUrl(
     return;
   }
   if (!options.trustPublicUrl) {
-    throw new RuntimeAdapterError(
+    throw new TurnHostError(
       "invalid_local_provider",
       "Local provider baseUrl points to a public host; set trustPublicUrl=true to allow it.",
       { baseUrl },
     );
   }
   if (parsed.protocol !== "https:") {
-    throw new RuntimeAdapterError(
+    throw new TurnHostError(
       "invalid_local_provider",
       "Public local provider baseUrl must use https://.",
       { baseUrl },
@@ -504,7 +504,7 @@ function validateProviderBaseUrl(
 function normalizeProviderId(value: string): string {
   const normalized = normalizeRequiredString(value, "Local provider id");
   if (/[:/\s]/u.test(normalized)) {
-    throw new RuntimeAdapterError("invalid_local_provider", "Local provider id must not contain whitespace, slash, or colon.", {
+    throw new TurnHostError("invalid_local_provider", "Local provider id must not contain whitespace, slash, or colon.", {
       providerId: normalized,
     });
   }
@@ -515,7 +515,7 @@ function normalizeProviderType(value: string): LocalProviderType {
   if ((LOCAL_PROVIDER_TYPES as readonly string[]).includes(value)) {
     return value as LocalProviderType;
   }
-  throw new RuntimeAdapterError("invalid_local_provider", "Local provider type is not supported.", {
+  throw new TurnHostError("invalid_local_provider", "Local provider type is not supported.", {
     providerType: value,
   });
 }
@@ -526,7 +526,7 @@ function normalizeModelName(value: string): string {
 
 function normalizeRequiredString(value: string, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
-    throw new RuntimeAdapterError("invalid_local_provider", `${label} must be a non-empty trimmed string.`);
+    throw new TurnHostError("invalid_local_provider", `${label} must be a non-empty trimmed string.`);
   }
   return value;
 }
@@ -542,7 +542,7 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
 function normalizeBaseUrl(value: string | undefined): string {
   const normalized = normalizeOptionalString(value);
   if (normalized === undefined) {
-    throw new RuntimeAdapterError("invalid_local_provider", "Local provider baseUrl is required.");
+    throw new TurnHostError("invalid_local_provider", "Local provider baseUrl is required.");
   }
   return normalized.replace(/\/+$/u, "");
 }

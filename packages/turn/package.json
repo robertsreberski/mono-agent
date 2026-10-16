@@ -111,15 +111,15 @@
     "@types/turndown": "5.0.6"
   },
   "imports": {
-    "#kernel/types": {
+    "#turn/contracts/runtime": {
       "types": "./types/contracts/runtime.d.ts",
       "default": "./src/contracts/runtime.js"
     },
-    "#kernel/cost": {
+    "#turn/telemetry/cost": {
       "types": "./types/ai/cost.d.ts",
       "default": "./src/ai/cost.js"
     },
-    "#kernel/native-journal-types": {
+    "#turn/contracts/native-storage": {
       "types": "./types/ai/native-journal-types.d.ts",
       "default": "./src/ai/native-journal-types.js"
     },

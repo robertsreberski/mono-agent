@@ -1,5 +1,5 @@
 import { createMonoRuntime } from "@mono-agent/turn/host";
-import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import { parseMonoRuntimeModelReference, TurnHostError } from "@mono-agent/turn/host/config";
 import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
 import { isRuntimeSubagentActivityEvent, PI_TRANSPORTS } from "@mono-agent/turn/host/types";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution, RuntimeRunOptions, RuntimeLiveInputMessage, RuntimeNativePreparationStorage } from "@mono-agent/turn/host/types";
@@ -34,4 +34,11 @@ if (false) {
     processJobs: { start: async () => ({ jobId: "fixture", state: "queued", startedAt: null }) },
   } };
   void bad; void processOwner;
+}
+
+const hostError: Error = new TurnHostError("invalid_runtime_options", "Fictional failure", { field: "fixture" });
+void hostError;
+if (false) {
+  // @ts-expect-error unknown codes are not accepted by the host error contract.
+  new TurnHostError("fictional_invalid_code", "Fictional failure");
 }

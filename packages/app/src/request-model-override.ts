@@ -1,6 +1,6 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
 import { supportsPiContext1M } from "@mono-agent/turn/ai";
-import { assertParsedRuntimeModelReference, MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, modelReferenceKey, parseMonoRuntimeModelReference, RuntimeAdapterError, runtimeOptionsForLocalProvider, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
+import { assertParsedRuntimeModelReference, MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, modelReferenceKey, parseMonoRuntimeModelReference, TurnHostError, runtimeOptionsForLocalProvider, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 import type { LocalProviderDefinition, LocalProviderRuntimeOptions, RuntimeModelReference } from "@mono-agent/turn/host/types";
 
 import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
@@ -123,7 +123,7 @@ function echoValue(value: string): string {
  * own message already conveys.
  */
 function echoReason(error: unknown): string {
-  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+  const reason = error instanceof TurnHostError && typeof error.details.reason === "string"
     ? error.details.reason
     : error instanceof Error
       ? error.message

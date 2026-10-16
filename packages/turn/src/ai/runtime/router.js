@@ -60,7 +60,7 @@ import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
 
 /**
  * @typedef {import("../../contracts/model.js").RuntimeModelRef} RuntimeModelRef
- * @typedef {import("../../contracts/runtime.js").AgentRuntimeHostOptions} AgentRuntimeHostOptions
+ * @typedef {import("../../contracts/runtime.js").TurnHostOptions} TurnHostOptions
  * @typedef {import("../../contracts/runtime.js").AgentRuntimeInstance} AgentRuntimeInstance
  * @typedef {import("../../contracts/runtime.js").RuntimeRunOptions} RuntimeRunOptions
  * @typedef {import("../../contracts/runtime.js").RuntimeResult} RuntimeResult
@@ -129,7 +129,7 @@ class ResolverProtectedOptionError extends Error {
 
 /**
  * @param {Object} [options]
- * @param {AgentRuntimeHostOptions} [options.host]
+ * @param {TurnHostOptions} [options.host]
  * @param {ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>} [options.chain]
  * @param {(input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (RouterAttemptResolution|undefined|Promise<RouterAttemptResolution|undefined>)} [options.resolveAttempt]
  * @param {Partial<RouterRetryPolicy>} [options.retry] Backoff shape for same-model
@@ -145,7 +145,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
   }
   assertUniqueEntries(entries);
   const inner = createRuntime(host);
-  /** @type {import("../../contracts/runtime.js").AgentRuntimeToolOptions|undefined} */
+  /** @type {import("../../contracts/runtime.js").TurnToolOptions|undefined} */
   let configuredTools;
   // The router builds transcript-tail snapshots outside the inner runtime's
   // bridge call (which is where the per-instance toolContext lives), so resolve
@@ -842,9 +842,9 @@ function modelKey(model) {
  * undefined implementation, so the configured value only replaces the host
  * seam when it is concrete.
  *
- * @param {AgentRuntimeHostOptions} host
- * @param {import("../../contracts/runtime.js").AgentRuntimeToolOptions|undefined} configuredTools
- * @returns {import("../../contracts/runtime.js").AgentRuntimeToolOptions}
+ * @param {TurnHostOptions} host
+ * @param {import("../../contracts/runtime.js").TurnToolOptions|undefined} configuredTools
+ * @returns {import("../../contracts/runtime.js").TurnToolOptions}
  */
 function effectiveRouterToolOptions(host, configuredTools) {
   /** @type {Object<string, *>} */
@@ -867,7 +867,7 @@ function effectiveRouterToolOptions(host, configuredTools) {
  * from the router's host/configured/run policy or telemetry.
  *
  * @param {import("../../contracts/runtime.js").RuntimeAttempt} runtime
- * @param {import("../../contracts/runtime.js").AgentRuntimeToolOptions} toolOptions
+ * @param {import("../../contracts/runtime.js").TurnToolOptions} toolOptions
  */
 function projectPiRuntimeToolContext(runtime, toolOptions) {
   if (typeof runtime.configureTools !== "function") {

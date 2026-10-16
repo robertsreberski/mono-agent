@@ -32,7 +32,7 @@ export function bridgeProcessJobsController(
   return Object.freeze({
     ...(limits === undefined ? {} : { limits }),
     async start(request: ProcessJobStartRequest): Promise<ProcessJobStartResult> {
-      assertKernelStartRequest(request);
+      assertProcessJobStartRequest(request);
       return await controller.start(request);
     },
   });
@@ -49,7 +49,7 @@ function bridgedLimits(
   return Object.freeze({ maxRuntimeMs, maxOutputBytes });
 }
 
-function assertKernelStartRequest(request: ProcessJobStartRequest): void {
+function assertProcessJobStartRequest(request: ProcessJobStartRequest): void {
   if (request === null || typeof request !== "object"
     || (request.tool !== "Exec" && request.tool !== "Bash")
     || typeof request.summary !== "string"

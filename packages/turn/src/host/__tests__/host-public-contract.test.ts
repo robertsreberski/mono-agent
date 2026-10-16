@@ -23,15 +23,15 @@ import type {
   RuntimeToolOptions,
 } from "../types.js";
 
-type KernelRuntimeInstance = ReturnType<typeof createRuntime>;
-type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
-type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
-type KernelRuntimeEvent = Parameters<NonNullable<KernelRunOptions["onEvent"]>>[0];
-type KernelSubagentActivityEvent = Extract<KernelRuntimeEvent, { type: "subagent_activity" }>;
-type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
-type KernelRunResult = Awaited<ReturnType<KernelRuntimeInstance["run"]>>;
-type KernelBridgeDescriptor = ReturnType<typeof listRuntimeBridges>[number];
-type KernelBridgeCapabilities = ReturnType<KernelBridgeDescriptor["capabilities"]>;
+type TurnRuntimeInstance = ReturnType<typeof createRuntime>;
+type TurnHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
+type TurnRunOptions = Parameters<TurnRuntimeInstance["run"]>[1];
+type TurnRuntimeEvent = Parameters<NonNullable<TurnRunOptions["onEvent"]>>[0];
+type TurnSubagentActivityEvent = Extract<TurnRuntimeEvent, { type: "subagent_activity" }>;
+type TurnToolOptions = Parameters<TurnRuntimeInstance["configureTools"]>[0];
+type TurnRunResult = Awaited<ReturnType<TurnRuntimeInstance["run"]>>;
+type TurnBridgeDescriptor = ReturnType<typeof listRuntimeBridges>[number];
+type TurnBridgeCapabilities = ReturnType<TurnBridgeDescriptor["capabilities"]>;
 type RuntimeRunComparableKeys =
   | "model"
   | "messages"
@@ -129,12 +129,12 @@ describe("host public contract", () => {
 
   it("MonoRuntimeHostOptions is assignable to createRuntime's host parameter", () => {
     const facade = null as unknown as WithoutConcreteSandboxEngine<MonoRuntimeHostOptions>;
-    assertAssignable<WithoutConcreteSandboxEngine<KernelHostOptions>>(facade);
+    assertAssignable<WithoutConcreteSandboxEngine<TurnHostOptions>>(facade);
   });
 
   it("the facade RuntimeRunOptions is assignable to createRuntime(...).run's options parameter", () => {
     const facade = null as unknown as RuntimeRunComparableOptions;
-    assertAssignable<KernelRunOptions>(facade);
+    assertAssignable<TurnRunOptions>(facade);
   });
 
   it("keeps the public lifecycle sink exact for direct TypeScript consumers", () => {
@@ -223,10 +223,10 @@ describe("host public contract", () => {
     } satisfies RuntimeSubagentActivityEvent;
     expectTypeOf<RuntimeSubagentActivityPhase>()
       .toEqualTypeOf<"agent_started" | "started" | "completed" | "message" | "agent_completed">();
-    expectTypeOf<RuntimeSubagentIdentity>().toExtend<KernelSubagentActivityEvent["subagent"]>();
-    expectTypeOf<KernelSubagentActivityEvent["subagent"]>().toExtend<RuntimeSubagentIdentity>();
-    expectTypeOf<RuntimeSubagentActivityEvent>().toExtend<KernelSubagentActivityEvent>();
-    expectTypeOf<KernelSubagentActivityEvent>().toExtend<RuntimeSubagentActivityEvent>();
+    expectTypeOf<RuntimeSubagentIdentity>().toExtend<TurnSubagentActivityEvent["subagent"]>();
+    expectTypeOf<TurnSubagentActivityEvent["subagent"]>().toExtend<RuntimeSubagentIdentity>();
+    expectTypeOf<RuntimeSubagentActivityEvent>().toExtend<TurnSubagentActivityEvent>();
+    expectTypeOf<TurnSubagentActivityEvent>().toExtend<RuntimeSubagentActivityEvent>();
     assertAssignable<RuntimeEventLike>(event);
 
     const opaqueProviderEvent = {
@@ -302,15 +302,15 @@ describe("host public contract", () => {
 
   it("the facade RuntimeToolOptions is assignable to createRuntime(...).configureTools options except for the concrete sandbox engine", () => {
     const facade = null as unknown as WithoutConcreteSandboxEngine<RuntimeToolOptions>;
-    assertAssignable<WithoutConcreteSandboxEngine<KernelToolOptions>>(facade);
+    assertAssignable<WithoutConcreteSandboxEngine<TurnToolOptions>>(facade);
   });
 
   it("the kernel's run() result is assignable to the facade RuntimeResult", () => {
-    expectTypeOf<KernelRunResult>().toExtend<RuntimeResult>();
+    expectTypeOf<TurnRunResult>().toExtend<RuntimeResult>();
   });
 
   it("listRuntimeBridges' capabilities() result is assignable to MonoRuntimeBackendCapabilities", () => {
-    expectTypeOf<KernelBridgeCapabilities>().toExtend<MonoRuntimeBackendCapabilities>();
+    expectTypeOf<TurnBridgeCapabilities>().toExtend<MonoRuntimeBackendCapabilities>();
   });
 
   it("parseRuntimeModelReference keeps its real string-in signature", () => {

@@ -711,7 +711,7 @@ monoRuntimeSupportsSessionResume
 ```text
 MODEL_REFERENCE_ECHO_MAX_BYTES
 MODEL_REFERENCE_REASON_MAX_BYTES
-RuntimeAdapterError
+TurnHostError
 assertParsedRuntimeModelReference
 isAutodiscoverableProviderId
 isPiBuiltinProvider

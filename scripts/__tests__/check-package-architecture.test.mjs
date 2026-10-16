@@ -138,7 +138,7 @@ describe("engine ownership and historical reference guard", () => {
   });
   it("checks static, dynamic and relative engine imports, not just manifests", () => {
     const root = "/fictional", file = root + "/packages/turn/src/engine/index.js";
-    for (const specifier of ["@mono-agent/turn", "@mono-agent/turn/ai", "@mono-agent/turn/engine", "@mono-agent/turn/engine/sessions.js", "@mono-agent/contracts", "@mono-agent/conversation/owned.js", "#kernel/cost", "#kernel/types",
+    for (const specifier of ["@mono-agent/turn", "@mono-agent/turn/ai", "@mono-agent/turn/engine", "@mono-agent/turn/engine/sessions.js", "@mono-agent/contracts", "@mono-agent/conversation/owned.js", "#turn/telemetry/cost", "#turn/contracts/runtime",
       "../index.js", "../ai/index.js", "../../scripts/helper.js", "../../.."]) {
       for (const source of [`import { run } from "${specifier}";`, `export { run } from "${specifier}";`, `await import("${specifier}");`]) {
         expect(engineRuntimeImports(root, file, source)).toEqual([specifier]);

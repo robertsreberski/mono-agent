@@ -41,7 +41,7 @@ import {
   redactMonoAgentConfig,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, TurnHostError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 import { sandboxEffectiveStateWarning } from "@mono-agent/turn/host/sandbox";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 import { getPiBuiltinModel } from "@mono-agent/turn/ai";
@@ -3700,7 +3700,7 @@ function displayReferenceOf(model: RuntimeModelReference): string {
  * concrete repair whenever it quotes the operator's value first.
  */
 function displayReason(error: unknown): string {
-  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+  const reason = error instanceof TurnHostError && typeof error.details.reason === "string"
     ? error.details.reason
     : error instanceof Error
       ? error.message

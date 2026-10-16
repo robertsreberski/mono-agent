@@ -84,7 +84,7 @@
 
 /**
  * @typedef {RuntimeRunOptions
- *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
+ *   & Pick<TurnHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
  *   & {runtimeBrand: import("../runtime-brand.js").RuntimeBrand, toolContext?: import("../agent/tools/shared/tool-context.js").ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
  * } RuntimeRequest
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
@@ -327,7 +327,7 @@
  */
 
 /**
- * @typedef {Object} AgentRuntimeHostOptions
+ * @typedef {Object} TurnHostOptions
  * The `host` object passed to `createRuntime(host)` / `createRouterRuntime({host, chain})`.
  * Combines the tool-context keys (bound per runtime instance) and the
  * host-integration callbacks (bound once, applied to every run via hostDefaults).
@@ -355,8 +355,8 @@
  */
 
 /**
- * @typedef {Object} AgentRuntimeToolOptions
- * The subset of AgentRuntimeHostOptions accepted by `runtime.configureTools(next)`
+ * @typedef {Object} TurnToolOptions
+ * The subset of TurnHostOptions accepted by `runtime.configureTools(next)`
  * (createRuntime's TOOL_RUNTIME_KEYS pick).
  * @property {string} [workspace]
  * @property {string} [repoRoot]
@@ -410,7 +410,7 @@
  * @typedef {Object} AgentRuntimeInstance
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
- * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
+ * @property {(next?: TurnToolOptions) => void} configureTools
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<NativePreparedDispatch>} [prepareNativeDispatch]
  * @property {"v1"} [sessionTurnReconciliation] Explicit native evidence ownership capability.
  * @property {(request: {sessionsRoot: string, descriptor: any, purpose: "execution"|"compaction", expectedModel: {provider: string, id: string, api?: string}, expectedInputs: ReadonlyArray<{id: string, requestDigest: string, placement: "initial"|"live"}>, expectedBaseTip?: string|null}) => Promise<any>} reconcileSessionTurn Storage-only protected native reconciliation.
@@ -430,7 +430,7 @@
  * Method signatures preserve structural host projections with stricter inputs.
  * @typedef {{
  *   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>,
- *   configureTools?(next?: AgentRuntimeToolOptions): void,
+ *   configureTools?(next?: TurnToolOptions): void,
  *   prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<NativePreparedDispatch>,
  * }} RuntimeAttempt
  */

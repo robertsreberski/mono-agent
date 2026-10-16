@@ -5,9 +5,17 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsMcpApps, monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
-import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider, TurnHostError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 
-describe("runtime adapter model references", () => {
+describe("turn host model references", () => {
+  it("exposes the intentional error name without changing message/code/details", () => {
+    const error = new TurnHostError("invalid_runtime_options", "Fictional failure", { field: "fixture", code: "invalid_model_reference" });
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe("TurnHostError");
+    expect(error.message).toBe("Fictional failure");
+    expect(error.code).toBe("invalid_runtime_options");
+    expect(error.details).toEqual({ field: "fixture", code: "invalid_runtime_options" });
+  });
   it("canonicalizes the legacy pi wrapper", () => {
     expect(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5")).toEqual({
       provider: "openai-codex",
@@ -17,7 +25,7 @@ describe("runtime adapter model references", () => {
   });
 
   it("rejects raw or legacy-invalid model references with a stable error", () => {
-    expect(() => parseMonoRuntimeModelReference("haiku")).toThrow(RuntimeAdapterError);
+    expect(() => parseMonoRuntimeModelReference("haiku")).toThrow(TurnHostError);
     try {
       parseMonoRuntimeModelReference("haiku");
     } catch (error) {
@@ -53,8 +61,8 @@ describe("runtime adapter model references", () => {
       parseMonoRuntimeModelReference(reference);
       throw new Error(`Expected ${reference} to be rejected.`);
     } catch (error) {
-      expect(error).toBeInstanceOf(RuntimeAdapterError);
-      expect((error as RuntimeAdapterError).message).toContain(replacement);
+      expect(error).toBeInstanceOf(TurnHostError);
+      expect((error as TurnHostError).message).toContain(replacement);
     }
   });
 
@@ -63,7 +71,7 @@ describe("runtime adapter model references", () => {
       parseMonoRuntimeModelReference("acp:some-agent");
       throw new Error("Expected acp:some-agent to be rejected.");
     } catch (error) {
-      expect((error as RuntimeAdapterError).message).toContain("mono-agent bridge acp");
+      expect((error as TurnHostError).message).toContain("mono-agent bridge acp");
     }
   });
 
@@ -72,7 +80,7 @@ describe("runtime adapter model references", () => {
       parseMonoRuntimeModelReference("anthropic:opus");
       throw new Error("Expected a tier alias to be rejected.");
     } catch (error) {
-      expect((error as RuntimeAdapterError).message).toContain("tier aliases are not valid model ids");
+      expect((error as TurnHostError).message).toContain("tier aliases are not valid model ids");
     }
   });
 
@@ -155,7 +163,7 @@ describe("runtime adapter fallback chain", () => {
   });
 
   it("rejects an empty fallback chain", () => {
-    expect(() => createMonoRuntime({ fallbackChain: [] })).toThrow(RuntimeAdapterError);
+    expect(() => createMonoRuntime({ fallbackChain: [] })).toThrow(TurnHostError);
   });
 
   it("forwards the actual attempted model and exact effort tri-state", async () => {
@@ -239,7 +247,7 @@ describe("runtime adapter fallback chain", () => {
         model: parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6"),
         effort: " high",
       }],
-    })).toThrow(RuntimeAdapterError);
+    })).toThrow(TurnHostError);
   });
 
   it("rejects chain entries with unparsed model references", () => {
@@ -247,7 +255,7 @@ describe("runtime adapter fallback chain", () => {
       createMonoRuntime({
         fallbackChain: [{ model: { provider: "", model: "", reference: "" } }],
       }),
-    ).toThrow(RuntimeAdapterError);
+    ).toThrow(TurnHostError);
   });
 
   it("rejects non-object chain entries with a typed error", () => {
@@ -256,7 +264,7 @@ describe("runtime adapter fallback chain", () => {
         createMonoRuntime({
           fallbackChain: [entry as never],
         }),
-      ).toThrow(RuntimeAdapterError);
+      ).toThrow(TurnHostError);
     }
   });
 
@@ -362,7 +370,7 @@ describe("runtime adapter local providers", () => {
           enabled: true,
         },
       ],
-    )).toThrow(RuntimeAdapterError);
+    )).toThrow(TurnHostError);
   });
 
   it("maps LM Studio and trusted OpenAI-compatible providers through the same custom-provider contract", () => {
@@ -524,8 +532,8 @@ describe("parseMonoRuntimeModelReference bounds the reason it derives", () => {
     } catch (error) {
       thrown = error;
     }
-    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
-    const { message, details } = thrown as RuntimeAdapterError;
+    expect(thrown).toBeInstanceOf(TurnHostError);
+    const { message, details } = thrown as TurnHostError;
     expect(new TextEncoder().encode(details.reason as string).length)
       .toBeLessThanOrEqual(MODEL_REFERENCE_REASON_MAX_BYTES);
     expect(message).toContain("use openai-codex:sk-live-AAAA");
@@ -539,9 +547,9 @@ describe("parseMonoRuntimeModelReference bounds the reason it derives", () => {
     } catch (error) {
       thrown = error;
     }
-    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
-    expect((thrown as RuntimeAdapterError).message).not.toContain("\n");
-    expect((thrown as RuntimeAdapterError).details.reason).toBe(
+    expect(thrown).toBeInstanceOf(TurnHostError);
+    expect((thrown as TurnHostError).message).not.toContain("\n");
+    expect((thrown as TurnHostError).details.reason).toBe(
       "codex is no longer a runtime backend; use openai-codex:gpt\\n[ok]    Core config",
     );
   });
@@ -663,8 +671,8 @@ describe("a model reference is bounded where it is rendered, never where it is p
     } catch (error) {
       thrown = error;
     }
-    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
-    const error = thrown as RuntimeAdapterError;
+    expect(thrown).toBeInstanceOf(TurnHostError);
+    const error = thrown as TurnHostError;
     expect(error.code).toBe("invalid_model_reference");
     expect(error.message).not.toContain("\n");
     expect(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(error.message)).toBe(false);

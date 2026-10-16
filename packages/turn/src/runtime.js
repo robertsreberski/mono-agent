@@ -44,8 +44,8 @@ import { snapshotNativeDispatchOptions } from "./ai/providers/engine-turn/prepar
 import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
 
 /**
- * @typedef {import("./contracts/runtime.js").AgentRuntimeHostOptions} AgentRuntimeHostOptions
- * @typedef {import("./contracts/runtime.js").AgentRuntimeToolOptions} AgentRuntimeToolOptions
+ * @typedef {import("./contracts/runtime.js").TurnHostOptions} TurnHostOptions
+ * @typedef {import("./contracts/runtime.js").TurnToolOptions} TurnToolOptions
  * @typedef {import("./contracts/runtime.js").AgentRuntimeInstance} AgentRuntimeInstance
  * @typedef {import("./contracts/runtime.js").RuntimeRunOptions} RuntimeRunOptions
  * @typedef {import("./contracts/runtime.js").RuntimeResult} RuntimeResult
@@ -131,7 +131,7 @@ function resolvePrompts(hostPrompts, runPrompts) {
 }
 
 /**
- * @param {AgentRuntimeHostOptions} [host]
+ * @param {TurnHostOptions} [host]
  * @returns {AgentRuntimeInstance}
  */
 export function createRuntime(host = {}) {

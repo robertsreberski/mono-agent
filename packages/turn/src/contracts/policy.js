@@ -37,7 +37,7 @@
  * @typedef {Object} RuntimePromptOverrides
  * Optional overrides for the kernel's built-in prompt fragments. Precedence is
  * run over host over the kernel default: an absent field leaves the built-in
- * string in place. Supplied on both AgentRuntimeHostOptions (host default) and
+ * string in place. Supplied on both TurnHostOptions (host default) and
  * RuntimeRunOptions (per-run).
  * @property {(systemPrompt: string) => string} [structuredOutputInstruction]
  *   Replaces the StructuredOutput system-prompt instruction (receives the raw

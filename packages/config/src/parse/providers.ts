@@ -8,7 +8,7 @@ import {
   isAutodiscoverableProviderId,
   isPiBuiltinProvider,
   modelReferenceKey,
-  RuntimeAdapterError,
+  TurnHostError,
   validateLocalProviderDefinition,
   validateProviderDefinition,
 } from "@mono-agent/turn/host/config";
@@ -267,7 +267,7 @@ function normalizeProviderFromUnknown(
       ? validateLocalProviderDefinition(provider as LocalProviderDefinition)
       : validateProviderDefinition(provider);
   } catch (error) {
-    if (error instanceof RuntimeAdapterError) {
+    if (error instanceof TurnHostError) {
       throw new MonoAgentConfigError("invalid_json", error.message, {
         path: source,
         reason: error.message,

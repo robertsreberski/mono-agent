@@ -1,5 +1,5 @@
 import type { MonoRuntimeFallbackChainEntry, MonoRuntimeRetryPolicy, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution, MonoRuntimeAttemptResolver, CreateMonoRuntimeOptions } from "./runtime-options.js";
-import { assertParsedRuntimeModelReference, RuntimeAdapterError } from "./model-reference.js";
+import { assertParsedRuntimeModelReference, TurnHostError } from "./model-reference.js";
 import { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
 import { createRuntime } from "#turn/runtime/create-runtime";
 import { createRouterRuntime } from "#turn/runtime/router";
@@ -19,7 +19,7 @@ import type {
   RuntimeToolOptions,
 } from "./runtime-contracts.js";
 
-type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
+type TurnHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
 
 export function monoRuntimeSupportsSessionResume(): boolean {
   return PI_RUNTIME_BACKEND.capabilities.supports_session_resume === true;
@@ -52,7 +52,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   // agent/sandbox-seam.js) — this is the ONE place the real sandbox
   // implementation gets injected, so every mono-agent host's sandbox policy is
   // actually enforced without the kernel depending on this package itself.
-  const hostWithSandbox: KernelHostOptions = {
+  const hostWithSandbox: TurnHostOptions = {
     ...withoutCallerSandbox(hostOptions),
     sandbox: monoSandboxImpl,
   };
@@ -76,10 +76,10 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   return {
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {
       if (typeof systemPrompt !== "string" || systemPrompt.trim().length === 0) {
-        throw new RuntimeAdapterError("invalid_runtime_options", "Runtime system prompt must be a non-empty string.");
+        throw new TurnHostError("invalid_runtime_options", "Runtime system prompt must be a non-empty string.");
       }
       if (runOptions === undefined || runOptions === null || typeof runOptions !== "object") {
-        throw new RuntimeAdapterError("invalid_runtime_options", "Runtime run options must be an object.");
+        throw new TurnHostError("invalid_runtime_options", "Runtime run options must be an object.");
       }
 
       assertParsedRuntimeModelReference(runOptions.model);
@@ -97,11 +97,11 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     },
     async prepareNativeDispatch(systemPrompt, runOptions) {
       if (typeof systemPrompt !== "string" || !systemPrompt.trim() || !runOptions || typeof runOptions !== "object") {
-        throw new RuntimeAdapterError("invalid_runtime_options", "Native preparation requires instructions and run options.");
+        throw new TurnHostError("invalid_runtime_options", "Native preparation requires instructions and run options.");
       }
       assertParsedRuntimeModelReference(runOptions.model);
       if (!runtime.prepareNativeDispatch) {
-        throw new RuntimeAdapterError("runtime_backend_unavailable", "Native prepared dispatch unavailable.");
+        throw new TurnHostError("runtime_backend_unavailable", "Native prepared dispatch unavailable.");
       }
       return await runtime.prepareNativeDispatch(systemPrompt, {
         ...withoutCallerSandbox(runOptions),
@@ -118,7 +118,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     },
     ...(runtime.sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation: runtime.sessionTurnReconciliation }),
     async reconcileSessionTurn(request) {
-      if (!runtime.reconcileSessionTurn) throw new RuntimeAdapterError("runtime_backend_unavailable", "Native turn reconciliation unavailable.");
+      if (!runtime.reconcileSessionTurn) throw new TurnHostError("runtime_backend_unavailable", "Native turn reconciliation unavailable.");
       return await runtime.reconcileSessionTurn(request);
     },
     async recoverSession(receipt, context): Promise<boolean> {
@@ -129,7 +129,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     },
     async refreshSession(providerSessionId: string): Promise<void> {
       if (typeof runtime.refreshSession !== "function") {
-        throw new RuntimeAdapterError(
+        throw new TurnHostError(
           "runtime_backend_unavailable",
           "The runtime cannot guarantee a cold provider-session reopen.",
         );
@@ -137,12 +137,12 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       await runtime.refreshSession(providerSessionId);
     },
     async salvageDurableSession(providerSessionId: string, sessionsRoot: string) {
-      if (!runtime.salvageDurableSession) throw new RuntimeAdapterError("runtime_backend_unavailable", "Durable session salvage unavailable.");
+      if (!runtime.salvageDurableSession) throw new TurnHostError("runtime_backend_unavailable", "Durable session salvage unavailable.");
       return runtime.salvageDurableSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId: string, sessionsRoot: string, deletion?: import("#kernel/native-journal-types").RuntimeNativeJournalDeletion): Promise<void> {
+    async retireDurableSession(providerSessionId: string, sessionsRoot: string, deletion?: import("#turn/contracts/native-storage").RuntimeNativeJournalDeletion): Promise<void> {
       if (typeof runtime.retireDurableSession !== "function") {
-        throw new RuntimeAdapterError(
+        throw new TurnHostError(
           "runtime_backend_unavailable",
           "The runtime cannot retire durable provider-session state.",
         );
@@ -219,11 +219,11 @@ function normalizeFallbackChain(
     return undefined;
   }
   if (!Array.isArray(fallbackChain) || fallbackChain.length === 0) {
-    throw new RuntimeAdapterError("invalid_runtime_options", "Runtime fallback chain must be a non-empty array.");
+    throw new TurnHostError("invalid_runtime_options", "Runtime fallback chain must be a non-empty array.");
   }
   const normalized = fallbackChain.map((entry) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new RuntimeAdapterError(
+      throw new TurnHostError(
         "invalid_runtime_options",
         "Each runtime fallback chain entry must be an object with a model reference.",
       );
@@ -234,7 +234,7 @@ function normalizeFallbackChain(
       && entry.effort !== null
       && (typeof entry.effort !== "string" || entry.effort.trim().length === 0 || entry.effort !== entry.effort.trim())
     ) {
-      throw new RuntimeAdapterError(
+      throw new TurnHostError(
         "invalid_runtime_options",
         "Runtime fallback effort must be a non-empty trimmed string, null, or omitted.",
       );
@@ -243,7 +243,7 @@ function normalizeFallbackChain(
       entry.attempts !== undefined
       && (!Number.isInteger(entry.attempts) || entry.attempts < 1 || entry.attempts > 10)
     ) {
-      throw new RuntimeAdapterError(
+      throw new TurnHostError(
         "invalid_runtime_options",
         "Runtime fallback attempts must be an integer between 1 and 10, or omitted.",
       );
@@ -264,12 +264,12 @@ function normalizeRetryPolicy(
     return undefined;
   }
   if (retry === null || typeof retry !== "object" || Array.isArray(retry)) {
-    throw new RuntimeAdapterError("invalid_runtime_options", "Runtime retry policy must be an object.");
+    throw new TurnHostError("invalid_runtime_options", "Runtime retry policy must be an object.");
   }
   for (const key of ["backoffMs", "maxBackoffMs"] as const) {
     const value = retry[key];
     if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
-      throw new RuntimeAdapterError(
+      throw new TurnHostError(
         "invalid_runtime_options",
         `Runtime retry ${key} must be a non-negative finite number.`,
       );
@@ -283,13 +283,13 @@ function capabilitiesForRuntimeBridge(
 ): MonoRuntimeBackendCapabilities {
   const bridge = listRuntimeBridges().find((candidate) => candidate.id === runtimeBridgeId);
   if (bridge === undefined) {
-    throw new RuntimeAdapterError("runtime_backend_unavailable", "Agent runtime bridge is not registered.", {
+    throw new TurnHostError("runtime_backend_unavailable", "Agent runtime bridge is not registered.", {
       runtimeBridgeId,
     });
   }
   const capabilities = bridge.capabilities();
   if (!isRecord(capabilities) || Array.isArray(capabilities)) {
-    throw new RuntimeAdapterError("runtime_backend_unavailable", "Agent runtime bridge returned invalid capabilities.", {
+    throw new TurnHostError("runtime_backend_unavailable", "Agent runtime bridge returned invalid capabilities.", {
       runtimeBridgeId,
     });
   }

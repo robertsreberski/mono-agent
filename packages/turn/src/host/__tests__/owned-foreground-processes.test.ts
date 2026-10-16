@@ -3,13 +3,13 @@ import { createRuntime } from "@mono-agent/turn";
 import { bridgeOwnedForegroundProcesses, type OwnedForegroundProcesses, type OwnedForegroundProcessRequest } from "../owned-foreground-processes.js";
 import type { RuntimeRunOptions } from "../types.js";
 
-type KernelOptions = Parameters<ReturnType<typeof createRuntime>["run"]>[1];
-type KernelOwner = NonNullable<KernelOptions["ownedForegroundProcesses"]>;
+type TurnOptions = Parameters<ReturnType<typeof createRuntime>["run"]>[1];
+type TurnOwner = NonNullable<TurnOptions["ownedForegroundProcesses"]>;
 
 describe("owned foreground process adapter bridge", () => {
   it("keeps the dependency-free kernel seam structurally equivalent", () => {
-    expectTypeOf<OwnedForegroundProcesses>().toExtend<KernelOwner>();
-    expectTypeOf<KernelOwner>().toExtend<OwnedForegroundProcesses>();
+    expectTypeOf<OwnedForegroundProcesses>().toExtend<TurnOwner>();
+    expectTypeOf<TurnOwner>().toExtend<OwnedForegroundProcesses>();
     expectTypeOf<RuntimeRunOptions["ownedForegroundProcesses"]>().toEqualTypeOf<OwnedForegroundProcesses | undefined>();
   });
   it("mints attempt-local closures and forwards exact prepared/launcher/signal identities", async () => {

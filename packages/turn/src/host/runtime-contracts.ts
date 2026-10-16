@@ -17,9 +17,9 @@ import type { ProcessJobStartResult } from "#turn/contracts/process";
 import type { ProcessJobsController } from "#turn/contracts/process";
 import type { OwnedForegroundProcessRequest } from "#turn/contracts/process";
 import type { OwnedForegroundProcesses } from "#turn/contracts/process";
-import type * as Kernel from "#kernel/types";
+import type * as RuntimeContracts from "#turn/contracts/runtime";
 import type * as Events from "#turn/contracts/events";
-import type * as Pricing from "#kernel/cost";
+import type * as Pricing from "#turn/telemetry/cost";
 import type {
   AgentReplyMcpAppPart,
   AgentReplyPartFailure,
@@ -27,7 +27,7 @@ import type {
 } from "@mono-agent/contracts";
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox-contracts.js";
 import type { RuntimeToolLifecycleTerminalState } from "#turn/contracts/events";
-import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeJournalPresence, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeHandoffProposal, RuntimeNativePreparationStorage } from "#kernel/native-journal-types";
+import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeJournalPresence, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeHandoffProposal, RuntimeNativePreparationStorage } from "#turn/contracts/native-storage";
 
 
 export interface MonoRuntimeSandboxEngine {
@@ -37,7 +37,7 @@ export interface MonoRuntimeSandboxEngine {
 }
 
 
-export type RuntimeModelReference = Readonly<Kernel.RuntimeModelRef>;
+export type RuntimeModelReference = Readonly<RuntimeContracts.RuntimeModelRef>;
 
 
 export interface MonoRuntimeBackendCapabilities {
@@ -203,9 +203,9 @@ export interface RuntimeSubagentActivityEvent extends RuntimeEventLike {
 
 
 /** Monotonic per-execution evidence, armed only after canonical replay seeding. */
-export type RuntimeDispatchProgress = Readonly<NonNullable<Kernel.RuntimeResult["dispatchProgress"]>>;
+export type RuntimeDispatchProgress = Readonly<NonNullable<RuntimeContracts.RuntimeResult["dispatchProgress"]>>;
 /** Readonly host projection; unknown provider diagnostics remain open. */
-export type RuntimeResult = Readonly<Pick<Kernel.RuntimeResult, "dispatchProgress" | "turnDisposition" | "subagentQuestion" | "text" | "structuredResult" | "structuredResultSource" | "events" | "durationMs" | "numTurns" | "model" | "effort" | "sdk" | "cancelled" | "error" | "failureKind" | "retryable" | "providerSessionId" | "providerSessionRecovery" | "runtimeWarnings">> & {
+export type RuntimeResult = Readonly<Pick<RuntimeContracts.RuntimeResult, "dispatchProgress" | "turnDisposition" | "subagentQuestion" | "text" | "structuredResult" | "structuredResultSource" | "events" | "durationMs" | "numTurns" | "model" | "effort" | "sdk" | "cancelled" | "error" | "failureKind" | "retryable" | "providerSessionId" | "providerSessionRecovery" | "runtimeWarnings">> & {
   readonly usage?: unknown;
   readonly cost?: unknown;
   readonly errorDetails?: unknown;
@@ -260,7 +260,7 @@ export interface RuntimeSessionTurnDetachedAttempt {
   readonly result: RuntimeResult;
 }
 /** Common request facts, narrowed by the host's authority and required inputs. */
-export type RuntimeRunOptions = Readonly<Pick<Kernel.RuntimeRunOptions, "sessionRecovery" | "sessionTurn" | "model" | "providerAttributionSessionId" | "processJobs" | "ownedForegroundProcesses" | "promptCacheDiagnostics" | "cacheRetention" | "toolLifecycleSink" | "effort" | "cwd" | "maxTurns" | "allowedTools" | "disallowedTools" | "toolLimits" | "mcpCallNoTotalTimeoutTools" | "compaction" | "prompts" | "liveInput" | "piToolExecutionMode" | "piToolParallelismMode">> & {
+export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions, "sessionRecovery" | "sessionTurn" | "model" | "providerAttributionSessionId" | "processJobs" | "ownedForegroundProcesses" | "promptCacheDiagnostics" | "cacheRetention" | "toolLifecycleSink" | "effort" | "cwd" | "maxTurns" | "allowedTools" | "disallowedTools" | "toolLimits" | "mcpCallNoTotalTimeoutTools" | "compaction" | "prompts" | "liveInput" | "piToolExecutionMode" | "piToolParallelismMode">> & {
   /** Stable configured profile, never executable authority or retained controllers. */
   readonly toolExposure?: { readonly persistentSubagents?: boolean; readonly askParent?: boolean };
   /** Current host facts only; tools must independently enforce admission. */

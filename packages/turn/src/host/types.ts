@@ -97,7 +97,7 @@ export type { RuntimeSessionTurnReconciliationResult } from "#turn/contracts/ses
 export type { RuntimeNativeSessionAuthority } from "#turn/contracts/session";
 
 export type { RuntimeNativeSessionProjection } from "#turn/contracts/session";
-export type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeNativePreparationStorage } from "#kernel/native-journal-types";
+export type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeNativePreparationStorage } from "#turn/contracts/native-storage";
 
 export type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution, MonoRuntimeFallbackChainEntry } from "./runtime-options.js";
 

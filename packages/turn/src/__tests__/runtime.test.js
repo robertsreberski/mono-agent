@@ -273,7 +273,7 @@ describe("createRuntime", () => {
     executeMock.mockResolvedValue({ text: "ok" });
     // These three belonged to the deleted ACP *client* backend (the ACP server
     // bridge never used them). HOST_KEYS must stay identical to the
-    // `Pick<AgentRuntimeHostOptions, ...>` clause of RuntimeRequest, so a host
+    // `Pick<TurnHostOptions, ...>` clause of RuntimeRequest, so a host
     // that still passes them gets them dropped rather than smuggled onto a
     // request shape that does not admit them.
     const runtime = createRuntime({

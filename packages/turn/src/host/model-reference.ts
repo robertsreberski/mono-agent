@@ -1,24 +1,24 @@
 import { parseRuntimeModelReference } from "#turn/runtime/model-reference";
 import type { RuntimeModelReference } from "./runtime-contracts.js";
 
-type RuntimeAdapterErrorCode =
+type TurnHostErrorCode =
   | "invalid_model_reference"
   | "runtime_backend_unavailable"
   | "invalid_runtime_options"
   | "invalid_local_provider";
 
-interface RuntimeAdapterErrorDetails {
-  readonly code?: RuntimeAdapterErrorCode;
+interface TurnHostErrorDetails {
+  readonly code?: TurnHostErrorCode;
   readonly [key: string]: unknown;
 }
 
-export class RuntimeAdapterError extends Error {
-  readonly code: RuntimeAdapterErrorCode;
-  readonly details: RuntimeAdapterErrorDetails;
+export class TurnHostError extends Error {
+  readonly code: TurnHostErrorCode;
+  readonly details: TurnHostErrorDetails;
 
-  constructor(code: RuntimeAdapterErrorCode, message: string, details: RuntimeAdapterErrorDetails = {}) {
+  constructor(code: TurnHostErrorCode, message: string, details: TurnHostErrorDetails = {}) {
     super(message);
-    this.name = "RuntimeAdapterError";
+    this.name = "TurnHostError";
     this.code = code;
     this.details = { ...details, code };
   }
@@ -124,7 +124,7 @@ export function sanitizeModelReferenceText(value: string, maxBytes: number): str
 
 export function parseMonoRuntimeModelReference(value: string): RuntimeModelReference {
   if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
-    throw new RuntimeAdapterError("invalid_model_reference", "Model reference must be a non-empty trimmed string.");
+    throw new TurnHostError("invalid_model_reference", "Model reference must be a non-empty trimmed string.");
   }
 
   try {
@@ -140,7 +140,7 @@ export function parseMonoRuntimeModelReference(value: string): RuntimeModelRefer
       error instanceof Error ? error.message : String(error),
       MODEL_REFERENCE_REASON_MAX_BYTES,
     );
-    throw new RuntimeAdapterError("invalid_model_reference", `Invalid runtime model reference: ${reason}`, {
+    throw new TurnHostError("invalid_model_reference", `Invalid runtime model reference: ${reason}`, {
       reason,
     });
   }
@@ -158,7 +158,7 @@ export function assertParsedRuntimeModelReference(value: unknown): asserts value
 
 function normalizeRuntimeModelReference(value: unknown): RuntimeModelReference {
   if (!isRecord(value) || Array.isArray(value)) {
-    throw new RuntimeAdapterError(
+    throw new TurnHostError(
       "invalid_model_reference",
       "Runtime model reference must be a parsed object with provider, model, and reference.",
     );
@@ -168,14 +168,14 @@ function normalizeRuntimeModelReference(value: unknown): RuntimeModelReference {
   const model = normalizedRequiredString(value.model, "model");
   const reference = normalizedRequiredString(value.reference, "reference");
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(provider)) {
-    throw new RuntimeAdapterError(
+    throw new TurnHostError(
       "invalid_model_reference",
       "Runtime model reference provider has invalid characters.",
       { field: "provider" },
     );
   }
   if (reference !== `${provider}:${model}`) {
-    throw new RuntimeAdapterError(
+    throw new TurnHostError(
       "invalid_model_reference",
       "Runtime model reference must use its canonical <provider>:<model> spelling.",
       { field: "reference" },
@@ -187,7 +187,7 @@ function normalizeRuntimeModelReference(value: unknown): RuntimeModelReference {
 
 function normalizedRequiredString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
-    throw new RuntimeAdapterError("invalid_model_reference", `Runtime model reference ${field} must be a non-empty trimmed string.`, {
+    throw new TurnHostError("invalid_model_reference", `Runtime model reference ${field} must be a non-empty trimmed string.`, {
       field,
     });
   }
