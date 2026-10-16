@@ -3,8 +3,17 @@
 // gate stops the run before this replay can reach a retry or backup.
 import { describe, expect, it } from "vitest";
 
-import { createLiveInputMailbox } from "../../../conversation/src/live-input.js";
-import { instrumentLiveInputAppliedEvents } from "../../../turn/src/ai/runtime/live-input-events.js";
+import { createLiveInputMailbox } from "@mono-agent/conversation";
+import type { RuntimeLiveInputMessage } from "@mono-agent/turn/host/types";
+
+const { instrumentLiveInputAppliedEvents } = await import(
+  new URL("../../../turn/src/ai/runtime/live-input-events.js", import.meta.url).href
+) as {
+  instrumentLiveInputAppliedEvents(
+    input: AsyncIterable<RuntimeLiveInputMessage>,
+    onEvent: (event: { readonly type: string }) => void,
+  ): AsyncIterable<RuntimeLiveInputMessage>;
+};
 
 describe("live-input mailbox and runtime instrumentation retry", () => {
   it("keeps the first logical owner while refreshing only its mailbox lease callbacks", async () => {
@@ -18,8 +27,8 @@ describe("live-input mailbox and runtime instrumentation retry", () => {
     expect(offered.status).toBe("accepted");
     if (offered.status !== "accepted") return;
 
-    const events = [];
-    const stream = instrumentLiveInputAppliedEvents(mailbox, (event) => events.push(event));
+    const events: Array<{ readonly type: string }> = [];
+    const stream = instrumentLiveInputAppliedEvents(mailbox, (event) => events.push(event))!;
     const attemptOne = await stream[Symbol.asyncIterator]().next();
     expect(attemptOne.value?.reject?.({ code: "native_queue_removed" })).toBe("recorded");
 

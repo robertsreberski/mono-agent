@@ -20,7 +20,6 @@ import {
   backgroundSnapshotFromMetadata,
   captureBackgroundSnapshot,
   captureDurableBackgroundInputs,
-  captureDurableBackgroundSnapshot,
   decodeBackgroundSnapshot,
   encodeBackgroundSnapshot,
   fingerprintBackgroundRegularFile,
@@ -469,7 +468,7 @@ describe("background worker snapshots", () => {
   });
 
   it("reconstructs the managed worker from dotenv plus only operational plist values", async () => {
-    const snapshot = await captureDurableBackgroundSnapshot({
+    const snapshot = (await captureDurableBackgroundInputs({
       cwd: dir,
       configPath: "mono-agent.config.json",
       envFile: ".env",
@@ -479,7 +478,7 @@ describe("background worker snapshots", () => {
         MONO_AGENT_MODEL: "shell-override-must-not-win",
         UNPERSISTED_API_KEY: "shell-secret-must-not-win",
       },
-    });
+    })).snapshot;
     expect(snapshot.operationalEnvironmentFingerprint).toBe(
       fingerprintBackgroundOperationalEnvironment({ HOME: dir, PATH: "/managed/bin" }),
     );
@@ -615,12 +614,12 @@ describe("background operational environment", () => {
     const operational = managedBackgroundEnvironment({ HOME: dir, PATH: "/wizard/bin" });
     expect(operational.PATH).toBe("/wizard/bin:/opt/homebrew/bin:/usr/local/bin");
 
-    const approved = await captureDurableBackgroundSnapshot({
+    const approved = (await captureDurableBackgroundInputs({
       cwd: dir,
       configPath: "mono-agent.config.json",
       envFile: ".env",
       operationalEnvironment: operational,
-    });
+    })).snapshot;
     const workerEnvironment: Record<string, string | undefined> = {
       ...operational,
       MODEL_API_KEY: "top-secret",

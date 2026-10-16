@@ -269,7 +269,7 @@ export function isPathUnderTmpdir(path: string, tmpRoot: string = tmpdir()): boo
   return target === root || target.startsWith(rootWithSep);
 }
 
-export interface ShouldMirrorTraceSourceGloballyInput {
+interface ShouldMirrorTraceSourceGloballyInput {
   readonly registryDir: string;
   readonly globalRegistryDir: string;
   readonly globalDiscovery: boolean;

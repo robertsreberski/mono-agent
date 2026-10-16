@@ -6,7 +6,7 @@ import type {
 
 import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 
-export interface ProcessJobChannelRoutingInput {
+interface ProcessJobChannelRoutingInput {
   readonly projection: ProcessJobProjection;
   readonly conversationId: string;
   readonly deliveryKey: string;

@@ -6,12 +6,12 @@ import type { OAuthAuth, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { getOrCreatePiInstallationId } from "./pi-installation-id.js";
 
-export interface PiOAuthLoginIo {
+interface PiOAuthLoginIo {
   readonly ask: (question: string) => Promise<string>;
   readonly write: (text: string) => void;
 }
 
-export interface RunPiOAuthLoginOptions {
+interface RunPiOAuthLoginOptions {
   readonly authPath?: string;
   /** Effective durable Pi auth path; never the temporary staged auth.json. */
   readonly deviceIdAuthPath?: string;

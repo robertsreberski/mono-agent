@@ -68,14 +68,14 @@ export interface SharedRecallStore extends MemoryStore, RecallCapableStore, Labe
 // Short context-free replies cannot reliably select unsolicited cross-conversation lines.
 const SHORT_OWNER_QUERY_MAX_CODEPOINTS = 16;
 
-export interface MemoryRetrievalServiceOptions {
+interface MemoryRetrievalServiceOptions {
   readonly maxBytes?: number;
   readonly source?: string;
   readonly profileEnabled?: boolean;
   readonly intentExpiry?: boolean;
 }
 
-export interface SharedMemoryRecallRuntimeExtensionOptions {
+interface SharedMemoryRecallRuntimeExtensionOptions {
   /** Best-effort diagnostic when the loopback tool endpoint cannot start. */
   readonly onUnavailable?: (error: unknown) => void;
   /** Test seam for simulating endpoint startup failures. */
@@ -757,10 +757,6 @@ export function isSharedRecallStore(store: MemoryStore | undefined): store is Sh
   return value !== undefined && typeof value.recall === "function" && typeof value.close === "function";
 }
 
-export function normalizeMemoryRecallQuery(query: string): string {
-  return normalizeQuery(query);
-}
-
 function normalizeQuery(query: string): string {
   return normalizeEvidenceQuery(query).toLocaleLowerCase("en-US");
 }
@@ -774,7 +770,7 @@ function clampLimit(limit: number | undefined, fallback: number): number {
   return Math.min(AUTO_RECALL_BACKEND_HITS, Math.max(1, Math.trunc(limit)));
 }
 
-export { POSSIBLY_RELEVANT_HEADING };
+
 
 /** Reader-facing attribution when every label on the line agrees. */
 function recallAttributions(store: SharedRecallStore, hits: readonly SharedRecallHit[]): ReadonlyMap<string, string> {

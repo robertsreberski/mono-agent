@@ -30,7 +30,6 @@ import {
   markLaunchdLogMaintenanceStopping,
   readLaunchdLogMaintenanceIntent,
   rotateStoppedLaunchdLogs,
-  SHARED_LAUNCHD_LOG_MUTATION_CALLERS,
 } from "../launchd-logs.js";
 import type { LaunchdLogDependencies, LaunchdLogPolicy } from "../launchd-logs.js";
 import type { LaunchdPaths } from "../launchd.js";
@@ -858,3 +857,11 @@ describe("rotateStoppedLaunchdLogs", () => {
     await expect(lstat(`${paths.stdoutPath}.1`)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+// Expected mutation callers are test evidence, not runtime configuration.
+const SHARED_LAUNCHD_LOG_MUTATION_CALLERS = Object.freeze([
+  "beginLaunchdLogMaintenanceIntent",
+  "replaceMaintenanceIntentPhase",
+  "clearLaunchdLogMaintenanceIntent",
+  "rotateStoppedLaunchdLogs",
+] as const);

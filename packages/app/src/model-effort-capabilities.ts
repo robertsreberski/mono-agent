@@ -9,7 +9,7 @@ import { resolveModelEffortLevels } from "@mono-agent/turn/host/config";
 
 const KNOWN_EFFORTS = new Set<string>(EFFORT_LEVELS);
 
-export interface AdvertisedModelEffortCatalog {
+interface AdvertisedModelEffortCatalog {
   readonly localProviders?: readonly LocalProviderDefinition[];
 }
 

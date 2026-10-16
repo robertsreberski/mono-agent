@@ -27,7 +27,7 @@ import {
 } from "./process-jobs-store.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 
-export interface ProcessJobsRuntimeExtensionOptions {
+interface ProcessJobsRuntimeExtensionOptions {
   readonly next?: RuntimeOptionsExtension;
   readonly ownership: AgentRootOwnership;
   readonly registry: ProcessJobsRootRegistrySnapshot;
@@ -310,7 +310,7 @@ function processJobsAdmissible(
     && hasAllowedProcessTool(coreConfig);
 }
 
-export interface ProcessJobsAvailabilityOptions {
+interface ProcessJobsAvailabilityOptions {
   readonly service: ProcessJobsServiceHandle | undefined;
   readonly coreConfig: MonoAgentConfig;
   readonly channelId: ChannelId | undefined;

@@ -22,7 +22,7 @@ export interface BackgroundLockAcquireOptions {
   readonly purpose?: "lifecycle" | "shared-launchd-logs";
 }
 
-export interface FilesystemLifecycleLockOptions extends BackgroundLockAcquireOptions {
+interface FilesystemLifecycleLockOptions extends BackgroundLockAcquireOptions {
   readonly pid?: number;
   readonly now?: () => number;
   /** Permanent compatibility for owner records predating process-incarnation identity. */
@@ -35,15 +35,15 @@ export interface FilesystemLifecycleLockOptions extends BackgroundLockAcquireOpt
   readonly beforeStaleLockRename?: () => Promise<void>;
 }
 
-export interface LifecycleLockDependencies {
+interface LifecycleLockDependencies {
   readonly acquireLifecycleLock: (
     target: BackgroundLifecycleTarget,
     options?: BackgroundLockAcquireOptions,
   ) => Promise<(() => Promise<void>) | undefined>;
 }
 
-export const SHARED_LAUNCHD_LOG_LOCK_WAIT_MS = 18_000;
-export const SHARED_LAUNCHD_LOG_LOCK_POLL_MS = 400;
+const SHARED_LAUNCHD_LOG_LOCK_WAIT_MS = 18_000;
+const SHARED_LAUNCHD_LOG_LOCK_POLL_MS = 400;
 
 /** One per-account lock key for every mutation of the shared launchd log chain. */
 export function sharedLaunchdLogLockTarget(

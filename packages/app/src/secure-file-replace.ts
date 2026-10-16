@@ -11,9 +11,9 @@ type SecureFileIdentity = { readonly dev: bigint; readonly ino: bigint };
 type ClaimValidationPhase = "current" | "claimed" | "pre-publish" | "published";
 type RecoveryMode = "preserve-current" | "restore-previous";
 
-export interface VerifiedFileSnapshot { readonly contents: Buffer; readonly details: BigIntStats }
+interface VerifiedFileSnapshot { readonly contents: Buffer; readonly details: BigIntStats }
 
-export interface VerifiedFileReadOptions {
+interface VerifiedFileReadOptions {
   readonly validate: (details: BigIntStats, path: string) => void; readonly changedError: (path: string) => Error;
 }
 interface SecureReplaceFailure { readonly cause: unknown; readonly recoveryPaths: readonly string[] }

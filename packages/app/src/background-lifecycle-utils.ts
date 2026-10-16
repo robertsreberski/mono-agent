@@ -16,7 +16,7 @@ interface LifecyclePollDeps {
   readonly isAlive: (pid: number) => boolean;
 }
 
-export type UnloadLaunchdServiceResult =
+type UnloadLaunchdServiceResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly failure: LaunchctlResult };
 

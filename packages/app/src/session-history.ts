@@ -76,14 +76,14 @@ interface SessionHistoryNavigation {
   readonly nextActions: readonly SessionHistoryNextAction[];
 }
 
-export interface SessionHistoryBinding {
+interface SessionHistoryBinding {
   readonly reader: ToolHistoryReader;
   readonly conversationId: string;
   readonly logicalConversationId: string;
   readonly runId: string;
 }
 
-export interface SessionHistoryRuntimeExtensionOptions {
+interface SessionHistoryRuntimeExtensionOptions {
   readonly historyRoot: string;
   readonly rollover?: "none" | "daily";
   readonly onUnavailable?: (error: unknown) => void;

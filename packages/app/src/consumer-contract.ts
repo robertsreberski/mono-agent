@@ -16,17 +16,17 @@ export const consumerContractNames = ["local-agent-alpha", "local-agent-beta"] a
 
 export type ConsumerContractName = (typeof consumerContractNames)[number];
 
-export interface ConsumerContractIssue {
+interface ConsumerContractIssue {
   readonly check: string;
   readonly message: string;
 }
 
-export interface ConsumerContractSectionStatus {
+interface ConsumerContractSectionStatus {
   readonly id: string;
   readonly status: ValidationStatus;
 }
 
-export interface ConsumerContractFixtureOptions {
+interface ConsumerContractFixtureOptions {
   readonly name: ConsumerContractName;
   readonly fixtureDir: string;
   readonly env?: Record<string, string | undefined>;
@@ -34,7 +34,7 @@ export interface ConsumerContractFixtureOptions {
   readonly sandboxEngine?: SandboxEngine;
 }
 
-export interface ConsumerContractFixtureResult {
+interface ConsumerContractFixtureResult {
   readonly name: ConsumerContractName;
   readonly ok: boolean;
   readonly reportOk?: boolean;
@@ -47,14 +47,6 @@ const forbiddenFixtureSecretPattern = /(sk-|xoxb-|bot[0-9]+:|apiKey|token)/u;
 // Guards the retired/deprecated memory MCP surfaces (an mcp.json must not declare a
 // standalone memory server — MemoryRecall is auto-provisioned in-app, never via MCP config).
 const forbiddenMcpMemoryPattern = /@mono-agent\/memory-mcp|\bmemory-mcp\b|\bmemory_note\b|\bmemory_recall\b/u;
-
-export const consumerContractRunSummaryStatuses = {
-  running: true,
-  succeeded: true,
-  failed: true,
-  cancelled: true,
-  interrupted: true,
-} satisfies Record<RunSummaryStatus, true>;
 
 type ValidationReport = Awaited<ReturnType<typeof validateMonoAgentFolder>>;
 type ValidationStatus = ValidationReport["sections"][number]["status"];

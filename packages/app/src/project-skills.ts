@@ -24,12 +24,12 @@ import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 export const PROJECT_SKILL_VERSION = "2.0.0";
 export const PROJECT_SKILL_MANIFEST_PATH = "skills/.mono-agent-managed.json";
 
-export const PROJECT_SKILL_NAMES = [
+const PROJECT_SKILL_NAMES = [
   "mono-agent-memory",
 ] as const;
-export const RETIRED_PROJECT_SKILL_NAMES = ["mono-agent-configure"] as const;
+const RETIRED_PROJECT_SKILL_NAMES = ["mono-agent-configure"] as const;
 
-export type ProjectSkillName = (typeof PROJECT_SKILL_NAMES)[number];
+type ProjectSkillName = (typeof PROJECT_SKILL_NAMES)[number];
 
 interface BundledProjectSkill {
   readonly name: ProjectSkillName;
@@ -58,7 +58,7 @@ Never copy remembered private content into configuration. Never request embeddin
 To change memory, edit mono-agent.config.json directly, run mono-agent validate, then restart the agent. Explain prerequisite services and expected indexing/capture cost before recommending Journal or BuJo, and never claim a change is active until validation and restart have succeeded.
 `;
 
-export const BUNDLED_PROJECT_SKILLS: readonly BundledProjectSkill[] = [
+const BUNDLED_PROJECT_SKILLS: readonly BundledProjectSkill[] = [
   { name: "mono-agent-memory", contents: MEMORY_SKILL },
 ];
 
@@ -77,7 +77,7 @@ interface ManagedSkillManifest {
   readonly skills: Readonly<Record<string, { readonly sha256: string }>>;
 }
 
-export type ProjectSkillStatusKind =
+type ProjectSkillStatusKind =
   | "ready"
   | "missing"
   | "stale"
@@ -88,7 +88,7 @@ export type ProjectSkillStatusKind =
   | "retired-modified"
   | "retired-collision";
 
-export interface ProjectSkillStatus {
+interface ProjectSkillStatus {
   readonly name: string;
   readonly path: string;
   readonly status: ProjectSkillStatusKind;
@@ -96,20 +96,20 @@ export interface ProjectSkillStatus {
   readonly expectedSha256?: string;
 }
 
-export interface CheckProjectSkillsResult {
+interface CheckProjectSkillsResult {
   readonly manifestPath: string;
   readonly manifestVersion?: string;
   readonly statuses: readonly ProjectSkillStatus[];
   readonly ok: boolean;
 }
 
-export interface UpdateProjectSkillsResult extends CheckProjectSkillsResult {
+interface UpdateProjectSkillsResult extends CheckProjectSkillsResult {
   readonly updated: readonly string[];
   readonly removed: readonly string[];
   readonly backupDir?: string;
 }
 
-export interface UpdateManagedProjectSkillsOptions {
+interface UpdateManagedProjectSkillsOptions {
   /** Fault-injection seam invoked before the built-in compare-and-swap writer. */
   readonly beforeActivate?: (path: string, contents: string) => Promise<void>;
   /** Fault-injection seam immediately before exact removal of a retired managed skill. */

@@ -1,3 +1,4 @@
+import { maintainLaunchdLogsOperation } from "../background-log-maintenance.js";
 import { ensureManagedBackgroundRuntime, defaultManagedBackgroundRuntimeDeps, verifyManagedRuntimeLaunch } from "../background-runtime.js";
 import { runWebCommand } from "../web-command.js";
 import { allowUnattendedMaintenanceStop, MAINTENANCE_MAX_DEFERRAL_MS, type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
@@ -14,25 +15,9 @@ import { describe, expect, it, vi } from "vitest";
 import { listTraceSources, registerTraceSource } from "@mono-agent/observability";
 import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
-import {
-  canonicalBackgroundConfigPath,
-  acquireFilesystemLifecycleLock,
-  acquireSharedLaunchdLogLock,
-  ensureBackgroundReady,
-  defaultBackgroundDeps,
-  forceRestartBackground,
-  maintainLaunchdController,
-  maintainLaunchdLogs,
-  managedLaunchdLogMaintenanceEnvironment,
-  resolveInstanceTarget,
-  restartBackground,
-  startBackground,
-  statusBackground,
-  stopBackground,
-  tailLogs,
-  sharedLaunchdLogLockTarget,
-  withLaunchdMaintenanceControllerLock,
-} from "../background.js";
+import { canonicalBackgroundConfigPath, acquireFilesystemLifecycleLock, ensureBackgroundReady, defaultBackgroundDeps, forceRestartBackground, maintainLaunchdController, unattendedLogDeps, managedLaunchdLogMaintenanceEnvironment, resolveInstanceTarget, restartBackground, startBackground, statusBackground, stopBackground, tailLogs } from "../background.js";
+import { acquireSharedLaunchdLogLock, sharedLaunchdLogLockTarget } from "../launchd-lifecycle-lock.js";
+import { withLaunchdMaintenanceControllerLock } from "../launchd-maintenance-gate.js";
 import type { BackgroundDeps, InstanceTarget } from "../background.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import { invalidateApprovedBackgroundSnapshots, resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
@@ -2230,7 +2215,7 @@ describe("maintainLaunchdController", () => {
   });
 });
 
-describe("maintainLaunchdLogs", () => {
+describe("runLogMaintenanceFixture", () => {
   it("does nothing and never resurrects a main service that was not loaded", async () => {
     const { runner, calls } = makeRunner({ loaded: false });
     const target = makeTarget();
@@ -2250,7 +2235,7 @@ describe("maintainLaunchdLogs", () => {
       rotateStoppedLaunchdLogs: async () => { rotations += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(0);
     expect(inspections).toBe(1);
     expect(rotations).toBe(0);
     expect(calls.map((call) => call[0])).not.toContain("bootstrap");
@@ -2279,7 +2264,7 @@ describe("maintainLaunchdLogs", () => {
       rotateStoppedLaunchdLogs: async () => { rotations += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(0);
     expect(rotations).toBe(1);
     expect(runner.isLoaded(target.label)).toBe(true);
     expect(calls.filter((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath))
@@ -2322,7 +2307,7 @@ describe("maintainLaunchdLogs", () => {
       },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(0);
     expect(lifecycle).toEqual(["stopped", "rotate", "restoring", "clear"]);
   });
 
@@ -2352,7 +2337,7 @@ describe("maintainLaunchdLogs", () => {
       rotateStoppedLaunchdLogs: async () => { rotations += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(1);
     expect(marks).toBe(0);
     expect(rotations).toBe(0);
     expect(calls.map((call) => call[0])).not.toContain("bootstrap");
@@ -2386,7 +2371,7 @@ describe("maintainLaunchdLogs", () => {
       },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(0);
     expect(clears).toBe(1);
     expect(rotations).toBe(0);
     expect(calls.map((call) => call[0])).not.toContain("bootout");
@@ -2422,7 +2407,7 @@ describe("maintainLaunchdLogs", () => {
       clearLaunchdLogMaintenanceIntent: async () => { clears += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(1);
     expect(clears).toBe(0);
     expect(prints).toBe(2);
     expect(harness.err.join(" ")).toContain("replacement writer identity was lost");
@@ -2449,7 +2434,7 @@ describe("maintainLaunchdLogs", () => {
       rotateStoppedLaunchdLogs: async () => { rotations += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(1);
     expect(rotations).toBe(0);
     expect(calls.map((call) => call[0])).not.toContain("bootstrap");
     expect(harness.err.join(" ")).toContain("replacement writer identity was lost");
@@ -2464,7 +2449,7 @@ describe("maintainLaunchdLogs", () => {
       acquireLifecycleLock: async () => undefined,
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(0);
     expect(calls).toEqual([]);
   });
 
@@ -2485,7 +2470,7 @@ describe("maintainLaunchdLogs", () => {
       },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(0);
     expect(inspections).toBe(0);
     expect(calls).toEqual([]);
     expect(lifecycleReleased).toBe(1);
@@ -2507,7 +2492,7 @@ describe("maintainLaunchdLogs", () => {
       rotateStoppedLaunchdLogs: async () => { rotations += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(1);
     expect(rotations).toBe(0);
     expect(calls.map((call) => call[0])).not.toContain("bootout");
     expect(harness.err.join(" ")).toContain("refused unsafe paths");
@@ -2558,7 +2543,7 @@ describe("maintainLaunchdLogs", () => {
       clearLaunchdLogMaintenanceIntent: async () => { lifecycle.push("clear"); },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(0);
     expect(verifies).toBe(3);
     expect(rotations).toBe(1);
     expect(lifecycle).toEqual(["intent", "stopped", "rotate", "restoring", "clear"]);
@@ -2594,7 +2579,7 @@ describe("maintainLaunchdLogs", () => {
       rotateStoppedLaunchdLogs: async () => { rotations += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
     expect(rotations).toBe(0);
     expect(calls.map((call) => call[0])).not.toContain("bootstrap");
     expect(harness.err.join(" ")).toContain("2222");
@@ -2627,7 +2612,7 @@ describe("maintainLaunchdLogs", () => {
       rotateStoppedLaunchdLogs: async () => { rotations += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
     expect(rotations).toBe(0);
     expect(calls.filter((call) => call[0] === "bootout")).toHaveLength(1);
     expect(harness.err.join(" ")).toContain("2222");
@@ -2647,7 +2632,7 @@ describe("maintainLaunchdLogs", () => {
       clearLaunchdLogMaintenanceIntent: async () => { clears += 1; },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(1);
     expect(runner.isLoaded(target.label)).toBe(false);
     expect(calls.filter((call) => call[0] === "bootstrap")).toHaveLength(0);
     expect(intents).toBe(1);
@@ -2665,7 +2650,7 @@ describe("maintainLaunchdLogs", () => {
       inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
     expect(runner.isLoaded(target.label)).toBe(false);
     expect(calls.filter((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath))
       .toHaveLength(1);
@@ -2688,7 +2673,7 @@ describe("maintainLaunchdLogs", () => {
       },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(1);
     expect(runner.isLoaded(target.label)).toBe(false);
     expect(calls.filter((call) => call[0] === "bootstrap")).toHaveLength(0);
     expect(harness.err.join(" ")).toContain("plist changed during stopped-writer maintenance");
@@ -2708,7 +2693,7 @@ describe("maintainLaunchdLogs", () => {
       },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, POLL)).toBe(1);
     expect(runner.isLoaded(target.label)).toBe(false);
     expect(calls.filter((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath))
       .toHaveLength(1);
@@ -2754,7 +2739,7 @@ describe("maintainLaunchdLogs", () => {
       },
     });
 
-    expect(await maintainLaunchdLogs(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(await runLogMaintenanceFixture(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
     expect(calls.filter((call) => call[0] === "bootout")).toHaveLength(2);
     expect(harness.err.join(" ")).toContain("2222");
     expect(harness.err.join(" ")).toContain("remained alive");
@@ -3686,13 +3671,13 @@ describe("unattended maintenance activity protection", () => {
       inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true, perAgentFileReasons: ["oversize"] }) });
     let busy = true;
     const gate = withActivityGate(harness.deps, () => ({ disposition: busy ? "busy" : "idle", counts: { turns: 0, jobs: 0, asks: 0, [source]: busy ? 1 : 0 } }));
-    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, gate.deps, POLL)).toBe(0);
     expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
     expect(beginIntent).not.toHaveBeenCalled();
     expect(calls.some((call) => call[0] === "bootout")).toBe(false);
     expect(harness.rotations).toEqual([]);
     busy = false;
-    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, gate.deps, POLL)).toBe(0);
     expect(beginIntent).toHaveBeenCalledOnce();
     expect(harness.rotations).toHaveLength(1);
     expect(gate.status()?.lastDecision?.outcome).toBe("proceeded-idle");
@@ -3739,7 +3724,7 @@ describe("unattended maintenance activity protection", () => {
       ...(mode === "intent" ? { readLaunchdLogMaintenanceIntent: async () => ({ version: 1 as const, phase: "stopping" as const, label: target.label, plistFingerprint: "plist-identity" }) } : {}),
     });
     const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
-    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(await runLogMaintenanceFixture(target, gate.deps, POLL)).toBe(0);
     expect(harness.rotations).toHaveLength(1);
     expect(gate.status()?.lastDecision?.outcome).toBe(mode === "size" ? "forced-size" : mode === "permissions" ? "override-permission-repair" : "override-transaction-recovery");
   });
@@ -3829,10 +3814,10 @@ it("acknowledges a deferred log episode only after successful rotation/restorati
     rotateStoppedLaunchdLogs: async () => { entered(); await finish; },
   });
   const gate = withActivityGate(harness.deps, () => ({ disposition: busy ? "busy" : "idle", counts: { turns: busy ? 1 : 0, jobs: 0, asks: 0 } }));
-  expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+  expect(await runLogMaintenanceFixture(target, gate.deps, POLL)).toBe(0);
   const firstDeferredAt = gate.status()?.pending?.firstDeferredAt;
   busy = false;
-  const attempt = maintainLaunchdLogs(target, gate.deps, POLL);
+  const attempt = runLogMaintenanceFixture(target, gate.deps, POLL);
   try {
     await rotating;
     expect(gate.status()?.lastDecision?.outcome).toBe("proceeded-idle");
@@ -3959,3 +3944,12 @@ describe("approval invalidation commit points and recovery", () => {
     } finally { await rm(managedRoot, { recursive: true, force: true }); }
   });
 });
+
+async function runLogMaintenanceFixture(
+  target: Parameters<typeof maintainLaunchdLogsOperation>[0],
+  deps: Parameters<typeof unattendedLogDeps>[1],
+  poll: Parameters<typeof maintainLaunchdLogsOperation>[2],
+): Promise<number> {
+  return await maintainLaunchdLogsOperation(target, unattendedLogDeps(target, deps), poll,
+    async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"));
+}

@@ -53,5 +53,25 @@ describe("configured managed-runtime packages", () => {
       .resolves.toEqual([]);
   });
 
+  it("still validates core config before returning an empty closure", async () => {
+    const { cwd, configPath } = await scaffold({ runtime: { model: 42 } });
+    await expect(resolveConfiguredManagedRuntimePackages({ cwd, configPath, env: {} })).rejects.toThrow();
+  });
 
+  it("sorts and deduplicates configured plugin package names", async () => {
+    const { cwd, configPath } = await scaffold({
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      channels: { plugins: [
+        { package: "@mono-agent/channel-whatsapp" },
+        { package: "@mono-agent/channel-a2a" },
+        { package: "@mono-agent/channel-whatsapp" },
+      ] },
+    });
+    const packages = await resolveConfiguredManagedRuntimePackages({ cwd, configPath, env: {} });
+    expect(packages.map((entry) => entry.packageName)).toEqual([
+      "@mono-agent/channel-a2a", "@mono-agent/channel-whatsapp",
+    ]);
+  });
 });

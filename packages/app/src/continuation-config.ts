@@ -11,7 +11,7 @@ import type { ContinuationRetentionOptions } from "./continuation-store.js";
 /** Fixed by default so persisted callback/status URLs survive app restarts. */
 export const DEFAULT_CONTINUATION_SERVICE_PORT = 4319;
 
-export interface ContinuationSettings {
+interface ContinuationSettings {
   readonly configured: boolean;
   readonly enabled: boolean;
   readonly host: string;

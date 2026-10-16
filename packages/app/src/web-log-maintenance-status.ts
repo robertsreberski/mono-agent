@@ -26,7 +26,7 @@ export interface WebLogMaintenanceStatus {
   readonly refusals?: readonly string[];
 }
 
-export type WebStatusRead<T> =
+type WebStatusRead<T> =
   | { readonly kind: "absent" }
   | { readonly kind: "valid"; readonly status: T }
   | { readonly kind: "invalid"; readonly detail: string };

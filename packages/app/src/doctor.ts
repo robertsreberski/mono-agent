@@ -147,7 +147,7 @@ const CONTINUATION_V2_ROLLBACK_GUARD = "UPGRADED-TO-RECORDS-V3";
 const CONTINUATION_V2_ROLLBACK_GUARD_CONTENT =
   "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n";
 
-export interface DoctorStatusExecOptions {
+interface DoctorStatusExecOptions {
   readonly cwd: string;
   readonly env: Record<string, string | undefined>;
   readonly timeout: number;
@@ -155,12 +155,12 @@ export interface DoctorStatusExecOptions {
   readonly encoding: "utf8";
 }
 
-export interface DoctorStatusExecResult {
+interface DoctorStatusExecResult {
   readonly stdout: string;
 }
 
 /** Injectable process seam for bounded, read-only local tool version checks. */
-export type DoctorStatusExecFile = (
+type DoctorStatusExecFile = (
   file: string,
   args: readonly string[],
   options: DoctorStatusExecOptions,
@@ -175,11 +175,11 @@ const defaultDoctorStatusExecFile: DoctorStatusExecFile = async (file, args, opt
   return { stdout };
 };
 
-export type CodexWebSearchProbe = (options: {
+type CodexWebSearchProbe = (options: {
   readonly model: string;
 }) => Promise<{ readonly ok: boolean; readonly reason: string; readonly model: string }>;
 
-export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput {
+interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput {
   readonly drivers?: readonly ChannelDriver[];
   /** Optional sandbox engine override for deterministic validation tests. */
   readonly sandboxEngine?: SandboxEngine;
@@ -206,7 +206,6 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
   /** Injectable ChatGPT-subscription Codex search readiness probe. */
   readonly codexWebSearchProbe?: CodexWebSearchProbe;
   /** Managed workers resolve optional plugins only from their attested app closure. */
-  readonly preferAppPluginInstall?: boolean;
   /**
    * Internal managed-worker fast path. The launch verifier has already bound
    * this informational detail to the exact private runtime marker, so doctor
@@ -296,7 +295,6 @@ export async function validateMonoAgentFolder(
       options.env,
       liveness,
       allowFilesystemWrites,
-      options.preferAppPluginInstall === true,
     ));
     sections.push(await toolsSection(coreConfig, options));
     sections.push(await computerUseSection(coreConfig.tools.computerUse));
@@ -340,7 +338,7 @@ export async function validateMonoAgentFolder(
 }
 
 /** Read-only launchd log inventory used by both `validate` and its `doctor` alias. */
-export async function launchdLogsSection(configPath: string): Promise<ValidationSection> {
+async function launchdLogsSection(configPath: string): Promise<ValidationSection> {
   let maintenanceDetail: string | undefined;
   let inspection: LaunchdLogInspection;
   let monitorStatus: ManagedLaunchdLogMonitorStatus | "unavailable" | undefined;
@@ -1105,7 +1103,7 @@ async function memorySection(
   env: Readonly<Record<string, string | undefined>>,
   liveness: boolean,
   allowFilesystemWrites: boolean,
-  preferAppPluginInstall: boolean,
+
 ): Promise<ValidationSection> {
   if (config.memory === undefined) {
     return {

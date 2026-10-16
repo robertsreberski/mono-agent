@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-export interface AgentArtifactDerivedRoots {
+interface AgentArtifactDerivedRoots {
   readonly attachments: string;
   readonly outbound: string;
   readonly history: string;

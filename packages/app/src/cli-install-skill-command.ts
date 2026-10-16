@@ -2,7 +2,7 @@ import process from "node:process";
 
 import type { ParsedCliArgs } from "./cli-args.js";
 import { installComposerCompanion } from "./docs-mcp-pairing.js";
-import { agentAppPackageVersion } from "./package-version.js";
+import { appPackageVersion } from "./package-version.js";
 import { checkManagedProjectSkills, updateManagedProjectSkills } from "./project-skills.js";
 import * as ui from "./ui.js";
 
@@ -63,7 +63,7 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
   }
   let result;
   try {
-    const docsMcpVersion = agentAppPackageVersion();
+    const docsMcpVersion = appPackageVersion();
     result = await installComposerCompanion({
       target: args.target ?? "both",
       force: args.force,

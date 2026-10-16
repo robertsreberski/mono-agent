@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { verifyManagedRuntimeClosureForProvenance } from "./background-runtime.js";
 import type { ManagedRuntimeProvenanceVerificationDeps } from "./background-runtime.js";
-import { agentAppPackageVersion } from "./package-version.js";
+import { appPackageVersion } from "./package-version.js";
 
 const PACKAGE_NAME = "@mono-agent/app";
 // Stable persisted discriminator shared with older managed installations.
@@ -79,7 +79,7 @@ export async function runtimeProvenanceDetail(
     );
     if (marker === undefined) return UNMANAGED_DETAIL;
 
-    const installedVersion = agentAppPackageVersion();
+    const installedVersion = appPackageVersion();
     const closureId = `${marker.cliSha256}-${marker.sourceClosureSha256}`;
     if (
       installedVersion === undefined

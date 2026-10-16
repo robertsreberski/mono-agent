@@ -2,7 +2,7 @@ import { EFFORT_LEVELS } from "@mono-agent/config";
 import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 
 /** One enabled trigger (cron job / webhook endpoint) carrying override strings. */
-export interface TriggerOverrideEntry {
+interface TriggerOverrideEntry {
   /** Display name for the issue message, e.g. `cron job "digest"`. */
   readonly name: string;
   readonly model?: string;

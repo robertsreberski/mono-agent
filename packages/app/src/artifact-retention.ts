@@ -18,7 +18,7 @@ interface ArtifactRetentionLogger {
   readonly warn?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
-export interface RunArtifactRetentionPassInput {
+interface RunArtifactRetentionPassInput {
   readonly artifactDir: string;
   readonly retention: ArtifactRetentionConfig;
   readonly scope?: Extract<RunArtifactScope, "agent" | "memory">;
@@ -27,7 +27,7 @@ export interface RunArtifactRetentionPassInput {
   readonly shouldContinue?: () => boolean;
 }
 
-export interface StartArtifactRetentionSchedulerInput extends RunArtifactRetentionPassInput {
+interface StartArtifactRetentionSchedulerInput extends RunArtifactRetentionPassInput {
   readonly memoryRetention?: ArtifactRetentionConfig;
   readonly memoryRoot?: string;
   /** Test seam for deterministic cancellation coverage. */

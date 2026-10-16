@@ -19,7 +19,7 @@ export const DEFAULT_WEB_THEME: WebTheme = "evergreen";
 
 // Mirrors WEB_CONSOLE_NAME_MAX_CHARACTERS in @mono-agent/web; declared locally so
 // this module keeps a type-only dependency on the lazily loaded web package.
-export const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
+const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
 
 /** True when `value` is one of the curated console themes. */
 export function isWebTheme(value: unknown): value is WebTheme {

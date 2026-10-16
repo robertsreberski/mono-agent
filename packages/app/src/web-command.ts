@@ -86,21 +86,10 @@ import * as ui from "./ui.js";
 
 export { WEB_LAUNCHD_LABEL } from "./launchd.js";
 
-export {
-  DEFAULT_WEB_HOST,
-  DEFAULT_WEB_PORT,
-  LEGACY_DEFAULT_WEB_HOST,
-  WEB_THEMES,
-  DEFAULT_WEB_THEME,
-  WEB_CONSOLE_NAME_MAX_CHARACTERS,
-  isWebTheme,
-  invalidWebConsoleName,
-  decodeManagedWebDefinition,
-  type ManagedWebDefinition,
-} from "./web-service-definition.js";
+export { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, LEGACY_DEFAULT_WEB_HOST } from "./web-service-definition.js";
 // Deliberately outside `com.mono-agent.*`: fleet discovery reserves that prefix
 // for configured agent instances.
-export const MANAGED_WEB_WORKER_ENV = "MONO_AGENT_MANAGED_WEB_WORKER";
+const MANAGED_WEB_WORKER_ENV = "MONO_AGENT_MANAGED_WEB_WORKER";
 const DEFAULT_LOG_LINES = 200;
 const WEB_SERVICE_SCHEMA = "mono-agent.web-service.v1";
 const TAILSCALE_OWNERSHIP_SCHEMA = "mono-agent.web-tailscale-serve.v1";
@@ -241,7 +230,7 @@ type WebServiceRecordRead =
   | { readonly kind: "valid"; readonly record: WebServiceRecord; readonly contents: string }
   | { readonly kind: "invalid"; readonly detail: string };
 
-export interface TailscaleServeOwnership {
+interface TailscaleServeOwnership {
   readonly schema: typeof TAILSCALE_OWNERSHIP_SCHEMA;
   readonly webKey: string;
   readonly httpsPort: number;
@@ -282,7 +271,7 @@ type TailscaleServeResult =
       readonly replacementHandlerRemoved?: boolean;
     };
 
-export type TailscaleRouteOutcome = "none" | "rolled-back" | "restored" | "uncertain";
+type TailscaleRouteOutcome = "none" | "rolled-back" | "restored" | "uncertain";
 
 interface TailscaleCleanupResult {
   readonly ok: boolean;
@@ -306,7 +295,7 @@ export function webPaths(homeDir?: string): WebPaths {
   return managedWebPaths(homeDir);
 }
 
-export function renderWebHelp(): string {
+function renderWebHelp(): string {
   return [
     "mono-agent web — always-on multi-agent web console",
     "",

@@ -16,7 +16,7 @@ import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, readBoundedOwne
 
 import { isSubagentUuid, isSubagentTurnIntent, isSubagentRecoveryFence, isSubagentOwnerLink, sameSubagentOwner, SubagentRecoveryError, type SubagentTurnIntent, type SubagentRecoveryFence, type SubagentOwnerLink, type SubagentOwnerIdentity, type SubagentOwnerResolution, type SubagentKnownOwner } from "./subagent-registry-ownership.js";
 
-export interface InstanceDefinition {
+interface InstanceDefinition {
   readonly name: string;
   readonly description: string;
   readonly systemPrompt: string;

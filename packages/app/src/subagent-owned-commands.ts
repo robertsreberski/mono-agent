@@ -4,7 +4,7 @@ import type { OwnedForegroundProcessRequest, OwnedForegroundProcesses, ProcessJo
 import type { ProcessIncarnation } from "./process-incarnation.js";
 import { SUBAGENT_SEEN_CALLS_MAX_BYTES, SUBAGENT_SEEN_CALLS_MAX_COUNT, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
 
-export interface SubagentOwnedCommandsPort {
+interface SubagentOwnedCommandsPort {
   readonly deadlineAt: number;
   readonly maxOutputBytes: number;
   now(): number;

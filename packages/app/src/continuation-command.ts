@@ -6,7 +6,7 @@ import { loadContinuationSettings } from "./continuation-config.js";
 import { continuationOperatorToken } from "./continuation-service.js";
 import type { ContinuationHealthSnapshot, ContinuationStatusSnapshot } from "./continuations.js";
 
-export interface RunContinuationCommandOptions {
+interface RunContinuationCommandOptions {
   readonly cwd: string;
   readonly configPath: string;
   readonly env: Record<string, string | undefined>;

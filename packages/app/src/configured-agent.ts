@@ -161,7 +161,6 @@ type AgentHarnessSessionOptionsWithEvents = NonNullable<AgentHarnessOptions["ses
 
 export interface ConfiguredAgentHarnessOptions {
   /** Managed workers resolve optional exporters only from their immutable app closure. */
-  readonly preferAppPluginInstall?: boolean;
   readonly config: MonoAgentConfig;
   /**
    * Canonical agent-root authority and plugin-resolution folder. Configured
@@ -1214,9 +1213,6 @@ async function createConfiguredAgentHarnessInternal(
     : (target: RuntimeModelReference) => runtimeForSession(modelReferenceKey(target));
   const clearSessionsBoundaryOptions = {
     cwd: agentRoot,
-    workspace: config.runtime.workspace,
-    baseModel: model,
-    fallbackModels,
     ...(harnessSandboxPolicy === undefined ? {} : { sandboxPolicy: harnessSandboxPolicy }),
     ...(processJobsProtectionPosture.suppressSyntheticSandbox
       ? { suppressSyntheticSandbox: true }
@@ -1244,9 +1240,7 @@ async function createConfiguredAgentHarnessInternal(
     config,
     {
       cwd: agentRoot,
-      ...(options.preferAppPluginInstall === undefined
-        ? {}
-        : { preferAppPluginInstall: options.preferAppPluginInstall }),
+
     },
     processJobsProtectionPosture,
   ));
@@ -2073,7 +2067,6 @@ interface ConfiguredMemoryDependencies {
   /** Canonical agent-root authority and folder used to resolve optional plugins. */
   readonly cwd?: string;
   /** Managed workers must use the plugin frozen into their app-side runtime closure. */
-  readonly preferAppPluginInstall?: boolean;
   readonly logger?: { warn(message: string): void };
   /**
    * Injection seam for the bujo memory LLM's runtime (tests). This runtime MUST
@@ -2203,10 +2196,7 @@ async function createConfiguredMemoryInternal(
       ? undefined
       : await recorderCompositionDeps(config, {
           ...deps.observability,
-          ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }),
-          ...(deps.preferAppPluginInstall === undefined
-            ? {}
-            : { preferAppPluginInstall: deps.preferAppPluginInstall }),
+
         });
   const llm = configuredMemoryLlm(
     bujo,

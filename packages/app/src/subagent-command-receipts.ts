@@ -3,7 +3,7 @@ import type { ProcessJobProcessResult } from "@mono-agent/turn/host/types";
 import { isSubagentUuid } from "./subagent-registry-ownership.js";
 import type { SubagentOwnedCommand } from "./subagent-execution-ownership.js";
 
-export const SUBAGENT_COMMAND_RECEIPTS_MAX_COUNT = 32;
+const SUBAGENT_COMMAND_RECEIPTS_MAX_COUNT = 32;
 export const SUBAGENT_COMMAND_RECEIPTS_MAX_BYTES = 12 * 1024;
 /** Private host measurements, not a verdict about the intended verification. */
 export interface SubagentCommandReceipt {
@@ -31,7 +31,7 @@ const exact = (value: Record<string, unknown>, keys: string[]): boolean => Objec
 const nonnegative = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const nullableNumber = (value: unknown): boolean => value === null || nonnegative(value);
 const nullableBool = (value: unknown): boolean => value === null || typeof value === "boolean";
-export function isSubagentCommandReceipt(value: unknown): value is SubagentCommandReceipt {
+function isSubagentCommandReceipt(value: unknown): value is SubagentCommandReceipt {
   return object(value) && exact(value, ["id", "tool", "cwd", "capturedAt", "budgetMs", "durationMs", "exitCode", "signal", "timedOut", "cancelled", "truncated", "completion", "cleanup"])
     && isSubagentUuid(value.id) && ["Exec", "Bash"].includes(String(value.tool))
     && typeof value.cwd === "string" && !value.cwd.includes("\0") && Buffer.byteLength(value.cwd) <= 4096 && isAbsolute(value.cwd) && resolve(value.cwd) === value.cwd

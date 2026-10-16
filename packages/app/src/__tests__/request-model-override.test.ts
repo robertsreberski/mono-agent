@@ -4,12 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 
-import {
-  createRequestModelOverrideRuntimeExtension,
-  implicitModelRuntimeOptions,
-  requestModelOverrideRoutesOnlyPiNative,
-  requestModelOverrideTargetsPiNative,
-} from "../request-model-override.js";
+import { createRequestModelOverrideRuntimeExtension, implicitModelRuntimeOptions, requestModelOverrideRoutesOnlyPiNative } from "../request-model-override.js";
 import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
 
 interface RunOptions {
@@ -70,29 +65,6 @@ const EFFORT_MODELS_PROVIDER: LocalProviderDefinition = {
     { name: "plain", capabilities: { reasoning: false, reasoning_mode: "none" } },
   ],
 };
-
-describe("requestModelOverrideTargetsPiNative", () => {
-  it("offers Pi-native tools when an accepted override targets Pi", () => {
-    expect(requestModelOverrideTargetsPiNative(
-      { tui: { model: "openai-codex:gpt-5.6-terra" } },
-      { baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8") },
-    )).toBe(true);
-  });
-
-  it("offers Pi-native tools when only a configured fallback targets Pi", () => {
-    expect(requestModelOverrideTargetsPiNative(undefined, {
-      baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8"),
-      fallbackModels: [parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra")],
-    })).toBe(true);
-  });
-
-  it("offers Pi-native tools for every parsed provider route", () => {
-    expect(requestModelOverrideTargetsPiNative(undefined, {
-      baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8"),
-      fallbackModels: [parseMonoRuntimeModelReference("github-copilot:gpt-5.1")],
-    })).toBe(true);
-  });
-});
 
 describe("requestModelOverrideRoutesOnlyPiNative", () => {
   const piPrimary = parseMonoRuntimeModelReference("openai-codex:gpt-5.6-sol");

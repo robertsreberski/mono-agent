@@ -15,9 +15,9 @@ import { DatabaseSync } from "node:sqlite";
  * anything unexpected fails closed instead of being repaired silently.
  */
 
-export type OwnedStateErrorKind = "corrupt" | "insecure" | "lease_conflict" | "unsupported_schema";
+type OwnedStateErrorKind = "corrupt" | "insecure" | "lease_conflict" | "unsupported_schema";
 
-export class OwnedStateError extends Error {
+class OwnedStateError extends Error {
   readonly kind: OwnedStateErrorKind;
 
   constructor(kind: OwnedStateErrorKind, message: string, options?: { readonly cause?: unknown }) {
@@ -38,7 +38,7 @@ const LEASE_FILE = "lease.sqlite";
 const WRITE_BUSY_TIMEOUT_MS = 5_000;
 
 /** `<cwd>/.mono-agent/<name>` and its database/lease files. */
-export function resolveOwnedStatePaths(cwd: string, name: string): OwnedStatePaths {
+function resolveOwnedStatePaths(cwd: string, name: string): OwnedStatePaths {
   return ownedStatePathsAt(resolve(cwd, ".mono-agent", name));
 }
 
@@ -46,7 +46,7 @@ function ownedStatePathsAt(root: string): OwnedStatePaths {
   return { root, database: join(root, DATABASE_FILE), lease: join(root, LEASE_FILE) };
 }
 
-export interface OpenOwnedStateOptions {
+interface OpenOwnedStateOptions {
   readonly cwd: string;
   /** Directory name under `.mono-agent/`, e.g. `telegram-topics-v1`. */
   readonly name: string;

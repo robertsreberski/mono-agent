@@ -12,12 +12,7 @@ import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it } from "vitest";
 
 import { memoryGuidanceScopes } from "../memory-guidance.js";
-import {
-  createSharedMemoryRecallRuntimeExtension,
-  MemoryRetrievalService,
-  normalizeMemoryRecallQuery,
-  type SharedRecallStore,
-} from "../memory-retrieval.js";
+import { createSharedMemoryRecallRuntimeExtension, MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 
 function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boolean } = {}): SharedRecallStore & { readonly queries: string[]; readonly accesses: string[][] } {
   const queries: string[] = [];
@@ -512,10 +507,6 @@ describe("MemoryRetrievalService", () => {
     expect(explicitHits.map((hit) => hit.record.id)).toContain("atlas-late-conflict");
     expect(disputedStore.queries).toEqual([query.toLowerCase()]);
     expect(disputedStore.accesses.flat()).not.toContain("atlas-late-conflict");
-  });
-
-  it("normalizes Unicode, case, and whitespace deterministically", () => {
-    expect(normalizeMemoryRecallQuery("  ＤEPLOY\n\tPipeline  ")).toBe("deploy pipeline");
   });
 
   it("preserves capitalized query-local entity evidence for graph expansion", async () => {

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { renderHelp, renderHelpTopic } from "../cli.js";
+import { renderHelp, renderHelpTopic } from "../cli-help.js";
 import { readinessProbeTimeoutDescription } from "../readiness-probe.js";
 
 /**

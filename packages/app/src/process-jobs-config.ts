@@ -66,7 +66,7 @@ export interface ProcessJobsSettings {
   };
 }
 
-export interface LoadProcessJobsSettingsOptions {
+interface LoadProcessJobsSettingsOptions {
   /** The exact destructive-root plan already attested by clear-sessions preflight. */
   readonly purgePlan?: ConversationStatePurgePlan;
   /** Check an unconfigured default state root only when destructive reset is imminent. */
@@ -77,7 +77,7 @@ export interface LoadProcessJobsSettingsOptions {
 
 const MAX_DESTRUCTIVE_CONFIG_BYTES = 1024 * 1024;
 
-export interface ProcessJobsConfigSnapshot {
+interface ProcessJobsConfigSnapshot {
   readonly path: string;
   readonly json: Readonly<Record<string, unknown>>;
   readonly digest: string;

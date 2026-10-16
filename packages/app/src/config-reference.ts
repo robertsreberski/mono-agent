@@ -427,7 +427,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   },
 ];
 
-export interface ConfigReferenceField {
+interface ConfigReferenceField {
   readonly jsonPath: string;
   readonly env: string;
   readonly type: ConfigReferenceType;

@@ -49,7 +49,7 @@ interface DestinationsControllerPort {
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
 }
 
-export interface MaintenanceControllerPort extends NotifyControllerPort, DestinationsControllerPort {
+interface MaintenanceControllerPort extends NotifyControllerPort, DestinationsControllerPort {
   readonly runtime: MonoRuntimeLike | undefined;
   readonly activeRuntimes: MonoRuntimeLike[];
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;

@@ -19,7 +19,7 @@ import type { PollOptions } from "./background-lifecycle-utils.js";
 import type { BackgroundDeps, BackgroundLifecycleTarget } from "./background.js";
 import * as ui from "./ui.js";
 
-export interface ManagedLaunchdLogInspectionDependencies {
+interface ManagedLaunchdLogInspectionDependencies {
   readonly inspectLaunchdLogs: (
     paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
   ) => Promise<LaunchdLogInspection>;
@@ -107,7 +107,7 @@ export interface ManagedLaunchdLogMonitorStatus {
   readonly cooldownDeadline: string;
 }
 
-export interface ManagedLaunchdLogWakeState {
+interface ManagedLaunchdLogWakeState {
   firstOverLimitAtMonotonicMs?: number;
   busyDeferrals?: number;
   cooldownIndex: number;

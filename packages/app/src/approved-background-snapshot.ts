@@ -21,7 +21,7 @@ export interface ApprovedBackgroundSnapshotBinding {
   readonly launchProof: string;
 }
 
-export interface PreparedBackgroundApproval {
+interface PreparedBackgroundApproval {
   /** Synchronous commit; call only inside the authenticated restart latch. */
   publish(): void;
   dispose(): Promise<void>;

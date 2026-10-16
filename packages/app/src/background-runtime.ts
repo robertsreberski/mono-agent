@@ -98,7 +98,7 @@ export interface ManagedRuntimeSourceIdentity {
   readonly cliSha256: string;
 }
 
-export interface ManagedRuntimeLaunchVerificationInput {
+interface ManagedRuntimeLaunchVerificationInput {
   readonly currentCliPath: string;
   readonly launchProof: string;
   readonly homeDir?: string;
@@ -106,7 +106,7 @@ export interface ManagedRuntimeLaunchVerificationInput {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-export interface ManagedRuntimeProvenanceVerificationInput {
+interface ManagedRuntimeProvenanceVerificationInput {
   readonly packageRoot: string;
   readonly packageVersion: string;
   readonly cliSha256: string;
@@ -235,7 +235,7 @@ export interface ManagedBackgroundRuntimeInput {
 }
 
 /** Inputs for the read-only fleet attestation of an already materialized runtime. */
-export interface ManagedBackgroundRuntimeAttestationInput {
+interface ManagedBackgroundRuntimeAttestationInput {
   /** CLI from the trusted deploy checkout whose execution closure is expected. */
   readonly currentCliPath: string;
   /** CLI path persisted in the managed LaunchAgent. */
@@ -249,7 +249,7 @@ export interface ManagedBackgroundRuntimeAttestationInput {
   readonly additionalPackages?: readonly ManagedRuntimeAdditionalPackage[];
 }
 
-export interface ManagedBackgroundRuntimeAttestation {
+interface ManagedBackgroundRuntimeAttestation {
   readonly schema: "mono-agent.managed-runtime-attestation.v1";
   /** Opaque, path-free identity used only to compare an initial and final probe. */
   readonly fingerprint: string;

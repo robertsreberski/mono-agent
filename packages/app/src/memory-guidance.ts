@@ -23,7 +23,7 @@ const GUIDANCE_FLOOR = 0.35;
  * candidate score by this margin (when at least five candidates exist) and rank
  * among the first GUIDANCE_MAX_RANK hits.
  */
-export const GUIDANCE_MARGIN = 0.1;
+const GUIDANCE_MARGIN = 0.1;
 export const GUIDANCE_MAX_RANK = 8;
 const GUIDANCE_MIN_CANDIDATES = 5;
 
@@ -200,7 +200,7 @@ export function formatMemoryBackground(
 }
 
 /** The profile is a read-only projection; source ids are for private inspection only. */
-export interface MemoryProfile {
+interface MemoryProfile {
   readonly content: string;
   readonly entries: readonly { readonly id: string; readonly text: string }[];
   readonly fingerprint: string;

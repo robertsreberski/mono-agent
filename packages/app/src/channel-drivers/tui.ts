@@ -29,7 +29,7 @@ import {
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
-import { agentAppPackageVersion } from "../package-version.js";
+import { appPackageVersion } from "../package-version.js";
 import { buildProviderModelCatalog } from "../provider-model-catalog.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
 import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../skill-registry.js";
@@ -566,7 +566,7 @@ export function createTuiChannelDriver(
             schema: ACP_BRIDGE_SOURCE_SCHEMA,
             bridgeVersion: ACP_BRIDGE_VERSION,
             protocolVersion: ACP_PROTOCOL_VERSION,
-            installedVersion: agentAppPackageVersion() ?? "unknown",
+            installedVersion: appPackageVersion() ?? "unknown",
             workspacePath,
           },
         },

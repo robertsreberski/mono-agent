@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { waitForShutdownSignal } from "../cli-background-command.js";
-import { AGENT_RESTART_EXIT_CODE, AGENT_RESTART_EXIT_FALLBACK_MS, armAcceptedRestartExitFallback, createSupervisedRestartLatch } from "../supervised-restart-latch.js";
+import { AGENT_RESTART_EXIT_CODE, AGENT_RESTART_EXIT_FALLBACK_MS, createSupervisedRestartLatch } from "../supervised-restart-latch.js";
 
 const verified = { supported: true } as const;
 afterEach(() => {
@@ -11,23 +11,6 @@ afterEach(() => {
 });
 
 describe("supervised host lifecycle latch", () => {
-  it("forces only a leaked accepted-restart worker after its bounded graceful-drain window", () => {
-    vi.useFakeTimers();
-    const exit = vi.fn();
-    const unref = vi.fn();
-    const schedule = vi.fn((handler: () => void, ms: number) => {
-      const timer = setTimeout(handler, ms);
-      timer.unref = unref;
-      return timer;
-    });
-    armAcceptedRestartExitFallback({ exit, schedule });
-    expect(schedule).toHaveBeenCalledWith(expect.any(Function), AGENT_RESTART_EXIT_FALLBACK_MS);
-    expect(unref).toHaveBeenCalledOnce();
-    vi.advanceTimersByTime(AGENT_RESTART_EXIT_FALLBACK_MS - 1);
-    expect(exit).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(exit).toHaveBeenCalledExactlyOnceWith(AGENT_RESTART_EXIT_CODE);
-  });
 
   it("accepts before the shutdown waiter subscribes, keeps one immutable id and one stop", async () => {
     const latch = createSupervisedRestartLatch();

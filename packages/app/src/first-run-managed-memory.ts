@@ -25,7 +25,7 @@ export interface FirstRunManagedMemoryHooks {
   readonly afterManifestLinked?: (finalRoot: string) => void | Promise<void>;
 }
 
-export interface InitializeFirstRunManagedMemoryOptions {
+interface InitializeFirstRunManagedMemoryOptions {
   readonly agentRoot: string;
   /** A plan returned by the init wizard composer, not an arbitrary loaded config. */
   readonly plan: WizardPlan;
@@ -35,7 +35,7 @@ export interface InitializeFirstRunManagedMemoryOptions {
   readonly hooks?: FirstRunManagedMemoryHooks;
 }
 
-export interface InitializeFirstRunManagedMemoryResult {
+interface InitializeFirstRunManagedMemoryResult {
   readonly initialized: boolean;
   readonly root?: string;
 }

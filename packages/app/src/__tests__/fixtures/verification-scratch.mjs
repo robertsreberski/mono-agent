@@ -11,7 +11,7 @@
 import { readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
-export const KEEP_VERIFICATION_SCRATCH_ENV = "MONO_AGENT_KEEP_VERIFICATION_SCRATCH";
+const KEEP_VERIFICATION_SCRATCH_ENV = "MONO_AGENT_KEEP_VERIFICATION_SCRATCH";
 
 export function keepVerificationScratch(env = process.env) {
   return env[KEEP_VERIFICATION_SCRATCH_ENV] === "1";

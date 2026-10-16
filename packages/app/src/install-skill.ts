@@ -19,7 +19,7 @@ export interface InstallSkillResult {
   readonly installed: readonly string[];
 }
 
-export const COMPOSER_SKILL_NAME = "mono-agent-composer";
+const COMPOSER_SKILL_NAME = "mono-agent-composer";
 
 // dist/install-skill.js and src/install-skill.ts both sit one level below the
 // package root, so ../skills resolves to the bundled skills folder either way.

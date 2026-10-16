@@ -71,7 +71,7 @@ interface PendingAudit {
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
-export interface MemoryHealthWorkerClientOptions {
+interface MemoryHealthWorkerClientOptions {
   readonly workerUrl?: URL;
   readonly timeoutMs?: number;
   /** Clone-safe test fixture controls; production workers receive no worker data. */
@@ -211,7 +211,7 @@ export class MemoryHealthWorkerClient {
   }
 }
 
-export function isMemoryHealthWorkerResponse(value: unknown): value is MemoryHealthWorkerResponse {
+function isMemoryHealthWorkerResponse(value: unknown): value is MemoryHealthWorkerResponse {
   if (!isRecord(value) || (value.type !== "result" && value.type !== "error") || !isPositiveInteger(value.id)) {
     return false;
   }

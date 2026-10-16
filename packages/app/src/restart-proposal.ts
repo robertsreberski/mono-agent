@@ -34,7 +34,7 @@ function isInteractiveWebTurn(request: { readonly conversationId: string; readon
     && request.conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "") === `web:${record.threadId}`;
 }
 
-export interface RestartProposalService {
+interface RestartProposalService {
   readonly extension: RuntimeOptionsExtension;
   wrapResponder(responder: AgentResponder): AgentResponder;
 }

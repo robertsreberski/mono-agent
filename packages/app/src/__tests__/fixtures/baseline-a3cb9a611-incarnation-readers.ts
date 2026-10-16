@@ -5,14 +5,14 @@
 
 const BASELINE_PROCESS_INCARNATION_SCHEMA = "mono-agent.process-incarnation.v1";
 
-export interface BaselineProcessIncarnation {
+interface BaselineProcessIncarnation {
   readonly schema: typeof BASELINE_PROCESS_INCARNATION_SCHEMA;
   readonly bootSessionId: string;
   readonly processStartId: string;
 }
 
 /** packages/agent-harness/src/process-incarnation.ts:71-81 at a3cb9a611. */
-export function baselineProcessIncarnationFromJson(value: unknown): BaselineProcessIncarnation | undefined {
+function baselineProcessIncarnationFromJson(value: unknown): BaselineProcessIncarnation | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
   return record.schema === BASELINE_PROCESS_INCARNATION_SCHEMA

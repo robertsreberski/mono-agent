@@ -52,7 +52,7 @@ interface PendingCheckAdmission {
   cancelled: boolean;
 }
 
-export interface ProviderAuthCheckManager extends ProviderAuthCheckOperator {
+interface ProviderAuthCheckManager extends ProviderAuthCheckOperator {
   isActive(): boolean;
   credentialPersisted(providerId: string): void;
   stop(): Promise<void>;

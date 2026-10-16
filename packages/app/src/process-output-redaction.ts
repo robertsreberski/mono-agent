@@ -88,7 +88,7 @@ const CREDENTIAL_SHAPES: readonly (readonly [RegExp, string])[] = [
 /** Avoid holding ordinary lines for one-character coincidences with ambient secrets. */
 const MIN_CROSS_LINE_SECRET_PREFIX = 4;
 
-export interface StreamingProcessOutputLine<T> {
+interface StreamingProcessOutputLine<T> {
   readonly text: string;
   readonly value: T;
 }
@@ -278,17 +278,12 @@ export function redactProcessOutputLine(
   return redacted;
 }
 
-export function isPrivateKeyBegin(line: string): boolean {
+function isPrivateKeyBegin(line: string): boolean {
   return /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/u.test(line);
 }
 
-export function isPrivateKeyEnd(line: string): boolean {
+function isPrivateKeyEnd(line: string): boolean {
   return /-----END [A-Z0-9 ]*PRIVATE KEY-----/u.test(line);
-}
-
-/** The longest secret the redactor must be able to see whole to match it. */
-export function longestSecretBytes(secrets: readonly string[]): number {
-  return secrets.reduce((longest, secret) => Math.max(longest, Buffer.byteLength(secret, "utf8")), 0);
 }
 
 /**

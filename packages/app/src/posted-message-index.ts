@@ -29,7 +29,7 @@ import { dirname, join, parse, resolve, sep } from "node:path";
  * tooling.
  */
 
-export const POSTED_MESSAGE_INDEX_FILENAME = "posted-message-index.jsonl";
+const POSTED_MESSAGE_INDEX_FILENAME = "posted-message-index.jsonl";
 
 /** Daily-rollover bucket suffix the responder appends (`…#2026-06-22`). */
 const ROLLOVER_BUCKET = /#\d{4}-\d{2}-\d{2}$/u;
@@ -113,7 +113,7 @@ interface PreparedCompaction {
   readonly body: Buffer;
 }
 
-export interface PostedMessageEntry {
+interface PostedMessageEntry {
   /** Slack channel/DM id the message was posted to. */
   readonly channelId: string;
   /** Slack message timestamp returned by `chat.postMessage`. */
@@ -147,7 +147,7 @@ function sendKeyFor(entry: PostedMessageEntry): string {
 }
 
 /** Strip a trailing daily-rollover bucket so the stored id is the base producing id. */
-export function basePostedConversationId(conversationId: string): string {
+function basePostedConversationId(conversationId: string): string {
   return conversationId.replace(ROLLOVER_BUCKET, "");
 }
 

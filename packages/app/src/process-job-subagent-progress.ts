@@ -183,7 +183,7 @@ function routePart(
 }
 
 /** Keep only an honestly priced, contract-bounded detached turn cost. */
-export function pricedSubagentCostUsd(value: unknown): number | undefined {
+function pricedSubagentCostUsd(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= Number.MAX_SAFE_INTEGER
     ? value
     : undefined;

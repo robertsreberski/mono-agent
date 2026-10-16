@@ -11,19 +11,19 @@ import {
 } from "./install-skill.js";
 import type { InstallSkillOptions, InstallSkillResult, InstallSkillTarget } from "./install-skill.js";
 
-export const DOCS_MCP_SERVER_NAME = "mono-agent-docs";
+const DOCS_MCP_SERVER_NAME = "mono-agent-docs";
 const DOCS_MCP_PACKAGE = "@mono-agent/docs-mcp";
 
 type HarnessTarget = Exclude<InstallSkillTarget, "both">;
 type PairingState = "paired" | "already-current" | "upgraded" | "skipped-missing";
 
-export interface DocsMcpPairingStatus {
+interface DocsMcpPairingStatus {
   readonly target: HarnessTarget;
   readonly state: PairingState;
   readonly command: string;
 }
 
-export interface InstallComposerCompanionResult extends InstallSkillResult {
+interface InstallComposerCompanionResult extends InstallSkillResult {
   readonly pairings: readonly DocsMcpPairingStatus[];
 }
 
@@ -46,7 +46,7 @@ export interface DocsMcpPairingDependencies {
   isNpxAvailable(): Promise<boolean>;
 }
 
-export interface InstallComposerCompanionOptions extends InstallSkillOptions {
+interface InstallComposerCompanionOptions extends InstallSkillOptions {
   readonly pairDocsMcp: boolean;
   readonly docsMcpVersion?: string;
 }

@@ -42,7 +42,7 @@ import {
   type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
 
-export interface TraceabilityControllerPort {
+interface TraceabilityControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configPath: string;

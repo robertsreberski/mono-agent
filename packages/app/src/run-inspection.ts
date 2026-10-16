@@ -19,9 +19,9 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { firstCliPositional } from "./cli-args.js";
 import * as ui from "./ui.js";
 
-export const RUN_INSPECTION_MAX_RUNS = 50;
-export const RUN_INSPECTION_MAX_EVENTS = 500;
-export const RUN_INSPECTION_MAX_STRING_BYTES = 32 * 1_024;
+const RUN_INSPECTION_MAX_RUNS = 50;
+const RUN_INSPECTION_MAX_EVENTS = 500;
+const RUN_INSPECTION_MAX_STRING_BYTES = 32 * 1_024;
 const RUN_INSPECTION_MAX_WARNINGS = 50;
 
 // The longest public high-confidence pattern is 523 ASCII bytes
@@ -107,12 +107,12 @@ interface RunInspectionCommonArgs {
   readonly json?: boolean;
 }
 
-export type RunInspectionArgs = RunInspectionCommonArgs & (
+type RunInspectionArgs = RunInspectionCommonArgs & (
   | { readonly mode: "list"; readonly runId?: never }
   | { readonly mode: "show"; readonly runId: string }
 );
 
-export interface RunInspectionDependencies {
+interface RunInspectionDependencies {
   readonly resolveArtifactDir: (input: MonoAgentAppConfigInput) => Promise<string>;
   readonly listRuns: (options: JsonlRunReaderOptions) => Promise<RecordedRunListResult>;
   readonly readRun: (options: JsonlRunReaderOptions, runId: string) => Promise<RecordedRunDetail | undefined>;

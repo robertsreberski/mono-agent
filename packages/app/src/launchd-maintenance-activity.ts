@@ -5,10 +5,10 @@ import { readPrivateLaunchdState, writePrivateLaunchdState } from "./private-lau
 import { probeWorkerActivity, type WorkerActivityProbe } from "./worker-activity-snapshot.js";
 
 export const MAINTENANCE_MAX_DEFERRAL_MS = 4 * 60 * 60 * 1_000;
-export const MAINTENANCE_MAX_DEFERRALS = 48;
+const MAINTENANCE_MAX_DEFERRALS = 48;
 export type MaintenanceReason = "log-size" | "snapshot-drift" | "definition-drift" | "runtime-upgrade" | "runtime-unverified";
 export type MaintenanceOverride = "permission-repair" | "transaction-recovery" | "worker-unready";
-export type MaintenanceDecision = "deferred-busy" | "proceeded-idle" | "forced-ceiling" | "forced-size" | `override-${MaintenanceOverride}`;
+type MaintenanceDecision = "deferred-busy" | "proceeded-idle" | "forced-ceiling" | "forced-size" | `override-${MaintenanceOverride}`;
 export interface MaintenanceEpisode {
   readonly reasons: readonly MaintenanceReason[];
   readonly firstDeferredAt: string;
@@ -33,7 +33,7 @@ export interface MaintenanceActivityRequest {
   readonly inspection?: LaunchdLogInspection;
   readonly override?: MaintenanceOverride;
 }
-export interface MaintenanceActivityDependencies {
+interface MaintenanceActivityDependencies {
   readonly runner: LaunchctlRunner;
   readonly getuid: () => number;
   readonly now: () => number;

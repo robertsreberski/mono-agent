@@ -25,7 +25,7 @@ export interface SubagentVerificationObservation {
   omitted?: number;
   readonly report?: { readonly path: string; readonly present: boolean };
 }
-export const SUBAGENT_OBSERVATION_MAX_BYTES = 4096;
+const SUBAGENT_OBSERVATION_MAX_BYTES = 4096;
 interface Access {
   workspace: string;
   readableRoots: string[];

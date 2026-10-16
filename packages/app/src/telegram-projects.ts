@@ -37,7 +37,7 @@ type Logger = {
   warn?: (message: string, metadata?: Record<string, unknown>) => void;
 };
 
-export interface TelegramProjectsServiceOptions {
+interface TelegramProjectsServiceOptions {
   readonly directory: TelegramTopicDirectoryStore;
   readonly botId: string;
   /** This agent's web-console source id; without one nothing is mirrored. */
@@ -82,7 +82,7 @@ export interface TelegramProjectsService {
 }
 
 /** Host-owned topic key: never model-visible, stored only by the web console. */
-export function telegramProjectKey(botId: string, target: TelegramDestinationTarget): string | undefined {
+function telegramProjectKey(botId: string, target: TelegramDestinationTarget): string | undefined {
   const chat = String(target.chatId);
   if (!/^-?\d{1,20}$/u.test(chat)) return undefined;
   return `telegram:${botId}:${chat}:${target.messageThreadId === undefined ? "main" : String(target.messageThreadId)}`;

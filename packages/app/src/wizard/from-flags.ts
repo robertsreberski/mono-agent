@@ -27,7 +27,7 @@ const WITH_CHANNEL_MODULE_ID: Record<WithChannel, string> = {
 };
 
 /** The non-interactive `init`/preset flags, before they are mapped onto answers. */
-export interface AnswersFromCliArgs {
+interface AnswersFromCliArgs {
   readonly name?: string;
   readonly model?: string;
   readonly fallbacks?: readonly { readonly model: string; readonly effort?: EffortLevel }[];

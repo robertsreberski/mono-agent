@@ -10,7 +10,7 @@ import {
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 
-export interface RunAuditRunsArgs {
+interface RunAuditRunsArgs {
   readonly configPath?: string;
   readonly artifactDir?: string;
   readonly consumerPath?: string;
@@ -52,7 +52,7 @@ export async function runAuditRuns(args: RunAuditRunsArgs): Promise<number> {
   return 0;
 }
 
-export function renderAuditReport(report: ArtifactAuditReport): string {
+function renderAuditReport(report: ArtifactAuditReport): string {
   let out = `Artifact audit: ${report.artifactDir}\n`;
   out += `Summary files: ${report.totalSummaryFiles} (${report.parsedSummaryFiles} parsed, ${report.parseFailureCount} parse failed)\n`;
   out += `Stale running: ${report.staleRunningCount}\n`;

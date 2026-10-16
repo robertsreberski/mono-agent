@@ -77,7 +77,7 @@ export function decodeBackgroundSnapshot(encoded: string): BackgroundSnapshot {
   return snapshot;
 }
 
-export interface MaterializedBackgroundRuntimeInputs {
+interface MaterializedBackgroundRuntimeInputs {
   /** Owner-only immutable copy read by every app/channel config loader. */
   readonly configPath: string;
   /** Frozen effective environment; only adapters/secrets/process protocols use it. */
@@ -87,7 +87,7 @@ export interface MaterializedBackgroundRuntimeInputs {
   dispose(): Promise<void>;
 }
 
-export interface CaptureBackgroundSnapshotInput {
+interface CaptureBackgroundSnapshotInput {
   readonly cwd: string;
   readonly configPath: string;
   readonly envFile?: string;
@@ -99,7 +99,7 @@ export interface CaptureBackgroundSnapshotInput {
   readonly proofKey?: Uint8Array;
 }
 
-export interface CaptureDurableBackgroundSnapshotInput {
+interface CaptureDurableBackgroundSnapshotInput {
   readonly cwd: string;
   readonly configPath: string;
   readonly envFile?: string;
@@ -109,12 +109,12 @@ export interface CaptureDurableBackgroundSnapshotInput {
   readonly proofKey?: Uint8Array;
 }
 
-export interface BackgroundInputVersion {
+interface BackgroundInputVersion {
   readonly path: string;
   readonly version: BigIntStats | undefined;
 }
 
-export interface DurableBackgroundInputs {
+interface DurableBackgroundInputs {
   /** Exact environment a managed worker reconstructs from dotenv + plist. */
   readonly environment: Readonly<Record<string, string>>;
   /** Snapshot captured with that same reconstructed environment. */
@@ -123,17 +123,6 @@ export interface DurableBackgroundInputs {
   readonly configSourceFingerprint: string;
   /** Ephemeral final-capture versions, never serialized into approval or trace metadata. */
   readonly inputVersions: readonly BackgroundInputVersion[];
-}
-
-/**
- * Reconstruct the worker environment without inheriting shell credentials or
- * config overrides, then attest it. This mirrors managed-worker startup:
- * operational plist values exist first and dotenv fills every other key.
- */
-export async function captureDurableBackgroundSnapshot(
-  input: CaptureDurableBackgroundSnapshotInput,
-): Promise<BackgroundSnapshot> {
-  return (await captureDurableBackgroundInputs(input)).snapshot;
 }
 
 /**

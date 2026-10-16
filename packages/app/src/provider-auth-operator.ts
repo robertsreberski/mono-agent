@@ -57,7 +57,7 @@ interface PendingLoginAdmission {
   task?: Promise<void>;
 }
 
-export interface CreateProviderAuthOperatorOptions extends ProviderAuthStatusOptions {
+interface CreateProviderAuthOperatorOptions extends ProviderAuthStatusOptions {
   readonly platform?: NodeJS.Platform;
   readonly login?: typeof loginPiProviderAuth;
   readonly persist?: typeof persistPiProviderCredential;

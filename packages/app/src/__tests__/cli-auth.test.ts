@@ -25,7 +25,9 @@ vi.mock("../provider-setup.js", async (importOriginal) => {
   return { ...actual, executeProviderSetupPlan: mocks.executeProviderSetupPlan };
 });
 
-import { parseCliArgs, readApiKeyFromStdin, runCli } from "../cli.js";
+import { parseCliArgs } from "../cli-args.js";
+import { readApiKeyFromStdin } from "../cli-init-command.js";
+import { runCli } from "../cli.js";
 
 const originalCwd = process.cwd();
 const originalOpenCodeApiKey = process.env.OPENCODE_API_KEY;

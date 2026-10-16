@@ -21,7 +21,7 @@ const MAX_STATE_BYTES = 256 * 1024;
 const MAX_BUCKETS = 512;
 const defaults: Readonly<Record<string, readonly [number, number]>> = { searxng: [1, 2000], ollama: [1, 2000], duckduckgo: [1, 3000], startpage: [1, 3000], codex: [1, 0], fetch: [2, 500] } as const;
 
-export function webControlDirectory(): string { return join(homedir(), ".mono-agent", "web-control"); }
+function webControlDirectory(): string { return join(homedir(), ".mono-agent", "web-control"); }
 
 /** Host-owned operational state only: no queries, documents, or credentials. */
 export function createHostWebRequestCoordinator(options: {

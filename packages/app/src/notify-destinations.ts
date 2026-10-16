@@ -23,7 +23,7 @@ const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
   (telegramModule ??= await import("@mono-agent/channel-telegram"));
 
 
-export interface ResolveNotifyDestinationsInput {
+interface ResolveNotifyDestinationsInput {
   readonly input: MonoAgentAppConfigInput;
   readonly artifactDir: string;
   /** App-lifetime cached sightings; omitted by standalone callers for a direct scan. */

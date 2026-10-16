@@ -24,13 +24,13 @@ type FetchInitWithNodeOptions = RequestInit & {
   readonly signal?: AbortSignalLike | null;
 };
 
-export interface AdapterSendProxy {
+interface AdapterSendProxy {
   readonly fetchImpl: typeof fetch;
   close(): Promise<void>;
   destroy(error?: Error): Promise<void>;
 }
 
-export interface AdapterSendProxyOptions {
+interface AdapterSendProxyOptions {
   /** Explicit configured endpoints that may need SRT's coarse loopback capability. */
   readonly directLoopbackUrls?: readonly string[];
 }

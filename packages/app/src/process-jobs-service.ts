@@ -717,7 +717,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           fence.state = "fenced";
           record.wake.state = "unknown";
           record.wake.retrySafe = false;
-          recordWakeFailure(record, "A legacy wake was interrupted; automatic replay is suppressed.");
+          recordWakeFailure(record);
           continue;
         }
         const certificates = record.wake.notCrossed ?? [];
@@ -726,7 +726,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         if (certificates.length >= MAX_WAKE_CERTIFICATES) {
           record.wake.state = "unknown";
           record.wake.retrySafe = false;
-          recordWakeFailure(record, "Wake non-admission proof capacity was exhausted; automatic replay is suppressed.");
+          recordWakeFailure(record);
           continue;
         }
         fence.state = "fenced";
@@ -768,16 +768,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                   current.wake.state = unavailableExhausted || safeRetryExhausted || busyExhausted
                     ? "failed" : "unknown";
                   current.wake.retrySafe = false;
-                  recordWakeFailure(
-                    current,
-                    unavailableExhausted
-                      ? "The destination channel remained unavailable through its bounded pre-dispatch retry window."
-                      : busyExhausted
-                        ? "The originating conversation remained busy through its bounded deferral window."
-                        : safeRetryExhausted
-                          ? "Process-job wake delivery exhausted its safe retry budget."
-                          : "A prior wake attempt ended ambiguously; it was not replayed to avoid duplicate delivery.",
-                  );
+                  recordWakeFailure(current);
                   failed = true;
                 }
               });
@@ -1279,7 +1270,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (current?.wake.state !== "pending") continue;
           current.wake.state = "failed";
           current.wake.retrySafe = false;
-          recordWakeFailure(current, "Process-job pending-wake capacity was exceeded during recovery.");
+          recordWakeFailure(current);
         }
       });
     }
@@ -1592,7 +1583,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             "spawn_failed",
             this.now(),
             cleanupIncomplete ? "process_job_cleanup_incomplete" : "process_job_spawn_failed",
-            safeProcessError(error, "The process could not be launched.", pending.redactionSecrets),
+            boundedSafeDiagnostic("The process could not be launched."),
           );
         }
       });
@@ -1689,7 +1680,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (error instanceof ProcessJobServiceError) throw error;
       throw new ProcessJobServiceError(
         "process_job_store_error",
-        safeProcessError(error, "Process-job ownership could not be recorded.", pending.redactionSecrets),
+        boundedSafeDiagnostic("Process-job ownership could not be recorded."),
       );
     }
     if (scheduleSurface) this.scheduleSurfaceUpdate(jobId);
@@ -1700,7 +1691,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (this.stopping) this.shutdownFailures.push(error);
       this.options.logger?.warn?.("Process-job completion could not be recorded.", {
         jobId,
-        reason: safeProcessError(error, "unknown completion failure", active.redactionSecrets),
+        reason: boundedSafeDiagnostic("unknown completion failure"),
       });
     }).finally(() => this.settlements.delete(jobId));
     this.settlements.set(jobId, settlement);
@@ -1838,25 +1829,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             : outputPreview(stdout.text, stderr.text, record.previewChars);
           if (alreadyTerminal) {
             if (cleanupError !== undefined) {
-              appendOperationalFailure(
-                record,
-                `Sandbox cleanup also failed: ${safeProcessError(
-                  cleanupError,
-                  "unknown cleanup failure",
-                  active.redactionSecrets,
-                )}`,
-                "process_job_cleanup_incomplete",
-              );
+              appendOperationalFailure(record, "process_job_cleanup_incomplete");
             }
             if (artifactError !== undefined) {
-              appendOperationalFailure(
-                record,
-                `Output artifact publication also failed: ${safeProcessError(
-                  artifactError,
-                  "unknown artifact failure",
-                  active.redactionSecrets,
-                )}`,
-              );
+              appendOperationalFailure(record);
             }
             return;
           }
@@ -1871,25 +1847,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                 : SHUTDOWN_INTERRUPTED_MESSAGE,
             );
             if (cleanupError !== undefined) {
-              appendOperationalFailure(
-                record,
-                `Sandbox cleanup also failed: ${safeProcessError(
-                  cleanupError,
-                  "unknown cleanup failure",
-                  active.redactionSecrets,
-                )}`,
-                "process_job_cleanup_incomplete",
-              );
+              appendOperationalFailure(record, "process_job_cleanup_incomplete");
             }
             if (artifactError !== undefined) {
-              appendOperationalFailure(
-                record,
-                `Output artifact publication also failed: ${safeProcessError(
-                  artifactError,
-                  "unknown artifact failure",
-                  active.redactionSecrets,
-                )}`,
-              );
+              appendOperationalFailure(record);
             }
           } else {
             const terminal = terminalFromResult(
@@ -1897,7 +1858,6 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               result,
               cleanupError,
               artifactError,
-              active.redactionSecrets,
             );
             transitionTerminal(record, terminal.state, this.now(), terminal.code, terminal.message);
           }
@@ -1938,25 +1898,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             "The process completed, but its terminal state could not be persisted. Wake delivery was withheld; restart recovery will reconcile the durable record.",
           );
           if (cleanupError !== undefined) {
-            appendOperationalFailure(
-              completionRecord,
-              `Sandbox cleanup also failed: ${safeProcessError(
-                cleanupError,
-                "unknown cleanup failure",
-                active.redactionSecrets,
-              )}`,
-              "process_job_cleanup_incomplete",
-            );
+            appendOperationalFailure(completionRecord, "process_job_cleanup_incomplete");
           }
           if (artifactError !== undefined) {
-            appendOperationalFailure(
-              completionRecord,
-              `Output artifact publication also failed: ${safeProcessError(
-                artifactError,
-                "unknown artifact failure",
-                active.redactionSecrets,
-              )}`,
-            );
+            appendOperationalFailure(completionRecord);
           }
           completionRecord.wake.state = "failed";
           completionRecord.wake.retrySafe = false;
@@ -2063,7 +2008,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           await this.drainQueue();
         }).catch((error: unknown) => {
           this.options.logger?.warn?.("Process-job queue expiry could not be recorded.", {
-            reason: safeAmbientError(error, "unknown queue-expiry failure"),
+            reason: boundedSafeDiagnostic("unknown queue-expiry failure"),
           });
         });
       }, Math.max(0, deadline - this.now().getTime()));
@@ -2072,7 +2017,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }).catch((error: unknown) => {
       if (generation !== this.queueTimerGeneration) return;
       this.options.logger?.warn?.("Process-job queue deadline could not be loaded.", {
-        reason: safeAmbientError(error, "unknown queue-deadline failure"),
+        reason: boundedSafeDiagnostic("unknown queue-deadline failure"),
       });
     });
   }
@@ -2097,7 +2042,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       .catch((error: unknown) => {
         this.options.logger?.warn?.("Process-job wake settlement failed.", {
           jobId,
-          reason: safeAmbientError(error, "unknown wake-settlement failure"),
+          reason: boundedSafeDiagnostic("unknown wake-settlement failure"),
         });
       })
       .finally(() => {
@@ -2184,7 +2129,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }).catch((error: unknown): NotifyDeliveryResult => ({
         delivered: false,
         code: "process_job_wake_failed",
-        reason: safeAmbientError(error, "Process-job wake failed."),
+        reason: boundedSafeDiagnostic("Process-job wake failed."),
         retryable: false,
         ambiguous: true,
       }));
@@ -2232,7 +2177,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             if (fence.state === "crossed" || fence.legacy === true) {
               current.wake.state = "unknown";
               current.wake.retrySafe = false;
-              recordWakeFailure(current, "A wake may have crossed admission; automatic replay is suppressed.");
+              recordWakeFailure(current);
               return;
             }
             if (result.retryable === true && result.ambiguous !== true) {
@@ -2240,7 +2185,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               if (certificates.length >= MAX_WAKE_CERTIFICATES) {
                 current.wake.state = "unknown";
                 current.wake.retrySafe = false;
-                recordWakeFailure(current, "Wake non-admission proof capacity was exhausted; automatic replay is suppressed.");
+                recordWakeFailure(current);
                 return;
               }
               fence.state = "fenced";
@@ -2263,10 +2208,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             if (conversationBusyExhausted) {
               current.wake.state = "failed";
               current.wake.retrySafe = false;
-              recordWakeFailure(
-                current,
-                "The originating conversation remained busy through its bounded deferral window.",
-              );
+              recordWakeFailure(current);
             } else {
               current.wake.retrySafe = true;
             }
@@ -2283,12 +2225,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             if (destinationUnavailableExhausted) {
               current.wake.state = "failed";
               current.wake.retrySafe = false;
-              recordWakeFailure(
-                current,
-                `The destination channel remained unavailable through ${String(
-                  PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
-                )} pre-dispatch checks.`,
-              );
+              recordWakeFailure(current);
             } else {
               current.wake.retrySafe = true;
             }
@@ -2303,12 +2240,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             current.wake.state = result.ambiguous === true ? "unknown" : "failed";
             current.wake.retrySafe = false;
             const reason = result.reason ?? "Process-job wake was not delivered.";
-            recordWakeFailure(
-              current,
-              result.retryable === true && attempt >= MAX_WAKE_ATTEMPTS
-                ? `Process-job wake exhausted its safe retry budget: ${reason}`
-                : reason,
-            );
+            recordWakeFailure(current);
           }
         });
       });
@@ -2491,7 +2423,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     } catch (error) {
       this.options.logger?.warn?.("Queued process-job sandbox cleanup failed.", {
         jobId,
-        reason: safeAmbientError(error, "Queued process-job sandbox cleanup failed."),
+        reason: boundedSafeDiagnostic("Queued process-job sandbox cleanup failed."),
       });
       await this.storeMutate("cleanup.record_failure", (records) => {
         const record = records.get(jobId);
@@ -2792,14 +2724,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     this.disarmQueueTimer();
     this.options.logger?.warn?.("Process-job storage degraded; new admission is closed.", {
       operation,
-      reason: safeAmbientError(error, "unknown process-job store failure"),
+      reason: boundedSafeDiagnostic("unknown process-job store failure"),
     });
     try {
       await recordProcessJobHealthIncident(this.store.stateDir, operation, this.now());
     } catch (markerError) {
       this.options.logger?.warn?.("Process-job health incident marker could not be persisted.", {
         operation,
-        reason: safeAmbientError(markerError, "unknown health-marker failure"),
+        reason: boundedSafeDiagnostic("unknown health-marker failure"),
       });
     }
     try {
@@ -2807,7 +2739,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     } catch (healthError) {
       this.options.logger?.warn?.("Process-job live health update could not be published.", {
         operation,
-        reason: safeAmbientError(healthError, "unknown health-publication failure"),
+        reason: boundedSafeDiagnostic("unknown health-publication failure"),
       });
     }
   }
@@ -2818,7 +2750,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       void this.updateSurfaceById(jobId, retirementOnly).catch((error: unknown) => {
         this.options.logger?.warn?.("Process-job lifecycle surface could not be loaded for update.", {
           jobId,
-          reason: safeAmbientError(error, "unknown lifecycle-surface load failure"),
+          reason: boundedSafeDiagnostic("unknown lifecycle-surface load failure"),
         });
       });
     });
@@ -2834,7 +2766,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     const update = this.updateSurfaceById(jobId).catch((error: unknown) => {
       this.options.logger?.warn?.("Initial process-job lifecycle update failed.", {
         jobId,
-        reason: safeAmbientError(error, "unknown initial lifecycle-surface failure"),
+        reason: boundedSafeDiagnostic("unknown initial lifecycle-surface failure"),
       });
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2855,7 +2787,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     } catch (error) {
       this.options.logger?.warn?.("Process-job lifecycle surface could not be updated.", {
         jobId: projection.jobId,
-        reason: safeAmbientError(error, "unknown lifecycle-surface failure"),
+        reason: boundedSafeDiagnostic("unknown lifecycle-surface failure"),
       });
     }
   }
@@ -3031,7 +2963,7 @@ function clearConversationBusyDeferral(record: DurableProcessJobRecord): void {
   record.wake.conversationBusySinceAt = null;
 }
 
-function recordWakeFailure(record: DurableProcessJobRecord, _reason: string): void {
+function recordWakeFailure(record: DurableProcessJobRecord): void {
   if (record.lastError === null) {
     record.lastError = processJobPublicError(record.wake.state === "unknown"
       ? "process_job_wake_unknown" : "process_job_wake_failed");
@@ -3042,7 +2974,6 @@ function recordWakeFailure(record: DurableProcessJobRecord, _reason: string): vo
 
 function appendOperationalFailure(
   record: DurableProcessJobRecord,
-  _reason: string,
   code: Extract<ProcessJobErrorCode, "process_job_cleanup_incomplete" | "process_job_store_error">
     = "process_job_store_error",
 ): void {
@@ -3055,7 +2986,6 @@ function terminalFromResult(
   result: ProcessJobProcessResult,
   cleanupError: unknown,
   artifactError: unknown,
-  redactionSecrets: readonly string[],
 ): {
   readonly state: Extract<ProcessJobState, "succeeded" | "failed" | "timed_out" | "cancelled" | "spawn_failed">;
   readonly code?: ProcessJobErrorCode;
@@ -3063,18 +2993,10 @@ function terminalFromResult(
 } {
   const artifactFailure = artifactError === undefined
     ? ""
-    : ` Output artifact publication failed: ${safeProcessError(
-      artifactError,
-      "unknown artifact failure",
-      redactionSecrets,
-    )}`;
+    : ` Output artifact publication failed: ${boundedSafeDiagnostic("unknown artifact failure")}`;
   const cleanupFailure = cleanupError === undefined
     ? ""
-    : ` Sandbox cleanup failed or was withheld: ${safeProcessError(
-      cleanupError,
-      "unknown cleanup failure",
-      redactionSecrets,
-    )}`;
+    : ` Sandbox cleanup failed or was withheld: ${boundedSafeDiagnostic("unknown cleanup failure")}`;
   const operationalCode = cleanupError !== undefined
     ? "process_job_cleanup_incomplete"
     : artifactError !== undefined
@@ -3098,7 +3020,7 @@ function terminalFromResult(
     return {
       state: "spawn_failed",
       code: operationalCode ?? "process_job_spawn_failed",
-      message: `${safeProcessError(result.spawnError, "Process spawn failed.", redactionSecrets)}${artifactFailure}${cleanupFailure}`,
+      message: `${boundedSafeDiagnostic("Process spawn failed.")}${artifactFailure}${cleanupFailure}`,
     };
   }
   if (operationalCode !== undefined) {
@@ -3317,10 +3239,6 @@ async function cancelMalformedHandle(handle: ProcessJobProcessHandle | undefined
   try { await handle.completion; } catch { /* rejection is represented by the launch failure */ }
 }
 
-function safeProcessError(_error: unknown, fallback: string, _secrets: readonly string[]): string {
-  return boundedSummary(fallback);
-}
-
-function safeAmbientError(_error: unknown, fallback: string): string {
+function boundedSafeDiagnostic(fallback: string): string {
   return boundedSummary(fallback);
 }

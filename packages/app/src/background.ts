@@ -114,34 +114,12 @@ import {
 } from "./background-log-maintenance.js";
 import * as ui from "./ui.js";
 
-export type { PollOptions } from "./background-lifecycle-utils.js";
-export {
-  acquireFilesystemLifecycleLock,
-  acquireSharedLaunchdLogLock,
-  sharedLaunchdLogLockTarget,
-  SHARED_LAUNCHD_LOG_LOCK_POLL_MS,
-  SHARED_LAUNCHD_LOG_LOCK_WAIT_MS,
-} from "./launchd-lifecycle-lock.js";
-export type {
-  BackgroundLifecycleTarget,
-  BackgroundLockAcquireOptions,
-  FilesystemLifecycleLockOptions,
-} from "./launchd-lifecycle-lock.js";
-export { withLaunchdMaintenanceControllerLock } from "./launchd-maintenance-gate.js";
+export { acquireFilesystemLifecycleLock } from "./launchd-lifecycle-lock.js";
+export type { BackgroundLifecycleTarget, BackgroundLockAcquireOptions } from "./launchd-lifecycle-lock.js";
+
 export { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
 
-export {
-  acquireBackgroundWorkerLease,
-  backgroundWorkerLeasePath,
-} from "./background-worker-lease.js";
-export type {
-  BackgroundWorkerLease,
-  BackgroundWorkerLeaseOptions,
-} from "./background-worker-lease.js";
-export {
-  LAUNCHD_LOG_MAX_BYTES,
-  LAUNCHD_LOG_ROTATION_COUNT,
-} from "./launchd-logs.js";
+export { acquireBackgroundWorkerLease } from "./background-worker-lease.js";
 
 /**
  * Background-service orchestration for the mono-agent CLI. The interactive
@@ -684,25 +662,6 @@ export async function forceRestartBackground(
 }
 
 /**
- * Private one-shot invoked only by the scheduled maintenance LaunchAgent. It
- * never creates or rewrites a service definition. It does not resurrect an
- * intentionally stopped service; the sole exception is recovery authorized by
- * its own durable lifecycle intent after a prior maintainer died post-bootout.
- */
-export async function maintainLaunchdLogs(
-  target: BackgroundLifecycleTarget,
-  deps: BackgroundDeps,
-  poll: PollOptions = DEFAULT_CONTROL_POLL,
-): Promise<number> {
-  return await maintainLaunchdLogsOperation(
-    target,
-    unattendedLogDeps(target, deps),
-    poll,
-    async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"),
-  );
-}
-
-/**
  * Ensure the canonical per-config LaunchAgent is running and return the fresh
  * trace source that proved it completed the full startup lifecycle. This is the shared
  * lifecycle boundary for CLI start/restart and remote configuration handoffs;
@@ -776,7 +735,7 @@ async function ensureBackgroundReadyUnlocked(
   );
 }
 
-function unattendedLogDeps(target: BackgroundLifecycleTarget, deps: BackgroundDeps): BackgroundDeps {
+export function unattendedLogDeps(target: BackgroundLifecycleTarget, deps: BackgroundDeps): BackgroundDeps {
   const { clearMaintenanceDeferral, allowUnattendedStop } = deps;
   return {
     ...deps,

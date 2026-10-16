@@ -1,12 +1,12 @@
 import * as ui from "./ui.js";
 
-export interface HumanChannelStatus {
+interface HumanChannelStatus {
   readonly id: string;
   readonly kind: string;
   readonly text: string;
 }
 
-export interface HumanChannelSection {
+interface HumanChannelSection {
   readonly title: "channels" | "operator";
   readonly lines: readonly string[];
 }

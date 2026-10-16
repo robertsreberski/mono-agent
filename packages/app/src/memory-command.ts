@@ -103,7 +103,7 @@ const EMPTY_HEALTH_COUNTS = Object.freeze({
   missingVectors: 0,
 });
 
-export interface RunMemoryCommandInput {
+interface RunMemoryCommandInput {
   readonly cwd: string;
   readonly env: Record<string, string | undefined>;
   readonly configPath?: string;
@@ -983,7 +983,7 @@ function memoryImportOperationLabel(operation: string | undefined):
     : "import-unknown";
 }
 
-export function writeMemoryBundleFailure(
+function writeMemoryBundleFailure(
   json: boolean,
   operation: string,
   code: MemoryBundleFailureCode,
@@ -1180,7 +1180,7 @@ class MemoryForgetOperationError extends Error {
   }
 }
 
-export type MemoryForgetFailureCode =
+type MemoryForgetFailureCode =
   | "forget_requires_bujo"
   | "forget_usage"
   | "forget_config_invalid"

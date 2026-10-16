@@ -19,7 +19,7 @@ import { hasUsablePiOAuthClientId } from "./provider-setup.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { configuredRuntimeModels } from "./runtime-routes.js";
 
-export interface UsedProviderReference {
+interface UsedProviderReference {
   readonly usage: ProviderAuthUsage;
   readonly ref: RuntimeModelReference;
 }

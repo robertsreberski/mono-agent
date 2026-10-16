@@ -27,7 +27,7 @@ export function operatorEndpointOf(source: TraceSourceListItem): string | undefi
     : undefined;
 }
 
-export interface RunJobsCommandOptions {
+interface RunJobsCommandOptions {
   readonly cwd: string;
   readonly configPath: string;
   readonly env: Record<string, string | undefined>;
@@ -115,7 +115,7 @@ export async function runJobsCommand(options: RunJobsCommandOptions): Promise<nu
   }
 }
 
-export async function discoverJobsSource(options: Pick<RunJobsCommandOptions, "cwd" | "configPath" | "env" | "agent" | "listSources">): Promise<TraceSourceListItem> {
+async function discoverJobsSource(options: Pick<RunJobsCommandOptions, "cwd" | "configPath" | "env" | "agent" | "listSources">): Promise<TraceSourceListItem> {
   const configuredRegistry = await resolveAppTraceRegistryDir({
     cwd: options.cwd,
     configPath: options.configPath,

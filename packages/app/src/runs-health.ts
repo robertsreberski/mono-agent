@@ -6,16 +6,16 @@ import {
 } from "@mono-agent/observability";
 
 export const RUNS_HEALTH_MAX_RUNS = 50;
-export const RUNS_HEALTH_RECENT_RUNS = 5;
+const RUNS_HEALTH_RECENT_RUNS = 5;
 
-export type RunsHealthStatus = "ok" | "waiting" | "disabled";
+type RunsHealthStatus = "ok" | "waiting" | "disabled";
 
-export interface RunsHealthDisplay {
+interface RunsHealthDisplay {
   readonly status: RunsHealthStatus;
   readonly details: readonly string[];
 }
 
-export interface BuildRunsHealthDisplayInput {
+interface BuildRunsHealthDisplayInput {
   readonly artifactDir: string;
   readonly totalRuns?: number;
   readonly runs: readonly RecordedRunListItem[];
@@ -114,7 +114,7 @@ function isUserCancelledRun(run: RecordedRunListItem): boolean {
   return run.status === "cancelled" && run.failureKind?.trim() === "cancelled_user";
 }
 
-export function formatSelectedSkillsLine(selectedSkills: readonly string[] | undefined): string {
+function formatSelectedSkillsLine(selectedSkills: readonly string[] | undefined): string {
   if (selectedSkills === undefined) {
     return "Active skills: unavailable.";
   }

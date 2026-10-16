@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { defaultManagedBackgroundRuntimeDeps, ensureManagedBackgroundRuntime } from "../background-runtime.js";
 import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../launchd-maintenance-command.js";
-import { agentAppPackageVersion } from "../package-version.js";
+import { appPackageVersion } from "../package-version.js";
 import { runtimeProvenanceDetail } from "../runtime-provenance.js";
 
 const UNMANAGED_DETAIL = "Runtime provenance: dev (unmanaged).";
@@ -39,7 +39,7 @@ async function managedFixture(
   name: string,
   options: { readonly additionalPackage?: boolean } = {},
 ): Promise<ManagedFixture> {
-  const packageVersion = agentAppPackageVersion();
+  const packageVersion = appPackageVersion();
   if (packageVersion === undefined) throw new Error("agent-app version unavailable in test");
   const sourceRoot = join(dir, name, "source");
   const homeDir = join(dir, name, "home");
@@ -195,7 +195,7 @@ async function captureManagedFixture(fixture: ManagedFixture): Promise<ManagedFi
     closureManifestBytes: await readFile(closureManifestPath),
     closureManifestMode: closureManifestDetails.mode & 0o777,
     healthyDetail: `Runtime provenance: managed closure ${fixture.closureId} (`
-      + `@mono-agent/app ${String(agentAppPackageVersion())}; ${process.platform}-${process.arch}; `
+      + `@mono-agent/app ${String(appPackageVersion())}; ${process.platform}-${process.arch}; `
       + `Node ABI ${process.versions.modules}; installed ${INSTALLED_AT}).`,
   };
 }
@@ -219,7 +219,7 @@ describe("runtimeProvenanceDetail", () => {
 
     expect(detail).toBe(
       `Runtime provenance: managed closure ${fixture.closureId} (`
-      + `@mono-agent/app ${agentAppPackageVersion()}; ${process.platform}-${process.arch}; `
+      + `@mono-agent/app ${appPackageVersion()}; ${process.platform}-${process.arch}; `
       + `Node ABI ${process.versions.modules}; installed ${INSTALLED_AT}).`,
     );
     expect(detail).not.toContain(dir);

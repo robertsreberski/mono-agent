@@ -48,10 +48,6 @@ export function computeColorEnabled(
 
 const colorEnabled = computeColorEnabled(process.env, process.stdout.isTTY);
 
-export function isColorEnabled(): boolean {
-  return colorEnabled;
-}
-
 function paint(code: string, text: string): string {
   return colorEnabled ? `${code}${text}${ANSI.reset}` : text;
 }

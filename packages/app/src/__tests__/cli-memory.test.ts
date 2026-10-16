@@ -19,7 +19,9 @@ import { listTraceSources } from "@mono-agent/observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAppTraceRegistryDir } from "../app-config.js";
-import { parseCliArgs, renderHelp, renderHelpTopic, runCli } from "../cli.js";
+import { parseCliArgs } from "../cli-args.js";
+import { renderHelp, renderHelpTopic } from "../cli-help.js";
+import { runCli } from "../cli.js";
 import { curateRecoveredFailureReason, runMemoryCommand } from "../memory-command.js";
 
 /** Resolve a help topic to its rendered detail text. */

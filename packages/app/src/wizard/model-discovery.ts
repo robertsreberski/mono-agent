@@ -16,7 +16,7 @@ export type WizardModelAvailability = "catalog_available";
 export type WizardModelAuthState = "auth_required" | "credential_detected" | "verified" | "not_required";
 
 /** Cloud Pi providers that guided onboarding can authenticate and prove end to end. */
-export const GUIDED_PI_PROVIDER_IDS = [
+const GUIDED_PI_PROVIDER_IDS = [
   "anthropic",
   "github-copilot",
   "openai-codex",
@@ -85,7 +85,7 @@ interface ExecResult {
 
 type DiscoveryCommandRunner = NonNullable<DiscoverWizardModelsOptions["execFile"]>;
 
-export interface DiscoverWizardModelsOptions {
+interface DiscoverWizardModelsOptions {
   readonly execFile?: (file: string, args: readonly string[], opts: {
     readonly timeout: number;
     readonly env?: Record<string, string | undefined>;

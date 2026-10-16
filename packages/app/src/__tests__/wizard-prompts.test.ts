@@ -4,37 +4,9 @@ import { dirname, join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-// `@clack/core`'s cancel sentinel is a private, unexported symbol, so we stub
-// `isCancel` to recognise our own sentinel — enough to exercise both `guard`
-// branches deterministically without a TTY. The pure option builders below never
-// touch clack, so the mock leaves them untouched.
-const { CANCEL } = vi.hoisted(() => ({ CANCEL: Symbol("clack:cancel:test") }));
-vi.mock("@clack/prompts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@clack/prompts")>();
-  return { ...actual, isCancel: (value: unknown): value is symbol => value === CANCEL };
-});
 
 import { APP_TOOL_NAMES, BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
-import {
-  assertConcreteWizardModelRef,
-  canonicalWizardModelRef,
-  channelSelectOptions,
-  creationReviewOptions,
-  CUSTOM_PI_MODEL_OPTION,
-  effortSelectOptions,
-  fallbackModelSelectOptions,
-  guard,
-  memorySelectOptions,
-  modelSelectOptions,
-  piModelSelectOptions,
-  previousWizardStep,
-  presetSelectOptions,
-  toolMultiselectOptions,
-  validateWizardAgentName,
-  validateWizardAgentPurpose,
-  wizardCancelIntentForKey,
-  WizardCancelled,
-} from "../wizard/prompts.js";
+import { assertConcreteWizardModelRef, canonicalWizardModelRef, channelSelectOptions, creationReviewOptions, CUSTOM_PI_MODEL_OPTION, effortSelectOptions, fallbackModelSelectOptions, memorySelectOptions, modelSelectOptions, piModelSelectOptions, presetSelectOptions, toolMultiselectOptions, validateWizardAgentName, validateWizardAgentPurpose, wizardCancelIntentForKey, WizardCancelled } from "../wizard/prompts.js";
 import {
   discoverWizardModelCandidates,
   rankWizardModelCandidates,
@@ -237,8 +209,6 @@ describe("wizard prompt builders", () => {
     expect(validateWizardAgentPurpose("x".repeat(241))).toContain("240");
     expect(wizardCancelIntentForKey({ name: "escape" })).toBe("back");
     expect(wizardCancelIntentForKey({ name: "c", ctrl: true })).toBe("exit");
-    expect(previousWizardStep(0)).toBeUndefined();
-    expect(previousWizardStep(4)).toBe(3);
   });
 
   it("renders unambiguous creation actions", () => {
@@ -598,18 +568,5 @@ describe("wizard model discovery", () => {
       "unavailable",
       "unavailable",
     ]);
-  });
-});
-
-describe("guard", () => {
-  it("returns the value for a non-cancel result", () => {
-    expect(guard("anthropic:claude-sonnet-4-6")).toBe("anthropic:claude-sonnet-4-6");
-    expect(guard(["Read", "Glob", "Grep"])).toEqual(["Read", "Glob", "Grep"]);
-    expect(guard(true)).toBe(true);
-    expect(guard([])).toEqual([]);
-  });
-
-  it("throws WizardCancelled for the clack cancel symbol", () => {
-    expect(() => guard(CANCEL)).toThrow(WizardCancelled);
   });
 });

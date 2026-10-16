@@ -39,17 +39,9 @@ import {
   type IssueContinuationCapabilityInput,
 } from "./continuations.js";
 
-export {
-  ContinuationProtocolError,
-  ContinuationSynthesisUnavailableError,
-} from "./continuation-service-errors.js";
+export { ContinuationSynthesisUnavailableError } from "./continuation-service-errors.js";
 export { continuationOperatorToken } from "./continuation-service-helpers.js";
-export type {
-  ContinuationServiceHandle,
-  ContinuationServiceLogger,
-  ContinuationServiceOptions,
-  ContinuationSynthesisAvailability,
-} from "./continuation-service-types.js";
+export type { ContinuationServiceHandle } from "./continuation-service-types.js";
 
 export async function startContinuationService(
   options: ContinuationServiceOptions,

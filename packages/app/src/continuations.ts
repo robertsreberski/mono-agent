@@ -17,13 +17,6 @@ export type ContinuationState =
   | "cancelled"
   | "dead_lettered";
 
-export type ContinuationTerminalState =
-  | "delivery_unknown"
-  | "delivered"
-  | "expired"
-  | "cancelled"
-  | "dead_lettered";
-
 export interface ContinuationDeliveryReceipt {
   readonly kind: "delivered" | "suppressed" | "captured" | "silent";
   readonly deliveredAt: string;

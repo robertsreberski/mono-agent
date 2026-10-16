@@ -18,7 +18,7 @@ import type { FirstRunManagedMemoryHooks } from "./first-run-managed-memory.js";
 import { assertManagedProjectSkillInitSafe } from "./project-skills.js";
 import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 
-export interface InitMonoAgentFolderOptions {
+interface InitMonoAgentFolderOptions {
   /** Folder the agent is constructed in. Defaults to process.cwd(). */
   readonly dir?: string;
   /** The composed capability selection; omitted → {@link defaultAnswers} (the silent default scaffold). */
@@ -68,7 +68,7 @@ export interface InitMonoAgentFolderResult {
   readonly plan: WizardPlan;
 }
 
-export type InitFileChangeKind =
+type InitFileChangeKind =
   | "created"
   | "updated"
   | "unchanged"
@@ -107,7 +107,7 @@ export type SecretEnvRefusalCode =
   | "unsafe-gitignore-path"
   | "unsafe-lock-path";
 
-export class SecretEnvPersistenceRefusedError extends Error {
+class SecretEnvPersistenceRefusedError extends Error {
   readonly code: SecretEnvRefusalCode;
 
   constructor(code: SecretEnvRefusalCode, message: string) {
@@ -157,7 +157,7 @@ export function secretEnvConcurrentModificationCause(
   return undefined;
 }
 
-export interface SecretEnvPersistenceOptions {
+interface SecretEnvPersistenceOptions {
   /** Preview the exact safety checks and changes without writing. */
   readonly dryRun?: boolean;
   /** Platform seam used to enforce the Windows fail-closed policy. */
@@ -176,7 +176,7 @@ export interface SecretEnvPersistenceOptions {
   readonly afterInstallLink?: (targetPath: string, temporaryPath: string) => void | Promise<void>;
 }
 
-export interface SecretEnvMergeResult {
+interface SecretEnvMergeResult {
   readonly changes: readonly InitFileChange[];
   /** Number of supplied values that would be or were written. */
   readonly valuesChanged: number;
@@ -833,7 +833,7 @@ async function releaseSecretEnvLock(
   await syncDirectoryBestEffort(dirname(lockPath));
 }
 
-async function resolveSafeSecretEnvTarget(
+export async function resolveSafeSecretEnvTarget(
   path: string,
 ): Promise<{ readonly path: string; readonly ownerUid: number }> {
   const canonicalParent = await realpath(dirname(path));
@@ -866,13 +866,7 @@ async function resolveSafeSecretEnvTarget(
   return { path: join(canonicalParent, basename(path)), ownerUid };
 }
 
-/** Stable, repository-external lock path for one canonical dotenv target. */
-export async function secretEnvLockPathFor(path: string): Promise<string> {
-  const target = await resolveSafeSecretEnvTarget(path);
-  return await secretEnvLockPathForCanonical(target.path, target.ownerUid);
-}
-
-async function secretEnvLockPathForCanonical(path: string, ownerUid: number): Promise<string> {
+export async function secretEnvLockPathForCanonical(path: string, ownerUid: number): Promise<string> {
   const root = join(tmpdir(), `mono-agent-secret-env-locks-${ownerUid}`);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const rootStat = await lstat(root);

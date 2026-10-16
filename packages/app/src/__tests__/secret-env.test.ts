@@ -22,7 +22,8 @@ import {
   SecretEnvConcurrentModificationError,
   initMonoAgentFolder,
   mergeSecretEnvFile,
-  secretEnvLockPathFor,
+  resolveSafeSecretEnvTarget,
+  secretEnvLockPathForCanonical,
   verifySecretEnvPersistenceGuard,
 } from "../init.js";
 
@@ -495,7 +496,7 @@ describe("mergeSecretEnvFile", () => {
 
   it("fails closed with manual recovery for a durable lock whose owner process is dead", async () => {
     const envPath = join(dir, ".env");
-    const lockPath = await secretEnvLockPathFor(envPath);
+    const lockPath = await lockPathForFixture(envPath);
     if (typeof process.getuid !== "function") throw new Error("This regression requires a POSIX uid.");
     await writeFile(lockPath, `${JSON.stringify({
       version: 1,
@@ -517,7 +518,7 @@ describe("mergeSecretEnvFile", () => {
 
   it("refuses an unprovable lock with actionable recovery guidance", async () => {
     const envPath = join(dir, ".env");
-    const lockPath = await secretEnvLockPathFor(envPath);
+    const lockPath = await lockPathForFixture(envPath);
     await writeFile(lockPath, "not a durable owner record\n", { mode: 0o600 });
 
     await expect(mergeSecretEnvFile(envPath, { TOKEN: "secret" })).rejects.toMatchObject({
@@ -531,7 +532,7 @@ describe("mergeSecretEnvFile", () => {
 
   it("refuses a lock symlink without removing or modifying its target", async () => {
     const envPath = join(dir, ".env");
-    const lockPath = await secretEnvLockPathFor(envPath);
+    const lockPath = await lockPathForFixture(envPath);
     const victimPath = join(dir, "lock-victim.txt");
     await writeFile(victimPath, "do-not-touch\n");
     await symlink(victimPath, lockPath);
@@ -574,7 +575,7 @@ describe("mergeSecretEnvFile", () => {
     expect(indexed).not.toContain(".env.mono-agent");
     expect(indexed).not.toContain("..env.mono-agent");
     expect(indexed).not.toContain(".env\n");
-    expect(await secretEnvLockPathFor(envPath)).not.toContain(dir);
+    expect(await lockPathForFixture(envPath)).not.toContain(dir);
   });
 
   it("tightens an existing env to mode 0600 even when operator values win", async () => {
@@ -700,7 +701,7 @@ describe("initMonoAgentFolder secret outcome", () => {
   it("returns actionable external stale-lock guidance through the public init outcome", async () => {
     if (typeof process.getuid !== "function") throw new Error("This regression requires a POSIX uid.");
     const envPath = join(dir, ".env");
-    const lockPath = await secretEnvLockPathFor(envPath);
+    const lockPath = await lockPathForFixture(envPath);
     await writeFile(lockPath, `${JSON.stringify({
       version: 1,
       pid: deadProcessId(),
@@ -774,4 +775,9 @@ function deadProcessId(): number {
     }
   }
   throw new Error("Unable to find a dead PID for the stale-lock regression.");
+}
+
+async function lockPathForFixture(path: string): Promise<string> {
+  const target = await resolveSafeSecretEnvTarget(path);
+  return await secretEnvLockPathForCanonical(target.path, target.ownerUid);
 }

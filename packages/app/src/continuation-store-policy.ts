@@ -243,7 +243,7 @@ export function isRecord(value: unknown, id: string): value is DurableContinuati
     && (value.receipt === undefined || isReceipt(value.receipt));
 }
 
-export function isOriginContextState(value: unknown): value is ContinuationOriginContextState {
+function isOriginContextState(value: unknown): value is ContinuationOriginContextState {
   return value === "pending"
     || value === "pinned"
     || value === "abandoned"

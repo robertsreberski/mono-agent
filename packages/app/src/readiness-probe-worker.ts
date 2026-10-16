@@ -25,7 +25,7 @@ const TOOL_EVENT_TYPES = new Set([
 ]);
 
 /** @internal Clone-safe input accepted from the readiness parent. */
-export interface ReadinessWorkerData {
+interface ReadinessWorkerData {
   readonly cwd: string;
   readonly runtime: {
     readonly model: RuntimeModelReference;
