@@ -205,7 +205,8 @@ export interface RuntimeSubagentActivityEvent extends RuntimeEventLike {
 /** Monotonic per-execution evidence, armed only after canonical replay seeding. */
 export type RuntimeDispatchProgress = Readonly<NonNullable<RuntimeContracts.RuntimeResult["dispatchProgress"]>>;
 /** Readonly host projection; unknown provider diagnostics remain open. */
-export type RuntimeResult = Readonly<Pick<RuntimeContracts.RuntimeResult, "dispatchProgress" | "turnDisposition" | "subagentQuestion" | "text" | "structuredResult" | "structuredResultSource" | "events" | "durationMs" | "numTurns" | "model" | "effort" | "sdk" | "cancelled" | "error" | "failureKind" | "retryable" | "providerSessionId" | "providerSessionRecovery" | "runtimeWarnings">> & {
+export type RuntimeResult = Readonly<Pick<RuntimeContracts.RuntimeResult, "turnDisposition" | "subagentQuestion" | "text" | "structuredResult" | "structuredResultSource" | "events" | "durationMs" | "numTurns" | "model" | "effort" | "sdk" | "cancelled" | "error" | "failureKind" | "retryable" | "providerSessionId" | "providerSessionRecovery" | "runtimeWarnings">> & {
+  readonly dispatchProgress?: RuntimeDispatchProgress;
   readonly usage?: unknown;
   readonly cost?: unknown;
   readonly errorDetails?: unknown;
@@ -260,7 +261,10 @@ export interface RuntimeSessionTurnDetachedAttempt {
   readonly result: RuntimeResult;
 }
 /** Common request facts, narrowed by the host's authority and required inputs. */
-export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions, "sessionRecovery" | "sessionTurn" | "model" | "providerAttributionSessionId" | "processJobs" | "ownedForegroundProcesses" | "promptCacheDiagnostics" | "cacheRetention" | "toolLifecycleSink" | "effort" | "cwd" | "maxTurns" | "allowedTools" | "disallowedTools" | "toolLimits" | "mcpCallNoTotalTimeoutTools" | "compaction" | "prompts" | "liveInput" | "piToolExecutionMode" | "piToolParallelismMode">> & {
+export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions, "sessionRecovery" | "sessionTurn" | "model" | "providerAttributionSessionId" | "processJobs" | "ownedForegroundProcesses" | "promptCacheDiagnostics" | "cacheRetention" | "toolLifecycleSink" | "effort" | "cwd" | "maxTurns" | "allowedTools" | "disallowedTools" | "mcpCallNoTotalTimeoutTools" | "liveInput" | "piToolExecutionMode" | "piToolParallelismMode">> & {
+  readonly toolLimits?: RuntimeToolLimits;
+  readonly compaction?: RuntimeCompactionPolicy;
+  readonly prompts?: RuntimePromptOverrides;
   /** Stable configured profile, never executable authority or retained controllers. */
   readonly toolExposure?: { readonly persistentSubagents?: boolean; readonly askParent?: boolean };
   /** Current host facts only; tools must independently enforce admission. */

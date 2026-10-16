@@ -71,6 +71,22 @@ function assertAssignable<T>(_value: T): void {
 }
 
 describe("host public contract", () => {
+  it("preserves nested readonly host projections of shared facts", () => {
+    if (false) {
+      const result = null as unknown as RuntimeResult;
+      // @ts-expect-error dispatch progress is a readonly host view, not the mutable core object.
+      result.dispatchProgress!.armed = false;
+
+      const options = null as unknown as RuntimeRunOptions;
+      // @ts-expect-error host tool budgets remain readonly through the request projection.
+      options.toolLimits!.bashTimeoutMs = 1;
+      // @ts-expect-error host compaction policy remains readonly through the request projection.
+      options.compaction!.enabled = false;
+      // @ts-expect-error host prompt overrides remain readonly through the request projection.
+      options.prompts!.emptyReplyFinalization = () => "replacement";
+    }
+  });
+
   it("keeps live-input callbacks source-compatible with contextual-void expression returns", () => {
     const calls: string[] = [];
     const message: RuntimeLiveInputMessage = {
