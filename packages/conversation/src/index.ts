@@ -59,4 +59,4 @@ export type { ToolPolicyInput } from "./tool-policy/policy.js";
 export { createSessionRuntimeResolver } from "./session-runtime.js";
 export type { ProviderSessionHandle, SessionRuntimeResolver } from "./session-runtime.js";
 export { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "./context/turn-envelope.js";
-export { logicalConversationIdForFence } from "./durable-history.js";
+export { logicalConversationIdForFence } from "./history/canonical/identity.js";

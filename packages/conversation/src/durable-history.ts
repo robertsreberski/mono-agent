@@ -1,53 +1,34 @@
-import { belongsToLogicalConversation, stripDailyBucketSuffix } from "./history/conversation-id.js";
-import type { NativeHistoryAuthorityLease, ManagedModelSwitchStorageLease, ManagedProviderSessionPreparation, CurrentJournalPresence, ProviderSessionPreparationSnapshot, ModelSwitchStorageSupport, ModelSwitchStorageSource } from "./history/contracts.js";
-import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, RuntimeNativeEpochContext, RuntimeNativeJournalRef } from "@mono-agent/turn/host/types";
-import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
-import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
-import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
-import { MODEL_SWITCH_DIRECTORY, ModelSwitchCapacityError, switchDigest, validateModelSwitchState, validateNativeTurnHistory, recognizesModelSwitchBinding, MAX_NATIVE_EPOCH_BYTES, validateFrozenHandoffBudget, switchHash, validateSwitchReference } from "./durable-model-switch-contract.js";
-import type { ModelSwitchState, HandoffReference, SummaryAttempt, NativeTurnHistory, CanonicalJournalDescriptor } from "./durable-model-switch-contract.js";
-import { pendingTurnDescriptor, turnInputDigest, turnCandidateDigest, projectTurnSettlement } from "./durable-turn-settlement.js";
-import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-history.js";
-import type { TurnHistoryV3 } from "./durable-turn-history.js";
-import type { DurableTurnReceipt, PendingTurnPointer, PendingTurnPayload, PendingTurnInput, PendingTurnCandidate, DurableTurnFence } from "./durable-turn-contract.js";
-import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
-import type { PendingPayloadEntry } from "./durable-turn-payloads.js";
-import { OwnedFileDamagedError, isOwned } from "@mono-agent/turn/engine/owned-fs.js";
-import { PENDING_TURN_DIRECTORY, DurableTurnAlreadyCommittedError, validateDurableTurnFence, serializeDurableTurnFence, createPendingTurnPayload, createPendingInitialInput, durableTurnFenceDigest, pendingPayloadName, serializePendingTurnPayload } from "./durable-turn-contract.js";
-import { createHash, randomBytes } from "node:crypto";
-import { constants as fsConstants, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES,AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES,AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,AGENT_CONTEXT_IMPORT_VERSION,type AgentContextImportRequest,type AgentContextImportResult } from "@mono-agent/contracts";
+import { OwnedFileDamagedError,isOwned } from "@mono-agent/turn/engine/owned-fs.js";
+import type { RuntimeNativeEpochContext,RuntimeNativeJournalAuthority,RuntimeNativeJournalStorage } from "@mono-agent/turn/host/types";
+import { createHash,randomBytes } from "node:crypto";
+import { constants as fsConstants,type Stats } from "node:fs";
+import { chmod,lstat,mkdir,open,readdir,rename,rm } from "node:fs/promises";
+import { basename,dirname,isAbsolute,join,parse,resolve,sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-
-import {
-  AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES,
-  AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES,
-  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
-  AGENT_CONTEXT_IMPORT_VERSION,
-  AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
-  type AgentContextImportRequest,
-  type AgentContextImportResult,
-} from "@mono-agent/contracts";
-
+import { setTimeout as delay } from "node:timers/promises";
 import type { HistoryMessage } from "./context/index.js";
-import type { ConversationHistoryProviderSessionTurn, ConversationHistoryExclusiveTurn, ConversationHistoryContextImport, ConversationHistoryStore, ConversationHistoryTurnInspector, ConversationHistoryTurnRecovery, ConversationHistoryTurnDrainOptions, ConversationHistoryTurnDrainResult, PreparedHistoryAppend, ProviderSessionTurnCommitOptions, ProviderSessionTurnBinding } from "./history/contracts.js";
+import type { ModelSwitchState,NativeTurnHistory } from "./durable-model-switch-contract.js";
+import { MAX_NATIVE_EPOCH_BYTES,MODEL_SWITCH_DIRECTORY,ModelSwitchCapacityError,recognizesModelSwitchBinding,switchDigest,switchHash,validateFrozenHandoffBudget,validateModelSwitchState,validateNativeTurnHistory,validateSwitchReference } from "./durable-model-switch-contract.js";
+import type { DurableTurnFence,DurableTurnReceipt,PendingTurnCandidate,PendingTurnInput,PendingTurnPayload } from "./durable-turn-contract.js";
+import { DurableTurnAlreadyCommittedError,PENDING_TURN_DIRECTORY,createPendingInitialInput,createPendingTurnPayload,durableTurnFenceDigest,pendingPayloadName,serializePendingTurnPayload } from "./durable-turn-contract.js";
+import { recognizesTurnCommit,validateTurnHistoryV3 } from "./durable-turn-history.js";
+import type { PendingPayloadEntry } from "./durable-turn-payloads.js";
+import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
+import { pendingTurnDescriptor,projectTurnSettlement,turnCandidateDigest,turnInputDigest } from "./durable-turn-settlement.js";
+import { historyProcessIncarnationFromJson,type HistoryProcessIncarnation } from "./history-process-incarnation.js";
+import { currentHistoryProcessIncarnation,historyOwnerIncarnation,historyOwnerLiveness } from "./history-process-liveness.js";
+import { TruncatedHistoryRecordError,cloneMessage,historyRecordVersion,isRecord,lastCommitBinding,modelBinding,nativeExtension,parseDirtyFence,parseHistoryFile,preserveNativeHistory,serializeDirtyFence,serializeHistoryFile,validateAndCloneMessage,validateAppendMessages } from "./history/canonical/codec.js";
+import { currentJournal,deriveProviderSessionId,digestRunId,historyKey,logicalConversationIdForFence,normalizeConversationId,normalizeRunId,requiresExactConversationClaim } from "./history/canonical/identity.js";
+import { DEFAULT_MAX_MESSAGES,MAX_DIRTY_FENCE_BYTES,MAX_MESSAGE_ENVELOPE_BYTES,MAX_STORE_FILE_BYTES,STORE_VERSION,type CanonicalHistoryFile,type DirtyFence,type LoadedHistoryRecord } from "./history/canonical/record-contracts.js";
+import type { ConversationHistoryContextImport,ConversationHistoryExclusiveTurn,ConversationHistoryProviderSessionTurn,ConversationHistoryStore,ConversationHistoryTurnDrainOptions,ConversationHistoryTurnDrainResult,ConversationHistoryTurnInspector,ConversationHistoryTurnRecovery,CurrentJournalPresence,ManagedModelSwitchStorageLease,ManagedProviderSessionPreparation,ModelSwitchStorageSource,ModelSwitchStorageSupport,NativeHistoryAuthorityLease,PreparedHistoryAppend,ProviderSessionTurnBinding,ProviderSessionTurnCommitOptions } from "./history/contracts.js";
+import { belongsToLogicalConversation } from "./history/conversation-id.js";
+import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
+import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
+import { MAX_NATIVE_HISTORY_ROOT_BYTES,NATIVE_HISTORY_ROOT_FILE,NATIVE_HISTORY_ROOT_TEMP,NativeHistoryRootStore } from "./native-history-root.js";
+import { ProviderSessionModelChangedError,uniqueSessionHandles,type ProviderSessionHandle } from "./session-runtime.js";
 import { assertSessionModelKey } from "./sessions/model-key.js";
-import { ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
-import { currentHistoryProcessIncarnation, historyOwnerIncarnation, historyOwnerLiveness } from "./history-process-liveness.js";
-import { historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./history-process-incarnation.js";
 
-const LEGACY_STORE_VERSION = 1;
-const PROVIDER_STORE_VERSION = 2;
-const STORE_VERSION = 3;
-const DEFAULT_MAX_MESSAGES = 64;
-const MAX_MESSAGE_CONTENT_BYTES = 64 * 1024;
-const MAX_MESSAGE_ENVELOPE_BYTES = 16 * 1024;
-// JSON may encode one content byte as a six-byte escape (for example, NUL).
-const MAX_MESSAGE_SERIALIZED_BYTES = MAX_MESSAGE_CONTENT_BYTES * 6 + MAX_MESSAGE_ENVELOPE_BYTES;
-const MAX_STORE_FILE_BYTES = DEFAULT_MAX_MESSAGES * MAX_MESSAGE_SERIALIZED_BYTES + 64 * 1024;
-const MAX_APPEND_MESSAGES = DEFAULT_MAX_MESSAGES;
 const DEFAULT_MAX_STORE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_CONVERSATIONS = 10_000;
 const DEFAULT_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1_000;
@@ -82,8 +63,6 @@ const ACTIVE_MARKER_PATTERN = /^([a-f0-9]{64})\.([0-9]+)\.([a-f0-9]{32})\.active
 const DIRTY_FENCE_PATTERN = /^([a-f0-9]{64})\.dirty\.json$/u;
 const DIRTY_FENCE_TEMP_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.([a-f0-9]{24})\.dirty\.tmp$/u;
 const MAX_ACTIVE_MARKER_BYTES = 4 * 1024;
-const MAX_DIRTY_FENCE_BYTES = 1024;
-const MAX_RUN_ID_BYTES = 4 * 1024;
 // JSON can escape every decoded byte as six bytes. The remaining allowance
 // covers both message envelopes, the fixed provenance, timestamp and v2 record.
 const MAX_CONTEXT_IMPORT_RECORD_BYTES = 6 * (
@@ -176,25 +155,6 @@ export interface DurableHistoryStoreStats {
   };
 }
 
-interface ProviderSessionState {
-  readonly modelKey?: string;
-  readonly epoch: string;
-  readonly revision?: number;
-  readonly dirtyRunId?: string;
-}
-
-type CanonicalHistoryFile = TurnHistoryV3 | NativeTurnHistory;
-
-interface LoadedHistoryRecord {
-  readonly lastCommit?: DurableTurnReceipt;
-  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof PROVIDER_STORE_VERSION | typeof STORE_VERSION;
-  readonly native?: NativeTurnHistory["native"];
-  readonly lastSwitch?: NonNullable<NativeTurnHistory["lastSwitch"]>;
-  readonly conversationId: string;
-  readonly messages: readonly HistoryMessage[];
-  readonly providerSession?: ProviderSessionState;
-}
-
 interface DirectoryIdentity {
   readonly dev: number;
   readonly ino: number;
@@ -215,20 +175,6 @@ interface ActiveMarker {
   readonly token: string;
   readonly damaged?: true;
   readonly incarnation?: HistoryProcessIncarnation | undefined;
-}
-
-interface DirtyFence {
-  readonly kind?: "execution" | "compaction" | "retirement";
-  readonly payload?: PendingTurnPointer;
-  readonly modelKey?: string;
-  readonly path: string;
-  readonly conversationKey: string;
-  readonly logicalConversationKey?: string;
-  readonly epoch: string;
-  readonly providerSessionId?: string;
-  readonly revision: number;
-  readonly runIdDigest: string;
-  readonly mtimeMs?: number;
 }
 
 interface HeldConversation {
@@ -3618,20 +3564,6 @@ function compareRetentionEntries(left: CommittedEntry, right: CommittedEntry): n
   return left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name);
 }
 
-function historyRecordVersion(record: LoadedHistoryRecord | CanonicalHistoryFile): string {
-  return createHash("sha256")
-    .update("mono-agent-history-version-v1\0")
-    .update(JSON.stringify({
-      sourceVersion: "sourceVersion" in record ? record.sourceVersion : record.version,
-      conversationId: record.conversationId,
-      messages: record.messages,
-      providerSession: record.providerSession,
-      lastCommit: record.lastCommit,
-      ...nativeExtension(record),
-    }), "utf8")
-    .digest("hex");
-}
-
 function validateContextImportRequest(
   request: AgentContextImportRequest & { readonly timestamp: string },
 ): AgentContextImportRequest & { readonly timestamp: string } {
@@ -3719,46 +3651,6 @@ function retainHistoryMessages(messages: readonly HistoryMessage[], maxMessages:
   return retained.flat();
 }
 
-function normalizeConversationId(conversationId: string): string {
-  if (typeof conversationId !== "string") throw new TypeError("conversationId must be a non-empty string.");
-  const normalized = conversationId.trim();
-  const bytes = Buffer.byteLength(normalized, "utf8");
-  if (bytes === 0) throw new TypeError("conversationId must be a non-empty string.");
-  if (bytes > AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES) {
-    throw new TypeError(`conversationId must not exceed ${AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES} UTF-8 bytes.`);
-  }
-  if (normalized.includes("\0")) throw new TypeError("conversationId must not contain NUL bytes.");
-  return normalized;
-}
-
-
-
-export function logicalConversationIdForFence(conversationId: string): string {
-  conversationId = normalizeConversationId(conversationId);
-  const logicalId = stripDailyBucketSuffix(conversationId);
-  return logicalId.length === 0 ? conversationId : logicalId;
-}
-
-function requiresExactConversationClaim(conversationId: string): boolean {
-  return logicalConversationIdForFence(conversationId) !== conversationId;
-}
-
-
-
-function normalizeRunId(runId: string): string {
-  if (typeof runId !== "string") throw new TypeError("runId must be a non-empty string.");
-  const normalized = runId.trim();
-  const bytes = Buffer.byteLength(normalized, "utf8");
-  if (bytes === 0) throw new TypeError("runId must be a non-empty string.");
-  if (bytes > MAX_RUN_ID_BYTES) throw new TypeError(`runId must not exceed ${MAX_RUN_ID_BYTES} UTF-8 bytes.`);
-  if (normalized.includes("\0")) throw new TypeError("runId must not contain NUL bytes.");
-  return normalized;
-}
-
-function historyKey(conversationId: string): string {
-  return createHash("sha256").update("mono-agent-history-v1\0").update(conversationId, "utf8").digest("hex");
-}
-
 function sessionClaimKey(kind: "exact" | "logical", conversationId: string): string {
   return createHash("sha256")
     .update("mono-agent-history-session-claim-v1\0")
@@ -3785,149 +3677,6 @@ function isLogicalSessionShardJournalName(name: string): boolean {
 
 function createProviderSessionEpoch(): string {
   return randomBytes(32).toString("hex");
-}
-
-function digestRunId(runId: string): string {
-  return createHash("sha256").update("mono-agent-provider-dirty-run-v1\0").update(runId, "utf8").digest("hex");
-}
-
-function deriveProviderSessionId(conversationId: string, epoch: string): string {
-  return createHash("sha256")
-    .update("mono-agent-provider-session-v2\0")
-    .update(conversationId, "utf8")
-    .update("\0")
-    .update(epoch, "utf8")
-    .digest("hex");
-}
-
-function validateAppendMessages(messages: readonly HistoryMessage[]): readonly HistoryMessage[] {
-  if (!Array.isArray(messages)) throw new TypeError("messages must be an array.");
-  if (messages.length > MAX_APPEND_MESSAGES) {
-    throw new TypeError(`append accepts at most ${MAX_APPEND_MESSAGES} messages.`);
-  }
-  return Array.from(messages, (message) => validateAndCloneMessage(message));
-}
-
-function validateAndCloneMessage(value: HistoryMessage): HistoryMessage {
-  if (!isRecord(value)) throw new TypeError("Each history message must be an object.");
-  const allowed = new Set(["role", "content", "name", "timestamp", "runId", "idempotencyKey"]);
-  for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) throw new TypeError(`History message contains unsupported field ${key}.`);
-  }
-  if (!(["system", "user", "assistant", "tool"] as const).includes(value.role)) {
-    throw new TypeError("History message role is invalid.");
-  }
-  if (typeof value.content !== "string") throw new TypeError("History message content must be a string.");
-  const contentBytes = Buffer.byteLength(value.content, "utf8");
-  if (contentBytes > MAX_MESSAGE_CONTENT_BYTES) {
-    throw new TypeError(`History message content must not exceed ${MAX_MESSAGE_CONTENT_BYTES} UTF-8 bytes.`);
-  }
-  const optional = ["name", "timestamp", "runId", "idempotencyKey"] as const;
-  for (const field of optional) {
-    const fieldValue = value[field];
-    if (fieldValue !== undefined && typeof fieldValue !== "string") {
-      throw new TypeError(`History message ${field} must be a string when present.`);
-    }
-  }
-  const clone = cloneMessage(value);
-  const envelope = { ...clone, content: "" };
-  if (Buffer.byteLength(JSON.stringify(envelope), "utf8") > MAX_MESSAGE_ENVELOPE_BYTES) {
-    throw new TypeError(`History message metadata must not exceed ${MAX_MESSAGE_ENVELOPE_BYTES} serialized UTF-8 bytes.`);
-  }
-  if (Buffer.byteLength(JSON.stringify(clone), "utf8") > MAX_MESSAGE_SERIALIZED_BYTES) {
-    throw new TypeError("History message cannot be represented within its serialized safety limit.");
-  }
-  return clone;
-}
-
-function cloneMessage(message: HistoryMessage): HistoryMessage {
-  return {
-    role: message.role,
-    content: message.content,
-    ...(message.name === undefined ? {} : { name: message.name }),
-    ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
-    ...(message.runId === undefined ? {} : { runId: message.runId }),
-    ...(message.idempotencyKey === undefined ? {} : { idempotencyKey: message.idempotencyKey }),
-  };
-}
-
-function lastCommitBinding(record: { readonly lastCommit?: DurableTurnReceipt }): { readonly lastCommit?: DurableTurnReceipt } {
-  return record.lastCommit === undefined ? {} : { lastCommit: { ...record.lastCommit } };
-}
-
-function nativeExtension(record: { readonly conversationId: string; readonly native?: NativeTurnHistory["native"]; readonly lastSwitch?: NativeTurnHistory["lastSwitch"] }) {
-  return record.native === undefined ? {} : { native: structuredClone(record.native),
-    ...(record.lastSwitch === undefined ? {} : { lastSwitch: structuredClone(record.lastSwitch) }) };
-}
-/** Preserve authority/projection/switch receipt only for a proven same-epoch
- * write. Never invent a native journal or drop its authority. */
-function preserveNativeHistory(existing: LoadedHistoryRecord | CanonicalHistoryFile, next: CanonicalHistoryFile): CanonicalHistoryFile {
-  if (existing.native === undefined) return next;
-  if (next.conversationId !== existing.conversationId || next.providerSession.epoch !== existing.providerSession?.epoch
-    || next.providerSession.modelKey !== existing.providerSession.modelKey) {
-    return next; // The owner-held native lifecycle planner must complete this candidate.
-  }
-  const record = { ...next, version: 3, ...nativeExtension(existing) };
-  validateNativeTurnHistory(record, (message) => validateAndCloneMessage(message as HistoryMessage));
-  return record;
-}
-
-function serializeHistoryFile(record: CanonicalHistoryFile): Buffer {
-  if (record.native !== undefined) validateNativeTurnHistory(record, (message) => validateAndCloneMessage(message as HistoryMessage));
-  else validateTurnHistoryV3(record, (message) => validateAndCloneMessage(message as HistoryMessage));
-  const bytes = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
-  if (bytes.byteLength > MAX_STORE_FILE_BYTES) {
-    throw new Error(`Serialized conversation history exceeds the ${MAX_STORE_FILE_BYTES}-byte limit.`);
-  }
-  return bytes;
-}
-
-function serializeDirtyFence(value: Omit<DirtyFence, "path" | "mtimeMs">): Buffer {
-  if (value.kind !== undefined) return serializeDurableTurnFence({ version: 6, kind: value.kind, conversationKey: value.conversationKey,
-    logicalConversationKey: value.logicalConversationKey!, epoch: value.epoch, providerSessionId: value.providerSessionId!, modelKey: value.modelKey!,
-    revision: value.revision, runIdDigest: value.runIdDigest, ...(value.payload === undefined ? {} : { payload: value.payload }) });
-  if (value.modelKey !== undefined) {
-    assertSessionModelKey(value.modelKey);
-    if (value.logicalConversationKey === undefined || value.providerSessionId === undefined) {
-      throw new Error("Bound dirty fences require logical and provider session identities.");
-    }
-  }
-  if (!/^[a-f0-9]{64}$/u.test(value.conversationKey)) {
-    throw new Error("History dirty fence has an invalid conversation key.");
-  }
-  if (value.logicalConversationKey !== undefined && !/^[a-f0-9]{64}$/u.test(value.logicalConversationKey)) {
-    throw new Error("History dirty fence has an invalid logical conversation key.");
-  }
-  if (!/^[a-f0-9]{64}$/u.test(value.epoch)) {
-    throw new Error("History dirty fence has an invalid provider epoch.");
-  }
-  if (value.providerSessionId !== undefined && !/^[a-f0-9]{64}$/u.test(value.providerSessionId)) {
-    throw new Error("History dirty fence has an invalid provider session id.");
-  }
-  if (!Number.isSafeInteger(value.revision) || value.revision < 0) {
-    throw new Error("History dirty fence has an invalid provider revision.");
-  }
-  if (!/^[a-f0-9]{64}$/u.test(value.runIdDigest)) {
-    throw new Error("History dirty fence has an invalid run digest.");
-  }
-  const bytes = Buffer.from(`${JSON.stringify({
-    version: value.modelKey !== undefined ? 4 : value.logicalConversationKey !== undefined
-      ? 3
-      : value.providerSessionId === undefined ? 1 : 2,
-    conversationKey: value.conversationKey,
-    ...modelBinding(value.modelKey),
-    ...(value.logicalConversationKey === undefined
-      ? {}
-      : { logicalConversationKey: value.logicalConversationKey }),
-    epoch: value.epoch,
-    ...(value.providerSessionId === undefined ? {} : { providerSessionId: value.providerSessionId }),
-    revision: value.revision,
-    runIdDigest: value.runIdDigest,
-  })}\n`, "utf8");
-  if (bytes.byteLength > MAX_DIRTY_FENCE_BYTES) {
-    throw new Error(`History dirty fence exceeds the ${MAX_DIRTY_FENCE_BYTES}-byte limit.`);
-  }
-  return bytes;
 }
 
 async function writePreparedFile(
@@ -3957,88 +3706,6 @@ async function writePreparedFile(
   }
   await assertDirectoryIdentity(root, rootIdentity);
 }
-
-function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
-  let value: unknown;
-  try {
-    value = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new TruncatedHistoryRecordError(`History file ${path} is not valid JSON.`);
-  }
-  if (!isRecord(value)) throw new Error(`History file ${path} must contain an object.`);
-  if (typeof value.conversationId !== "string" || !Array.isArray(value.messages)) {
-    throw new Error(`History file ${path} has an unsupported schema.`);
-  }
-  const conversationId = normalizeConversationId(value.conversationId);
-  if (conversationId !== value.conversationId) {
-    throw new Error(`History file ${path} contains a non-canonical conversation id.`);
-  }
-  if (value.messages.length > DEFAULT_MAX_MESSAGES) {
-    throw new Error(`History file ${path} exceeds the ${DEFAULT_MAX_MESSAGES}-message limit.`);
-  }
-  const messages = value.messages.map((message) => validateAndCloneMessage(message as HistoryMessage));
-  const keys = Object.keys(value).sort().join(",");
-  if (value.version === LEGACY_STORE_VERSION && keys === "conversationId,messages,version") {
-    return { sourceVersion: LEGACY_STORE_VERSION, conversationId, messages };
-  }
-  if (value.version === STORE_VERSION) {
-    if (value.native !== undefined) {
-      validateNativeTurnHistory(value, (message) => validateAndCloneMessage(message as HistoryMessage));
-      if (value.native.authority.ownerKey !== logicalConversationIdForFence(conversationId)) throw new Error("Native canonical authority does not belong to the managed conversation");
-    } else validateTurnHistoryV3(value, (message) => validateAndCloneMessage(message as HistoryMessage));
-    return { sourceVersion: STORE_VERSION, conversationId, messages, providerSession: { ...value.providerSession },
-      ...lastCommitBinding(value), ...nativeExtension(value) };
-  }
-  if (
-    value.version !== PROVIDER_STORE_VERSION
-    || keys !== "conversationId,messages,providerSession,version"
-    || !isRecord(value.providerSession)
-  ) {
-    throw new Error(`History file ${path} has an unsupported schema.`);
-  }
-  const providerKeys = Object.keys(value.providerSession).sort().join(",");
-  if (
-    providerKeys !== "epoch"
-    && providerKeys !== "dirtyRunId,epoch"
-    && providerKeys !== "epoch,revision"
-    && providerKeys !== "dirtyRunId,epoch,revision"
-    && providerKeys !== "epoch,modelKey,revision"
-    && providerKeys !== "dirtyRunId,epoch,modelKey,revision"
-  ) {
-    throw new Error(`History file ${path} has an unsupported provider session schema.`);
-  }
-  if (typeof value.providerSession.epoch !== "string" || !/^[a-f0-9]{64}$/u.test(value.providerSession.epoch)) {
-    throw new Error(`History file ${path} has an invalid provider session epoch.`);
-  }
-  if ("modelKey" in value.providerSession) assertSessionModelKey(value.providerSession.modelKey);
-  let revision: number | undefined;
-  if (value.providerSession.revision !== undefined) {
-    revision = value.providerSession.revision as number;
-    if (!Number.isSafeInteger(revision) || revision < 0) {
-      throw new Error(`History file ${path} has an invalid provider session revision.`);
-    }
-  }
-  let dirtyRunId: string | undefined;
-  if (value.providerSession.dirtyRunId !== undefined) {
-    dirtyRunId = normalizeRunId(value.providerSession.dirtyRunId as string);
-    if (dirtyRunId !== value.providerSession.dirtyRunId) {
-      throw new Error(`History file ${path} has a non-canonical dirty run id.`);
-    }
-  }
-  return {
-    sourceVersion: PROVIDER_STORE_VERSION,
-    conversationId,
-    messages,
-    providerSession: {
-      epoch: value.providerSession.epoch,
-      ...modelBinding(value.providerSession.modelKey as string | undefined),
-      ...(revision === undefined ? {} : { revision }),
-      ...(dirtyRunId === undefined ? {} : { dirtyRunId }),
-    },
-  };
-}
-
-class TruncatedHistoryRecordError extends Error {}
 
 async function acquireCrossProcessLock(
   path: string,
@@ -4463,66 +4130,7 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
     const after = await handle.stat();
     assertSecureHistoryFile(after, path); assertSameIdentity(opened, after, path);
     contentsRead = true;
-    let value: unknown;
-    try {
-      value = JSON.parse(bytes.toString("utf8"));
-    } catch {
-      throw new Error(`History dirty fence ${path} is not valid JSON.`);
-    }
-    if (isRecord(value) && value.version === 6 && value.kind !== "model-switch") {
-      validateDurableTurnFence(value);
-      return { path, kind: value.kind, conversationKey: value.conversationKey, logicalConversationKey: value.logicalConversationKey,
-        epoch: value.epoch, providerSessionId: value.providerSessionId, modelKey: value.modelKey, revision: value.revision, runIdDigest: value.runIdDigest,
-        ...(value.payload === undefined ? {} : { payload: value.payload }) };
-    }
-    const keys = isRecord(value) ? Object.keys(value).sort().join(",") : "";
-    const legacy = isRecord(value)
-      && value.version === 1
-      && keys === "conversationKey,epoch,revision,runIdDigest,version";
-    const current = isRecord(value)
-      && value.version === 2
-      && keys === "conversationKey,epoch,providerSessionId,revision,runIdDigest,version"
-      && typeof value.providerSessionId === "string"
-      && /^[a-f0-9]{64}$/u.test(value.providerSessionId);
-    const logical = isRecord(value)
-      && value.version === 3
-      && keys === "conversationKey,epoch,logicalConversationKey,providerSessionId,revision,runIdDigest,version"
-      && typeof value.logicalConversationKey === "string"
-      && /^[a-f0-9]{64}$/u.test(value.logicalConversationKey)
-      && typeof value.providerSessionId === "string"
-      && /^[a-f0-9]{64}$/u.test(value.providerSessionId);
-    const bound = isRecord(value)
-      && value.version === 4
-      && keys === "conversationKey,epoch,logicalConversationKey,modelKey,providerSessionId,revision,runIdDigest,version"
-      && typeof value.logicalConversationKey === "string"
-      && /^[a-f0-9]{64}$/u.test(value.logicalConversationKey)
-      && typeof value.providerSessionId === "string"
-      && /^[a-f0-9]{64}$/u.test(value.providerSessionId);
-    if (bound && isRecord(value)) assertSessionModelKey(value.modelKey);
-    if (
-      !isRecord(value)
-      || (!legacy && !current && !logical && !bound)
-      || typeof value.conversationKey !== "string"
-      || !/^[a-f0-9]{64}$/u.test(value.conversationKey)
-      || typeof value.epoch !== "string"
-      || !/^[a-f0-9]{64}$/u.test(value.epoch)
-      || !Number.isSafeInteger(value.revision)
-      || (value.revision as number) < 0
-      || typeof value.runIdDigest !== "string"
-      || !/^[a-f0-9]{64}$/u.test(value.runIdDigest)
-    ) {
-      throw new Error(`History dirty fence ${path} has an unsupported schema.`);
-    }
-    return {
-      path,
-      ...(bound ? { modelKey: value.modelKey as string } : {}),
-      conversationKey: value.conversationKey,
-      ...(logical || bound ? { logicalConversationKey: value.logicalConversationKey as string } : {}),
-      epoch: value.epoch,
-      ...(current || logical || bound ? { providerSessionId: value.providerSessionId as string } : {}),
-      revision: value.revision as number,
-      runIdDigest: value.runIdDigest,
-    };
+    return parseDirtyFence(bytes, path);
   } catch (error) {
     if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error });
     throw error;
@@ -4681,28 +4289,14 @@ function noFollowFlag(): number {
   return fsConstants.O_NOFOLLOW ?? 0;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isErrno(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException)?.code === code;
-}
-
-function modelBinding(modelKey: string | undefined): { readonly modelKey?: string } {
-  return modelKey === undefined ? {} : { modelKey };
 }
 
 function requireSettledFence(fence: DirtyFence | undefined): void {
   if (fence?.kind === "execution" || fence?.kind === "compaction") {
     throw new Error("Pending provider turn requires explicit owner-held reconciliation");
   }
-}
-
-function managedNativeJournalId(handleId: string): string { return createHash("sha256").update(`mono-host-journal-v1\0${handleId}`).digest("hex"); }
-/** Every v5 epoch is a deterministic guarded journal derived from its handle. */
-function currentJournal(conversationId: string, epoch: string): RuntimeNativeJournalRef {
-  const handleId = deriveProviderSessionId(conversationId, epoch); return { handleId, journalId: managedNativeJournalId(handleId) };
 }
 
 function switchCanonicalRecord(existing: LoadedHistoryRecord, state: ModelSwitchState, authority: RuntimeNativeJournalAuthority): NativeTurnHistory {

@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { belongsToLogicalConversation, hasDailyBucketSuffix, stripDailyBucketSuffix } from "../history/conversation-id.js";
-import { logicalConversationIdForFence } from "../durable-history.js";
+import { logicalConversationIdForFence } from "../history/canonical/identity.js";
 import { toolHistoryLogicalConversationId } from "../tool-history-store.js";
 import { bucketConversationId } from "../responder.js";
 
