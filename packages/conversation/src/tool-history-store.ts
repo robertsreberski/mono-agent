@@ -60,7 +60,7 @@ export interface ToolHistoryArtifactReference {
   readonly available: boolean;
 }
 
-export interface ToolHistoryRecordProjection {
+interface ToolHistoryRecordProjection {
   readonly recordId: string;
   readonly conversationId: string;
   readonly runId: string;
@@ -129,18 +129,18 @@ export interface ToolHistorySearchItem {
   readonly untrusted: true;
 }
 
-export interface ToolHistorySearchPage {
+interface ToolHistorySearchPage {
   readonly items: readonly ToolHistorySearchItem[];
   readonly next?: ToolHistorySearchCursor;
 }
 
-export interface ToolHistoryProjectionItem {
+interface ToolHistoryProjectionItem {
   readonly call: ToolHistorySearchItem;
   readonly invocation: ToolHistoryGetResult;
   readonly result?: ToolHistoryGetResult;
 }
 
-export interface ToolHistoryGetInput {
+interface ToolHistoryGetInput {
   readonly logicalConversationId: string;
   readonly currentConversationId: string;
   readonly currentRunId: string;
@@ -151,7 +151,7 @@ export interface ToolHistoryGetInput {
   readonly chunkBytes?: number;
 }
 
-export interface ToolHistoryGetResult {
+interface ToolHistoryGetResult {
   readonly record?: ToolHistoryRecordProjection;
   readonly tombstone?: {
     readonly recordId: string;
@@ -163,7 +163,7 @@ export interface ToolHistoryGetResult {
   readonly untrusted: true;
 }
 
-export interface ToolHistoryStats {
+interface ToolHistoryStats {
   readonly calls: number;
   readonly records: number;
   readonly tombstones: number;
@@ -562,7 +562,7 @@ export function assertToolHistoryWorkerBuildFresh(sourcePath: string, distPath: 
   }
 }
 
-export class ToolHistoryWriterError extends Error {
+class ToolHistoryWriterError extends Error {
   readonly code: string;
 
   constructor(code: string, message: string) {

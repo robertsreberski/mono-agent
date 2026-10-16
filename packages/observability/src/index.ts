@@ -164,3 +164,4 @@ export type {
   UpdateTraceSourceOptions,
 } from "./types.js";
 export * from "./cache-usage.js";
+export { NoopRunRecorder } from "./noop-recorder.js";

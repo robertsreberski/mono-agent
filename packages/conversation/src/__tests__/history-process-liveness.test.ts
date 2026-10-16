@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 
-vi.mock("../process-incarnation.js", () => ({
+vi.mock("../history-process-incarnation.js", () => ({
   readHistoryProcessIncarnation: vi.fn(), historyProcessIncarnationFromJson: vi.fn(),
 }));
-import { readHistoryProcessIncarnation } from "../process-incarnation.js";
+import { readHistoryProcessIncarnation } from "../history-process-incarnation.js";
 import { isProcessAlive } from "../history-process-liveness.js";
 
 afterEach(() => vi.restoreAllMocks());

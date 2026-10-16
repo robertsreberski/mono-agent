@@ -105,16 +105,8 @@ export interface ModelSwitchFence {
   readonly targetEpoch: string;
   readonly payload: ModelSwitchPointer;
 }
-export interface StoredHandoff {
-  readonly version: 1;
-  readonly switchId: string;
-  readonly ownerKey: string;
-  readonly historyBucket: string;
-  /** The sole stored content body. Native events/canonical state contain references only. */
-  readonly artifact: Record<string, unknown>;
-}
 const hashPattern = /^[a-f0-9]{64}$/u;
-export function switchInvalid(): never { throw new TypeError("Invalid model-switch storage contract"); }
+function switchInvalid(): never { throw new TypeError("Invalid model-switch storage contract"); }
 export function switchObject(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value) as object | null)) switchInvalid();
 }
@@ -123,7 +115,7 @@ export function switchKeys(value: Record<string, unknown>, required: readonly st
 }
 function text(value: unknown, max = 512): asserts value is string { if (typeof value !== "string" || !value.length || value.length > max || value.includes("\0")) switchInvalid(); }
 export function switchHash(value: unknown): asserts value is string { if (typeof value !== "string" || !hashPattern.test(value)) switchInvalid(); }
-export function switchNumber(value: unknown): asserts value is number { if (!Number.isSafeInteger(value) || (value as number) < 0) switchInvalid(); }
+function switchNumber(value: unknown): asserts value is number { if (!Number.isSafeInteger(value) || (value as number) < 0) switchInvalid(); }
 export function validateSwitchReference(value: unknown): asserts value is HandoffReference {
   switchObject(value); switchKeys(value, ["id", "hash"]); switchHash(value.id); switchHash(value.hash);
 }
@@ -138,7 +130,7 @@ function validateJournalDescriptor(value: unknown, ownerKey: string, historyBuck
   if (value.sourceTipId !== null) text(value.sourceTipId);
   provenance(value.provenance);
 }
-export function validateSwitchAuthority(value: unknown): asserts value is RuntimeNativeJournalAuthority {
+function validateSwitchAuthority(value: unknown): asserts value is RuntimeNativeJournalAuthority {
   switchObject(value); switchKeys(value, ["version", "rootId", "authorityId", "ownerKey", "historyBucket"]);
   if (value.version !== 1) switchInvalid(); switchHash(value.rootId); switchHash(value.authorityId); text(value.ownerKey); text(value.historyBucket);
 }

@@ -24,10 +24,10 @@ it("a calendar-clock step changes v1 boot evidence but not the same live process
   mockExec((_file, args) => args.includes("kern.boottime") ? `{ sec = ${calendarBoot}, usec = 0 }`
     : args.includes("kern.bootsessionuuid") ? uuid.toUpperCase() : start);
   const before = await import("../process-incarnation.js");
-  const oldBefore = await before.readProcessIncarnation(process.pid, before.PROCESS_INCARNATION_SCHEMA), stableBefore = await before.readHistoryProcessIncarnation(process.pid);
+  const oldBefore = await before.readProcessIncarnation(process.pid, before.PROCESS_INCARNATION_SCHEMA), stableBefore = await (await import("../history-process-incarnation.js")).readHistoryProcessIncarnation(process.pid);
   calendarBoot += 3_600; vi.resetModules(); // A fresh observer after a clock step, not the first observer's cached v1 boot time.
   const after = await import("../process-incarnation.js");
-  const oldAfter = await after.readProcessIncarnation(process.pid, after.PROCESS_INCARNATION_SCHEMA), stableAfter = await after.readHistoryProcessIncarnation(process.pid);
+  const oldAfter = await after.readProcessIncarnation(process.pid, after.PROCESS_INCARNATION_SCHEMA), stableAfter = await (await import("../history-process-incarnation.js")).readHistoryProcessIncarnation(process.pid);
   expect(oldBefore!.bootSessionId).not.toBe(oldAfter!.bootSessionId);
   expect(stableAfter).toEqual(stableBefore);
   expect(stableAfter).toEqual({ schema: "mono-agent.process-incarnation.v2", bootSessionId: `darwin-uuid:${uuid}`, processStartId: "posix-utc-lstart:Mon Jan 5 12:34:56 2026" });
@@ -41,7 +41,7 @@ it("a calendar-clock step changes v1 boot evidence but not the same live process
 
 it("v2 Darwin probes are bounded, UTC-pinned, and never request calendar boottime", async () => {
   mockExec((_file, args) => args.includes("kern.bootsessionuuid") ? uuid : start);
-  const { readHistoryProcessIncarnation } = await import("../process-incarnation.js");
+  const { readHistoryProcessIncarnation } = await import("../history-process-incarnation.js");
   expect(await readHistoryProcessIncarnation(process.pid)).toBeDefined();
   expect(execFile).toHaveBeenCalledTimes(2);
   for (const [, args, options] of vi.mocked(execFile).mock.calls) {
@@ -52,7 +52,7 @@ it("v2 Darwin probes are bounded, UTC-pinned, and never request calendar boottim
 
 it.each(["win32", "freebsd", "openbsd"] as const)("%s history identity is unavailable without spawning a probe", async (name) => {
   platform(name);
-  const { readHistoryProcessIncarnation } = await import("../process-incarnation.js");
+  const { readHistoryProcessIncarnation } = await import("../history-process-incarnation.js");
   expect(await readHistoryProcessIncarnation(process.pid)).toBeUndefined(); expect(execFile).not.toHaveBeenCalled(); expect(fs.readFile).not.toHaveBeenCalled();
 });
 it("Linux reuses boot UUID and process start ticks under the distinct v2 schema", async () => {
@@ -60,7 +60,7 @@ it("Linux reuses boot UUID and process start ticks under the distinct v2 schema"
   vi.mocked(fs.readFile).mockImplementation((async (path: unknown) => String(path).endsWith("boot_id") ? `${uuid}\n`
     : `${process.pid} (fictional process) ${["S", ...Array(18).fill("0"), "123456"].join(" ")}`) as unknown as typeof fs.readFile);
   const api = await import("../process-incarnation.js");
-  const legacy = await api.readProcessIncarnation(process.pid), stable = await api.readHistoryProcessIncarnation(process.pid);
+  const legacy = await api.readProcessIncarnation(process.pid), stable = await (await import("../history-process-incarnation.js")).readHistoryProcessIncarnation(process.pid);
   expect(stable).toEqual({ ...legacy, schema: api.HISTORY_PROCESS_INCARNATION_SCHEMA });
   expect(stable).toMatchObject({ bootSessionId: `linux:${uuid}`, processStartId: "linux-ticks:123456" }); expect(execFile).not.toHaveBeenCalled();
 });
@@ -71,7 +71,7 @@ it("a failed Linux v2 boot read does not poison the unchanged app v1 boot cache"
     return `${process.pid} (fictional) ${["S", ...Array(18).fill("0"), "123456"].join(" ")}`;
   }) as unknown as typeof fs.readFile);
   const api = await import("../process-incarnation.js");
-  expect(await api.readHistoryProcessIncarnation(process.pid)).toBeUndefined(); denied = false;
+  expect(await (await import("../history-process-incarnation.js")).readHistoryProcessIncarnation(process.pid)).toBeUndefined(); denied = false;
   await expect(api.readProcessIncarnation(process.pid)).resolves.toMatchObject({ schema: api.PROCESS_INCARNATION_SCHEMA });
 });
 it.each(["permission", "malformed UUID", "empty start", "placeholder start"])("unavailable %s evidence is not a v2 identity", async (reason) => {
@@ -79,14 +79,14 @@ it.each(["permission", "malformed UUID", "empty start", "placeholder start"])("u
     if (reason === "permission") throw Object.assign(new Error("Fictional denied probe"), { code: "EACCES" });
     return args.includes("kern.bootsessionuuid") ? reason === "malformed UUID" ? "not-a-uuid" : uuid : reason === "placeholder start" ? "-\n" : "";
   });
-  const { readHistoryProcessIncarnation } = await import("../process-incarnation.js");
+  const { readHistoryProcessIncarnation } = await import("../history-process-incarnation.js");
   expect(await readHistoryProcessIncarnation(process.pid)).toBeUndefined();
 });
 it("history parses only v2; v1 and unknown schemas cannot provide mismatch proof", async () => {
   const api = await import("../process-incarnation.js"), value = { schema: api.HISTORY_PROCESS_INCARNATION_SCHEMA, bootSessionId: uuid, processStartId: start };
-  expect(api.historyProcessIncarnationFromJson(value)).toEqual(value);
+  expect((await import("../history-process-incarnation.js")).historyProcessIncarnationFromJson(value)).toEqual(value);
   for (const invalid of [{ ...value, schema: api.PROCESS_INCARNATION_SCHEMA }, { ...value, schema: "unknown" }, { ...value, processStartId: "" }, null, []]) {
-    expect(api.historyProcessIncarnationFromJson(invalid)).toBeUndefined();
+    expect((await import("../history-process-incarnation.js")).historyProcessIncarnationFromJson(invalid)).toBeUndefined();
   }
 });
 
@@ -98,7 +98,7 @@ it.skipIf(hostPlatform !== "darwin")("real Darwin ps changes with TZ, while the 
     .not.toBe(await run("/bin/ps", args, { encoding: "utf8", env: { ...env, TZ: "Pacific/Honolulu" } }));
   let ambientTZ = "UTC";
   mockExec((file, argv, options) => run(file, argv, { ...options, env: { ...env, TZ: ambientTZ, ...options.env } }));
-  const { readHistoryProcessIncarnation } = await import("../process-incarnation.js");
+  const { readHistoryProcessIncarnation } = await import("../history-process-incarnation.js");
   const first = await readHistoryProcessIncarnation(process.pid); ambientTZ = "Pacific/Honolulu";
   expect(first).toBeDefined(); expect(await readHistoryProcessIncarnation(process.pid)).toEqual(first);
 });

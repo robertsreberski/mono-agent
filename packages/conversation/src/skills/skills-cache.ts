@@ -7,15 +7,15 @@ import { loadSelectedSkills, type LoadedSkillContext, type LoadSelectedSkillsInp
  * Underlying loader used to populate the cache. Defaults to {@link loadSelectedSkills};
  * injectable for tests to observe content reads.
  */
-export type SkillsLoader = (input: LoadSelectedSkillsInput) => Promise<LoadedSkillContext>;
+type SkillsLoader = (input: LoadSelectedSkillsInput) => Promise<LoadedSkillContext>;
 
 /**
  * Cheap stat used to validate cache freshness. Defaults to `node:fs/promises` stat;
  * injectable for tests.
  */
-export type SkillsStat = (path: string) => Promise<Stats>;
+type SkillsStat = (path: string) => Promise<Stats>;
 
-export interface CreateSkillsCacheOptions {
+interface CreateSkillsCacheOptions {
   readonly loader?: SkillsLoader;
   readonly stat?: SkillsStat;
 }

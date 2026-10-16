@@ -45,7 +45,7 @@ import type {
 } from "./types.js";
 import { assertSessionModelKey, ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
 import { currentHistoryProcessIncarnation, historyOwnerIncarnation, historyOwnerLiveness } from "./history-process-liveness.js";
-import { historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./process-incarnation.js";
+import { historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./history-process-incarnation.js";
 
 const LEGACY_STORE_VERSION = 1;
 const PROVIDER_STORE_VERSION = 2;

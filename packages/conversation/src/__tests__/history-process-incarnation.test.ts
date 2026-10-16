@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
 import * as incarnation from "../process-incarnation.js";
+import * as historyIncarnation from "../history-process-incarnation.js";
 import { currentHistoryProcessIncarnation, historyOwnerLiveness } from "../history-process-liveness.js";
 
 type Owner = { release(): Promise<void> };
@@ -56,14 +57,14 @@ function emulateAlive(pid: number) {
 }
 
 it("captures this process once, sharing the in-flight lookup", async () => {
-  const capture = vi.spyOn(incarnation, "readHistoryProcessIncarnation");
+  const capture = vi.spyOn(historyIncarnation, "readHistoryProcessIncarnation");
   const values = await Promise.all(Array.from({ length: 8 }, () => currentHistoryProcessIncarnation()));
   expect(capture).toHaveBeenCalledTimes(1); expect(values[0]).toBeDefined();
   for (const value of values) expect(value).toBe(values[0]);
 });
 it("resolves a foreign incarnation once per owner per wait, polls kill(0), and refreshes for a new wait/owner", async () => {
   const expected = (await currentHistoryProcessIncarnation())!, pid = 1_073_741_823;
-  const kill = emulateAlive(pid), read = vi.spyOn(incarnation, "readHistoryProcessIncarnation").mockResolvedValue(expected), live = historyOwnerLiveness();
+  const kill = emulateAlive(pid), read = vi.spyOn(historyIncarnation, "readHistoryProcessIncarnation").mockResolvedValue(expected), live = historyOwnerLiveness();
   for (let index = 0; index < 8; index++) expect(await live(pid, expected)).toBe(true);
   expect(read).toHaveBeenCalledTimes(1); expect(kill).toHaveBeenCalledTimes(16);
   const next = { ...expected, processStartId: "fictional-next-birth" }; read.mockResolvedValue(next);
@@ -104,13 +105,13 @@ for (const kind of ["logical", "exact"] as const) {
       if (target !== pid || signal !== 0) return originalKill(target, signal);
       if (++polls === 8) controller.abort(); return true;
     });
-    const read = vi.spyOn(incarnation, "readHistoryProcessIncarnation").mockResolvedValue(f.current);
+    const read = vi.spyOn(historyIncarnation, "readHistoryProcessIncarnation").mockResolvedValue(f.current);
     await expect(acquire(f, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
     expect(polls).toBe(8); expect(read).toHaveBeenCalledTimes(1); expect(claim(f.path, kind)?.token).toBe("a".repeat(32));
   });
   it.each(["permission", "unavailable"])(`${kind} keeps a foreign owner live when incarnation lookup is %s`, async (reason) => {
     const f = await fixture(), pid = 1_073_741_823; seedClaim(f.path, kind, pid, f.stale); emulateAlive(pid);
-    const read = vi.spyOn(incarnation, "readHistoryProcessIncarnation");
+    const read = vi.spyOn(historyIncarnation, "readHistoryProcessIncarnation");
     if (reason === "permission") read.mockRejectedValue(Object.assign(new Error("Fictional permission failure"), { code: "EACCES" })); else read.mockResolvedValue(undefined);
     await expect(acquire(f)).rejects.toMatchObject({ code: "ERR_HARNESS_WRITER_BUSY" }); expect(claim(f.path, kind)?.token).toBe("a".repeat(32));
     expect(read).toHaveBeenCalledTimes(1);
@@ -139,7 +140,7 @@ it("reclaims the legacy marker left by a stopped old writer only after its PID d
 });
 it("unreadable foreign incarnation keeps a marker protected", async () => {
   const f = await fixture(), pid = 1_073_741_823, path = await marker(f.root, pid, f.stale), before = await fs.readFile(path); emulateAlive(pid);
-  vi.spyOn(incarnation, "readHistoryProcessIncarnation").mockRejectedValue(Object.assign(new Error("Fictional denied identity"), { code: "EPERM" }));
+  vi.spyOn(historyIncarnation, "readHistoryProcessIncarnation").mockRejectedValue(Object.assign(new Error("Fictional denied identity"), { code: "EPERM" }));
   await f.store.stats(); expect(await fs.readFile(path)).toEqual(before);
 });
 it("unparseable or filename-mismatched marker contents supply no incarnation proof", async () => {
@@ -183,7 +184,7 @@ it("SIGKILL plus simulated PID reuse recovers both claims and marker without rep
   // Model the OS assigning that exact PID to a different incarnation. Persisted
   // owner bytes remain genuine, including the real killed child's incarnation.
   emulateAlive(child.pid!);
-  const read = vi.spyOn(incarnation, "readHistoryProcessIncarnation").mockResolvedValue({ ...old.incarnation, processStartId: "fictional-reused-birth" });
+  const read = vi.spyOn(historyIncarnation, "readHistoryProcessIncarnation").mockResolvedValue({ ...old.incarnation, processStartId: "fictional-reused-birth" });
   expect((await fs.readdir(join(f.root, ".pending-turns"))).length).toBeGreaterThan(0);
   await f.store.reset(id);
   await expect(fs.lstat(join(f.root, ".locks", names[0]!))).rejects.toMatchObject({ code: "ENOENT" });

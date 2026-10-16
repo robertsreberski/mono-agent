@@ -9,7 +9,7 @@ export const NATIVE_HISTORY_ROOT_FILE = ".native-history-root.json";
 export const NATIVE_HISTORY_ROOT_TEMP = /^\.native-history-root\.[a-f0-9]{32}\.tmp$/u;
 export const MAX_NATIVE_HISTORY_ROOT_BYTES = 1024;
 interface Identity { readonly dev: number; readonly ino: number }
-export interface NativeHistoryRootMarker { readonly version: 1; readonly kind: "native-history";  readonly rootId: string }
+interface NativeHistoryRootMarker { readonly version: 1; readonly kind: "native-history";  readonly rootId: string }
 interface Owner {
   assertOwned(): Promise<void>;
   reserve(bytes: number): Promise<void>;

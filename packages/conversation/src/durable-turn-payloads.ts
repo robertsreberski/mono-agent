@@ -8,8 +8,8 @@ import {
 } from "./durable-turn-contract.js";
 import type { PendingTurnIdentity, PendingTurnPayload, PendingTurnPointer } from "./durable-turn-contract.js";
 
-export interface PendingDirectoryIdentity { readonly dev: number; readonly ino: number }
-export interface PendingPayloadCoordinates { readonly conversationKey: string; readonly runIdDigest: string }
+interface PendingDirectoryIdentity { readonly dev: number; readonly ino: number }
+interface PendingPayloadCoordinates { readonly conversationKey: string; readonly runIdDigest: string }
 export interface PendingPayloadEntry extends PendingPayloadCoordinates {
   readonly generation: string;
   readonly name: string;

@@ -88,7 +88,7 @@ export function buildTurnContextEvent(
  * < precedingCount` (the "we clipped it" signal) does not already give. The
  * host-only `sender.id` never appears here either.
  */
-export interface SpeakerTurnContextFields {
+interface SpeakerTurnContextFields {
   readonly speaker?: string;
   readonly precedingCount?: number;
   readonly precedingRendered?: number;

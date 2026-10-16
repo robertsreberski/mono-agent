@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
-import { readHistoryProcessIncarnation, HISTORY_PROCESS_INCARNATION_SCHEMA } from "../process-incarnation.js";
+import { readHistoryProcessIncarnation } from "../history-process-incarnation.js";
+import { HISTORY_PROCESS_INCARNATION_SCHEMA } from "../process-incarnation.js";
 import { currentHistoryProcessIncarnation, historyOwnerLiveness } from "../history-process-liveness.js";
 
-vi.mock("../process-incarnation.js", async (original) => ({
-  ...await original<typeof import("../process-incarnation.js")>(),
+vi.mock("../history-process-incarnation.js", async (original) => ({
+  ...await original<typeof import("../history-process-incarnation.js")>(),
   readHistoryProcessIncarnation: vi.fn(async () => undefined),
 }));
 it("unavailable self identity respects the cooldown, emits PID-only evidence and never steals a live PID", async () => {

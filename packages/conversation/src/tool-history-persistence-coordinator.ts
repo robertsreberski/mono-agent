@@ -2,7 +2,7 @@ export type ToolHistoryRequestSettlement<T> =
   | { readonly status: "fulfilled"; readonly value: T }
   | { readonly status: "rejected"; readonly error: unknown };
 
-export type ToolHistoryForegroundSettlement<T> =
+type ToolHistoryForegroundSettlement<T> =
   | { readonly status: "settled"; readonly settlement: ToolHistoryRequestSettlement<T> }
   | { readonly status: "deferred" };
 

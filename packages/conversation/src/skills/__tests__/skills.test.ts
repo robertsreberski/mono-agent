@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadSelectedSkills, SkillActivationError } from "../index.js";
+import { loadSelectedSkills, SkillActivationError } from "../skills.js";
 
 const tempDirs: string[] = [];
 async function createSkillsRoot(): Promise<string> {

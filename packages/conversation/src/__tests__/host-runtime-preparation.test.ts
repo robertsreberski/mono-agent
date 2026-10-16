@@ -8,7 +8,7 @@ import type { MonoRuntimeLike, RuntimePreparedHandoff } from "@mono-agent/turn/h
 import { preparedHostFixture } from "../../../turn/src/__tests__/fixtures/prepared-host-runtime.mjs";
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "../harness/runtime-execution.js";
 import { UncommittedTurnCollector } from "../harness/turn-continuity.js";
-import { buildAgentContext } from "../context/index.js";
+import { buildAgentContext } from "../context/context-builder.js";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { createSemaphore } from "../semaphore.js";
 

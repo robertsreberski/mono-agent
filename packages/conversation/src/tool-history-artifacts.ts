@@ -47,7 +47,7 @@ export function toolHistoryArtifactAvailable(
   }
 }
 
-export interface ToolHistoryArtifactSinkInput {
+interface ToolHistoryArtifactSinkInput {
   readonly filename: string;
   readonly buffer: Buffer;
   readonly toolName: string;

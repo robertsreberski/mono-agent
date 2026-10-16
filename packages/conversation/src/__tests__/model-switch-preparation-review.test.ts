@@ -11,7 +11,7 @@ import type { ConversationHistoryTurnInspection } from "../types.js";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
 import { createModelSwitchState } from "../model-switch-billing.js";
-import { buildAgentContext } from "../context/index.js";
+import { buildAgentContext } from "../context/context-builder.js";
 import { UncommittedTurnCollector } from "../harness/turn-continuity.js";
 import { prepareHarnessRuntime } from "../harness/runtime-execution.js";
 import {

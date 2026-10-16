@@ -17,7 +17,7 @@ import { modelReferenceKey } from "@mono-agent/turn/host/config";
 import { type RuntimeResult } from "@mono-agent/turn/host/types";
 
 import type { BuiltAgentContext } from "./context/index.js";
-import { NoopRunRecorder } from "./recorder.js";
+import { NoopRunRecorder } from "@mono-agent/observability";
 import { createLiveSessionManager } from "./live-session.js";
 import type { LiveSessionManager, LiveSessionRunLifecycle } from "./live-session.js";
 import { createLiveInputMailbox } from "./live-input.js";

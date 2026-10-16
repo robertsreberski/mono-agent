@@ -9,7 +9,8 @@ import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
-import type { ConversationHistoryStore, HistoryMessage, PreparedHistoryAppend } from "../index.js";
+import type { ConversationHistoryStore, HistoryMessage } from "../index.js";
+import type { PreparedHistoryAppend } from "../types.js";
 import {
   FAILED_TURN_HISTORY_KEY_PREFIX,
   TURN_CONTINUITY_MAX_BYTES,

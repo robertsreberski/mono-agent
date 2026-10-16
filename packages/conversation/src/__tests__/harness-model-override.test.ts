@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
 import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
-import type { AgentHarnessRequest, AgentHarnessSessionEvent, AgentHarnessSessionOptions } from "../index.js";
+import type { AgentHarnessRequest } from "../index.js";
+import type { AgentHarnessSessionEvent, AgentHarnessSessionOptions } from "../types.js";
 
 const tempDirs: string[] = [];
 const defaultModel = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;

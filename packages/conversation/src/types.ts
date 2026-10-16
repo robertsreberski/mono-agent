@@ -1,3 +1,4 @@
+import type { SessionContextCapabilities } from "./harness/session-context.js";
 import type { ManagedProviderSessionPreparation } from "./durable-history.js";
 import type { PendingTurnInput, PendingTurnCandidate, PendingTurnPayload } from "./durable-turn-contract.js";
 import type {
@@ -579,7 +580,7 @@ export interface AgentHarnessOptions {
    * runs after context assembly. Hosts must answer with the same predicate that
    * injects the schema — guidance for an absent capability is worse than none.
    */
-  readonly subagentInstancesFor?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => Promise<NonNullable<import("./harness/session-context.js").SessionContextCapabilities["subagentInstances"]>>;
+  readonly subagentInstancesFor?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => Promise<NonNullable<SessionContextCapabilities["subagentInstances"]>>;
   /** App-verified attribution for the Session context; metadata alone is never trusted. */
   readonly verifiedPeerCallerFor?: (input: { readonly request: AgentHarnessRequest }) => Promise<string | undefined>;
   readonly backgroundSubagentsAvailable?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => boolean;

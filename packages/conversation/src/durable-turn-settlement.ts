@@ -33,7 +33,7 @@ function isLegacyFailedCompactionNoop(payload: PendingTurnPayload, result: Match
 }
 
 /** Defense-in-depth over the storage-only native matcher. No partial operation adoption. */
-export function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extract<RuntimeSessionTurnReconciliationResult, { status: "matched" }>): void {
+function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extract<RuntimeSessionTurnReconciliationResult, { status: "matched" }>): void {
   const descriptor = pendingTurnDescriptor(payload);
   if (result.turnId !== descriptor.turnId || result.handleId !== descriptor.handleId) throw new Error("Native turn identity mismatch");
   for (const key of ["kind", "ownerKey", "historyBucket", "turnId", "handleId", "baseRevision"] as const) {
@@ -84,7 +84,7 @@ export function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extrac
     || result.seal.outcome !== "completed") && !isLegacyFailedCompactionNoop(payload, result)) throw new Error("Native completion is not sealed");
 }
 
-export interface TurnSettlement {
+interface TurnSettlement {
   readonly outcome: DurableTurnOutcome;
   readonly candidate?: PendingTurnCandidate;
   readonly messages: readonly HistoryMessage[];

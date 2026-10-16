@@ -39,7 +39,7 @@ export interface RuntimeSessionSnapshot {
   readonly busy: boolean;
 }
 
-export interface RuntimeSessionStoreOptions {
+interface RuntimeSessionStoreOptions {
   readonly idleTimeoutMs: number;
   readonly onEvict?: (record: RuntimeSessionRecord, reason: RuntimeSessionEvictReason) => void | Promise<void>;
   readonly now?: () => number;
@@ -84,7 +84,7 @@ export interface RuntimeSessionStore {
   disposeAll(): Promise<void>;
 }
 
-export interface RuntimeSessionStoreWithSnapshot extends RuntimeSessionStore {
+interface RuntimeSessionStoreWithSnapshot extends RuntimeSessionStore {
   release(conversationId: string, record: RuntimeSessionRecord): boolean;
   list(): readonly RuntimeSessionSnapshot[];
 }

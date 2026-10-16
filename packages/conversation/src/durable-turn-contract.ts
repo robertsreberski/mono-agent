@@ -11,9 +11,8 @@ export class DurableTurnAlreadyCommittedError extends Error {
 /** Private P2b wire contracts; not execution or authority to recover a turn. */
 export const PENDING_TURN_DIRECTORY = ".pending-turns";
 export const MAX_PENDING_TURN_BYTES = 16 * 1024 * 1024;
-export const MAX_TURN_FENCE_BYTES = 1024;
-export const PENDING_GENERATION_PATTERN = /^[a-f0-9]{32}$/u;
-export const PENDING_FILE_PATTERN = /^([a-f0-9]{64})\.([a-f0-9]{64})\.([a-f0-9]{32})\.json$/u;
+const MAX_TURN_FENCE_BYTES = 1024;
+const PENDING_GENERATION_PATTERN = /^[a-f0-9]{32}$/u;
 export type DurableTurnOutcome = "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface PendingTurnIdentity {
@@ -154,7 +153,7 @@ export function createPendingLiveInput(source: { readonly id: string; readonly p
   return kind === "wake" ? { kind: "wake", id: source.id, placement: "live", requestDigest }
     : { kind: "live", id: source.id, placement: "live", requestDigest, persistText: source.persistText, receivedAt: source.receivedAt };
 }
-export function createPendingTurnCandidate(source: PendingTurnCandidate): PendingTurnCandidate {
+function createPendingTurnCandidate(source: PendingTurnCandidate): PendingTurnCandidate {
   return { outcome: source.outcome, text: source.text, timestamp: source.timestamp, error: source.error, failureKind: source.failureKind,
     ...(source.silent === undefined ? {} : { silent: source.silent }),
     ...(source.consumedInputIds === undefined ? {} : { consumedInputIds: [...source.consumedInputIds] }),

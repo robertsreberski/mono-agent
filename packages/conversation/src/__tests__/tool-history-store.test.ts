@@ -72,6 +72,7 @@ beforeAll(async () => {
   ]);
   const sourceNames = [
     "process-incarnation",
+    "history-process-incarnation",
     "history-process-liveness",
     "tool-history-artifacts",
     "tool-history-busy-wait",

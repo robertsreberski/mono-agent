@@ -9,7 +9,7 @@ import type { HandoffReference, ModelSwitchFence, ModelSwitchPointer, ModelSwitc
 import { acceptHandoffReference, admitSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage, finishSummaryAttempt } from "./model-switch-billing.js";
 import type { SummaryAttempt } from "./durable-model-switch-contract.js";
 
-export interface ModelSwitchDirectoryIdentity { readonly dev: number; readonly ino: number }
+interface ModelSwitchDirectoryIdentity { readonly dev: number; readonly ino: number }
 export interface ModelSwitchStorageOwner {
   readonly ownerKey: string;
   readonly historyBucket: string;
@@ -25,7 +25,7 @@ export interface ModelSwitchStorageOwner {
   adjustReservation(bytes: number): Promise<void>;
   onPhase?(phase: string): Promise<void>;
 }
-export interface ModelSwitchArtifact {
+interface ModelSwitchArtifact {
   readonly version: 1;
   readonly switchId: string;
   readonly ownerKey: string;
@@ -34,7 +34,7 @@ export interface ModelSwitchArtifact {
   readonly artifact: Record<string, unknown>;
 }
 /** @internal Exact publication framing shared with native selection preflight. */
-export function serializeModelSwitchArtifact(state: ModelSwitchState, artifact: Record<string, unknown>, attemptId: string | null): Buffer {
+function serializeModelSwitchArtifact(state: ModelSwitchState, artifact: Record<string, unknown>, attemptId: string | null): Buffer {
   const envelope: ModelSwitchArtifact = { version: 1, switchId: state.identity.switchId, ownerKey: state.identity.ownerKey,
     historyBucket: state.identity.historyBucket, attemptId, artifact };
   return boundedSwitchBytes(envelope, MAX_MODEL_SWITCH_BYTES);

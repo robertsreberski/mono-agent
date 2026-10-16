@@ -14,7 +14,7 @@ export interface PreparedSwitchProducer {
   produceHandoffSummary(input: RuntimeHandoffProducerRequest): Promise<RuntimeHandoffProducerResult>;
   close(): Promise<void>;
 }
-export type PreparedSwitchResult =
+type PreparedSwitchResult =
   | { readonly status: "pending"; readonly switchId: string }
   | { readonly status: "ready"; readonly switchId: string; readonly artifact: HandoffReference; readonly modelKey: string }
   | { readonly status: "budget_failure"; readonly reason: string }
