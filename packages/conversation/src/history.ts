@@ -1,3 +1,4 @@
+import { belongsToLogicalConversation } from "./history/conversation-id.js";
 import type { HistoryMessage } from "./context/index.js";
 
 import type { ConversationHistoryStore, InMemoryHistoryStoreOptions } from "./history/contracts.js";
@@ -48,13 +49,4 @@ function normalizeConversationId(conversationId: string): string {
     throw new TypeError("conversationId must be a non-empty string.");
   }
   return conversationId.trim();
-}
-
-function belongsToLogicalConversation(conversationId: string, logicalConversationId: string): boolean {
-  return conversationId === logicalConversationId
-    || new RegExp(`^${escapeRegExp(logicalConversationId)}#\\d{4}-\\d{2}-\\d{2}$`, "u").test(conversationId);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

@@ -1,3 +1,4 @@
+import { stripDailyBucketSuffix, hasDailyBucketSuffix } from "./history/conversation-id.js";
 import type { AgentHarness, AgentHarnessFailure, AgentHarnessSessionBoundary } from "./harness/contracts.js";
 import { AgentHarnessError } from "./harness/error.js";
 import type {
@@ -208,7 +209,7 @@ export function createAgentResponder(options: {
             // A continuation carries an immutable origin history identity. If
             // that identity already has an explicit daily bucket, preserve it
             // even when synthesis runs on a later calendar day.
-            const activeBucket = request.continuation !== undefined && hasDailyBucket(request.conversationId)
+            const activeBucket = request.continuation !== undefined && hasDailyBucketSuffix(request.conversationId)
               ? request.conversationId
               : bucket(request.conversationId);
             activeBucketByBaseConversation.set(serializationKey, activeBucket);
@@ -1062,23 +1063,13 @@ export function bucketConversationId(
   if (rollover !== "daily") {
     return conversationId;
   }
-  const baseConversationId = stripDailyBucket(conversationId);
+  const baseConversationId = stripDailyBucketSuffix(conversationId);
   const suffix = `#${formatRolloverDay(now(), timezone)}`;
   return baseConversationId.endsWith(suffix) ? baseConversationId : `${baseConversationId}${suffix}`;
 }
 
-const DAILY_BUCKET_SUFFIX_RE = /#\d{4}-\d{2}-\d{2}$/u;
-
-function stripDailyBucket(conversationId: string): string {
-  return conversationId.replace(DAILY_BUCKET_SUFFIX_RE, "");
-}
-
-function hasDailyBucket(conversationId: string): boolean {
-  return DAILY_BUCKET_SUFFIX_RE.test(conversationId);
-}
-
 function responseSerializationKey(conversationId: string, rollover: SessionRollover | undefined): string {
-  return rollover === "daily" ? stripDailyBucket(conversationId) : conversationId;
+  return rollover === "daily" ? stripDailyBucketSuffix(conversationId) : conversationId;
 }
 
 function rolloverBoundaryForRequest(input: {
@@ -1091,7 +1082,7 @@ function rolloverBoundaryForRequest(input: {
   if (input.rollover !== "daily") {
     return undefined;
   }
-  const baseConversationId = stripDailyBucket(input.conversationId);
+  const baseConversationId = stripDailyBucketSuffix(input.conversationId);
   const previousConversationId = input.lastBucketByBaseConversation.get(baseConversationId);
   input.lastBucketByBaseConversation.set(baseConversationId, input.bucketedConversationId);
   if (previousConversationId === undefined || previousConversationId === input.bucketedConversationId) {

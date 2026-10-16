@@ -1,3 +1,4 @@
+import { stripDailyBucketSuffix } from "./history/conversation-id.js";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { lstat, readdir, stat } from "node:fs/promises";
@@ -976,14 +977,12 @@ export function toolHistoryRecordId(
   return `sth1_${digest}`;
 }
 
-const DAILY_ROLLOVER_SUFFIX = /#\d{4}-\d{2}-\d{2}$/u;
-
 /** Normalize only configured daily rollover buckets; natural '#' ids remain opaque otherwise. */
 export function toolHistoryLogicalConversationId(
   conversationId: string,
   rollover: "none" | "daily" | undefined,
 ): string {
-  return rollover === "daily" ? conversationId.replace(DAILY_ROLLOVER_SUFFIX, "") : conversationId;
+  return rollover === "daily" ? stripDailyBucketSuffix(conversationId) : conversationId;
 }
 
 function validateDatabase(database: DatabaseSync): void {

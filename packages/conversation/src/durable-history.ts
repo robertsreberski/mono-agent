@@ -1,3 +1,4 @@
+import { belongsToLogicalConversation, stripDailyBucketSuffix } from "./history/conversation-id.js";
 import type { NativeHistoryAuthorityLease, ManagedModelSwitchStorageLease, ManagedProviderSessionPreparation, CurrentJournalPresence, ProviderSessionPreparationSnapshot, ModelSwitchStorageSupport, ModelSwitchStorageSource } from "./history/contracts.js";
 import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, RuntimeNativeEpochContext, RuntimeNativeJournalRef } from "@mono-agent/turn/host/types";
 import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
@@ -3730,14 +3731,11 @@ function normalizeConversationId(conversationId: string): string {
   return normalized;
 }
 
-function belongsToLogicalConversation(conversationId: string, logicalConversationId: string): boolean {
-  return conversationId === logicalConversationId
-    || new RegExp(`^${escapeRegExp(logicalConversationId)}#\\d{4}-\\d{2}-\\d{2}$`, "u").test(conversationId);
-}
+
 
 export function logicalConversationIdForFence(conversationId: string): string {
   conversationId = normalizeConversationId(conversationId);
-  const logicalId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
+  const logicalId = stripDailyBucketSuffix(conversationId);
   return logicalId.length === 0 ? conversationId : logicalId;
 }
 
@@ -3745,9 +3743,7 @@ function requiresExactConversationClaim(conversationId: string): boolean {
   return logicalConversationIdForFence(conversationId) !== conversationId;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
+
 
 function normalizeRunId(runId: string): string {
   if (typeof runId !== "string") throw new TypeError("runId must be a non-empty string.");

@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
@@ -71,6 +71,7 @@ beforeAll(async () => {
     symlink(fileURLToPath(new URL("../../../turn", import.meta.url)), join(fixtureScope, "turn"), "dir"),
   ]);
   const sourceNames = [
+    "history/conversation-id",
     "process-incarnation",
     "history-process-incarnation",
     "history-process-liveness",
@@ -85,6 +86,7 @@ beforeAll(async () => {
   await Promise.all(sourceNames.map(async (name) => {
     const source = await readFile(new URL(`../${name}.ts`, import.meta.url), "utf8");
     const compiled = transpileModule(source, { compilerOptions }).outputText;
+    await mkdir(dirname(join(sourceFixtureRoot, `${name}.js`)), { recursive: true });
     await writeFile(join(sourceFixtureRoot, `${name}.js`), compiled);
   }));
   await writeFile(join(sourceFixtureRoot, "package.json"), '{"type":"module"}\n');
