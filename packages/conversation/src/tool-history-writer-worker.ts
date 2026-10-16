@@ -1,73 +1,44 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
-  chmodSync,
-  closeSync,
-  constants as fsConstants,
-  existsSync,
-  fchmodSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  unlinkSync,
+    chmodSync,
+    closeSync,
+    existsSync,
+    fchmodSync,
+    constants as fsConstants,
+    fsyncSync,
+    lstatSync,
+    mkdirSync,
+    openSync,
+    readdirSync,
+    unlinkSync,
 } from "node:fs";
 import { join, parse, resolve, sep } from "node:path";
-import { parentPort, workerData } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
+import { parentPort, workerData } from "node:worker_threads";
+import type { LifecyclePayload, WorkerInput, WorkerRequest } from "./tool-history/contracts.js";
 
 import {
-  isKnownArtifactFailureKind,
-  sanitizeVisibleText,
+    isKnownArtifactFailureKind,
+    sanitizeVisibleText,
 } from "@mono-agent/observability";
 import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, RuntimeToolLifecycleTerminalState } from "@mono-agent/turn/host/types";
 
 import { isProcessAlive } from "./history-process-liveness.js";
-import { continueToolHistoryOperationTail } from "./tool-history-worker-queue.js";
+import {
+    canonicalToolArtifactRoot,
+    toolHistoryArtifactAvailable,
+    validatedToolHistoryArtifactPath,
+} from "./tool-history-artifacts.js";
 import { isToolHistorySqliteBusy, runWithinToolHistoryBusyDeadline } from "./tool-history-busy-wait.js";
 import {
-  canonicalToolArtifactRoot,
-  toolHistoryArtifactAvailable,
-  validatedToolHistoryArtifactPath,
-} from "./tool-history-artifacts.js";
-import {
-  TOOL_HISTORY_APPLICATION_ID,
-  TOOL_HISTORY_DATABASE,
-  TOOL_HISTORY_DIRECTORY,
-  TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS,
-  TOOL_HISTORY_OWNER_DATABASE,
-  TOOL_HISTORY_SCHEMA,
-  TOOL_HISTORY_USER_VERSION,
-  toolHistoryRecordId,
-  type ToolHistoryRetentionOptions,
-  type ToolHistoryRunBinding,
-} from "./tool-history-store.js";
-import {
-  boundedToolHistoryPayload,
-  TOOL_HISTORY_ARGUMENT_MAX_BYTES,
-  TOOL_HISTORY_RESULT_MAX_BYTES,
-  type BoundedToolHistoryPayload,
+    boundedToolHistoryPayload,
+    TOOL_HISTORY_ARGUMENT_MAX_BYTES,
+    TOOL_HISTORY_RESULT_MAX_BYTES,
+    type BoundedToolHistoryPayload,
 } from "./tool-history-payload.js";
-
-interface WorkerInput {
-  readonly root: string;
-  readonly artifactRoot: string;
-  readonly artifactRootAliases: readonly string[];
-  readonly retention?: ToolHistoryRetentionOptions;
-  readonly ownerAcquireCeilingMs?: number;
-}
-
-interface WorkerRequest {
-  readonly id: number;
-  readonly operation: string;
-  readonly payload?: unknown;
-}
-
-interface LifecyclePayload {
-  readonly binding: ToolHistoryRunBinding;
-  readonly event: RuntimeToolLifecycleEvent;
-}
+import { continueToolHistoryOperationTail } from "./tool-history-worker-queue.js";
+import { TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_SCHEMA, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRetentionOptions, type ToolHistoryRunBinding } from "./tool-history/contracts.js";
 
 const DEFAULT_RETENTION: Required<ToolHistoryRetentionOptions> = {
   maxCompletedCalls: 100_000,

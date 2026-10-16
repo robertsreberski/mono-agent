@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { belongsToLogicalConversation, hasDailyBucketSuffix, stripDailyBucketSuffix } from "../history/conversation-id.js";
 import { logicalConversationIdForFence } from "../history/canonical/identity.js";
-import { toolHistoryLogicalConversationId } from "../tool-history-store.js";
+import { toolHistoryLogicalConversationId } from "../tool-history/contracts.js";
 import { bucketConversationId } from "../responder.js";
 
 it("preserves anchored membership for opaque bases and one lexical daily generation", () => {

@@ -14,26 +14,11 @@ export {
 export type { ProcessIncarnation } from "./process-incarnation.js";
 export { isProcessAlive } from "./history-process-liveness.js";
 export { createToolHistoryArtifactSink } from "./tool-history-artifacts.js";
-export {
-  acquireToolHistoryWriter,
-  ToolHistoryReader,
-  ToolHistoryWriter,
-  toolHistoryDiskUsage,
-  toolHistoryLogicalConversationId,
-  TOOL_HISTORY_APPLICATION_ID,
-  TOOL_HISTORY_DATABASE,
-  TOOL_HISTORY_DIRECTORY,
-  TOOL_HISTORY_OWNER_DATABASE,
-  TOOL_HISTORY_USER_VERSION,
-} from "./tool-history-store.js";
-export type {
-  ToolHistoryRunBinding,
-  ToolHistorySearchInput,
-  ToolHistorySearchCursor,
-  ToolHistorySearchItem,
-  ToolHistoryWriterHandle,
-  ToolHistoryWriterOptions,
-} from "./tool-history-store.js";
+export { acquireToolHistoryWriter, ToolHistoryWriter } from "./tool-history/writer.js";
+export { ToolHistoryReader, toolHistoryDiskUsage } from "./tool-history/reader.js";
+export { toolHistoryLogicalConversationId, TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_USER_VERSION } from "./tool-history/contracts.js";
+export type { ToolHistoryRunBinding, ToolHistorySearchInput, ToolHistorySearchCursor, ToolHistorySearchItem, ToolHistoryWriterOptions } from "./tool-history/contracts.js";
+export type { ToolHistoryWriterHandle } from "./tool-history/writer.js";
 export { CONVERSATION_HISTORY_VERSION_MAX_BYTES } from "./sessions.js";
 export { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "./mcp-server-transport.js";
 export { AgentHarnessFailureError, createAgentResponder } from "./responder.js";

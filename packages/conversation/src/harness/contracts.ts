@@ -6,7 +6,8 @@ import type { SandboxPolicy } from "@mono-agent/turn/host/types";
 
 import type { BuiltAgentContext } from "../context/index.js";
 import type { SkillsCache } from "../skills/index.js";
-import type { ToolHistoryReader, ToolHistoryWriter } from "../tool-history-store.js";
+import type { ToolHistoryReader } from "../tool-history/reader.js";
+import type { ToolHistoryWriter } from "../tool-history/writer.js";
 import type { ToolPolicy } from "../tool-policy/index.js";
 
 import type { ConversationHistoryStore } from "../history/contracts.js";

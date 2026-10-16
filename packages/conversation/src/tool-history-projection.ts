@@ -1,4 +1,4 @@
-import { ToolHistoryReader } from "./tool-history-store.js";
+import { ToolHistoryReader } from "./tool-history/reader.js";
 
 const PROJECTION_MAX_BYTES = 64 * 1024;
 const PROJECTION_HEADER_LINES = [

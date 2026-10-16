@@ -10,21 +10,9 @@ import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { createDurableHistoryStore } from "../durable-history.js";
-import {
-  acquireToolHistoryWriter,
-  assertToolHistoryWorkerBuildFresh,
-  ToolHistoryReader,
-  ToolHistoryWriter,
-  TOOL_HISTORY_DATABASE,
-  TOOL_HISTORY_DIRECTORY,
-  TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS,
-  TOOL_HISTORY_OWNER_DATABASE,
-  TOOL_HISTORY_PERSISTENCE_CEILING_MS,
-  TOOL_HISTORY_USER_VERSION,
-  toolHistoryRecordId,
-  type ToolHistoryRunBinding,
-  type ToolHistoryWriterOptions,
-} from "../tool-history-store.js";
+import { acquireToolHistoryWriter, assertToolHistoryWorkerBuildFresh, ToolHistoryWriter } from "../tool-history/writer.js";
+import { ToolHistoryReader } from "../tool-history/reader.js";
+import { TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_PERSISTENCE_CEILING_MS, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRunBinding, type ToolHistoryWriterOptions } from "../tool-history/contracts.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
 const tempDirs: string[] = [];
@@ -78,7 +66,11 @@ beforeAll(async () => {
     "tool-history-artifacts",
     "tool-history-busy-wait",
     "tool-history-persistence-coordinator",
-    "tool-history-store",
+    "tool-history/contracts",
+    "tool-history/reader",
+    "tool-history/writer",
+    "tool-history/paths",
+    "tool-history/errors",
     "tool-history-payload",
     "tool-history-worker-queue",
     "tool-history-writer-worker",
@@ -90,7 +82,7 @@ beforeAll(async () => {
     await writeFile(join(sourceFixtureRoot, `${name}.js`), compiled);
   }));
   await writeFile(join(sourceFixtureRoot, "package.json"), '{"type":"module"}\n');
-  sourceFixtureModuleUrl = pathToFileURL(join(sourceFixtureRoot, "tool-history-store.js")).href;
+  sourceFixtureModuleUrl = pathToFileURL(join(sourceFixtureRoot, "tool-history/writer.js")).href;
 });
 
 afterAll(async () => {
