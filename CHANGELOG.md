@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix tool history lock contention on macOS reporting `deferred` instead of
+  `failed`. The writer now bounds its 200 ms SQLite lock wait by elapsed time,
+  so timer coalescing under lower-priority scheduling no longer stretches it
+  past the foreground ceiling or stalls later lifecycle writes for seconds.
+
 - Fix nested compaction blocking completed conversation turns and wake-ups.
   Recover their pending publication without replaying tools, and account the
   last closed operation when an interrupted turn has nested operations.

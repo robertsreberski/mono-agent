@@ -74,6 +74,7 @@ beforeAll(async () => {
     "process-incarnation",
     "history-process-liveness",
     "tool-history-artifacts",
+    "tool-history-busy-wait",
     "tool-history-persistence-coordinator",
     "tool-history-store",
     "tool-history-payload",
@@ -2868,6 +2869,13 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     ]);
   }, 10_000);
 
+  // The writer bounds this lock wait by elapsed time (tool-history-busy-wait).
+  // SQLite's own busy timeout sums requested sleeps, and under darwin
+  // background/utility QoS timer coalescing stretched 200 ms to 1-2 s, so this
+  // receipt became `deferred`. Reproduce that slack manually on macOS with
+  // `taskpolicy -b pnpm --filter @mono-agent/conversation exec vitest run
+  // src/__tests__/tool-history-store.test.ts -t 'definitive writer lock'`;
+  // it is not automated because background QoS can starve under CPU load.
   it.skipIf(process.platform === "win32")("reports a definitive writer lock failure before a longer foreground ceiling", async () => {
     const root = await tempRoot();
     const warnings: string[] = [];

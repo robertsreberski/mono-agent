@@ -1123,7 +1123,9 @@ shutdown drains all accepted requests within its bounded graceful-close budget.
 `failed` is reserved for a definitive rejection known at publication. A
 deferred artifact is not proof of either final success or loss; after the run,
 `ToolHistoryReader`/`SessionHistory` is authoritative for committed rows. The
-writer's 200 ms SQLite busy timeout leaves margin inside the foreground ceiling;
+writer bounds its lock waits at 200 ms of elapsed time, leaving margin inside the
+foreground ceiling, instead of relying on SQLite's busy timeout, which sums
+requested sleeps and stretches under macOS timer coalescing;
 the bounded synchronous reader keeps its separate 250 ms timeout. Reset,
 statistics, and close remain bounded maintenance operations; reset still fails
 closed on a real worker error. Writer-health

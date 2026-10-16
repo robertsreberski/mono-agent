@@ -25,6 +25,7 @@ import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, Runtim
 
 import { isProcessAlive } from "./history-process-liveness.js";
 import { continueToolHistoryOperationTail } from "./tool-history-worker-queue.js";
+import { isToolHistorySqliteBusy, runWithinToolHistoryBusyDeadline } from "./tool-history-busy-wait.js";
 import {
   canonicalToolArtifactRoot,
   toolHistoryArtifactAvailable,
@@ -1118,7 +1119,7 @@ async function acquireOwner(path: string, ceilingMs: number): Promise<{ release(
       };
     } catch (error) {
       try { database?.close(); } catch { /* retry */ }
-      if (!isBusy(error) && !(error instanceof WorkerHistoryError && error.code === "history_owner_interposed")) throw error;
+      if (!isToolHistorySqliteBusy(error) && !(error instanceof WorkerHistoryError && error.code === "history_owner_interposed")) throw error;
       if (performance.now() >= deadline) {
         throw new WorkerHistoryError(
           "history_writer_in_use",
@@ -1179,9 +1180,9 @@ function artifactRefs(database: DatabaseSync, binding: ToolHistoryRunBinding, to
 function transaction<T>(database: DatabaseSync, operation: () => T, afterCommit?: () => void): T {
   const preparedJournalCreated = prepareSecureJournal();
   try {
-    database.exec("BEGIN IMMEDIATE");
+    execLockStatement(database, "BEGIN IMMEDIATE");
     const value = operation();
-    database.exec("COMMIT");
+    execLockStatement(database, "COMMIT");
     try { afterCommit?.(); } catch (error) { incrementStat(database, "maintenance_failures", 1, reasonOf(error)); }
     removeEmptyPreparedJournal();
     return value;
@@ -1189,6 +1190,24 @@ function transaction<T>(database: DatabaseSync, operation: () => T, afterCommit?
     try { database.exec("ROLLBACK"); } catch { /* close/recovery remains authoritative */ }
     if (preparedJournalCreated) removeEmptyPreparedJournal();
     throw error;
+  }
+}
+
+/**
+ * Takes the write lock (BEGIN IMMEDIATE) or the commit lock with a wall-clock
+ * bound. SQLite's own busy timeout counts requested sleeps, which darwin timer
+ * coalescing can stretch several-fold, and the writer's 200 ms bound exists so
+ * a definitive `SQLITE_BUSY` rejection reaches the caller inside the 250 ms
+ * foreground ceiling. A busy COMMIT keeps its transaction open in rollback
+ * journal mode, so retrying it is the documented SQLite recovery. Statements
+ * inside the transaction keep SQLite's connection-level timeout.
+ */
+function execLockStatement(database: DatabaseSync, sql: "BEGIN IMMEDIATE" | "COMMIT"): void {
+  database.exec("PRAGMA busy_timeout=0");
+  try {
+    runWithinToolHistoryBusyDeadline(() => database.exec(sql), TOOL_HISTORY_WRITER_BUSY_TIMEOUT_MS);
+  } finally {
+    database.exec(`PRAGMA busy_timeout=${String(TOOL_HISTORY_WRITER_BUSY_TIMEOUT_MS)}`);
   }
 }
 
@@ -1607,11 +1626,6 @@ function positiveInteger(value: number, name: string): number {
 function nonNegativeInteger(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError("Tool history retention limits must be non-negative integers.");
   return value;
-}
-
-function isBusy(error: unknown): boolean {
-  const code = (error as { code?: unknown })?.code;
-  return code === "ERR_SQLITE_ERROR" && /busy|locked/u.test(reasonOf(error).toLocaleLowerCase());
 }
 
 function reasonOf(error: unknown): string {
