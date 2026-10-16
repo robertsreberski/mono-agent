@@ -23,10 +23,11 @@ function runWith(kind, result) {
 describe("core scan policy", () => {
   test("pins tools and selects only the five core workspaces in every Knip mode", () => {
     expect(packages).toEqual(["contracts", "config", "turn", "conversation", "app"]);
+    expect(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).devDependencies.knip).toBe("5.88.1");
     const scans = scanArguments("dead-code");
     expect(scans.map((scan) => scan.name)).toEqual(["knip-default", "knip-production", "knip-entry-exports"]);
     for (const { args } of scans) {
-      expect(args.slice(0, 2)).toEqual(["dlx", "knip@5.88.1"]);
+      expect(args.slice(0, 2)).toEqual(["exec", "knip"]);
       expect(args.filter((_, index) => args[index - 1] === "--workspace")).toEqual(packages.map((name) => `packages/${name}`));
       expect(args).not.toContain("--no-exit-code");
     }

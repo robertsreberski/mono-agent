@@ -89,6 +89,7 @@ describe("verify-all", () => {
       "check:changelog",
       "release:validate",
       "check:architecture",
+      "scan:dead-code",
       "build",
       "check:doc-snippets",
       "check:deep-imports",
@@ -109,7 +110,7 @@ describe("verify-all", () => {
     ].join("\n"))).toBe(true);
   });
 
-  it("exits non-zero and skips consumers when a pre-build repo gate fails", async () => {
+  it.each(["check:architecture", "scan:dead-code"])("exits non-zero and skips consumers when %s fails", async (failedLabel) => {
     const stdout = sink();
     const stderr = sink();
     let verifyConsumersCalled = false;
@@ -119,7 +120,7 @@ describe("verify-all", () => {
       releaseTag: "v0.11.2",
       stdout,
       stderr,
-      runCommand: async (_command, _args, options) => options.label === "check:architecture" ? 1 : 0,
+      runCommand: async (_command, _args, options) => options.label === failedLabel ? 1 : 0,
       verifyConsumers: async () => {
         verifyConsumersCalled = true;
         return {
@@ -131,7 +132,7 @@ describe("verify-all", () => {
 
     expect(result.exitCode).toBe(1);
     expect(verifyConsumersCalled).toBe(false);
-    expect(stderr.text).toContain("Repo gate failed at check:architecture.");
+    expect(stderr.text).toContain(`Repo gate failed at ${failedLabel}.`);
     expect(stderr.text).toContain("Consumer verification skipped");
     expect(stdout.text).toContain("repo fail");
     expect(stdout.text).toContain("local-agent-alpha contract fail");
@@ -180,6 +181,7 @@ describe("verify-all", () => {
       "check:changelog",
       "release:validate",
       "check:architecture",
+      "scan:dead-code",
       "build",
       "check:doc-snippets",
       "check:deep-imports",
@@ -1273,6 +1275,11 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     label: "check:architecture",
     command: "pnpm",
     args: ["run", "check:architecture"],
+  }),
+  gateRunContract("pnpm run scan:dead-code", {
+    label: "scan:dead-code",
+    command: "pnpm",
+    args: ["run", "scan:dead-code"],
   }),
   gateRunContract("pnpm run build", {
     label: "build",

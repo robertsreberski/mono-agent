@@ -10,9 +10,11 @@ pnpm run scan:core
 Or run `pnpm run scan:dead-code` and `pnpm run scan:cycles` independently.
 The dead-code scan runs Knip **5.88.1** in default, production, and
 `--include-entry-exports` modes. The cycle scan runs Madge **8.0.0** separately on
-contracts, config, turn, conversation, and app. Tools are pinned in the launcher
-and fetched with `pnpm dlx`; neither is a workspace dependency or CI guard.
-No package build is needed. First use needs registry access (or a warm dlx cache).
+contracts, config, turn, conversation, and app. Knip is an exact-pinned root
+devDependency, invoked through `pnpm exec knip`; all three modes are a required
+step in the existing CI verify job and local `verify:all` gate. Madge remains
+pinned in the launcher and fetched with `pnpm dlx`, outside the CI guard.
+No package build is needed. Madge first use needs registry access (or a warm dlx cache).
 
 Both commands finish all scans even when findings exist. Exit codes are **0**
 (clean), **1** (findings), and **2** (tool/configuration failure). A red scan is

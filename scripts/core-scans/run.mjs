@@ -28,7 +28,7 @@ export function scanArguments(kind) {
       ["entry-exports", ["--include-entry-exports"]],
     ].map(([mode, flags]) => ({
       name: `knip-${mode}`,
-      args: ["dlx", "knip@5.88.1", "--directory", root,
+      args: ["exec", "knip", "--directory", root,
         "--config", "scripts/core-scans/knip.ts",
         ...packages.flatMap((name) => ["--workspace", `packages/${name}`]),
         "--reporter", "json", ...flags],
