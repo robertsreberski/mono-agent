@@ -1,4 +1,4 @@
-import type { AgentReplyAttachmentPart } from "./index.js";
+import type { AgentReplyAttachmentPart } from "./response.js";
 
 /** Verify the authorized artifact against the part selected for delivery. */
 export function assertMatchingReplyAttachment(

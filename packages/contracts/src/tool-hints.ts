@@ -11,7 +11,7 @@
 import { homedir } from "node:os";
 import { types as nodeUtilTypes } from "node:util";
 
-import type { AgentStreamEvent } from "./index.js";
+import type { AgentStreamEvent } from "./stream.js";
 
 /** The routing variant of {@link AgentStreamEvent}, narrowed for the formatter below. */
 type ProviderStatusStreamEvent = Extract<AgentStreamEvent, { type: "provider_status" }>;

@@ -192,7 +192,10 @@ Primary modules:
 
 | Area | Modules | Purpose |
 | --- | --- | --- |
-| Turn contracts | `index.ts`, `types.ts` | Requests, responses, attachments, live-input ownership/settlement, cancellation, and settings value shapes. |
+| Public composition | `index.ts` | Re-exports only; internal modules import declaration leaves directly. |
+| Turn contracts | `request.ts`, `response.ts`, `stream.ts`, `responder.ts` | Requests, rich responses, stream events and responder capabilities. |
+| Turn boundary helpers | `attachments.ts`, `continuation.ts`, `cancellation.ts`, `notify.ts` | Attachment rules, pinned context validation, branded cancellation and notification classification. |
+| Wire facts | `info.ts`, `mcp-apps.ts`, `types.ts` | Operator response bounds, MCP Apps protocol facts and generic settings shapes. |
 | Channel lifecycle | `channel.ts` | Driver startup, running handles, status, notifications, and interaction hooks. |
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |

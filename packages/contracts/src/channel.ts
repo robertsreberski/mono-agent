@@ -1,4 +1,4 @@
-import type { AgentResponder } from "./index.js";
+import type { AgentResponder } from "./responder.js";
 import type { ProcessJobProjection } from "./process-jobs.js";
 
 /**

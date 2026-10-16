@@ -1,4 +1,4 @@
-import type { AgentStreamEvent } from "./index.js";
+import type { AgentStreamEvent } from "./stream.js";
 import {
   isAgentReplyPartDeliveryOutcomes,
   sanitizeReplyPartDeliveryOutcomes,

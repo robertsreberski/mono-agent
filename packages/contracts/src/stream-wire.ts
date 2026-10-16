@@ -1,8 +1,5 @@
-import type {
-  AgentReplyPart,
-  AgentResponseMetadata,
-  AgentStreamEvent,
-} from "./index.js";
+import type { AgentReplyPart, AgentResponseMetadata } from "./response.js";
+import type { AgentStreamEvent } from "./stream.js";
 import { CodedError } from "./coded-error.js";
 
 /** Shared producer and wire bound for additive rich reply parts in one run. */
