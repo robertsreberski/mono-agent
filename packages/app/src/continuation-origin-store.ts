@@ -1,29 +1,24 @@
-import { lstat, readdir, rm } from "node:fs/promises";
+import { lstat,readdir,rm } from "node:fs/promises";
 import { join } from "node:path";
 import { assertAgentContinuationOriginContext } from "@mono-agent/contracts";
 
 import {
-  TERMINAL_CONTINUATION_STATES,
-  canonicalContinuationJson,
-  continuationDigest,
+TERMINAL_CONTINUATION_STATES,
+canonicalContinuationJson,
+continuationDigest,
 } from "./continuations.js";
+import { assertOwnerOnlyRegularFile,readBoundedOwnerOnlyFile,readBoundedOwnerOnlyFileWithStats,syncDirectory } from "./durable-state/private-files.js";
 import {
-  assertOwnerOnlyRegularFile,
-  readBoundedOwnerOnlyFile,
-  readBoundedOwnerOnlyFileWithStats,
-  syncDirectory,
-} from "./continuation-store-fs.js";
-import {
-  assertRecordFitsV3,
-  isMissing,
-  isOriginContextGroupCommit,
+assertRecordFitsV3,
+isMissing,
+isOriginContextGroupCommit,
 } from "./continuation-store-policy.js";
 import {
-  MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES,
-  type ContinuationOriginContextGroupCommit,
-  type ContinuationOriginContextReference,
-  type DurableContinuationRecord,
+MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES,
+MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES,
+type ContinuationOriginContextGroupCommit,
+type ContinuationOriginContextReference,
+type DurableContinuationRecord,
 } from "./continuation-store-types.js";
 
 export function prepareOriginContextGroupCommit(

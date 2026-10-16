@@ -60,7 +60,7 @@ import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels/types.js";
 import { loadContinuationSettings } from "./continuation-config.js";
 import { applyOriginContextGroupCommit } from "./continuation-origin-store.js";
-import { readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";
+import { readBoundedOwnerOnlyFile } from "./durable-state/private-files.js";
 import { loadLegacyStore,mergeMigrationRecords } from "./continuation-store-records.js";
 import {
 CONTINUATION_RECORD_STORE_SCHEMA_VERSION,

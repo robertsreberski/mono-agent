@@ -1,9 +1,11 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash,createHmac,timingSafeEqual } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { setTimeout as pause } from "node:timers/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname,join,resolve } from "node:path";
 
-import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, loadOrCreateContinuationSecret, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
+import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
+import { ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,writeJsonAtomic } from "./durable-state/private-files.js";
+import { loadOrCreateContinuationSecret } from "./continuation-secret.js";
 
 /** Private, source-bound peer handoff. Attribution is never owner approval or tool authority. */
 interface PeerHandoff {
@@ -96,9 +98,9 @@ export class PeerSessionExhaustedError extends Error {
  * Exhaustion fails closed rather than evicting old generations and enabling replay. */
 export async function consumePeerGeneration(artifactDir: string, proof: PeerHandoff, maxGenerations = 1024): Promise<boolean> {
   const directory = peerGenerationDirectory(artifactDir, proof.session);
-  let lease: Awaited<ReturnType<typeof acquireContinuationStoreLock>> | undefined;
+  let lease: Awaited<ReturnType<typeof acquireSqliteLease>> | undefined;
   for (let attempt = 0; attempt < 6; attempt++) {
-    try { lease = await acquireContinuationStoreLock(directory); break; }
+    try { lease = await acquireSqliteLease(directory); break; }
     catch (error) {
       if (attempt === 5 || !(error instanceof Error) || !error.message.startsWith("Continuation state is already owned")) throw error;
       await pause(25);

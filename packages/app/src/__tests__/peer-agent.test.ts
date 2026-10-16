@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir,mkdtemp,readFile,rm,writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname,join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach,describe,expect,it,vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 
 const mocks = vi.hoisted(() => ({
@@ -14,8 +14,8 @@ const mocks = vi.hoisted(() => ({
   operators: vi.fn(),
   interruptedWrite: undefined as undefined | { entered(): void; wait: Promise<void> },
 }));
-vi.mock("../continuation-store-fs.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../continuation-store-fs.js")>();
+vi.mock("../durable-state/private-files.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../durable-state/private-files.js")>();
   return { ...original, writeTextAtomic: async (...args: Parameters<typeof original.writeTextAtomic>) => {
     if (args[0].endsWith("thread.json") && args[1].includes('"status":"interrupted"') && mocks.interruptedWrite) {
       mocks.interruptedWrite.entered();
@@ -33,9 +33,9 @@ vi.mock("../peer-acp-client.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../peer-acp-client.js")>(), runPeerAcpTurn: mocks.run,
 }));
 
-import { createPeerAgentRuntimeExtension, withoutLocalPaths } from "../peer-agent.js";
-import { PeerSessionGoneError, type PeerAcpTurn } from "../peer-acp-client.js";
-import { makePeerHandoff, stampPeerOperatorHandoff } from "../peer-provenance.js";
+import { createPeerAgentRuntimeExtension,withoutLocalPaths } from "../peer-agent.js";
+import { PeerSessionGoneError,type PeerAcpTurn } from "../peer-acp-client.js";
+import { makePeerHandoff,stampPeerOperatorHandoff } from "../peer-provenance.js";
 import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 

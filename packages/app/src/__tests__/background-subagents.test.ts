@@ -16,7 +16,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir,mkdtemp,readFile,readdir,rename,rm,stat,writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach,describe,expect,it,vi } from "vitest";
-import { acquireContinuationStoreLock,writeJsonAtomic } from "../continuation-store-fs.js";
+import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
+import { writeJsonAtomic } from "../durable-state/private-files.js";
 import { createSubagentInstanceRegistry,subagentConversationRoot } from "../subagent-instances.js";
 import { openProcessJobsService,type ProcessJobsServiceHandle,type ProcessJobWakeInput } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
@@ -702,7 +703,7 @@ describe("orphaned managed reservations", () => {
       record.ownerLink = { jobId, storeRoot: f.service.settings.stateDir };
       if (record.turns === 0) record.createdForAdmission = true;
       // A stopped writer leaves SQLite lock files, but no in-process turn map.
-      const lock = await acquireContinuationStoreLock(resolve(directory, "turn-locks", record.id));
+      const lock = await acquireSqliteLease(resolve(directory, "turn-locks", record.id));
       await lock.release();
     }
     await writeJsonAtomic(file, records, true);

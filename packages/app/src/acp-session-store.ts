@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname,isAbsolute,join,resolve } from "node:path";
 
-import {
-  ensureOwnerOnlyDirectory,
-  readBoundedOwnerOnlyFile,
-  writeJsonAtomic,
-} from "./continuation-store-fs.js";
+import { ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,writeJsonAtomic } from "./durable-state/private-files.js";
 
 export const ACP_SESSION_AUTHORIZATION_SCHEMA = "mono-agent.acp-session.v1" as const;
 const MAX_ACP_SESSION_AUTHORIZATION_BYTES = 4 * 1024;

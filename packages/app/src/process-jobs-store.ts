@@ -39,10 +39,7 @@ processIncarnationFromJson,
 type ProcessIncarnation,
 } from "@mono-agent/conversation/process-incarnation";
 import { secureFileReplace } from "./durable-state/secure-file-replace.js";
-import {
-readBoundedOwnerOnlyFile,
-syncDirectory,
-} from "./continuation-store-fs.js";
+import { readBoundedOwnerOnlyFile,syncDirectory } from "./durable-state/private-files.js";
 
 export const PROCESS_JOB_RECORD_SCHEMA = 1;
 export const PROCESS_JOB_RECORDS_DIRECTORY = "records-v1";

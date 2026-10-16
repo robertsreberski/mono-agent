@@ -7,7 +7,8 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { discoverAcpBridgeAgents,discoverOperatorAgents } from "@mono-agent/web";
 import * as z from "zod/v4";
 
-import { acquireContinuationStoreLock,ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,writeTextAtomic } from "./continuation-store-fs.js";
+import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
+import { ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,writeTextAtomic } from "./durable-state/private-files.js";
 import { PeerSessionGoneError,runPeerAcpTurn } from "./peer-acp-client.js";
 import { PeerQuestionRelay,type PeerQuestion,type PeerTurnEvent } from "./peer-question-relay.js";
 import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
@@ -110,8 +111,8 @@ async function saveThread(path: string, value: ThreadRecord): Promise<void> {
 }
 
 /** Owner lock for one caller thread; contention never exposes the state path. */
-async function acquireThreadLease(path: string, busy: string): Promise<Awaited<ReturnType<typeof acquireContinuationStoreLock>>> {
-  try { return await acquireContinuationStoreLock(path); }
+async function acquireThreadLease(path: string, busy: string): Promise<Awaited<ReturnType<typeof acquireSqliteLease>>> {
+  try { return await acquireSqliteLease(path); }
   catch (error) {
     if (error instanceof Error && error.message.startsWith("Continuation state is already owned")) throw new Error(busy);
     throw error;
@@ -136,9 +137,9 @@ async function reconcileInterruptedPeerThreads(config: MonoAgentConfig, service?
     for await (const entry of directory) {
       if (!entry.isDirectory() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
       const path = join(root, entry.name);
-      let lease: Awaited<ReturnType<typeof acquireContinuationStoreLock>> | undefined;
+      let lease: Awaited<ReturnType<typeof acquireSqliteLease>> | undefined;
       try {
-        lease = await acquireContinuationStoreLock(path);
+        lease = await acquireSqliteLease(path);
         const record = await readThread(path);
         if (record?.status === "busy" || record?.status === "awaiting_answer") {
           const pending = record.question && record.questionJobId

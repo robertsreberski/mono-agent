@@ -12,7 +12,8 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { type RuntimeModelReference } from "@mono-agent/turn/host/types";
 
-import { acquireContinuationStoreLock,ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,writeJsonAtomic } from "./continuation-store-fs.js";
+import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
+import { ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,writeJsonAtomic } from "./durable-state/private-files.js";
 
 import { isSubagentUuid,isSubagentTurnIntent,isSubagentRecoveryFence,isSubagentOwnerLink,sameSubagentOwner,SubagentRecoveryError,type SubagentRecoveryFence,type SubagentOwnerLink,type SubagentOwnerIdentity,type SubagentOwnerResolution,type SubagentKnownOwner } from "./subagent-registry-ownership.js";
 interface PreProviderState {
@@ -210,7 +211,7 @@ export function createSubagentInstanceRegistry(options: {
       const file = resolve(directory, "instances.json");
       const turnPath = (id: string): string => resolve(directory, "turn-locks", id);
       const acquirePrivateLock = async (path: string) => {
-        try { return await acquireContinuationStoreLock(path); }
+        try { return await acquireSqliteLease(path); }
         catch {
           // Admission errors reach native tool results. Filesystem/lock errors
           // include the private registry path; never disclose it to the model.
@@ -366,7 +367,7 @@ export function createSubagentInstanceRegistry(options: {
             }
             if (["queued", "running"].includes(record.status) && !turns.has(turnPath(record.id))) {
               try {
-                const abandoned = await acquireContinuationStoreLock(turnPath(record.id));
+                const abandoned = await acquireSqliteLease(turnPath(record.id));
                 try {
                   if (record.activeTurn?.kind === "detached") {
                     // No OS turn lock alone is not proof of cleanup/publication.

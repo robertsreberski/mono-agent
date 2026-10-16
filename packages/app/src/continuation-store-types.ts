@@ -1,14 +1,14 @@
 import {
-  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES,
-  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES,
-  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES,
-  type AgentContinuationOriginContext,
+AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES,
+AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES,
+AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES,
+type AgentContinuationOriginContext,
 } from "@mono-agent/contracts";
 
 import type {
-  ContinuationDeliveryReceipt,
-  ContinuationMode,
-  ContinuationState,
+ContinuationDeliveryReceipt,
+ContinuationMode,
+ContinuationState,
 } from "./continuations.js";
 
 export const CONTINUATION_STORE_SCHEMA_VERSION = 1;
@@ -21,7 +21,6 @@ export const LEGACY_RECORDS_DIRECTORY = "records-v2";
 export const LEGACY_TRANSACTION_FILE = "continuation-transaction-v2.json";
 export const V2_ROLLBACK_GUARD = "UPGRADED-TO-RECORDS-V3";
 export const ORIGIN_CONTEXT_GROUPS_DIRECTORY = "origin-context-groups-v1";
-export const OWNER_DATABASE_FILE = "continuations-owner.sqlite";
 export const ORIGIN_CONTEXTS_DIRECTORY = "origin-context-v1";
 export const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 export const MAX_TRANSACTION_BYTES = 16 * 1024 * 1024;
@@ -197,8 +196,4 @@ export interface ContinuationStore {
     readonly activatedAt: string;
   }): Promise<void>;
   mutate<T>(operation: (records: Map<string, DurableContinuationRecord>) => T | Promise<T>): Promise<T>;
-}
-
-export interface ContinuationStoreLock {
-  release(): Promise<void>;
 }

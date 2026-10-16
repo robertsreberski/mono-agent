@@ -1,38 +1,38 @@
 import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants, type BigIntStats, type Dirent } from "node:fs";
-import { lstat, mkdir, open, opendir, readdir, realpath, rename, rm, stat, unlink } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { constants as fsConstants,type BigIntStats,type Dirent } from "node:fs";
+import { lstat,mkdir,open,opendir,readdir,realpath,rename,rm,stat,unlink } from "node:fs/promises";
+import { basename,dirname,isAbsolute,join,relative,resolve,sep } from "node:path";
 
 import {
-  ToolHistoryReader,
-  toolHistoryDiskUsage,
-  TOOL_HISTORY_OWNER_DATABASE,
+ToolHistoryReader,
+toolHistoryDiskUsage,
+TOOL_HISTORY_OWNER_DATABASE,
 } from "@mono-agent/conversation";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import {
-  assertConversationStatePurgePlanUnchanged,
-  assertConversationStatePurgeRootUnchanged,
-  CLEAR_SESSIONS_CONTROL_DIRECTORY,
-  clearSessionsRegistryRoot as resolveClearSessionsRegistryRoot,
-  conversationStatePurgePlanEntries,
-  type ConversationStatePurgePlan,
-  type ResolvedConversationStatePurgeRoot,
-  resolveConversationStatePurgePlan,
-  sameFileSystemIdentity,
+assertConversationStatePurgePlanUnchanged,
+assertConversationStatePurgeRootUnchanged,
+CLEAR_SESSIONS_CONTROL_DIRECTORY,
+clearSessionsRegistryRoot as resolveClearSessionsRegistryRoot,
+conversationStatePurgePlanEntries,
+type ConversationStatePurgePlan,
+type ResolvedConversationStatePurgeRoot,
+resolveConversationStatePurgePlan,
+sameFileSystemIdentity,
 } from "./conversation-state-roots.js";
-import { syncDirectory } from "./continuation-store-fs.js";
+import { syncDirectory } from "./durable-state/private-files.js";
 import {
-  assertProcessJobsConfigSnapshotUnchanged,
-  loadProcessJobsSettings,
-  readProcessJobsConfigSnapshot,
-  resolveProcessJobsRegistryWorkspace,
+assertProcessJobsConfigSnapshotUnchanged,
+loadProcessJobsSettings,
+readProcessJobsConfigSnapshot,
+resolveProcessJobsRegistryWorkspace,
 } from "./process-jobs-config.js";
 import {
-  assertProcessJobsRegistryDisjointFromPaths,
-  freezeProcessJobsRootRegistry,
-  type ProcessJobsRootRegistryFreeze,
+assertProcessJobsRegistryDisjointFromPaths,
+freezeProcessJobsRootRegistry,
+type ProcessJobsRootRegistryFreeze,
 } from "./process-jobs-root-registry.js";
 
 export interface PurgeSessionsResult {

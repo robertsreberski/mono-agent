@@ -1,36 +1,30 @@
 import { randomUUID } from "node:crypto";
-import { readdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readdir,rm } from "node:fs/promises";
+import { dirname,join } from "node:path";
 
-import { canonicalContinuationJson, continuationDigest } from "./continuations.js";
+import { canonicalContinuationJson,continuationDigest } from "./continuations.js";
+import { assertOwnerOnlyRegularFile,pathExists,readBoundedOwnerOnlyFile,syncDirectory,writeJsonAtomic } from "./durable-state/private-files.js";
 import {
-  assertOwnerOnlyRegularFile,
-  continuationPathExists,
-  readBoundedOwnerOnlyFile,
-  syncDirectory,
-  writeJsonAtomic,
-} from "./continuation-store-fs.js";
-import {
-  assertRecordFitsV3,
-  isObject,
-  isDurableGeneration,
-  isRecord,
-  isRecordTransaction,
-  isStoreFile,
-  normalizeLegacyContinuationRecords,
-  requiredDate,
-  requiredString,
+assertRecordFitsV3,
+isObject,
+isDurableGeneration,
+isRecord,
+isRecordTransaction,
+isStoreFile,
+normalizeLegacyContinuationRecords,
+requiredDate,
+requiredString,
 } from "./continuation-store-policy.js";
 import {
-  CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
-  MAX_LEGACY_STORE_BYTES,
-  MAX_MANIFEST_BYTES,
-  MAX_RECORD_BYTES,
-  MAX_TRANSACTION_BYTES,
-  type ContinuationRecordTransaction,
-  type ContinuationStoreManifest,
-  type ContinuationStoreStats,
-  type DurableContinuationRecord,
+CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+MAX_LEGACY_STORE_BYTES,
+MAX_MANIFEST_BYTES,
+MAX_RECORD_BYTES,
+MAX_TRANSACTION_BYTES,
+type ContinuationRecordTransaction,
+type ContinuationStoreManifest,
+type ContinuationStoreStats,
+type DurableContinuationRecord,
 } from "./continuation-store-types.js";
 
 export async function loadLegacyStore(path: string): Promise<Map<string, DurableContinuationRecord>> {
@@ -167,7 +161,7 @@ export async function recoverRecordTransaction(
   transactionPath: string,
   expectedSchemaVersion: 2 | typeof CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
 ): Promise<string | undefined> {
-  if (!await continuationPathExists(transactionPath)) return undefined;
+  if (!await pathExists(transactionPath)) return undefined;
   const raw = await readBoundedOwnerOnlyFile(transactionPath, MAX_TRANSACTION_BYTES, "Continuation transaction");
   let value: unknown;
   try {

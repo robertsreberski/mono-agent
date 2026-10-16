@@ -1,84 +1,74 @@
 import { randomUUID } from "node:crypto";
-import { readdir, rm } from "node:fs/promises";
+import { readdir,rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  assertAgentContinuationOriginContext,
-  type AgentContinuationOriginContext,
+assertAgentContinuationOriginContext,
+type AgentContinuationOriginContext,
 } from "@mono-agent/contracts";
 
 import { canonicalContinuationJson } from "./continuations.js";
 import {
-  OriginContextCorruptionError,
-  applyOriginContextGroupCommit,
-  applyOriginContextGroupCommits,
-  cleanOriginContextGroupTemporaries,
-  loadOriginContextGroupCommit,
-  originContextDigest,
-  originContextStoreBytes,
-  prepareOriginContextGroupCommit,
-  readOriginContextCanonical,
-  referencedOriginContextDigests,
-  releasePendingOriginPin,
-  removeOriginContextGroupCommits,
-  sweepOriginContextBlobs,
+OriginContextCorruptionError,
+applyOriginContextGroupCommit,
+applyOriginContextGroupCommits,
+cleanOriginContextGroupTemporaries,
+loadOriginContextGroupCommit,
+originContextDigest,
+originContextStoreBytes,
+prepareOriginContextGroupCommit,
+readOriginContextCanonical,
+referencedOriginContextDigests,
+releasePendingOriginPin,
+removeOriginContextGroupCommits,
+sweepOriginContextBlobs,
 } from "./continuation-origin-store.js";
+import { pathExists,ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,syncDirectory,writeJsonAtomic,writeTextAtomic } from "./durable-state/private-files.js";
 import {
-  continuationPathExists,
-  ensureOwnerOnlyDirectory,
-  readBoundedOwnerOnlyFile,
-  syncDirectory,
-  writeJsonAtomic,
-  writeTextAtomic,
-} from "./continuation-store-fs.js";
-import {
-  applyRetention,
-  cloneRecord,
-  cloneRecords,
-  continuationStoreStats,
-  isMissing,
-  isOriginContextReference,
-  normalizeLegacyContinuationRecords,
-  replaceRecords,
-  requiredDate,
-  requiredString,
-  resolveRetention,
+applyRetention,
+cloneRecord,
+cloneRecords,
+continuationStoreStats,
+isMissing,
+isOriginContextReference,
+normalizeLegacyContinuationRecords,
+replaceRecords,
+requiredDate,
+requiredString,
+resolveRetention,
 } from "./continuation-store-policy.js";
 import {
-  assertV3Manifest,
-  loadLegacyStore,
-  loadRecordDirectory,
-  mergeMigrationRecords,
-  persistManifest,
-  persistRecordChanges,
-  recoverRecordTransaction,
+assertV3Manifest,
+loadLegacyStore,
+loadRecordDirectory,
+mergeMigrationRecords,
+persistManifest,
+persistRecordChanges,
+recoverRecordTransaction,
 } from "./continuation-store-records.js";
 import {
-  CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
-  LEGACY_RECORDS_DIRECTORY,
-  LEGACY_TRANSACTION_FILE,
-  MANIFEST_FILE,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGE_BYTES,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES,
-  ORIGIN_CONTEXT_GROUPS_DIRECTORY,
-  ORIGIN_CONTEXTS_DIRECTORY,
-  RECORDS_DIRECTORY,
-  TRANSACTION_FILE,
-  V2_ROLLBACK_GUARD,
-  type ContinuationOriginContextGroupCommit,
-  type ContinuationRetentionOptions,
-  type ContinuationStore,
-  type DurableContinuationRecord,
+CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+LEGACY_RECORDS_DIRECTORY,
+LEGACY_TRANSACTION_FILE,
+MANIFEST_FILE,
+MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES,
+MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES,
+MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGE_BYTES,
+MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES,
+ORIGIN_CONTEXT_GROUPS_DIRECTORY,
+ORIGIN_CONTEXTS_DIRECTORY,
+RECORDS_DIRECTORY,
+TRANSACTION_FILE,
+V2_ROLLBACK_GUARD,
+type ContinuationOriginContextGroupCommit,
+type ContinuationRetentionOptions,
+type ContinuationStore,
+type DurableContinuationRecord,
 } from "./continuation-store-types.js";
 
 const V2_ROLLBACK_GUARD_CONTENT =
   "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n";
 
-export {
-  acquireContinuationStoreLock,
-  loadOrCreateContinuationSecret,
-} from "./continuation-store-fs.js";
+
 export { CONTINUATION_RECORD_STORE_SCHEMA_VERSION } from "./continuation-store-types.js";
 export type { ContinuationOriginContextReference, ContinuationRetentionOptions, ContinuationStore, DurableContinuationRecord } from "./continuation-store-types.js";
 
@@ -106,7 +96,7 @@ export async function openContinuationStore(
   const policy = resolveRetention(options.retention);
   const now = options.now ?? (() => new Date());
 
-  const manifestExists = await continuationPathExists(manifestPath);
+  const manifestExists = await pathExists(manifestPath);
   const manifest = manifestExists ? await assertV3Manifest(manifestPath) : undefined;
   // Fieldless manifests were written by the eager-guard implementation, so
   // they remain permanently fenced. Only a new explicit false opens the one
@@ -115,7 +105,7 @@ export async function openContinuationStore(
     ? false
     : manifest.rollbackGuardRequired ?? true;
 
-  let legacyRecordsDirectoryExists = await continuationPathExists(legacyRecordsDir);
+  let legacyRecordsDirectoryExists = await pathExists(legacyRecordsDir);
   if (legacyRecordsDirectoryExists) await ensureOwnerOnlyDirectory(legacyRecordsDir);
   const ensureLegacyRecordsDirectory = async (): Promise<void> => {
     if (legacyRecordsDirectoryExists) return;
@@ -124,7 +114,7 @@ export async function openContinuationStore(
     legacyRecordsDirectoryExists = true;
   };
   let rollbackGuardInstalled = legacyRecordsDirectoryExists
-    ? await continuationPathExists(rollbackGuardPath)
+    ? await pathExists(rollbackGuardPath)
     : false;
   let rollbackGuardValidated = false;
   const ensureV2RollbackGuard = async (): Promise<void> => {
@@ -146,7 +136,7 @@ export async function openContinuationStore(
   };
 
   const isCommittedEntry = (entry: string): boolean => !(entry.startsWith(".") && entry.endsWith(".tmp"));
-  const v3StateExists = await continuationPathExists(transactionPath)
+  const v3StateExists = await pathExists(transactionPath)
     || (await readdir(recordsDir)).some(isCommittedEntry)
     || (await readdir(originContextGroupsDir)).some(isCommittedEntry);
   if (manifestRollbackGuardRequired) {
@@ -161,9 +151,9 @@ export async function openContinuationStore(
   }
 
   const legacyStateExists = legacyRecordsDirectoryExists
-    || await continuationPathExists(legacyPath)
-    || await continuationPathExists(legacyManifestPath)
-    || await continuationPathExists(legacyTransactionPath);
+    || await pathExists(legacyPath)
+    || await pathExists(legacyManifestPath)
+    || await pathExists(legacyTransactionPath);
   const migrationRequired = legacyStateExists && !manifestRollbackGuardRequired;
   let migrationSource: Map<string, DurableContinuationRecord> | undefined;
   if (migrationRequired) {
@@ -171,7 +161,7 @@ export async function openContinuationStore(
     // before touching state, but always finish any admitted v2 transaction:
     // the guard does not itself prove that v2 replay completed.
     if (rollbackGuardInstalled) await ensureV2RollbackGuard();
-    if (await continuationPathExists(legacyTransactionPath)) {
+    if (await pathExists(legacyTransactionPath)) {
       await ensureLegacyRecordsDirectory();
       await recoverRecordTransaction(legacyRecordsDir, legacyTransactionPath, 2);
     }
@@ -179,7 +169,7 @@ export async function openContinuationStore(
       ? await loadRecordDirectory(legacyRecordsDir, new Set([V2_ROLLBACK_GUARD]))
       : new Map();
     normalizeLegacyContinuationRecords(migrationSource);
-    if (await continuationPathExists(legacyPath)) {
+    if (await pathExists(legacyPath)) {
       const legacy = await loadLegacyStore(legacyPath);
       normalizeLegacyContinuationRecords(legacy);
       mergeMigrationRecords(migrationSource, legacy, "v1 and v2");
@@ -379,7 +369,7 @@ export async function openContinuationStore(
       applyOriginContextGroupCommit(draft, commit);
       await ensureV2RollbackGuard();
       markerPath = join(originContextGroupsDir, `${commit.groupKey}.json`);
-      if (await continuationPathExists(markerPath)) {
+      if (await pathExists(markerPath)) {
         const existing = await loadOriginContextGroupCommit(markerPath);
         if (canonicalContinuationJson(existing) !== canonicalContinuationJson(commit)) {
           throw new Error("Continuation origin-context group activation conflicts with an existing commit marker.");
@@ -497,7 +487,7 @@ export async function openContinuationStore(
       try {
         await withOriginLock(async () => {
           const path = join(originContextsDir, `${digest}.json`);
-          if (await continuationPathExists(path)) {
+          if (await pathExists(path)) {
             const existing = await readOriginContextCanonical(path, reference);
             if (existing !== canonical) {
               throw new Error("Continuation origin context digest collision or content conflict.");
