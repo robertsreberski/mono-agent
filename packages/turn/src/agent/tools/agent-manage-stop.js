@@ -1,7 +1,7 @@
 // @ts-check
 
 /** Stop is a host-owned operation, not a new child turn. Never accept job ids from tool input.
- * @param {import('../../ai/types.js').RuntimeSubagentsOptions|null|undefined} subagents
+ * @param {import("../../contracts/runtime.js").RuntimeSubagentsOptions|null|undefined} subagents
  * @param {{id: string, stop?: boolean, description?: string}} params
  * @param {AbortSignal} [signal]
  * @param {unknown} [recoveryAccess]

@@ -1,6 +1,6 @@
 // @ts-check
 
-/** @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef */
+/** @typedef {import("../../contracts/model.js").RuntimeModelRef} RuntimeModelRef */
 
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 

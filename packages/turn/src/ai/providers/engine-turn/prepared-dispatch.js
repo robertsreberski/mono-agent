@@ -11,8 +11,8 @@ export function prepareNativeDispatchBinding(input = {}) {
   return snapshotNativeDispatchOptions(input);
 }
 
-/** @typedef {import('../../types.js').NativeDispatchBinding} NativeDispatchBinding */
-/** @typedef {import('../../types.js').NativePreparedDispatch} NativePreparedDispatch */
+/** @typedef {import("../../../contracts/runtime.js").NativeDispatchBinding} NativeDispatchBinding */
+/** @typedef {import("../../../contracts/runtime.js").NativePreparedDispatch} NativePreparedDispatch */
 
 const bindingKeys = new Set(["sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive",
   "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"]);

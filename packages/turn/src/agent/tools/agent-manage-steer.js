@@ -2,7 +2,7 @@
 
 /** Steering offers text to a turn already in progress. It is a host-owned
  * operation, never a new child turn, and never a claim that the child obeyed.
- * @param {import('../../ai/types.js').RuntimeSubagentsOptions|null|undefined} subagents
+ * @param {import("../../contracts/runtime.js").RuntimeSubagentsOptions|null|undefined} subagents
  * @param {{id: string, steer?: string}} params
  * @param {AbortSignal} [signal]
  */

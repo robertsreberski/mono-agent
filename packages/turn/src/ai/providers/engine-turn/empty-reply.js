@@ -1,7 +1,7 @@
 // @ts-check
 // One bounded, same-session plain-text finalization after normal settlement.
 
-/** @param {import('../../types.js').RuntimePromptOverrides} [prompts] */
+/** @param {import("../../../contracts/policy.js").RuntimePromptOverrides} [prompts] */
 export function emptyReplyFinalizationPrompt(prompts) {
   if (typeof prompts?.emptyReplyFinalization === "function") return prompts.emptyReplyFinalization();
   return [
@@ -28,7 +28,7 @@ export function shouldRetryEmptyReply(state) {
  * The prompt is persisted only in the native provider session, just like the
  * structured-output finalization prompt. The subscriber does not project user
  * text messages into runtime events. Keep all tools disabled during this prompt.
- * @param {{harness: any, runtimeWarnings: Array<Record<string, unknown>>, abortSignal?: AbortSignal, prompts?: import('../../types.js').RuntimePromptOverrides}} deps
+ * @param {{harness: any, runtimeWarnings: Array<Record<string, unknown>>, abortSignal?: AbortSignal, prompts?: import("../../../contracts/policy.js").RuntimePromptOverrides}} deps
  * @returns {Promise<{attempted: boolean, error?: unknown}>}
  */
 export async function runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal, prompts }) {

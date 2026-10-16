@@ -71,7 +71,7 @@ function clampInteger(value, fallback, min, max) {
 }
 
 /**
- * @param {{toolLimits?: import('../ai/types.js').RuntimeToolLimits, compaction?: import('../ai/types.js').RuntimeCompactionPolicy}} [options]
+ * @param {{toolLimits?: import("../contracts/policy.js").RuntimeToolLimits, compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy}} [options]
  * @param {Object} [model]
  * @param {number} [model.contextWindow]
  * @returns {AgentCompactionPolicy}

@@ -59,11 +59,11 @@ import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
 import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
 
 /**
- * @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef
- * @typedef {import('../types.js').AgentRuntimeHostOptions} AgentRuntimeHostOptions
- * @typedef {import('../types.js').AgentRuntimeInstance} AgentRuntimeInstance
- * @typedef {import('../types.js').RuntimeRunOptions} RuntimeRunOptions
- * @typedef {import('../types.js').RuntimeResult} RuntimeResult
+ * @typedef {import("../../contracts/model.js").RuntimeModelRef} RuntimeModelRef
+ * @typedef {import("../../contracts/runtime.js").AgentRuntimeHostOptions} AgentRuntimeHostOptions
+ * @typedef {import("../../contracts/runtime.js").AgentRuntimeInstance} AgentRuntimeInstance
+ * @typedef {import("../../contracts/runtime.js").RuntimeRunOptions} RuntimeRunOptions
+ * @typedef {import("../../contracts/runtime.js").RuntimeResult} RuntimeResult
  */
 
 /**
@@ -94,7 +94,7 @@ import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
  * @typedef {Object} RouterAttemptResolution
  * Private host seam for route-specific provider options/runtime ownership.
  * Returned options are never copied into router telemetry.
- * @property {AgentRuntimeInstance} [runtime] Must emit its tool events and
+ * @property {import("../../contracts/runtime.js").RuntimeAttempt} [runtime] Must emit its tool events and
  * settle every live-input lease before run() returns: the router re-checks a
  * failed attempt's side effects only until it admits the next attempt.
  * @property {Object<string, *>} [options]
@@ -131,7 +131,7 @@ class ResolverProtectedOptionError extends Error {
  * @param {Object} [options]
  * @param {AgentRuntimeHostOptions} [options.host]
  * @param {ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>} [options.chain]
- * @param {(input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (RouterAttemptResolution|Promise<RouterAttemptResolution>)} [options.resolveAttempt]
+ * @param {(input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (RouterAttemptResolution|undefined|Promise<RouterAttemptResolution|undefined>)} [options.resolveAttempt]
  * @param {Partial<RouterRetryPolicy>} [options.retry] Backoff shape for same-model
  *   retries. Per-route retry counts live on each chain entry's `attempts`.
  * @param {"v1"} [options.sessionTurnReconciliation] Explicit ownership assertion for a custom resolver that preserves the native owner.
@@ -145,7 +145,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
   }
   assertUniqueEntries(entries);
   const inner = createRuntime(host);
-  /** @type {import('../types.js').AgentRuntimeToolOptions|undefined} */
+  /** @type {import("../../contracts/runtime.js").AgentRuntimeToolOptions|undefined} */
   let configuredTools;
   // The router builds transcript-tail snapshots outside the inner runtime's
   // bridge call (which is where the per-instance toolContext lives), so resolve
@@ -251,6 +251,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           /** @type {*} */
           let callOptions = { ...entryCallBase };
           /** @type {AgentRuntimeInstance} */
+          /** @type {import("../../contracts/runtime.js").RuntimeAttempt} */
           let attemptRuntime = inner;
           /** @type {(() => (void|Promise<void>))|undefined} */
           let attemptCleanup;
@@ -372,7 +373,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
                 message: "Conversation history unavailable; no retry or backup model was started." };
               const failure = normalizeAttemptResult(lastResult || lastRouteSkip || { error: "Conversation history unavailable", failureKind: "provider_unavailable", events: [] }, !detachedAcknowledged);
               emit(callOptions, { type: "runtime_warning", ...warning });
-              return { ...failure, runtimeWarnings: [...(failure.runtimeWarnings || []), warning], failoverHistory };
+              return { ...failure, runtimeWarnings: [.../** @type {ReadonlyArray<unknown>} */ (failure.runtimeWarnings || []), warning], failoverHistory };
             }
             callOptions.messages = [...detachedMessages, ...options.messages.slice(-1)];
           }
@@ -413,7 +414,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           const attemptEffects = { tool: false, liveInput: false };
           currentAttemptEffects = attemptEffects;
           const hostOnEvent = callOptions.onEvent;
-          callOptions.onEvent = (/** @type {import('../types.js').RuntimeEvent} */ event) => {
+          callOptions.onEvent = (/** @type {import("../../contracts/events.js").RuntimeEvent} */ event) => {
             if (isToolActivityEvent(event)) attemptEffects.tool = true;
             hostOnEvent?.(event);
           };
@@ -604,7 +605,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         /** @type {*} */
         let attemptOptions = { ...options, model: primary.model };
         delete attemptOptions.detachedContext;
-        let attemptRuntime = inner;
+        /** @type {import("../../contracts/runtime.js").RuntimeAttempt} */
+          let attemptRuntime = inner;
         let cleanup;
         try {
           const resolution = normalizeAttemptResolution(await resolveAttempt?.({
@@ -638,7 +640,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         || !entrySupportsSessionResume(primary) || !entrySatisfiesRequirements(primary, options)) {
         throw new Error("Router primary does not support native prepared dispatch");
       }
-      let callOptions = snapshotNativeDispatchOptions({ ...options, model: primary.model }), attemptRuntime = inner;
+      let callOptions = snapshotNativeDispatchOptions({ ...options, model: primary.model });
+      /** @type {import("../../contracts/runtime.js").RuntimeAttempt} */
+      let attemptRuntime = inner;
       const capturedTools = snapshotNativeDispatchOptions(effectiveRouterToolOptions(host, configuredTools));
       /** @type {(() => (void|Promise<void>))|undefined} */ let cleanup;
       let cleaned = false;
@@ -839,8 +843,8 @@ function modelKey(model) {
  * seam when it is concrete.
  *
  * @param {AgentRuntimeHostOptions} host
- * @param {import('../types.js').AgentRuntimeToolOptions|undefined} configuredTools
- * @returns {import('../types.js').AgentRuntimeToolOptions}
+ * @param {import("../../contracts/runtime.js").AgentRuntimeToolOptions|undefined} configuredTools
+ * @returns {import("../../contracts/runtime.js").AgentRuntimeToolOptions}
  */
 function effectiveRouterToolOptions(host, configuredTools) {
   /** @type {Object<string, *>} */
@@ -862,8 +866,8 @@ function effectiveRouterToolOptions(host, configuredTools) {
  * ToolContext before every execution so a blank or stale runtime cannot diverge
  * from the router's host/configured/run policy or telemetry.
  *
- * @param {AgentRuntimeInstance} runtime
- * @param {import('../types.js').AgentRuntimeToolOptions} toolOptions
+ * @param {import("../../contracts/runtime.js").RuntimeAttempt} runtime
+ * @param {import("../../contracts/runtime.js").AgentRuntimeToolOptions} toolOptions
  */
 function projectPiRuntimeToolContext(runtime, toolOptions) {
   if (typeof runtime.configureTools !== "function") {
@@ -951,7 +955,7 @@ function withoutAttemptScopedOptions(options) {
   return projected;
 }
 
-/** @param {AgentRuntimeInstance} runtime */
+/** @param {import("../../contracts/runtime.js").RuntimeAttempt} runtime */
 function assertRuntimeLike(runtime) {
   if (runtime === null || typeof runtime !== "object" || typeof runtime.run !== "function") {
     throw new Error("route attempt resolver runtime must expose run()");
@@ -1180,7 +1184,7 @@ function entrySupportsSessionResume(entry) {
 
 /**
  * @param {Partial<RuntimeRunOptions>} callOptions
- * @param {import('../types.js').RuntimeEvent} event
+ * @param {import("../../contracts/events.js").RuntimeEvent} event
  * @returns {void}
  */
 function emit(callOptions, event) {

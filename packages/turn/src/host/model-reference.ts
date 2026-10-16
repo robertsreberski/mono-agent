@@ -1,5 +1,5 @@
 import { parseRuntimeModelReference } from "@mono-agent/turn/ai/runtime/model-refs.js";
-import type { RuntimeModelReference } from "./types.js";
+import type { RuntimeModelReference } from "./runtime-contracts.js";
 
 type RuntimeAdapterErrorCode =
   | "invalid_model_reference"

@@ -1,3 +1,4 @@
+import { runHarnessPrompt } from "./engine-turn/prompt-operation.js";
 import { canCertifySilentTurn } from "../silent-turn.js";
 import { createDispatchProgress, withDispatchProgress } from "./engine-turn/dispatch-progress.js";
 import { validateSessionTurn } from "../../engine/journal-schema.js";
@@ -81,7 +82,6 @@ import {
   buildTurnHarness,
   buildTurnTools,
   createLiveInputPromptEpoch,
-  runHarnessPrompt,
   startLiveInput,
   thinkingLevelForEffort,
 } from "./engine-turn/turn-runner.js";

@@ -1,103 +1,25 @@
-import type { ProcessJobState } from "@mono-agent/contracts";
+import type { ProcessJobProcessResult } from "#turn/contracts/process";
+import type { ProcessJobLaunchOptions } from "#turn/contracts/process";
+import type { ProcessJobProcessHandle } from "#turn/contracts/process";
+import type { ProcessJobStartRequest } from "#turn/contracts/process";
+import type { ProcessJobStartResult } from "#turn/contracts/process";
+import type { ProcessJobControllerLimits } from "#turn/contracts/process";
+import type { ProcessJobsController } from "#turn/contracts/process";
 
-import type { PreparedSandboxCommand } from "./sandbox.js";
+export type { ProcessJobProcessResult } from "#turn/contracts/process";
 
-export interface ProcessJobProcessResult {
-  readonly code: number | null;
-  readonly signal: NodeJS.Signals | null;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly aborted: boolean;
-  readonly timedOut: boolean;
-  readonly bufferExceeded: boolean;
-  readonly truncated: boolean;
-  readonly bytes: number;
-  readonly storedBytes: number;
-  readonly spawnError: Error | null;
-  /** False only when bounded termination settled without proof that the owned group disappeared. */
-  readonly groupExitConfirmed?: boolean;
-  readonly durationMs: number;
-}
+export type { ProcessJobLaunchOptions } from "#turn/contracts/process";
 
-export interface ProcessJobLaunchOptions {
-  readonly timeoutMs?: number;
-  readonly signal?: AbortSignal;
-  readonly maxBufferBytes?: number;
-  readonly onStdout?: (chunk: Buffer) => void;
-  readonly onStderr?: (chunk: Buffer) => void;
-}
+export type { ProcessJobProcessHandle } from "#turn/contracts/process";
 
-export interface ProcessJobProcessHandle {
-  readonly pid: number | null;
-  readonly pgid: number | null;
-  readonly startedAt: string;
-  readonly completion: Promise<ProcessJobProcessResult>;
-  /** Release the gated target only after PID/PGID/incarnation ownership is durable. */
-  readonly release: () => Promise<void>;
-  /** Send SIGTERM to the owned group and escalate to SIGKILL after one second. */
-  readonly cancel: () => void;
-}
+export type { ProcessJobStartRequest } from "#turn/contracts/process";
 
-export interface ProcessJobStartRequest {
-  readonly tool: "Exec" | "Bash";
-  /**
-   * Exact sandbox-prepared command. The controller takes ownership before
-   * start() can settle and must call cleanup after the owned process group exits
-   * on every success/failure/cancellation path. Commands that deliberately
-   * create a different POSIX session or process group are outside this ownership
-   * contract. Never persist env values or raw argv from this object.
-   */
-  readonly prepared: PreparedSandboxCommand;
-  /** Kernel-produced summary that contains no argument/command values. */
-  readonly summary: string;
-  /**
-   * Model-authored purpose for user-visible lifecycle messages. The host must
-   * bound and redact this before retaining it; never persist the raw value.
-   */
-  readonly description?: string;
-  /** Omission preserves the terminal wake; false updates lifecycle surfaces only. */
-  readonly wakeOnCompletion?: boolean;
-  /** Explicit per-call narrowing; omission delegates to compiled host config. */
-  readonly timeoutMs?: number;
-  /** Explicit per-call preview narrowing; omission delegates to host config. */
-  readonly maxOutputChars?: number;
-  /** One-shot launcher bound to the exact prepared command and POSIX group wait. */
-  readonly launch: (options?: ProcessJobLaunchOptions) => ProcessJobProcessHandle;
-}
+export type { ProcessJobStartResult } from "#turn/contracts/process";
 
-export interface ProcessJobStartResult {
-  readonly jobId: string;
-  readonly state: Extract<ProcessJobState, "queued" | "starting" | "running">;
-  readonly startedAt: string | null;
-  /**
-   * Runtime budget the host actually granted, after its own `maxRuntimeMs`
-   * ceiling was applied to whatever the caller requested. Optional so an older
-   * controller that omits it still satisfies the contract; when present the tool
-   * reports it, so a reduced budget can never be silently mistaken for the
-   * requested one.
-   */
-  readonly maxRuntimeMs?: number;
-  /** Admission-time snapshot; later cancellations may change the position. */
-  readonly queuePosition?: number;
-  readonly queueDeadlineAt?: string;
-}
+export type { ProcessJobControllerLimits } from "#turn/contracts/process";
 
-/** Host budget a background job is bounded by, independent of any one request. */
-export interface ProcessJobControllerLimits {
-  readonly maxRuntimeMs: number;
-  readonly maxOutputBytes: number;
-}
+export type { ProcessJobsController } from "#turn/contracts/process";
 
-/** Request-scoped host controller injected only into Pi-native Exec/Bash. */
-export interface ProcessJobsController {
-  /**
-   * The host's standing ceiling, published so the tool schema can state it
-   * before a job is launched. Optional: a controller that omits it simply
-   * leaves the limit unstated rather than failing the contract.
-   */
-  readonly limits?: ProcessJobControllerLimits;
-  start(request: ProcessJobStartRequest): Promise<ProcessJobStartResult>;
-}
 
 /** Bridge the typed host controller to agent-runtime's dependency-free seam. */
 export function bridgeProcessJobsController(

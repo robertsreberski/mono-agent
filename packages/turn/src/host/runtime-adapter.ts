@@ -1,3 +1,4 @@
+import type { MonoRuntimeFallbackChainEntry, MonoRuntimeRetryPolicy, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution, MonoRuntimeAttemptResolver, CreateMonoRuntimeOptions } from "./runtime-options.js";
 import { assertParsedRuntimeModelReference, RuntimeAdapterError } from "./model-reference.js";
 import { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
 import {
@@ -18,13 +19,9 @@ import type {
   RuntimeResult,
   RuntimeRunOptions,
   RuntimeToolOptions,
-} from "./types.js";
+} from "./runtime-contracts.js";
 
-type KernelRuntimeInstance = ReturnType<typeof createRuntime>;
 type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
-type KernelRouterOptions = NonNullable<Parameters<typeof createRouterRuntime>[0]>;
-type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
-type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 
 /** @coreScanRetained */
 export function monoRuntimeSupportsSessionResume(): boolean {
@@ -53,84 +50,6 @@ export function describeMonoRuntimeSupport(
   };
 }
 
-export interface MonoRuntimeFallbackChainEntry {
-  readonly model: RuntimeModelReference;
-  /** String pins this route, `null` selects the provider default, omitted inherits the run effort. */
-  readonly effort?: string | null;
-  /**
-   * Total attempts on this route including the first, 1–10. Omitted means a
-   * single shot. A retry re-runs the whole logical turn on the same model and
-   * only fires for transient provider failures.
-   */
-  readonly attempts?: number;
-}
-
-export interface MonoRuntimeRetryPolicy {
-  /** Delay before the first retry; doubles per retry. Defaults to 1000. */
-  readonly backoffMs?: number;
-  /** Ceiling for the doubled delay. Defaults to 15000. */
-  readonly maxBackoffMs?: number;
-}
-
-export interface MonoRuntimeAttemptContext {
-  readonly model: RuntimeModelReference;
-  /** Index of this route in the chain. Stable across same-model retries. */
-  readonly attemptIndex: number;
-  /** 0 for the first try of a route, then 1, 2, … for each same-model retry. */
-  readonly retryIndex: number;
-}
-
-export interface MonoRuntimeAttemptResolution {
-  /**
-   * Optional isolated runtime for this route. It must emit its tool events and
-   * settle every live-input lease before `run()` returns: the router stops a
-   * retry/backup on that evidence only until it admits the next attempt.
-   */
-  readonly runtime?: MonoRuntimeLike;
-  /** Private per-attempt provider options. These are never copied into router telemetry. */
-  readonly options?: Readonly<Record<string, unknown>> & {
-    /** The sandbox implementation is owned by createMonoRuntime. */
-    readonly sandbox?: never;
-    /** Attempt plugins cannot replace the host's durable process-job owner. */
-    readonly processJobs?: never;
-    readonly ownedForegroundProcesses?: never;
-    /** Attempt plugins cannot replace the host's run-bound artifact sink. */
-    readonly persistArtifact?: never;
-    /** Host conversation replay cannot be supplied by a private route resolver. */
-    readonly detachedContext?: never;
-  };
-  /** Provider-specific projection of the logical tool policy for this attempt. */
-  readonly policyOptions?: Readonly<Pick<
-    RuntimeRunOptions,
-    "allowedTools" | "disallowedTools"
-  >>;
-  readonly cleanup?: () => void | Promise<void>;
-}
-
-export type MonoRuntimeAttemptResolver = (
-  context: MonoRuntimeAttemptContext,
-) => MonoRuntimeAttemptResolution | undefined | Promise<MonoRuntimeAttemptResolution | undefined>;
-
-export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
-  /** The sandbox implementation is owned and injected by runtime-adapter. */
-  readonly sandbox?: never;
-  /**
-   * Ordered model chain for provider failover. When present, runs are served by
-   * the agent-runtime fallback router: the first entry is attempted first and
-   * each retryable provider failure advances to the next entry, so callers
-   * should put the primary model at index 0. The router overrides the per-run
-   * `model` with chain entries; failover details are reported on the result as
-   * `failoverHistory`.
-   */
-  readonly fallbackChain?: readonly MonoRuntimeFallbackChainEntry[];
-  /** Backoff shape for same-model retries. Per-route counts live on each chain entry's `attempts`. */
-  readonly retry?: MonoRuntimeRetryPolicy;
-  /** Private host seam for actual-model provider options and route-owned runtimes. */
-  readonly resolveAttempt?: MonoRuntimeAttemptResolver;
-  /** Custom routers must explicitly attest that their session owner supports native matching. */
-  readonly sessionTurnReconciliation?: "v1";
-}
-
 /** @coreScanRetained */
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
   const { fallbackChain, retry, resolveAttempt, sessionTurnReconciliation, ...hostOptions } = options;
@@ -140,10 +59,10 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   // agent/sandbox-seam.js) — this is the ONE place the real sandbox
   // implementation gets injected, so every mono-agent host's sandbox policy is
   // actually enforced without the kernel depending on this package itself.
-  const hostWithSandbox = {
+  const hostWithSandbox: KernelHostOptions = {
     ...withoutCallerSandbox(hostOptions),
     sandbox: monoSandboxImpl,
-  } as unknown as KernelHostOptions;
+  };
   const protectedResolveAttempt = resolveAttempt === undefined
     ? undefined
     : protectAttemptResolver(resolveAttempt);
@@ -157,7 +76,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
         ...(protectedResolveAttempt === undefined
           ? {}
           : {
-              resolveAttempt: protectedResolveAttempt as unknown as NonNullable<KernelRouterOptions["resolveAttempt"]>,
+              resolveAttempt: protectedResolveAttempt,
             }),
       });
 
@@ -180,8 +99,8 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
         ...(runOptions.ownedForegroundProcesses === undefined
           ? {}
           : { ownedForegroundProcesses: bridgeOwnedForegroundProcesses(runOptions.ownedForegroundProcesses) }),
-      } as unknown as KernelRunOptions);
-      return result as RuntimeResult;
+      });
+      return result;
     },
     async prepareNativeDispatch(systemPrompt, runOptions) {
       if (typeof systemPrompt !== "string" || !systemPrompt.trim() || !runOptions || typeof runOptions !== "object") {
@@ -195,13 +114,13 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
         ...withoutCallerSandbox(runOptions),
         ...(runOptions.processJobs === undefined ? {} : { processJobs: bridgeProcessJobsController(runOptions.processJobs) }),
         ...(runOptions.ownedForegroundProcesses === undefined ? {} : { ownedForegroundProcesses: bridgeOwnedForegroundProcesses(runOptions.ownedForegroundProcesses) }),
-      } as unknown as KernelRunOptions) as import("./types.js").RuntimeNativePreparedDispatch;
+      });
     },
     configureTools(next?: RuntimeToolOptions): void {
       runtime.configureTools?.(
         next === undefined
           ? undefined
-          : (withoutCallerSandbox(next) as unknown as KernelToolOptions),
+          : withoutCallerSandbox(next),
       );
     },
     ...(runtime.sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation: runtime.sessionTurnReconciliation }),
@@ -228,7 +147,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       if (!runtime.salvageDurableSession) throw new RuntimeAdapterError("runtime_backend_unavailable", "Durable session salvage unavailable.");
       return runtime.salvageDurableSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId: string, sessionsRoot: string, deletion?: import("./types.js").RuntimeNativeJournalDeletion): Promise<void> {
+    async retireDurableSession(providerSessionId: string, sessionsRoot: string, deletion?: import("#kernel/native-journal-types").RuntimeNativeJournalDeletion): Promise<void> {
       if (typeof runtime.retireDurableSession !== "function") {
         throw new RuntimeAdapterError(
           "runtime_backend_unavailable",
@@ -257,11 +176,12 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
  * Always return a fresh object so rejecting that implementation never mutates a
  * caller-owned (possibly frozen) option bag.
  */
-function withoutCallerSandbox<T extends Readonly<Record<string, unknown>>>(
+function withoutCallerSandbox<T extends Readonly<Record<string, unknown>> & { readonly sandbox?: never }>(
   input: T,
-): Omit<T, "sandbox"> {
+): T {
   const { sandbox: _callerSandbox, ...rest } = input;
-  return rest;
+  // Sandbox is forbidden by the host contract; retain its named fields and open index.
+  return rest as T;
 }
 
 function protectAttemptResolver(

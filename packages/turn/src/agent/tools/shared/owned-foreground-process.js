@@ -2,30 +2,8 @@
 
 import { startPreparedProcess } from "./process-runner.js";
 
-/**
- * @typedef {{code: number|null, signal: NodeJS.Signals|null, stdout: string, stderr: string,
- * aborted: boolean, timedOut: boolean, bufferExceeded: boolean, truncated: boolean,
- * bytes: number, storedBytes: number, spawnError: Error|null, durationMs: number,
- * groupExitConfirmed?: boolean}} OwnedForegroundProcessResult
- */
-
-/**
- * Host-owned awaited command lane; deliberately not a background-job capability.
- * An attempt controller captures its turn/attempt owner out of band.
- * @typedef {Object} OwnedForegroundProcessController
- * @property {(request: {
- *   tool: "Exec"|"Bash", callId: string,
- *   prepared: import("../../sandbox-seam.js").PreparedSandboxCommand,
- *   timeoutMs: number, signal?: AbortSignal,
- *   launch: (options?: {timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number}) => ReturnType<typeof startPreparedProcess>
- * }) => Promise<OwnedForegroundProcessResult>} run
- */
-
-/**
- * Each provider invocation obtains a fresh host-bound attempt. Neither the model
- * nor a provider tool-call id may select the owning persistent turn.
- * @typedef {{forAttempt(): OwnedForegroundProcessController}} OwnedForegroundProcesses
- */
+/** @typedef {import("../../../contracts/process.js").OwnedForegroundProcessController} OwnedForegroundProcessController */
+/** @typedef {import("../../../contracts/process.js").OwnedForegroundProcesses} OwnedForegroundProcesses */
 
 /**
  * Transfer cleanup and launch authority before awaiting a foreground result.

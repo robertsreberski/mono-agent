@@ -1,7 +1,7 @@
 // Public host restrictions and deliberate adaptations to the canonical kernel.
 import { describe, expect, expectTypeOf, it } from "vitest";
 
-import { createPiOAuthApiKeyResolver, createRuntime } from "@mono-agent/turn";
+import { createPiOAuthApiKeyResolver, createRouterRuntime, createRuntime } from "@mono-agent/turn";
 import { parseRuntimeModelReference } from "@mono-agent/turn/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/turn/ai/runtime/registry.js";
 
@@ -323,3 +323,17 @@ describe("host public contract", () => {
     expectTypeOf(createPiOAuthApiKeyResolver).returns.toBeFunction();
   });
 });
+
+// Full request and attempt assignment, not only the comparable-key subset above.
+// These bodies are never executed; the host typecheck verifies their contracts.
+function checkFullRequest(options: RuntimeRunOptions): void {
+  void createRuntime().run("SYSTEM", options);
+}
+function checkAttemptResolution(resolution: MonoRuntimeAttemptResolution): void {
+  const accept: NonNullable<Parameters<typeof createRouterRuntime>[0]>["resolveAttempt"] = () => resolution;
+  void accept;
+}
+if (false) {
+  checkFullRequest({ model: parseRuntimeModelReference("fictional:fixture"), messages: [], abortSignal: new AbortController().signal });
+  checkAttemptResolution({ runtime: createMonoRuntime() });
+}

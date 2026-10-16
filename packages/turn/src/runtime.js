@@ -44,11 +44,11 @@ import { snapshotNativeDispatchOptions } from "./ai/providers/engine-turn/prepar
 import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
 
 /**
- * @typedef {import('./ai/types.js').AgentRuntimeHostOptions} AgentRuntimeHostOptions
- * @typedef {import('./ai/types.js').AgentRuntimeToolOptions} AgentRuntimeToolOptions
- * @typedef {import('./ai/types.js').AgentRuntimeInstance} AgentRuntimeInstance
- * @typedef {import('./ai/types.js').RuntimeRunOptions} RuntimeRunOptions
- * @typedef {import('./ai/types.js').RuntimeResult} RuntimeResult
+ * @typedef {import("./contracts/runtime.js").AgentRuntimeHostOptions} AgentRuntimeHostOptions
+ * @typedef {import("./contracts/runtime.js").AgentRuntimeToolOptions} AgentRuntimeToolOptions
+ * @typedef {import("./contracts/runtime.js").AgentRuntimeInstance} AgentRuntimeInstance
+ * @typedef {import("./contracts/runtime.js").RuntimeRunOptions} RuntimeRunOptions
+ * @typedef {import("./contracts/runtime.js").RuntimeResult} RuntimeResult
  */
 
 // Host-integration callbacks bound onto every request. This list is the runtime
@@ -115,9 +115,9 @@ const PROMPT_OVERRIDE_KEYS = ["structuredOutputInstruction", "structuredOutputFi
  * leaves the bridge on its built-in string). Kept out of the `...hostDefaults,
  * ...options` spread so a run that overrides ONE prompt does not drop the host's
  * other prompt defaults (an object-replacing spread would).
- * @param {import('./ai/types.js').RuntimePromptOverrides} [hostPrompts]
- * @param {import('./ai/types.js').RuntimePromptOverrides} [runPrompts]
- * @returns {import('./ai/types.js').RuntimePromptOverrides|undefined}
+ * @param {import("./contracts/policy.js").RuntimePromptOverrides} [hostPrompts]
+ * @param {import("./contracts/policy.js").RuntimePromptOverrides} [runPrompts]
+ * @returns {import("./contracts/policy.js").RuntimePromptOverrides|undefined}
  */
 function resolvePrompts(hostPrompts, runPrompts) {
   if (!hostPrompts && !runPrompts) return undefined;
@@ -284,7 +284,7 @@ export function createRuntime(host = {}) {
      * @returns {Promise<RuntimeResult>}
      */
     run: (systemPrompt, options) => /** @type {Promise<RuntimeResult>} */ (executeRequest(systemPrompt, options)),
-    prepareNativeDispatch: (systemPrompt, options) => /** @type {Promise<import('./ai/types.js').NativePreparedDispatch>} */ (
+    prepareNativeDispatch: (systemPrompt, options) => /** @type {Promise<import("./contracts/runtime.js").NativePreparedDispatch>} */ (
       executeRequest(systemPrompt, snapshotNativeDispatchOptions(options), true)),
     configureTools(next = {}) {
       updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));

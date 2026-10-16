@@ -27,7 +27,7 @@ const MAX_EXEC_ARGS = 256;
 
 /**
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{ctx: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
  */
 export async function execToolImpl(params, options) {
   return (await execToolRun(params, options)).text;
@@ -37,7 +37,7 @@ export async function execToolImpl(params, options) {
  * Execute an argv vector directly, without shell parsing.
  *
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{ctx: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../ai/types.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./shared/owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
  */
 export async function execToolRun(
   {

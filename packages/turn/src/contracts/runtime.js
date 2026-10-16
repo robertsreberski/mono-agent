@@ -1,193 +1,20 @@
-// Runtime contracts, authored as JSDoc alongside the JavaScript runtime.
-// The package also owns the TypeScript host integration in src/host.
-//
-// `tsc -p tsconfig.types.json` emits these declarations into types/ai/types.d.ts.
-// JavaScript modules reference them with import typedefs; TypeScript hosts use
-// the generated declarations through the package entrypoints.
-//
-/**
- * @typedef {"pi"} RuntimeSdkId
- * Runtime-result and telemetry label. Model references no longer carry this
- * field because Pi is the sole runtime bridge.
- */
+/** @typedef {import("./policy.js").RuntimeToolLimits} RuntimeToolLimits */
+/** @typedef {import("./policy.js").RuntimeCompactionPolicy} RuntimeCompactionPolicy */
+/** @typedef {import("./policy.js").RuntimePromptOverrides} RuntimePromptOverrides */
+// Shared turn contracts, authored as JSDoc; no runtime implementation imports.
 
-/**
- * @typedef {"pi"} RuntimeBridgeId
- * Direct Pi bridge id returned by src/ai/runtime/registry.js.
- */
+/** @typedef {import("./model.js").RuntimeSdkId} RuntimeSdkId */
+/** @typedef {import("./model.js").RuntimeBridgeId} RuntimeBridgeId */
+/** @typedef {import("./model.js").RuntimeModelRef} RuntimeModelRef */
+/** @typedef {import("./events.js").RuntimeEvent} RuntimeEvent */
+/** @typedef {import("./events.js").RuntimeToolLifecycleSink} RuntimeToolLifecycleSink */
+/** @typedef {import("./events.js").RuntimeObserver} RuntimeObserver */
 
-/**
- * @typedef {Object} RuntimeModelRef
- * @property {string} provider            Pi provider id.
- * @property {string} model               Provider model id.
- * @property {string} reference           Canonical `<provider>:<model>` reference.
- */
 
-/**
- * @typedef {Object} RuntimeSubagentIdentity
- * Provider-neutral identity attached to every `subagent_activity` event.
- * @property {string} id The canonical parent attachment key: the initiating
- *   parent tool-use id when the provider exposes it, or a stable synthetic key
- *   for an orphan lifecycle record. A provider-native task/thread id never replaces it.
- * @property {string} [nativeId] Provider-native task or thread id, retained only
- *   as diagnostic/correlation metadata.
- * @property {string} name Provider-neutral profile/agent name.
- * @property {number} callIndex Provider call-order ordinal; consumers must not
- *   use it as an identity key.
- * @property {string} [label] Short task label or description.
- * @property {string} [agentPath] Provider-reported ancestry for a
- *   nested native agent. Informational only; `id` remains the attachment key.
- * @property {number} [costUsd] Priced delegation cost, when the runtime can
- *   attribute it to this subagent.
- * @property {*} [attribution] Bounded provider-route attribution for the
- *   delegation. Consumers must treat it as operator telemetry. On
- *   `agent_started` it is the LAUNCH route — the explicit request completed
- *   with the inherited parent route — with `disposition: "unknown"`, so it
- *   renders requested-only and never as a confirmed run. On `agent_completed`
- *   it is the final accounting, where `requested` is the explicit request
- *   alone. Absent when the runtime knows no route; never guessed.
- */
 
-/**
- * @typedef {"agent_started"|"started"|"completed"|"message"|"agent_completed"} RuntimeSubagentActivityPhase
- * `agent_started`/`agent_completed` bracket the delegation; `started`/`completed`
- * bracket one child tool call; `message` carries optional child-only prose or
- * thinking and must never be treated as parent answer text or a completed tool.
- */
 
-/**
- * @typedef {Object} RuntimeSubagentActivityEvent
- * One normalized native or in-process subagent activity event.
- * @property {"subagent_activity"} type
- * @property {RuntimeSubagentIdentity} subagent
- * @property {RuntimeSubagentActivityPhase} phase
- * @property {string} id Unique activity-row id, namespaced from the canonical
- *   `subagent.id` for lifecycle and tool rows.
- * @property {string} [name]
- * @property {*} [arguments]
- * @property {*} [content]
- * @property {"text"|"thinking"|"status"|"warning"|"error"} [kind] Present on a
- *   `message` phase when known.
- * @property {"assistant"|"user"} [role] Present on a `message` phase when known.
- * @property {boolean} [isError]
- * @property {number} [executionMs]
- * @property {number} [totalTokens]
- */
 
-/**
- * @typedef {RuntimeSubagentActivityEvent | {type: string, [key: string]: *}} RuntimeEvent
- * Structured runtime/telemetry event. Subagent activity uses the normalized
- * shape above; every other event kind (tool_approval_pending,
- * provider_failover_started, context_compaction, ...) adds its own fields.
- */
 
-/** @typedef {"success"|"rejected"|"error"|"exit_nonzero"|"timeout"|"signal"|"cancelled"|"interrupted"} RuntimeToolLifecycleTerminalState */
-
-/**
- * @typedef {Readonly<{
- *   phase: "invocation",
- *   toolCallId: string,
- *   toolName: string,
- *   arguments?: unknown,
- * }>} RuntimeToolLifecycleInvocationEvent
- * Provider-neutral invocation half sent to the host-owned lifecycle sink.
- */
-
-/**
- * @typedef {Readonly<{
- *   phase: "result",
- *   toolCallId: string,
- *   toolName?: string,
- *   content?: unknown,
- *   state: RuntimeToolLifecycleTerminalState,
- *   failureKind?: string,
- *   detailCode?: string,
- *   executionMs?: number,
- *   artifacts?: ReadonlyArray<Readonly<{path: string, available?: boolean}>>,
- * }>} RuntimeToolLifecycleResultEvent
- * Provider-neutral terminal half sent to the host-owned lifecycle sink.
- */
-
-/** @typedef {RuntimeToolLifecycleInvocationEvent | RuntimeToolLifecycleResultEvent} RuntimeToolLifecycleEvent */
-
-/**
- * @typedef {Readonly<{
- *   recordId?: string,
- *   sequence?: number,
- *   persistence: "persisted"|"deferred"|"failed",
- *   truncated?: boolean,
- *   originalBytes?: number,
- *   retainedBytes?: number,
- *   artifactReferences?: ReadonlyArray<Readonly<{id: string, available: boolean}>>,
- *   errorCode?: string,
- * }>} RuntimeToolLifecyclePersistence
- * Bounded metadata returned after one lifecycle half becomes durable.
- */
-
-/**
- * @callback RuntimeToolLifecycleSink
- * @param {RuntimeToolLifecycleEvent} event
- * @returns {Promise<RuntimeToolLifecyclePersistence|undefined>}
- */
-
-/**
- * @typedef {Object} RuntimeObserver
- * Per-call or host-level observer merged by createObserverHub (ai/observer.js).
- * Loose on purpose: observer.js is not a kernel seam file.
- * @property {(event: RuntimeToolLifecycleEvent) => void} [recordToolLifecycle] Synchronous admission before queued lifecycle persistence.
- * @property {(event: RuntimeEvent) => (void|Promise<void>)} [onEvent]
- * @property {() => (void|Promise<void>)} [flush]
- */
-
-/**
- * @typedef {Object} RuntimeToolLimits
- * Typed per-run tool-output limits. Every
- * field is optional; an omitted field falls back to the kernel default (see
- * resolveAgentCompactionPolicy, agent/compaction.js).
- * @property {number} [toolTextLimitChars]        Max chars of a builtin tool's text result.
- * @property {number} [bashOutputLimitChars]      Max chars of bash stdout/stderr.
- * @property {number} [mcpTextLimitChars]         Max chars of an MCP tool's text result.
- * @property {number} [searchResultLimit]         Max Grep/search hits returned.
- * @property {number} [imageInlineMaxBytes]       Max bytes of an inlined image result.
- * @property {number} [toolPayloadMaxBytes]       Hard cap on a single tool_result payload.
- * @property {number} [mcpCallTimeoutMs]          Per-MCP-call inactivity timeout.
- * @property {number} [mcpCallMaxTotalTimeoutMs]  Hard wall-clock cap for one MCP call.
- * @property {number} [bashTimeoutMs]             Foreground ceiling and default for
- *   Bash/Exec timeouts on the Pi bridge, applied by `normalizePiBuiltinToolParams`
- *   (defaults to 120_000). Background hand-offs deliberately ignore it: a process job is
- *   bounded by the host's `processJobs.maxRuntimeMs` instead.
- */
-
-/**
- * @typedef {Object} RuntimeCompactionPolicy
- * Typed per-run context-compaction policy. Every field is
- * optional; omitted scalar budgets resolve adaptively against the effective
- * model context window.
- * @property {boolean} [enabled]              Whether auto-compaction runs at all.
- * @property {number} [triggerRatio]          Fraction of the context window that arms the proactive trigger.
- * @property {number} [keepRecentTokens]      Recent-token budget preserved across a compaction.
- * @property {number} [summaryMaxTokens]      Combined output-token budget for generated compaction summaries.
- * @property {number} [minSavingsTokens]      Minimum token savings required for proactive compaction; reactive recovery accepts any positive reduction.
- * @property {boolean} [fixedOverheadEnabled] Whether the system-prompt + tool-schema overhead correction is folded into the trigger.
- * @property {number} [contextWindowOverride] Persistent correction for provider context-window metadata; learned overflow evidence may lower it process-locally (applied at resolveLiveCompactionPolicy).
- */
-
-/**
- * @typedef {Object} RuntimePromptOverrides
- * Optional overrides for the kernel's built-in prompt fragments. Precedence is
- * run over host over the kernel default: an absent field leaves the built-in
- * string in place. Supplied on both AgentRuntimeHostOptions (host default) and
- * RuntimeRunOptions (per-run).
- * @property {(systemPrompt: string) => string} [structuredOutputInstruction]
- *   Replaces the StructuredOutput system-prompt instruction (receives the raw
- *   system prompt, returns the augmented one). Only applied when an outputSchema is active.
- * @property {() => string} [structuredOutputFinalization]
- *   Replaces the structured-output finalization re-prompt.
- * @property {() => string} [emptyReplyFinalization]
- *   Replaces the single plain-text finalization re-prompt after an empty reply.
- * @property {(body: string) => string} [liveInputGuidance]
- *   Replaces the live-input steering wrapper (receives the raw guidance body).
- */
 
 /**
  * @typedef {Object} RuntimeRunOptions
@@ -200,14 +27,14 @@
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
- * @property {{runId: string, revision: number}} [sessionRecovery] Host-owned durable recovery opt-in.
+ * @property {{runId: string, revision: number}|undefined} [sessionRecovery] Host-owned durable recovery opt-in.
  * @property {() => Promise<ReadonlyArray<Object>>} [detachedContext] Protected lazy host replay prefix; never returned or included in telemetry.
  * @property {(attempt: {descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeResult}) => Promise<void>} [onSessionTurnDetached] Protected awaited host claim before stateless replay.
- * @property {{kind: "host"|"instance", ownerKey: string, historyBucket: string|null, turnId: string, handleId: string, baseRevision: number|null, reconciliation?: {version: 1, purpose: "execution"|"compaction", fenceDigest: string, initialInputId: string|null}}} [sessionTurn] Protected host-owned native ownership/turn binding; no recovery authority.
+ * @property {import("./session.js").RuntimeSessionTurnDescriptor|undefined} [sessionTurn] Protected host-owned native ownership/turn binding; no recovery authority.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {boolean} [manualCompaction] Internal promptless Pi compaction mode; never sent to fallback routes.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
- * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, acknowledge?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, uncertain?: (details: {reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}) => unknown, reject?: (error?: unknown) => unknown}>} [liveInput] Stream of in-flight user messages for steering an active run. Native acceptance, exact transcript consumption, and uncertain delivery are distinct synchronous callbacks; thenables are never awaited as settlement confirmation. An optional opaque logicalOwner object proves that a later same-id value is a fresh callback lease for the first logical owner, not an independent duplicate.
+ * @property {AsyncIterable<import("./live-input.js").RuntimeLiveInputMessage>} [liveInput] Stream of in-flight user messages for steering an active run. Native acceptance, exact transcript consumption, and uncertain delivery are distinct synchronous callbacks; thenables are never awaited as settlement confirmation. An optional opaque logicalOwner object proves that a later same-id value is a fresh callback lease for the first logical owner, not an independent duplicate.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
  * @property {(event: RuntimeEvent) => void} [onEvent]
  * @property {"short"|"long"} [cacheRetention] Optional Anthropic Messages retention; omitted preserves Pi defaults/environment.
@@ -229,9 +56,9 @@
  * @property {AbortSignal} [abortSignal]
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact] Host-owned synchronous artifact writer bound to this run.
  * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment] Host-only environment for Bash, Exec, and nested subagents in this run.
- * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
- * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
- * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
+ * @property {import("../agent/sandbox-seam.js").SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
+ * @property {import("../agent/sandbox-seam.js").RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
+ * @property {import("../agent/sandbox-seam.js").RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
  * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits.
  * @property {readonly string[]} [mcpCallNoTotalTimeoutTools] Exact `server:tool`
  *   names whose host-owned lifecycle has no total deadline. Inactivity and abort still apply.
@@ -244,8 +71,8 @@
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
- * @property {import('../agent/tools/shared/owned-foreground-process.js').OwnedForegroundProcesses} [ownedForegroundProcesses] Host-bound awaited command ownership; no child background capability.
- * @property {import('../agent/tools/shared/process-jobs.js').ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
+ * @property {import("./process.js").OwnedForegroundProcesses} [ownedForegroundProcesses] Host-bound awaited command ownership; no child background capability.
+ * @property {import("./process.js").ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {{chainDepth: number, maxChainDepth: number, remainingStarts: number, unavailableReason?: string}} [processJobsAvailability] Host-owned request lineage diagnostics, including when the controller is unavailable.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
@@ -258,7 +85,7 @@
 /**
  * @typedef {RuntimeRunOptions
  *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
- *   & {runtimeBrand: import('../runtime-brand.js').RuntimeBrand, toolContext?: import('../agent/tools/shared/tool-context.js').ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
+ *   & {runtimeBrand: import("../runtime-brand.js").RuntimeBrand, toolContext?: import("../agent/tools/shared/tool-context.js").ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
  * } RuntimeRequest
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
  * second (options) argument: the host-supplied RuntimeRunOptions, merged by
@@ -335,14 +162,17 @@
  * @property {number} updatedAt
  * @property {{input: number, output: number, cacheRead: number, cacheWrite: number, costUsd: number}} usage
  */
+
 /**
  * @typedef {{ack: string, message: string, background?: boolean, close?: boolean, description?: string}} RuntimeSubagentRecoveryRequest
  */
+
 /**
  * A new route for the turn being admitted. The host persists it on the stored
  * definition, so later continuations inherit it.
  * @typedef {{model?: RuntimeModelRef, effort?: string}} RuntimeSubagentRoute
  */
+
 /**
  * Host-owned, conversation-scoped persistent instance facade. No filesystem implementation belongs in the kernel.
  * @typedef {Object} RuntimeSubagentInstances
@@ -393,14 +223,14 @@
  * @property {"silent"|"visible"} [turnDisposition] Host-certified silent completion, when applicable.
  * @property {*} [structuredResult]
  * @property {string|null} [structuredResultSource]
- * @property {Array<RuntimeEvent>} [events]
+ * @property {ReadonlyArray<import("./events.js").RuntimeEventLike>} [events]
  * @property {Object} [usage]
  * @property {number} [durationMs]
  * @property {number} [numTurns]
  * @property {string} [model]
  * @property {string} [effort]
  * @property {string} [effectiveEffort] Provider-effective reasoning/thinking level when reported.
- * @property {RuntimeSdkId} [sdk]
+ * @property {RuntimeSdkId | (string & {})} [sdk]
  * @property {boolean} [cancelled]
  * @property {string|null} [error]
  * @property {Object|null} [errorDetails]
@@ -409,7 +239,7 @@
  * @property {{runId: string, revision: number, providerSessionId: string, modelKey: string, tipId: string}} [providerSessionRecovery]
  * @property {string|null} [providerSessionId]
  * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (ai/failure.js).
- * @property {Array<Object>} [runtimeWarnings]
+ * @property {unknown} [runtimeWarnings]
  * @property {Object} [diagnostics]
  * @property {Object} [capabilitiesUsed]
  * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
@@ -507,14 +337,14 @@
  * @property {ReadonlyArray<string>} [additionalWriteRoots]
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
- * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
- * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine]
- * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject host integration's implementation from packages/turn/src/host/sandbox.ts.
+ * @property {import("../agent/sandbox-seam.js").SandboxPolicy} [sandboxPolicy]
+ * @property {import("../agent/sandbox-seam.js").RuntimeSandboxEngine} [sandboxEngine]
+ * @property {import("../agent/sandbox-seam.js").RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject host integration's implementation from packages/turn/src/host/sandbox.ts.
  * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
- * @property {(parsed: {provider: string, model: string}) => (import('./cost.js').NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
- * @property {import('../pi-auth.js').PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
+ * @property {(parsed: {provider: string, model: string}) => (import("../ai/cost.js").NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
+ * @property {import("../pi-auth.js").PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact]
  * @property {(record: CompactionRecordedPayload) => void} [onCompactionRecorded]
  * @property {(payload: ApprovalRequestPayload) => Promise<ApprovalDecision>} [onToolApprovalRequest]
@@ -534,9 +364,9 @@
  * @property {ReadonlyArray<string>} [additionalWriteRoots]
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
- * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
- * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine]
- * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox]
+ * @property {import("../agent/sandbox-seam.js").SandboxPolicy} [sandboxPolicy]
+ * @property {import("../agent/sandbox-seam.js").RuntimeSandboxEngine} [sandboxEngine]
+ * @property {import("../agent/sandbox-seam.js").RuntimeSandbox} [sandbox]
  */
 
 /**
@@ -548,6 +378,7 @@
  * @property {ReadonlyArray<{name: string, description: string, parameters: Record<string, any>}>} tools Actual selected built-in/MCP/StructuredOutput declarations.
  * @property {ReadonlyArray<any>} messages Frozen request including current decorated input.
  */
+
 /**
  * @typedef {Object} NativeDispatchBinding
  * @property {string} [sessionId]
@@ -560,11 +391,11 @@
  * @property {any} [nativeSessionAuthority]
  * @property {any} [nativeSessionProjection]
  */
-/**
- * @typedef {{prepared: {status: "prepared", checkpoints: ReadonlyArray<Record<string, any>>, ledger: ReadonlyArray<Record<string, any>>, recent: ReadonlyArray<Record<string, any>>, older: ReadonlyArray<Record<string, any>>, coverage: ReadonlyArray<Record<string, any>>}, outputReserve: number}} NativeHandoffProducerRequest
- * @typedef {Readonly<Record<"intent"|"constraints"|"decisions"|"completedWork"|"failures"|"openWork"|"nextActions"|"references", ReadonlyArray<string>>>} NativeHandoffSummary
- * @typedef {{status: "ready", summary: NativeHandoffSummary, usage?: any, durationMs?: number}|{status: "summary_rejected", reason: string, usage?: any, durationMs?: number}|{status: "budget_failure", reason: string}} NativeHandoffProducerResult
- */
+
+/** @typedef {import("../ai/native-journal-types.js").RuntimeHandoffProducerRequest} NativeHandoffProducerRequest */
+/** @typedef {import("../ai/native-journal-types.js").RuntimeHandoffSummary} NativeHandoffSummary */
+/** @typedef {import("../ai/native-journal-types.js").RuntimeHandoffProducerResult} NativeHandoffProducerResult */
+
 /**
  * @typedef {Object} NativePreparedDispatch
  * @property {() => void} [assertReady] Check availability before host P2 admission, without consuming the lease.
@@ -586,9 +417,20 @@
  * @property {(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: {appliedInputIds: readonly string[]}) => Promise<boolean>} recoverSession
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
- * @property {(providerSessionId: string, sessionsRoot: string) => ReturnType<typeof import('../engine/session-salvage.js').salvageDurableNativeSession>} [salvageDurableSession] Read-only best-effort snapshot of a durable session transcript.
+ * @property {(providerSessionId: string, sessionsRoot: string) => ReturnType<typeof import("../engine/session-salvage.js").salvageDurableNativeSession>} [salvageDurableSession] Read-only best-effort snapshot of a durable session transcript.
  * @property {(providerSessionId: string, sessionsRoot: string, deletion?: {hostAuthority:{version:1,rootId:string,authorityId:string,ownerKey:string,historyBucket:string},disposition:'C'|'D',assertOwned:()=>Promise<void>}) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
  * @property {(providerSessionId: string) => Promise<boolean>} disposeSession
  * @property {(providerSessionId: string) => Promise<boolean>} invalidateSession
  * @property {() => Promise<void>} disposeAllSessions
+ */
+
+/**
+ * Structural attempt runtime, distinct from the concrete factory's complete
+ * lifecycle API. The router checks optional preparation/tool projection at use.
+ * Method signatures preserve structural host projections with stricter inputs.
+ * @typedef {{
+ *   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>,
+ *   configureTools?(next?: AgentRuntimeToolOptions): void,
+ *   prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<NativePreparedDispatch>,
+ * }} RuntimeAttempt
  */

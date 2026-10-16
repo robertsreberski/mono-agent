@@ -7,13 +7,31 @@
     "tsBuildInfoFile": "dist/.host.tsbuildinfo",
     "paths": {
       "#kernel/types": [
-        "./types/ai/types.d.ts"
+        "./types/contracts/runtime.d.ts"
       ],
       "#kernel/cost": [
         "./types/ai/cost.d.ts"
       ],
       "#kernel/native-journal-types": [
         "./types/ai/native-journal-types.d.ts"
+      ],
+      "#turn/contracts/events": [
+        "./types/contracts/events.d.ts"
+      ],
+      "#turn/contracts/live-input": [
+        "./types/contracts/live-input.d.ts"
+      ],
+      "#turn/contracts/mcp-apps": [
+        "./types/contracts/mcp-apps.d.ts"
+      ],
+      "#turn/contracts/session": [
+        "./types/contracts/session.d.ts"
+      ],
+      "#turn/contracts/process": [
+        "./types/contracts/process.d.ts"
+      ],
+      "#turn/contracts/policy": [
+        "./types/contracts/policy.d.ts"
       ]
     }
   },

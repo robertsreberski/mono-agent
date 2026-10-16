@@ -10,7 +10,7 @@ export { digestTurnInput as digestNativeTurnInput } from "../engine/turn-evidenc
 // replaces the default guidance wrapper below; otherwise the default is used.
 /**
  * @param {string} text
- * @param {import('./types.js').RuntimePromptOverrides} [prompts]
+ * @param {import("../contracts/policy.js").RuntimePromptOverrides} [prompts]
  * @returns {string}
  */
 export function formatLiveInputGuidance(text, prompts) {

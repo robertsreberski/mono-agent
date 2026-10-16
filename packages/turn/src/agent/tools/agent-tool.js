@@ -19,8 +19,8 @@ import { homedir } from "node:os";
 import { createCountingSemaphore } from "./shared/semaphore.js";
 import { publicBackgroundStartFailure } from "./shared/process-jobs.js";
 
-/** @typedef {import('../../ai/types.js').RuntimeSubagentDefinition} RuntimeSubagentDefinition */
-/** @typedef {import('../../ai/types.js').RuntimeSubagentsOptions} RuntimeSubagentsOptions */
+/** @typedef {import("../../contracts/runtime.js").RuntimeSubagentDefinition} RuntimeSubagentDefinition */
+/** @typedef {import("../../contracts/runtime.js").RuntimeSubagentsOptions} RuntimeSubagentsOptions */
 
 const GENERAL_PURPOSE_SUBAGENT = "general-purpose";
 
@@ -237,7 +237,7 @@ function positiveInt(value, fallback) {
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
  * @param {{recoveryAccess?: unknown, instancesEnabled?: boolean, persistentExposure?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
- * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../ai/types.js").RuntimeSubagentRecoveryRequest, route?: import("../../ai/types.js").RuntimeSubagentRoute}} [continuation] Internal AgentManage dispatch; never model supplied.
+ * @param {{record: import("../../contracts/runtime.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../contracts/runtime.js").RuntimeSubagentRecoveryRequest, route?: import("../../contracts/runtime.js").RuntimeSubagentRoute}} [continuation] Internal AgentManage dispatch; never model supplied.
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}, continuation) {
@@ -399,7 +399,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         ...(override === undefined ? {} : { model: override.model }),
         ...(params.effort === undefined ? {} : { effort: params.effort }),
       };
-      /** @type {import("../../ai/types.js").RuntimeSubagentInstance|undefined} */
+      /** @type {import("../../contracts/runtime.js").RuntimeSubagentInstance|undefined} */
       let instance;
       const requested = {
         ...(profile.model === undefined ? {} : { model: `${profile.model.provider}:${profile.model.model}` }),

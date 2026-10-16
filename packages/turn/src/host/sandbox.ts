@@ -1,3 +1,7 @@
+import type { SandboxMode, SandboxNetworkMode, SandboxFallback, SandboxEngineId, SandboxNetworkPolicy, SandboxPolicy, SandboxCommandSpec, PreparedSandboxCommand, SandboxEngine, SandboxEffectiveMode, SandboxEffectiveState } from "./sandbox-contracts.js";
+import { SANDBOX_MODES, SANDBOX_NETWORK_MODES, SANDBOX_FALLBACKS } from "./sandbox-contracts.js";
+export type { SandboxMode, SandboxNetworkMode, SandboxFallback, SandboxEngineId, SandboxNetworkPolicy, SandboxPolicy, SandboxCommandSpec, PreparedSandboxCommand, SandboxEngine, SandboxEffectiveMode, SandboxEffectiveState } from "./sandbox-contracts.js";
+export { SANDBOX_MODES, SANDBOX_NETWORK_MODES, SANDBOX_FALLBACKS } from "./sandbox-contracts.js";
 import { execFile } from "node:child_process";
 import { constants as fsConstants, lstatSync, realpathSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -20,17 +24,6 @@ import {
 } from "./sandbox-managed.js";
 
 const execFileAsync = promisify(execFile);
-
-export const SANDBOX_MODES = ["native", "off"] as const;
-export type SandboxMode = (typeof SANDBOX_MODES)[number];
-
-export const SANDBOX_NETWORK_MODES = ["none", "localhost", "allowlist", "all"] as const;
-export type SandboxNetworkMode = (typeof SANDBOX_NETWORK_MODES)[number];
-
-export const SANDBOX_FALLBACKS = ["fail-closed", "unsafe-host-process"] as const;
-export type SandboxFallback = (typeof SANDBOX_FALLBACKS)[number];
-
-export type SandboxEngineId = string;
 
 const DEFAULT_DENY_WRITE = [".env", ".env.*", ".git/config", ".git/hooks/**"] as const;
 
@@ -104,26 +97,6 @@ interface SandboxPolicyInput {
   readonly unsafeAllowHostProcess?: boolean;
 }
 
-export interface SandboxNetworkPolicy {
-  readonly mode: SandboxNetworkMode;
-  readonly allowlist: readonly string[];
-}
-
-export interface SandboxPolicy {
-  readonly mode: SandboxMode;
-  readonly engine: SandboxEngineId;
-  readonly root: string;
-  readonly readableRoots: readonly string[];
-  readonly writableRoots: readonly string[];
-  /** Host-internal canonical roots that model tools must never read or mutate. */
-  readonly protectedRoots?: readonly string[];
-  readonly denyWrite: readonly string[];
-  readonly tempRoot: string;
-  readonly network: SandboxNetworkPolicy;
-  readonly fallback: SandboxFallback;
-  readonly unsafeAllowHostProcess: boolean;
-}
-
 type SandboxErrorCode =
   | "invalid_sandbox_policy"
   | "sandbox_unavailable";
@@ -134,46 +107,6 @@ export class SandboxUnavailableError extends SandboxPolicyError {
   constructor(message: string, details: Record<string, unknown> = {}) {
     super("sandbox_unavailable", message, details);
   }
-}
-
-export interface SandboxCommandSpec {
-  readonly command: string;
-  readonly args?: readonly string[];
-  readonly cwd?: string;
-  readonly env?: Record<string, string | undefined>;
-  /** Trusted per-command capability; never derived from model/user tool input. */
-  readonly allowLocalBinding?: boolean;
-}
-
-export interface PreparedSandboxCommand extends SandboxCommandSpec {
-  readonly args: readonly string[];
-  readonly cwd: string;
-  readonly sandboxed: boolean;
-  readonly sandboxSettingsPath?: string;
-  readonly cleanup?: () => Promise<void>;
-}
-
-export interface SandboxEngine {
-  readonly id: SandboxEngineId;
-  isAvailable(): Promise<boolean>;
-  prepareCommand(command: SandboxCommandSpec, policy: SandboxPolicy): Promise<PreparedSandboxCommand>;
-}
-
-export type SandboxEffectiveMode =
-  | "off"
-  | "native"
-  | "blocked"
-  | "unsafe-host-process";
-
-export interface SandboxEffectiveState {
-  readonly configured: boolean;
-  readonly configuredMode: SandboxMode | undefined;
-  readonly effective: SandboxEffectiveMode;
-  readonly engine: SandboxEngineId | undefined;
-  readonly engineAvailable: boolean | undefined;
-  readonly fallback: SandboxFallback | undefined;
-  readonly fallbackActive: boolean;
-  readonly unsafeAllowHostProcess: boolean;
 }
 
 interface PrepareSandboxedCommandInput {

@@ -20,7 +20,7 @@ import {
 } from "../pi-errors.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
 import { projectContext } from "../../../engine/request-projection.js";
-import { runHarnessPrompt } from "./turn-runner.js";
+import { runHarnessPrompt } from "./prompt-operation.js";
 
 // Per-process cache of real context-window ceilings discovered from overflow
 // errors, keyed by model reference/id. The long-running host re-learns quickly

@@ -1,6 +1,6 @@
 // @ts-check
 
-/** @param {import('../../types.js').RuntimeModelRef} modelRef */
+/** @param {import("../../../contracts/model.js").RuntimeModelRef} modelRef */
 export function assertEngineTurnModelRef(modelRef) {
   // Direct kernel callers may bypass the parser, so malformed references must
   // still fail before the sole bridge receives them.

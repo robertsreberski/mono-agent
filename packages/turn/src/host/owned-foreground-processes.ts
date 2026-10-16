@@ -1,26 +1,14 @@
-import type { PreparedSandboxCommand } from "./sandbox.js";
-import type { ProcessJobProcessHandle, ProcessJobProcessResult } from "./process-jobs.js";
+import type { ProcessJobProcessResult } from "#turn/contracts/process";
+import type { ProcessJobProcessHandle } from "#turn/contracts/process";
+import type { OwnedForegroundProcessRequest } from "#turn/contracts/process";
+import type { OwnedForegroundProcessController } from "#turn/contracts/process";
+import type { OwnedForegroundProcesses } from "#turn/contracts/process";
+export type { OwnedForegroundProcessRequest } from "#turn/contracts/process";
 
-/** Exact prepared command; the host owns cleanup from run() invocation onward. */
-export interface OwnedForegroundProcessRequest {
-  readonly tool: "Exec" | "Bash";
-  /** Provider call identity within the host-bound attempt, never a model argument. */
-  readonly callId: string;
-  readonly prepared: PreparedSandboxCommand;
-  readonly timeoutMs: number;
-  readonly signal?: AbortSignal;
-  /** One-shot gated launch. The host must persist incarnation before release(). */
-  readonly launch: (options?: { timeoutMs?: number; signal?: AbortSignal; maxBufferBytes?: number }) => ProcessJobProcessHandle;
-}
+export type { OwnedForegroundProcessController } from "#turn/contracts/process";
 
-export interface OwnedForegroundProcessController {
-  run(request: OwnedForegroundProcessRequest): Promise<ProcessJobProcessResult>;
-}
+export type { OwnedForegroundProcesses } from "#turn/contracts/process";
 
-/** A turn-scoped owner mints an isolated attempt capability for each Pi invocation. */
-export interface OwnedForegroundProcesses {
-  forAttempt(): OwnedForegroundProcessController;
-}
 
 /** Structural bridge, without granting background starts or exposing owner identities. */
 export function bridgeOwnedForegroundProcesses(owner: OwnedForegroundProcesses): OwnedForegroundProcesses {

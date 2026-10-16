@@ -90,7 +90,7 @@ function toolResultOutcome(result) {
  * subset of the orchestrator's runState.
  * @typedef {object} StreamSubscriberState
  * @property {string[]} assistantTexts
- * @property {import('../../types.js').RuntimeDispatchProgress} [dispatchProgress]
+ * @property {import("../../../contracts/runtime.js").RuntimeDispatchProgress} [dispatchProgress]
  * @property {string[]} assistantThinking
  * @property {Set<unknown>} textDeltaIndexes
  * @property {Set<unknown>} thinkingDeltaIndexes

@@ -179,7 +179,7 @@ export function runPreparedProcess(
  * spawn until the host has durably recorded the returned ownership metadata.
  * Foreground handles expose a harmless no-op release for one structural shape.
  *
- * @returns {{pid: number|null, pgid: number|null, startedAt: string, completion: Promise<any>, release: () => Promise<void>, cancel: () => void}}
+ * @returns {import("../../../contracts/process.js").ProcessJobProcessHandle}
  */
 export function startPreparedProcess(
   commandSpec,
@@ -217,6 +217,7 @@ export function startPreparedProcess(
   let child = null;
   let cancel = () => {};
   let release = async () => {};
+  /** @type {Promise<import("../../../contracts/process.js").ProcessJobProcessResult>} */
   const completion = new Promise((resolve) => {
     try {
       child = spawn(

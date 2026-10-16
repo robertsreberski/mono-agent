@@ -8,9 +8,9 @@ import { runtimeCapabilities } from "./capabilities.js";
  * `@typedef`) so this barrel does not re-export a second `RuntimeModelRef`
  * type alongside model-refs.js's — that duplicate `export *` re-export is a
  * TS2308 ambiguity. The canonical export stays in model-refs.js/types.js.
- * @typedef {import('../types.js').RuntimeBridge} RuntimeBridge
- * @typedef {import('../types.js').RuntimeBridgeDescriptor} RuntimeBridgeDescriptor
- * @typedef {import('../types.js').RuntimeBridgeId} RuntimeBridgeId
+ * @typedef {import("../../contracts/runtime.js").RuntimeBridge} RuntimeBridge
+ * @typedef {import("../../contracts/runtime.js").RuntimeBridgeDescriptor} RuntimeBridgeDescriptor
+ * @typedef {import("../../contracts/model.js").RuntimeBridgeId} RuntimeBridgeId
  */
 
 /**
@@ -21,7 +21,7 @@ export function listRuntimeBridges() {
 }
 
 /**
- * @param {import('../types.js').RuntimeModelRef} modelRef
+ * @param {import("../../contracts/model.js").RuntimeModelRef} modelRef
  * @returns {Promise<RuntimeBridge>}
  */
 export async function resolveEngineTurnAdapter(modelRef) {

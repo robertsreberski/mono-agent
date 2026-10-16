@@ -375,7 +375,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/host/types.ts",
+    "file": "packages/turn/src/host/runtime-contracts.ts",
     "names": [
       "RuntimeToolLifecycleEvent",
       "RuntimeToolLifecyclePersistence"

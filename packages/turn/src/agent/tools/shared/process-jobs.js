@@ -4,22 +4,7 @@ import { types as nodeUtilTypes } from "node:util";
 
 import { startPreparedProcess } from "./process-runner.js";
 
-/**
- * Kernel-local structural controller seam. The typed public interface lives in
- * the host integration; the kernel seam stays structural.
- *
- * @typedef {Object} ProcessJobsController
- * @property {(request: {
- *   tool: "Exec"|"Bash",
- *   prepared: import("../../sandbox-seam.js").PreparedSandboxCommand,
- *   summary: string,
- *   description?: string,
- *   wakeOnCompletion?: boolean,
- *   timeoutMs?: number,
- *   maxOutputChars?: number,
- *   launch: (options?: {timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}) => ReturnType<typeof startPreparedProcess>,
- * }) => Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null, maxRuntimeMs?: number, queuePosition?: number, queueDeadlineAt?: string}>} start
- */
+/** @typedef {import("../../../contracts/process.js").ProcessJobsController} ProcessJobsController */
 
 /**
  * Transfer one prepared command to the injected host controller. From the

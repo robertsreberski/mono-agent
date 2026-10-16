@@ -15,7 +15,7 @@
  * prompt and returns the augmented one); otherwise the default below is used.
  * @param {string} systemPrompt
  * @param {unknown} outputSchema
- * @param {import('../../types.js').RuntimePromptOverrides} [prompts]
+ * @param {import("../../../contracts/policy.js").RuntimePromptOverrides} [prompts]
  * @returns {string}
  */
 export function appendStructuredOutputInstruction(systemPrompt, outputSchema, prompts) {
@@ -36,7 +36,7 @@ export function appendStructuredOutputInstruction(systemPrompt, outputSchema, pr
  * The finalization re-prompt issued when a turn ended without submitting the
  * required structured result. A `prompts.structuredOutputFinalization()`
  * override, when supplied, replaces the default text.
- * @param {import('../../types.js').RuntimePromptOverrides} [prompts]
+ * @param {import("../../../contracts/policy.js").RuntimePromptOverrides} [prompts]
  * @returns {string}
  */
 export function structuredOutputFinalizationPrompt(prompts) {
@@ -101,7 +101,7 @@ export function structuredOutputRetryDiagnostics(attempts, reason, failed) {
  *
  * Returns the retry bookkeeping ({attempts, reason}); the caller computes
  * `failed` from the (closure-owned) structuredResult after re-capturing state.
- * @param {{harness: any, structuredTool: {name: string}|null, runtimeWarnings: Array<Record<string, unknown>>, prompts?: import('../../types.js').RuntimePromptOverrides}} deps
+ * @param {{harness: any, structuredTool: {name: string}|null, runtimeWarnings: Array<Record<string, unknown>>, prompts?: import("../../../contracts/policy.js").RuntimePromptOverrides}} deps
  * @returns {Promise<{attempts: number, reason: string}>}
  */
 export async function runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings, prompts }) {

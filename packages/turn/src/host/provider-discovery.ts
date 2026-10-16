@@ -1,3 +1,4 @@
+import type { DiscoveredProvider } from "./provider-contracts.js";
 import { isPlainObject } from "./runtime-helpers.js";
 import {
   localProviderDefinitionFor,
@@ -10,12 +11,7 @@ import type {
   LocalProviderModelDefinition,
   LocalProviderType,
   ProviderDefinition,
-} from "./local-providers.js";
-
-export interface DiscoveredProvider extends LocalProviderDefinition {
-  readonly baseUrl: string;
-  readonly models: readonly LocalProviderModelDefinition[];
-}
+} from "./provider-contracts.js";
 
 interface DiscoverLocalProvidersInput {
   readonly configured?: readonly ProviderDefinition[];

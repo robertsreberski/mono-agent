@@ -43,12 +43,12 @@ async function mcp() {
   cleanups.push(() => new Promise((resolve) => { server.closeAllConnections(); server.close(() => resolve(undefined)); }));
   return { url: `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (server.address()).port}/mcp`, methods, calls };
 }
-/** @returns {Promise<import('../../ai/types.js').NativePreparedDispatch & Required<Pick<import('../../ai/types.js').NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>>} */
+/** @returns {Promise<import("../../contracts/runtime.js").NativePreparedDispatch & Required<Pick<import("../../contracts/runtime.js").NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>>} */
 async function prepare(f, extra = {}, runtime) {
   const lease = await (runtime ? runtime.prepareNativeDispatch("Fictional rules", { ...f.options, ...extra }) : preparePiNativeDispatch("Fictional rules", { ...f.options, ...extra }));
   cleanups.push(() => lease.close());
   if (!lease.produceHandoffSummary || !lease.checkHandoffSummary || !lease.assertReady) throw new Error("Expected prepared producer");
-  return /** @type {import('../../ai/types.js').NativePreparedDispatch & Required<Pick<import('../../ai/types.js').NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>} */ (lease);
+  return /** @type {import("../../contracts/runtime.js").NativePreparedDispatch & Required<Pick<import("../../contracts/runtime.js").NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>} */ (lease);
 }
 
 it("resolves actual built-in/MCP/StructuredOutput declarations before opening any session and reuses MCP once", async () => {
@@ -314,7 +314,7 @@ it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations 
   expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String"); expect(Object.isFrozen(parameters.properties.answer)).toBe(true);
 });
 
-/** @returns {import("../../ai/types.js").NativeHandoffProducerRequest} */
+/** @returns {import("../../contracts/runtime.js").NativeHandoffProducerRequest} */
 const producerInput = () => ({ prepared: { status: "prepared", checkpoints: [], ledger: [{ kind: "tool", outcome: "unknown" }],
   recent: [], older: [], coverage: [] }, outputReserve: 256 });
 const summaryText = () => JSON.stringify(Object.fromEntries(["intent", "constraints", "decisions", "completedWork", "failures", "openWork", "nextActions", "references"]

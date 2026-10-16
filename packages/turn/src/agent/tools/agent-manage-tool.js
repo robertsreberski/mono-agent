@@ -5,7 +5,7 @@ import { createAgentTool, EFFORT_LEVELS } from "./agent-tool.js";
 
 /**
  * Continue the stored definition through the same execution, timeout, budget and activity path as Agent.
- * @param {import('../../ai/types.js').RuntimeSubagentsOptions|null|undefined} subagents
+ * @param {import("../../contracts/runtime.js").RuntimeSubagentsOptions|null|undefined} subagents
  * @param {Parameters<typeof createAgentTool>[1]} [context]
  */
 export function createAgentManageTool(subagents, context = {}) {

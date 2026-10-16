@@ -1,6 +1,6 @@
 // Canonical administrative storage contracts; no runtime imports.
 
-/** @typedef {import("./types.js").RuntimeCompactionPolicy} RuntimeCompactionPolicy */
+/** @typedef {import("../contracts/policy.js").RuntimeCompactionPolicy} RuntimeCompactionPolicy */
 
 /** Host-only storage authority; never a model-facing run option.
  * @typedef {{
