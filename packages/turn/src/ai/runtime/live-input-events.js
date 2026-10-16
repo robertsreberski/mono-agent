@@ -13,7 +13,7 @@ const MAX_DIAGNOSTICS_PER_KIND = 100;
 /**
  * @typedef {{providerEntryId?: string, providerRunId?: string}} RuntimeLiveInputEvidence
  * @typedef {{reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}} RuntimeLiveInputUncertainty
- * @typedef {{body: string, id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: RuntimeLiveInputEvidence) => unknown, acknowledge?: (evidence?: RuntimeLiveInputEvidence) => unknown, uncertain?: (details: RuntimeLiveInputUncertainty) => unknown, reject?: (reason?: unknown) => unknown}} RuntimeLiveInputMessage
+ * @typedef {{body: string, kind?: "process_job"|"user", id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: RuntimeLiveInputEvidence) => unknown, acknowledge?: (evidence?: RuntimeLiveInputEvidence) => unknown, uncertain?: (details: RuntimeLiveInputUncertainty) => unknown, reject?: (reason?: unknown) => unknown}} RuntimeLiveInputMessage
  * @typedef {{message: RuntimeLiveInputMessage, callbackMessage: RuntimeLiveInputMessage, logicalOwner?: object, inputId: string, receivedAt?: string, phase: "available"|"leased"|"native_accepted"|"consumed"|"uncertain", attempt: number, generation: number}} LiveInputOwner
  * @typedef {{type: string, [key: string]: unknown}} LiveInputEvent
  */

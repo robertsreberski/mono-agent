@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { createLiveInputMailbox } from "@mono-agent/conversation";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +20,9 @@ import {
 } from "../process-jobs-runtime.js";
 import {
   bindProcessJobWakeContextToResponder,
+  offerClaimedProcessJobLiveInput,
+  recordProcessJobWakeAdmission,
+  revokeProcessJobWakeAdmission,
   processJobWakeContextForRequest,
   registerProcessJobSteeringTarget,
   runWithProcessJobWakeContext,
@@ -730,6 +735,60 @@ describe("process-job request availability", () => {
     release();
     await flight;
   });
+
+  it.each([false, true])("stamps process-job live-input kind only for an exact private wake flight (trusted=%s)", async (trusted) => {
+    const mailbox = createLiveInputMailbox("active-kind-run");
+    const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "ok" }),
+      offerLiveInput: (request) => mailbox.offer({ ...request }) });
+    const target = registerProcessJobSteeringTarget({ conversationId: "web:kind-thread", runId: "active-kind-run", chainDepth: 0 });
+    const deliveryKey = "process-job:kind-test";
+    const request = { conversationId: "web:kind-thread", id: deliveryKey, deliveryKey,
+      text: "A background job completed.", receivedAt: "2026-01-01T00:00:00.000Z" };
+    try {
+      const offer = await (trusted
+        ? runWithProcessJobWakeContext({ jobId: "kind-test", chainDepth: 1 }, async () => responder.offerLiveInput!(request), deliveryKey)
+        : responder.offerLiveInput!(request));
+      if (offer.status !== "accepted") throw new Error("Expected accepted live input.");
+      const next = await mailbox[Symbol.asyncIterator]().next();
+      if (next.done) throw new Error("Expected a live input message.");
+      expect(next.value.kind).toBe(trusted ? "process_job" : "user");
+      next.value.acknowledge?.();
+      await expect(offer.settled).resolves.toEqual({ status: "applied", runId: "active-kind-run" });
+    } finally { mailbox.close(); target.release(); }
+  });
+
+  it.each(["verified", "unfenced", "wrong-token", "released", "abandoned", "wrong-boundary", "used", "borrowed-key", "tokenless"])(
+    "scopes transport kind to an exact one-use host admission (%s)", async (mode) => {
+      const mailbox = createLiveInputMailbox("transport-kind-run");
+      const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "ok" }),
+        offerLiveInput: (request) => mailbox.offer({ ...request }) });
+      const target = registerProcessJobSteeringTarget({ conversationId: "web:transport-thread", runId: "transport-kind-run", chainDepth: 0 });
+      const deliveryKey = "process-job:transport-kind";
+      const token = randomUUID();
+      const boundary = randomUUID();
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const flight = runWithProcessJobWakeContext({ jobId: "transport-kind", chainDepth: 1,
+        wakeRecovery: { version: 1, token, notCrossed: [] } }, async () => { await released; }, deliveryKey);
+      try {
+        if (mode !== "unfenced") recordProcessJobWakeAdmission(deliveryKey, mode === "wrong-token" ? "wrong" : mode === "tokenless" ? "" : token, boundary);
+        if (mode === "released") revokeProcessJobWakeAdmission(deliveryKey, token, boundary);
+        if (mode === "abandoned") { release(); await flight; }
+        if (mode === "used") offerClaimedProcessJobLiveInput(deliveryKey, token, boundary, () => ({ status: "unavailable", reason: "inactive" }));
+        const offerInput = () => responder.offerLiveInput!({ conversationId: "web:transport-thread", id: deliveryKey, deliveryKey,
+          text: "<conversation_tags>\"maintenance\"</conversation_tags>\n\nA background job completed.", receivedAt: "2026-01-01T00:00:00.000Z" });
+        // A user knowing a live key cannot borrow an unrelated in-flight claim.
+        const offer = mode === "borrowed-key" ? offerInput()
+          : offerClaimedProcessJobLiveInput(deliveryKey, token, mode === "wrong-boundary" ? "other" : boundary, offerInput);
+        if (offer.status !== "accepted") throw new Error("Expected accepted live input.");
+        const next = await mailbox[Symbol.asyncIterator]().next();
+        if (next.done) throw new Error("Expected a live input message.");
+        expect(next.value.kind).toBe(mode === "verified" ? "process_job" : "user");
+        next.value.acknowledge?.();
+        await expect(offer.settled).resolves.toEqual({ status: "applied", runId: "transport-kind-run" });
+      } finally { release(); await flight; mailbox.close(); target.release(); }
+    },
+  );
 
   it("targets the exact active run and keeps depth only for matching applied wake steering", async () => {
     type Settlement =

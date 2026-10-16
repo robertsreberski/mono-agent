@@ -10,6 +10,16 @@ import {
 } from "@mono-agent/contracts";
 import type { RuntimeLiveInputMessage } from "@mono-agent/turn/host/types";
 
+// Private symbol survives in-process request copies, but cannot be supplied by
+// channel JSON, transport ids, wake text, or a client-provided delivery key.
+const processJobInput = Symbol("host-process-job-input");
+
+/** Host-only: bind a completion wake after validating its private wake flight. */
+export function bindProcessJobLiveInput(request: AgentLiveInputRequest): AgentLiveInputRequest {
+  const bound = { ...request, [processJobInput]: true };
+  return bound;
+}
+
 export interface AppliedLiveInput {
   readonly id: string;
   readonly text: string;
@@ -60,6 +70,8 @@ export function createLiveInputMailbox(runId: string, onClose?: () => void): Liv
 
   const runtimeMessage = (entry: LiveInputEntry, lease: number): RuntimeLiveInputMessage => ({
     body: entry.request.text,
+    kind: (entry.request as AgentLiveInputRequest & { [processJobInput]?: boolean })[processJobInput] === true
+      ? "process_job" : "user",
     id: entry.request.id,
     receivedAt: entry.request.receivedAt,
     logicalOwner: entry.logicalOwner,

@@ -36,6 +36,7 @@ import {
   splitPromptMessages,
 } from "../../ai/providers/engine-turn.js";
 import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
+import * as engineAdapter from "../../ai/providers/engine-turn/engine-adapter.js";
 import { createPiSessionAdapter } from "../../engine/session-adapter.js";
 import { readTurnEvidence } from "../../engine/turn-evidence.js";
 import { ENGINE_CONTEXT } from "@mono-agent/turn/engine";
@@ -46,7 +47,9 @@ import {
 } from "../../ai/providers/engine-turn/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
-import { refreshProviderSession, syncProviderSession } from "../../ai/runtime/sessions.js";
+import { recoverDurableNativeSession, resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
+import { repairInterruptedSession } from "../../engine/interruption.js";
+import { disposeProviderSession, refreshProviderSession, syncProviderSession } from "../../ai/runtime/sessions.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 
@@ -94,6 +97,29 @@ describe("pi-native live input", () => {
     expect(uncertain).not.toHaveBeenCalled();
     expect(reject).not.toHaveBeenCalled();
     expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    [["process_job"], true],
+    [["process_job", "user"], false],
+    [["process_job", undefined], false],
+  ])("requires every consumed input to be a known process-job wake (%j)", (kinds, eligible) => {
+    let subscriber;
+    const epoch = createLiveInputPromptEpoch({ harness: { subscribe(handler) { subscriber = handler; } }, onEvent: () => {} });
+    epoch.confirm("owned-run");
+    subscriber({ type: "run_start", lane: "main", runId: "owned-run" });
+    kinds.forEach((kind, index) => {
+      const entryId = `entry-${index}`;
+      epoch.register(entryId, { id: `input-${index}`, kind });
+      subscriber({ type: "message_end", lane: "main", runId: "owned-run", entryId, message: { role: "user" } });
+    });
+    expect(epoch.silenceEligible()).toBe(eligible);
+    expect(epoch.consumedInputIds()).toHaveLength(kinds.length);
+    subscriber({ type: "run_start", lane: "main", runId: "another-run" });
+    expect(epoch.silenceEligible()).toBe(false);
+    expect(epoch.silenceRefusalReason()).toBe("live_input_uncertain");
+    expect(epoch.consumedInputIds()).toBeNull();
+    epoch.close();
   });
 
   // Regression: with the operation only confirmed by finish() at the end of the
@@ -1152,8 +1178,48 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
-  it("does not certify silence after a consumed live input", async () => {
+  it.each(["user", undefined])("refuses silence after consumed %s live input and returns the visible reply", async (kind) => {
     const model = setup();
+    let releaseFirst;
+    const firstReleased = new Promise((resolve) => { releaseFirst = resolve; });
+    let firstSeen = false;
+    faux.setResponses([
+      async () => {
+        firstSeen = true;
+        await firstReleased;
+        return fauxAssistantMessage([fauxToolCall("Read", { file_path: "missing.txt" }, { id: "read-1" })]);
+      },
+      fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })]),
+      fauxAssistantMessage([fauxText("Visible follow-up answer.")]),
+    ]);
+    const acknowledge = vi.fn();
+    const liveInput = (async function* () {
+      await vi.waitFor(() => expect(firstSeen).toBe(true));
+      yield { id: "process-job:untrusted-id", kind, body: "New instruction", accepted: releaseFirst, acknowledge,
+        uncertain: releaseFirst };
+    })();
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["Read", "FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+      liveInput,
+    }));
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ text: "Visible follow-up answer.", error: null, failureKind: null });
+    expect(result.turnDisposition).toBeUndefined();
+    expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
+      part.type === "tool_result" && part.is_error && part.content.includes("live_input_consumed")))).toBe(true);
+  });
+
+  it.each([false, true])("certifies silence with consumed process-job input and preserves recovery evidence (coordinated=%s)", async (coordinated) => {
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "silent-process-input-"));
+    const id = `silent-process-${coordinated}`;
+    const turnId = "silent-wake-turn";
+    const inputId = "process-job:completion-two";
+    const descriptor = { kind: "host", ownerKey: id, historyBucket: id, turnId, handleId: id, baseRevision: 0,
+      reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "initial-wake" } };
     let releaseFirst;
     const firstReleased = new Promise((resolve) => { releaseFirst = resolve; });
     let firstSeen = false;
@@ -1166,20 +1232,126 @@ describe("pi-native AgentHarness bridge", () => {
       fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })]),
     ]);
     const acknowledge = vi.fn();
+    const uncertain = vi.fn(releaseFirst);
     const liveInput = (async function* () {
       await vi.waitFor(() => expect(firstSeen).toBe(true));
-      yield { id: "input-1", body: "New instruction", accepted: releaseFirst, acknowledge,
-        uncertain: releaseFirst };
+      yield { id: inputId, kind: "process_job", body: "A second background job completed.",
+        accepted: releaseFirst, acknowledge, uncertain };
     })();
+    const options = runOptions(model, { sessionId: id, sessionsRoot: root, sessionKeepAlive: true,
+      messages: [{ role: "user", content: "A background job completed." }],
+      allowedTools: ["Read", "FinishSilently"], toolContext: createToolContext({ workspace: root }),
+      finishSilentlyController: { eligible: () => true }, liveInput,
+      ...(coordinated ? { sessionTurn: descriptor } : { sessionRecovery: { runId: turnId, revision: 0 } }),
+    });
+    try {
+      const result = await generateEngineTurnResponse("system", options);
+      expect(result).toMatchObject({ text: "", error: null, failureKind: null, turnDisposition: "silent" });
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(uncertain).not.toHaveBeenCalled();
+      expect(result.runtimeWarnings.some((warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
+      if (coordinated) {
+        const repo = resolveDurableNativeSessionRepo(root);
+        const raw = await repo.open((await repo.list())[0]);
+        try {
+          const evidence = await readTurnEvidence(raw, turnId);
+          expect(evidence.consumedInputIds).toEqual(["initial-wake", inputId]);
+          expect(raw.validator.inputs.get(inputId)).toMatchObject({ state: "consumed" });
+          expect(evidence.seal).toMatchObject({ outcome: "completed", result: { text: "", turnDisposition: "silent" } });
+          const seq = raw.seq;
+          await repairInterruptedSession(raw);
+          expect(raw.seq).toBe(seq); // A silent completed turn is not replayed as interrupted work.
+        } finally { await raw.close(); }
+      } else {
+        expect(result.providerSessionRecovery).toBeDefined();
+        expect(await recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).toBe(false);
+        expect(await recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [inputId] })).toBe(true);
+      }
+      let nextContext;
+      faux.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("Next visible reply.")]); }]);
+      const next = await generateEngineTurnResponse("system", { ...options, liveInput: undefined,
+        messages: [{ role: "user", content: "Continue." }], sessionRecovery: undefined,
+        ...(coordinated ? { sessionTurn: { ...descriptor, turnId: "next-turn", baseRevision: 1,
+          reconciliation: { ...descriptor.reconciliation, initialInputId: "next-input" } } } : {}),
+      });
+      expect(next).toMatchObject({ text: "Next visible reply.", error: null });
+      expect(JSON.stringify(nextContext).split("A second background job completed.")).toHaveLength(2);
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+    } finally { await disposeProviderSession(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("retries toolUse silence when a late user-consumption receipt invalidates the real prompt epoch", async () => {
+    const model = setup();
+    const listeners = new Set();
+    let operationId;
+    const original = engineAdapter.createHarnessAdapter;
+    const spy = vi.spyOn(engineAdapter, "createHarnessAdapter").mockImplementation(async (...args) => {
+      const harness = await original(...args);
+      const subscribe = harness.subscribe;
+      harness.subscribe = (listener) => {
+        listeners.add(listener);
+        const remove = subscribe((event) => { if (event.type === "run_start" && event.lane === "main") operationId = event.runId; listener(event); });
+        return () => { listeners.delete(listener); remove(); };
+      };
+      // Hold the queue receipt unconsumed until after the terminal tool accepts.
+      harness.steer = async () => "late-user-entry";
+      return harness;
+    });
+    let release;
+    const admitted = new Promise((resolve) => { release = resolve; });
+    let started;
+    const ready = new Promise((resolve) => { started = resolve; });
+    const acknowledge = vi.fn();
+    faux.setResponses([
+      async () => { started(); await admitted; return fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "late-silence" })]); },
+      (context) => { expect(getCurrentTools(context.messages)).toEqual([]); return fauxAssistantMessage([fauxText("Visible answer to the late user.")]); },
+    ]);
+    let accepted = false;
+    try {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check the completion." }], allowedTools: ["FinishSilently"],
+        toolContext: createToolContext({ workspace: sessionsRoot }), finishSilentlyController: { eligible: () => true },
+        liveInput: (async function* () { await ready; yield { id: "late-user", kind: "user", body: "A late user instruction.", accepted: release, acknowledge }; })(),
+        onEvent: (event) => {
+          if (event.type !== "user" || !event.message?.content?.some((part) => part.type === "tool_result" && part.content.includes("Silent completion accepted."))) return;
+          accepted = true;
+          // Simulate the late native consumption edge, not a host-controller flip.
+          // This goes through the running epoch's actual entry/operation correlator.
+          for (const listener of listeners) listener({ type: "message_end", lane: "main", runId: operationId,
+            entryId: "late-user-entry", message: { role: "user", content: [{ type: "text", text: "A late user instruction." }] } });
+        },
+      }));
+      expect(accepted).toBe(true);
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ text: "Visible answer to the late user.", error: null });
+      expect(result.turnDisposition).toBeUndefined();
+      expect(result.runtimeWarnings.filter((warning) => warning.warning_kind === "empty_reply_retry").map((warning) => warning.outcome)).toEqual(["started", "text"]);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("retries empty output when accepted terminal silence loses certification", async () => {
+    const model = setup();
+    let eligible = true;
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-invalidated" })]),
+      (context) => {
+        expect(getCurrentTools(context.messages)).toEqual([]);
+        return fauxAssistantMessage([fauxText("Visible finalization reply.")]);
+      },
+    ]);
     const result = await generateEngineTurnResponse("system", runOptions(model, {
-      messages: [{ role: "user", content: "Check" }],
-      allowedTools: ["Read", "FinishSilently"],
+      messages: [{ role: "user", content: "Check the completion." }], allowedTools: ["FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
-      finishSilentlyController: { eligible: () => true },
-      liveInput,
+      finishSilentlyController: { eligible: () => eligible },
+      onEvent: (event) => {
+        if (event.type === "user" && event.message?.content?.some((part) =>
+          part.type === "tool_result" && part.content.includes("Silent completion accepted."))) eligible = false;
+      },
     }));
-    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ text: "Visible finalization reply.", error: null });
     expect(result.turnDisposition).toBeUndefined();
+    expect(result.runtimeWarnings.filter((warning) => warning.warning_kind === "empty_reply_retry")
+      .map((warning) => warning.outcome)).toEqual(["started", "text"]);
   });
 
   it("serializes invoked Bash calls while preserving source-ordered results", async () => {
@@ -1682,6 +1854,23 @@ describe("pi-native AgentHarness bridge", () => {
       expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
         part.type === "tool_result" && part.is_error && part.content.includes("visible_content")))).toBe(true);
     } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
+  });
+
+  it.each(["operation_mismatch", "event_buffer_overflow"])("reports live_input_uncertain for %s correlation", async (failure) => {
+    let subscriber;
+    const epoch = createLiveInputPromptEpoch({ harness: { subscribe(handler) { subscriber = handler; } }, onEvent: () => {} });
+    epoch.confirm("owned-run");
+    subscriber({ type: "run_start", lane: "main", runId: "owned-run" });
+    if (failure === "operation_mismatch") epoch.confirm("other-run");
+    else for (let index = 0; index < 102; index++) subscriber({ type: "message_end", lane: "main", runId: "owned-run",
+      entryId: `overflow-${index}`, message: { role: "user" } });
+    const silentTurnState = { soleCall: true, visibleContent: false, pendingQuestion: false,
+      failed: false, accepted: false, completed: false, liveInputRefusalReason: epoch.silenceRefusalReason };
+    const tool = getPiBuiltinTools(["FinishSilently"], { ctx: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true }, silentTurnState }).find((entry) => entry.name === "FinishSilently");
+    await expect(tool.execute("uncertain-silence", {}, new AbortController().signal)).rejects.toThrow("live_input_uncertain");
+    expect(silentTurnState.accepted).toBe(false);
+    epoch.close();
   });
 
   it("refuses silence after a prior rich output in the same run", async () => {

@@ -20,6 +20,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 import {
   AgentHarnessFailureError,
+  bindProcessJobLiveInput,
   createAgentHarness,
   createAgentResponder,
   createDurableHistoryStore,
@@ -1055,6 +1056,45 @@ describe("AgentHarness", () => {
     expect(memoryTurns[0]?.summary).toContain("User: Initial request");
     expect(memoryTurns[0]?.summary).toContain("A ProcessJob finished successfully");
     expect(memoryTurns[0]?.captureText).toContain("A ProcessJob finished successfully");
+  });
+
+  it("settles a silent turn with an applied process-job wake without empty_response or redelivery", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are a helpful assistant.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      started();
+      const iterator = options.liveInput?.[Symbol.asyncIterator]();
+      if (!iterator) throw new Error("Missing live-input mailbox.");
+      const wake = await iterator.next();
+      if (wake.done) throw new Error("Missing completion wake.");
+      expect(wake.value.kind).toBe("process_job");
+      wake.value.accepted?.();
+      wake.value.acknowledge?.();
+      return { text: "", turnDisposition: "silent", error: null };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore,
+      createRunId: () => "silent-process-run" });
+    const responder = createAgentResponder({ harness });
+    const running = responder.respond({ conversationId: "wake-thread", text: "A background job completed.",
+      abortSignal: new AbortController().signal }, { append: async () => {} });
+    await ready;
+    const offer = responder.offerLiveInput?.(bindProcessJobLiveInput({ conversationId: "wake-thread",
+      id: "process-job:second", text: "Another background job completed.", deliveryKey: "process-job:second",
+      receivedAt: "2026-01-01T00:00:00.000Z" }));
+    if (offer?.status !== "accepted") throw new Error("Expected an accepted completion wake.");
+    await expect(running).resolves.toMatchObject({ text: "", metadata: { turnDisposition: "silent" } });
+    await expect(offer.settled).resolves.toEqual({ status: "applied", runId: "silent-process-run" });
+    expect(await historyStore.load("wake-thread")).toMatchObject([
+      { role: "user", content: "A background job completed." },
+      { role: "user", content: "Another background job completed." },
+      { role: "assistant", content: "[Host: silent completion]" },
+    ]);
+    // Applied mailbox ownership is terminal even after the run seals.
+    await expect(offer.settled).resolves.toEqual({ status: "applied", runId: "silent-process-run" });
   });
 
   it("preserves an explicit request runtime live-input source", async () => {

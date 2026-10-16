@@ -36,6 +36,7 @@ import {
   type AgentMessageStream,
   type AgentReplyAttachmentPart,
   type AgentReplyPart,
+  type AgentLiveInputOffer,
   type AgentLiveInputRequest,
   type AgentRequestBase,
   type AgentResponder,
@@ -298,6 +299,8 @@ export interface TuiAdapterOptions {
   readonly processJobWakeAdmission?: {
     claim(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
     release(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
+    /** Host-scoped proof for this exact claimed offer; never sourced from JSON. */
+    offerClaimedLiveInput?(deliveryKey: string, token: string, boundary: string, offer: () => AgentLiveInputOffer): AgentLiveInputOffer;
   };
   /** Owner-authorized process-job control plane; omitted when unavailable. */
   readonly processJobs?: ProcessJobOperator;
@@ -965,7 +968,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       if (fenced) await options.processJobWakeAdmission!.release(request.deliveryKey!, typeof token === "string" ? token : "", boundary);
       throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
     }
-    const offer = options.responder.offerLiveInput!(request);
+    const offerInput = () => options.responder.offerLiveInput!(request);
+    const offer = fenced && options.processJobWakeAdmission?.offerClaimedLiveInput
+      ? options.processJobWakeAdmission.offerClaimedLiveInput(request.deliveryKey!, typeof token === "string" ? token : "", boundary, offerInput)
+      : offerInput();
     const settlement = offer.status === "unavailable" ? offer : await offer.settled.catch(() => ({
       status: "uncertain" as const, reason: "delivery_uncertain" as const,
     }));

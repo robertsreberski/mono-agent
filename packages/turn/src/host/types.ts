@@ -317,6 +317,8 @@ export type RuntimeLiveInputCallbackDisposition = "recorded" | "ignored";
 /** One live follow-up delivered to a provider bridge. */
 export interface RuntimeLiveInputMessage {
   readonly body: string;
+  /** Trusted host classification; absent/unknown kinds cannot finish silently. */
+  readonly kind?: "process_job" | "user";
   readonly id?: string;
   readonly receivedAt?: string;
   /**

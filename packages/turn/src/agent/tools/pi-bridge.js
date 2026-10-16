@@ -1,3 +1,4 @@
+import { silentTurnRefusalReason } from "../../ai/silent-turn.js";
 import { sandboxFailureDiagnostic } from "./shared/sandbox-diagnostics.js";
 import { startPreparedProcess } from "./shared/process-runner.js";
 import { Type } from "@earendil-works/pi-ai";
@@ -682,12 +683,7 @@ export function getPiBuiltinTools(allowedTools, {
       async execute(_toolCallId, params, signal) {
         const reason = signal?.aborted ? "failure"
           : params === null || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length !== 0 ? "failure"
-          : !silentTurnState.soleCall ? "not_sole_call"
-          : silentTurnState.visibleContent ? "visible_content"
-          : silentTurnState.pendingQuestion ? "pending_question"
-          : silentTurnState.failed ? "failure"
-          : !finishSilentlyController.eligible() ? "ineligible_turn"
-          : null;
+          : silentTurnRefusalReason(silentTurnState, finishSilentlyController);
         if (reason !== null) throw new Error(reason);
         silentTurnState.accepted = true;
         return {

@@ -1,3 +1,4 @@
+import { bindProcessJobLiveInput } from "@mono-agent/conversation";
 import type { WakeRecovery } from "./process-jobs-wake-fence.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -21,6 +22,8 @@ export interface ProcessJobWakeContext {
 interface ProcessJobWakeFlight extends ProcessJobWakeContext {
   readonly token: object;
   readonly deliveryKey: string;
+  /** One-use, process-local admission proofs; never serialized or retained. */
+  readonly liveInputClaims: Map<string, string>;
 }
 
 interface ProcessJobWakeRequestBinding {
@@ -34,6 +37,7 @@ export type ProcessJobWakeContextResolution =
   | { readonly kind: "missed" };
 
 const wakeContext = new AsyncLocalStorage<ProcessJobWakeFlight>();
+const claimedLiveInputContext = new AsyncLocalStorage<ProcessJobWakeFlight>();
 // Recall-only provenance. An authenticated web channel is not evidence that a
 // host-created follow-up contains human-authored text. Keep capture unchanged.
 const hostWakeRecallContext = new AsyncLocalStorage<boolean>();
@@ -122,6 +126,7 @@ export async function runWithProcessJobWakeContext<T>(
     ...context,
     token: Object.freeze({}),
     deliveryKey,
+    liveInputClaims: new Map<string, string>(),
   });
   const current = wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
   if (current.length === 0) silentWakeDeliveryKeys.delete(deliveryKey);
@@ -129,11 +134,43 @@ export async function runWithProcessJobWakeContext<T>(
   try {
     return await wakeContext.run(flight, operation);
   } finally {
+    flight.liveInputClaims.clear();
     const active = wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
     const remaining = active.filter((candidate) => candidate.token !== flight.token);
     if (remaining.length === 0) wakeFlightsByDeliveryKey.delete(deliveryKey);
     else wakeFlightsByDeliveryKey.set(deliveryKey, remaining);
   }
+}
+
+/** Only the service calls this, after its durable admission fence has crossed. */
+export function recordProcessJobWakeAdmission(deliveryKey: string, token: string, boundary: string): void {
+  const flight = admissionFlight(deliveryKey, token);
+  flight?.liveInputClaims.set(boundary, token);
+}
+
+/** Releasing (or attempting to release) a claim cannot leave kind authority behind. */
+export function revokeProcessJobWakeAdmission(deliveryKey: string, token: string, boundary: string): void {
+  const flight = admissionFlight(deliveryKey, token);
+  if (flight?.liveInputClaims.get(boundary) === token) flight.liveInputClaims.delete(boundary);
+}
+
+/** Scope proof to this synchronous offer, not every request knowing a live key. */
+export function offerClaimedProcessJobLiveInput(
+  deliveryKey: string, token: string, boundary: string, offer: () => AgentLiveInputOffer,
+): AgentLiveInputOffer {
+  const flight = admissionFlight(deliveryKey, token);
+  if (flight === undefined || flight.liveInputClaims.get(boundary) !== token) return offer();
+  flight.liveInputClaims.delete(boundary);
+  return claimedLiveInputContext.run(flight, offer);
+}
+
+function admissionFlight(deliveryKey: string, token: string): ProcessJobWakeFlight | undefined {
+  // Tokenless legacy admission cannot distinguish a client-supplied key from
+  // a host completion. It retains delivery semantics, but grants no kind proof.
+  if (!token) return undefined;
+  const flights = wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
+  const flight = flights.length === 1 ? flights[0] : undefined;
+  return flight?.wakeRecovery?.token === token ? flight : undefined;
 }
 
 /**
@@ -253,10 +290,13 @@ function offerProcessJobWakeToActiveRun(
 
   let offer: AgentLiveInputOffer;
   try {
-    offer = offerLiveInput.call(responder, {
-      ...request,
-      targetRunId: target.runId,
-    });
+    const targeted = { ...request, targetRunId: target.runId };
+    // Transport text may include project/tag context. Kind comes only from
+    // the private in-process wake or this exact one-use admitted offer.
+    const verifiedCompletion = request.id === flight.deliveryKey && request.deliveryKey === flight.deliveryKey
+      && (wakeFlightsByDeliveryKey.get(flight.deliveryKey) ?? []).includes(flight)
+      && (wakeContext.getStore() === flight || claimedLiveInputContext.getStore() === flight);
+    offer = offerLiveInput.call(responder, verifiedCompletion ? bindProcessJobLiveInput(targeted) : targeted);
   } catch (error) {
     rollback();
     throw error;
