@@ -1,3 +1,4 @@
+import { canCertifySilentTurn } from "../silent-turn.js";
 import { createDispatchProgress, withDispatchProgress } from "./engine-turn/dispatch-progress.js";
 import { validateSessionTurn } from "../../engine/journal-schema.js";
 import { isJournalStorageError } from "../../engine/storage-error.js";
@@ -933,6 +934,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     }
 
     const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
+    runState.silentTurn.liveInputEligible = liveInputEpoch.silenceEligible;
     const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch, dispatchProgress });
 
     // Report the live harness value, not a downstream recreation of Pi's
@@ -1057,7 +1059,11 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       outputSchema: options.outputSchema, runError,
       externalAbort: runState.externalAbort || !!options.abortSignal?.aborted,
       maxTurnsHit: runState.maxTurnsHit,
-      silent: runState.silentTurn.completed || runState.silentTurn.accepted,
+      silent: canCertifySilentTurn(runState.silentTurn, options.finishSilentlyController, {
+        finalText: state.finalText, failed: !!runError,
+        aborted: runState.externalAbort || !!options.abortSignal?.aborted,
+      }),
+      invalidatedSilentCompletion: runState.silentTurn.completed,
       pendingQuestion: runState.silentTurn.pendingQuestion,
     })) {
       const retry = await runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal: options.abortSignal, prompts: options.prompts });
@@ -1215,9 +1221,10 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       && options.sessionRecovery.runId.length <= 512
       && Number.isSafeInteger(options.sessionRecovery?.revision) && options.sessionRecovery.revision >= 0
       && typeof runState.recoveryOperationId === "string";
-    const silentAtSeal = runState.preserveTurnEvidence && runState.silentTurn.completed && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
-      && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
-      && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
+    const certifySilence = () => canCertifySilentTurn(runState.silentTurn, options.finishSilentlyController, {
+      finalText, failed: !!errorMessage, aborted: runState.externalAbort,
+    });
+    const silentAtSeal = runState.preserveTurnEvidence && certifySilence();
     const buildFinalResult = () => buildSuccessResult({
       finalText,
       finalThinking,
@@ -1273,9 +1280,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       : undefined;
     if (runState.retainRecoveryTail) runState.externalAbort ||= !!options.abortSignal?.aborted;
     const silentCertified = runState.preserveTurnEvidence ? silentAtSeal && !runState.externalAbort
-      : runState.silentTurn.completed && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
-        && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
-        && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
+      : certifySilence();
     return { ...(runState.preserveTurnEvidence ? finalResult : buildFinalResult()), cancelled: runState.externalAbort, ...(providerSessionRecovery ? { providerSessionRecovery } : {}),
     ...(silentCertified ? { turnDisposition: "silent" } : {}) };
   } catch (err) {

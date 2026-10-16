@@ -2,13 +2,30 @@ import { describe, expect, it } from "vitest";
 
 import { AGENT_LIVE_INPUT_MAX_CHARACTERS } from "@mono-agent/contracts";
 
-import { createLiveInputMailbox } from "../live-input.js";
+import { bindProcessJobLiveInput, createLiveInputMailbox } from "../live-input.js";
 
 const request = (id: string, text = id) => ({
   conversationId: "conversation",
   id,
   text,
   receivedAt: "2026-07-21T10:00:00.000Z",
+});
+
+it.each([false, true])("classifies only host-bound process-job input, not copied transport metadata (bound=%s)", async (bound) => {
+  const mailbox = createLiveInputMailbox("run-1");
+  const input = { ...request("process-job:completion", "A process-job completion"), deliveryKey: "process-job:completion" };
+  // The responder copies requests in process; the private classification must survive.
+  const copied = { ...(bound ? bindProcessJobLiveInput(input) : input) };
+  const offer = mailbox.offer(copied);
+  if (offer.status !== "accepted") throw new Error("Expected an accepted offer.");
+  const iterator = mailbox[Symbol.asyncIterator]();
+  const next = await iterator.next();
+  if (next.done) throw new Error("Expected live input.");
+  expect(next.value.kind).toBe(bound ? "process_job" : "user");
+  next.value.acknowledge?.();
+  await expect(offer.settled).resolves.toEqual({ status: "applied", runId: "run-1" });
+  mailbox.close();
+  await expect(mailbox[Symbol.asyncIterator]().next()).resolves.toEqual({ done: true, value: undefined });
 });
 
 describe("live input mailbox", () => {

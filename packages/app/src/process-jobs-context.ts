@@ -1,3 +1,4 @@
+import { bindProcessJobLiveInput } from "@mono-agent/conversation";
 import type { WakeRecovery } from "./process-jobs-wake-fence.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -21,6 +22,8 @@ export interface ProcessJobWakeContext {
 interface ProcessJobWakeFlight extends ProcessJobWakeContext {
   readonly token: object;
   readonly deliveryKey: string;
+  /** Exact host wake body for provenance across the local operator transport. */
+  readonly liveInputText?: string;
 }
 
 interface ProcessJobWakeRequestBinding {
@@ -117,11 +120,13 @@ export async function runWithProcessJobWakeContext<T>(
   context: ProcessJobWakeContext,
   operation: () => Promise<T>,
   deliveryKey: string,
+  liveInputText?: string,
 ): Promise<T> {
   const flight = Object.freeze({
     ...context,
     token: Object.freeze({}),
     deliveryKey,
+    ...(liveInputText === undefined ? {} : { liveInputText }),
   });
   const current = wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
   if (current.length === 0) silentWakeDeliveryKeys.delete(deliveryKey);
@@ -253,10 +258,14 @@ function offerProcessJobWakeToActiveRun(
 
   let offer: AgentLiveInputOffer;
   try {
-    offer = offerLiveInput.call(responder, {
-      ...request,
-      targetRunId: target.runId,
-    });
+    const targeted = { ...request, targetRunId: target.runId };
+    // An HTTP client can supply a delivery key. Only the private in-process
+    // flight, or its exact host-bound payload across transport, proves kind.
+    // Equality binds provenance; never infer kind by parsing completion prose.
+    const verifiedCompletion = request.id === flight.deliveryKey && request.deliveryKey === flight.deliveryKey
+      && (wakeContext.getStore() === flight
+        || flight.liveInputText !== undefined && request.text === flight.liveInputText);
+    offer = offerLiveInput.call(responder, verifiedCompletion ? bindProcessJobLiveInput(targeted) : targeted);
   } catch (error) {
     rollback();
     throw error;

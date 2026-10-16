@@ -12,11 +12,14 @@ export function emptyReplyFinalizationPrompt(prompts) {
 }
 
 /**
- * @param {{finalText: string, stopReason: unknown, outputSchema: unknown, runError: unknown, externalAbort: boolean, maxTurnsHit: boolean, silent: boolean, pendingQuestion: boolean}} state
+ * @param {{finalText: string, stopReason: unknown, outputSchema: unknown, runError: unknown, externalAbort: boolean, maxTurnsHit: boolean, silent: boolean, invalidatedSilentCompletion?: boolean, pendingQuestion: boolean}} state
  */
 export function shouldRetryEmptyReply(state) {
   return !state.finalText.trim()
-    && (state.stopReason === "stop" || state.stopReason === "length")
+    && (state.stopReason === "stop" || state.stopReason === "length"
+      // A terminal silence tool is not a no-reply exemption if its admission
+      // was invalidated before certification. Other terminal tools stay out.
+      || state.stopReason === "toolUse" && state.invalidatedSilentCompletion === true)
     && !state.outputSchema && !state.runError && !state.externalAbort
     && !state.maxTurnsHit && !state.silent && !state.pendingQuestion;
 }

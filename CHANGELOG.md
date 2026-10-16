@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix `FinishSilently` on host notification turns that consume additional
+  process-job completion wakes; keep user or unknown live input visible and
+  retry empty replies when silent completion cannot be certified.
+
 - Fix tool history lock contention on macOS reporting `deferred` instead of
   `failed`. The writer now bounds its 200 ms SQLite lock wait by elapsed time,
   so timer coalescing under lower-priority scheduling no longer stretches it

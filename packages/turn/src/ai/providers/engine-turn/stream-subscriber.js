@@ -104,7 +104,7 @@ function toolResultOutcome(result) {
  * @property {boolean} toolFailureThisTurn
  * @property {boolean} structuredOutputCompletedThisTurn
  * @property {boolean} silentCompletedThisTurn
- * @property {{soleCall: boolean, visibleContent: boolean, pendingQuestion: boolean, failed: boolean, accepted: boolean, completed: boolean}} silentTurn
+ * @property {{soleCall: boolean, visibleContent: boolean, pendingQuestion: boolean, failed: boolean, accepted: boolean, completed: boolean, liveInputEligible?: () => boolean}} silentTurn
  * @property {unknown} structuredResult
  * @property {{retries: number, failedAttempts: number|null, textMark: number, thinkingMark: number}} [requestRetry]
  */

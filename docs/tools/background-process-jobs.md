@@ -364,8 +364,12 @@ older records retain the default wake behavior. Cancellation never restarts a
 command.
 
 A genuine completion wake can call `FinishSilently({})` alone, without narration
-or attachments, to end with a host-recorded silent disposition. If that tool is
-unavailable, answering with exactly `NOTHING_TO_REPORT` still suppresses
+or attachments, to end with a host-recorded silent disposition. Consuming more
+host-verified process-job completion wakes during that turn preserves silence
+eligibility. A consumed user message or input of unknown kind instead makes
+`FinishSilently` refuse with `live_input_consumed`; the agent must reply visibly.
+Completion text, message IDs and client-provided delivery keys cannot establish
+that an input is a host completion wake. If that tool is unavailable, answering with exactly `NOTHING_TO_REPORT` still suppresses
 delivery. Narration and rich reply parts remain visible. The host
 matches the exact active delivery key; unrelated and stale keys cannot silence
 another turn. Web wake admission has parity with the sentinel's exact live-flight
