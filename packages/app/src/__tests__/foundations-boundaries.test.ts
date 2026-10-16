@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { describe,expect,it } from "vitest";
+import { readFile, readdir } from "node:fs/promises";
+import { describe, expect, it } from "vitest";
 
 const source = async (path: string): Promise<string> => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
@@ -34,5 +34,16 @@ it("keeps domain contracts erased and independent of their implementation", asyn
     const text = await source(file);
     expect(text).not.toMatch(/^import (?!type\b)/mu);
     expect(text).not.toMatch(/from ["'][^"']*(?:channels|memory-recall|memory-guidance|memory-label-sections|subagent-instances|subagent-execution-ownership|subagent-command-receipts)\.js["']/u);
+  }
+});
+
+it("keeps built crash fixtures and inline child imports on durable-state owners", async () => {
+  const root = new URL("../", import.meta.url);
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  const retiredBuiltPath = /\bdist\/(?:agent-root-coordinator|owner-private-lock|secure-file-replace|owned-state-sqlite|worker-activity|worker-activity-snapshot|process-incarnation)\.js/u;
+  for (const entry of entries) {
+    if (!entry.isFile() || !/\.(?:ts|mjs)$/u.test(entry.name)) continue;
+    const text = await readFile(`${entry.parentPath}/${entry.name}`, "utf8");
+    expect(text, `${entry.parentPath}/${entry.name}`).not.toMatch(retiredBuiltPath);
   }
 });

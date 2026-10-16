@@ -265,7 +265,7 @@ function runOptions(model: typeof PI_MODEL | typeof CLAUDE_MODEL, workspace: str
 }
 
 function coordinatorModuleUrl(): string {
-  return pathToFileURL(join(process.cwd(), "dist/agent-root-coordinator.js")).href;
+  return pathToFileURL(join(process.cwd(), "dist/durable-state/agent-root-coordinator.js")).href;
 }
 
 async function childAttempt(root: string, home: string): Promise<"owned" | "conflict"> {
