@@ -35,7 +35,7 @@ import {
   type OperatorInfo,
 } from "@mono-agent/web";
 
-import { agentAppPackageVersion } from "./package-version.js";
+import { appPackageVersion } from "./package-version.js";
 import { bridgeStartupExitCode } from "./peer-acp-startup.js";
 import { consumePeerGeneration, PeerSessionExhaustedError, prunePeerGenerationLedger, stampPeerOperatorHandoff, verifyPeerHandoff } from "./peer-provenance.js";
 import {
@@ -68,7 +68,7 @@ const ASK_DISCOVERY_INTERVAL_MS = 25;
 const CUSTOM_OPTION_ID = "__mono_agent_custom__";
 const SENSITIVE_ASK_PATTERN = /\b(?:api[ _-]?key|credential|password|passphrase|private[ _-]?key|secret|token)\b/iu;
 
-export interface RunAcpBridgeOptions {
+interface RunAcpBridgeOptions {
   readonly sourceId: string;
   readonly requireToolEnvironment?: boolean;
   readonly env?: Readonly<Record<string, string | undefined>>;
@@ -152,7 +152,7 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
       agentInfo: {
         name: "mono-agent-acp-bridge",
         title: target.info.label ?? options.sourceId,
-        version: agentAppPackageVersion() ?? "unknown",
+        version: appPackageVersion() ?? "unknown",
       },
       _meta: { "mono-agent": target.descriptor },
     };

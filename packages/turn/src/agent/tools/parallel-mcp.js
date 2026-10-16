@@ -15,7 +15,7 @@ export function parallelSessionId(ctx, state) {
 }
 function digest(value) { return createHash("sha256").update(value).digest("hex"); }
 
-export function parallelCredential(config) {
+function parallelCredential(config) {
   if (config?.apiKeyEnv === undefined) return undefined;
   const name = config.apiKeyEnv;
   if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || !process.env[name]?.trim()) {

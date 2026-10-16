@@ -22,11 +22,11 @@ import { openOwnedState, type OwnedStateHandle } from "./owned-state-sqlite.js";
  * are replayed after the console was unreachable or the agent restarted.
  */
 
-export const TELEGRAM_TOPIC_DIRECTORY_NAME = "telegram-topics-v1";
+const TELEGRAM_TOPIC_DIRECTORY_NAME = "telegram-topics-v1";
 const TELEGRAM_TOPIC_DIRECTORY_LABEL = "Telegram topic directory";
 const SCHEMA_VERSION = 1;
 /** Per bot; new topics beyond this are not recorded (and reported as truncated). */
-export const TELEGRAM_TOPIC_DIRECTORY_MAX_TOPICS = 1_024;
+const TELEGRAM_TOPIC_DIRECTORY_MAX_TOPICS = 1_024;
 const MAX_CHATS = 256;
 /** Refresh last-seen at most this often per chat/topic to keep writes rare. */
 const LAST_SEEN_REFRESH_MS = 10 * 60 * 1_000;
@@ -72,7 +72,7 @@ export interface TelegramTopicDirectoryStore {
   close(): void;
 }
 
-export interface OpenTelegramTopicDirectoryOptions {
+interface OpenTelegramTopicDirectoryOptions {
   readonly cwd: string;
   readonly botId: string;
   readonly now?: () => Date;

@@ -15,7 +15,7 @@ import type {
 
 import { canonicalToolName } from "./modules/known-tools.js";
 
-export const SKILL_REGISTRY_REFRESH_MS = 5_000;
+const SKILL_REGISTRY_REFRESH_MS = 5_000;
 export const MAX_SKILL_REGISTRY_ITEMS = 256;
 export const MAX_SKILL_DESCRIPTION_BYTES = 256;
 export const MAX_SKILL_REGISTRY_BYTES = 256 * 1024;
@@ -23,11 +23,11 @@ export const MAX_SKILL_REGISTRY_BYTES = 256 * 1024;
 type SkillIndexLoader = (root: string) => Promise<readonly SkillIndexEntry[]>;
 type SkillRegistrySignatureReader = (root: string) => Promise<string>;
 
-export interface SkillRegistryLogger {
+interface SkillRegistryLogger {
   warn?(message: string, metadata?: Record<string, unknown>): void;
 }
 
-export interface CreateSkillRegistryMonitorOptions {
+interface CreateSkillRegistryMonitorOptions {
   readonly skillsRoot?: string;
   readonly selectedSkills: readonly string[];
   readonly skillDisclosure?: "index" | "full";
@@ -40,7 +40,7 @@ export interface CreateSkillRegistryMonitorOptions {
   readonly refreshMs?: number;
 }
 
-export interface SkillRegistryMonitor {
+interface SkillRegistryMonitor {
   /** Loads the first knowable snapshot before the operator server is exposed. */
   prime(): Promise<void>;
   /** Returns the latest atomic snapshot without doing filesystem work. */
@@ -242,7 +242,7 @@ function clampUtf8(value: string, maxBytes: number): string {
   return `${result}${suffix}`;
 }
 
-export async function readSkillRegistrySignature(
+async function readSkillRegistrySignature(
   skillsRoot: string,
   dependencies: {
     readonly readdir?: (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;

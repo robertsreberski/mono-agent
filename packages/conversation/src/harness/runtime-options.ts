@@ -1,5 +1,4 @@
 import { mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
-import { modelReferenceKey } from "@mono-agent/turn/host/config";
 import type { RuntimeModelReference, SandboxPolicy } from "@mono-agent/turn/host/types";
 
 import type { AgentHarnessRuntimeOptionsExtension } from "../types.js";
@@ -77,9 +76,6 @@ export function isRuntimeModelReference(value: unknown): value is RuntimeModelRe
     && typeof value.reference === "string";
 }
 
-export function sameRuntimeModel(a: RuntimeModelReference, b: RuntimeModelReference): boolean {
-  return modelReferenceKey(a) === modelReferenceKey(b);
-}
 
 function mergeStringLists(current: unknown, next: unknown): readonly string[] {
   const out: string[] = [];

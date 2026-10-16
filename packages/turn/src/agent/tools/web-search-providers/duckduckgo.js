@@ -26,7 +26,7 @@ function searchDuckDuckGo(query, options) {
   }, options);
 }
 
-export function parseDuckDuckGoResults(html) {
+function parseDuckDuckGoResults(html) {
   const { document } = parseHTML(String(html || ""));
   const rows = [...document.querySelectorAll(".result")];
   return rows.flatMap((row) => {
@@ -42,4 +42,3 @@ export function parseDuckDuckGoResults(html) {
     }];
   });
 }
-

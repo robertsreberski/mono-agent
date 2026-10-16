@@ -18,9 +18,6 @@ export const FAILED_TURN_HISTORY_KEY_PREFIX = "failed-turn:v1:";
 export const TURN_CONTINUITY_MAX_BYTES = 48 * 1024;
 export const TURN_CONTINUITY_ASSISTANT_MAX_BYTES = 8 * 1024;
 
-// Compatibility aliases preserve the internal PR #749 test/import surface.
-export const CANCELLED_TURN_MAX_BYTES = TURN_CONTINUITY_MAX_BYTES;
-export const CANCELLED_TURN_ASSISTANT_MAX_BYTES = TURN_CONTINUITY_ASSISTANT_MAX_BYTES;
 
 const CANCELLED_TURN_DATA_OPEN = "<cancelled_turn_data>";
 const CANCELLED_TURN_DATA_CLOSE = "</cancelled_turn_data>";

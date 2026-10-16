@@ -44,14 +44,14 @@ import {
 
 export const PROCESS_JOB_RECORD_SCHEMA = 1;
 export const PROCESS_JOB_RECORDS_DIRECTORY = "records-v1";
-export const PROCESS_JOB_ARTIFACTS_DIRECTORY = "artifacts";
+const PROCESS_JOB_ARTIFACTS_DIRECTORY = "artifacts";
 export const PROCESS_JOB_MANIFEST_FILE = "process-jobs-store-v1.json";
 export const PROCESS_JOB_TRANSACTION_FILE = "process-jobs-transaction-v1.json";
 export const PROCESS_JOB_QUARANTINE_DIRECTORY = "quarantine-v1";
 export const PROCESS_JOB_SECRET_FILE = "process-jobs-secret";
 export const PROCESS_JOB_HEALTH_FILE = "process-jobs-health-v1.json";
-export const PROCESS_JOB_ROLLBACK_GUARD = "PROCESS-JOBS-STORE-V1";
-export const PROCESS_JOB_ROLLBACK_GUARD_CONTENT =
+const PROCESS_JOB_ROLLBACK_GUARD = "PROCESS-JOBS-STORE-V1";
+const PROCESS_JOB_ROLLBACK_GUARD_CONTENT =
   "This state directory uses mono-agent process-job records v1. Older runtimes must not open it.\n";
 export const PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL = 64;
 export const PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS = 3;
@@ -201,7 +201,7 @@ export interface ProcessJobStoreWorkCounter {
   recordEntriesExaminedAtOpen?: number;
 }
 
-export interface OpenProcessJobStoreOptions {
+interface OpenProcessJobStoreOptions {
   /** Deterministic internal work seam for scale regressions; omitted in production. */
   readonly workCounter?: ProcessJobStoreWorkCounter;
   /** Lower-only internal seam for deterministic bounded-open regressions. */
@@ -360,7 +360,7 @@ export interface ProcessJobStore {
   applyRetention(settings: ProcessJobsSettings, now?: Date): Promise<void>;
 }
 
-export interface ProcessJobHealthIncident {
+interface ProcessJobHealthIncident {
   readonly schemaVersion: 1;
   readonly state: "degraded";
   readonly operation: string;

@@ -1,7 +1,7 @@
 import type { AgentMessageFinishOptions, AgentMessageStream, AgentStreamEvent } from "./index.js";
 import { appendReplyPartFallback } from "./resilient-message-stream.js";
 
-export interface BufferedMessageStreamOptions {
+interface BufferedMessageStreamOptions {
   /**
    * Build the error thrown when writing after `finish()`. Defaults to a plain
    * Error; adapters pass their own typed error to preserve message/code.

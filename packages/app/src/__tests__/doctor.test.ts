@@ -12,7 +12,7 @@ import { canonicalContinuationJson, continuationDigest } from "../continuations.
 import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
 import { launchdLogsSectionFromInspection, validateMonoAgentFolder } from "../doctor.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
-import { agentAppPackageVersion } from "../package-version.js";
+import { appPackageVersion } from "../package-version.js";
 import {
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   recordProcessJobHealthIncident,

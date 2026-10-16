@@ -21,7 +21,7 @@ const LEASE_SCHEMA = "mono-agent.background-worker-lease.v2";
 const DEFAULT_OWNERLESS_GRACE_MS = 5 * 60_000;
 const MAX_ACQUIRE_ATTEMPTS = 4;
 
-export interface BackgroundWorkerLease {
+interface BackgroundWorkerLease {
   readonly configPath: string;
   readonly path: string;
   readonly ownerPid: number;
@@ -29,7 +29,7 @@ export interface BackgroundWorkerLease {
   release(): Promise<void>;
 }
 
-export interface BackgroundWorkerLeaseOptions {
+interface BackgroundWorkerLeaseOptions {
   readonly homeDir?: string;
   readonly pid?: number;
   readonly now?: () => number;

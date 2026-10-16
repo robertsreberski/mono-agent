@@ -518,11 +518,11 @@ export type RedactedMemoryEmbeddingsConfig = Omit<MemoryEmbeddingsConfig, "apiKe
   readonly apiKey?: RedactedSecretValue;
 };
 
-export type RedactedOllamaWebSearchConfig = Omit<OllamaWebSearchConfig, "apiKey"> & {
+type RedactedOllamaWebSearchConfig = Omit<OllamaWebSearchConfig, "apiKey"> & {
   readonly apiKey?: RedactedSecretValue;
 };
 
-export type RedactedToolsConfig = Omit<MonoAgentConfig["tools"], "web"> & {
+type RedactedToolsConfig = Omit<MonoAgentConfig["tools"], "web"> & {
   readonly web?: Omit<NonNullable<MonoAgentConfig["tools"]["web"]>, "search"> & {
     readonly search: Omit<NonNullable<MonoAgentConfig["tools"]["web"]>["search"], "ollama"> & {
       readonly ollama?: RedactedOllamaWebSearchConfig;

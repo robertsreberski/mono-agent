@@ -14,7 +14,7 @@ import {
 
 export const MEMORY_REMEMBER_MCP_SERVER_NAME = "mono-agent-memory-write";
 export const REMEMBER_TOOL_NAME = "Remember";
-export const REMEMBER_MAX_CHARACTERS = 500;
+const REMEMBER_MAX_CHARACTERS = 500;
 
 /**
  * The write half of the memory surface, kept separate from `MemoryRecall`.
@@ -264,7 +264,7 @@ export function createMemoryRememberServer(
   return server;
 }
 
-export interface MemoryRememberRuntimeExtensionOptions {
+interface MemoryRememberRuntimeExtensionOptions {
   /** Best-effort diagnostic when the loopback tool endpoint cannot start. */
   readonly onUnavailable?: (error: unknown) => void;
   readonly env?: Record<string, string | undefined>;

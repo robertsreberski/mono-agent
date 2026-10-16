@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { runSandboxCommand, type SandboxCommandDependencies } from "../cli.js";
+import { runSandboxCommand, type SandboxCommandDependencies } from "../cli-sandbox-command.js";
 
 const READY_STATUS = {
   state: "ready" as const,

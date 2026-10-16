@@ -1,4 +1,4 @@
-import { readHistoryProcessIncarnation, historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./process-incarnation.js";
+import { readHistoryProcessIncarnation, historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./history-process-incarnation.js";
 
 let current: Promise<HistoryProcessIncarnation | undefined> | undefined;
 let retryAfter = 0;

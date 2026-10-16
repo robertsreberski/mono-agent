@@ -22,7 +22,7 @@ export const MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES = 10_096;
 export type ProcessJobState = (typeof PROCESS_JOB_STATES)[number];
 
 /** Stable machine-readable failures exposed at the runtime/operator boundary. */
-export const PROCESS_JOB_ERROR_CODES = [
+const PROCESS_JOB_ERROR_CODES = [
   "background_unsupported",
   "background_unsupported_channel",
   "process_job_disabled",
@@ -51,7 +51,7 @@ export const PROCESS_JOB_ERROR_CODES = [
 export type ProcessJobErrorCode = (typeof PROCESS_JOB_ERROR_CODES)[number];
 
 /** Stable secret-free messages paired with public process-job error codes. */
-export const PROCESS_JOB_PUBLIC_ERROR_MESSAGES: Readonly<Record<ProcessJobErrorCode, string>> = Object.freeze({
+const PROCESS_JOB_PUBLIC_ERROR_MESSAGES: Readonly<Record<ProcessJobErrorCode, string>> = Object.freeze({
   background_unsupported: "Background process jobs are unsupported for this tool call.",
   background_unsupported_channel: "Background process jobs are unsupported for this channel.",
   process_job_disabled: "Process jobs are disabled.",
@@ -82,9 +82,9 @@ export function processJobPublicError(code: ProcessJobErrorCode): ProcessJobProj
   return { code, message: PROCESS_JOB_PUBLIC_ERROR_MESSAGES[code] };
 }
 
-export type ProcessJobWakeState = "pending" | "delivered" | "failed" | "unknown" | "suppressed";
+type ProcessJobWakeState = "pending" | "delivered" | "failed" | "unknown" | "suppressed";
 
-export interface ProcessJobProjectionOrigin {
+interface ProcessJobProjectionOrigin {
   /** Exact conversation identity, including any host-owned rollover bucket. */
   readonly conversationId: string;
   readonly channel: string;
@@ -93,7 +93,7 @@ export interface ProcessJobProjectionOrigin {
   readonly bucket: string | null;
 }
 
-export interface ProcessJobProjectionTimestamps {
+interface ProcessJobProjectionTimestamps {
   readonly admittedAt: string;
   readonly queueDeadlineAt: string;
   readonly startedAt: string | null;
@@ -101,14 +101,14 @@ export interface ProcessJobProjectionTimestamps {
   readonly completedAt: string | null;
 }
 
-export interface ProcessJobProjectionLimits {
+interface ProcessJobProjectionLimits {
   readonly maxRuntimeMs: number;
   readonly maxOutputBytes: number;
   readonly previewChars: number;
   readonly chainDepth: number;
 }
 
-export interface ProcessJobProjectionOutput {
+interface ProcessJobProjectionOutput {
   readonly stdoutBytes: number;
   readonly stderrBytes: number;
   readonly truncated: boolean;
@@ -119,19 +119,19 @@ export interface ProcessJobProjectionOutput {
   readonly stderrRef: string | null;
 }
 
-export interface ProcessJobProjectionWake {
+interface ProcessJobProjectionWake {
   readonly state: ProcessJobWakeState;
   readonly attempts: number;
   readonly deliveryKey: string;
   readonly lastAttemptAt: string | null;
 }
 
-export interface ProcessJobProjectionError {
+interface ProcessJobProjectionError {
   readonly code: ProcessJobErrorCode;
   readonly message: string;
 }
 
-export interface ProcessJobSubagentRoute {
+interface ProcessJobSubagentRoute {
   readonly requested: { readonly model?: string; readonly effort?: string };
   readonly executed?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string };
   /** Present once the child settled; absent while only the request is known. */
@@ -269,7 +269,7 @@ export function isPeerProcessJobQuestion(value: unknown): value is PeerProcessJo
 }
 
 /** One bounded, display-only row derived from an untrusted peer ACP form schema. */
-export interface PeerQuestionFormField {
+interface PeerQuestionFormField {
   readonly key: string;
   readonly label: string;
   readonly description?: string;

@@ -12,16 +12,6 @@
 
 export const MAX_TOOL_RESULT_BYTES = 262144;
 
-export const BINARY_BLOAT_TOOLS = Object.freeze([
-  "mcp__playwright__browser_take_screenshot",
-  "mcp__playwright__browser_snapshot",
-]);
-
-export const DEFAULT_TOOL_BLOAT_CONFIG = Object.freeze({
-  maxBytes: MAX_TOOL_RESULT_BYTES,
-  binaryBloatTools: BINARY_BLOAT_TOOLS,
-});
-
 const RETAINED_UNTRUSTED_BEGIN = "[BEGIN RETAINED UNTRUSTED TOOL RESULT]";
 const RETAINED_UNTRUSTED_END = "[END RETAINED UNTRUSTED TOOL RESULT]";
 const RETAINED_MIDDLE_NOTICE = "[Omitted middle may contain additional source content; retained tail is not the source ending.]";

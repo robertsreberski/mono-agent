@@ -13,7 +13,7 @@ import type { MonoAgentAppLogger } from "./channels.js";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import type { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 
-export interface MemoryHealthControllerPort {
+interface MemoryHealthControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;

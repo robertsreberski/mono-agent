@@ -146,9 +146,9 @@ export function readRecord(value: unknown): Record<string, unknown> {
 }
 
 /** How a JSON value is encoded into the string env layer. */
-export type EnvEncodeKind = "string" | "boolean" | "integer" | "csv";
+type EnvEncodeKind = "string" | "boolean" | "integer" | "csv";
 
-export interface JsonEnvMapping {
+interface JsonEnvMapping {
   readonly env: string;
   readonly value: unknown;
   readonly kind?: EnvEncodeKind;

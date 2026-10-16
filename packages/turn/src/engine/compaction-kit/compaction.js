@@ -58,7 +58,7 @@ function getMessageFromEntryForCompaction(entry) {
     }
     return getMessageFromEntry(entry);
 }
-export function createSummaryRequestOptions(options, context) {
+function createSummaryRequestOptions(options, context) {
     return {
         ...options,
         signal: context.abortSignal,
@@ -67,17 +67,12 @@ export function createSummaryRequestOptions(options, context) {
         sessionId: options.sessionId ?? uuidv7(),
     };
 }
-export async function completeSimpleWithRetries(models, model, aiContext, options, retry, callbacks, context) {
+async function completeSimpleWithRetries(models, model, aiContext, options, retry, callbacks, context) {
     // Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
     const requestOptions = createSummaryRequestOptions(options, context);
     return retryAssistantCall(() => models.completeSimple(model, aiContext, requestOptions), retry, requestOptions.signal, callbacks);
 }
-/** Default compaction settings used by the harness. */
-export const DEFAULT_COMPACTION_SETTINGS = {
-    enabled: true,
-    reserveTokens: 16384,
-    keepRecentTokens: 20000,
-};
+
 /** Calculate total context tokens from provider usage. */
 export function calculateContextTokens(usage) {
     return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
@@ -235,7 +230,7 @@ function findValidCutPoints(entries, startIndex, endIndex) {
     return cutPoints;
 }
 /** Find the user-visible message that starts the turn containing an entry. */
-export function findTurnStartIndex(entries, entryIndex, startIndex) {
+function findTurnStartIndex(entries, entryIndex, startIndex) {
     for (let i = entryIndex; i >= startIndex; i--) {
         const entry = entries[i];
         if (entry.type === "branch_summary") {
@@ -251,7 +246,7 @@ export function findTurnStartIndex(entries, entryIndex, startIndex) {
     return -1;
 }
 /** Find the compaction cut point that keeps approximately the requested recent-token budget. */
-export function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
+function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
     const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
     if (cutPoints.length === 0) {
         return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
@@ -293,7 +288,7 @@ export function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
         isSplitTurn: !isUserMessage && turnStartIndex !== -1,
     };
 }
-export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
@@ -366,15 +361,7 @@ Use this EXACT format:
 - [Preserve important context, add new if needed]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-/** Generate or update a conversation summary for compaction. */
-export async function generateSummary(currentMessages, models, model, reserveTokens, customInstructions, previousSummary, thinkingLevel, retry, callbacks, context) {
-    const result = await generateSummaryWithUsage(currentMessages, models, model, reserveTokens, customInstructions, previousSummary, thinkingLevel, retry, callbacks, context);
-    return result.ok ? ok(result.value.text) : err(result.error);
-}
-/** Generate or update a conversation summary and return its provider usage. */
-export function generateSummaryWithUsage(currentMessages, models, model, reserveTokens, customInstructions, previousSummary, thinkingLevel, retry, callbacks, context) {
-    return generateSummaryWithRequest(currentMessages, { model, reserveTokens, customInstructions, previousSummary, thinkingLevel }, (aiContext, options, requestContext) => completeSimpleWithRetries(models, model, aiContext, options, retry, callbacks, requestContext), context);
-}
+
 /** Generate one summary through a caller-owned one-request boundary. */
 export async function generateSummaryWithRequest(currentMessages, options, request, context) {
     const { model, reserveTokens, customInstructions, previousSummary, thinkingLevel } = options;

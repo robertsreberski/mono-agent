@@ -131,5 +131,3 @@ function providerConstructionOptions(options) {
     .filter((key) => Object.hasOwn(options, key))
     .map((key) => [key, options[key]]));
 }
-
-export const PROVIDER_CHECK_PROMPT = Object.freeze({ system: SYSTEM_PROMPT, user: USER_PROMPT, maxOutputTokens: 4 });

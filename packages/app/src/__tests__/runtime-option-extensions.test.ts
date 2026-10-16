@@ -35,8 +35,7 @@ describe("composeRuntimeOptionExtensions", () => {
     const inner = vi.fn(async () => ({ runtimeOptions: {}, cleanup: async () => {} }));
     const extension = createClearSessionsRuntimeExtension(inner, {
       cwd: "/agent",
-      workspace: "/agent/workspace",
-      baseModel: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
+
       assertRecoveryResolved: async () => { throw new Error("generic unresolved recovery"); },
       registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
     });
@@ -49,8 +48,7 @@ describe("composeRuntimeOptionExtensions", () => {
     const assertion = vi.fn(async () => {});
     const extension = createClearSessionsRuntimeExtension(undefined, {
       cwd: "/agent",
-      workspace: "/agent/workspace",
-      baseModel: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
+
       sandboxPolicy: failClosedSandboxPolicy({ root: "/agent/workspace", network: { mode: "all" } }),
       assertRecoveryResolved: assertion,
       registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
@@ -71,8 +69,8 @@ describe("composeRuntimeOptionExtensions", () => {
     "does not synthesize a policy under off/omitted (%j), but attests recovery first",
     async (sandboxPolicy) => {
       const calls: string[] = [];
-      const options = { cwd: "/agent", workspace: "/agent/workspace",
-        baseModel: { provider: "ollama", model: "test", reference: "ollama:test" },
+      const options = { cwd: "/agent",
+
         ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
         assertRecoveryResolved: async () => { calls.push("attest"); },
         registryRoot: () => { throw new Error("must not inspect registry for host execution"); },
@@ -93,9 +91,8 @@ describe("composeRuntimeOptionExtensions", () => {
     const assertion = vi.fn(async () => {});
     const options = {
       cwd: "/agent",
-      workspace: "/agent/workspace",
-      baseModel: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
-      fallbackModels: [{ provider: "ollama", model: "qwen3:8b", reference: "ollama:qwen3:8b" }],
+
+
       suppressSyntheticSandbox: true,
       sandboxPolicy: failClosedSandboxPolicy({ root: "/agent/workspace", network: { mode: "all" } }),
       assertRecoveryResolved: assertion,

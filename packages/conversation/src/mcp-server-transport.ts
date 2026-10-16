@@ -1,6 +1,6 @@
 import { parseMcpServers } from "@mono-agent/turn/host/config";
 
-export type ContinuationMcpServerTransport = "stdio" | "http" | "unsupported";
+type ContinuationMcpServerTransport = "stdio" | "http" | "unsupported";
 
 /**
  * Classify the MCP transports that can safely receive request-bound

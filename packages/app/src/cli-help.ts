@@ -1,7 +1,7 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
 import { REMOVED_COMMANDS } from "./cli-args.js";
-import { agentAppPackageVersion } from "./package-version.js";
+import { appPackageVersion } from "./package-version.js";
 import { readinessProbeTimeoutDescription } from "./readiness-probe.js";
 import * as ui from "./ui.js";
 
@@ -417,7 +417,7 @@ export function renderHelp(): string {
 }
 
 /** The outcome of resolving a `help <topic>` request. */
-export type HelpTopicResult =
+type HelpTopicResult =
   | { readonly ok: true; readonly text: string }
   | { readonly ok: false; readonly message: string };
 
@@ -504,5 +504,5 @@ function renderHelpEntryDetail(entry: HelpEntry, aliasNote: string | undefined):
  * "unknown" rather than crashing `--version`.
  */
 export function monoAgentVersion(): string {
-  return agentAppPackageVersion() ?? "unknown";
+  return appPackageVersion() ?? "unknown";
 }

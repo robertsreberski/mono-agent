@@ -249,7 +249,7 @@ export function renderPresetShow(preset: WizardPreset): string {
  * internal `answers: Partial<WizardAnswers>` wizard seed. Narrowing here keeps the
  * machine contract stable if the wizard's internal answer shape changes.
  */
-export interface PublicPresetSummary {
+interface PublicPresetSummary {
   readonly id: string;
   readonly title: string;
   readonly description: string;

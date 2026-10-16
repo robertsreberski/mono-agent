@@ -7,7 +7,7 @@ import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 
 export const SET_CONVERSATION_TITLE_MCP_SERVER_NAME = "mono-agent-conversation-title";
 export const SET_CONVERSATION_TITLE_TOOL_NAME = "SetConversationTitle";
-export const SET_CONVERSATION_TITLE_MAX_CHARACTERS = 80;
+const SET_CONVERSATION_TITLE_MAX_CHARACTERS = 80;
 
 const SET_CONVERSATION_TITLE_INPUT = z.object({
   title: z.string()
@@ -43,7 +43,7 @@ export function isSetConversationTitleToolAllowed(policy: ConversationTitlePolic
 }
 
 /** One stateless tool whose structured result is applied by the originating web console. */
-export function createSetConversationTitleServer(isWritable: () => boolean = () => true): McpServer {
+function createSetConversationTitleServer(isWritable: () => boolean = () => true): McpServer {
   const server = new McpServer({
     name: SET_CONVERSATION_TITLE_MCP_SERVER_NAME,
     version: "1.0.0",

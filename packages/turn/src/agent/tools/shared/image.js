@@ -12,7 +12,7 @@ import sharp from "sharp";
 // 2,000 px sits above the standard tier's 1,568 px native long edge and just under
 // the 2,576 px high-resolution tier, so legibility is effectively unchanged: the
 // provider would downscale past this point for token accounting anyway.
-export const MAX_INLINE_IMAGE_EDGE_PX = 2_000;
+const MAX_INLINE_IMAGE_EDGE_PX = 2_000;
 
 const ANIMATED_IMAGE_MIME_TYPES = new Set(["image/gif", "image/webp"]);
 const OUTPUT_MIME_BY_FORMAT = {

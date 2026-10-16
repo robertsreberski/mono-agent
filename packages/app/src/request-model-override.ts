@@ -38,12 +38,12 @@ import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
  * REPLACES the default and a null CLEARS it. An effort-only / no-model turn leaves
  * the block untouched (the default's block is correct for the default model).
  */
-export interface RequestModelOverrideLogger {
+interface RequestModelOverrideLogger {
   warn?(message: string, metadata?: Record<string, unknown>): void;
   info?(message: string, metadata?: Record<string, unknown>): void;
 }
 
-export interface RequestModelOverrideOptions {
+interface RequestModelOverrideOptions {
   readonly logger?: RequestModelOverrideLogger;
   /** Host primary retained when a request does not select another model. */
   readonly baseModel?: RuntimeModelReference;
@@ -232,24 +232,13 @@ function advertisedEffortAdmits(
   return true;
 }
 
-/** Whether the accepted request route (or its configured base) is Pi-native. */
-export function requestModelOverrideTargetsPiNative(
-  metadata: Record<string, unknown> | undefined,
-  options?: RequestModelOverrideOptions,
-): boolean {
-  const accepted = resolveAcceptedModelOverride(metadata, options, undefined).model ?? options?.baseModel;
-  return [accepted, ...(options?.fallbackModels ?? [])].some((model) => model !== undefined);
-}
-
 /**
  * Whether every route the configured fallback router can reach for this
  * request is Pi-native. ProcessJobs private-state protection requires this
  * stronger contract: a single non-Pi primary or fallback would move execution
  * to a provider-owned tool loop that cannot enforce the mono-agent sandbox.
  *
- * Keep this separate from `requestModelOverrideTargetsPiNative`, whose
- * intentionally permissive any-Pi meaning is used by other capability
- * discovery. The chain projection mirrors `fallbackChainForConfig`: an
+ * The chain projection mirrors `fallbackChainForConfig`: an
  * accepted request override replaces the primary and a configured fallback
  * equal to that effective primary is skipped without otherwise rewriting the
  * configured order. Missing, malformed, or duplicate reachable routes fail

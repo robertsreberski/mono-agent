@@ -35,7 +35,7 @@ const PUSH_CHANNEL_BY_SCHEME: Partial<Record<string, ChannelId>> = {
  * WhatsApp is a recognized push scheme but has no notify hook yet, so it is
  * absent here and its conversations are never offered as candidates.
  */
-export const NOTIFY_CAPABLE_CHANNELS: ReadonlySet<ChannelId> = new Set<ChannelId>([
+const NOTIFY_CAPABLE_CHANNELS: ReadonlySet<ChannelId> = new Set<ChannelId>([
   "telegram",
   "slack",
   "messenger",
@@ -55,7 +55,7 @@ export function channelIdForConversation(conversationId: string): ChannelId | un
   return PUSH_CHANNEL_BY_SCHEME[conversationId.slice(0, colon)];
 }
 
-export interface ProactiveNotifyInput {
+interface ProactiveNotifyInput {
   /** Destination conversationId, e.g. `telegram:42` or `slack:C1:171.5`. */
   readonly conversationId: string;
   /** The message to deliver. With `verbatim`, posted as-is; otherwise run as a turn. */

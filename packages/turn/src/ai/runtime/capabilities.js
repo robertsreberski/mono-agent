@@ -1,6 +1,6 @@
 import { TOOL_POLICY_PROJECTED } from "./tool-policy.js";
 
-export const COMMON_CAPABILITIES = {
+const COMMON_CAPABILITIES = {
   streaming: true,
   structured_output: true,
   supports_session_resume: false,
@@ -14,7 +14,7 @@ export const COMMON_CAPABILITIES = {
   supports_request_tool_environment: false,
 };
 
-export const RUNTIME_CAPABILITIES = {
+const RUNTIME_CAPABILITIES = {
   pi: {
     runtime: "pi-agent",
     ...COMMON_CAPABILITIES,
@@ -29,12 +29,9 @@ export const RUNTIME_CAPABILITIES = {
 };
 
 /**
- * @param {*} [_legacySelection]
  * @returns {{kind: "pi"} & typeof RUNTIME_CAPABILITIES.pi}
  */
-export function runtimeCapabilities(_legacySelection) {
-  // Capability lookup no longer selects a backend. The ignored optional value
-  // keeps the still-separate router migration type-safe without allowing its
-  // legacy route ids to influence the sole surviving runtime contract.
+export function runtimeCapabilities() {
+  // Capability lookup describes the sole runtime; it does not select a backend.
   return { kind: "pi", ...RUNTIME_CAPABILITIES.pi };
 }

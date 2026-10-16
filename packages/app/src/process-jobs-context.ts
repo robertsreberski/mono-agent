@@ -12,7 +12,7 @@ import {
   type AgentResponse,
 } from "@mono-agent/contracts";
 
-export interface ProcessJobWakeContext {
+interface ProcessJobWakeContext {
   readonly jobId: string;
   readonly chainDepth: number;
   readonly pendingQuestion?: boolean;
@@ -31,7 +31,7 @@ interface ProcessJobWakeRequestBinding {
   readonly flight: ProcessJobWakeFlight;
 }
 
-export type ProcessJobWakeContextResolution =
+type ProcessJobWakeContextResolution =
   | { readonly kind: "none" }
   | { readonly kind: "resolved"; readonly context: ProcessJobWakeContext }
   | { readonly kind: "missed" };
@@ -327,18 +327,6 @@ function processJobWakeFlightForOffer(deliveryKey: string | undefined): ProcessJ
   if (deliveryKey === undefined) return undefined;
   const flights = wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
   return flights.length === 1 ? flights[0] : undefined;
-}
-
-/**
- * The live host-wake depth for a conversation's single active run, when it has
- * exactly one. Exported so a second host-owned wake feature can read the depth
- * this registry already tracks instead of registering a competing target: the
- * registry admits a steer only when exactly one candidate matches, so a
- * duplicate registration would silently disable steering for both.
- */
-export function processJobSteeringDepth(conversationId: string): number | undefined {
-  const candidates = steeringTargetsByConversation.get(baseConversationId(conversationId)) ?? [];
-  return candidates.length === 1 ? effectiveSteeringDepth(candidates[0]!) : undefined;
 }
 
 function effectiveSteeringDepth(target: ActiveProcessJobSteeringTarget): number {

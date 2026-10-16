@@ -8,7 +8,7 @@ import type { MemoryLoadOptions } from "@mono-agent/contracts";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../index.js";
+import type { AgentHarnessSessionOptions } from "../types.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;

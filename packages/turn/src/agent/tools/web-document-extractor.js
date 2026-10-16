@@ -6,9 +6,9 @@ import { XMLValidator } from "fast-xml-parser";
 import { DOMParser } from "linkedom";
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
 import { extractLocalHtml } from "./local/extract.js";
-export { extractHtmlLinks, MAX_WEB_FETCH_LINKS, MAX_WEB_FETCH_LINK_URL_CHARS, MAX_WEB_FETCH_LINK_TEXT_CHARS } from "./local/links.js";
+export { extractHtmlLinks } from "./local/links.js";
 
-export const MAX_STRUCTURED_DOCUMENT_BYTES = 8 * 1024 * 1024;
+const MAX_STRUCTURED_DOCUMENT_BYTES = 8 * 1024 * 1024;
 const MARKDOWN_MIME_TYPES = new Set([
   "application/markdown",
   "application/x-markdown",
@@ -143,7 +143,6 @@ function extractXml(xml, format, url) {
   const body = blocks.join("\n\n");
   return { body, readableText: markdownToText(body), title: "", extractionStage: "xml", parserFailureCount: 0, parserFailures: [] };
 }
-
 
 function safeUrl(value, base) {
   if (typeof value !== "string" || !value.trim()) return "";

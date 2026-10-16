@@ -19,7 +19,7 @@ interface PostedReplyScope {
   readonly threadTs: string;
 }
 
-export interface SlackPostedReplyHistoryOptions {
+interface SlackPostedReplyHistoryOptions {
   readonly maxMessages: number;
   readonly rollover?: "none" | "daily";
   readonly rolloverTimezone?: string;

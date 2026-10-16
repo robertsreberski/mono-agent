@@ -15,7 +15,7 @@ import { accountHomeDirectory } from "./account-home.js";
 const AGENT_ROOT_LEASE_SCHEMA = "mono-agent.agent-root-lease.v1";
 const AGENT_ROOT_LEASE_OWNERLESS_GRACE_MS = 5 * 60_000;
 const AGENT_ROOT_LEASE_ACQUIRE_ATTEMPTS = 4;
-export const PROCESS_JOBS_GENERATION_DRAIN_TIMEOUT_MS = 30_000;
+const PROCESS_JOBS_GENERATION_DRAIN_TIMEOUT_MS = 30_000;
 
 export const AGENT_ROOT_OWNED_ELSEWHERE_ERROR =
   "Another mono-agent process is already using this agent root. Stop that local agent before trying again.";
@@ -38,7 +38,7 @@ export interface AgentRootRequestLease {
   releaseAfterSettlement(): void;
 }
 
-export interface AgentRootMutationGate {
+interface AgentRootMutationGate {
   readonly generation: AgentRootProtectionGeneration;
   release(): void;
 }
@@ -50,7 +50,7 @@ export interface AgentRootOwnership {
   release(): void;
 }
 
-export interface AcquireAgentRootOwnershipOptions {
+interface AcquireAgentRootOwnershipOptions {
   readonly homeDir?: string;
   readonly pid?: number;
   readonly now?: () => number;

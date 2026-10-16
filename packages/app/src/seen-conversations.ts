@@ -13,7 +13,7 @@ export interface SeenConversation {
   readonly lastSeen?: string;
 }
 
-export interface ListSeenOptions {
+interface ListSeenOptions {
   /** Cap on the number of (newest-first) summary files read. Default 2000. */
   readonly limit?: number;
 }

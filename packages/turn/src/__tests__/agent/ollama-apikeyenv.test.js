@@ -101,16 +101,16 @@ describe("hosted Ollama apiKeyEnv resolution", () => {
     // A rotation must change the identity (otherwise operators sharing a
     // process read each other's cached results); the value itself must never
     // appear in it.
-    const { __ollamaCacheIdentityForTests } = await import("../../agent/tools/web-controller.js");
+    const { ollamaCacheIdentity } = await import("../../agent/tools/web-controller.js");
     const config = { baseUrl: "https://ollama.com", apiKeyEnv: ENV_NAME };
     process.env[ENV_NAME] = "key-one";
-    const first = __ollamaCacheIdentityForTests(config);
+    const first = ollamaCacheIdentity(config);
     expect(JSON.stringify(first)).not.toContain("key-one");
     expect(first).toMatchObject({ apiKeyEnv: ENV_NAME });
     expect(typeof first.credentialDigest).toBe("string");
     await searchOnce();
     process.env[ENV_NAME] = "key-two";
-    const second = __ollamaCacheIdentityForTests(config);
+    const second = ollamaCacheIdentity(config);
     expect(second.credentialDigest).not.toBe(first.credentialDigest);
     expect(JSON.stringify(second)).not.toContain("key-two");
 

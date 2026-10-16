@@ -141,12 +141,16 @@ export function annotateProviderErrorMessage(message, error) {
   return { message: text, causeCode: null, causeSource: null };
 }
 
-/** Test seam: drop recorded transport errors. */
+/** Test seam: drop recorded transport errors.
+ * @coreScanRetained
+ */
 export function resetTransportErrorProbeForTests() {
   recorded.length = 0;
 }
 
-/** Test seam: record a transport error without a real socket. */
+/** Test seam: record a transport error without a real socket.
+ * @coreScanRetained
+ */
 export function recordTransportErrorForTests(code, at = Date.now()) {
   recorded.push({ code, at, origin: null });
 }

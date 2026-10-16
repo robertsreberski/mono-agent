@@ -71,7 +71,7 @@ export async function loadSelectedSkills(input: LoadSelectedSkillsInput): Promis
   };
 }
 
-export function skillInstructionsToContextBlocks(skills: readonly LoadedSkill[]): readonly MarkdownContextBlock[] {
+function skillInstructionsToContextBlocks(skills: readonly LoadedSkill[]): readonly MarkdownContextBlock[] {
   return skills.map((skill) => ({
     kind: "markdown",
     source: skill.mainFile,

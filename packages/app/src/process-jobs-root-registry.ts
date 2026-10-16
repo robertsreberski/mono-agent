@@ -13,18 +13,18 @@ import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "./owner-private-
 import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 import { syncDirectory } from "./continuation-store-fs.js";
 
-export const PROCESS_JOBS_ROOT_REGISTRY_SCHEMA = "mono-agent.process-jobs-roots.v1";
+const PROCESS_JOBS_ROOT_REGISTRY_SCHEMA = "mono-agent.process-jobs-roots.v1";
 export const PROCESS_JOBS_ROOT_REGISTRY_DIRECTORY = "process-jobs-roots-v1";
 export const PROCESS_JOBS_ROOT_REGISTRY_FILE = "registry.json";
 export const PROCESS_JOBS_ROOT_REGISTRY_RECOVERY_DIRECTORY = "process-jobs-roots-v1.recovery";
-export const PROCESS_JOBS_ROOT_REGISTRY_STAGING_FILE = "registry.staging.json";
+const PROCESS_JOBS_ROOT_REGISTRY_STAGING_FILE = "registry.staging.json";
 export const PROCESS_JOBS_ROOT_REGISTRY_PREVIOUS_FILE = "registry.previous.json";
 export const PROCESS_JOBS_ROOT_REGISTRY_FAILED_FILE = "registry.failed.json";
 export const PROCESS_JOBS_ROOT_REGISTRY_MAX_RECOVERY_ENTRIES = 3;
 export const PROCESS_JOBS_ROOT_REGISTRY_MAX_ROOTS = 64;
 export const PROCESS_JOBS_ROOT_REGISTRY_MAX_SEGMENTS = 64;
 export const PROCESS_JOBS_ROOT_REGISTRY_MAX_SEGMENT_BYTES = 255;
-export const PROCESS_JOBS_ROOT_REGISTRY_MAX_ROOT_BYTES = 2 * 1024;
+const PROCESS_JOBS_ROOT_REGISTRY_MAX_ROOT_BYTES = 2 * 1024;
 export const PROCESS_JOBS_ROOT_REGISTRY_MAX_BYTES = 256 * 1024;
 
 export const PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR =
@@ -59,7 +59,7 @@ interface RecoveryArtifacts {
   readonly failed?: ProvenManifest;
 }
 
-export interface RegisteredProcessJobsRoot {
+interface RegisteredProcessJobsRoot {
   readonly segments: readonly string[];
   readonly key: string;
   readonly lexicalPath: string;
@@ -356,19 +356,6 @@ export function assertProcessJobsRegistryDisjointFromPaths(
 
 export function processJobsProtectionPolicyRoots(snapshot: ProcessJobsRootRegistrySnapshot): readonly string[] {
   return snapshot.kind === "empty" ? [] : snapshot.protectedRoots;
-}
-
-export function processJobsRootForKey(
-  snapshot: ProcessJobsRootRegistrySnapshot,
-  key: string,
-): RegisteredProcessJobsRoot | undefined {
-  return snapshot.kind === "ready" ? snapshot.roots.find((root) => root.key === key) : undefined;
-}
-
-export function processJobsRegistryGeneration(
-  snapshot: ProcessJobsRootRegistrySnapshot,
-): AgentRootProtectionGeneration {
-  return snapshot.generation;
 }
 
 async function loadStrict(

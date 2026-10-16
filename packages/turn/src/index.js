@@ -17,7 +17,7 @@ export * from "./ai/index.js";
 export { resolveEngineTurnAdapter, generateEngineTurnResponse, engineTurnAdapter } from "./ai/index.js";
 export * from "./agent/index.js";
 
-export { produceNativeHandoffSummary, HANDOFF_SUMMARY_PROMPT } from "./ai/providers/engine-turn/handoff-producer.js";
+export { produceNativeHandoffSummary } from "./ai/providers/engine-turn/handoff-producer.js";
 export { detachDurableNativeSession } from "./engine/session-lifecycle.js";
 
 // Administrative storage factory; never forwarded through runtime run options.

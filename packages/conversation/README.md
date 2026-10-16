@@ -750,13 +750,13 @@ permission to erase oversized evidence or cold-fallback after switch intent.
 | `CONVERSATION_HISTORY_VERSION_MAX_BYTES` | Maximum UTF-8 size of an opaque custom-store history version token (512 bytes) |
 | `acquireToolHistoryWriter()` / `ToolHistoryReader` | Persist managed-tool lifecycle pairs or query retained records through a host-authorized bounded projection |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
-| `ProcessIncarnation` / `currentProcessIncarnation()` / `readProcessIncarnation()` / `isSameProcessIncarnation()` / `isProcessIncarnationLive()` | Share OS boot/start identity across app ownership consumers. macOS writes stable v2 evidence (boot-session UUID plus UTC process start), so calendar-clock steps and timezone changes never change a live owner's identity; Linux, Windows and other platforms keep writing v1 unchanged. Readers return `undefined` only when `ESRCH` proves the PID absent and throw on every other failure; macOS probes are bounded to five seconds. `isSameProcessIncarnation()` is the strict authorization check. `isProcessIncarnationLive()` is the reclaim check: a live PID with unavailable or incomparable evidence (including a macOS v1 record) stays live. `processIncarnationFromJson()` accepts v1 and v2. Durable history uses `readHistoryProcessIncarnation()` (v2) with a conservative PID-only fallback |
+| `ProcessIncarnation` / `currentProcessIncarnation()` / `readProcessIncarnation()` / `isSameProcessIncarnation()` / `isProcessIncarnationLive()` | Share OS boot/start identity across app ownership consumers. macOS writes stable v2 evidence (boot-session UUID plus UTC process start), so calendar-clock steps and timezone changes never change a live owner's identity; Linux, Windows and other platforms keep writing v1 unchanged. Readers return `undefined` only when `ESRCH` proves the PID absent and throw on every other failure; macOS probes are bounded to five seconds. `isSameProcessIncarnation()` is the strict authorization check. `isProcessIncarnationLive()` is the reclaim check: a live PID with unavailable or incomparable evidence (including a macOS v1 record) stays live. `processIncarnationFromJson()` accepts v1 and v2. Durable history uses an internal v2 reader with a conservative PID-only fallback |
 | `loadSelectedSkills()` / `createSkillsCache()` | Load only host-selected skill bodies and reuse unchanged reads |
 
 Lightweight ownership/maintenance entrypoints can import the incarnation API
 from `@mono-agent/conversation/process-incarnation` without loading the runtime
-composition barrel. Agent-app retains its existing local re-exports through this
-subpath; there is one implementation and no new package dependency.
+composition barrel. App ownership consumers share this subpath; there is one
+OS implementation and no new package dependency.
 
 The exhaustive inventory below is generated from the package entrypoint.
 
@@ -775,134 +775,47 @@ Every symbol exported by each public code entrypoint is listed below.
 
 ```text
 AgentHarness
-AgentHarnessContinuationClaimCapability
-AgentHarnessContinuationClaimCapabilityIssuer
-AgentHarnessContinuationContextOptions
-AgentHarnessContinuationMode
 AgentHarnessError
-AgentHarnessFailure
 AgentHarnessFailureError
-AgentHarnessMcpRequestContextOptions
 AgentHarnessOptions
-AgentHarnessProgressCapability
-AgentHarnessProgressCapabilityIssuer
-AgentHarnessRecorderFactoryInput
 AgentHarnessRequest
 AgentHarnessResponse
 AgentHarnessRuntimeOptionsExtension
 AgentHarnessRuntimeOptionsInput
-AgentHarnessSessionBoundary
-AgentHarnessSessionBoundaryKind
-AgentHarnessSessionEvent
-AgentHarnessSessionEventKind
-AgentHarnessSessionOptions
-AgentHarnessSessionSnapshot
 AgentHarnessToolHistoryOptions
 AgentHarnessTurnHistoryEnricher
-AgentSessionMode
-AppliedLiveInput
-BuildContextInput
 BuiltAgentContext
 CONVERSATION_HISTORY_VERSION_MAX_BYTES
-ContextBlockInput
-ContextRole
-ContextSection
-ContextSectionId
-ContextValidationError
-ContextValidationErrorCode
-ContextValidationErrorDetails
-ContinuationMcpServerTransport
-ConversationHistoryContextImport
 ConversationHistoryExclusiveTurn
-ConversationHistoryProviderSessionTurn
 ConversationHistoryStore
-ConversationHistoryTurnDrainOptions
-ConversationHistoryTurnDrainResult
 ConversationHistoryTurnInspection
-ConversationHistoryTurnInspector
-ConversationHistoryTurnReconciliation
-ConversationHistoryTurnRecovery
-CreateSkillsCacheOptions
-DEFAULT_SOUL_TEXT
-DurableConversationHistoryStore
-DurableHistoryStoreOptions
-DurableHistoryStoreStats
 ExternalRunSummary
-FileContextInput
-HISTORY_PROCESS_INCARNATION_SCHEMA
 HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
-HistoryProcessIncarnation
-InMemoryHistoryStoreOptions
 LiveInputMailbox
-LiveSessionManager
-LiveSessionManagerOptions
-LiveSessionRunLifecycle
-LoadSelectedSkillsInput
-LoadedSkill
-LoadedSkillContext
-LoadedSkillFile
-ManagedProviderSessionPreparation
-MarkdownContextBlock
-MemoryWriteMode
-NativeHistoryAuthorityBusyError
-NoopRunRecorder
-PROCESS_INCARNATION_SCHEMA
-PreparedHistoryAppend
 ProcessIncarnation
 ProviderSessionHandle
-ProviderSessionPreparationSnapshot
 ProviderSessionTurnBinding
-ProviderSessionTurnCommitOptions
-RuntimeSessionEvictReason
-RuntimeSessionRecord
-RuntimeSessionSnapshot
-RuntimeSessionStore
-RuntimeSessionStoreOptions
-SameProcessIncarnation
 SessionRuntimeResolver
-SkillActivationError
 SkillIndexEntry
 SkillIndexSummary
-SkillsCache
-SkillsLoader
-SkillsStat
 TOOL_HISTORY_APPLICATION_ID
 TOOL_HISTORY_DATABASE
 TOOL_HISTORY_DIRECTORY
-TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS
 TOOL_HISTORY_OWNER_DATABASE
-TOOL_HISTORY_PERSISTENCE_CEILING_MS
-TOOL_HISTORY_SCHEMA
 TOOL_HISTORY_USER_VERSION
-ToolHistoryArtifactReference
-ToolHistoryArtifactSinkInput
-ToolHistoryGetInput
-ToolHistoryGetResult
 ToolHistoryReader
-ToolHistoryRecordProjection
-ToolHistoryRetentionOptions
 ToolHistoryRunBinding
 ToolHistorySearchCursor
 ToolHistorySearchInput
 ToolHistorySearchItem
-ToolHistorySearchPage
-ToolHistoryStats
 ToolHistoryWriter
-ToolHistoryWriterError
 ToolHistoryWriterHandle
 ToolHistoryWriterOptions
-ToolPolicy
 ToolPolicyError
-ToolPolicyErrorCode
-ToolPolicyErrorDetails
 ToolPolicyInput
-ToolPolicyRuntimeOptions
 acquireToolHistoryWriter
-assistantTextFromRuntimeEvent
 bindProcessJobLiveInput
-buildAgentContext
-buildSkillIndex
 classifyContinuationMcpServerTransport
 composeHostTurnEnvelope
 createAgentHarness
@@ -911,7 +824,6 @@ createDurableHistoryStore
 createInMemoryHistoryStore
 createLiveInputMailbox
 createLiveSessionManager
-createRuntimeSessionStore
 createSessionRuntimeResolver
 createSkillsCache
 createToolHistoryArtifactSink
@@ -919,30 +831,21 @@ createToolPolicy
 currentProcessIncarnation
 failClosedToolPolicy
 formatHostCapabilities
-historyProcessIncarnationFromJson
 isProcessAlive
 isProcessIncarnationLive
 isReadSkillCompatibleName
 isSameProcessIncarnation
 isStdioMcpServerSpec
-loadContextFromFiles
 loadSelectedSkills
-loadSkillFilesFromDirectory
 loadSkillIndexFromDirectory
 loadToolPolicyFromJsonFile
 loadToolPolicyFromJsonFileSync
 logicalConversationIdForFence
-normalizeInlineText
 processIncarnationFromJson
-processIncarnationsEqual
-readHistoryProcessIncarnation
 readProcessIncarnation
-renderSkillIndexEntries
 renderSkillIndexSection
-skillInstructionsToContextBlocks
 toolHistoryDiskUsage
 toolHistoryLogicalConversationId
-toolHistoryRecordId
 toolPolicyToRuntimeOptions
 ```
 
@@ -950,17 +853,14 @@ toolPolicyToRuntimeOptions
 
 ```text
 HISTORY_PROCESS_INCARNATION_SCHEMA
-HistoryProcessIncarnation
 PROCESS_INCARNATION_SCHEMA
 ProcessIncarnation
 SameProcessIncarnation
 currentProcessIncarnation
-historyProcessIncarnationFromJson
 isProcessIncarnationLive
 isSameProcessIncarnation
 processIncarnationFromJson
 processIncarnationsEqual
-readHistoryProcessIncarnation
 readProcessIncarnation
 ```
 

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  AGENT_ATTACHMENT_MIME_ALIASES,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   agentAttachmentKindFromMimeType,
@@ -10,6 +9,7 @@ import {
   type AgentAttachment,
   type AgentRequestBase,
 } from "../index.js";
+import { AGENT_ATTACHMENT_MIME_ALIASES } from "../attachment-mime-aliases.js";
 
 describe("multimodal attachment contracts", () => {
   it("shares the default Telegram-compatible size and MIME policy", () => {

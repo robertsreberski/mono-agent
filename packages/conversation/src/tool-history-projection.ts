@@ -9,7 +9,7 @@ const PROJECTION_HEADER_LINES = [
 const PROJECTION_TRUNCATED_LINE = "<projection_truncated reason=\"byte_limit\" />";
 const PROJECTION_CLOSING_LINE = "</session_tool_history>";
 
-export interface ToolHistoryProjection {
+interface ToolHistoryProjection {
   readonly text: string;
   readonly recordCount: number;
 }

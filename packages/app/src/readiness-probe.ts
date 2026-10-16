@@ -26,7 +26,7 @@ type ReadinessRuntimeRunOptions = RuntimeRunOptions & {
   readonly providerEnv: Readonly<Record<string, string>>;
 };
 
-export interface ReadinessProbeOptions {
+interface ReadinessProbeOptions {
   readonly plan: WizardPlan;
   /** Caller cancellation for an interactive readiness check. */
   readonly abortSignal?: AbortSignal;
@@ -84,7 +84,7 @@ export interface ReadinessRouteResult {
   readonly message?: string;
 }
 
-export interface ReadinessRouteStart {
+interface ReadinessRouteStart {
   readonly key: string;
   readonly index: number;
   readonly total: number;

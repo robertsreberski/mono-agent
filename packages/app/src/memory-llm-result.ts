@@ -1,6 +1,6 @@
 import type { RuntimeResult } from "@mono-agent/turn/host/types";
 
-export interface MemoryRuntimeResultOptions {
+interface MemoryRuntimeResultOptions {
   readonly timedOut?: boolean;
   readonly timeoutMs?: number;
   readonly structuredOutputRequested?: boolean;

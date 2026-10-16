@@ -10,7 +10,7 @@ export const DEFAULT_MEMORY_EMBEDDING_ENDPOINTS: Readonly<Record<ManagedMemoryEm
 const EMBEDDING_PROBE_TEXT = "mono-agent managed-memory embedding readiness probe";
 const OLLAMA_DISCOVERY_CONCURRENCY = 6;
 
-export interface DiscoverMemoryEmbeddingModelsOptions {
+interface DiscoverMemoryEmbeddingModelsOptions {
   readonly provider: ManagedMemoryEmbeddingProvider;
   readonly endpoint?: string;
   readonly apiKey?: string;
@@ -18,13 +18,13 @@ export interface DiscoverMemoryEmbeddingModelsOptions {
   readonly timeoutMs?: number;
 }
 
-export interface ProbeMemoryEmbeddingSelectionOptions extends DiscoverMemoryEmbeddingModelsOptions {
+interface ProbeMemoryEmbeddingSelectionOptions extends DiscoverMemoryEmbeddingModelsOptions {
   readonly model: string;
   /** When supplied, fail if the service returns a vector with another dimension. */
   readonly expectedDimension?: number;
 }
 
-export interface MemoryEmbeddingProbeResult {
+interface MemoryEmbeddingProbeResult {
   readonly dimension: number;
 }
 

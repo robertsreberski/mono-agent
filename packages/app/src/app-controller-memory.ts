@@ -64,7 +64,7 @@ export async function memoryStore(
       // Only a verified managed runtime has an exact plugin closure beside
       // agent-app. A systemd worker may publish a secret-free snapshot for
       // discovery while retaining the unmanaged plugin resolution order.
-      preferAppPluginInstall: controller.trustedRuntimeReadRoots.length > 0,
+
       ...(logger === undefined ? {} : { logger }),
       observability,
     };

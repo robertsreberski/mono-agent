@@ -93,6 +93,7 @@ describe("verify-all", () => {
       "check:doc-snippets",
       "check:deep-imports",
       "verify:consumers",
+      "scan:dead-code",
       "release:pack",
       "release:consumer",
       "typecheck",
@@ -109,7 +110,7 @@ describe("verify-all", () => {
     ].join("\n"))).toBe(true);
   });
 
-  it("exits non-zero and skips consumers when a pre-build repo gate fails", async () => {
+  it.each(["check:architecture", "build"])("exits non-zero and skips consumers when %s fails", async (failedLabel) => {
     const stdout = sink();
     const stderr = sink();
     let verifyConsumersCalled = false;
@@ -119,7 +120,7 @@ describe("verify-all", () => {
       releaseTag: "v0.11.2",
       stdout,
       stderr,
-      runCommand: async (_command, _args, options) => options.label === "check:architecture" ? 1 : 0,
+      runCommand: async (_command, _args, options) => options.label === failedLabel ? 1 : 0,
       verifyConsumers: async () => {
         verifyConsumersCalled = true;
         return {
@@ -131,11 +132,40 @@ describe("verify-all", () => {
 
     expect(result.exitCode).toBe(1);
     expect(verifyConsumersCalled).toBe(false);
-    expect(stderr.text).toContain("Repo gate failed at check:architecture.");
+    expect(stderr.text).toContain(`Repo gate failed at ${failedLabel}.`);
     expect(stderr.text).toContain("Consumer verification skipped");
     expect(stdout.text).toContain("repo fail");
     expect(stdout.text).toContain("local-agent-alpha contract fail");
     expect(stdout.text).toContain("local-agent-beta contract fail");
+    expect(stdout.text).toContain("verification failed");
+  });
+
+  it("fails before packaging when dead-code scanning fails after the consumer gate", async () => {
+    const execution = [];
+    const stdout = sink();
+    const stderr = sink();
+    const result = await runVerifyAll({
+      argv: [], cwd: "/repo", releaseTag: "v0.11.2", stdout, stderr,
+      runCommand: async (_command, _args, options) => {
+        execution.push(options.label);
+        return options.label === "scan:dead-code" ? 1 : 0;
+      },
+      verifyConsumers: async () => {
+        execution.push("verify:consumers");
+        return { exitCode: 0, statusByLabel: new Map([
+          ["local-agent-alpha contract", true], ["local-agent-beta contract", true],
+        ]) };
+      },
+    });
+    expect(result.exitCode).toBe(1);
+    expect(execution.slice(-5)).toEqual([
+      "build", "check:doc-snippets", "check:deep-imports", "verify:consumers", "scan:dead-code",
+    ]);
+    expect(execution).not.toContain("release:pack");
+    expect(stderr.text).toContain("Repo gate failed at scan:dead-code.");
+    expect(stdout.text).toContain("local-agent-alpha contract ok");
+    expect(stdout.text).toContain("local-agent-beta contract ok");
+    expect(stdout.text).toContain("repo fail");
     expect(stdout.text).toContain("verification failed");
   });
 
@@ -333,7 +363,11 @@ describe("verify-all", () => {
       "      - name: Validate package tarballs",
       "        run: pnpm run release:pack -- --tag \"${{ steps.release-smoke.outputs.tag }}\"",
     ].join("\n");
-    const mutatedSource = replaceExactly(source, `${consumer}\n\n${pack}`, `${pack}\n\n${consumer}`);
+    const scan = [
+      "      - name: Check core dead code (all three modes)",
+      "        run: pnpm run scan:dead-code",
+    ].join("\n");
+    const mutatedSource = replaceExactly(source, `${consumer}\n\n${scan}\n\n${pack}`, `${pack}\n\n${scan}\n\n${consumer}`);
 
     expect(() => expectCiParity(mutatedSource)).toThrow();
   });
@@ -1293,6 +1327,11 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     label: "verify:consumers",
     command: "pnpm",
     args: ["run", "verify:consumers", "--skip-build"],
+  }),
+  gateRunContract("pnpm run scan:dead-code", {
+    label: "scan:dead-code",
+    command: "pnpm",
+    args: ["run", "scan:dead-code"],
   }),
   gateRunContract(`pnpm run release:pack -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`, {
     label: "release:pack",

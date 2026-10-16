@@ -16,9 +16,9 @@ export interface ToolPolicy {
   readonly mcpConfigPath?: string;
 }
 
-export type ToolPolicyErrorCode = "invalid_tool_policy" | "tool_policy_read_failed";
+type ToolPolicyErrorCode = "invalid_tool_policy" | "tool_policy_read_failed";
 
-export type ToolPolicyErrorDetails = Record<string, unknown>;
+type ToolPolicyErrorDetails = Record<string, unknown>;
 
 export class ToolPolicyError extends Error {
   readonly code: ToolPolicyErrorCode;
@@ -32,7 +32,7 @@ export class ToolPolicyError extends Error {
   }
 }
 
-export interface ToolPolicyRuntimeOptions extends Record<string, unknown> {
+interface ToolPolicyRuntimeOptions extends Record<string, unknown> {
   allowedTools: string[];
   disallowedTools: string[];
   mcpServers?: Record<string, unknown>;

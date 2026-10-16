@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 
 import { CORE_CONFIG_FIELD_IDS } from "@mono-agent/config";
 import { resolveJsonMonoAgentConfig } from "../../../config/dist/config.js";
-import type { ConfigViewFieldId } from "@mono-agent/config";
 import { loadSlackAdapterConfig } from "@mono-agent/channel-slack";
 import { describe, expect, it } from "vitest";
 
@@ -21,7 +20,7 @@ import type { ConfigReferenceType } from "../config-reference.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> = {
+const EXPECTED_CORE_FIELD_TYPES: Record<keyof typeof CORE_CONFIG_FIELD_IDS, ConfigReferenceType> = {
   "agent.name": "string",
   "runtime.model": "string | object",
   "runtime.fallbacks": "array",
@@ -324,7 +323,7 @@ describe("config reference", () => {
   });
 
   it("keeps every core field's inferred type aligned with the hand-written fidelity table", () => {
-    const registryIds = Object.keys(CORE_CONFIG_FIELD_IDS).sort() as ConfigViewFieldId[];
+    const registryIds = Object.keys(CORE_CONFIG_FIELD_IDS).sort() as Array<keyof typeof CORE_CONFIG_FIELD_IDS>;
     const expectedIds = Object.keys(EXPECTED_CORE_FIELD_TYPES).sort();
     expect(expectedIds).toEqual(registryIds);
 

@@ -24,7 +24,7 @@ Implements the Pi runtime and its typed host integration. The `./host` entrypoin
 pnpm add @mono-agent/turn
 ```
 
-Node.js 22.19 or newer is required. Pi is the only runtime, and it talks to
+Node.js 24.15.0 or newer is required. Pi is the only runtime, and it talks to
 providers over their SDKs, so no provider CLI has to be on `PATH`.
 
 `Bash` and `Exec` honor an explicit `workdir` outside the session workspace when
@@ -540,17 +540,9 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/turn`**
 
 ```text
-ALLOWLIST_MODE_ALL
-ALLOWLIST_MODE_CUSTOM
-APPROVAL_DECISIONS
-BINARY_BLOAT_TOOLS
 CONTEXT_1M_TOKENS
 DEFAULT_RUNTIME_BRAND
-DEFAULT_TOOL_BLOAT_CONFIG
-HANDOFF_SUMMARY_PROMPT
-MAX_TOOL_RESULT_BYTES
 NativeEvidenceCapacityError
-PROVIDER_CHECK_PROMPT
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
@@ -562,35 +554,22 @@ PiProviderAuthPrompt
 PiReasoningLevel
 ProviderCheckCode
 ProviderCheckOutcome
-RISK_TIERS
-RUNTIME_CAPABILITIES
 RuntimeBridge
 RuntimeBridgeDescriptor
 RuntimeBridgeId
 RuntimeModelRef
-UNKNOWN_CAPABILITY
-buildCapabilitiesUsed
-buildTranscriptTailSnapshot
 checkPiProviderAuth
 classifyProviderCheckFailure
-createApprovalManager
 createManagedNativeJournalStorage
 createMetricsObserver
-createObserverHub
 createPiOAuthApiKeyResolver
 createRouterRuntime
 createRuntime
-createSessionRegistry
-describePiBuiltinProvider
 describePiProviderAuth
 detachDurableNativeSession
-disposeAllProviderSessions
-disposeProviderSession
 engineTurnAdapter
 generateEngineTurnResponse
 getPiBuiltinModel
-inferAllowlistMode
-invalidateProviderSession
 isLikelyContextTermination
 isPiOAuthLoginEnabled
 listPiBuiltinModels
@@ -598,67 +577,29 @@ listPiBuiltinProviders
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
-normalizeAllowlistMode
-normalizeList
-normalizeRuntimeModelReference
 parseRuntimeModelReference
-parseStoredAllowlist
 produceNativeHandoffSummary
 reasoningLevelsForPiModel
-refreshProviderSession
-renderResumeSnapshot
 resolveAgentCompactionPolicy
-resolveAllowlist
-resolveAllowlistMap
 resolveEngineTurnAdapter
 resolvePiOAuthApiKey
 resolveRuntimeBrand
 runPiProviderCheck
 runtimeCapabilities
-storedAllowlistMode
 supportsPiContext1M
-syncProviderSession
-toolCompactionAppliedFromWarnings
-wrapToolsWithApprovalGate
 ```
 
 **`@mono-agent/turn/agent`**
 
 ```text
-ALLOWLIST_MODE_ALL
-ALLOWLIST_MODE_CUSTOM
-APPROVAL_DECISIONS
-BINARY_BLOAT_TOOLS
-DEFAULT_TOOL_BLOAT_CONFIG
-MAX_TOOL_RESULT_BYTES
-RISK_TIERS
-buildTranscriptTailSnapshot
-createApprovalManager
-inferAllowlistMode
 isLikelyContextTermination
-normalizeAllowlistMode
-normalizeList
-parseStoredAllowlist
-renderResumeSnapshot
 resolveAgentCompactionPolicy
-resolveAllowlist
-resolveAllowlistMap
-storedAllowlistMode
-wrapToolsWithApprovalGate
 ```
 
 **`@mono-agent/turn/agent/allowlists.js`**
 
 ```text
-ALLOWLIST_MODE_ALL
-ALLOWLIST_MODE_CUSTOM
-inferAllowlistMode
-normalizeAllowlistMode
-normalizeList
-parseStoredAllowlist
-resolveAllowlist
-resolveAllowlistMap
-storedAllowlistMode
+(no named exports)
 ```
 
 **`@mono-agent/turn/agent/compaction.js`**
@@ -673,20 +614,14 @@ resolveAgentCompactionPolicy
 **`@mono-agent/turn/agent/prompt/skill-index.js`**
 
 ```text
-buildSkillIndex
-buildSkillPathNote
 formatSkillBodyWithPathNote
-getSkillAccessDirs
-inferSkillsRoot
 ```
 
 **`@mono-agent/turn/agent/tools/index.js`**
 
 ```text
-DEFAULT_CODEX_SEARCH_MODEL
 bashToolImpl
 bashToolRun
-createWebToolController
 editToolImpl
 execToolImpl
 execToolRun
@@ -705,7 +640,6 @@ performWebFetch
 performWebSearch
 readToolImpl
 resolveRgPath
-searchCodexSubscription
 webFetchToolImpl
 webSearchToolImpl
 writeToolImpl
@@ -743,7 +677,6 @@ updateToolContext
 **`@mono-agent/turn/agent/transcript.js`**
 
 ```text
-RESUME_SNAPSHOT_DEFAULTS
 buildTranscriptTailSnapshot
 renderResumeSnapshot
 ```
@@ -752,7 +685,6 @@ renderResumeSnapshot
 
 ```text
 CONTEXT_1M_TOKENS
-PROVIDER_CHECK_PROMPT
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
@@ -764,43 +696,30 @@ PiProviderAuthPrompt
 PiReasoningLevel
 ProviderCheckCode
 ProviderCheckOutcome
-RUNTIME_CAPABILITIES
 RuntimeBridge
 RuntimeBridgeDescriptor
 RuntimeBridgeId
 RuntimeModelRef
-UNKNOWN_CAPABILITY
-buildCapabilitiesUsed
 checkPiProviderAuth
 classifyProviderCheckFailure
 createMetricsObserver
-createObserverHub
-createSessionRegistry
-describePiBuiltinProvider
 describePiProviderAuth
-disposeAllProviderSessions
-disposeProviderSession
 engineTurnAdapter
 generateEngineTurnResponse
 getPiBuiltinModel
-invalidateProviderSession
 isPiOAuthLoginEnabled
 listPiBuiltinModels
 listPiBuiltinProviders
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
-normalizeRuntimeModelReference
 parseRuntimeModelReference
 reasoningLevelsForPiModel
-refreshProviderSession
 resolveEngineTurnAdapter
 resolvePiOAuthApiKey
 runPiProviderCheck
 runtimeCapabilities
 supportsPiContext1M
-syncProviderSession
-toolCompactionAppliedFromWarnings
 ```
 
 **`@mono-agent/turn/ai/cost.js`**
@@ -824,7 +743,6 @@ zeroPricing
 ```text
 FAILURE_KINDS
 FailureKind
-PROVIDER_ABORT_RE
 RetryableProviderFailureInfo
 classifyFailure
 createStderrTail
@@ -836,7 +754,6 @@ retryableProviderFailureInfo
 **`@mono-agent/turn/ai/file-change-stats.js`**
 
 ```text
-createFileChangePayload
 fileChangeSummary
 readFileChangeSnapshot
 statsForCompletedChange
@@ -852,35 +769,19 @@ formatLiveInputGuidance
 **`@mono-agent/turn/ai/providers/codex/app-server-client.js`**
 
 ```text
-CODEX_APP_SERVER_ARGS
-CODEX_APP_SERVER_ISOLATED_ARGS
-addOpaqueSensitiveValue
-codexErrorMessage
 createCodexAppServerClient
-isCodexRequestTimeout
-isSensitivePayloadField
-normalizedSensitiveName
-redactCodexDiagnostic
-redactCodexPayload
-sanitizeCodexDiagnostic
-sanitizeCodexNotification
-sanitizeCodexResponseError
-sensitiveEnvironmentValues
-utf8Head
 ```
 
 **`@mono-agent/turn/ai/runtime/model-refs.js`**
 
 ```text
 RuntimeModelRef
-normalizeRuntimeModelReference
 parseRuntimeModelReference
 ```
 
 **`@mono-agent/turn/ai/runtime/registry.js`**
 
 ```text
-RUNTIME_CAPABILITIES
 RuntimeBridge
 RuntimeBridgeDescriptor
 RuntimeBridgeId
@@ -956,30 +857,24 @@ validateSessionTurn
 **`@mono-agent/turn/host`**
 
 ```text
-bridgeOwnedForegroundProcesses
-bridgeProcessJobsController
 createMonoRuntime
 describeMonoRuntimeSupport
 discoverLocalProviderModels
 discoverLocalProviders
-listMonoRuntimeBackends
 monoRuntimeSupportsLiveInput
 monoRuntimeSupportsMcpApps
 monoRuntimeSupportsSessionResume
-runtimeBackendForModel
 ```
 
 **`@mono-agent/turn/host/config`**
 
 ```text
-CONTEXT_1M_TOKENS
 MODEL_REFERENCE_ECHO_MAX_BYTES
 MODEL_REFERENCE_REASON_MAX_BYTES
 RuntimeAdapterError
 assertParsedRuntimeModelReference
 isAutodiscoverableProviderId
 isPiBuiltinProvider
-isPlainObject
 isPrivateBaseUrl
 isValidMcpServerName
 localProviderDefinitionFor
@@ -992,16 +887,13 @@ runtimeOptionsForLocalProvider
 sanitizeModelReferenceText
 supportsPiContext1M
 validateLocalProviderDefinition
-validateProviderBaseUrl
 validateProviderDefinition
 ```
 
 **`@mono-agent/turn/host/sandbox`**
 
 ```text
-DEFAULT_DENY_WRITE
 MANAGED_SRT_TREE_SHA256
-PrepareSandboxedCommandInput
 PreparedSandboxCommand
 SANDBOX_FALLBACKS
 SANDBOX_MODES
@@ -1011,26 +903,17 @@ SandboxEffectiveMode
 SandboxEffectiveState
 SandboxEngine
 SandboxEngineId
-SandboxErrorCode
 SandboxFallback
 SandboxMode
 SandboxNetworkMode
 SandboxNetworkPolicy
-SandboxNetworkPolicyInput
 SandboxPolicy
 SandboxPolicyError
-SandboxPolicyInput
-SandboxPolicyRuntimeOptions
 SandboxUnavailableError
-SrtFilesystemSettings
-SrtNetworkSettings
-SrtSandboxEngineOptions
-SrtSettings
 createSandboxPolicy
 createSrtSandboxEngine
 describeSandboxEffectiveState
 failClosedSandboxPolicy
-managedSrtInstallRoot
 mergeSandboxPolicies
 networkPolicyAllowsUrl
 prepareSandboxedCommand
@@ -1038,33 +921,24 @@ protectSandboxRoots
 resolveSandboxEffectiveState
 sandboxEffectiveStateWarning
 sandboxPolicyToRuntimeOptions
-sandboxRequired
 srtSettingsForPolicy
 ```
 
 **`@mono-agent/turn/host/types`**
 
 ```text
-AgentRuntimeCustomModel
-AgentRuntimeCustomProvider
 CreateMonoRuntimeOptions
-DiscoverLocalProviderModelsOptions
-DiscoverLocalProvidersInput
 DiscoveredLocalModel
 DiscoveredProvider
 DurableSessionSalvage
-LocalProviderCapabilities
 LocalProviderDefinition
 LocalProviderModelDefinition
-LocalProviderPricing
 LocalProviderRuntimeOptions
-LocalProviderType
 ModelEffortLevels
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
 MonoRuntimeAttemptContext
 MonoRuntimeAttemptResolution
-MonoRuntimeAttemptResolver
 MonoRuntimeBackendCapabilities
 MonoRuntimeBackendDescriptor
 MonoRuntimeCompactionRecord
@@ -1073,27 +947,19 @@ MonoRuntimeHostOptions
 MonoRuntimeLike
 MonoRuntimeParsedPricingModel
 MonoRuntimePricing
-MonoRuntimeRetryPolicy
 MonoRuntimeSandboxEngine
 MonoRuntimeSupportDescription
-NormalizedMcpServer
-NormalizedMcpTransport
-OwnedForegroundProcessController
 OwnedForegroundProcessRequest
 OwnedForegroundProcesses
 PI_TRANSPORTS
 PiTransport
-PrepareSandboxedCommandInput
 PreparedSandboxCommand
-ProcessJobLaunchOptions
 ProcessJobProcessHandle
 ProcessJobProcessResult
 ProcessJobStartRequest
 ProcessJobStartResult
 ProcessJobsController
 ProviderDefinition
-RuntimeAdapterErrorCode
-RuntimeAdapterErrorDetails
 RuntimeCompactionPolicy
 RuntimeDispatchProgress
 RuntimeEventLike
@@ -1102,9 +968,7 @@ RuntimeHandoffFit
 RuntimeHandoffOptions
 RuntimeHandoffProducerRequest
 RuntimeHandoffProducerResult
-RuntimeHandoffProposal
 RuntimeHandoffSummary
-RuntimeLiveInputCallbackDisposition
 RuntimeLiveInputEvidence
 RuntimeLiveInputMessage
 RuntimeLiveInputUncertainty
@@ -1120,7 +984,6 @@ RuntimeNativeEvidenceView
 RuntimeNativeJournalAuthority
 RuntimeNativeJournalDeletion
 RuntimeNativeJournalDescriptor
-RuntimeNativeJournalPresence
 RuntimeNativeJournalRef
 RuntimeNativeJournalStorage
 RuntimeNativePreparationStorage
@@ -1135,15 +998,10 @@ RuntimeSessionTurnDescriptor
 RuntimeSessionTurnDetachedAttempt
 RuntimeSessionTurnReconciliationRequest
 RuntimeSessionTurnReconciliationResult
-RuntimeSessionTurnResultSeal
 RuntimeSubagentActivityEvent
 RuntimeSubagentActivityPhase
 RuntimeSubagentIdentity
 RuntimeSubagentRouteAttribution
-RuntimeSubagentRouteExecution
-RuntimeSubagentRouteRetry
-RuntimeSubagentRouteSelection
-RuntimeSubagentRouteTransition
 RuntimeToolLifecycleEvent
 RuntimeToolLifecyclePersistence
 RuntimeToolLifecycleSink
@@ -1151,23 +1009,12 @@ RuntimeToolLifecycleTerminalState
 RuntimeToolLimits
 RuntimeToolOptions
 SandboxCommandSpec
-SandboxEffectiveMode
 SandboxEffectiveState
 SandboxEngine
-SandboxEngineId
-SandboxErrorCode
 SandboxFallback
 SandboxMode
 SandboxNetworkMode
-SandboxNetworkPolicy
-SandboxNetworkPolicyInput
 SandboxPolicy
-SandboxPolicyInput
-SandboxPolicyRuntimeOptions
-SrtFilesystemSettings
-SrtNetworkSettings
-SrtSandboxEngineOptions
-SrtSettings
 isRuntimeSubagentActivityEvent
 ```
 

@@ -10,48 +10,20 @@ import { SYSTEMD_BACKGROUND_WORKER_ENV } from "./background-environment.js";
 import { readCliDotenvFile } from "./first-run-readiness.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
-export { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
+
 import { monoAgentVersion, renderHelp, renderHelpTopic, renderMemorySubcommandHelp } from "./cli-help.js";
-export { monoAgentVersion, renderHelp, renderHelpTopic } from "./cli-help.js";
+
 import { runInstallSkill } from "./cli-install-skill-command.js";
 import { runConfig, runPresets, runValidate } from "./cli-validate-config-command.js";
-export {
-  presetShowData,
-  renderConfigView,
-  renderPresetList,
-  renderPresetShow,
-} from "./cli-validate-config-command.js";
+
 import { runAuth, runInit } from "./cli-init-command.js";
-export {
-  identityRoleDisplayLine,
-  initChangeDisplayRows,
-  readApiKeyFromStdin,
-  resolvePiAuthPathForLogin,
-  runProviderSetupBeforeInit,
-  secretChecklistDisplayRows,
-  shouldRunInitWizard,
-} from "./cli-init-command.js";
-export type {
-  InitChangeDisplayRow,
-  InitProviderSetupStatus,
-  RunProviderSetupBeforeInitOptions,
-  SecretChecklistDisplayRow,
-} from "./cli-init-command.js";
+
 import {
   runBackgroundCommand,
   runLaunchdLogMaintenanceCommand,
   runStart,
 } from "./cli-background-command.js";
-export {
-  describeChannelStatus,
-  ensureStartable,
-  printAppStatus,
-  waitForShutdownSignal,
-} from "./cli-background-command.js";
-export type {
-  PreflightResult,
-  PrintAppStatusOptions,
-} from "./cli-background-command.js";
+
 import { runRunsCommand } from "./cli-runs-command.js";
 import { isRunInspectionInvocation, writeRunInspectionUsageFailure } from "./run-inspection.js";
 import {
@@ -63,8 +35,7 @@ import {
 import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "./managed-launchd-maintenance-environment.js";
 import { sanitizeManagedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";
 import { runSandboxCommand } from "./cli-sandbox-command.js";
-export { runSandboxCommand } from "./cli-sandbox-command.js";
-export type { SandboxCommandDependencies } from "./cli-sandbox-command.js";
+
 import * as ui from "./ui.js";
 
 interface ValidateContext {
@@ -83,7 +54,6 @@ function resolveValidateContext(args: ParsedCliArgs, invocationCwd: string): Val
     allowFilesystemWrites: args.consumerPath === undefined,
   };
 }
-
 
 export async function runCli(argv: readonly string[]): Promise<number> {
   let args: ParsedCliArgs;

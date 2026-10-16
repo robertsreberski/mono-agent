@@ -4,37 +4,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  buildLaunchdMaintenancePlistXml,
-  buildLaunchdMaintenanceProgramArguments,
-  buildPlistXml,
-  buildLaunchdProgramArguments,
-  buildWebLaunchdProgramArguments,
-  buildWebMaintenancePlistXml,
-  buildWebMaintenanceProgramArguments,
-  buildWebPlistXml,
-  defaultPathEnv,
-  deriveLaunchdLabel,
-  deriveLaunchdMaintenanceLabel,
-  domainTarget,
-  escapeXml,
-  launchdMaintenancePathsFor,
-  launchdMaintenanceEntrypointPathForCli,
-  launchdMaintenanceCalendarMinute,
-  launchdMaintenanceDispersionSeconds,
-  launchdPathsFor,
-  LAUNCHD_MAINTENANCE_DISPERSION_SECONDS,
-  MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
-  MANAGED_WEB_LOG_MAINTENANCE_ENV,
-  parseLaunchdManagedWorkerDefinition,
-  parseLaunchdServicePid,
-  parseLaunchdWebMaintenanceDefinition,
-  serviceTarget,
-  WEB_LAUNCHD_LABEL,
-  WEB_MAINTENANCE_LAUNCHD_LABEL,
-  webMaintenanceCalendarMinute,
-  webMaintenanceDispersionSeconds,
-} from "../launchd.js";
+import { buildLaunchdMaintenancePlistXml, buildLaunchdMaintenanceProgramArguments, buildPlistXml, buildLaunchdProgramArguments, buildWebLaunchdProgramArguments, buildWebMaintenancePlistXml, buildWebMaintenanceProgramArguments, buildWebPlistXml, defaultPathEnv, deriveLaunchdLabel, deriveLaunchdMaintenanceLabel, domainTarget, escapeXml, launchdMaintenanceEntrypointPathForCli, launchdMaintenanceCalendarMinute, launchdMaintenanceDispersionSeconds, launchdPathsFor, LAUNCHD_MAINTENANCE_DISPERSION_SECONDS, MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV, MANAGED_WEB_LOG_MAINTENANCE_ENV, parseLaunchdManagedWorkerDefinition, parseLaunchdServicePid, parseLaunchdWebMaintenanceDefinition, serviceTarget, WEB_LAUNCHD_LABEL, WEB_MAINTENANCE_LAUNCHD_LABEL, webMaintenanceCalendarMinute, webMaintenanceDispersionSeconds } from "../launchd.js";
 import type {
   MaintenancePlistInput,
   PlistInput,
@@ -174,13 +144,6 @@ describe("launchd maintenance identity", () => {
     expect(() => deriveLaunchdMaintenanceLabel("com.mono-agent.")).toThrow(/canonical mono-agent label/u);
     expect(() => deriveLaunchdMaintenanceLabel("com.mono-agent.Demo"))
       .toThrow(/canonical mono-agent label/u);
-  });
-
-  it("places the helper plist beside the main LaunchAgent", () => {
-    expect(launchdMaintenancePathsFor("com.mono-agent.demo-0a1b2c3d", "/home/u")).toEqual({
-      label: "com.mono-agent-maintenance.demo-0a1b2c3d",
-      plistPath: "/home/u/Library/LaunchAgents/com.mono-agent-maintenance.demo-0a1b2c3d.plist",
-    });
   });
 });
 

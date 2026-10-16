@@ -5,12 +5,12 @@ import type { ChannelConfigViewSection, SettingsJson, SettingsJsonValue } from "
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelDriver } from "./channels.js";
 
-export type ChannelPluginConfigErrorCode =
+type ChannelPluginConfigErrorCode =
   | "invalid_plugin_config"
   | "plugin_import_failed"
   | "malformed_plugin_export";
 
-export interface ChannelPluginConfigErrorDetails {
+interface ChannelPluginConfigErrorDetails {
   readonly code?: ChannelPluginConfigErrorCode;
   readonly packageName?: string;
   readonly pluginId?: string;
@@ -33,7 +33,7 @@ export class ChannelPluginConfigError extends Error {
   }
 }
 
-export interface ChannelPluginEntry {
+interface ChannelPluginEntry {
   readonly packageName: string;
   readonly id?: string;
   readonly label?: string;
@@ -53,7 +53,7 @@ interface InvalidChannelPluginEntry {
 
 type ParsedChannelPluginEntry = ChannelPluginEntry | InvalidChannelPluginEntry;
 
-export interface ResolveConfiguredChannelPluginsOptions {
+interface ResolveConfiguredChannelPluginsOptions {
   readonly reservedIds?: Iterable<string>;
   /** Host-only dependency injection keyed by plugin package name. */
   readonly factoryOptionsByPackage?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;

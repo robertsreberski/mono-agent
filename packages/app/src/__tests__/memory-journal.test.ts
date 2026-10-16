@@ -11,7 +11,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   createMemoryJournalRuntimeExtension,
-  createMemoryJournalServer,
+  createMemoryJournalServerWithState,
+  createMemoryJournalRequestState,
   isMemoryJournalCapableStore,
   isMemoryJournalToolAllowed,
   MEMORY_JOURNAL_ENTRY_TEXT_MAX_BYTES,
@@ -68,9 +69,9 @@ function fakeJournalStore(
 
 async function connectJournal(
   store: MemoryJournalCapableStore,
-  binding: Parameters<typeof createMemoryJournalServer>[1] = { runId: "run-journal" },
+  binding: Parameters<typeof createMemoryJournalRequestState>[0] = { runId: "run-journal" },
 ) {
-  const server = createMemoryJournalServer(store, binding);
+  const server = createMemoryJournalServerWithState(store, createMemoryJournalRequestState(binding));
   const client = new Client({ name: "memory-journal-test", version: "1.0.0" }, { capabilities: {} });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);

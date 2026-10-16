@@ -29,7 +29,7 @@ import type { ContinuationRunningChannel } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 
-export interface ContinuationControllerPort {
+interface ContinuationControllerPort {
   readonly activityTracker?: WorkerActivityTracker;
   readonly cwd: string;
   readonly configReadPath: string;

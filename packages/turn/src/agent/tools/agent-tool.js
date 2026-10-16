@@ -22,7 +22,7 @@ import { publicBackgroundStartFailure } from "./shared/process-jobs.js";
 /** @typedef {import('../../ai/types.js').RuntimeSubagentDefinition} RuntimeSubagentDefinition */
 /** @typedef {import('../../ai/types.js').RuntimeSubagentsOptions} RuntimeSubagentsOptions */
 
-export const GENERAL_PURPOSE_SUBAGENT = "general-purpose";
+const GENERAL_PURPOSE_SUBAGENT = "general-purpose";
 
 /**
  * Read-only by default. A profile that needs a shell or writes must say so in
@@ -1574,7 +1574,7 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
  * @param {{profileName: string, instance?: {id: string, turns: number, status: string}, label?: string, routeLabel?: string, outcome: {status: string, answer: string, reason?: string}, wrapUpNote?: string, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
  * @returns {{text: string, savedPath: string|null, truncated: boolean}}
  */
-export function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, wrapUpNote, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
+function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, wrapUpNote, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
   const header = `<subagent: ${profileName}${instance ? ` · instance ${instance.id} · turn ${instance.turns}${instance.status === "closed" ? " · closed" : ""}` : ""}${label ? ` · ${label}` : ""}${routeLabel ? ` · ${routeLabel}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;

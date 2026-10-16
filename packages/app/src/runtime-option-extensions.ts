@@ -3,7 +3,7 @@ import type {
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/conversation";
 import { mergeSandboxPolicies, protectSandboxRoots } from "@mono-agent/turn/host/sandbox";
-import { type RuntimeModelReference, type SandboxPolicy } from "@mono-agent/turn/host/types";
+import { type SandboxPolicy } from "@mono-agent/turn/host/types";
 
 import {
   assertClearSessionsRecoveryResolved,
@@ -26,9 +26,6 @@ export interface RuntimeOptionsCompositionOptions {
 
 export interface ClearSessionsRuntimeBoundaryOptions {
   readonly cwd: string;
-  readonly workspace: string;
-  readonly baseModel: RuntimeModelReference;
-  readonly fallbackModels?: readonly RuntimeModelReference[];
   readonly sandboxPolicy?: SandboxPolicy;
   /** @internal App-validated trusted-host posture; recovery attestation remains mandatory. */
   readonly suppressSyntheticSandbox?: boolean;
@@ -51,8 +48,7 @@ export function createClearSessionsRuntimeExtension(
     const result = next === undefined
       ? { runtimeOptions: {}, cleanup: async () => {} }
       : await next(input);
-    const effectiveModel = runtimeModel(result.runtimeOptions?.model) ?? options.baseModel;
-    const registryPolicy = clearSessionsSandboxPolicy(options, effectiveModel);
+    const registryPolicy = clearSessionsSandboxPolicy(options);
     if (registryPolicy === undefined) return result;
     const runtimeOptions: Record<string, unknown> = {};
     mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
@@ -64,7 +60,6 @@ export function createClearSessionsRuntimeExtension(
 /** Build the stable tool-context half of the clear-sessions boundary. */
 export function clearSessionsSandboxPolicy(
   options: ClearSessionsRuntimeBoundaryOptions,
-  _effectiveModel: RuntimeModelReference = options.baseModel,
 ): SandboxPolicy | undefined {
   if (options.suppressSyntheticSandbox === true) return undefined;
   if (options.sandboxPolicy?.mode !== "native") return undefined;
@@ -183,13 +178,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asSandboxPolicy(value: unknown): SandboxPolicy | undefined {
   return isRecord(value) ? value as unknown as SandboxPolicy : undefined;
-}
-
-function runtimeModel(value: unknown): RuntimeModelReference | undefined {
-  return isRecord(value)
-    && typeof value.provider === "string"
-    && typeof value.model === "string"
-    && typeof value.reference === "string"
-    ? value as unknown as RuntimeModelReference
-    : undefined;
 }

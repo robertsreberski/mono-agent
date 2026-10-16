@@ -52,16 +52,16 @@ const INSTALL_LOCK_OWNERLESS_GRACE_MS = 5 * 60_000;
 const INSTALL_LOCK_RECORD_MAX_BYTES = 4 * 1024;
 const INSTALL_GUARD_TIMEOUT_EXIT = 75;
 
-export type SandboxManagerErrorCode =
+type SandboxManagerErrorCode =
   | "managed_srt_unsupported"
   | "managed_srt_corrupt"
   | "managed_srt_install_failed"
   | "managed_srt_lock_unsafe"
   | "sandbox_check_failed";
 
-export class SandboxManagerError extends CodedError<SandboxManagerErrorCode> {}
+class SandboxManagerError extends CodedError<SandboxManagerErrorCode> {}
 
-export interface ManagedSrtMarker {
+interface ManagedSrtMarker {
   readonly schemaVersion: 2;
   readonly package: typeof MANAGED_SRT_PACKAGE;
   readonly version: typeof MANAGED_SRT_VERSION;
@@ -150,7 +150,7 @@ export interface SandboxManagerOptions {
   readonly hooks?: ManagedSrtHooks;
 }
 
-export interface ManagedSrtSetupOptions extends SandboxManagerOptions {
+interface ManagedSrtSetupOptions extends SandboxManagerOptions {
   readonly verify?: boolean;
 }
 

@@ -26,8 +26,8 @@
 
 import { randomUUID } from "node:crypto";
 
-export const APPROVAL_DECISIONS = Object.freeze(["approve", "deny", "always"]);
-export const RISK_TIERS = Object.freeze(["low", "medium", "high"]);
+const APPROVAL_DECISIONS = Object.freeze(["approve", "deny", "always"]);
+const RISK_TIERS = Object.freeze(["low", "medium", "high"]);
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 

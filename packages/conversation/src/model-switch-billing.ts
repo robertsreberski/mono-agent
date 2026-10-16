@@ -10,7 +10,7 @@ export function createModelSwitchState(coordinates: Omit<ModelSwitchIdentity, "s
     billingPolicy: MODEL_SWITCH_BILLING_POLICY, authorizationGeneration: 0, authorizations: [], attempts: [], phase: "outgoing", artifact: null, frozenBudget: structuredClone(frozenBudget), initialMessageDigest };
   validateModelSwitchState(state); return state;
 }
-export class SummaryAttemptAlreadyRecordedError extends Error {
+class SummaryAttemptAlreadyRecordedError extends Error {
   readonly code = "ERR_HANDOFF_ATTEMPT_ALREADY_RECORDED";
   constructor() { super("This summary attempt is already recorded; never automatically repeat it"); }
 }

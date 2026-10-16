@@ -145,7 +145,7 @@ export function renderSkillIndexEntries(
  * The whole `## Skill Index` section, heading included.
  *
  * Exists so a caller outside the context builder — the subagent path in
- * agent-app, which composes a child prompt without going through the harness —
+ * app, which composes a child prompt without going through the harness —
  * cannot drift from the section heading `buildAgentContext` emits. Disclosure is
  * fixed to `index`: inlining bodies into a child is the cost this exists to
  * avoid, so `ReadSkill` guidance always belongs with it.

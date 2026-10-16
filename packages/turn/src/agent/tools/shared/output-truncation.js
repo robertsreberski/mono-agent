@@ -59,7 +59,7 @@ export function writeToolArtifact(label, text, ctx) {
   }
 }
 
-export function truncationSuffix({ label, shown, total, artifact, hint }) {
+function truncationSuffix({ label, shown, total, artifact, hint }) {
   return [
     "",
     `[truncated ${label} output: showing ${shown} of ${total} characters.]`,

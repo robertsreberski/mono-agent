@@ -17,9 +17,9 @@ import { normalizePiErrorMessage } from "../pi-errors.js";
 import { failureKindForPiError } from "./result-builder.js";
 
 /** Additional attempts after a mid-stream failure (inherited Pi harness value). */
-export const REQUEST_RETRY_LIMIT = 3;
+const REQUEST_RETRY_LIMIT = 3;
 /** First backoff; doubles per retry (1 s, 2 s, 4 s). */
-export const REQUEST_RETRY_BASE_DELAY_MS = 1000;
+const REQUEST_RETRY_BASE_DELAY_MS = 1000;
 
 // Account/limit states that a few seconds cannot fix, even when a provider
 // phrases them like a transient throttle.

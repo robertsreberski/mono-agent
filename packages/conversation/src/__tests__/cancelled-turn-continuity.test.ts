@@ -12,8 +12,8 @@ import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/typ
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
 import type { HistoryMessage } from "../index.js";
 import {
-  CANCELLED_TURN_ASSISTANT_MAX_BYTES,
-  CANCELLED_TURN_MAX_BYTES,
+  TURN_CONTINUITY_ASSISTANT_MAX_BYTES,
+  TURN_CONTINUITY_MAX_BYTES,
   UncommittedTurnCollector,
   cancelledTurnReason,
   representedContinuityToolRecordIds,
@@ -391,7 +391,7 @@ describe("cancelled turn natural continuity", () => {
     const assistant = messages[1]!;
     const envelope = envelopeFrom(assistant.content);
 
-    expect(Buffer.byteLength(assistant.content, "utf8")).toBeLessThanOrEqual(CANCELLED_TURN_MAX_BYTES);
+    expect(Buffer.byteLength(assistant.content, "utf8")).toBeLessThanOrEqual(TURN_CONTINUITY_MAX_BYTES);
     expect(assistant.content).not.toContain(token);
     expect(assistant.content).toContain("[redacted]");
     expect(envelope.completedTools).toHaveLength(40);
@@ -416,7 +416,7 @@ describe("cancelled turn natural continuity", () => {
         message: { content: [{ type: "text", text }] },
       });
       expect(collector.assistantRetentionSnapshot().retainedBytes)
-        .toBeLessThanOrEqual(CANCELLED_TURN_ASSISTANT_MAX_BYTES);
+        .toBeLessThanOrEqual(TURN_CONTINUITY_ASSISTANT_MAX_BYTES);
     }
 
     const snapshot = collector.assistantRetentionSnapshot();
@@ -444,7 +444,7 @@ describe("cancelled turn natural continuity", () => {
       omittedEvents: snapshot.omittedEvents,
     });
     expect(Buffer.byteLength(partialAssistant.text, "utf8"))
-      .toBeLessThanOrEqual(CANCELLED_TURN_ASSISTANT_MAX_BYTES);
+      .toBeLessThanOrEqual(TURN_CONTINUITY_ASSISTANT_MAX_BYTES);
     expect(partialAssistant.text).not.toContain("�");
     expect(content).not.toContain(token);
     expect(content).toContain("[redacted]");
@@ -458,7 +458,7 @@ describe("cancelled turn natural continuity", () => {
       type: "assistant",
       message: {
         content: [
-          { type: "text", text: "a".repeat(CANCELLED_TURN_ASSISTANT_MAX_BYTES) + overflowA },
+          { type: "text", text: "a".repeat(TURN_CONTINUITY_ASSISTANT_MAX_BYTES) + overflowA },
           { type: "text", text: overflowB },
         ],
       },
@@ -466,7 +466,7 @@ describe("cancelled turn natural continuity", () => {
 
     const snapshot = collector.assistantRetentionSnapshot();
     expect(snapshot).toEqual({
-      retainedBytes: CANCELLED_TURN_ASSISTANT_MAX_BYTES,
+      retainedBytes: TURN_CONTINUITY_ASSISTANT_MAX_BYTES,
       omittedBytes: Buffer.byteLength(overflowA + overflowB, "utf8"),
       omittedEvents: 1,
       truncated: true,
@@ -531,7 +531,7 @@ describe("cancelled turn natural continuity", () => {
     const retained = envelope.completedTools as unknown[];
     const omissions = envelope.omissions as { readonly completedTools: number };
 
-    expect(Buffer.byteLength(messages[1]!.content, "utf8")).toBeLessThanOrEqual(CANCELLED_TURN_MAX_BYTES);
+    expect(Buffer.byteLength(messages[1]!.content, "utf8")).toBeLessThanOrEqual(TURN_CONTINUITY_MAX_BYTES);
     expect(retained.length + omissions.completedTools).toBe(10);
     expect(omissions.completedTools).toBeGreaterThan(0);
   });

@@ -25,9 +25,9 @@ import { isPiOAuthLoginEnabled } from "@mono-agent/turn/ai";
 
 import { inspectPiAuthStore, MAX_PI_AUTH_STORE_BYTES } from "./pi-auth-store-inspection.js";
 
-export type ProviderSetupKind = "auth" | "preflight";
+type ProviderSetupKind = "auth" | "preflight";
 
-export interface ProviderSetupCommandAction {
+interface ProviderSetupCommandAction {
   readonly id: string;
   readonly kind: ProviderSetupKind;
   readonly label: string;
@@ -37,12 +37,12 @@ export interface ProviderSetupCommandAction {
   readonly detail: string;
 }
 
-export interface ProviderSetupPiLoginAction extends ProviderSetupCommandAction {
+interface ProviderSetupPiLoginAction extends ProviderSetupCommandAction {
   readonly id: `pi-login:${string}`;
   readonly piAuthPath: string;
 }
 
-export interface ProviderSetupHttpAction {
+interface ProviderSetupHttpAction {
   readonly id: string;
   readonly kind: ProviderSetupKind;
   readonly label: string;
@@ -52,7 +52,7 @@ export interface ProviderSetupHttpAction {
   readonly detail: string;
 }
 
-export interface ProviderSetupPiApiKeyAction {
+interface ProviderSetupPiApiKeyAction {
   readonly id: string;
   readonly kind: "auth";
   readonly label: string;
@@ -79,7 +79,7 @@ export interface ProviderSetupPlan {
 
 export type ProviderCredentialState = "auth_required" | "credential_detected" | "verified";
 
-export interface DetectProviderCredentialStatesOptions {
+interface DetectProviderCredentialStatesOptions {
   readonly modelRefs: readonly string[];
   readonly cwd: string;
   readonly piAuthPath?: string;
@@ -109,7 +109,7 @@ export interface ProviderSetupResult {
   readonly failureKind?: ProviderSetupFailureKind;
 }
 
-export interface PlanProviderSetupOptions {
+interface PlanProviderSetupOptions {
   readonly modelRefs: readonly string[];
   readonly cwd: string;
   readonly piAuthPath?: string;
@@ -127,7 +127,7 @@ export interface PlanProviderSetupOptions {
   readonly piApiKeyPersistenceByProvider?: Readonly<Record<string, "secure-store" | "environment" | undefined>>;
 }
 
-export interface ExecuteProviderSetupOptions {
+interface ExecuteProviderSetupOptions {
   readonly spawn?: typeof spawn;
   readonly fetch?: typeof fetch;
   readonly apiKeys?: Readonly<Record<string, string | undefined>>;
@@ -173,7 +173,7 @@ type PiAuthPromotionHooks = Pick<
   | "beforePiAuthPostMutationSync"
 >;
 
-export interface PersistPiProviderCredentialOptions extends PiAuthPromotionHooks {
+interface PersistPiProviderCredentialOptions extends PiAuthPromotionHooks {
   readonly authPath: string;
   readonly provider: string;
   readonly platform?: NodeJS.Platform;
@@ -210,7 +210,7 @@ export function resolvePiCliPath(): string {
   return fileURLToPath(new URL("./pi-oauth-login-main.js", import.meta.url));
 }
 
-export function piLoginCommand(provider: string, piCliPath = resolvePiCliPath(), durableAuthPath?: string): readonly [string, ...string[]] {
+function piLoginCommand(provider: string, piCliPath = resolvePiCliPath(), durableAuthPath?: string): readonly [string, ...string[]] {
   return [process.execPath, piCliPath, provider, ...(provider === "openai" && durableAuthPath !== undefined ? [durableAuthPath] : [])];
 }
 
@@ -220,7 +220,7 @@ export function piAuthRecoveryCommand(provider: string, piAuthPath?: string): st
     : `mono-agent auth login ${shellQuote(provider)} --pi-auth-path ${shellQuote(piAuthPath)}`;
 }
 
-export function piAuthWorkingDirectory(piAuthPath: string | undefined, cwd = process.cwd()): string {
+function piAuthWorkingDirectory(piAuthPath: string | undefined, cwd = process.cwd()): string {
   return dirname(piAuthPathForSetup(piAuthPath, cwd));
 }
 
@@ -277,7 +277,7 @@ function hasNonEmptyPersistedValue(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0;
 }
 
-export interface BoundedProviderCommandResult {
+interface BoundedProviderCommandResult {
   readonly stdout: string;
 }
 
@@ -538,7 +538,7 @@ export function isProviderSetupPiApiKeyAction(action: ProviderSetupAction): acti
   return "provider" in action && "piAuthPath" in action && "envVar" in action;
 }
 
-export function isProviderSetupPiLoginAction(action: ProviderSetupAction): action is ProviderSetupPiLoginAction {
+function isProviderSetupPiLoginAction(action: ProviderSetupAction): action is ProviderSetupPiLoginAction {
   return action.id.startsWith("pi-login:") && "piAuthPath" in action && "command" in action;
 }
 
@@ -697,7 +697,7 @@ export function hasUsablePiOAuthClientId(provider: string, value: { readonly cli
   return provider !== "openai" || isBoundedCredentialString(value.clientId);
 }
 
-export function isUsableStoredPiCredential(provider: string, value: unknown): boolean {
+function isUsableStoredPiCredential(provider: string, value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (!isBoundedCredentialValue(value)) return false;
   if (value.type === "oauth") {
@@ -1173,7 +1173,7 @@ interface StalePiAuthLockRecord {
   readonly token: string;
 }
 
-export type StalePiAuthLockRepairResult = "removed" | "active" | "unverifiable";
+type StalePiAuthLockRepairResult = "removed" | "active" | "unverifiable";
 
 /**
  * Remove only a secure, identity-stable lock whose recorded process is proven

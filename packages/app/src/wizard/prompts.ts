@@ -18,7 +18,7 @@ import { PRESET_CATALOG } from "./presets.js";
  * One `@clack/prompts` `select`/`multiselect` option. `value` is the machine key
  * the wizard maps back onto {@link WizardAnswers}; `label`/`hint` are display-only.
  */
-export interface WizardSelectOption {
+interface WizardSelectOption {
   readonly value: string;
   readonly label: string;
   readonly hint?: string;
@@ -63,7 +63,7 @@ export class WizardExitRequested extends Error {
   }
 }
 
-export interface WizardKey {
+interface WizardKey {
   readonly name?: string;
   readonly ctrl?: boolean;
 }
@@ -73,23 +73,6 @@ export function wizardCancelIntentForKey(key: WizardKey): "back" | "exit" | unde
   if (key.name === "escape") return "back";
   if (key.ctrl === true && key.name === "c") return "exit";
   return undefined;
-}
-
-/** Pure back transition: `undefined` means the user is already at the first step. */
-export function previousWizardStep(step: number): number | undefined {
-  return step > 0 ? step - 1 : undefined;
-}
-
-/**
- * Unwrap a clack prompt result: return the value, or throw {@link WizardCancelled}
- * when the user cancelled (clack signals cancel with a sentinel symbol). Every
- * prompt result must pass through here so a single top-level catch handles cancel.
- */
-export function guard<T>(value: T | symbol): T {
-  if (p.isCancel(value)) {
-    throw new WizardCancelled();
-  }
-  return value;
 }
 
 /** Folder/public-name validation mirrors the config loader's 80-code-point contract. */
@@ -102,7 +85,7 @@ export function validateWizardAgentName(value: string | undefined): string | und
   return undefined;
 }
 
-export const MAX_AGENT_PURPOSE_LENGTH = 240;
+const MAX_AGENT_PURPOSE_LENGTH = 240;
 
 /** One short, printable role statement for the generated Identity. */
 export function validateWizardAgentPurpose(value: string | undefined): string | undefined {

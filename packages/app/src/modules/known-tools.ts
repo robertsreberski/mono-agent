@@ -14,7 +14,7 @@ export { ALLOW_ALL_TOOLS };
  * `AgentManage` with no alias, so an unmigrated policy entry is reported by
  * doctor rather than silently dropped (allow) or silently widened (deny).
  */
-export { RENAMED_TOOL_NAMES, renamedToolMessage, renamedToolName };
+export { renamedToolMessage, renamedToolName };
 
 /** Mono-agent-managed built-ins gated by `tools.allowedTools` (pi-bridge.js). */
 export const BUILTIN_TOOL_NAMES = [
@@ -90,10 +90,6 @@ export function canonicalToolName(name: string): string {
 
 /** Safe read-only default pre-checked for every new agent. */
 export const DEFAULT_SAFE_TOOLS = ["Read", "Glob", "Grep"] as const;
-
-export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];
-export type AppToolName = (typeof APP_TOOL_NAMES)[number];
-export type AdapterSendToolName = (typeof ADAPTER_SEND_TOOL_NAMES)[number];
 
 /**
  * All offline-knowable tool names: built-ins, adapter send tools, AND the canonical

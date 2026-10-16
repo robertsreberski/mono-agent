@@ -6,7 +6,8 @@ import { loadMonoAgentConfig } from "@mono-agent/config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
-import { CAPABILITY_MODULES, findModule } from "../modules/index.js";
+import { CAPABILITY_MODULES } from "../modules/catalog.js";
+import { findModule } from "../modules/index.js";
 import {
   alwaysOnTools,
   composeWizardPlan,

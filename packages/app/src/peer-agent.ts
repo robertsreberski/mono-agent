@@ -161,7 +161,7 @@ async function reconcileInterruptedPeerThreads(config: MonoAgentConfig, service?
   if (skipped > 0) process.emitWarning(`Skipped ${String(skipped)} unsafe peer thread recovery entries.`, "PeerRecoveryWarning");
 }
 
-export interface PeerAgentExtensionOptions {
+interface PeerAgentExtensionOptions {
   config: MonoAgentConfig;
   service?: ProcessJobsServiceHandle | undefined;
   channelId?: ChannelId | undefined;

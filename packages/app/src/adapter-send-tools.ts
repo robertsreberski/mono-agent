@@ -120,22 +120,22 @@ export interface AdapterSendToolsSettings {
   readonly askUser?: AskUserToolSettings;
 }
 
-export interface AdapterSendToolsClients {
+interface AdapterSendToolsClients {
   readonly slack?: Pick<SlackWebApi, "chatPostMessage">;
   readonly telegram?: Partial<Pick<TelegramMessageSender, "sendMessage" | "sendDocument" | "sendPhoto">>;
 }
 
-export interface AdapterSendToolsHttpOptions {
+interface AdapterSendToolsHttpOptions {
   readonly fetchImpl?: typeof fetch;
   readonly deliveryHistory?: AdapterSendToolsDeliveryHistory;
 }
 
-export interface AdapterSendToolsDeliveryHistory {
+interface AdapterSendToolsDeliveryHistory {
   readonly bridgeUrl: string;
   readonly bridgeToken: string;
 }
 
-export interface AdapterSendToolsDeliveryHistoryCapabilityIssuer {
+interface AdapterSendToolsDeliveryHistoryCapabilityIssuer {
   issueDeliveryHistoryCapability(input: {
     readonly runId: string;
     readonly producerConversationId: string;
@@ -143,7 +143,7 @@ export interface AdapterSendToolsDeliveryHistoryCapabilityIssuer {
   }): { readonly url: string; readonly token: string; release(): void };
 }
 
-export interface AdapterSendToolsRuntimeExtension {
+interface AdapterSendToolsRuntimeExtension {
   readonly runtimeOptions: {
     readonly mcpServers: Record<string, unknown>;
     readonly mcpCallNoTotalTimeoutTools?: readonly string[];
@@ -158,7 +158,7 @@ export interface AdapterSendToolsRuntimeExtension {
  * Forwarded to the stdio child so `SlackSendMessage` can record
  * `(channel, ts) → conversationId` — see {@link appendPostedMessage}.
  */
-export interface AdapterSendToolsIndexing {
+interface AdapterSendToolsIndexing {
   readonly conversationId: string;
   readonly indexPath: string;
 }
@@ -172,7 +172,7 @@ interface AdapterSendToolsRequestInput {
   readonly runId?: string;
 }
 
-export interface AdapterSendToolsResolveOptions {
+interface AdapterSendToolsResolveOptions {
   readonly allowedTools?: readonly string[] | undefined;
   readonly disallowedTools?: readonly string[] | undefined;
   readonly logger?: {
@@ -295,7 +295,7 @@ export function isAdapterSendToolAllowed(
  * targets AskUser at the producing conversation; `indexPath` additionally
  * enables the posted-message index (Slack reply continuity).
  */
-export interface AdapterSendToolsChildContext {
+interface AdapterSendToolsChildContext {
   readonly conversationId?: string;
   readonly interactionConversationId?: string;
   readonly runId?: string;
@@ -305,7 +305,7 @@ export interface AdapterSendToolsChildContext {
   readonly deliveryHistory?: AdapterSendToolsDeliveryHistory;
 }
 
-export interface AdapterSendToolsInteractionEnv {
+interface AdapterSendToolsInteractionEnv {
   readonly bridgeUrl: string;
   readonly bridgeToken: string;
   readonly timeoutMs: number | null;
@@ -354,7 +354,7 @@ export function adapterSendToolsMcpEnv(
   };
 }
 
-export interface AdapterSendToolsChildConfig {
+interface AdapterSendToolsChildConfig {
   readonly input: MonoAgentAppConfigInput;
   readonly allowedTools: readonly string[];
   readonly indexing?: AdapterSendToolsIndexing;

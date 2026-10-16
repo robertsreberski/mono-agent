@@ -9,12 +9,12 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 
 /** Pi bounds MCP text content at 12,000 characters; leave framing headroom. */
-export const REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS = 10_000;
-export const REQUEST_SCOPED_MCP_MAX_CURSOR_BYTES = 2_048;
-export const REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION =
+const REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS = 10_000;
+const REQUEST_SCOPED_MCP_MAX_CURSOR_BYTES = 2_048;
+const REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION =
   "[nested history-tool result omitted; inspect the referenced record directly]";
 
-export interface RequestScopedMcpEndpointOptions {
+interface RequestScopedMcpEndpointOptions {
   readonly serverName: string;
   readonly startingMessage: string;
   /** A fresh server is required for every SDK-dispatched stateless HTTP request. */

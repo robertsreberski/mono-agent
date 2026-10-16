@@ -89,6 +89,7 @@ stream.
 | `@mono-agent/observability` | Node-backed recorder, artifact readers/audit/retention/metrics, trace registry, composite recorder, and shared contracts. |
 | `@mono-agent/observability/event-timeline` | Browser-safe adjacent-event coalescing for display. |
 | `src/recorder.ts` / `src/recorded-runs.ts` | Artifact write boundaries and bounded, hostile-file-safe reads. |
+| `src/noop-recorder.ts` | `NoopRunRecorder` preserves terminal summaries without writing artifacts. |
 | `src/artifact-retention.ts` / `src/tool-output-path.ts` | Terminal-run and raw tool-output retention with shared canonical containment and run-directory naming. |
 | `src/trace-sources.ts` | File-backed source manifests, heartbeat updates, discovery, and per-source run reads. |
 
@@ -196,6 +197,7 @@ KNOWN_RUN_FAILURE_KINDS
 KnownArtifactFailureKind
 KnownRunFailureKindDescription
 MapRunToSessionOptions
+NoopRunRecorder
 ObservabilityError
 ObservabilityErrorCode
 ObservabilityErrorDetails

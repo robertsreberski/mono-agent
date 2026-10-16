@@ -2,7 +2,7 @@ import process from "node:process";
 
 import { discoverAcpBridgeAgents } from "@mono-agent/web";
 
-export interface RunAcpDiscoveryOptions {
+interface RunAcpDiscoveryOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly output?: { write(chunk: string): unknown };
 }

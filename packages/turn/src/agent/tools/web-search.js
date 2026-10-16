@@ -8,7 +8,7 @@ import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.
 import { webSearchProviders, expandSearchProvider } from "./web-search-providers/registry.js";
 import { guardedSearch, canonicalizeSearchUrl, collapseWhitespace, cooldownBackendNames } from "./web-search-providers/shared.js";
 export { canonicalizeSearchUrl, __resetWebSearchThrottleForTests } from "./web-search-providers/shared.js";
-export { parseDuckDuckGoResults } from "./web-search-providers/duckduckgo.js";
+
 export { parseStartpageResults } from "./web-search-providers/startpage.js";
 import { boundWebSearchEntries } from "./web-search-output.js";
 import { buildWebNextAction, formatActionableEnvelope, webStatusForCode } from "./web-actionable.js";

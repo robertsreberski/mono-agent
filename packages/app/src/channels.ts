@@ -28,14 +28,7 @@ import { CronOperatorRegistry } from "./cron-operator-service.js";
  */
 export type ChannelId = ContractChannelId;
 export type MonoAgentAppLogger = ChannelLogger;
-export type {
-  ChannelLogger,
-  ChannelStatus,
-  NotifyDeliveryResult,
-  NotifyDeliveryContext,
-  NotifyDestination,
-  RunningChannel,
-} from "@mono-agent/contracts";
+export type { ChannelLogger, ChannelStatus, NotifyDeliveryResult, RunningChannel } from "@mono-agent/contracts";
 export type ChannelStartInput<TConfig> = ContractChannelStartInput<TConfig, MonoAgentConfig>;
 export type ChannelDriver<TConfig = unknown> = ContractChannelDriver<TConfig, MonoAgentConfig>;
 
@@ -50,7 +43,7 @@ export type ContinuationChannelSynthesisResult =
     };
 
 /** Built-in channel ids in startup and status-display order. */
-export const BUILTIN_CHANNEL_IDS = [
+const BUILTIN_CHANNEL_IDS = [
   "telegram",
   "slack",
   "webhook",
@@ -58,7 +51,6 @@ export const BUILTIN_CHANNEL_IDS = [
   "cron",
   "tui",
 ] as const;
-export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
 
 export {
   createCronChannelDriver,
@@ -70,14 +62,7 @@ export {
   slackTargetFromConversation,
   telegramChatIdFromConversation,
 };
-export type {
-  CronChannelOverrides,
-  OpenAIApiChannelOverrides,
-  SlackChannelOverrides,
-  TelegramChannelOverrides,
-  TuiChannelOverrides,
-  WebhookChannelOverrides,
-};
+export type { CronChannelOverrides, OpenAIApiChannelOverrides, SlackChannelOverrides, TelegramChannelOverrides, WebhookChannelOverrides };
 
 export interface ChannelDriverOverrides {
   readonly telegram?: TelegramChannelOverrides;

@@ -1,7 +1,7 @@
 const MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA = "mono-agent.managed-runtime-launch.v2";
 const MAX_MANAGED_RUNTIME_LAUNCH_PROOF_BYTES = 2 * 1024;
 
-export interface ManagedRuntimeLaunchProof {
+interface ManagedRuntimeLaunchProof {
   readonly schema: typeof MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA;
   readonly markerSha256: string;
   readonly maintenanceEntrySha256: string;

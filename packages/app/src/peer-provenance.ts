@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, loadOrCreateContinuationSecret, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
 
 /** Private, source-bound peer handoff. Attribution is never owner approval or tool authority. */
-export interface PeerHandoff {
+interface PeerHandoff {
   readonly version: 1;
   readonly caller: string;
   readonly conversation: string;
@@ -124,7 +124,7 @@ export async function consumePeerGeneration(artifactDir: string, proof: PeerHand
 }
 
 /** Only this bridge-produced, domain-separated MAC is forwarded to the operator. */
-export interface PeerOperatorHandoff extends Omit<PeerHandoff, "proof"> {
+interface PeerOperatorHandoff extends Omit<PeerHandoff, "proof"> {
   readonly attestation: string;
 }
 

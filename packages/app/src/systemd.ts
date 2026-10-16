@@ -47,7 +47,7 @@ export interface SystemdService {
 const MARKER = "# mono-agent systemd user service v1 ";
 export const SYSTEMD_WEB_IDENTITY = "web";
 
-export class SystemdUserManagerUnavailableError extends Error {
+class SystemdUserManagerUnavailableError extends Error {
   override readonly name = "SystemdUserManagerUnavailableError";
 }
 

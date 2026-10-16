@@ -23,7 +23,7 @@ export type ConversationStatePurgeRootKind =
   | "ACP sessions"
   | "persistent subagent instances";
 
-export interface FileSystemIdentity {
+interface FileSystemIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
 }
@@ -57,11 +57,11 @@ export interface ConversationStatePurgePlan {
   readonly subagents?: ResolvedConversationStatePurgeRoot;
 }
 
-export interface ConversationStateConfigSnapshot {
+interface ConversationStateConfigSnapshot {
   readonly json: Readonly<Record<string, unknown>>;
 }
 
-export const CLEAR_SESSIONS_REGISTRY_DIRECTORY = "clear-sessions-v1";
+const CLEAR_SESSIONS_REGISTRY_DIRECTORY = "clear-sessions-v1";
 export const CLEAR_SESSIONS_CONTROL_DIRECTORY = ".mono-agent-clear-sessions-v1";
 
 export function clearSessionsRegistryRoot(cwd: string): string {
@@ -170,7 +170,7 @@ export function conversationStatePurgePlanEntries(
   ];
 }
 
-export async function resolveAndAttestConversationStatePurgeRoot(
+async function resolveAndAttestConversationStatePurgeRoot(
   kind: ConversationStatePurgeRootKind,
   path: string,
 ): Promise<ResolvedConversationStatePurgeRoot> {

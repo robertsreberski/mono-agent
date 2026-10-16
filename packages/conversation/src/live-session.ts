@@ -28,7 +28,7 @@ export interface LiveSessionManager {
   dispose(): Promise<void>;
 }
 
-export interface LiveSessionManagerOptions {
+interface LiveSessionManagerOptions {
   /** Executes a single turn — typically `MonoAgentHarness.run`. */
   readonly run: (request: AgentHarnessRequest, lifecycle: LiveSessionRunLifecycle) => Promise<AgentHarnessResponse>;
   /**

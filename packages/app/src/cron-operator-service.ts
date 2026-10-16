@@ -42,7 +42,7 @@ interface ConfirmationEntry {
   readonly confirmation: CronOperatorConfirmation;
 }
 
-export interface CronOperatorServiceInput {
+interface CronOperatorServiceInput {
   readonly config: CronAdapterConfig;
   readonly configView: () => ChannelConfigViewSection | Promise<ChannelConfigViewSection>;
   readonly store?: CronControlStore;
@@ -55,7 +55,7 @@ export interface CronOperatorServiceInput {
   readonly logger?: MonoAgentAppLogger;
 }
 
-export interface CronOperatorDegradationController {
+interface CronOperatorDegradationController {
   reason(): string | undefined;
   degrade(reason: string): void;
 }

@@ -2,7 +2,7 @@ import type { HistoryMessage } from "./context/index.js";
 
 import type { ConversationHistoryStore, InMemoryHistoryStoreOptions } from "./types.js";
 
-export class InMemoryConversationHistoryStore implements ConversationHistoryStore {
+class InMemoryConversationHistoryStore implements ConversationHistoryStore {
   private readonly maxMessages: number;
   private readonly conversations = new Map<string, HistoryMessage[]>();
 

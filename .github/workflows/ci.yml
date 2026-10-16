@@ -127,6 +127,9 @@ jobs:
       - name: Verify consumer contracts
         run: pnpm run verify:consumers --skip-build
 
+      - name: Check core dead code (all three modes)
+        run: pnpm run scan:dead-code
+
       - name: Validate package tarballs
         run: pnpm run release:pack -- --tag "${{ steps.release-smoke.outputs.tag }}"
 

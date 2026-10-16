@@ -1,13 +1,12 @@
 import { readFile, realpath } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
-import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
 
 import { loadAppCoreConfig } from "./app-config.js";
 import { configuredChannelPluginPackageNames } from "./channel-plugins.js";
 import type { ManagedRuntimeAdditionalPackage } from "./background-runtime.js";
 
-export interface ResolveManagedRuntimePackagesInput {
+interface ResolveManagedRuntimePackagesInput {
   readonly cwd: string;
   readonly configPath: string;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -18,22 +17,20 @@ export async function resolveConfiguredManagedRuntimePackages(
   input: ResolveManagedRuntimePackagesInput,
 ): Promise<readonly ManagedRuntimeAdditionalPackage[]> {
   const cwd = resolve(input.cwd);
-  const [channelPackages, config] = await Promise.all([
+  const [channelPackages] = await Promise.all([
     configuredChannelPluginPackageNames(input.configPath),
     loadAppCoreConfig({ cwd, configPath: input.configPath, env: input.env }),
   ]);
-  const requirements = new Map<string, boolean>();
-  for (const packageName of channelPackages) requirements.set(packageName, false);
+  const requirements = new Set(channelPackages);
 
   const appBase = import.meta.url;
-  const cwdBase = pathToFileURL(join(cwd, "package.json")).href;
   const resolved = await Promise.all([...requirements]
-    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-    .map(async ([packageName, allowCwdFallback]) => ({
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    .map(async (packageName) => ({
       packageName,
       packageSource: await resolveInstalledPackageRoot(
         packageName,
-        allowCwdFallback ? [cwdBase, appBase] : [appBase],
+        [appBase],
       ),
     })));
   return resolved;

@@ -1,6 +1,6 @@
 import type { SandboxEffectiveState } from "@mono-agent/turn/host/types";
 import type { ConfiguredAgentSessionEvent, ConfiguredAgentSessionSnapshot } from "./configured-agent.js";
-export type { ProcessJobsProtectionStatus } from "./process-jobs-protection.js";
+
 
 /** Outcome of applying a saved configuration to the running app. */
 export type ConfigApplyResult =

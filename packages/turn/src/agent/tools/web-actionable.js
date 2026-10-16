@@ -31,16 +31,6 @@ import { normalizeSearchCountry } from "./web-search-country.js";
  * next_actions rather than diverging from them.
  */
 
-/** @type {readonly ["ok", "partial", "blocked", "error"]} */
-export const WEB_RESEARCH_STATUSES = Object.freeze(["ok", "partial", "blocked", "error"]);
-
-export const WEB_RESEARCH_STATUS_DOC = Object.freeze({
-  ok: "Complete usable output.",
-  partial: "Usable but incomplete output (lossy truncation, excerpts-only, static render fallback, or a focus-filtered subset).",
-  blocked: "Policy, access, or budget prevents progress; do not retry blindly or bypass.",
-  error: "Execution or provider failure.",
-});
-
 /**
  * Terminal failure codes that classify as `blocked` (policy/access/budget
  * prevents progress). Every other failure code classifies as `error`.
@@ -52,7 +42,7 @@ export const WEB_RESEARCH_STATUS_DOC = Object.freeze({
  * caller, never through this mapping.
  * @type {ReadonlySet<string>}
  */
-export const BLOCKED_WEB_CODES = Object.freeze(new Set([
+const BLOCKED_WEB_CODES = Object.freeze(new Set([
   "robots_denied",
   "robots_unavailable",
   "robots_crawl_delay",
@@ -76,18 +66,8 @@ export function webStatusForCode(code) {
   return typeof code === "string" && BLOCKED_WEB_CODES.has(code) ? "blocked" : "error";
 }
 
-/**
- * @param {unknown} code
- */
-export function isBlockedWebCode(code) {
-  return typeof code === "string" && BLOCKED_WEB_CODES.has(code);
-}
-
-export const WEB_FOCUS_MAX_CHARS = 500;
-export const WEB_FETCH_LINK_LIMIT = 20;
-export const WEB_FETCH_LINK_URL_MAX_CHARS = 2000;
-export const WEB_FETCH_LINK_TEXT_MAX_CHARS = 200;
-export const WEB_NEXT_ACTION_REASON_MAX_CHARS = 300;
+const WEB_FOCUS_MAX_CHARS = 500;
+const WEB_NEXT_ACTION_REASON_MAX_CHARS = 300;
 
 /**
  * Validate the research-contract fetch options shared by the controller fast

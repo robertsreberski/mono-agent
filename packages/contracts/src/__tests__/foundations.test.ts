@@ -3,11 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   BufferedMessageStream,
   CodedError,
-  buildStreamingTailPreview,
-  isCodedError,
   normalizeTrailing,
   splitTextByCodePoints,
 } from "../index.js";
+import { buildStreamingTailPreview } from "../stream-text.js";
 
 describe("CodedError", () => {
   it("preserves subclass name and echoes the code into details", () => {
@@ -17,18 +16,6 @@ describe("CodedError", () => {
     expect(error.name).toBe("WidgetError");
     expect(error.code).toBe("broken");
     expect(error.details).toEqual({ id: 7, code: "broken" });
-  });
-
-  it("isCodedError matches by structure and optional code", () => {
-    class WidgetError extends CodedError<"broken">{}
-    const error = new WidgetError("broken", "x");
-    expect(isCodedError(error)).toBe(true);
-    expect(isCodedError(error, "broken")).toBe(true);
-    expect(isCodedError(error, "other")).toBe(false);
-    // legacy error carrying a string code is also recognized
-    const legacy = Object.assign(new Error("x"), { code: "legacy" });
-    expect(isCodedError(legacy, "legacy")).toBe(true);
-    expect(isCodedError(new Error("x"))).toBe(false);
   });
 });
 

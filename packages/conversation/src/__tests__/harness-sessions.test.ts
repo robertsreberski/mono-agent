@@ -20,7 +20,8 @@ import {
   ToolHistoryReader,
   toolHistoryLogicalConversationId,
 } from "../index.js";
-import type { AgentHarnessSessionOptions, ConversationHistoryStore } from "../index.js";
+import type { ConversationHistoryStore } from "../index.js";
+import type { AgentHarnessSessionOptions } from "../types.js";
 import type { SkillsCache } from "../skills/index.js";
 
 const tempDirs: string[] = [];

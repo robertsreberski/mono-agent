@@ -4,7 +4,7 @@ import type { CreateElicitationResponse } from "@agentclientprotocol/sdk";
 
 import type { PeerAcpQuestion } from "./peer-acp-client.js";
 
-export const PEER_QUESTION_TIMEOUT_MS = 30 * 60_000;
+const PEER_QUESTION_TIMEOUT_MS = 30 * 60_000;
 
 /** Bounded untrusted question; the ACP form remains authoritative for validation. */
 export interface PeerQuestion {

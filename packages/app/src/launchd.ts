@@ -37,7 +37,7 @@ export interface LaunchdPaths {
   readonly launchAgentsDir: string;
 }
 
-export interface LaunchdMaintenancePaths {
+interface LaunchdMaintenancePaths {
   readonly label: string;
   readonly plistPath: string;
 }
@@ -127,7 +127,7 @@ export interface LaunchdManagedWorkerDefinition {
   readonly environment: Readonly<Record<string, string>>;
 }
 
-export interface LaunchdManagedWorkerInfo extends LaunchdServiceInfo {
+interface LaunchdManagedWorkerInfo extends LaunchdServiceInfo {
   /** Present only when launchctl exposes the exact current producer shape. */
   readonly definition?: LaunchdManagedWorkerDefinition;
   /** Fail closed unless the loaded policy explicitly relaunches nonzero exits. */
@@ -241,17 +241,6 @@ function launchdMaintenanceHashBucket(canonicalMainLabel: string, bucketCount: n
   // silently create a different schedule/dispersion and is therefore rejected.
   deriveLaunchdMaintenanceLabel(canonicalMainLabel);
   return createHash("sha256").update(canonicalMainLabel).digest().readUInt32BE(0) % bucketCount;
-}
-
-export function launchdMaintenancePathsFor(
-  mainLabel: string,
-  home: string = accountHomeDirectory(),
-): LaunchdMaintenancePaths {
-  const label = deriveLaunchdMaintenanceLabel(mainLabel);
-  return {
-    label,
-    plistPath: resolve(home, "Library", "LaunchAgents", `${label}.plist`),
-  };
 }
 
 /** Canonical lightweight helper next to the attested managed-runtime CLI. */

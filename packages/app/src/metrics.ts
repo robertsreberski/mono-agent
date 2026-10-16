@@ -7,7 +7,7 @@ import type { RecordedRunMetricGroupBy, RecordedRunMetricsBucket, RecordedRunMet
 import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 
-export interface RunMetricsArgs {
+interface RunMetricsArgs {
   readonly configPath?: string;
   readonly artifactDir?: string;
   readonly since?: string;
@@ -55,7 +55,7 @@ export async function runMetrics(args: RunMetricsArgs): Promise<number> {
   return 0;
 }
 
-export function renderMetricsReport(report: RecordedRunMetricsReport): string {
+function renderMetricsReport(report: RecordedRunMetricsReport): string {
   let out = `Artifact metrics: ${report.artifactDir}\n`;
   out += `Summary files: ${report.totalSummaryFiles} (${report.parsedSummaryFiles} parsed, ${report.parseFailureCount} parse failed)\n`;
   if (report.since !== undefined || report.until !== undefined) {

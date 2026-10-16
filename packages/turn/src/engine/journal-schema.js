@@ -63,7 +63,7 @@ const keys = (value, allowed) => object(value) && Object.keys(value).every((key)
 const model = (value) => keys(value, ["provider", "id", "api"]) && id(value.provider) && id(value.id) && id(value.api);
 
 /** Versioned minimal final result. Unknown/private fields cannot enter seals. */
-export function validateTurnSeal(seal, terminalStatus) {
+function validateTurnSeal(seal, terminalStatus) {
   requireValue(keys(seal, ["version", "outcome", "result"]) && seal.version === 1
     && seal.outcome === ({ completed: "completed", failed: "failed", aborted: "cancelled", interrupted: "interrupted" })[terminalStatus]);
   const result = seal.result;

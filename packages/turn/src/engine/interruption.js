@@ -24,7 +24,7 @@ export async function recordInterruption(store, turnId, cause, operationIds) {
 }
 
 /** Account and seal one turn. Administrative completion scopes are caller-excluded. */
-export async function repairInterruptedTurn(store, turnId, cause = "crashed") {
+async function repairInterruptedTurn(store, turnId, cause = "crashed") {
   for (const account of selectTurnInterruptionAccounts(store, turnId, cause)) {
     await recordInterruption(store, turnId, account.cause, account.operationId === null ? [] : [account.operationId]);
   }

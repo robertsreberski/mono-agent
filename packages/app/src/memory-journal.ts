@@ -179,15 +179,7 @@ export function isMemoryJournalToolAllowed(policy: MemoryJournalPolicy | undefin
   return allowed.includes("*") || allowed.some(isMemoryJournalToolPolicyName);
 }
 
-/** Register one bounded chronological browser over an already-capable local store. */
-export function createMemoryJournalServer(
-  store: MemoryJournalCapableStore,
-  binding: MemoryJournalBinding,
-): McpServer {
-  return createMemoryJournalServerWithState(store, createMemoryJournalRequestState(binding));
-}
-
-function createMemoryJournalServerWithState(
+export function createMemoryJournalServerWithState(
   store: MemoryJournalCapableStore,
   state: MemoryJournalRequestState,
 ): McpServer {
@@ -704,7 +696,7 @@ class MemoryJournalInputError extends Error {
   }
 }
 
-function createMemoryJournalRequestState(binding: MemoryJournalBinding): MemoryJournalRequestState {
+export function createMemoryJournalRequestState(binding: MemoryJournalBinding): MemoryJournalRequestState {
   return {
     runId: binding.runId,
     cursorAuthenticationKey: randomBytes(32),

@@ -88,7 +88,7 @@ import * as ui from "./ui.js";
 
 type ReadinessProbeFailure = Extract<ReadinessProbeResult, { readonly ok: false }>;
 
-export interface RunInitEnvironmentContext {
+interface RunInitEnvironmentContext {
   readonly shellEnv: CliEnvironment;
   readonly dotenvEnv: CliEnvironment;
   readonly dotenvPath: string;
@@ -1781,9 +1781,9 @@ export function shouldRunInitWizard(args: ParsedCliArgs, stdinIsTty: boolean, st
   return Object.keys(args).every((key) => bareKeys.has(key));
 }
 
-export type InitProviderSetupStatus = "ok" | "failed" | "skipped" | "interrupted" | "fatal";
+type InitProviderSetupStatus = "ok" | "failed" | "skipped" | "interrupted" | "fatal";
 
-export interface RunProviderSetupBeforeInitOptions {
+interface RunProviderSetupBeforeInitOptions {
   readonly modelRefs: readonly string[];
   readonly cwd: string;
   readonly auth: boolean;
@@ -2125,7 +2125,7 @@ function resolveWithChannels(args: ParsedCliArgs): readonly WithChannel[] | unde
   return args.withChannels.filter(isWithChannel);
 }
 
-export interface InitChangeDisplayRow {
+interface InitChangeDisplayRow {
   readonly label: "created" | "updated" | "kept" | "would create" | "would update";
   readonly path: string;
   readonly unchanged: boolean;
@@ -2161,7 +2161,7 @@ export function identityRoleDisplayLine(identityRole: InitMonoAgentFolderResult[
   }
 }
 
-export interface SecretChecklistDisplayRow {
+interface SecretChecklistDisplayRow {
   readonly envVar: string;
   readonly label: string;
   readonly description: string;

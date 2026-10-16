@@ -321,34 +321,11 @@ function isErrno(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === code;
 }
 
-export interface HistoryProcessIncarnation extends Omit<ProcessIncarnation, "schema"> {
-  readonly schema: typeof HISTORY_PROCESS_INCARNATION_SCHEMA;
-}
-
-/** Stable history evidence. Unavailable (including timeout) is not death proof. */
-export async function readHistoryProcessIncarnation(pid: number): Promise<HistoryProcessIncarnation | undefined> {
-  try {
-    assertPid(pid);
-    if (process.platform !== "linux" && process.platform !== "darwin") return undefined;
-    return await readStableProcessIncarnation(pid);
-  } catch { return undefined; }
-}
-
-/** v1/unknown persisted identities must never be compared with stable v2 evidence. */
-export function historyProcessIncarnationFromJson(value: unknown): HistoryProcessIncarnation | undefined {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  return record.schema === HISTORY_PROCESS_INCARNATION_SCHEMA
-    && typeof record.bootSessionId === "string" && record.bootSessionId.length > 0
-    && typeof record.processStartId === "string" && record.processStartId.length > 0
-    ? record as unknown as HistoryProcessIncarnation : undefined;
-}
-
 /**
  * Shared v2 backend for app owners and history. `undefined` only when ESRCH
  * proves absence; timeout, malformed output and unsupported platforms throw.
  */
-async function readStableProcessIncarnation(pid: number): Promise<HistoryProcessIncarnation | undefined> {
+async function readStableProcessIncarnation(pid: number): Promise<ProcessIncarnation & { readonly schema: typeof HISTORY_PROCESS_INCARNATION_SCHEMA } | undefined> {
   if (process.platform !== "linux" && process.platform !== "darwin") {
     throw new Error(`Stable process incarnation is unsupported on ${process.platform}.`);
   }

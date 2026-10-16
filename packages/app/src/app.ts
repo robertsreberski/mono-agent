@@ -6,10 +6,4 @@
  * boundary in focused, behavior-preserving changes.
  */
 export { startMonoAgentApp } from "./app-controller.js";
-export type {
-  ConfigApplyResult,
-  MonoAgentApp,
-  MonoAgentAppOptions,
-  SandboxStatus,
-  TraceabilityStatus,
-} from "./app-controller.js";
+export type { MonoAgentApp, MonoAgentAppOptions, SandboxStatus, TraceabilityStatus } from "./app-controller.js";

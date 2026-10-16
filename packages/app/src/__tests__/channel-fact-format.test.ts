@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { describeChannel } from "../background.js";
 import { formatChannelFactValue } from "../channel-fact-format.js";
-import { describeChannelStatus } from "../cli.js";
+import { describeChannelStatus } from "../cli-background-command.js";
 
 // A webhook channel summary with a NESTED object fact — the exact shape that
 // rendered as `invokeUrls=[object Object]` (E4). The regression guard below asserts

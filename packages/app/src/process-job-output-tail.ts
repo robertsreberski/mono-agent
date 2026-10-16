@@ -18,14 +18,14 @@ interface StreamState {
   partialSequence: number;
 }
 
-export interface ProcessJobOutputTailSnapshot {
+interface ProcessJobOutputTailSnapshot {
   readonly stdoutBytes: number;
   readonly stderrBytes: number;
   readonly truncated: boolean;
   readonly preview: string;
 }
 
-export interface ProcessJobOutputTailOptions {
+interface ProcessJobOutputTailOptions {
   readonly previewChars: number;
   readonly maxOutputBytes: number;
   readonly secrets: readonly string[];

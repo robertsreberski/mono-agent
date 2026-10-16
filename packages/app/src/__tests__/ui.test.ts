@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { badge, channelBadge, computeColorEnabled, healthBadge, isColorEnabled, keyValue, rule, style } from "../ui.js";
+import { badge, channelBadge, computeColorEnabled, healthBadge, keyValue, rule, style } from "../ui.js";
 
 describe("computeColorEnabled", () => {
   it("disables color when NO_COLOR is set (any value), even with a TTY", () => {
@@ -27,9 +27,6 @@ describe("computeColorEnabled", () => {
 });
 
 describe("styling helpers with color disabled (the vitest non-TTY harness)", () => {
-  it("reports color disabled so output stays plain in tests and pipes", () => {
-    expect(isColorEnabled()).toBe(false);
-  });
 
   it("renders style helpers as the identity function", () => {
     expect(style.green("ok")).toBe("ok");

@@ -42,7 +42,7 @@ type Observed =
   | { readonly kind: "owned"; readonly identity: Identity; readonly owner: Owner };
 interface ArtifactInput { readonly path: string; readonly pid: number; readonly now: number; readonly token: string }
 
-export interface OwnerPrivateLockOptions {
+interface OwnerPrivateLockOptions {
   readonly path: string;
   readonly label: string;
   readonly schemaTag: string;

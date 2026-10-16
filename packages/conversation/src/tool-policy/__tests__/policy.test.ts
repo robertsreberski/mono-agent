@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createToolPolicy, failClosedToolPolicy, loadToolPolicyFromJsonFile, loadToolPolicyFromJsonFileSync, ToolPolicyError, toolPolicyToRuntimeOptions } from "../index.js";
+import { createToolPolicy, loadToolPolicyFromJsonFile, loadToolPolicyFromJsonFileSync, ToolPolicyError } from "../policy.js";
+import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "../index.js";
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {

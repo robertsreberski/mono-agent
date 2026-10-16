@@ -15,11 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
-import {
-  consumerContractNames,
-  consumerContractRunSummaryStatuses,
-  validateConsumerContractFixture,
-} from "../consumer-contract.js";
+import { consumerContractNames, validateConsumerContractFixture } from "../consumer-contract.js";
 import type { ConsumerContractName } from "../consumer-contract.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -222,16 +218,6 @@ describe("golden consumer config contracts", () => {
     const results = await Promise.all(consumerContractNames.map((name) => validateFixture(name)));
 
     expect(results.flatMap((result) => result.issues.filter((issue) => issue.check === "fixture-secrets"))).toEqual([]);
-  });
-
-  it("keeps artifact run statuses aligned with the observability status union", () => {
-    expect(Object.keys(consumerContractRunSummaryStatuses).sort()).toEqual([
-      "cancelled",
-      "failed",
-      "interrupted",
-      "running",
-      "succeeded",
-    ]);
   });
 
   it("rejects an absolute memory path outside the private copy without creating files", async () => {

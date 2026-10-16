@@ -76,14 +76,14 @@ interface SessionHistoryNavigation {
   readonly nextActions: readonly SessionHistoryNextAction[];
 }
 
-export interface SessionHistoryBinding {
+interface SessionHistoryBinding {
   readonly reader: ToolHistoryReader;
   readonly conversationId: string;
   readonly logicalConversationId: string;
   readonly runId: string;
 }
 
-export interface SessionHistoryRuntimeExtensionOptions {
+interface SessionHistoryRuntimeExtensionOptions {
   readonly historyRoot: string;
   readonly rollover?: "none" | "daily";
   readonly onUnavailable?: (error: unknown) => void;
@@ -347,7 +347,7 @@ function getRecord(binding: SessionHistoryBinding, input: SessionHistoryInput) {
       retainedBytes: record.retainedBytes,
       recovered: record.recovered,
       isolated: record.isolated,
-      artifactReferences: record.artifactReferences,
+      artifactReferences: record.artifactReferences as ToolHistorySearchItem["artifactReferences"],
       chunk: nestedChunk,
       chunkOffset: offset,
       ...(nextCursor === undefined ? {} : { nextCursor }),
@@ -375,7 +375,7 @@ function projectSearchItem(item: ToolHistorySearchItem) {
     recovered: item.recovered,
     preview: requestScopedNestedResult(item.toolName, NESTED_ALIASES, item.preview),
     truncated: item.truncated,
-    artifactReferences: item.artifactReferences,
+    artifactReferences: item.artifactReferences as ToolHistorySearchItem["artifactReferences"],
     untrusted: true as const,
   };
 }

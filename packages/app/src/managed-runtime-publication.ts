@@ -11,7 +11,7 @@ const OWNERLESS_GRACE_MS = 5_000;
 const WAIT_SLICE_MS = 2_000;
 const POLL_INTERVAL_MS = 100;
 
-export interface ManagedRuntimePublicationBarrierOptions {
+interface ManagedRuntimePublicationBarrierOptions {
   readonly label: string;
   /** Canonical ~/.mono-agent root that already owns the lifecycle locks tree. */
   readonly managedRoot: string;

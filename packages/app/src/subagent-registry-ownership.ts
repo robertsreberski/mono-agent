@@ -36,7 +36,7 @@ export class SubagentRecoveryError extends Error {
   }
 }
 export const isSubagentUuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(value);
-export const isSubagentFailureReason = (value: unknown): value is SubagentFailureReason => typeof value === "string"
+const isSubagentFailureReason = (value: unknown): value is SubagentFailureReason => typeof value === "string"
   && ["continuation_not_started", "settlement_unknown", "session_continuity_lost", "timeout", "cancelled", "failed", "empty", "interrupted"].includes(value);
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: string[]): boolean => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));

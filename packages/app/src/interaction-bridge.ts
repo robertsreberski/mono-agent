@@ -26,7 +26,7 @@ import type {
  * degradation), which the AskUser tool description tells the model to expect.
  */
 
-export interface InteractionBridgeOptions {
+interface InteractionBridgeOptions {
   readonly onActivityChange?: (count: number) => void;
   readonly host?: string;
   /** TCP port; 0 picks an ephemeral port. Default {@link DEFAULT_INTERACTION_BRIDGE_PORT}. */
@@ -101,8 +101,8 @@ export interface InteractionBridgeHandle {
 }
 
 /** Default port 0 = ephemeral: consumers get the URL via env, so a fixed port only invites collisions. */
-export const DEFAULT_INTERACTION_BRIDGE_PORT = 0;
-export const DEFAULT_ASK_USER_TIMEOUT_MS = 600_000;
+const DEFAULT_INTERACTION_BRIDGE_PORT = 0;
+const DEFAULT_ASK_USER_TIMEOUT_MS = 600_000;
 
 /** Render a loopback bridge origin, including bracketed IPv6 literals. */
 export function formatInteractionBridgeUrl(host: string, port?: number): string {
@@ -111,7 +111,7 @@ export function formatInteractionBridgeUrl(host: string, port?: number): string 
 }
 
 /** Resolved JSON `interaction` config block. */
-export interface InteractionSettings {
+interface InteractionSettings {
   /** True when the operator explicitly configured the JSON block. */
   readonly configured: boolean;
   readonly host: string;

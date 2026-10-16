@@ -1,4 +1,4 @@
-import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
+import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
 
 export class NoopRunRecorder implements RunRecorder {
   private readonly runId: string;

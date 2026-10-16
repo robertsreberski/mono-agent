@@ -21,14 +21,6 @@ export const DEFAULT_LAUNCHD_LOG_POLICY: LaunchdLogPolicy = Object.freeze({
   rotationCount: LAUNCHD_LOG_ROTATION_COUNT,
 });
 
-/** Source-audited callers which may repair the shared directory chain. */
-export const SHARED_LAUNCHD_LOG_MUTATION_CALLERS = Object.freeze([
-  "beginLaunchdLogMaintenanceIntent",
-  "replaceMaintenanceIntentPhase",
-  "clearLaunchdLogMaintenanceIntent",
-  "rotateStoppedLaunchdLogs",
-] as const);
-
 export type LaunchdLogFileState = "missing" | "ok" | "repairable" | "unsafe" | "unreadable";
 
 export interface LaunchdLogFileInspection {

@@ -3,12 +3,8 @@ import { OPENAI_API_CONFIG_FIELDS } from "@mono-agent/channel-openai-api";
 import { SLACK_CONFIG_FIELDS } from "@mono-agent/channel-slack";
 import { TELEGRAM_CONFIG_FIELDS } from "@mono-agent/channel-telegram";
 
-import {
-  CAPABILITY_MODULES,
-  findModule,
-  modulesByKind,
-  resolveModuleInputs,
-} from "../modules/index.js";
+import { CAPABILITY_MODULES, modulesByKind } from "../modules/catalog.js";
+import { findModule, resolveModuleInputs } from "../modules/index.js";
 import { BUILTIN_TOOL_NAMES, DEFAULT_SAFE_TOOLS, isKnownToolName } from "../modules/known-tools.js";
 
 const MODEL = "anthropic:claude-sonnet-4-6";

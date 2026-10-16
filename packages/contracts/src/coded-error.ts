@@ -22,22 +22,3 @@ export class CodedError<Code extends string = string> extends Error {
     this.details = { ...details, code };
   }
 }
-
-/**
- * Structural guard for coded errors. Matches both {@link CodedError} instances
- * and legacy errors that already carry a string `code`, so callers can stop
- * string-matching `.message` while classes migrate onto the base incrementally.
- */
-export function isCodedError<Code extends string = string>(
-  error: unknown,
-  code?: Code,
-): error is CodedError<Code> {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  const candidate = error as { code?: unknown };
-  if (typeof candidate.code !== "string") {
-    return false;
-  }
-  return code === undefined || candidate.code === code;
-}

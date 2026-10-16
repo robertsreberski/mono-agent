@@ -61,7 +61,7 @@ const TRACKING_PARAMETERS = new Set([
   "vero_conv",
   "vero_id",
 ]);
-export function backendInCooldown(backend, key = backend) {
+function backendInCooldown(backend, key = backend) {
   const cooldownKey = processCooldownKey(backend, key);
   const until = backendCooldownUntil.get(cooldownKey);
   if (until === undefined) return false;
@@ -72,11 +72,11 @@ export function backendInCooldown(backend, key = backend) {
   return true;
 }
 
-export function processCooldownKey(backend, key) {
+function processCooldownKey(backend, key) {
   return `${backend}:${String(key)}`;
 }
 
-export function processCooldownRemaining(backend, key = backend) {
+function processCooldownRemaining(backend, key = backend) {
   return Math.max(0, (backendCooldownUntil.get(processCooldownKey(backend, key)) ?? Date.now()) - Date.now());
 }
 
@@ -87,7 +87,7 @@ export function processCooldownRemaining(backend, key = backend) {
  *
  * @returns {number} Milliseconds to wait before sending.
  */
-export function reserveKeylessSlot(backend) {
+function reserveKeylessSlot(backend) {
   const now = Date.now();
   const earliest = Math.max(now, backendNextAvailableAt.get(backend) ?? 0);
   backendNextAvailableAt.set(backend, earliest + keylessThrottle.minSpacingMs);
@@ -98,7 +98,7 @@ export function reserveKeylessSlot(backend) {
 // caller is awaiting. An unref'd timer lets the event loop drain while the
 // search is still pending, and a one-shot CLI turn then exits mid-query.
 // Cancellation is the signal's job, not the timer's.
-export function sleep(ms, signal) {
+function sleep(ms, signal) {
   if (!ms) return Promise.resolve();
   return new Promise((resolvePromise, rejectPromise) => {
     const onAbort = () => {
@@ -120,6 +120,7 @@ export function sleep(ms, signal) {
  * state. Module-scoped state would otherwise leak between test cases.
  *
  * @param {{maxConcurrency?: number, minSpacingMs?: number, cooldownMs?: number}} [overrides]
+  * @coreScanRetained
  */
 export function __resetWebSearchThrottleForTests(overrides = {}) {
   keylessThrottle = { ...KEYLESS_DEFAULT_THROTTLE, ...overrides };
@@ -286,10 +287,6 @@ export function collapseWhitespace(value) {
   return String(value || "").replace(/\s+/gu, " ").trim();
 }
 
-export function escapeMarkdownLabel(value) {
-  return collapseWhitespace(value).replace(/[[\]\\]/gu, "\\$&");
-}
-
 export function requestSignal(signal) {
   const timeout = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -414,7 +411,7 @@ export async function guardedSearch(kind, key, options, execute) {
   catch (error) { return webRequestFailure(error, kind, options.signal); }
 }
 
-export function processCooldownResult(backend, retryAfterMs) {
+function processCooldownResult(backend, retryAfterMs) {
   return {
     ok: false,
     backend,
@@ -450,7 +447,6 @@ export function parseRetryAfter(response) {
   if (!Number.isFinite(ms)) return undefined;
   return Math.min(8_640_000_000_000_000 - now, Math.max(1000, ms));
 }
-
 
 /** Shared process-wide pacing for native composite engine/robots requests.
  * The caller gates the exact URL and obtains host admission before this slot.

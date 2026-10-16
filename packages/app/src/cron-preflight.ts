@@ -15,7 +15,7 @@ import {
 /** Raw stdout ceiling; a decoded 64 KiB input still fits once JSON-escaped. */
 export const MAX_CRON_PREFLIGHT_STDOUT_BYTES = 256 * 1024;
 /** Raw stderr ceiling. Stderr is diagnostic only and never becomes a verdict. */
-export const MAX_CRON_PREFLIGHT_STDERR_BYTES = 8 * 1024;
+const MAX_CRON_PREFLIGHT_STDERR_BYTES = 8 * 1024;
 /** How much of a failed gate's stderr one warn line may carry. */
 export const MAX_CRON_PREFLIGHT_STDERR_LOG_BYTES = 1024;
 /** Grace between SIGTERM and SIGKILL for a gate that ignores the first signal. */
@@ -48,7 +48,7 @@ export type CronPreflightSpawn = (
   options: CronPreflightSpawnOptions,
 ) => CronPreflightChild;
 
-export interface CronPreflightRunInput {
+interface CronPreflightRunInput {
   /** Explicit argv from the job's `preflight` declaration. Never a shell line. */
   readonly argv: readonly string[];
   readonly firing: CronFiringIdentity;

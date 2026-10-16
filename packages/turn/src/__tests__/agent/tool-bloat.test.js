@@ -5,8 +5,6 @@ import { join } from "node:path";
 
 import {
   applyToolBloatGuard,
-  BINARY_BLOAT_TOOLS,
-  DEFAULT_TOOL_BLOAT_CONFIG,
   MAX_TOOL_RESULT_BYTES,
   summarisePayload,
   wrapToolsWithBloatGuard,
@@ -35,13 +33,8 @@ function makeSink(runDir) {
 describe("tool-bloat constants", () => {
   it("exposes a 256 KB default cap", () => {
     expect(MAX_TOOL_RESULT_BYTES).toBe(262144);
-    expect(DEFAULT_TOOL_BLOAT_CONFIG.maxBytes).toBe(MAX_TOOL_RESULT_BYTES);
   });
 
-  it("knows the playwright bloat offenders", () => {
-    expect(BINARY_BLOAT_TOOLS).toContain("mcp__playwright__browser_take_screenshot");
-    expect(BINARY_BLOAT_TOOLS).toContain("mcp__playwright__browser_snapshot");
-  });
 });
 
 describe("summarisePayload", () => {

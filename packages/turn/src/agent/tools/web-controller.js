@@ -232,7 +232,7 @@ function safeSearchCacheIdentity(searchConfig) {
 }
 
 /** Only a digest of the current credential may influence a shared cache key. */
-function ollamaCacheIdentity(config) {
+export function ollamaCacheIdentity(config) {
   if (config?.apiKeyEnv === undefined) return config;
   const value = process.env[config.apiKeyEnv];
   return {
@@ -241,9 +241,6 @@ function ollamaCacheIdentity(config) {
     credentialDigest: value ? createHash("sha256").update(value.trim()).digest("hex") : "missing",
   };
 }
-
-// Test seam: assert rotation invalidates without ever exposing the value.
-export const __ollamaCacheIdentityForTests = ollamaCacheIdentity;
 
 function readSharedSearch(key) {
   const entry = sharedSearchCache.get(key);
@@ -267,7 +264,9 @@ function writeSharedSearch(key, value) {
   }
 }
 
-/** Test hook: the shared cache is module state and would leak between cases. */
+/** Test hook: the shared cache is module state and would leak between cases.
+ * @coreScanRetained
+ */
 export function __resetSharedSearchCacheForTests() {
   sharedSearchCache.clear();
 }

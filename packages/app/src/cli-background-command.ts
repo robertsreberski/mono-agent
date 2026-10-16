@@ -127,7 +127,6 @@ export async function ensureStartable(
   options: {
     readonly cwd?: string;
     readonly configPath?: string;
-    readonly preferAppPluginInstall?: boolean;
     readonly verifiedRuntimeProvenanceDetail?: string;
   } = {},
 ): Promise<PreflightResult> {
@@ -142,7 +141,7 @@ export async function ensureStartable(
     configPath,
     liveness: false,
     ignoreDuplicateKeys: true,
-    ...(options.preferAppPluginInstall === true ? { preferAppPluginInstall: true } : {}),
+
     ...(options.verifiedRuntimeProvenanceDetail === undefined
       ? {}
       : { verifiedRuntimeProvenanceDetail: options.verifiedRuntimeProvenanceDetail }),
@@ -349,7 +348,7 @@ export async function prepareSupervisedRestartInputs(input: {
       env: candidate.environment, ...(input.managedRoot === undefined ? {} : { runtimeRoot: resolve(input.managedRoot, "runtime-inputs") }) });
     try {
       const preflight = await ensureStartable(input.args, materialized.environment, { cwd: input.cwd,
-        configPath: materialized.configPath, preferAppPluginInstall: true, verifiedRuntimeProvenanceDetail: verified.provenanceDetail });
+        configPath: materialized.configPath, verifiedRuntimeProvenanceDetail: verified.provenanceDetail });
       if (!preflight.ok) return await refuse(preflightRestartReason(preflight));
     } finally { await materialized.dispose(); }
     const final = await captureDurableBackgroundInputs({ cwd: input.cwd, configPath: input.configPath,
@@ -504,7 +503,7 @@ async function runForeground(
         : {
             cwd,
             configPath: runtimeInputs.configPath,
-            preferAppPluginInstall: true,
+
           }),
       ...(managedRuntime === undefined
         ? {}

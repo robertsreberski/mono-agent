@@ -10,7 +10,7 @@ export const MANAGED_SRT_LOCK_SHA256 = "0f34561ddc700ad43c31f254beb0e1e4b87bae61
 export const MANAGED_SRT_TREE_SHA256 = "a6302340f9754fbb4fab32e3bc636a6d05e389ad338a7bc6b98c71a9f3609649";
 export const MANAGED_SRT_MARKER = ".mono-agent-srt.json";
 
-export interface ManagedSrtMarker {
+interface ManagedSrtMarker {
   readonly schemaVersion: 2;
   readonly package: typeof MANAGED_SRT_PACKAGE;
   readonly version: typeof MANAGED_SRT_VERSION;
@@ -192,7 +192,7 @@ export async function verifyManagedSrtInstall(installRoot: string): Promise<stri
   return cliPath;
 }
 
-export function assertSupportedNodeVersion(version: string): void {
+function assertSupportedNodeVersion(version: string): void {
   const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(version);
   if (match === null) {
     throw new Error(`Cannot determine whether Node ${version} satisfies SRT's >=20.11.0 requirement.`);

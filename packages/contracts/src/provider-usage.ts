@@ -37,7 +37,7 @@ export interface ProviderUsageSnapshot {
   readonly providers: readonly ProviderUsage[];
 }
 /** Constant-rate burn projection for one window, anchored at the measurement `fetchedAt`, not wall-clock. */
-export interface ProviderUsageProjection {
+interface ProviderUsageProjection {
   /** 1 = exactly on track to consume the window by its reset. */
   readonly pace: number;
   /** 0..1 of the window elapsed at the measurement anchor. */
@@ -52,7 +52,7 @@ export interface ProviderUsageProjection {
   readonly projectedUnusedPercent?: number;
 }
 /** One window's projection, for consumers that render per-window state. */
-export interface ProviderUsageWindowProjection {
+interface ProviderUsageWindowProjection {
   readonly kind: ProviderUsageWindow["kind"];
   readonly projection: ProviderUsageProjection;
 }

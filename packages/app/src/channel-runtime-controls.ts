@@ -7,18 +7,18 @@ import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 import { buildProviderModelCatalog } from "./provider-model-catalog.js";
 import { configuredRuntimeModels } from "./runtime-routes.js";
 
-export interface ChannelRuntimeEffortOption {
+interface ChannelRuntimeEffortOption {
   readonly value: string;
   readonly label: string;
 }
 
-export interface ChannelRuntimeModelOption {
+interface ChannelRuntimeModelOption {
   readonly value: string;
   readonly label: string;
   readonly efforts: readonly ChannelRuntimeEffortOption[];
 }
 
-export interface ChannelRuntimeControls {
+interface ChannelRuntimeControls {
   readonly defaultModel: string;
   readonly defaultEffort?: string;
   readonly models: readonly ChannelRuntimeModelOption[];

@@ -20,7 +20,6 @@ import {
   buildWebNextAction,
   filterEnvelopeNextActions,
   formatActionableEnvelope,
-  isBlockedWebCode,
   normalizeWebResearchOptions,
   parseActionableEnvelope,
   refreshCachedSearchEnvelope,
@@ -124,8 +123,6 @@ describe("managed web-research contract", () => {
     expect(webStatusForCode("invalid_query")).toBe("error");
     expect(webStatusForCode("aborted")).toBe("error");
     expect(webStatusForCode("extraction_failed")).toBe("error");
-    expect(isBlockedWebCode("rate_limited")).toBe(true);
-    expect(isBlockedWebCode("http_500")).toBe(false);
     const failure = webFailureEnvelope("WebFetch", "network_denied", "Error: denied.");
     expect(failure.error).toBe(true);
     expect(JSON.parse(failure.text)).toMatchObject({ tool: "WebFetch", status: "blocked", code: "network_denied" });
@@ -527,7 +524,6 @@ describe("managed web-research contract", () => {
 
   it("classifies local HTTP 429 as blocked with a stable code", async () => {
     expect(webStatusForCode("http_429")).toBe("blocked");
-    expect(isBlockedWebCode("http_429")).toBe(true);
     expect(webStatusForCode("http_500")).toBe("error");
     const result = await performWebFetch({ url: "https://example.com/limited" }, {
       fetchImpl: async () => new Response("limited", { status: 429, headers: { "content-type": "text/plain" } }),

@@ -6,7 +6,7 @@ import { assertPrivateLaunchdStateWritable, readPrivateLaunchdState, removePriva
 import { activityBusy, type WorkerActivityCounts, type WorkerActivityTracker } from "./worker-activity.js";
 
 const DIRECTORY = "worker-activity";
-export interface WorkerActivitySnapshot {
+interface WorkerActivitySnapshot {
   readonly version: 1;
   readonly pid: number;
   readonly incarnation: ProcessIncarnation;

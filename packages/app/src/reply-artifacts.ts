@@ -156,7 +156,7 @@ interface ReplyArtifactManifest {
   readonly expiresAt: string;
 }
 
-export interface ReplyArtifactServiceOptions {
+interface ReplyArtifactServiceOptions {
   readonly artifactDir: string;
   readonly workspace: string;
   /** Resolved state, memory, credential, config, and other private roots. */

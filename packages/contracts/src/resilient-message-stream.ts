@@ -134,7 +134,7 @@ export interface ResilientMessageStreamLogger {
   error?(message: string, metadata?: Record<string, unknown>): void;
 }
 
-export interface ResilientMessageStreamOptions {
+interface ResilientMessageStreamOptions {
   transport: ChannelTransport;
   initialStatusText?: string;
   editDebounceMs?: number;
@@ -257,7 +257,7 @@ type ActivityEntry =
       readonly children: ActivityLine[];
     };
 
-export interface ResilientAgentMessageStream extends AgentMessageStreamBase {
+interface ResilientAgentMessageStream extends AgentMessageStreamBase {
   status(text: string): Promise<void>;
   append(delta: string): Promise<void>;
   replace(text: string): Promise<void>;

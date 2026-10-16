@@ -566,7 +566,7 @@ export function piAuthPathBackgroundConflict(options: {
   return interactive !== background;
 }
 
-export interface FirstRunReadinessGate {
+interface FirstRunReadinessGate {
   readonly ready: boolean;
   readonly reasons: readonly string[];
 }
@@ -710,7 +710,7 @@ function selectedPersistentRuntimeModelRefs(plan: WizardPlan): readonly string[]
   return [...new Set(refs)];
 }
 
-export interface ValidateWizardPlanInStagingOptions {
+interface ValidateWizardPlanInStagingOptions {
   readonly plan: WizardPlan;
   /** Folder whose existing relative context roots the generated plan references. */
   readonly sourceCwd?: string;

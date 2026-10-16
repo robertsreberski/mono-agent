@@ -118,7 +118,7 @@ interface RetainedConnection {
   lastUsedAtMs: number;
 }
 
-export interface McpAppServiceOptions {
+interface McpAppServiceOptions {
   readonly artifactDir: string;
   readonly retentionDays?: number;
   readonly now?: () => Date;
@@ -145,7 +145,7 @@ export interface McpAppServiceOptions {
   ) => void | Promise<void>;
 }
 
-export interface McpAppService {
+interface McpAppService {
   readonly createExtension: RuntimeOptionsExtension;
   wrapResponder(responder: AgentResponder): AgentResponder;
   load(request: AgentMcpAppLoadRequest): Promise<AgentMcpAppResource>;

@@ -1,3 +1,4 @@
+import { AGENT_ATTACHMENT_MIME_ALIASES } from "./attachment-mime-aliases.js";
 import { types as nodeUtilTypes } from "node:util";
 import type { MemoryCaptureSpeakerKind } from "./memory.js";
 
@@ -6,10 +7,44 @@ export {
   isSafePrototypeInstance,
   readSafeDataProperty,
 } from "./log-redaction.js";
-export type { LogRedactorOptions, LogRedactor, SecretSafeLogSink } from "./log-redaction.js";
+export type {
+  SecretSafeLogSink,
+} from "./log-redaction.js";
 export { assertMatchingReplyAttachment, collectExactReplyArtifactBytes } from "./reply-artifacts.js";
 
-export * from "./provider-auth.js";
+export {
+  PROVIDER_AUTH_SESSION_SCHEMA,
+  PROVIDER_AUTH_CHECK_SCHEMA,
+  MAX_PROVIDER_AUTH_BODY_BYTES,
+  MAX_PROVIDER_AUTH_INPUT_BYTES,
+  MAX_PROVIDER_AUTH_TEXT_INPUT_BYTES,
+  MAX_PROVIDER_AUTH_ITEMS,
+  MAX_PROVIDER_AUTH_OPTIONS,
+  MAX_PROVIDER_AUTH_STRING_BYTES,
+  ProviderAuthOperationError,
+  parseProviderAuthStatusSnapshot,
+  parseProviderAuthSessionSnapshot,
+  parseProviderAuthSessionStartInput,
+  parseProviderAuthSessionInput,
+  parseProviderAuthCheckStartInput,
+  parseProviderAuthCheckSessionSnapshot,
+} from "./provider-auth.js";
+export type {
+  ProviderAuthCheckResultCode,
+  ProviderAuthUsage,
+  ProviderAuthMethod,
+  ProviderAuthProviderStatus,
+  ProviderAuthStatusSnapshot,
+  ProviderAuthPrompt,
+  ProviderAuthSessionSnapshot,
+  ProviderAuthSessionStartInput,
+  ProviderAuthSessionInput,
+  ProviderAuthCheckStartInput,
+  ProviderAuthCheckResult,
+  ProviderAuthCheckSessionSnapshot,
+  ProviderAuthCheckOperator,
+  ProviderAuthOperator,
+} from "./provider-auth.js";
 
 export type AgentRequestMetadata = Record<string, unknown>;
 export { registerNativeNotifyRequest, isNativeNotifyRequest,
@@ -21,8 +56,6 @@ export type AgentResponseMetadata = Record<string, unknown> & {
 };
 export {
   MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
-  PROCESS_JOB_ERROR_CODES,
-  PROCESS_JOB_PUBLIC_ERROR_MESSAGES,
   PROCESS_JOB_STATES,
   isProcessJobErrorCode,
   isProcessJobState,
@@ -39,20 +72,11 @@ export {
 export type {
   InternalProcessJobTool,
   PeerProcessJobQuestion,
-  PeerQuestionFormField,
   ProcessJobErrorCode,
   ProcessJobOperator,
   ProcessJobProjection,
-  ProcessJobProjectionError,
-  ProcessJobProjectionLimits,
-  ProcessJobProjectionOrigin,
-  ProcessJobProjectionOutput,
-  ProcessJobProjectionTimestamps,
-  ProcessJobProjectionWake,
   ProcessJobState,
   ProcessJobSubagentProgress,
-  ProcessJobSubagentRoute,
-  ProcessJobWakeState,
 } from "./process-jobs.js";
 export type {
   MemoryBlock,
@@ -83,7 +107,7 @@ export const NOTHING_TO_REPORT_SENTINEL = "NOTHING_TO_REPORT";
  * model narrating first still plainly decided to stay silent — delivering its
  * scratch work instead is the worst available reading of that.
  */
-export type NotifySuppression = "none" | "empty" | "sentinel" | "narrated-sentinel";
+type NotifySuppression = "none" | "empty" | "sentinel" | "narrated-sentinel";
 
 /**
  * Classify a notify turn's final text.
@@ -217,30 +241,6 @@ export const DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
 export function agentAttachmentKindFromMimeType(mimeType: string): AgentAttachment["kind"] {
   return mimeType.trim().toLowerCase().startsWith("image/") ? "image" : "document";
 }
-
-/**
- * Vendor or legacy aliases for {@link DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST}.
- * Browsers and OS pickers report non-canonical types for the same container
- * (Safari reports a Voice Memo `.m4a` file as `audio/x-m4a`), so alias keys
- * map to the canonical allowlisted type transports already accept.
- */
-export const AGENT_ATTACHMENT_MIME_ALIASES: Readonly<Record<string, string>> = {
-  "audio/x-m4a": "audio/mp4",
-  "audio/m4a": "audio/mp4",
-  "audio/x-mp4": "audio/mp4",
-  "audio/mp3": "audio/mpeg",
-  "audio/x-mp3": "audio/mpeg",
-  "audio/mpeg3": "audio/mpeg",
-  "audio/x-mpeg-3": "audio/mpeg",
-  "audio/x-wav": "audio/wav",
-  "audio/wave": "audio/wav",
-  "audio/vnd.wave": "audio/wav",
-  "audio/x-pn-wav": "audio/wav",
-  "audio/x-aac": "audio/aac",
-  "audio/x-flac": "audio/flac",
-  "audio/x-ogg": "audio/ogg",
-  "audio/vorbis": "audio/ogg",
-};
 
 /**
  * Canonicalize a caller-reported attachment MIME type to the allowlisted form.
@@ -614,9 +614,6 @@ export interface AgentToolEnvironment {
   readonly values: Readonly<Record<string, string>>;
   readonly pathPrepend?: readonly string[];
 }
-
-/** Stable MCP Apps extension identifier negotiated between a host and server. */
-export const MCP_APPS_EXTENSION_ID = "io.modelcontextprotocol/ui";
 
 /** Spec MIME type used for MCP App resources. */
 export const MCP_APP_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
@@ -1148,12 +1145,11 @@ function hasOwnTrueDataProperty(value: unknown, key: string): boolean {
   }
 }
 
-export { CodedError, isCodedError } from "./coded-error.js";
+export { CodedError } from "./coded-error.js";
 export {
   MAX_AGENT_REPLY_PARTS,
   serializeAgentStreamFrame,
   parseAgentStreamFrame,
-  frameFeedingMessageStream,
 } from "./stream-wire.js";
 export type { AgentStreamWireFrame } from "./stream-wire.js";
 export {
@@ -1168,28 +1164,19 @@ export type {
 export {
   BufferedMessageStream,
 } from "./buffered-message-stream.js";
-export type {
-  BufferedMessageStreamOptions,
-} from "./buffered-message-stream.js";
 export {
   DEFAULT_EMPTY_FINAL_TEXT,
   DEFAULT_MAX_MESSAGE_CHARS,
-  buildStreamingTailPreview,
   normalizeTrailing,
   splitTextByCodePoints,
   splitTextForChat,
 } from "./stream-text.js";
 export {
   formatLiveInputActivityLine,
-  formatProviderStatusLine,
-  isSubagentLaunchToolName,
   setToolActivityPathRoots,
-  splitSubagentToolName,
-  SUBAGENT_TOOL_SEPARATOR,
-  toolHintFor,
   toolNameLeaf,
 } from "./tool-hints.js";
-export type { ToolActivityLineOptions } from "./tool-hints.js";
+
 export {
   ResilientMessageStream,
   ChannelDeliveryError,
@@ -1202,9 +1189,7 @@ export type {
   ChannelMessageContentKind,
   ChannelSendOutcome,
   MessageRef,
-  ResilientMessageStreamOptions,
   ResilientMessageStreamLogger,
-  ResilientAgentMessageStream,
 } from "./resilient-message-stream.js";
 export type {
   ChannelConfigInput,
@@ -1230,7 +1215,6 @@ export type {
   NotifyDestination,
   HostWakeDeliveryResult,
   HostWakeDisposition,
-  ProcessJobWakeDeliveryInput,
   ProcessJobWakeDeliveryResult,
   ProcessJobWakeDisposition,
   RunningChannel,
@@ -1254,9 +1238,7 @@ export {
 } from "./config-loader.js";
 export type {
   ConfigErrorFactory,
-  EnvEncodeKind,
   JsonEnvFieldSpec,
-  JsonEnvMapping,
   RedactedSecretValue,
 } from "./config-loader.js";
 export {
@@ -1270,33 +1252,27 @@ export {
   listen,
   normalizeHostForBind,
 } from "./host-safety.js";
-export type { BoundedHttpResponseWriterOptions, ListenErrorFactories } from "./host-safety.js";
+
 export {
   bearerTokensEqual,
   generateBearerToken,
   readAuthorizationBearer,
 } from "./bearer.js";
 export { sanitizeInboundHttpHeaders } from "./http-headers.js";
-export type { InboundHttpHeaders } from "./http-headers.js";
+
 export {
   SettingsJsonError,
   readSettingsJson,
   writeSettingsJson,
 } from "./json-source.js";
-export type {
-  ReadSettingsJsonResult,
-  SettingsJsonErrorCode,
-  SettingsJsonErrorDetails,
-} from "./json-source.js";
+
 export type {
   SettingsJson,
   SettingsJsonValue,
-  SettingsPrimitive,
 } from "./types.js";
 export {
   CronOperatorWireError,
   MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES,
-  MAX_CRON_OPERATOR_CURSOR_BYTES,
   MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES,
   MAX_CRON_OPERATOR_DETAIL_ARTIFACT_ID_BYTES,
   MAX_CRON_OPERATOR_DETAIL_ERROR_BYTES,
@@ -1308,7 +1284,6 @@ export {
   MAX_CRON_OPERATOR_JOB_ID_BYTES,
   MAX_CRON_OPERATOR_JOBS,
   MAX_CRON_OPERATOR_RESPONSE_BYTES,
-  MAX_CRON_OPERATOR_RUN_ID_BYTES,
   MAX_CRON_OPERATOR_RUN_PAGE,
   MAX_CRON_OPERATOR_SUMMARY_ARTIFACT_ID_BYTES,
   MAX_CRON_OPERATOR_SUMMARY_ERROR_BYTES,

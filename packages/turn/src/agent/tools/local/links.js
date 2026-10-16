@@ -4,12 +4,12 @@
 // in the package root for the complete license and verified source provenance.
 import { parseHTML } from "linkedom";
 
-export const MAX_WEB_FETCH_LINKS = 20;
-export const MAX_WEB_FETCH_LINK_URL_CHARS = 2000;
-export const MAX_WEB_FETCH_LINK_TEXT_CHARS = 200;
+const MAX_WEB_FETCH_LINKS = 20;
+const MAX_WEB_FETCH_LINK_URL_CHARS = 2000;
+const MAX_WEB_FETCH_LINK_TEXT_CHARS = 200;
 const CHROME = 'nav,header,footer,aside,[role="navigation"],[role="menu"],[role="menubar"]';
 
-export function safeDocumentUrl(value, base) {
+function safeDocumentUrl(value, base) {
   if (typeof value !== "string" || !value.trim()) return "";
   try {
     const parsed = new URL(value, base);

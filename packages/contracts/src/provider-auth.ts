@@ -1,4 +1,4 @@
-export const PROVIDER_AUTH_STATUS_SCHEMA = "mono-agent.provider-auth.v1" as const;
+const PROVIDER_AUTH_STATUS_SCHEMA = "mono-agent.provider-auth.v1" as const;
 export const PROVIDER_AUTH_SESSION_SCHEMA = "mono-agent.provider-auth-session.v1" as const;
 export const PROVIDER_AUTH_CHECK_SCHEMA = "mono-agent.provider-auth-check.v1" as const;
 
@@ -6,24 +6,24 @@ export const MAX_PROVIDER_AUTH_BODY_BYTES = 128 * 1024;
 export const MAX_PROVIDER_AUTH_INPUT_BYTES = 65_536;
 export const MAX_PROVIDER_AUTH_TEXT_INPUT_BYTES = 16 * 1024;
 export const MAX_PROVIDER_AUTH_ITEMS = 64;
-export const MAX_PROVIDER_AUTH_USAGES = 64;
-export const MAX_PROVIDER_AUTH_METHODS = 8;
+const MAX_PROVIDER_AUTH_USAGES = 64;
+const MAX_PROVIDER_AUTH_METHODS = 8;
 export const MAX_PROVIDER_AUTH_OPTIONS = 32;
 export const MAX_PROVIDER_AUTH_STRING_BYTES = 4_096;
 
-export type ProviderAuthState = "present" | "expired" | "missing" | "not_applicable";
-export type ProviderAuthVerification = "not_verified" | "verified_by_account_request" | "verified_by_live_request" | "not_applicable";
-export type ProviderAuthType = "oauth" | "api_key";
-export type ProviderAuthStrategy = "device_code" | "paste_back" | "provider_prompt" | "api_key_prompt";
-export type ProviderAuthSessionState =
+type ProviderAuthState = "present" | "expired" | "missing" | "not_applicable";
+type ProviderAuthVerification = "not_verified" | "verified_by_account_request" | "verified_by_live_request" | "not_applicable";
+type ProviderAuthType = "oauth" | "api_key";
+type ProviderAuthStrategy = "device_code" | "paste_back" | "provider_prompt" | "api_key_prompt";
+type ProviderAuthSessionState =
   | "pending"
   | "awaiting_input"
   | "awaiting_user"
   | "succeeded"
   | "failed"
   | "cancelled";
-export type ProviderAuthCheckSessionState = "running" | "completed" | "cancelled";
-export type ProviderAuthCheckResultState =
+type ProviderAuthCheckSessionState = "running" | "completed" | "cancelled";
+type ProviderAuthCheckResultState =
   | "pending"
   | "running"
   | "passed"
@@ -37,7 +37,7 @@ export type ProviderAuthCheckResultState =
   | "cancelled"
   | "stale"
   | "not_run";
-export type ProviderAuthCheckSelectionBasis =
+type ProviderAuthCheckSelectionBasis =
   | "catalog_pricing"
   | "subscription_zero_price"
   | "sole_candidate_unknown_price";
@@ -190,7 +190,7 @@ export interface ProviderAuthOperator {
   stop(): Promise<void>;
 }
 
-export type ProviderAuthErrorCode =
+type ProviderAuthErrorCode =
   | "provider_auth_invalid_request"
   | "provider_auth_not_found"
   | "provider_auth_conflict"
@@ -216,10 +216,6 @@ export class ProviderAuthOperationError extends Error {
     this.status = status;
     if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds;
   }
-}
-
-export function isTerminalProviderAuthSessionState(value: ProviderAuthSessionState): boolean {
-  return value === "succeeded" || value === "failed" || value === "cancelled";
 }
 
 export function parseProviderAuthStatusSnapshot(value: unknown): ProviderAuthStatusSnapshot {

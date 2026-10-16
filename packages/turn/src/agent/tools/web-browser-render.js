@@ -213,7 +213,7 @@ function compactBrowserNamespace(value) {
   return `mw-${digest}`;
 }
 
-export function extractBrowserText(output) {
+function extractBrowserText(output) {
   const raw = String(output || "").trim();
   if (!raw) return "";
   try {

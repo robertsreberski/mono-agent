@@ -1,4 +1,4 @@
-export interface RedactSecretsOptions {
+interface RedactSecretsOptions {
   readonly fallback: string;
   readonly secrets?: Iterable<string>;
   readonly environment?: Readonly<Record<string, string | undefined>>;

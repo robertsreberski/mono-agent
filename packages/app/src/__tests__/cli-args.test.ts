@@ -14,7 +14,11 @@ vi.mock("../managed-runtime-publication.js", async (importOriginal) => {
 });
 
 import { firstCliPositional, JSON_CAPABLE_COMMANDS } from "../cli-args.js";
-import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, renderHelpTopic, runCli, shouldLoadCommandDotenv } from "../cli.js";
+import { describeChannelStatus } from "../cli-background-command.js";
+import { loadCliEnvFile, parseCliArgs } from "../cli-args.js";
+import { monoAgentVersion, renderHelp, renderHelpTopic } from "../cli-help.js";
+import { runCli } from "../cli.js";
+import { shouldLoadCommandDotenv } from "../cli-commands.js";
 
 /** Resolve a help topic to its rendered detail text, failing if it is not a valid topic. */
 function helpTopicText(topic: string): string {

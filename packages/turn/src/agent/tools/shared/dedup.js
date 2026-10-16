@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { MAX_READ_LINE_CHARS, READ_HISTORY_LIMIT } from "./constants.js";
 
-export const readHistory = new Map();
+const readHistory = new Map();
 
 export function boundedInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
   const n = Number(value);

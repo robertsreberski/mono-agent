@@ -1,6 +1,6 @@
 // @ts-check
 
-export const DEFAULT_WEB_SEARCH_MAX_REQUESTS_PER_RUN = 4;
+const DEFAULT_WEB_SEARCH_MAX_REQUESTS_PER_RUN = 4;
 export const MAX_WEB_SEARCH_REQUESTS_PER_RUN = 20;
 
 /**

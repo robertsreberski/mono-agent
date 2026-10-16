@@ -183,24 +183,6 @@ export function listPiBuiltinProviders() {
 }
 
 /**
- * Describe one static Pi built-in provider by id, or `undefined` for unknown
- * ids (including providers with no generated catalog entry).
- *
- * @param {string} providerId
- * @returns {PiBuiltinProviderSnapshot|undefined}
- */
-export function describePiBuiltinProvider(providerId) {
-  const id = String(providerId);
-  if (!getBuiltinProviders().includes(/** @type {any} */ (id))) {
-    return undefined;
-  }
-  return {
-    id,
-    label: builtinProviderLabelMap().get(id) ?? id,
-  };
-}
-
-/**
  * Pi 0.99's OpenAI ChatGPT sign-in requires a stable installation device ID.
  * App owners supply a stable installation ID when initiating OpenAI OAuth.
  * The built-in method remains visible to callers choosing their auth type.

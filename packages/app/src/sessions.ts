@@ -82,7 +82,7 @@ export interface PurgeConversationStateResult {
   readonly subagents: { readonly root?: string; readonly removed: boolean; readonly registries: number; readonly sessions: number };
 }
 
-export interface PurgeConversationStateOptions {
+interface PurgeConversationStateOptions {
   /** @internal Deterministic race-test seam after every preflight validation and before any traversal. */
   readonly hooks?: {
     readonly afterValidation?: (plan: ConversationStatePurgePlan) => void | Promise<void>;

@@ -39,7 +39,7 @@ function isWebReplyTurn(request: { readonly conversationId: string; readonly met
     && record.trigger === undefined && conversationId === `web:${record.threadId}`;
 }
 
-export interface SuggestRepliesService {
+interface SuggestRepliesService {
   readonly extension: RuntimeOptionsExtension;
   wrapResponder(responder: AgentResponder): AgentResponder;
 }

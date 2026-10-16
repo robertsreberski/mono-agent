@@ -70,7 +70,7 @@ import {
 } from "./model-discovery.js";
 
 /** The outcome of a wizard run: collected answers, or a clean cancellation. */
-export type WizardOutcome =
+type WizardOutcome =
   | {
       readonly status: "answers";
       readonly answers: WizardAnswers;
@@ -86,7 +86,7 @@ export type WizardOutcome =
   | { readonly status: "cancelled" };
 
 /** Context supplied by the CLI after it has resolved paths and parsed `.env`. */
-export interface WizardRunContext {
+interface WizardRunContext {
   readonly cwd: string;
   readonly piAuthPath?: string;
   /** Values parsed from the destination `.env`; shell-only values must not be supplied here. */
@@ -94,7 +94,7 @@ export interface WizardRunContext {
 }
 
 /** Ephemeral setup state retained while the CLI repairs a pre-write plan. */
-export interface SetupRepairRunContext extends WizardRunContext {
+interface SetupRepairRunContext extends WizardRunContext {
   /** Optional focused edit step; omitted starts at Creation review. */
   readonly initialStep?: number;
   readonly answers: WizardAnswers;

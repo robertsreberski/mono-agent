@@ -30,5 +30,4 @@ export async function resolveEngineTurnAdapter(modelRef) {
   return /** @type {RuntimeBridge} */ (engineTurnAdapter);
 }
 
-
-export { RUNTIME_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";
+export { runtimeCapabilities } from "./capabilities.js";

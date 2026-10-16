@@ -3,8 +3,8 @@ export const bucket = "fictional-v4-bucket";
 export const modelKey = "openai:fictional-model";
 export const timestamp = "2000-01-01T00:00:00.000Z";
 export const conversationKey = (id) => createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");
-export const handleId = (id, epoch) => createHash("sha256").update("mono-agent-provider-session-v2\0").update(id).update("\0").update(epoch).digest("hex");
-export const journalId = (id, epoch) => createHash("sha256").update(`mono-host-journal-v1\0${handleId(id, epoch)}`).digest("hex");
+const handleId = (id, epoch) => createHash("sha256").update("mono-agent-provider-session-v2\0").update(id).update("\0").update(epoch).digest("hex");
+const journalId = (id, epoch) => createHash("sha256").update(`mono-host-journal-v1\0${handleId(id, epoch)}`).digest("hex");
 const authorityFor = (id) => {
   const ownerKey = id.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
   const coordinates = { historyBucket: id, ownerKey, rootId: "1".repeat(64), version: 1 };

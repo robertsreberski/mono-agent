@@ -97,7 +97,7 @@ interface RunHistoryNavigation {
   readonly relatedTools?: readonly RunHistoryRelatedTool[];
 }
 
-export interface RunHistoryBinding {
+interface RunHistoryBinding {
   readonly artifactDir: string;
   /** Request conversation id. Daily rollover buckets are ignored when configured. */
   readonly conversationId: string;
@@ -107,19 +107,12 @@ export interface RunHistoryBinding {
   readonly rollover?: "none" | "daily";
 }
 
-export interface RunHistoryRuntimeExtensionOptions {
+interface RunHistoryRuntimeExtensionOptions {
   readonly artifactDir: string;
   /** The configured session rollover mode; daily buckets remain one logical history scope. */
   readonly rollover?: "none" | "daily";
   /** Best-effort diagnostic when the loopback MCP endpoint cannot start. */
   readonly onUnavailable?: (error: unknown) => void;
-}
-
-export interface RunHistoryRuntimeExtension {
-  readonly runtimeOptions: {
-    readonly mcpServers: Record<string, unknown>;
-  };
-  readonly cleanup: () => Promise<void>;
 }
 
 type RunHistoryToolPolicy = Pick<ToolPolicyInput, "allowedTools" | "disallowedTools">;

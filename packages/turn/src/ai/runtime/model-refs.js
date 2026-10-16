@@ -133,14 +133,6 @@ function parseCanonicalReference(value) {
  * @param {string} value
  * @returns {RuntimeModelRef}
  */
-export function normalizeRuntimeModelReference(value) {
-  return parseRuntimeModelReference(value);
-}
-
-/**
- * @param {string} value
- * @returns {RuntimeModelRef}
- */
 export function parseRuntimeModelReference(value) {
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
     throw new Error("model reference must be a non-empty trimmed string");

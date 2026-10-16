@@ -1,13 +1,13 @@
 import { parseRuntimeModelReference } from "@mono-agent/turn/ai/runtime/model-refs.js";
 import type { RuntimeModelReference } from "./types.js";
 
-export type RuntimeAdapterErrorCode =
+type RuntimeAdapterErrorCode =
   | "invalid_model_reference"
   | "runtime_backend_unavailable"
   | "invalid_runtime_options"
   | "invalid_local_provider";
 
-export interface RuntimeAdapterErrorDetails {
+interface RuntimeAdapterErrorDetails {
   readonly code?: RuntimeAdapterErrorCode;
   readonly [key: string]: unknown;
 }
@@ -122,6 +122,7 @@ export function sanitizeModelReferenceText(value: string, maxBytes: number): str
   return keepMarker ? `${kept}${marker}` : kept;
 }
 
+/** @coreScanRetained */
 export function parseMonoRuntimeModelReference(value: string): RuntimeModelReference {
   if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
     throw new RuntimeAdapterError("invalid_model_reference", "Model reference must be a non-empty trimmed string.");
@@ -146,7 +147,9 @@ export function parseMonoRuntimeModelReference(value: string): RuntimeModelRefer
   }
 }
 
-/** Stable canonical string used for model comparison, caching, and display. */
+/** Stable canonical string used for model comparison, caching, and display.
+ * @coreScanRetained
+ */
 export function modelReferenceKey(model: RuntimeModelReference): string {
   return model.reference;
 }

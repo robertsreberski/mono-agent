@@ -166,6 +166,7 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
       args: ["run", "verify:consumers", "--skip-build"],
       runner: "verifyConsumers",
     },
+    { label: "scan:dead-code", command: "pnpm", args: ["run", "scan:dead-code"] },
     { label: "release:pack", command: "pnpm", args: ["run", "release:pack", "--", "--tag", releaseTag] },
     { label: "release:consumer", command: "pnpm", args: packedConsumerArgs },
     { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },

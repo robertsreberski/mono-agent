@@ -4,16 +4,8 @@ import type { ModuleInput } from "./types.js";
 
 export const DEFAULT_MODEL = "openai-codex:gpt-5.6-terra";
 
-/** The model input every composed agent shares; overridable from the wizard/CLI. */
-export const MODEL_INPUT: ModuleInput = {
-  id: "model",
-  label: "Model",
-  description: "Primary runtime model reference in <provider>:<model> form, e.g. openai-codex:gpt-5.6-terra, anthropic:claude-sonnet-4-6, opencode-go:kimi-k3.",
-  default: DEFAULT_MODEL,
-};
-
 /** Context the base skeleton needs that is derived from the target folder, not from inputs. */
-export interface BaseConfigContext {
+interface BaseConfigContext {
   /** Basename of the agent folder. It is retained for path-derived defaults only. */
   readonly dirBasename: string;
   /** Retained for callers that inspect the target before composition. */

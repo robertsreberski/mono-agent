@@ -366,7 +366,7 @@ export async function buildResponder(
       : { rolloverTimezone: coreConfig.runtime.session.rolloverTimezone }),
   });
   const responder = await createConfiguredAgentResponderForApp({
-    preferAppPluginInstall: controller.backgroundSnapshot !== undefined,
+
     config: coreConfig,
     cwd: controller.cwd,
     // The host's resolved environment is authoritative for credential checks;

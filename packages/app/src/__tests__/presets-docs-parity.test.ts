@@ -1,3 +1,4 @@
+import { composeWizardPlan } from "../wizard/answers.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5,12 +6,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
-  composeWizardPlan,
   findPreset,
   PRESET_CATALOG,
   presetAnswers,
   presetIds,
-} from "../wizard/index.js";
+} from "../wizard/presets.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 

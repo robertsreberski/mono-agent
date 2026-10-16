@@ -79,25 +79,8 @@ export {
   acquireContinuationStoreLock,
   loadOrCreateContinuationSecret,
 } from "./continuation-store-fs.js";
-export {
-  CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
-  CONTINUATION_STORE_SCHEMA_VERSION,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGE_BYTES,
-  MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES,
-} from "./continuation-store-types.js";
-export type {
-  ContinuationLastError,
-  ContinuationOriginContextPin,
-  ContinuationOriginContextReference,
-  ContinuationOriginContextState,
-  ContinuationRetentionOptions,
-  ContinuationStore,
-  ContinuationStoreLock,
-  ContinuationStoreStats,
-  DurableContinuationRecord,
-} from "./continuation-store-types.js";
+export { CONTINUATION_RECORD_STORE_SCHEMA_VERSION } from "./continuation-store-types.js";
+export type { ContinuationOriginContextReference, ContinuationRetentionOptions, ContinuationStore, DurableContinuationRecord } from "./continuation-store-types.js";
 
 export async function openContinuationStore(
   stateDir: string,

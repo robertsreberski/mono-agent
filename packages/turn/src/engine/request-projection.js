@@ -22,7 +22,7 @@ export function projectContext(source, options = {}) {
 
 /** A composed checkpoint summarizes exactly the frozen prefix it names.
  * @param {any} coverage @param {any[]} descriptors */
-export function validateComposedCoverage(coverage, descriptors) {
+function validateComposedCoverage(coverage, descriptors) {
   if (coverage?.version !== 1 || !Array.isArray(coverage.sources) || coverage.sources.length !== descriptors.length
     || coverage.sources.some((s, i) => ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"].some((key) => s[key] !== descriptors[i][key]))) {
     throw new TypeError("Invalid composed checkpoint coverage");

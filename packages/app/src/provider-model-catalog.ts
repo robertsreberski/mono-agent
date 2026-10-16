@@ -22,7 +22,7 @@ import {
   resolveAdvertisedModelEffortForBuiltin,
 } from "./model-effort-capabilities.js";
 
-export const DEFAULT_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 100;
 export const MAX_PAGE_SIZE = 200;
 /**
  * Producer-side length bounds for the CATALOG's own projections
@@ -57,7 +57,7 @@ export const MAX_PAGE_SIZE = 200;
  * console. Model ids have no such second enforcer and keep the local bound.
  */
 export const MAX_CATALOG_ID_BYTES = 256;
-export const MAX_CATALOG_LABEL_BYTES = 256;
+const MAX_CATALOG_LABEL_BYTES = 256;
 
 /**
  * The catalog must not advertise a model a turn cannot route to. Byte bounds are
@@ -79,7 +79,7 @@ const isSelectableReference = (providerId: string, modelId: string): boolean => 
 const withinBytes = (value: string, max: number): boolean =>
   Buffer.byteLength(value, "utf8") <= max;
 export const DEFAULT_MAX_ADVERTISED_PER_PROVIDER = 100;
-export const MAX_SEARCH_RESULTS = 100;
+const MAX_SEARCH_RESULTS = 100;
 
 /**
  * Producer-side bounds on ONE `describe()` entry's effort ladder.
@@ -110,7 +110,7 @@ function boundedEffortLevels(levels: readonly string[] | undefined): readonly st
   return bounded.length === levels.length ? levels : bounded;
 }
 
-export interface ProviderModelCatalogInput {
+interface ProviderModelCatalogInput {
   readonly context1MModels?: Readonly<Record<string, boolean>>;
   /** Configured provider definitions (the canonical `providers.entries` map). */
   readonly providers?: readonly ProviderDefinition[];
@@ -124,7 +124,7 @@ export interface ProviderModelCatalogInput {
   readonly listBuiltinModels?: (providerId: string) => readonly PiBuiltinModelSnapshot[];
 }
 
-export interface ProviderModelCatalog {
+interface ProviderModelCatalog {
   /** Whether native local metadata proves this route cannot generate chat. */
   isEmbeddingOnly(ref: RuntimeModelReference): boolean;
   /** Eager, frozen, deterministic provider list. Never throws. */
@@ -142,13 +142,13 @@ export interface ProviderModelCatalog {
   describe(refs: readonly RuntimeModelReference[]): Record<string, TuiModelOption>;
 }
 
-export interface ProviderAuthCheckModelSelection {
+interface ProviderAuthCheckModelSelection {
   readonly kind: "selected";
   readonly model: RuntimeModelReference;
   readonly selectionBasis: "catalog_pricing" | "subscription_zero_price" | "sole_candidate_unknown_price";
 }
 
-export interface ProviderAuthCheckModelUnavailable {
+interface ProviderAuthCheckModelUnavailable {
   readonly kind: "unavailable";
   readonly code: "provider_unsupported" | "no_eligible_model" | "pricing_unavailable";
   readonly message: string;

@@ -1,4 +1,4 @@
-export type ContextValidationErrorCode =
+type ContextValidationErrorCode =
   | 'empty_required_field'
   | 'invalid_context_block'
   | 'invalid_history'
@@ -6,7 +6,7 @@ export type ContextValidationErrorCode =
   | 'invalid_skill_index'
   | 'file_read_failed';
 
-export interface ContextValidationErrorDetails {
+interface ContextValidationErrorDetails {
   readonly [key: string]: unknown;
 }
 

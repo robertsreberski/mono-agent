@@ -1,6 +1,6 @@
 import { lstat, rm } from "node:fs/promises";
 
-export interface FileIdentity {
+interface FileIdentity {
   readonly dev: number;
   readonly ino: number;
 }

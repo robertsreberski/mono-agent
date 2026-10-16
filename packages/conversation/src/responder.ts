@@ -31,7 +31,7 @@ export class AgentHarnessFailureError extends Error {
   }
 }
 
-export type SessionRollover = "none" | "daily";
+type SessionRollover = "none" | "daily";
 
 export function createAgentResponder(options: {
   readonly harness: AgentHarness;
@@ -485,7 +485,7 @@ async function serializeByKey<T>(
  * no lifecycle bookend either, so its activity header would never settle and a
  * rejected `Agent` call would read as one still running.
  */
-export interface StreamEventContext {
+interface StreamEventContext {
   readonly toolTimings?: Map<string, number>;
   readonly toolNames?: Map<string, string>;
 }
@@ -745,7 +745,7 @@ const MAX_STRUCTURED_CONTENT_CHARS = 16_000;
  * Lift a bounded machine-readable result out of the transcript block's raw result.
  *
  * The pi bridge stores the untouched MCP payload at `raw_result.details.raw`
- * (`agent-runtime/src/agent/tools/pi-bridge.js`), while `content` keeps only the
+ * (`turn/src/agent/tools/pi-bridge.js`), while `content` keeps only the
  * flattened text. `content` is therefore lossy for any tool whose real answer is
  * structured — AskUser's `interactionId`/`answered` live nowhere else — so consumers
  * that must reason about the outcome read this instead of parsing prose.
@@ -1014,7 +1014,7 @@ function thoughtTextFromBlock(block: Record<string, unknown>): string | undefine
  * to the stream's ephemeral `status` callback so the operator still sees the
  * progress transiently.
  */
-export function commentaryTextFromRuntimeEvent(event: unknown): string {
+function commentaryTextFromRuntimeEvent(event: unknown): string {
   if (!isRecord(event) || event.type !== "assistant") {
     return "";
   }

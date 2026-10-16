@@ -34,8 +34,8 @@ export interface SubagentOwnedCommand {
   budgetMs?: number;
 }
 
-export const SUBAGENT_OWNERSHIP_MAX_BYTES = 40 * 1024;
-export const SUBAGENT_COMMAND_MAX_BYTES = 4 * 1024;
+const SUBAGENT_OWNERSHIP_MAX_BYTES = 40 * 1024;
+const SUBAGENT_COMMAND_MAX_BYTES = 4 * 1024;
 export const SUBAGENT_SEEN_CALLS_MAX_COUNT = 256;
 export const SUBAGENT_SEEN_CALLS_MAX_BYTES = 32 * 1024;
 

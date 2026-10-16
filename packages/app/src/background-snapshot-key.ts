@@ -11,7 +11,7 @@ import { deriveLaunchdLabel } from "./launchd.js";
 const BACKGROUND_SNAPSHOT_KEY_BYTES = 32;
 const execFileAsync = promisify(execFile);
 
-export interface BackgroundSnapshotKeyOptions {
+interface BackgroundSnapshotKeyOptions {
   /** Test seam; production keys always live below the OS account home. */
   readonly homeDir?: string;
 }
@@ -72,7 +72,7 @@ export async function loadBackgroundSnapshotKey(
 }
 
 /** Resolve an existing proof key without creating or repairing any ancestor. */
-export async function existingBackgroundSnapshotKeyPath(
+async function existingBackgroundSnapshotKeyPath(
   configPath: string,
   options: BackgroundSnapshotKeyOptions = {},
 ): Promise<string> {
