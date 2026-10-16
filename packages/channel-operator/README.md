@@ -250,7 +250,11 @@ and their compatibility frame ceilings (1 MiB in legacy clients, 8 MiB in web).
 ## Public API
 
 The optional app-owned `TuiAdapterOptions.processJobWakeAdmission` authority
-advertises `capabilities.processJobWakeAdmission: { version: 1 }`. Private web
+advertises `capabilities.processJobWakeAdmission: { version: 1 }`.
+Its optional host-only `offerClaimedLiveInput` callback scopes a successful
+claim's process-local kind proof to exactly one live-input offer. This proof is
+not sourced from JSON or completion text, and survives project/tag prefixes;
+unclaimed, released and abandoned claims grant no process-job kind. Private web
 wake requests carry `processJobWakeAttempt` with their existing delivery key on
 `/v1/turns` and `/v1/live-input`. The adapter awaits durable exact-token marking
 before sending turn headers or offering input. Only explicit `unavailable` or

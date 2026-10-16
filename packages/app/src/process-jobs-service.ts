@@ -23,6 +23,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   processJobPublicError,
+  type AgentLiveInputOffer,
   type ProcessJobErrorCode,
   type ProcessJobProjection,
   type ProcessJobState,
@@ -32,7 +33,7 @@ import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsContr
 import type { NotifyDeliveryResult } from "./channels.js";
 import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
 import { ProcessJobOutputTail } from "./process-job-output-tail.js";
-import { consumeSilentProcessJobWake } from "./process-jobs-context.js";
+import { consumeSilentProcessJobWake, offerClaimedProcessJobLiveInput, recordProcessJobWakeAdmission, revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
 import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "./owner-private-lock.js";
 import {
   attestProcessJobsRootRegistration,
@@ -175,6 +176,7 @@ export interface ProcessJobsServiceHandle {
   wakeAdmission?: {
     claim(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
     release(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
+    offerClaimedLiveInput?(deliveryKey: string, token: string, boundary: string, offer: () => AgentLiveInputOffer): AgentLiveInputOffer;
   };
   inspectSubagentRecovery?(identity: SubagentOwnerIdentity): Promise<SubagentRecoverySnapshot | undefined>;
   recordSubagentObservation?(identity: SubagentOwnerIdentity, observation: SubagentVerificationObservation): Promise<void>;
@@ -655,9 +657,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await this.changeWakeBoundary(deliveryKey, token, boundary, false),
     release: async (deliveryKey: string, token: string, boundary: string): Promise<boolean> =>
       await this.changeWakeBoundary(deliveryKey, token, boundary, true),
+    offerClaimedLiveInput: (deliveryKey: string, token: string, boundary: string, offer: () => AgentLiveInputOffer): AgentLiveInputOffer => {
+      if (this.stopped || this.stopping || !this.storageOperational) return offer();
+      return offerClaimedProcessJobLiveInput(deliveryKey, token, boundary, offer);
+    },
   };
 
   private async changeWakeBoundary(deliveryKey: string, token: string, boundary: string, release: boolean): Promise<boolean> {
+    if (release) revokeProcessJobWakeAdmission(deliveryKey, token, boundary);
     return await this.withLock(async () => {
       if (this.stopped || (!release && this.stopping) || !this.storageOperational
         || !validWakeToken(boundary) || (token !== "" && !validWakeToken(token))
@@ -689,7 +696,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         }
         changed = true;
       });
+      if (changed && !release) recordProcessJobWakeAdmission(deliveryKey, token, boundary);
       return changed;
+    }).finally(() => {
+      // A release may have queued behind an in-progress claim whose proof did
+      // not exist at the initial revocation above. Revoke again after the lock.
+      if (release) revokeProcessJobWakeAdmission(deliveryKey, token, boundary);
     });
   }
 

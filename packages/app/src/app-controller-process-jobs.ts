@@ -134,7 +134,6 @@ export function ensureProcessJobsService(
             ...(controller.logger === undefined ? {} : { logger: controller.logger }),
           }),
           input.deliveryKey,
-          input.prompt,
         ),
         // Routing logs every undelivered update once, with its reason. Throwing
         // here only added a second, reason-free warning from the service.

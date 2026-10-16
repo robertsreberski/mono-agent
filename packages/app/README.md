@@ -270,7 +270,10 @@ the effective boundary rather than just the configured mode.
 Process-job chains keep the default depth budget of 4 and allow a configured
 ceiling of 64. Request diagnostics remain visible when the budget is exhausted.
 Background Exec/Bash accepts `wake_on_completion: false` for helpers that only
-need terminal card updates. A host-raised wake may call `FinishSilently({})` alone
+need terminal card updates. Process-job live-input kind comes from an in-process
+wake flight or a one-use token-bound host admission claim for the exact offer;
+project/tag prefixes do not affect that provenance. Unclaimed keys alone never
+grant silence eligibility. A host-raised wake may call `FinishSilently({})` alone
 without narration or attachments; the host records silence as a typed terminal
 disposition and suppresses delivery. The exact sentinel-only
 `NOTHING_TO_REPORT` fallback still works. Web wake admission has the same

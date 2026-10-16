@@ -1,7 +1,7 @@
 // @ts-check
 // One admission rule for the tool, empty-reply retry, and terminal seal.
 
-/** @typedef {{soleCall: boolean, visibleContent: boolean, pendingQuestion: boolean, failed: boolean, completed: boolean, liveInputEligible?: () => boolean}} SilentTurnState */
+/** @typedef {{soleCall: boolean, visibleContent: boolean, pendingQuestion: boolean, failed: boolean, completed: boolean, liveInputRefusalReason?: () => ("live_input_consumed"|"live_input_uncertain"|null)}} SilentTurnState */
 
 /**
  * @param {SilentTurnState} state
@@ -14,8 +14,7 @@ export function silentTurnRefusalReason(state, controller, result = {}) {
   if (state.visibleContent || result.finalText?.trim()) return "visible_content";
   if (state.pendingQuestion) return "pending_question";
   if (controller?.eligible() !== true) return "ineligible_turn";
-  if (state.liveInputEligible?.() !== true) return "live_input_consumed";
-  return null;
+  return state.liveInputRefusalReason ? state.liveInputRefusalReason() : "live_input_uncertain";
 }
 
 /**

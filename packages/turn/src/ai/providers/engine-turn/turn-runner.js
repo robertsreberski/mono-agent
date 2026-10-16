@@ -580,8 +580,8 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
     consumedInputIds: () => invalid ? null : [...entries.values()].filter((entry) => entry.consumed).map((entry) => entry.message.id),
     // Keep recovery identities intact. Only trusted host-classified completion
     // wakes may be consumed without creating an obligation to answer a user.
-    silenceEligible: () => !invalid && [...entries.values()].every((entry) =>
-      !entry.observed || entry.consumed && entry.message.kind === "process_job"),
+    silenceEligible: () => silenceRefusalReason() === null,
+    silenceRefusalReason,
     register(entryId, message) {
       if (!entries.has(entryId)) entries.set(entryId, { message, observed: false, consumed: false });
       if (invalid) {
@@ -632,6 +632,13 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
       remove?.();
     },
   };
+
+  function silenceRefusalReason() {
+    if (invalid) return /** @type {const} */ ("live_input_uncertain");
+    return [...entries.values()].some((entry) => entry.observed
+      && (!entry.consumed || entry.message.kind !== "process_job"))
+      ? /** @type {const} */ ("live_input_consumed") : null;
+  }
 
   function consumeBuffered() {
     if (invalid || runId === undefined) return;

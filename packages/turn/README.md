@@ -116,7 +116,10 @@ fallback.
 `FinishSilently` uses the same eligibility checks at tool admission and terminal
 certification. Only host-classified process-job completion wakes may be consumed
 as live input on a silent turn; user or unknown-kind input refuses the tool with
-`live_input_consumed`. Consumed identities remain in native recovery evidence.
+`live_input_consumed`; unavailable operation correlation refuses with
+`live_input_uncertain`. Host classification uses an in-process wake flight or a
+successful token-bound admission claim, independent of project/tag prefixes.
+Consumed identities remain in native recovery evidence.
 Only certifiable silence skips empty-reply finalization.
 
 See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).

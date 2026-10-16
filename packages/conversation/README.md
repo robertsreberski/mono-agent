@@ -91,8 +91,8 @@ history after the mailbox seals. Each replay also receives a distinct mailbox
 lease, so a custom runtime's stale callback cannot settle a newer attempt. The
 opaque logical-owner identity lets the standard runtime refresh that lease
 without granting callback ownership to an unrelated same-ID duplicate.
-Hosts use `bindProcessJobLiveInput()` only after verifying a private completion
-wake flight. Its in-process provenance survives responder copies and lets the
+Hosts use `bindProcessJobLiveInput()` only after verifying an in-process completion
+wake flight or a one-use token-bound admission claim for the exact live-input offer. Its in-process provenance survives responder copies and lets the
 runtime distinguish completion wakes from human follow-ups; text, message IDs
 and client-provided delivery keys alone never grant silent-turn eligibility.
 

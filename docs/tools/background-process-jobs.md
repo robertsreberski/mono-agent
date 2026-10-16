@@ -367,9 +367,14 @@ A genuine completion wake can call `FinishSilently({})` alone, without narration
 or attachments, to end with a host-recorded silent disposition. Consuming more
 host-verified process-job completion wakes during that turn preserves silence
 eligibility. A consumed user message or input of unknown kind instead makes
-`FinishSilently` refuse with `live_input_consumed`; the agent must reply visibly.
-Completion text, message IDs and client-provided delivery keys cannot establish
-that an input is a host completion wake. If that tool is unavailable, answering with exactly `NOTHING_TO_REPORT` still suppresses
+`FinishSilently` refuse with `live_input_consumed`; uncertain operation correlation
+instead refuses with `live_input_uncertain`. The agent must reply visibly.
+Process-job kind requires an in-process host wake flight or a successful,
+one-use token-bound host admission claim scoped to the exact live-input offer.
+Project context and conversation-tag prefixes do not change that proof.
+Completion text, message IDs and client-provided delivery keys alone grant no
+such authority. Unclaimed, released or abandoned claims and token-less legacy
+transport requests remain user-kind. If that tool is unavailable, answering with exactly `NOTHING_TO_REPORT` still suppresses
 delivery. Narration and rich reply parts remain visible. The host
 matches the exact active delivery key; unrelated and stale keys cannot silence
 another turn. Web wake admission has parity with the sentinel's exact live-flight

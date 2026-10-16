@@ -1,5 +1,12 @@
 import { WorkerActivityTracker } from "../worker-activity.js";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore, createLiveInputMailbox, createToolPolicy } from "@mono-agent/conversation";
+import { startTuiAdapter } from "@mono-agent/channel-operator";
+import { withProjectContext } from "@mono-agent/web";
+// @ts-expect-error Real native engine test seam; only provider transport is scripted.
+import { generateEngineTurnResponse } from "../../../turn/src/ai/providers/engine-turn.js";
+import { createToolContext } from "@mono-agent/turn/agent/tools/shared/tool-context.js";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +44,7 @@ import {
 } from "../process-jobs-store.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 import { routeProactiveNotification } from "../proactive-notify.js";
-import { bindProcessJobWakeContextToResponder, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 
 const INCARNATION: ProcessIncarnation = {
   schema: "mono-agent.process-incarnation.v1",
@@ -61,6 +68,113 @@ afterEach(async () => {
   await Promise.allSettled(services.splice(0).map(async (service) => await service.stop()));
   await Promise.all(ownershipRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   vi.useRealTimers();
+});
+
+it.each(["unfenced", "wrong-token", "borrowed-key"])("does not grant process-job kind to %s transport input", async (mode) => {
+  const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+  const ready = deferred<ProcessJobWakeInput>(); const release = deferred<void>();
+  const service = await startService(fixture, { wake: (input) => runWithProcessJobWakeContext({ jobId: input.projection.jobId,
+    chainDepth: input.chainDepth, wakeRecovery: input.wakeRecovery! }, async () => {
+    ready.resolve(input); await release.promise; return { delivered: true as const };
+  }, input.deliveryKey) });
+  const origin = { ...ORIGIN, channel: "web" as const, bucket: null, conversationId: "web:negative-kind", baseConversationId: "web:negative-kind",
+    replyToConversationId: "web:negative-kind", normalizedReplyTarget: "web:negative-kind" };
+  await service.activateWakes();
+  const completion = deferred<ProcessJobProcessResult>();
+  await service.controller(origin, 0).start(requestOf(handleOf(completion))); completion.resolve(processResult());
+  const wake = await ready.promise;
+  const mailbox = createLiveInputMailbox("negative-kind-run");
+  const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "unused" }), offerLiveInput: request => mailbox.offer(request) });
+  const target = registerProcessJobSteeringTarget({ conversationId: "web:negative-kind", runId: "negative-kind-run", chainDepth: 0 });
+  const boundary = randomUUID(); const token = mode === "wrong-token" ? randomUUID() : wake.wakeRecovery!.token;
+  try {
+    if (mode !== "unfenced") expect(await service.wakeAdmission!.claim(wake.deliveryKey, token, boundary)).toBe(mode !== "wrong-token");
+    const offerInput = () => responder.offerLiveInput!({ conversationId: "web:negative-kind", id: wake.deliveryKey, deliveryKey: wake.deliveryKey,
+      text: "A new user instruction.", receivedAt: "2026-01-01T00:00:00.000Z" });
+    const offer = mode === "wrong-token" ? service.wakeAdmission!.offerClaimedLiveInput!(wake.deliveryKey, token, boundary, offerInput) : offerInput();
+    if (offer.status !== "accepted") throw new Error("Expected accepted live input.");
+    const input = await mailbox[Symbol.asyncIterator]().next();
+    if (input.done) throw new Error("Expected live input.");
+    expect(input.value.kind).toBe("user"); input.value.acknowledge?.();
+    await expect(offer.settled).resolves.toEqual({ status: "applied", runId: "negative-kind-run" });
+  } finally { release.resolve(); mailbox.close(); target.release(); }
+});
+
+it.each(["tags", "project-and-tags"])("certifies a %s web completion steer over the claimed operator transport", async (contextKind) => {
+  const fixture = await createFixture();
+  ownershipRoots.push(fixture.cwd);
+  const wakeReady = deferred<ProcessJobWakeInput>();
+  const wakeExit = deferred<void>();
+  const service = await startService(fixture, { wake: (input) => runWithProcessJobWakeContext({
+    jobId: input.projection.jobId, chainDepth: input.chainDepth, wakeRecovery: input.wakeRecovery!,
+  }, async () => { wakeReady.resolve(input); await wakeExit.promise; return { delivered: true as const }; }, input.deliveryKey) });
+  const origin = { ...ORIGIN, channel: "web" as const, bucket: null, conversationId: "web:claimed-wake", baseConversationId: "web:claimed-wake",
+    replyToConversationId: "web:claimed-wake", normalizedReplyTarget: "web:claimed-wake" };
+  const completion = deferred<ProcessJobProcessResult>();
+  await service.activateWakes();
+  await service.controller(origin, 0).start(requestOf(handleOf(completion)));
+  completion.resolve(processResult());
+  const wake = await wakeReady.promise;
+  const piPath = fileURLToPath(new URL("../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+  const { createModels, fauxProvider, fauxAssistantMessage, fauxToolCall } = await import(piPath);
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "claimed-wake" }], tokensPerSecond: undefined });
+  const models = createModels(); models.setProvider(faux.provider);
+  const entered = deferred<void>();
+  const releaseProvider = deferred<void>();
+  faux.setResponses([
+    async () => { entered.resolve(); await releaseProvider.promise;
+      return fauxAssistantMessage([fauxToolCall("Read", { file_path: "missing.txt" }, { id: "read" })]); },
+    fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silence" })]),
+  ]);
+  const kinds: unknown[] = [];
+  const runtime = { run: async (prompt: string, options: any) => {
+    const liveInput = (async function* () {
+      for await (const input of options.liveInput) {
+        kinds.push(input.kind);
+        yield { ...input, accepted: (evidence: unknown) => { input.accepted?.(evidence); releaseProvider.resolve(); } };
+      }
+    })();
+    return generateEngineTurnResponse(prompt, { ...options, liveInput, piResolvedModel: faux.getModel(), piResolvedModels: models,
+      effort: "none", toolContext: createToolContext({ workspace: fixture.cwd }) });
+  } };
+  const identityPath = join(fixture.cwd, "IDENTITY.md");
+  await writeFile(identityPath, "You are a helpful assistant.");
+  const history = createInMemoryHistoryStore();
+  const harness = createAgentHarness({ identityPath, runtime: runtime as never,
+    model: { provider: "faux", model: "claimed-wake", reference: "faux:claimed-wake" }, cwd: fixture.cwd,
+    toolPolicy: createToolPolicy({ allowedTools: ["Read", "FinishSilently"] }), historyStore: history,
+    runtimeOptions: { finishSilentlyController: { eligible: () => true } }, createRunId: () => "claimed-wake-run" });
+  const responder = bindProcessJobWakeContextToResponder(createAgentResponder({ harness }));
+  const target = registerProcessJobSteeringTarget({ conversationId: "web:claimed-wake", runId: "claimed-wake-run", chainDepth: 1 });
+  const operator = await startTuiAdapter({ responder, processJobWakeAdmission: service.wakeAdmission! });
+  const controller = new AbortController();
+  const running = responder.respond({ conversationId: "web:claimed-wake", text: "A background job completed.", abortSignal: controller.signal }, { append: async () => {} });
+  try {
+    await entered.promise;
+    const prefixed = withProjectContext(wake.prompt, { name: "Fictional project", tags: ["maintenance"],
+      context: contextKind === "project-and-tags" ? "Review the local build status." : "" });
+    expect(prefixed).not.toBe(wake.prompt);
+    const refused = await fetch(`${operator.baseUrl}/v1/conversations/web%3Aclaimed-wake/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: wake.deliveryKey, deliveryKey: wake.deliveryKey, text: prefixed,
+        receivedAt: "2026-01-01T00:00:00.000Z", processJobWakeAttempt: randomUUID() }),
+    });
+    expect(refused.status).toBe(400);
+    expect(kinds).toEqual([]);
+    const response = await fetch(`${operator.baseUrl}/v1/conversations/web%3Aclaimed-wake/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: wake.deliveryKey, deliveryKey: wake.deliveryKey, text: prefixed,
+        receivedAt: "2026-01-01T00:00:00.000Z", processJobWakeAttempt: wake.wakeRecovery!.token }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "applied", runId: "claimed-wake-run" });
+    await expect(running).resolves.toMatchObject({ text: "", metadata: { turnDisposition: "silent" } });
+    expect(kinds).toEqual(["process_job"]);
+    expect((await history.load("web:claimed-wake")).at(-1)).toMatchObject({ role: "assistant", content: "[Host: silent completion]" });
+  } finally {
+    releaseProvider.resolve(); controller.abort(); wakeExit.resolve();
+    await Promise.allSettled([running]); target.release(); await operator.stop();
+  }
 });
 
 describe("held subagent obligations", () => {

@@ -3,8 +3,9 @@
 ## Unreleased
 
 - Fix `FinishSilently` on host notification turns that consume additional
-  process-job completion wakes; keep user or unknown live input visible and
-  retry empty replies when silent completion cannot be certified.
+  process-job completion wakes, including project/tag-prefixed web wakes with
+  host admission proof; keep user or unknown live input visible and retry empty
+  replies when silent completion cannot be certified.
 
 - Fix tool history lock contention on macOS reporting `deferred` instead of
   `failed`. The writer now bounds its 200 ms SQLite lock wait by elapsed time,

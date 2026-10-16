@@ -934,7 +934,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     }
 
     const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
-    runState.silentTurn.liveInputEligible = liveInputEpoch.silenceEligible;
+    runState.silentTurn.liveInputRefusalReason = liveInputEpoch.silenceRefusalReason;
     const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch, dispatchProgress });
 
     // Report the live harness value, not a downstream recreation of Pi's
