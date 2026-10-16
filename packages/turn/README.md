@@ -566,6 +566,7 @@ resolveRuntimeBrand
 **`@mono-agent/turn/agent`**
 
 ```text
+AgentCompactionPolicy
 buildTranscriptTailSnapshot
 formatSkillBodyWithPathNote
 isLikelyContextTermination
@@ -578,7 +579,10 @@ resolveAgentCompactionPolicy
 ```text
 CONTEXT_1M_TOKENS
 FAILURE_KINDS
+FailureKind
 NativeEvidenceCapacityError
+NormalizedPricing
+ParsedModelReference
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
@@ -588,8 +592,14 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+PricingInputRow
 ProviderCheckCode
 ProviderCheckOutcome
+RetryableProviderFailureInfo
+RuntimeBridge
+RuntimeBridgeDescriptor
+RuntimeBridgeId
+RuntimeModelRef
 checkPiProviderAuth
 classifyFailure
 classifyProviderCheckFailure

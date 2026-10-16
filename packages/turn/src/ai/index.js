@@ -15,3 +15,13 @@ export { produceNativeHandoffSummary } from "../execution/pi/handoff-producer.js
 export { createManagedNativeJournalStorage } from "../execution/pi/storage-capability.js";
 export { NativeEvidenceCapacityError } from "../engine/native-journal-storage.js";
 export { detachDurableNativeSession } from "../engine/session-lifecycle.js";
+
+/** @typedef {import("../telemetry/cost.js").ParsedModelReference} ParsedModelReference */
+/** @typedef {import("../telemetry/cost.js").NormalizedPricing} NormalizedPricing */
+/** @typedef {import("../telemetry/cost.js").PricingInputRow} PricingInputRow */
+/** @typedef {import("../telemetry/failure.js").RetryableProviderFailureInfo} RetryableProviderFailureInfo */
+/** @typedef {import("../telemetry/failure.js").FailureKind} FailureKind */
+/** @typedef {import("../contracts/model.js").RuntimeModelRef} RuntimeModelRef */
+/** @typedef {import("../contracts/runtime.js").RuntimeBridge} RuntimeBridge */
+/** @typedef {import("../contracts/runtime.js").RuntimeBridgeDescriptor} RuntimeBridgeDescriptor */
+/** @typedef {import("../contracts/model.js").RuntimeBridgeId} RuntimeBridgeId */
