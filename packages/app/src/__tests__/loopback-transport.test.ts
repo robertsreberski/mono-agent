@@ -5,6 +5,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it, vi } from "vitest";
 import { createLoopbackMcpEndpoint } from "../mcp/loopback-transport.js";
+import { createRequestScopedMcpRuntimeExtension } from "../request-scoped-mcp.js";
 
 const token = vi.hoisted(() => "11111111-1111-4111-8111-111111111111");
 vi.mock("node:crypto", async (original) => ({ ...await original<typeof import("node:crypto")>(), randomUUID: () => token }));
@@ -118,10 +119,27 @@ describe("loopback MCP transport", () => {
 
   it("releases once on failed startup even when HTTP close itself throws", async () => {
     const release = vi.fn();
-    await expect(createLoopbackMcpEndpoint({ ...options(), onRelease: release, listen: async (server) => {
+    const failedStartup = vi.fn();
+    await expect(createLoopbackMcpEndpoint({ ...options(), onRelease: release, onStartupFailure: failedStartup, listen: async (server) => {
       server.closeAllConnections = () => { throw new Error("close failed"); };
       throw new Error("listen failed");
     } })).rejects.toThrow("close failed");
     expect(release).toHaveBeenCalledOnce();
+    expect(failedStartup).not.toHaveBeenCalled();
   });
+});
+
+it("omits request tools after clean startup failure but propagates failed startup cleanup", async () => {
+  const diagnostic = vi.fn(() => { throw new Error("diagnostic failed"); });
+  const config = { serverName: "test", startingMessage: "starting", createServer: options().createServer, onUnavailable: diagnostic };
+  const omitted = await createRequestScopedMcpRuntimeExtension({ ...config, listen: async () => { throw new Error("startup failed"); } })({} as never);
+  expect(omitted.runtimeOptions?.mcpServers).toEqual({});
+  expect(diagnostic).toHaveBeenCalledOnce();
+  await omitted.cleanup?.();
+  diagnostic.mockClear();
+  await expect(createRequestScopedMcpRuntimeExtension({ ...config, listen: async (server) => {
+    server.closeAllConnections = () => { throw new Error("close failed"); };
+    throw new Error("startup failed");
+  } })({} as never)).rejects.toThrow("close failed");
+  expect(diagnostic).not.toHaveBeenCalled();
 });

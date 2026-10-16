@@ -655,9 +655,11 @@ export function createSharedMemoryRecallRuntimeExtension(
       recordAccess: (ids: readonly string[]) => service.recordAccessIdsForTurn(runId, ids),
       close: async () => {},
     };
+    let startupCleanupSucceeded = false;
     try {
       const endpoint = await createLoopbackMcpEndpoint({
         createServer: () => createMemoryRecallServer(boundStore),
+        onStartupFailure: () => { startupCleanupSucceeded = true; },
         startingResponse: { status: 503, message: "Memory recall is starting" },
         bodyLimitMessage: "MemoryRecall MCP request exceeds 1 MB.",
         unavailableTransportMessage: "MemoryRecall MCP transport is unavailable.",
@@ -671,6 +673,7 @@ export function createSharedMemoryRecallRuntimeExtension(
         cleanup: endpoint.close,
       };
     } catch (error) {
+      if (!startupCleanupSucceeded) throw error;
       service.releaseTurn(runId);
       try { options.onUnavailable?.(error); } catch { /* diagnostics are best-effort */ }
       // Automatic recall already ran. Omit only the explicit tool on startup failure.

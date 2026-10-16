@@ -1311,3 +1311,20 @@ it("releases failed-startup memory even when diagnostics throw", async () => {
   await expect(extension.cleanup()).resolves.toBeUndefined();
   released.mockRestore();
 });
+
+it("releases memory but still propagates a failed startup close instead of reporting omission", async () => {
+  const service = new MemoryRetrievalService(fakeStore());
+  const released = vi.spyOn(service, "releaseTurn");
+  const diagnostic = vi.fn();
+  try {
+    await expect(createSharedMemoryRecallRuntimeExtension(service, {
+      listen: async (server) => {
+        server.closeAllConnections = () => { throw new Error("startup close failed"); };
+        throw new Error("startup failed");
+      },
+      onUnavailable: diagnostic,
+    })({ runId: "startup-close-failure" })).rejects.toThrow("startup close failed");
+    expect(released).toHaveBeenCalledWith("startup-close-failure");
+    expect(diagnostic).not.toHaveBeenCalled();
+  } finally { released.mockRestore(); }
+});

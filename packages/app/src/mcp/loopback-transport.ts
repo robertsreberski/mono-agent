@@ -15,6 +15,8 @@ interface LoopbackMcpEndpointOptions {
   readonly listen?: (server: Server) => Promise<void>;
   /** Endpoint lifetime, not dispatch lifetime. Also runs after failed startup/close. */
   readonly onRelease?: () => void | Promise<void>;
+  /** Runs only after failed-startup cleanup succeeds, before propagating its error. */
+  readonly onStartupFailure?: () => void;
 }
 
 /** Capability-path loopback dispatch; callers own tool, runtime-spec and failure policy. */
@@ -89,6 +91,7 @@ export async function createLoopbackMcpEndpoint(options: LoopbackMcpEndpointOpti
     return { url: `http://127.0.0.1:${address.port}${path}`, close };
   } catch (error) {
     await close();
+    options.onStartupFailure?.();
     throw error;
   }
 }

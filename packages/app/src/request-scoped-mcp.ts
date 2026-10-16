@@ -27,9 +27,11 @@ interface RequestScopedMcpEndpointOptions {
 /** Per-request tool adapter; startup failures omit only explicit tools. */
 export function createRequestScopedMcpRuntimeExtension(options: RequestScopedMcpEndpointOptions): RuntimeOptionsExtension {
   return async (input) => {
+    let startupCleanupSucceeded = false;
     try {
       const endpoint = await createLoopbackMcpEndpoint({
         createServer: () => options.createServer(input),
+        onStartupFailure: () => { startupCleanupSucceeded = true; },
         startingResponse: { status: 503, message: options.startingMessage },
         bodyLimitMessage: "Request-scoped MCP body exceeds 1 MB.",
         unavailableTransportMessage: `${options.serverName} MCP transport is unavailable.`,
@@ -41,6 +43,7 @@ export function createRequestScopedMcpRuntimeExtension(options: RequestScopedMcp
         cleanup: endpoint.close,
       };
     } catch (error) {
+      if (!startupCleanupSucceeded) throw error;
       try { options.onUnavailable?.(error); } catch { /* diagnostics are best-effort */ }
       return { runtimeOptions: { mcpServers: {} }, cleanup: async () => {} };
     }
