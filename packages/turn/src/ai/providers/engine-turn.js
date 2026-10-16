@@ -1386,7 +1386,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
 export const engineTurnAdapter = {
   id: "pi",
   kind: "pi",
-  capabilities: runtimeCapabilities("pi"),
+  capabilities: runtimeCapabilities(),
   supports: (ref) => Boolean(ref?.provider && ref?.model),
   execute: generateEngineTurnResponse,
   prepareNativeDispatch: preparePiNativeDispatch,

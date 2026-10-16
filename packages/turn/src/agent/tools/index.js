@@ -20,14 +20,9 @@ export {
 export { execToolImpl, execToolRun } from "./exec.js";
 export { webFetchToolImpl, performWebFetch } from "./web-fetch.js";
 export { webSearchToolImpl, performWebSearch } from "./web-search.js";
-export {
-  DEFAULT_CODEX_SEARCH_MODEL,
-  inspectCodexSubscriptionSearch,
-  searchCodexSubscription,
-} from "./codex-subscription-search.js";
+export { inspectCodexSubscriptionSearch } from "./codex-subscription-search.js";
 export { inspectParallelWeb } from "./parallel-mcp.js";
 export { inspectLocalWeb } from "./local/config.js";
-export { createWebToolController } from "./web-controller.js";
 
 export { isPathAllowed, isWorkdirAllowed } from "./shared/path-resolver.js";
 export { resolveRgPath } from "./shared/ripgrep.js";

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createCodexAppServerClient } from "../../ai/providers/codex/app-server-client.js";
 import { boundWebSearchSnippet, sliceWellFormedCodePoints, toWellFormedText } from "./web-search-output.js";
 
-export const DEFAULT_CODEX_SEARCH_MODEL = "gpt-5.6-luna";
+const DEFAULT_CODEX_SEARCH_MODEL = "gpt-5.6-luna";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const IDLE_CLOSE_MS = 30_000;

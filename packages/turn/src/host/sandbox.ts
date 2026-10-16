@@ -32,7 +32,7 @@ export type SandboxFallback = (typeof SANDBOX_FALLBACKS)[number];
 
 export type SandboxEngineId = string;
 
-export const DEFAULT_DENY_WRITE = [".env", ".env.*", ".git/config", ".git/hooks/**"] as const;
+const DEFAULT_DENY_WRITE = [".env", ".env.*", ".git/config", ".git/hooks/**"] as const;
 
 // SRT read policy is deny-then-allow. Deny `/` and re-open only the configured
 // roots plus this reviewed set of OS/runtime paths needed to start ordinary
@@ -86,12 +86,12 @@ const SRT_IMMUTABLE_RUNTIME_READ_ROOTS = [
 const runtimeReadExpansionCache = new Map<string, Promise<readonly string[]>>();
 const MAX_RUNTIME_READ_EXPANSIONS = 64;
 
-export interface SandboxNetworkPolicyInput {
+interface SandboxNetworkPolicyInput {
   readonly mode?: SandboxNetworkMode;
   readonly allowlist?: readonly string[];
 }
 
-export interface SandboxPolicyInput {
+interface SandboxPolicyInput {
   readonly mode?: SandboxMode;
   readonly engine?: SandboxEngineId;
   readonly root?: string;
@@ -124,7 +124,7 @@ export interface SandboxPolicy {
   readonly unsafeAllowHostProcess: boolean;
 }
 
-export type SandboxErrorCode =
+type SandboxErrorCode =
   | "invalid_sandbox_policy"
   | "sandbox_unavailable";
 
@@ -176,17 +176,17 @@ export interface SandboxEffectiveState {
   readonly unsafeAllowHostProcess: boolean;
 }
 
-export interface PrepareSandboxedCommandInput {
+interface PrepareSandboxedCommandInput {
   readonly policy?: SandboxPolicy;
   readonly command: SandboxCommandSpec;
   readonly engine?: SandboxEngine;
 }
 
-export interface SandboxPolicyRuntimeOptions {
+interface SandboxPolicyRuntimeOptions {
   readonly sandboxPolicy: SandboxPolicy;
 }
 
-export interface SrtNetworkSettings {
+interface SrtNetworkSettings {
   readonly allowedDomains: readonly string[];
   readonly deniedDomains: readonly string[];
   readonly strictAllowlist: true;
@@ -194,14 +194,14 @@ export interface SrtNetworkSettings {
   readonly allowAllUnixSockets: boolean;
 }
 
-export interface SrtFilesystemSettings {
+interface SrtFilesystemSettings {
   readonly denyRead: readonly string[];
   readonly allowRead: readonly string[];
   readonly allowWrite: readonly string[];
   readonly denyWrite: readonly string[];
 }
 
-export interface SrtSettings {
+interface SrtSettings {
   /**
    * Absent under all-network mode: SRT starts its proxy and domain filter
    * whenever `network.allowedDomains` is defined, so unrestricted networking
@@ -211,7 +211,7 @@ export interface SrtSettings {
   readonly filesystem: SrtFilesystemSettings;
 }
 
-export interface SrtSandboxEngineOptions extends ResolveSrtLaunchOptions {
+interface SrtSandboxEngineOptions extends ResolveSrtLaunchOptions {
   /**
    * Host-owned runtime roots that must remain readable after request-policy
    * intersection. These roots are always denied for writes and are not widened
@@ -262,10 +262,6 @@ export function failClosedSandboxPolicy(input: Omit<SandboxPolicyInput, "mode" |
     unsafeAllowHostProcess: false,
     network: input.network ?? { mode: "none" },
   });
-}
-
-export function sandboxRequired(policy: SandboxPolicy): boolean {
-  return policy.mode !== "off" && policy.fallback === "fail-closed";
 }
 
 export function sandboxPolicyToRuntimeOptions(policy: SandboxPolicy): SandboxPolicyRuntimeOptions {
@@ -1512,4 +1508,4 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export { MANAGED_SRT_TREE_SHA256, managedSrtInstallRoot } from "./sandbox-managed.js";
+export { MANAGED_SRT_TREE_SHA256 } from "./sandbox-managed.js";

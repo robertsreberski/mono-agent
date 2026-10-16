@@ -18,8 +18,8 @@ agent turn:
 
 Typed hosts use `@mono-agent/turn/host`; low-level consumers can still
 inject their own sandbox through `createRuntime()` / `createRouterRuntime()`.
-The package depends on contracts for host contracts/errors and engine for
-native execution/storage. `src/host/` compiles from TypeScript to `dist/host`,
+The package depends on contracts for host contracts/errors and owns its isolated
+`src/engine` for native execution/storage. `src/host/` compiles from TypeScript to `dist/host`,
 while existing JavaScript ships from `src` with generated declarations in `types`.
 The host entrypoints split construction, config validation, contracts and sandbox
 support without adding a forwarding package. Config remains a separate package.
@@ -172,10 +172,8 @@ sequenceDiagram
   Host->>Host: validate/parse host-specific contract
 ```
 
-Claude SDK, Claude CLI, and Pi SDK can return provider-captured output as
-`structuredResult`. Codex app-server receives the schema but returns its output
-as text for the host to parse; direct OpenCode rejects the option. The package
-does not validate any captured output against a host domain schema. Hosts own
+The Pi bridge captures structured output as `structuredResult`. The package
+does not validate captured output against a host domain schema. Hosts own
 that validation and all state-machine side effects.
 
 ## Main Subsystems
@@ -191,7 +189,7 @@ flowchart TB
   Public["Public API<br/>src/index.js"] --> RuntimeFactory["runtime.js<br/>createRuntime()"]
   Public --> Router["ai/runtime/router.js<br/>createRouterRuntime()"]
   Public --> AIExports["ai/index.js<br/>model refs, registry, observers"]
-  Public --> AgentExports["agent/index.js<br/>allowlists, compaction,<br/>approvals, transcript"]
+  Public --> AgentExports["agent/index.js<br/>compaction policy"]
 
   RuntimeFactory --> AdapterModule["ai/providers/engine-turn.js"]
   AdapterModule --> Providers["engine-turn/engine-adapter.js"]

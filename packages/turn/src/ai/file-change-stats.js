@@ -182,32 +182,3 @@ export function fileChangeSummary(changes) {
     unavailable_count: stats.filter((item) => item.unavailable_reason).length,
   };
 }
-
-function snapshotKey(id, path) {
-  return `${id}:${path}`;
-}
-
-export function createFileChangePayload(raw, { cwd = process.cwd(), snapshots = new Map() } = {}) {
-  const item = raw?.item || {};
-  const id = item.id || "file_change";
-  const changes = (Array.isArray(item.changes) ? item.changes : []).map((change) => {
-    const resolvedPath = change?.path ? resolve(cwd, change.path) : "";
-    if (!resolvedPath) return change;
-    if (raw.type === "item.started") {
-      const before = readFileChangeSnapshot(resolvedPath);
-      snapshots.set(snapshotKey(id, resolvedPath), before);
-      return change;
-    }
-    const before = snapshots.get(snapshotKey(id, resolvedPath)) || null;
-    const after = readFileChangeSnapshot(resolvedPath);
-    snapshots.delete(snapshotKey(id, resolvedPath));
-    const lineStats = statsForCompletedChange(change, before, after);
-    return lineStats ? { ...change, line_stats: lineStats } : change;
-  });
-  const summary = fileChangeSummary(changes) || item.summary;
-  return {
-    changes,
-    status: item.status || (raw.type === "item.completed" ? "completed" : "in_progress"),
-    ...(summary ? { summary } : {}),
-  };
-}

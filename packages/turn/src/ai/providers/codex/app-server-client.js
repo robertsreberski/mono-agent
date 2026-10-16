@@ -6,8 +6,8 @@ const CODEX_DIAGNOSTIC_BYTES = 8 * 1024;
 const CODEX_STDERR_TAIL_BYTES = 8 * 1024;
 const CODEX_SHUTDOWN_GRACE_MS = 1_000;
 const CODEX_KILL_GRACE_MS = 1_000;
-export const CODEX_APP_SERVER_ARGS = ["app-server", "--listen", "stdio://"];
-export const CODEX_APP_SERVER_ISOLATED_ARGS = [
+const CODEX_APP_SERVER_ARGS = ["app-server", "--listen", "stdio://"];
+const CODEX_APP_SERVER_ISOLATED_ARGS = [
   ...CODEX_APP_SERVER_ARGS,
   "-c",
   "project_doc_max_bytes=0",
@@ -18,7 +18,7 @@ const SENSITIVE_HEADER_RE = /((?:(?:proxy-)?authorization|cookie|set-cookie)\s*[
 const SENSITIVE_JSON_LINE_RE = /("(?:api[_-]?key|private[_-]?key|access[_-]?key|authorization|authentication|auth|bearer|cookie|credential|password|signature|sig|secret|token)"\s*:\s*)[^\r\n]*/giu;
 const SENSITIVE_ESCAPED_JSON_LINE_RE = /(\\"(?:api[_-]?key|private[_-]?key|access[_-]?key|authorization|authentication|auth|bearer|cookie|credential|password|signature|sig|secret|token)\\"\s*:\s*)[^\r\n]*/giu;
 
-export function normalizedSensitiveName(name) {
+function normalizedSensitiveName(name) {
   return String(name || "")
     .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
     .replace(/[^A-Za-z0-9]+/gu, "_")
@@ -26,7 +26,7 @@ export function normalizedSensitiveName(name) {
     .toLowerCase();
 }
 
-export function isSensitivePayloadField(name) {
+function isSensitivePayloadField(name) {
   const normalized = normalizedSensitiveName(name);
   return /(?:^|_)(?:token|secret|password|authorization|api_key|apikey|credential|cookie|auth|authentication|bearer|private_key|access_key|signature|sig)$/u.test(normalized);
 }
@@ -41,14 +41,14 @@ function boundedTimeout(value, fallback) {
   return Number.isFinite(parsed) && parsed >= 1 ? Math.trunc(parsed) : fallback;
 }
 
-export function sensitiveEnvironmentValues(env) {
+function sensitiveEnvironmentValues(env) {
   return [...new Set(Object.entries(env || {})
     .filter(([key, value]) => isSensitiveEnvironmentKey(key) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value))]
     .sort((left, right) => right.length - left.length);
 }
 
-export function addOpaqueSensitiveValue(target, value, { splitCredentials = false } = {}) {
+function addOpaqueSensitiveValue(target, value, { splitCredentials = false } = {}) {
   if (typeof value !== "string" || value.length < 8) return;
   target.add(value);
   if (!splitCredentials) return;
@@ -90,7 +90,7 @@ function leadingSensitiveOverlap(text, sensitiveValue) {
   return matched >= 8 ? matched : 0;
 }
 
-export function redactCodexDiagnostic(text, sensitiveValues, truncatedStart = false) {
+function redactCodexDiagnostic(text, sensitiveValues, truncatedStart = false) {
   let redacted = String(text || "");
   for (const value of sensitiveValues) {
     if (truncatedStart) {
@@ -108,7 +108,7 @@ export function redactCodexDiagnostic(text, sensitiveValues, truncatedStart = fa
     .replace(SENSITIVE_ASSIGNMENT_RE, "$1[REDACTED]");
 }
 
-export function utf8Head(text, limit) {
+function utf8Head(text, limit) {
   if (limit <= 0) return "";
   const bytes = Buffer.from(String(text || ""));
   if (bytes.length <= limit) return bytes.toString("utf8");
@@ -145,7 +145,7 @@ function safeDiagnosticString(value) {
   }
 }
 
-export function sanitizeCodexDiagnostic(value, sensitiveValues, limit = CODEX_DIAGNOSTIC_BYTES) {
+function sanitizeCodexDiagnostic(value, sensitiveValues, limit = CODEX_DIAGNOSTIC_BYTES) {
   return boundCodexDiagnostic(
     redactCodexDiagnostic(safeDiagnosticString(value), sensitiveValues),
     limit,
@@ -168,7 +168,7 @@ function boundedCodexDiagnosticPayload(value, sensitiveValues, limit) {
   return sanitizeCodexDiagnostic(value, sensitiveValues, limit);
 }
 
-export function redactCodexPayload(value, sensitiveValues, seen = new WeakSet(), depth = 0) {
+function redactCodexPayload(value, sensitiveValues, seen = new WeakSet(), depth = 0) {
   if (typeof value === "string") return redactCodexDiagnostic(value, sensitiveValues);
   if (value === null || typeof value !== "object") return value;
   if (value instanceof Error) {
@@ -199,7 +199,7 @@ export function redactCodexPayload(value, sensitiveValues, seen = new WeakSet(),
   return result;
 }
 
-export function sanitizeCodexResponseError(error, sensitiveValues) {
+function sanitizeCodexResponseError(error, sensitiveValues) {
   const sanitized = redactCodexPayload(error, sensitiveValues);
   let serialized;
   try {
@@ -231,7 +231,7 @@ const CODEX_DIAGNOSTIC_NOTIFICATION_METHODS = new Set([
   "guardianWarning",
 ]);
 
-export function sanitizeCodexNotification(notification, sensitiveValues) {
+function sanitizeCodexNotification(notification, sensitiveValues) {
   const safe = redactCodexPayload(notification, sensitiveValues);
   if (!safe || typeof safe !== "object") return safe;
   if (CODEX_DIAGNOSTIC_NOTIFICATION_METHODS.has(safe.method)) {
@@ -312,7 +312,7 @@ function createCodexStderrTail(sensitiveValues, limit = CODEX_STDERR_TAIL_BYTES)
   };
 }
 
-export function codexErrorMessage(error) {
+function codexErrorMessage(error) {
   if (!error) return "Codex app-server error";
   if (typeof error === "string") return error;
   const data = error.data || error.error || {};
@@ -323,7 +323,7 @@ export function codexErrorMessage(error) {
   return error.message || data.message || safeDiagnosticString(error);
 }
 
-export function isCodexRequestTimeout(error, method = null) {
+function isCodexRequestTimeout(error, method = null) {
   return error?.code === "CODEX_APP_SERVER_REQUEST_TIMEOUT"
     && (!method || error.method === method);
 }

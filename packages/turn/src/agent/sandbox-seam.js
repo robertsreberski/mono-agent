@@ -238,5 +238,3 @@ export const passthroughSandbox = {
   prepareCommand,
   networkAllowsUrl,
 };
-
-export { SandboxUnavailableError, SANDBOX_UNAVAILABLE_CODE };

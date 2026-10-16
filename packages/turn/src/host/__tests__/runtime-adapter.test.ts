@@ -1,9 +1,10 @@
+import { listMonoRuntimeBackends, runtimeBackendForModel } from "../runtime-adapter.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { createMonoRuntime, describeMonoRuntimeSupport, listMonoRuntimeBackends, monoRuntimeSupportsLiveInput, monoRuntimeSupportsMcpApps, monoRuntimeSupportsSessionResume, runtimeBackendForModel } from "@mono-agent/turn/host";
+import { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsMcpApps, monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 

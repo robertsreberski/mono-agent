@@ -1,12 +1,9 @@
-// Runtime contracts. These are JSDoc-only; the codebase is JS
-// (no TypeScript), so the types document the bridge surface that active
-// runtimes implement through src/ai/runtime/registry.js.
+// Runtime contracts, authored as JSDoc alongside the JavaScript runtime.
+// The package also owns the TypeScript host integration in src/host.
 //
-// `tsc -p tsconfig.types.json` (allowJs + declaration + emitDeclarationOnly)
-// compiles these typedefs into packages/turn/types/ai/types.d.ts;
-// downstream TS consumers (currently the agent-runtime/host entrypoint) import them
-// via `import('./types.js').X` JSDoc syntax from the other seam files, or
-// transitively through the package root's generated declarations.
+// `tsc -p tsconfig.types.json` emits these declarations into types/ai/types.d.ts.
+// JavaScript modules reference them with import typedefs; TypeScript hosts use
+// the generated declarations through the package entrypoints.
 //
 /**
  * @typedef {"pi"} RuntimeSdkId
@@ -449,7 +446,7 @@
  * A fully loaded bridge (registry.js's resolveEngineTurnAdapter result): the
  * executable provider implementation. Unlike RuntimeBridgeDescriptor,
  * `capabilities` here is the bridge module's own static value (computed once
- * at module load, e.g. `runtimeCapabilities("pi")`), not a callable.
+ * at module load, e.g. `runtimeCapabilities()`), not a callable.
  * @property {RuntimeBridgeId} id
  * @property {(ref: RuntimeModelRef, options?: Object) => boolean} supports
  * @property {RuntimeCapabilities} capabilities
@@ -595,5 +592,3 @@
  * @property {(providerSessionId: string) => Promise<boolean>} invalidateSession
  * @property {() => Promise<void>} disposeAllSessions
  */
-
-export const PROVIDER_KIND_VALUES = ["claude", "pi", "codex", "opencode", "acp"];

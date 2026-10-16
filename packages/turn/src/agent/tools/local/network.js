@@ -54,7 +54,7 @@ export async function localRequest(url, options, init = {}, maxBytes = 2 * 1024 
   return result;
 }
 
-export async function readLocalBytes(response, maxBytes, signal) {
+async function readLocalBytes(response, maxBytes, signal) {
   if (Number(response.headers.get("content-length")) > maxBytes) {
     await response.body?.cancel();
     throw Object.assign(new Error("Local response exceeded byte limit."), { code: "response_too_large" });

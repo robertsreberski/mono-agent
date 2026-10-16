@@ -1,7 +1,9 @@
+import { isPlainObject } from "../runtime-helpers.js";
+import { listMonoRuntimeBackends } from "../runtime-adapter.js";
 import { describe, expect, it } from "vitest";
 
-import { isPlainObject, isValidMcpServerName, parseMcpServers } from "@mono-agent/turn/host/config";
-import { listMonoRuntimeBackends } from "@mono-agent/turn/host";
+import { isValidMcpServerName, parseMcpServers } from "@mono-agent/turn/host/config";
+
 
 describe("isPlainObject", () => {
   it("accepts records and rejects arrays/null/primitives", () => {

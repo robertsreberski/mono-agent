@@ -1,17 +1,17 @@
 // Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
 // Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
-export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
 <summary>
 `;
-export const COMPACTION_SUMMARY_SUFFIX = `
+const COMPACTION_SUMMARY_SUFFIX = `
 </summary>`;
-export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
+const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
 
 <summary>
 `;
-export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
-export function bashExecutionToText(msg) {
+const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+function bashExecutionToText(msg) {
     let text = `Ran \`${msg.command}\`\n`;
     if (msg.output) {
         text += `\`\`\`\n${msg.output}\n\`\`\``;
@@ -46,16 +46,7 @@ export function createCompactionSummaryMessage(summary, tokensBefore, timestamp)
         timestamp: typeof timestamp === "number" ? timestamp : new Date(timestamp).getTime(),
     };
 }
-export function createCustomMessage(customType, content, display, details, timestamp) {
-    return {
-        role: "custom",
-        customType,
-        content,
-        display,
-        details,
-        timestamp: typeof timestamp === "number" ? timestamp : new Date(timestamp).getTime(),
-    };
-}
+
 export function convertToLlm(messages) {
     return messages
         .map((m) => {

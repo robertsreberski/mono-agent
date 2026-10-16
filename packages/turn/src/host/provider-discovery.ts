@@ -17,7 +17,7 @@ export interface DiscoveredProvider extends LocalProviderDefinition {
   readonly models: readonly LocalProviderModelDefinition[];
 }
 
-export interface DiscoverLocalProvidersInput {
+interface DiscoverLocalProvidersInput {
   readonly configured?: readonly ProviderDefinition[];
   readonly fetch?: typeof fetch;
   readonly timeoutMs?: number;

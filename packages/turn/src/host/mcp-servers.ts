@@ -5,14 +5,14 @@ import { isPlainObject, isValidMcpServerName } from "./runtime-helpers.js";
  * projector that maps these onto its own constructor shape, so the
  * name-collision `translateMcpServers` variants converge on one parser.
  */
-export type NormalizedMcpTransport = "http" | "sse" | "stdio";
+type NormalizedMcpTransport = "http" | "sse" | "stdio";
 
 /**
  * One parsed MCP server entry. `transport` is decided up front from the raw
  * record; the projectors switch on it instead of re-classifying. Only the fields
  * relevant to the chosen transport are populated.
  */
-export interface NormalizedMcpServer {
+interface NormalizedMcpServer {
   readonly name: string;
   readonly transport: NormalizedMcpTransport;
   /** Present for http/sse transports. */

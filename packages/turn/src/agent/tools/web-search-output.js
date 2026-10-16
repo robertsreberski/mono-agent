@@ -1,6 +1,6 @@
 // @ts-check
 
-export const WEB_SEARCH_TITLE_MAX_CHARS = 500;
+const WEB_SEARCH_TITLE_MAX_CHARS = 500;
 export const WEB_SEARCH_SNIPPET_MAX_CHARS = 4_000;
 // Bounds the structured result entries JSON (UTF-8 bytes of JSON.stringify(entries)).
 // Envelope framing (summary, coverage, next actions) stays outside this allocation.

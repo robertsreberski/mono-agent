@@ -176,8 +176,8 @@ function piCatalogPricing(parsed) {
 }
 
 // `resolveCustomPricing(parsed) -> NormalizedPricing | null` lets a host plug
-// in user-defined pricing tables. Hosts query custom model/provider stores
-// in src/core/custom-pricing.js and passes the closure in via `generateResponse`.
+// in user-defined pricing tables. A host can query its own model/provider store
+// and pass the resolver to `resolvePricing({ model, resolveCustomPricing })`.
 // The pricing helpers below (`normalizePricing`, `zeroPricing`, `unknownPricing`,
 // `pricingHasRates`, `isPrivateHost`, `parseReference`) are exported so hosts
 // can build their own resolvers without re-implementing the row-shape conversion.

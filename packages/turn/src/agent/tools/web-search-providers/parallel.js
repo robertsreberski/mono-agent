@@ -30,7 +30,7 @@ export const parallelProvider = {
   },
 };
 
-export function parallelSearchObjective(query, options) {
+function parallelSearchObjective(query, options) {
   return [query, options.language ? `Prefer sources in ${options.language}.` : "",
     options.country ? `Prefer search results localized for country ${options.country}.` : "",
     options.timeRange ? `Prefer sources published within the last ${options.timeRange}.` : "",

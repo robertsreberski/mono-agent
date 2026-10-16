@@ -1,3 +1,4 @@
+import { managedSrtInstallRoot } from "../sandbox-managed.js";
 import { execFile } from "node:child_process";
 import { existsSync, rmSync, symlinkSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -19,7 +20,7 @@ import {
   createToolContext,
 } from "@mono-agent/turn/agent/tools/shared/tool-context.js";
 
-import { SandboxUnavailableError, managedSrtInstallRoot, createSandboxPolicy, createSrtSandboxEngine, describeSandboxEffectiveState, failClosedSandboxPolicy, mergeSandboxPolicies, networkPolicyAllowsUrl, prepareSandboxedCommand, protectSandboxRoots, resolveSandboxEffectiveState, sandboxEffectiveStateWarning, sandboxPolicyToRuntimeOptions, sandboxRequired, srtSettingsForPolicy } from "@mono-agent/turn/host/sandbox";
+import { SandboxUnavailableError, createSandboxPolicy, createSrtSandboxEngine, describeSandboxEffectiveState, failClosedSandboxPolicy, mergeSandboxPolicies, networkPolicyAllowsUrl, prepareSandboxedCommand, protectSandboxRoots, resolveSandboxEffectiveState, sandboxEffectiveStateWarning, sandboxPolicyToRuntimeOptions, srtSettingsForPolicy } from "@mono-agent/turn/host/sandbox";
 import { monoSandboxImpl } from "../sandbox-impl.js";
 
 const tempDirs: string[] = [];
@@ -74,7 +75,6 @@ describe("sandbox policy", () => {
       readableRoots: ["/repo/workspace"],
       writableRoots: ["/repo/workspace"],
     });
-    expect(sandboxRequired(policy)).toBe(true);
 
     expect(createSandboxPolicy({ root: "/repo/workspace" })).toMatchObject({
       fallback: "fail-closed",
@@ -99,7 +99,6 @@ describe("sandbox policy", () => {
       fallback: "unsafe-host-process",
       unsafeAllowHostProcess: true,
     });
-    expect(sandboxRequired(policy)).toBe(false);
   });
 
   it("serializes policy into runtime options without dropping the sandbox boundary", () => {

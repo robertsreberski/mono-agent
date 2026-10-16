@@ -90,24 +90,24 @@ export interface RuntimeSubagentIdentity {
 }
 
 /** Explicitly requested leg of one delegation's route, as `<provider>:<model>`. */
-export interface RuntimeSubagentRouteSelection {
+interface RuntimeSubagentRouteSelection {
   readonly model?: string;
   readonly effort?: string;
 }
 
 /** A route leg the provider actually ran on, with its effective effort when reported. */
-export interface RuntimeSubagentRouteExecution extends RuntimeSubagentRouteSelection {
+interface RuntimeSubagentRouteExecution extends RuntimeSubagentRouteSelection {
   readonly effectiveEffort?: string;
 }
 
-export interface RuntimeSubagentRouteTransition {
+interface RuntimeSubagentRouteTransition {
   readonly from: string;
   readonly to: string;
   readonly attemptIndex?: number;
   readonly reason?: string;
 }
 
-export interface RuntimeSubagentRouteRetry {
+interface RuntimeSubagentRouteRetry {
   readonly model?: string;
   readonly retryIndex?: number;
   readonly attempts?: number;
@@ -312,7 +312,7 @@ export interface RuntimeLiveInputUncertainty extends RuntimeLiveInputEvidence {
 }
 
 /** Recognized synchronous host-settlement confirmation values. */
-export type RuntimeLiveInputCallbackDisposition = "recorded" | "ignored";
+type RuntimeLiveInputCallbackDisposition = "recorded" | "ignored";
 
 /** One live follow-up delivered to a provider bridge. */
 export interface RuntimeLiveInputMessage {
@@ -414,7 +414,7 @@ export interface RuntimeSessionTurnReconciliationRequest {
   readonly expectedInputs: readonly { readonly id: string; readonly requestDigest: string; readonly placement: "initial" | "live" }[];
 }
 
-export interface RuntimeSessionTurnResultSeal {
+interface RuntimeSessionTurnResultSeal {
   readonly text: string | null;
   readonly error: string | null;
   readonly failureKind: string | null;
@@ -663,7 +663,7 @@ export interface DurableSessionSalvage {
 }
 
 import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeJournalPresence, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeHandoffProposal, RuntimeNativePreparationStorage } from "#kernel/native-journal-types";
-export type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeJournalPresence, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeHandoffProposal, RuntimeNativePreparationStorage } from "#kernel/native-journal-types";
+export type { RuntimeNativeJournalAuthority, RuntimeNativeJournalDeletion, RuntimeNativeJournalDescriptor, RuntimeNativeJournalRef, RuntimeNativeEpochContext, RuntimeNativeJournalStorage, RuntimeNativeEvidenceView, RuntimeHandoffBudget, RuntimePreparedHandoff, RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffFit, RuntimeHandoffProducerResult, RuntimeHandoffOptions, RuntimeNativePreparationStorage } from "#kernel/native-journal-types";
 
 /** Actual resolved native request, never credentials/auth headers. */
 export interface RuntimeNativeDispatchSnapshot {
@@ -792,18 +792,14 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
 /** Source-level built-in web search provider names; arrays are ordered fallback chains. */
 type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "local";
 
-export type { RuntimeAdapterErrorCode, RuntimeAdapterErrorDetails } from "./model-reference.js";
+export type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution, MonoRuntimeFallbackChainEntry } from "./runtime-adapter.js";
 
-export type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution, MonoRuntimeAttemptResolver, MonoRuntimeFallbackChainEntry, MonoRuntimeRetryPolicy } from "./runtime-adapter.js";
+export type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "./process-jobs.js";
 
-export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
+export type { PreparedSandboxCommand, SandboxCommandSpec, SandboxEffectiveState, SandboxEngine, SandboxFallback, SandboxMode, SandboxNetworkMode, SandboxPolicy } from "./sandbox.js";
 
-export type { ProcessJobLaunchOptions, ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "./process-jobs.js";
+export type { DiscoveredLocalModel, LocalProviderDefinition, LocalProviderModelDefinition, LocalProviderRuntimeOptions, ModelEffortLevels, ProviderDefinition } from "./local-providers.js";
 
-export type { PreparedSandboxCommand, PrepareSandboxedCommandInput, SandboxCommandSpec, SandboxEffectiveMode, SandboxEffectiveState, SandboxEngine, SandboxEngineId, SandboxErrorCode, SandboxFallback, SandboxMode, SandboxNetworkMode, SandboxNetworkPolicy, SandboxNetworkPolicyInput, SandboxPolicy, SandboxPolicyInput, SandboxPolicyRuntimeOptions, SrtFilesystemSettings, SrtNetworkSettings, SrtSandboxEngineOptions, SrtSettings } from "./sandbox.js";
+export type { DiscoveredProvider } from "./provider-discovery.js";
 
-export type { AgentRuntimeCustomModel, AgentRuntimeCustomProvider, DiscoverLocalProviderModelsOptions, DiscoveredLocalModel, LocalProviderCapabilities, LocalProviderDefinition, LocalProviderModelDefinition, LocalProviderPricing, LocalProviderRuntimeOptions, LocalProviderType, ModelEffortLevels, ProviderDefinition } from "./local-providers.js";
-
-export type { DiscoveredProvider, DiscoverLocalProvidersInput } from "./provider-discovery.js";
-
-export type { OwnedForegroundProcessRequest, OwnedForegroundProcessController, OwnedForegroundProcesses } from "./owned-foreground-processes.js";
+export type { OwnedForegroundProcessRequest, OwnedForegroundProcesses } from "./owned-foreground-processes.js";

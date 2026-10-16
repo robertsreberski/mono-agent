@@ -227,7 +227,7 @@ async function safePersist(sink, event) {
 }
 
 /** @param {any} persisted @param {string|undefined} terminalStateValue */
-export function historyMetadata(persisted, terminalStateValue) {
+function historyMetadata(persisted, terminalStateValue) {
   const metadata = {
     ...(typeof persisted?.recordId === "string" ? { recordId: persisted.recordId } : {}),
     ...(Number.isFinite(Number(persisted?.sequence)) ? { sequence: Number(persisted.sequence) } : {}),

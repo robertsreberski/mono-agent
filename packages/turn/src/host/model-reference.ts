@@ -1,13 +1,13 @@
 import { parseRuntimeModelReference } from "@mono-agent/turn/ai/runtime/model-refs.js";
 import type { RuntimeModelReference } from "./types.js";
 
-export type RuntimeAdapterErrorCode =
+type RuntimeAdapterErrorCode =
   | "invalid_model_reference"
   | "runtime_backend_unavailable"
   | "invalid_runtime_options"
   | "invalid_local_provider";
 
-export interface RuntimeAdapterErrorDetails {
+interface RuntimeAdapterErrorDetails {
   readonly code?: RuntimeAdapterErrorCode;
   readonly [key: string]: unknown;
 }

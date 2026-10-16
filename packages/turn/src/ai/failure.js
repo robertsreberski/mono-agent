@@ -104,7 +104,7 @@ const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?o
 // Includes streams that closed before their terminal event (Codex websocket
 // "stream closed before response.completed", Anthropic "stream ended before
 // message_stop"): the transport dropped mid-response, not a request fault.
-export const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|(?:websocket )?stream (?:ended|closed) before|socket hang up|und_err_socket|econnreset|premature close)\b/i;
+const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|(?:websocket )?stream (?:ended|closed) before|socket hang up|und_err_socket|econnreset|premature close)\b/i;
 
 /**
  * @param {string} text

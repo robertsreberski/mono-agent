@@ -332,7 +332,7 @@ export async function resolveSession(runState, {
  * @param {{durableRepo: any}} params
  */
 /** Detach opted-in state without rewind/deletion, even after poison or cancellation. */
-export async function preserveNativeTurnEvidence(runState) {
+async function preserveNativeTurnEvidence(runState) {
   try { await runState.session?.close(); }
   catch (error) { throw isJournalStorageError(error) ? error : new JournalStorageError(error); }
   finally {

@@ -118,7 +118,7 @@ export interface DiscoveredLocalModel {
   readonly embeddingOnly?: boolean;
 }
 
-export interface DiscoverLocalProviderModelsOptions {
+interface DiscoverLocalProviderModelsOptions {
   readonly fetch?: typeof fetch;
   readonly timeoutMs?: number;
 }
@@ -567,7 +567,7 @@ function validateLocalProviderModelDefinition(model: LocalProviderModelDefinitio
   };
 }
 
-export function validateProviderBaseUrl(
+function validateProviderBaseUrl(
   baseUrl: string,
   options: { readonly trustPublicUrl: boolean },
 ): void {

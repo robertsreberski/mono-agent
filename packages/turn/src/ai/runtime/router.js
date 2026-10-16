@@ -1152,7 +1152,7 @@ function entrySatisfiesRequirements(entry, options) {
   if (Object.keys(effectiveRequires).length === 0) return true;
   let caps;
   try {
-    caps = runtimeCapabilities(entry.model);
+    caps = runtimeCapabilities();
   } catch {
     return false;
   }
@@ -1172,7 +1172,7 @@ function entrySatisfiesRequirements(entry, options) {
  */
 function entrySupportsSessionResume(entry) {
   try {
-    return runtimeCapabilities(entry.model).supports_session_resume === true;
+    return runtimeCapabilities().supports_session_resume === true;
   } catch {
     return true;
   }

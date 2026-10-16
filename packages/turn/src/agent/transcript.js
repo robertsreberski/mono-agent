@@ -231,12 +231,3 @@ export function renderResumeSnapshot(snapshot) {
   lines.push("</resume_context>");
   return lines.join("\n");
 }
-
-export const RESUME_SNAPSHOT_DEFAULTS = {
-  maxTurns: DEFAULT_MAX_TURNS,
-  verbatimTurns: DEFAULT_VERBATIM_TURNS,
-  maxChars: DEFAULT_MAX_CHARS,
-  toolResultChars: DEFAULT_TOOL_RESULT_CHARS,
-  assistantTextChars: DEFAULT_ASSISTANT_TEXT_CHARS,
-  turnSummaryChars: DEFAULT_TURN_SUMMARY_CHARS,
-};
