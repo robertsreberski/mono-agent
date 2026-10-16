@@ -14,8 +14,8 @@ import {
   webFetchToolImpl,
   webSearchToolImpl,
   writeToolImpl,
-} from "@mono-agent/turn/agent/tools/index.js";
-import { createToolContext } from "@mono-agent/turn/agent/tools/shared/tool-context.js";
+} from "@mono-agent/turn/tools";
+import { createToolContext } from "@mono-agent/turn/tools";
 import { describe, expect, it } from "vitest";
 
 // This function is deliberately never executed. Its body is a downstream

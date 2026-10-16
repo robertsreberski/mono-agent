@@ -3,7 +3,7 @@ import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "./effec
 import { assertComputerUseServerNameAvailable, COMPUTER_USE_SERVER_NAME, computerUseSection } from "./computer-use.js";
 import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
-import { inspectLocalWeb, inspectParallelWeb } from "@mono-agent/turn/agent/tools/index.js";
+import { inspectLocalWeb, inspectParallelWeb } from "@mono-agent/turn/tools";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -28,7 +28,7 @@ import {
   loadToolPolicyFromJsonFile,
 } from "@mono-agent/conversation";
 import { describeMonoRuntimeSupport } from "@mono-agent/turn/host";
-import { inspectCodexSubscriptionSearch } from "@mono-agent/turn/agent/tools/index.js";
+import { inspectCodexSubscriptionSearch } from "@mono-agent/turn/tools";
 import { isValidMcpServerName, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { networkPolicyAllowsUrl } from "@mono-agent/turn/host/sandbox";
 import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
@@ -44,7 +44,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 import { sandboxEffectiveStateWarning } from "@mono-agent/turn/host/sandbox";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
-import { getPiBuiltinModel } from "@mono-agent/turn";
+import { getPiBuiltinModel } from "@mono-agent/turn/ai";
 
 import {
   isAppCoreConfigError,

@@ -1,5 +1,5 @@
 import { assertSessionModelKey } from "./session-runtime.js";
-import { digestNativeTurnInput, formatLiveInputGuidance } from "@mono-agent/turn/ai/live-input-prompt.js";
+import { digestNativeTurnInput, formatLiveInputGuidance } from "@mono-agent/turn/ai";
 import type { RuntimePromptOverrides, RuntimeSessionTurnDescriptor } from "@mono-agent/turn/host/types";
 import { createHash } from "node:crypto";
 

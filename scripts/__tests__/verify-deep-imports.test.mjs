@@ -11,31 +11,13 @@ function sink() {
 const repoRoot = new URL("../..", import.meta.url).pathname;
 
 describe("verify-deep-imports", () => {
-  it("derives specifiers from the exports map, without wildcards, including the core deep paths", () => {
+  it("derives exactly the eleven curated turn specifiers without wildcards", () => {
     const specifiers = mappedEntries(repoRoot).map((entry) => entry.specifier);
-    expect(specifiers).toContain("@mono-agent/turn");
-    expect(specifiers).toContain("@mono-agent/turn/ai");
-    expect(specifiers).toContain("@mono-agent/turn/agent");
-    expect(specifiers).toContain("@mono-agent/turn/ai/failure.js");
-    expect(specifiers).toContain("@mono-agent/turn/agent/compaction.js");
-    expect(specifiers).toContain("@mono-agent/turn/ai/runtime/registry.js");
-    // The Codex app-server client survives the runtime-bridge removal: it backs
-    // `tools.web.search.backend: "codex"` and must stay a published subpath.
-    expect(specifiers).toContain("@mono-agent/turn/ai/providers/codex/app-server-client.js");
-    expect(specifiers).toContain("@mono-agent/turn/agent/tools/shared/ripgrep.js");
-    // Phase 6 removed the wildcards + the pi-sdk shim; neither should be mapped.
-    expect(specifiers.some((s) => s.includes("*"))).toBe(false);
-    expect(specifiers).not.toContain("@mono-agent/turn/ai/providers/pi-sdk.js");
-    // 0.21.0 deleted the non-Pi runtime bridges; their subpaths must not return.
-    for (const removed of [
-      "@mono-agent/turn/ai/providers/claude-sdk.js",
-      "@mono-agent/turn/ai/providers/claude-cli.js",
-      "@mono-agent/turn/ai/providers/codex-app.js",
-      "@mono-agent/turn/ai/providers/opencode-app.js",
-      "@mono-agent/turn/ai/providers/acp.js",
-    ]) {
-      expect(specifiers).not.toContain(removed);
-    }
+    expect(specifiers.sort()).toEqual([
+      "@mono-agent/turn", "@mono-agent/turn/ai", "@mono-agent/turn/agent", "@mono-agent/turn/tools",
+      "@mono-agent/turn/host", "@mono-agent/turn/host/config", "@mono-agent/turn/host/types", "@mono-agent/turn/host/sandbox",
+      "@mono-agent/turn/engine", "@mono-agent/turn/engine/sessions.js", "@mono-agent/turn/engine/owned-fs.js",
+    ].sort());
   });
 
   it("maps each non-wildcard export key to its types condition target", () => {
@@ -69,13 +51,13 @@ describe("verify-deep-imports", () => {
     // Default imports all succeed; a single types target is forced missing via
     // the injectable fileExists, so the run fails on the broken `types` condition.
     const stdout = sink();
-    const missing = "@mono-agent/turn/ai/cost.js";
+    const missing = "@mono-agent/turn/ai";
     const { exitCode, results } = await runVerifyDeepImports({
       repoRoot,
       stdout,
       stderr: sink(),
       importFn: () => Promise.resolve({}),
-      fileExists: (path) => !path.includes(`${"types"}/ai/cost.d.ts`),
+      fileExists: (path) => !path.includes(`${"types"}/ai/index.d.ts`),
     });
     expect(exitCode).toBe(1);
     expect(stdout.text).toContain(`FAIL ${missing} (types): types condition target missing on disk`);
@@ -90,15 +72,15 @@ describe("verify-deep-imports", () => {
       stdout,
       stderr: sink(),
       importFn: (specifier) => {
-        if (specifier === "@mono-agent/turn/ai/cost.js") {
+        if (specifier === "@mono-agent/turn/ai") {
           return Promise.reject(new Error("boom"));
         }
         return Promise.resolve({});
       },
     });
     expect(exitCode).toBe(1);
-    expect(stdout.text).toContain("FAIL @mono-agent/turn/ai/cost.js: boom");
+    expect(stdout.text).toContain("FAIL @mono-agent/turn/ai: boom");
     expect(stdout.text).toContain("deep-imports fail");
-    expect(results.find((r) => r.specifier === "@mono-agent/turn/ai/cost.js")?.ok).toBe(false);
+    expect(results.find((r) => r.specifier === "@mono-agent/turn/ai")?.ok).toBe(false);
   });
 });

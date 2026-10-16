@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { JsonlSessionRepo } from "../../../../turn/src/engine/session-store.js";
-import { createManagedNativeJournalStorage } from "@mono-agent/turn";
+import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 import { createDurableHistoryStore } from "../../../dist/durable-history.js";
 import { createModelSwitchState } from "../../../dist/model-switch-billing.js";
 import { switchDigest, switchConversationKey } from "../../../dist/durable-model-switch-contract.js";
@@ -36,7 +36,7 @@ export async function fixture(base, id = bucket, sourceProvenance = undefined) {
   const source = await store.modelSwitchStorageSource(bucket); if (source.status !== "supported") throw new Error("Expected supported source");
   const descriptor = await native.freeze({ epoch: source.sourceEpoch, handleId: turn.providerSessionId,
     ownerKey, historyBucket: bucket, provenance: sourceProvenance ?? { provider: "faux", api: "faux-api", model: "A", account: null } });
-  /** @type {import("@mono-agent/turn").RuntimeHandoffBudget} */
+  /** @type {import("@mono-agent/turn/ai").RuntimeHandoffBudget} */
   const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const state = createModelSwitchState({ ownerKey, historyBucket: bucket, sourceCanonicalDigest: source.sourceCanonicalDigest,
     sourceRevision: source.sourceRevision, sourceEpoch: source.sourceEpoch, source: descriptor, fromModelKey: "faux:A", toModelKey: "faux:B",

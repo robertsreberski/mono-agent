@@ -121,8 +121,10 @@ The exact `retainedExports` and `retainedEntries` registers in
 - two real built-module loaders: config-reference generation and runtime
   attestation;
 - process-global cache/probe isolation controls and the runtime registry test
-  factory, not unused product features;
-- deferred host-entry regrouping and the intentionally empty allowlists entry.
+  factory, not unused product features.
+
+Turn host entries now resolve through their real owners; no deferred host or
+empty-entry exemptions remain.
 
 Only names needing a native Knip exception carry `@coreScanRetained`; the policy
 test enforces exact agreement between annotations and the register. No ignored

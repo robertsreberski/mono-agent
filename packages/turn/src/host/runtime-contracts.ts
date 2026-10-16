@@ -171,13 +171,11 @@ export type RuntimeEventLike = Events.RuntimeEventLike;
 
 
 /** Provider-neutral, host-persisted half of a managed tool lifecycle.
- * @coreScanRetained
  */
 export type RuntimeToolLifecycleEvent = Events.RuntimeToolLifecycleEvent;
 
 
 /** Host acknowledgement for one accepted lifecycle half.
- * @coreScanRetained
  */
 export type RuntimeToolLifecyclePersistence = Events.RuntimeToolLifecyclePersistence;
 

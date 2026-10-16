@@ -7,7 +7,8 @@ const prepared = vi.hoisted(() => ({ snapshot: Object.freeze({ model: { provider
 const kernel = vi.hoisted(() => ({ run: vi.fn(async (_system: string, _options: Record<string, any>): Promise<import("../types.js").RuntimeResult> => ({ text: "Fictional answer" })),
   prepareNativeDispatch: vi.fn(async (_system: string, _options: Record<string, any>) => prepared) }));
 beforeEach(() => { vi.clearAllMocks(); });
-vi.mock("@mono-agent/turn", () => ({ createRuntime: () => kernel, createRouterRuntime: () => kernel }));
+vi.mock("#turn/runtime/create-runtime", () => ({ createRuntime: () => kernel }));
+vi.mock("#turn/runtime/router", () => ({ createRouterRuntime: () => kernel }));
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { RuntimeNativeSessionAuthority, RuntimeNativeSessionProjection } from "../types.js";
 const model = { provider: "faux", model: "fixture", reference: "faux:fixture" };

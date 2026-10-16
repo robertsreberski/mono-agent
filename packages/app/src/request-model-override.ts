@@ -1,5 +1,5 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
-import { supportsPiContext1M } from "@mono-agent/turn";
+import { supportsPiContext1M } from "@mono-agent/turn/ai";
 import { assertParsedRuntimeModelReference, MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, modelReferenceKey, parseMonoRuntimeModelReference, RuntimeAdapterError, runtimeOptionsForLocalProvider, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 import type { LocalProviderDefinition, LocalProviderRuntimeOptions, RuntimeModelReference } from "@mono-agent/turn/host/types";
 

@@ -31,62 +31,6 @@
       "types": "./types/agent/index.d.ts",
       "default": "./src/agent/index.js"
     },
-    "./ai/failure.js": {
-      "types": "./types/ai/failure.d.ts",
-      "default": "./src/ai/failure.js"
-    },
-    "./ai/cost.js": {
-      "types": "./types/ai/cost.d.ts",
-      "default": "./src/ai/cost.js"
-    },
-    "./ai/runtime/model-refs.js": {
-      "types": "./types/ai/runtime/model-refs.d.ts",
-      "default": "./src/ai/runtime/model-refs.js"
-    },
-    "./ai/runtime/registry.js": {
-      "types": "./types/ai/runtime/registry.d.ts",
-      "default": "./src/ai/runtime/registry.js"
-    },
-    "./ai/live-input-prompt.js": {
-      "types": "./types/ai/live-input-prompt.d.ts",
-      "default": "./src/ai/live-input-prompt.js"
-    },
-    "./ai/file-change-stats.js": {
-      "types": "./types/ai/file-change-stats.d.ts",
-      "default": "./src/ai/file-change-stats.js"
-    },
-    "./ai/providers/codex/app-server-client.js": {
-      "types": "./types/ai/providers/codex/app-server-client.d.ts",
-      "default": "./src/ai/providers/codex/app-server-client.js"
-    },
-    "./agent/tools/index.js": {
-      "types": "./types/agent/tools/index.d.ts",
-      "default": "./src/agent/tools/index.js"
-    },
-    "./agent/tools/shared/ripgrep.js": {
-      "types": "./types/agent/tools/shared/ripgrep.d.ts",
-      "default": "./src/agent/tools/shared/ripgrep.js"
-    },
-    "./agent/prompt/skill-index.js": {
-      "types": "./types/agent/prompt/skill-index.d.ts",
-      "default": "./src/agent/prompt/skill-index.js"
-    },
-    "./agent/allowlists.js": {
-      "types": "./types/agent/allowlists.d.ts",
-      "default": "./src/agent/allowlists.js"
-    },
-    "./agent/transcript.js": {
-      "types": "./types/agent/transcript.d.ts",
-      "default": "./src/agent/transcript.js"
-    },
-    "./agent/compaction.js": {
-      "types": "./types/agent/compaction.d.ts",
-      "default": "./src/agent/compaction.js"
-    },
-    "./agent/tools/shared/tool-context.js": {
-      "types": "./types/agent/tools/shared/tool-context.d.ts",
-      "default": "./src/agent/tools/shared/tool-context.js"
-    },
     "./host": {
       "types": "./types/host/index.d.ts",
       "default": "./dist/host/index.js"
@@ -114,6 +58,10 @@
     "./engine/owned-fs.js": {
       "types": "./types/engine/owned-fs.d.ts",
       "default": "./src/engine/owned-fs.js"
+    },
+    "./tools": {
+      "types": "./types/tools/index.d.ts",
+      "default": "./src/tools/index.js"
     }
   },
   "main": "./src/index.js",
@@ -198,6 +146,30 @@
     "#turn/contracts/policy": {
       "types": "./types/contracts/policy.d.ts",
       "default": "./src/contracts/policy.js"
+    },
+    "#turn/runtime/create-runtime": {
+      "types": "./types/runtime.d.ts",
+      "default": "./src/runtime.js"
+    },
+    "#turn/runtime/router": {
+      "types": "./types/ai/runtime/router.d.ts",
+      "default": "./src/ai/runtime/router.js"
+    },
+    "#turn/runtime/model-reference": {
+      "types": "./types/ai/runtime/model-refs.d.ts",
+      "default": "./src/ai/runtime/model-refs.js"
+    },
+    "#turn/runtime/bridges": {
+      "types": "./types/ai/runtime/registry.d.ts",
+      "default": "./src/ai/runtime/registry.js"
+    },
+    "#turn/providers/pi/catalog": {
+      "types": "./types/ai/pi-interop.d.ts",
+      "default": "./src/ai/pi-interop.js"
+    },
+    "#turn/providers/pi/context-1m": {
+      "types": "./types/ai/context-1m.d.ts",
+      "default": "./src/ai/context-1m.js"
     }
   }
 }

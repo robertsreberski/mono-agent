@@ -7,3 +7,6 @@ export {
   isLikelyContextTermination,
   resolveAgentCompactionPolicy,
 } from "./compaction.js";
+
+export { formatSkillBodyWithPathNote } from "./prompt/skill-index.js";
+export { buildTranscriptTailSnapshot, renderResumeSnapshot } from "./transcript.js";

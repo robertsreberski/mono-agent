@@ -2,8 +2,8 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { createPiOAuthApiKeyResolver, createRouterRuntime, createRuntime } from "@mono-agent/turn";
-import { parseRuntimeModelReference } from "@mono-agent/turn/ai/runtime/model-refs.js";
-import { listRuntimeBridges } from "@mono-agent/turn/ai/runtime/registry.js";
+import { parseRuntimeModelReference } from "@mono-agent/turn/ai";
+import { listRuntimeBridges } from "@mono-agent/turn/ai";
 
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "@mono-agent/turn/host/types";

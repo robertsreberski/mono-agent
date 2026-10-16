@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  listPiBuiltinModels,
-  listPiBuiltinProviders,
-} from "@mono-agent/turn";
+import { listPiBuiltinModels, listPiBuiltinProviders } from "@mono-agent/turn/ai";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 import { buildProviderModelCatalog, selectProviderAuthCheckModel } from "../provider-model-catalog.js";

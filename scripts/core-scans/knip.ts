@@ -292,108 +292,10 @@ export const retainedExports = [
     "taggedNames": [
       "attestManagedBackgroundRuntime"
     ]
-  },
-  {
-    "file": "packages/turn/src/host/sandbox.ts",
-    "names": [
-      "sandboxPolicyToRuntimeOptions",
-      "protectSandboxRoots",
-      "resolveSandboxEffectiveState",
-      "sandboxEffectiveStateWarning",
-      "describeSandboxEffectiveState"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "sandboxPolicyToRuntimeOptions",
-      "protectSandboxRoots",
-      "resolveSandboxEffectiveState",
-      "sandboxEffectiveStateWarning",
-      "describeSandboxEffectiveState"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/runtime-adapter.ts",
-    "names": [
-      "monoRuntimeSupportsSessionResume",
-      "monoRuntimeSupportsLiveInput",
-      "monoRuntimeSupportsMcpApps",
-      "describeMonoRuntimeSupport",
-      "createMonoRuntime"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "monoRuntimeSupportsSessionResume",
-      "monoRuntimeSupportsLiveInput",
-      "monoRuntimeSupportsMcpApps",
-      "describeMonoRuntimeSupport",
-      "createMonoRuntime"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/local-providers.ts",
-    "names": [
-      "discoverLocalProviderModels",
-      "resolveModelEffortLevels",
-      "runtimeOptionsForLocalProvider",
-      "isPiBuiltinProvider",
-      "isAutodiscoverableProviderId"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "discoverLocalProviderModels",
-      "resolveModelEffortLevels",
-      "runtimeOptionsForLocalProvider",
-      "isPiBuiltinProvider",
-      "isAutodiscoverableProviderId"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/model-reference.ts",
-    "names": [
-      "parseMonoRuntimeModelReference",
-      "modelReferenceKey"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "parseMonoRuntimeModelReference",
-      "modelReferenceKey"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/mcp-servers.ts",
-    "names": [
-      "parseMcpServers"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "parseMcpServers"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/runtime-contracts.ts",
-    "names": [
-      "RuntimeToolLifecycleEvent",
-      "RuntimeToolLifecyclePersistence"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "RuntimeToolLifecycleEvent",
-      "RuntimeToolLifecyclePersistence"
-    ]
   }
 ] as const;
 
-export const retainedEntries = [{
-  file: "packages/turn/src/agent/allowlists.js",
-  reason: "deferred: turn entry regrouping",
-  citation: "packages/turn/package.json",
-}] as const;
+export const retainedEntries = [] as const;
 
 export default {
   tags: ["-coreScanRetained"],

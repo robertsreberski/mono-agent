@@ -36,7 +36,6 @@ interface NormalizedMcpServer {
  * lenient behaviour of every per-runtime translateMcpServers. Returns an empty
  * array (never undefined) when there is nothing to parse, so callers decide
  * their own empty-handling.
-  * @coreScanRetained
  */
 export function parseMcpServers(
   input: Record<string, unknown> | undefined,

@@ -6,7 +6,7 @@ import { startTuiAdapter } from "@mono-agent/channel-operator";
 import { withProjectContext } from "@mono-agent/web";
 // @ts-expect-error Real native engine test seam; only provider transport is scripted.
 import { generateEngineTurnResponse } from "../../../turn/src/ai/providers/engine-turn.js";
-import { createToolContext } from "@mono-agent/turn/agent/tools/shared/tool-context.js";
+import { createToolContext } from "@mono-agent/turn/tools";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

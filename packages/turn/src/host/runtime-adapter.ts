@@ -1,11 +1,9 @@
 import type { MonoRuntimeFallbackChainEntry, MonoRuntimeRetryPolicy, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution, MonoRuntimeAttemptResolver, CreateMonoRuntimeOptions } from "./runtime-options.js";
 import { assertParsedRuntimeModelReference, RuntimeAdapterError } from "./model-reference.js";
 import { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
-import {
-  createRouterRuntime,
-  createRuntime,
-} from "@mono-agent/turn";
-import { listRuntimeBridges } from "@mono-agent/turn/ai/runtime/registry.js";
+import { createRuntime } from "#turn/runtime/create-runtime";
+import { createRouterRuntime } from "#turn/runtime/router";
+import { listRuntimeBridges } from "#turn/runtime/bridges";
 import { bridgeProcessJobsController } from "./process-jobs.js";
 import { monoSandboxImpl } from "./sandbox-impl.js";
 
@@ -23,22 +21,18 @@ import type {
 
 type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
 
-/** @coreScanRetained */
 export function monoRuntimeSupportsSessionResume(): boolean {
   return PI_RUNTIME_BACKEND.capabilities.supports_session_resume === true;
 }
 
-/** @coreScanRetained */
 export function monoRuntimeSupportsLiveInput(): boolean {
   return PI_RUNTIME_BACKEND.capabilities.supports_live_input === true;
 }
 
-/** @coreScanRetained */
 export function monoRuntimeSupportsMcpApps(): boolean {
   return PI_RUNTIME_BACKEND.capabilities.supports_mcp_apps === true;
 }
 
-/** @coreScanRetained */
 export function describeMonoRuntimeSupport(
   model: RuntimeModelReference,
 ): MonoRuntimeSupportDescription {
@@ -50,7 +44,6 @@ export function describeMonoRuntimeSupport(
   };
 }
 
-/** @coreScanRetained */
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
   const { fallbackChain, retry, resolveAttempt, sessionTurnReconciliation, ...hostOptions } = options;
   const chain = normalizeFallbackChain(fallbackChain);

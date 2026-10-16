@@ -39,7 +39,7 @@ import { resolve as resolvePath } from "node:path";
 
 import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, normalizeOptionalString, setToolActivityPathRoots } from "@mono-agent/contracts";
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
-import { isProviderAuthFailureText } from "@mono-agent/turn/ai/failure.js";
+import { isProviderAuthFailureText } from "@mono-agent/turn/ai";
 import type { AgentResponder, MemoryStore } from "@mono-agent/contracts";
 import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -52,7 +52,7 @@ import type {
 } from "@mono-agent/observability";
 import { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
-import { createManagedNativeJournalStorage } from "@mono-agent/turn";
+import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 import { createSrtSandboxEngine, mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
 import { modelReferenceKey, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/turn/host/config";
 import type { MonoRuntimeFallbackChainEntry, MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";

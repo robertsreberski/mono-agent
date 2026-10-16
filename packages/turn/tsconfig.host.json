@@ -32,6 +32,24 @@
       ],
       "#turn/contracts/policy": [
         "./types/contracts/policy.d.ts"
+      ],
+      "#turn/runtime/create-runtime": [
+        "./types/runtime.d.ts"
+      ],
+      "#turn/runtime/router": [
+        "./types/ai/runtime/router.d.ts"
+      ],
+      "#turn/runtime/model-reference": [
+        "./types/ai/runtime/model-refs.d.ts"
+      ],
+      "#turn/runtime/bridges": [
+        "./types/ai/runtime/registry.d.ts"
+      ],
+      "#turn/providers/pi/catalog": [
+        "./types/ai/pi-interop.d.ts"
+      ],
+      "#turn/providers/pi/context-1m": [
+        "./types/ai/context-1m.d.ts"
       ]
     }
   },

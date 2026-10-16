@@ -70,21 +70,29 @@ if (packageNames.includes("@mono-agent/turn")) {
   for (const removed of ["@mono-agent/engine", "@mono-agent/engine/sessions.js", "@mono-agent/engine/owned-fs.js"]) {
     await assertRemovedImport(removed, "ERR_MODULE_NOT_FOUND");
   }
-  for (const entry of ["@mono-agent/turn", "@mono-agent/turn/ai"]) {
-    const api = await import(entry);
-    assert.equal("resolveRuntimeBridge" in api, false);
-    assert.equal("generatePiNativeResponse" in api, false);
-    assert.equal("piNativeRuntimeBridge" in api, false);
-    assert.equal(typeof api.generateEngineTurnResponse, "function");
-    assert.equal(api.engineTurnAdapter.execute, api.generateEngineTurnResponse);
-    assert.equal(api.engineTurnAdapter.id, "pi");
-    assert.equal("assertEngineTurnModelRef" in api, false);
-    assert.equal(await api.resolveEngineTurnAdapter({ provider: "fictional", model: "fixture", reference: "fictional:fixture" }), api.engineTurnAdapter);
+  const root = await import("@mono-agent/turn");
+  assert.equal(typeof root.createRuntime, "function");
+  assert.equal("generateEngineTurnResponse" in root, false);
+  const ai = await import("@mono-agent/turn/ai");
+  for (const api of [root, ai]) {
+    for (const removed of ["resolveRuntimeBridge", "generatePiNativeResponse", "piNativeRuntimeBridge", "assertEngineTurnModelRef"]) {
+      assert.equal(removed in api, false);
+    }
   }
-  await assertRemovedImport(
-    "@mono-agent/turn/agent/tools/shared/runtime-context.js",
-    "ERR_PACKAGE_PATH_NOT_EXPORTED",
-  );
+  assert.equal(typeof ai.generateEngineTurnResponse, "function");
+  assert.equal(ai.engineTurnAdapter.execute, ai.generateEngineTurnResponse);
+  assert.equal(ai.engineTurnAdapter.id, "pi");
+  assert.equal(await ai.resolveEngineTurnAdapter({ provider: "fictional", model: "fixture", reference: "fictional:fixture" }), ai.engineTurnAdapter);
+  assert.equal(typeof ai.createCodexAppServerClient, "function");
+  const tools = await import("@mono-agent/turn/tools");
+  assert.equal(typeof tools.createToolContext, "function");
+  assert.equal(typeof tools.execToolRun, "function");
+  for (const removed of [
+    "ai/failure.js", "ai/cost.js", "ai/runtime/model-refs.js", "ai/runtime/registry.js", "ai/live-input-prompt.js",
+    "ai/file-change-stats.js", "ai/providers/codex/app-server-client.js", "agent/tools/index.js", "agent/tools/shared/ripgrep.js",
+    "agent/prompt/skill-index.js", "agent/allowlists.js", "agent/transcript.js", "agent/compaction.js", "agent/tools/shared/tool-context.js",
+    "agent/tools/shared/runtime-context.js",
+  ]) await assertRemovedImport("@mono-agent/turn/" + removed, "ERR_PACKAGE_PATH_NOT_EXPORTED");
 }
 
 if (packageNames.includes("@mono-agent/turn")) {

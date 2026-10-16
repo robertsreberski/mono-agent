@@ -16,9 +16,8 @@ import { openProcessJobsService } from "../packages/app/dist/process-jobs-servic
 import { resolveProcessJobsProtectionPosture } from "../packages/app/dist/process-jobs-protection.js";
 import { createProcessJobsRuntimeExtension } from "../packages/app/dist/process-jobs-runtime.js";
 import { bindProcessJobWakeContextToResponder, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../packages/app/dist/process-jobs-context.js";
-// agent-runtime ships its JavaScript src directly (package.json exports); the
-// TypeScript app/service/runtime admission above must use freshly built dist.
-import { execToolRun } from "../packages/turn/src/agent/tools/exec.js";
+// App/service admission uses freshly built dist; tools use their public entry.
+import { execToolRun } from "@mono-agent/turn/tools";
 
 const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = await realpath(await mkdtemp(join(tmpdir(), "mono-orchestrator-delivery-")));
