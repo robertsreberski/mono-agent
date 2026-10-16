@@ -4,7 +4,7 @@ import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "./contracts.js";
-import type { AppliedLiveInput } from "../live-input.js";
+import type { AppliedLiveInput } from "../sessions/live-input.js";
 import { senderLabel } from "./speaker-context.js";
 import { compactOneLine } from "./value-utils.js";
 

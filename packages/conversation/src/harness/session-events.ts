@@ -1,6 +1,6 @@
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
-import type { RuntimeSessionRecord, RuntimeSessionSnapshot } from "../sessions.js";
+import type { RuntimeSessionRecord, RuntimeSessionSnapshot } from "../sessions/warm-store.js";
 import type { ConversationHarnessSessionBoundary, ConversationHarnessSessionEvent } from "./contracts.js";
 
 export function withSessionBoundaryTimestamp(event: ConversationHarnessSessionBoundary, timestamp: string): RuntimeEventLike {

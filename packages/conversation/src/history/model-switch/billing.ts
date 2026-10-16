@@ -1,5 +1,5 @@
-import { MODEL_SWITCH_BILLING_POLICY, summaryAttemptId, switchDigest, switchHash, validateModelSwitchState, validateSwitchReference } from "./durable-model-switch-contract.js";
-import type { HandoffReference, ModelSwitchIdentity, ModelSwitchReservation, ModelSwitchState, SummaryAttempt } from "./durable-model-switch-contract.js";
+import { MODEL_SWITCH_BILLING_POLICY, summaryAttemptId, switchDigest, switchHash, validateModelSwitchState, validateSwitchReference } from "./contract.js";
+import type { HandoffReference, ModelSwitchIdentity, ModelSwitchReservation, ModelSwitchState, SummaryAttempt } from "./contract.js";
 
 /** Final billing policy: at most two billed calls per switchId without new
  * user action. Each later explicit user message authorizes one new attempt per

@@ -1,4 +1,4 @@
-// Manual measurement, not a test or latency gate. Build agent-harness first.
+// Manual measurement, not a test or latency gate. Build @mono-agent/conversation first.
 // node scripts/measure-history-accounting.mjs [largest-root=1000]
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -29,8 +29,8 @@ fs.open = async (...args) => {
 const readFile = fs.readFile;
 fs.readFile = (...args) => { countRead(); return readFile(...args); };
 syncBuiltinESMExports();
-const { createDurableHistoryStore } = await import("../packages/conversation/dist/durable-history.js");
-const { NativeHistoryRootStore } = await import("../packages/conversation/dist/native-history-root.js");
+const { createDurableHistoryStore } = await import("../packages/conversation/dist/history/canonical/store.js");
+const { NativeHistoryRootStore } = await import("../packages/conversation/dist/history/canonical/native-root.js");
 const { createManagedNativeJournalStorage } = await import("@mono-agent/turn/ai");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const key = (id) => hash(`mono-agent-history-v1\0${id}`);

@@ -23,7 +23,7 @@ fs.promises.open = async (...args) => {
 };
 syncBuiltinESMExports();
 try {
-  const { createDurableHistoryStore } = await import("../../../dist/durable-history.js");
+  const { createDurableHistoryStore } = await import("../../../dist/history/canonical/store.js");
   const store = createDurableHistoryStore({ root, now: () => Date.parse(timestamp), retireProviderSession: async () => { throw new Error("Unexpected native retirement"); },
     reconcileProviderSessionTurn: async (request) => { inspections++; return evidence(request); } });
   const writeStage = store.writeStage.bind(store);

@@ -1,9 +1,9 @@
 import { toolNameLeaf } from "@mono-agent/contracts";
-import { CANCELLED_TURN_HISTORY_KEY_PREFIX, FAILED_TURN_HISTORY_KEY_PREFIX } from "./harness/turn-continuity.js";
+import { CANCELLED_TURN_HISTORY_KEY_PREFIX, FAILED_TURN_HISTORY_KEY_PREFIX } from "../../harness/turn-continuity.js";
 import type { RuntimeSessionTurnDescriptor, RuntimeSessionTurnReconciliationResult } from "@mono-agent/turn/host/types";
-import type { HistoryMessage } from "./context/index.js";
-import { sha256, validatePendingTurnPayload } from "./durable-turn-contract.js";
-import type { PendingTurnPayload, PendingTurnCandidate, DurableTurnOutcome } from "./durable-turn-contract.js";
+import type { HistoryMessage } from "../../context/index.js";
+import { sha256, validatePendingTurnPayload } from "./contract.js";
+import type { PendingTurnPayload, PendingTurnCandidate, DurableTurnOutcome } from "./contract.js";
 
 export function pendingTurnDescriptor(payload: PendingTurnPayload): RuntimeSessionTurnDescriptor {
   const identity = payload.identity;

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSessionRuntimeResolver, uniqueSessionHandles } from "../session-runtime.js";
-import { createRuntimeSessionStore } from "../sessions.js";
+import { createSessionRuntimeResolver, uniqueSessionHandles } from "../sessions/runtime-owner.js";
+import { createRuntimeSessionStore } from "../sessions/warm-store.js";
 import { retireRunResultSession } from "../harness/session-retirement.js";
 
 const model = { provider: "faux", model: "base", reference: "faux:base" };

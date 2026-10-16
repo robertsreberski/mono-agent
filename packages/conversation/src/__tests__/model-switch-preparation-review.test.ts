@@ -8,9 +8,9 @@ import { type RuntimeNativeDispatchSnapshot, type RuntimeSessionTurnReconciliati
 import type { RunRecorder } from "@mono-agent/observability";
 import { fixture, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 import type { ConversationHistoryTurnInspection } from "../history/contracts.js";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
-import { createModelSwitchState } from "../model-switch-billing.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { ModelSwitchPayloadStore } from "../history/model-switch/payloads.js";
+import { createModelSwitchState } from "../history/model-switch/billing.js";
 import { buildAgentContext } from "../context/context-builder.js";
 import { UncommittedTurnCollector } from "../harness/turn-continuity.js";
 import { prepareHarnessRuntime } from "../harness/runtime-execution.js";

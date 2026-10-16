@@ -4,8 +4,8 @@ import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
-import { canonicalToolArtifactRoot } from "../tool-history-artifacts.js";
-import { ToolHistoryPersistenceCoordinator, type ToolHistoryRequestSettlement } from "../tool-history-persistence-coordinator.js";
+import { canonicalToolArtifactRoot } from "./artifacts.js";
+import { ToolHistoryPersistenceCoordinator, type ToolHistoryRequestSettlement } from "./persistence-coordinator.js";
 import { TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_PERSISTENCE_CEILING_MS, type ToolHistoryRunBinding, type ToolHistoryStats, type ToolHistoryWriterOptions, type WorkerRequest, type WorkerResponse } from "./contracts.js";
 import { ToolHistoryWriterError } from "./errors.js";
 import { canonicalHistoryRoot, positiveInteger, requestedArtifactRoot } from "./paths.js";
@@ -131,11 +131,11 @@ export class ToolHistoryWriter {
     const lexicalArtifactRoot = requestedArtifactRoot(options.artifactRoot, lexicalRoot);
     const artifactRoot = canonicalToolArtifactRoot(lexicalArtifactRoot);
     const workerUrl = import.meta.url.endsWith(".ts")
-      ? new URL("../../dist/tool-history-writer-worker.js", import.meta.url)
-      : new URL("../tool-history-writer-worker.js", import.meta.url);
+      ? new URL("../../dist/tool-history/writer-worker.js", import.meta.url)
+      : new URL("./writer-worker.js", import.meta.url);
     if (import.meta.url.endsWith(".ts")) {
       assertToolHistoryWorkerBuildFresh(
-        fileURLToPath(new URL("../tool-history-writer-worker.ts", import.meta.url)),
+        fileURLToPath(new URL("./writer-worker.ts", import.meta.url)),
         fileURLToPath(workerUrl),
       );
     }

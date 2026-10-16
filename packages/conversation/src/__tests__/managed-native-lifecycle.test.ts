@@ -6,13 +6,13 @@ import { chmod, lstat, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { NATIVE_HISTORY_ROOT_FILE } from "../native-history-root.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { NATIVE_HISTORY_ROOT_FILE } from "../history/canonical/native-root.js";
 import { fixture, ready, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
-import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
+import { ModelSwitchPayloadStore } from "../history/model-switch/payloads.js";
 import { retireRunResultSession } from "../harness/session-retirement.js";
 import { JsonlSessionRepo } from "@mono-agent/turn/engine";
-import { boundedSwitchBytes, validateModelSwitchFence, switchConversationKey, MAX_NATIVE_EPOCH_BYTES } from "../durable-model-switch-contract.js";
+import { boundedSwitchBytes, validateModelSwitchFence, switchConversationKey, MAX_NATIVE_EPOCH_BYTES } from "../history/model-switch/contract.js";
 import { createHash } from "node:crypto";
 const roots: string[] = [];
 const managedHandle = (epoch: string, id = bucket) => createHash("sha256").update("mono-agent-provider-session-v2\0").update(id).update("\0").update(epoch).digest("hex");
@@ -140,7 +140,7 @@ it("two switches keep exactly one current journal and one durable handoff; D cle
   const source = await f.store.modelSwitchStorageSource(bucket); if (source.status !== "supported") throw new Error("Expected supported source");
   const descriptor = await f.native.freeze({ epoch: source.sourceEpoch, handleId: turn.providerSessionId, ownerKey: bucket, historyBucket: bucket,
     provenance: { provider: "faux", api: "faux-api", model: "B", account: null } });
-  const { createModelSwitchState } = await import("../model-switch-billing.js");
+  const { createModelSwitchState } = await import("../history/model-switch/billing.js");
   const { switchId: _id, ...identity } = f.state.identity;
   const state = createModelSwitchState({ ...identity, sourceCanonicalDigest: source.sourceCanonicalDigest, sourceRevision: source.sourceRevision,
     sourceEpoch: source.sourceEpoch, source: descriptor, fromModelKey: "faux:B", toModelKey: "faux:A", targetEpoch: "d".repeat(64),

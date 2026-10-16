@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { isAgentResponseCancelledError } from "@mono-agent/contracts";
 
-import { createLiveSessionManager } from "../live-session.js";
+import { createLiveSessionManager } from "../sessions/queue.js";
 import type { ConversationHarnessRequest, ConversationHarnessResponse } from "../index.js";
 
 function req(

@@ -1,5 +1,5 @@
-import { ModelSwitchPayloadStore } from "../../../dist/model-switch-payloads.js";
-import { createDurableHistoryStore } from "../../../dist/durable-history.js";
+import { ModelSwitchPayloadStore } from "../../../dist/history/model-switch/payloads.js";
+import { createDurableHistoryStore } from "../../../dist/history/canonical/store.js";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 const [root, action, statePath, killPhase] = process.argv.slice(2);

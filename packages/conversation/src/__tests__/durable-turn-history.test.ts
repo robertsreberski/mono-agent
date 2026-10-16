@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { recognizesTurnCommit, validateTurnHistoryV3 } from "../durable-turn-history.js";
-import type { TurnHistoryV3 } from "../durable-turn-history.js";
+import { recognizesTurnCommit, validateTurnHistoryV3 } from "../history/pending-turn/canonical-record.js";
+import type { TurnHistoryV3 } from "../history/pending-turn/canonical-record.js";
 import type { HistoryMessage } from "../context/index.js";
 const hash = "a".repeat(64);
 const receipt = { version: 1 as const, turnId: "fictional-turn", inputDigest: hash, candidateDigest: hash, journalId: "fictional-journal", tipId: "fictional-tip", baseRevision: 0, committedRevision: 1, outcome: "completed" as const };

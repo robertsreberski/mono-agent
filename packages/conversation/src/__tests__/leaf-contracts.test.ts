@@ -3,9 +3,9 @@ import { expectTypeOf, it } from "vitest";
 import type { ConversationHarnessOptions } from "../harness/contracts.js";
 import type { SessionContextCapabilities } from "../harness/session-capabilities.js";
 import type { ManagedModelSwitchStorageLease, ModelSwitchStorageSource } from "../history/contracts.js";
-import type { DurableConversationHistoryStore } from "../durable-history.js";
-import type { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
-import { createSessionRuntimeResolver } from "../session-runtime.js";
+import type { DurableConversationHistoryStore } from "../history/canonical/store.js";
+import type { ModelSwitchPayloadStore } from "../history/model-switch/payloads.js";
+import { createSessionRuntimeResolver } from "../sessions/runtime-owner.js";
 
 it("keeps structural owner ports equal to the concrete implementation shapes", () => {
   expectTypeOf<ModelSwitchStorageSource>().toEqualTypeOf<Awaited<ReturnType<DurableConversationHistoryStore["modelSwitchStorageSource"]>>>();

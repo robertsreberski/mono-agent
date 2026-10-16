@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
-import type { ModelSwitchStorageOwner } from "../model-switch-payloads.js";
-import { createModelSwitchState, admitSummaryAttempt, finishSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage } from "../model-switch-billing.js";
-import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, serializeModelSwitchState, recognizesModelSwitchBinding, validateModelSwitchState, validateNativeTurnHistory } from "../durable-model-switch-contract.js";
-import type { CanonicalJournalDescriptor, ModelSwitchIdentity, ModelSwitchState, NativeTurnHistory } from "../durable-model-switch-contract.js";
+import { ModelSwitchPayloadStore } from "../history/model-switch/payloads.js";
+import type { ModelSwitchStorageOwner } from "../history/model-switch/payloads.js";
+import { createModelSwitchState, admitSummaryAttempt, finishSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage } from "../history/model-switch/billing.js";
+import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, serializeModelSwitchState, recognizesModelSwitchBinding, validateModelSwitchState, validateNativeTurnHistory } from "../history/model-switch/contract.js";
+import type { CanonicalJournalDescriptor, ModelSwitchIdentity, ModelSwitchState, NativeTurnHistory } from "../history/model-switch/contract.js";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const source: CanonicalJournalDescriptor = { journalId: "fictional-journal", epoch: "1".repeat(64), handleId: "2".repeat(64),

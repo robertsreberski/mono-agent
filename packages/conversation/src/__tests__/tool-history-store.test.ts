@@ -9,11 +9,11 @@ import { DatabaseSync } from "node:sqlite";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { createDurableHistoryStore } from "../durable-history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { acquireToolHistoryWriter, assertToolHistoryWorkerBuildFresh, ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_PERSISTENCE_CEILING_MS, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRunBinding, type ToolHistoryWriterOptions } from "../tool-history/contracts.js";
-import { buildToolHistoryProjection } from "../tool-history-projection.js";
+import { buildToolHistoryProjection } from "../tool-history/projection.js";
 
 const tempDirs: string[] = [];
 const children = new Set<ChildProcess>();
@@ -61,19 +61,19 @@ beforeAll(async () => {
   const sourceNames = [
     "history/conversation-id",
     "process-incarnation",
-    "history-process-incarnation",
-    "history-process-liveness",
-    "tool-history-artifacts",
-    "tool-history-busy-wait",
-    "tool-history-persistence-coordinator",
+    "history/canonical/process-incarnation",
+    "history/canonical/process-liveness",
+    "tool-history/artifacts",
+    "tool-history/busy-wait",
+    "tool-history/persistence-coordinator",
     "tool-history/contracts",
     "tool-history/reader",
     "tool-history/writer",
     "tool-history/paths",
     "tool-history/errors",
-    "tool-history-payload",
-    "tool-history-worker-queue",
-    "tool-history-writer-worker",
+    "tool-history/payload",
+    "tool-history/worker-queue",
+    "tool-history/writer-worker",
   ] as const;
   await Promise.all(sourceNames.map(async (name) => {
     const source = await readFile(new URL(`../${name}.ts`, import.meta.url), "utf8");

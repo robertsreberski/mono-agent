@@ -11,7 +11,7 @@ import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createDurableHistoryStore } from "../durable-history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
 
 const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -33,39 +33,40 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
   const compiledPath = join(dir, "durable-history.mjs");
   const compilerOptions = { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } as const;
   const contractsUrl = new URL("../../../contracts/dist/index.js", import.meta.url).href;
-  const durableSource = (await readFile(new URL("../durable-history.ts", import.meta.url), "utf8"))
+  const durableSource = (await readFile(new URL("../history/canonical/store.ts", import.meta.url), "utf8"))
     .replaceAll('"@mono-agent/contracts"', JSON.stringify(contractsUrl))
     .replaceAll('"@mono-agent/turn/engine/owned-fs.js"', JSON.stringify(new URL("../../../turn/src/engine/owned-fs.js", import.meta.url).href))
-    .replaceAll('"./history/canonical/claims.js"', JSON.stringify(new URL("../../dist/history/canonical/claims.js", import.meta.url).href))
-    .replaceAll('"./history/canonical/files.js"', JSON.stringify(new URL("../../dist/history/canonical/files.js", import.meta.url).href))
-    .replaceAll('"./history/canonical/codec.js"', JSON.stringify(new URL("../../dist/history/canonical/codec.js", import.meta.url).href))
-    .replaceAll('"./history/canonical/identity.js"', JSON.stringify(new URL("../../dist/history/canonical/identity.js", import.meta.url).href))
-    .replaceAll('"./history/canonical/record-contracts.js"', JSON.stringify(new URL("../../dist/history/canonical/record-contracts.js", import.meta.url).href))
-    .replaceAll('"./history/conversation-id.js"', JSON.stringify(new URL("../../dist/history/conversation-id.js", import.meta.url).href))
-    .replaceAll('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href))
-    .replaceAll('"./sessions/model-key.js"', JSON.stringify(new URL("../../dist/sessions/model-key.js", import.meta.url).href))
-    .replaceAll('"./durable-turn-payloads.js"', JSON.stringify(new URL("../../dist/durable-turn-payloads.js", import.meta.url).href))
-    .replaceAll('"./durable-turn-settlement.js"', JSON.stringify(new URL("../../dist/durable-turn-settlement.js", import.meta.url).href))
-    .replaceAll('"./durable-turn-history.js"', JSON.stringify(new URL("../../dist/durable-turn-history.js", import.meta.url).href))
-    .replaceAll('"./durable-turn-contract.js"', JSON.stringify(new URL("../../dist/durable-turn-contract.js", import.meta.url).href))
-    .replaceAll('"./native-history-root.js"', JSON.stringify(new URL("../../dist/native-history-root.js", import.meta.url).href))
-    .replaceAll('"./model-switch-payloads.js"', JSON.stringify(new URL("../../dist/model-switch-payloads.js", import.meta.url).href))
-    .replaceAll('"./durable-model-switch-contract.js"', JSON.stringify(new URL("../../dist/durable-model-switch-contract.js", import.meta.url).href));
+    .replaceAll('"./process-liveness.js"', '"./history-process-liveness.js"')
+    .replaceAll('"./claims.js"', JSON.stringify(new URL("../../dist/history/canonical/claims.js", import.meta.url).href))
+    .replaceAll('"./files.js"', JSON.stringify(new URL("../../dist/history/canonical/files.js", import.meta.url).href))
+    .replaceAll('"./codec.js"', JSON.stringify(new URL("../../dist/history/canonical/codec.js", import.meta.url).href))
+    .replaceAll('"./identity.js"', JSON.stringify(new URL("../../dist/history/canonical/identity.js", import.meta.url).href))
+    .replaceAll('"./record-contracts.js"', JSON.stringify(new URL("../../dist/history/canonical/record-contracts.js", import.meta.url).href))
+    .replaceAll('"../conversation-id.js"', JSON.stringify(new URL("../../dist/history/conversation-id.js", import.meta.url).href))
+    .replaceAll('"../../sessions/runtime-owner.js"', JSON.stringify(new URL("../../dist/sessions/runtime-owner.js", import.meta.url).href))
+    .replaceAll('"../../sessions/model-key.js"', JSON.stringify(new URL("../../dist/sessions/model-key.js", import.meta.url).href))
+    .replaceAll('"../pending-turn/payloads.js"', JSON.stringify(new URL("../../dist/history/pending-turn/payloads.js", import.meta.url).href))
+    .replaceAll('"../pending-turn/settlement.js"', JSON.stringify(new URL("../../dist/history/pending-turn/settlement.js", import.meta.url).href))
+    .replaceAll('"../pending-turn/canonical-record.js"', JSON.stringify(new URL("../../dist/history/pending-turn/canonical-record.js", import.meta.url).href))
+    .replaceAll('"../pending-turn/contract.js"', JSON.stringify(new URL("../../dist/history/pending-turn/contract.js", import.meta.url).href))
+    .replaceAll('"./native-root.js"', JSON.stringify(new URL("../../dist/history/canonical/native-root.js", import.meta.url).href))
+    .replaceAll('"../model-switch/payloads.js"', JSON.stringify(new URL("../../dist/history/model-switch/payloads.js", import.meta.url).href))
+    .replaceAll('"../model-switch/contract.js"', JSON.stringify(new URL("../../dist/history/model-switch/contract.js", import.meta.url).href));
   const livenessSource = await readFile(
-    new URL("../history-process-liveness.ts", import.meta.url),
+    new URL("../history/canonical/process-liveness.ts", import.meta.url),
     "utf8",
   );
   await Promise.all([
     writeFile(compiledPath, transpileModule(durableSource, { compilerOptions }).outputText),
     writeFile(
       join(dir, "history-process-liveness.js"),
-      transpileModule(livenessSource, { compilerOptions }).outputText,
+      transpileModule(livenessSource.replaceAll('"./process-incarnation.js"', '"./history-process-incarnation.js"'), { compilerOptions }).outputText,
     ),
     writeFile(join(dir, "process-incarnation.js"), transpileModule(
       await readFile(new URL("../process-incarnation.ts", import.meta.url), "utf8"), { compilerOptions },
     ).outputText),
     writeFile(join(dir, "history-process-incarnation.js"), transpileModule(
-      await readFile(new URL("../history-process-incarnation.ts", import.meta.url), "utf8"), { compilerOptions },
+      (await readFile(new URL("../history/canonical/process-incarnation.ts", import.meta.url), "utf8")).replaceAll('"../../process-incarnation.js"', '"./process-incarnation.js"'), { compilerOptions },
     ).outputText),
     writeFile(join(dir, "package.json"), '{"type":"module"}\n'),
   ]);

@@ -335,7 +335,7 @@ export default {
       paths,
       entry: [
         "src/index.ts!",
-        "src/tool-history-writer-worker.ts!",
+        "src/tool-history/writer-worker.ts!",
         "src/__tests__/fixtures/canonical-v5-fixture.d.mts",
         "src/__tests__/fixtures/managed-native-switch-fixture.d.mts",
       ],

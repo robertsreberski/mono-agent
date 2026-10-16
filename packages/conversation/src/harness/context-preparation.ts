@@ -16,7 +16,7 @@ import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
 import { memorySenderToken, memoryUserText } from "./memory-persistence.js";
 import { isCronRequest, runSourceFromRequest } from "./request-routing.js";
-import { buildToolHistoryProjection } from "../tool-history-projection.js";
+import { buildToolHistoryProjection } from "../tool-history/projection.js";
 
 export async function prepareHarnessContext(
   options: ConversationHarnessOptions,

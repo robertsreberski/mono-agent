@@ -4,8 +4,8 @@ import { basename, join } from "node:path";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP } from "../native-history-root.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP } from "../history/canonical/native-root.js";
 import { bucket, canonicalRecord, conversationKey, modelKey } from "./fixtures/canonical-v5-fixture.mjs";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -170,7 +170,7 @@ it.each([false, true])("isolates malformed inactive siblings regardless of root 
 
 
 it("publishes each root phase once and never resumes an unpublished valid proposal", async () => {
-  const f = await fixture(), { NativeHistoryRootStore } = await import("../native-history-root.js");
+  const f = await fixture(), { NativeHistoryRootStore } = await import("../history/canonical/native-root.js");
   const store = new NativeHistoryRootStore(f.root, await lstat(f.root));
   const phases: string[] = [], reserve = vi.fn(async () => {}), assertOwned = async () => {};
   await store.ensure({ reserve, assertOwned, onPhase: async (phase) => { phases.push(phase); } });

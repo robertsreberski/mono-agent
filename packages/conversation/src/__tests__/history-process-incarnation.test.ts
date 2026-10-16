@@ -6,10 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { createDurableHistoryStore } from "../durable-history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
 import * as incarnation from "../process-incarnation.js";
-import * as historyIncarnation from "../history-process-incarnation.js";
-import { currentHistoryProcessIncarnation, historyOwnerLiveness } from "../history-process-liveness.js";
+import * as historyIncarnation from "../history/canonical/process-incarnation.js";
+import { currentHistoryProcessIncarnation, historyOwnerLiveness } from "../history/canonical/process-liveness.js";
 
 type Owner = { release(): Promise<void> };
 type Internals = {

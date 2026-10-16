@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { createDurableHistoryStore } from "../../../dist/durable-history.js";
+import { createDurableHistoryStore } from "../../../dist/history/canonical/store.js";
 const root = process.argv[2];
 process.once("message", async ({ mode, conversationId }) => {
   try {

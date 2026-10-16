@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixture, ready, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
-import { createConversationHarness } from "../harness.js";
+import { createConversationHarness } from "../harness/index.js";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 const roots: string[] = [];

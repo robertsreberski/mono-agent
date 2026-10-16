@@ -10,7 +10,7 @@ import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/typ
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 import { createConversationHarness } from "../index.js";
-import { requestOverridesModel, runSourceFromRequest } from "../harness.js";
+import { requestOverridesModel, runSourceFromRequest } from "../harness/index.js";
 import { requestSessionModel } from "../harness/request-routing.js";
 import type { ConversationHarnessRecorderFactoryInput, ConversationHarnessRequest } from "../harness/contracts.js";
 

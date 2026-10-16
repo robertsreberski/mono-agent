@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createDurableHistoryStore } from "../../../dist/durable-history.js";
+import { createDurableHistoryStore } from "../../../dist/history/canonical/store.js";
 const [root, id, mode] = process.argv.slice(2);
 const store = createDurableHistoryStore({ root, ...(mode === "incarnation" ? { reconcileProviderSessionTurn: async () => ({ status: "absent" }), retireProviderSession: async () => { throw new Error("Unexpected retirement before kill"); } } : {}) });
 const alive = setInterval(() => {}, 60_000);

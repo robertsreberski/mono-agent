@@ -433,15 +433,17 @@ The harness is the request-to-runtime composition boundary:
 
 | Source area | Responsibility |
 | --- | --- |
-| `src/harness.ts` / `src/harness/` | Turn orchestration, validation, runtime invocation, persistence, and cleanup |
+| `src/harness/index.ts` / `src/harness/` | Turn orchestration, validation, runtime invocation, persistence, and cleanup |
 | `src/context/` / `src/skills/` | Deterministic context assembly and selected-skill loading |
 | `src/tool-policy/` | Tool and MCP normalization with a fail-closed default |
 | `src/responder.ts` | Structural request/stream adapter, applied-live-input activity correlation, cancellation, and session rollover |
-| `src/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, native acceptance/consumption callbacks, safe failover replay, and uncertain settlement |
-| `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
-| `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
-| `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
-| `src/durable-model-switch-contract.ts` / `src/model-switch-billing.ts` / `src/model-switch-payloads.ts` | Private additive switch wire, artifact and summary-admission storage; not managed-history migration or enabled host switching |
+| `src/sessions/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, native acceptance/consumption callbacks, safe failover replay, and uncertain settlement |
+| `src/sessions/queue.ts` / `src/sessions/warm-store.ts` | Queue-after-turn coordination and provider-session lifecycle |
+| `src/history/memory-store.ts` / `src/history/canonical/store.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
+| `src/tool-history/` | Shared protocol/identity contracts, authoritative reader, process-shared writer client, SQLite worker, incremental persistence, and cold projection |
+| `src/history/contracts.ts` / `src/history/conversation-id.ts` | Storage/preparation contracts and shared daily-bucket syntax, without harness or rollover policy |
+| `src/history/canonical/` | Canonical transaction coordinator, pure codec, acquired claims, private file checks, native-root enrollment, and conservative process liveness |
+| `src/history/model-switch/contract.ts` / `src/history/model-switch/billing.ts` / `src/history/model-switch/payloads.ts` | Private additive switch wire, artifact and summary-admission storage; not managed-history migration or enabled host switching |
 
 ### Internal model-switch storage foundation
 

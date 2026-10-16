@@ -6,14 +6,14 @@ import { join } from "node:path";
 import { JsonlSessionRepo } from "@mono-agent/turn/engine";
 import type { RuntimeNativePreparationStorage, RuntimeHandoffSummary } from "@mono-agent/turn/host/types";
 import { fixture, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { createModelSwitchState } from "../model-switch-billing.js";
-import { switchDigest } from "../durable-model-switch-contract.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { createModelSwitchState } from "../history/model-switch/billing.js";
+import { switchDigest } from "../history/model-switch/contract.js";
 import {
   advancePreparedModelSwitch, recoverPreparedModelSwitch, createPreparedModelSwitchState,
   explicitSwitchMessageDigest, runPreparedModelSwitch,
 } from "../harness/model-switch-preparation.js";
-import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
+import { ModelSwitchPayloadStore } from "../history/model-switch/payloads.js";
 import type { PreparedHarnessRuntime, HarnessPreparedBinding } from "../harness/runtime-execution.js";
 
 const roots: string[] = [];

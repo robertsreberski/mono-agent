@@ -10,7 +10,7 @@ import {
   createToolHistoryArtifactSinkForTests,
   toolHistoryArtifactAvailable,
   validatedToolHistoryArtifactPath,
-} from "../tool-history-artifacts.js";
+} from "../tool-history/artifacts.js";
 
 const tempDirs: string[] = [];
 

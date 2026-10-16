@@ -17,4 +17,3 @@ export interface SessionContextCapabilities {
    */
   readonly backgroundProcessJobs?: boolean;
 }
-

@@ -7,9 +7,9 @@ import { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type MonoRuntimeLike } from "@mono-agent/turn/host/types";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
-import { ConversationHarnessImpl } from "../harness.js";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { switchConversationKey } from "../durable-model-switch-contract.js";
+import { ConversationHarnessImpl } from "../harness/index.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { switchConversationKey } from "../history/model-switch/contract.js";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
 
 const closes: (() => Promise<unknown>)[] = [];

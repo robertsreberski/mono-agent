@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import type { HistoryMessage } from "../../context/index.js";
-import type { NativeTurnHistory } from "../../durable-model-switch-contract.js";
-import { validateNativeTurnHistory } from "../../durable-model-switch-contract.js";
-import type { DurableTurnReceipt } from "../../durable-turn-contract.js";
-import { serializeDurableTurnFence,validateDurableTurnFence } from "../../durable-turn-contract.js";
-import { validateTurnHistoryV3 } from "../../durable-turn-history.js";
+import type { NativeTurnHistory } from "../model-switch/contract.js";
+import { validateNativeTurnHistory } from "../model-switch/contract.js";
+import type { DurableTurnReceipt } from "../pending-turn/contract.js";
+import { serializeDurableTurnFence,validateDurableTurnFence } from "../pending-turn/contract.js";
+import { validateTurnHistoryV3 } from "../pending-turn/canonical-record.js";
 import { assertSessionModelKey } from "../../sessions/model-key.js";
 import { logicalConversationIdForFence,normalizeConversationId,normalizeRunId } from "./identity.js";
 import { DEFAULT_MAX_MESSAGES,LEGACY_STORE_VERSION,MAX_DIRTY_FENCE_BYTES,MAX_MESSAGE_CONTENT_BYTES,MAX_MESSAGE_ENVELOPE_BYTES,MAX_MESSAGE_SERIALIZED_BYTES,MAX_STORE_FILE_BYTES,PROVIDER_STORE_VERSION,STORE_VERSION,type CanonicalHistoryFile,type DirtyFence,type LoadedHistoryRecord } from "./record-contracts.js";

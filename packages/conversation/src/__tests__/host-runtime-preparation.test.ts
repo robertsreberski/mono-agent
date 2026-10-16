@@ -9,7 +9,7 @@ import { preparedHostFixture } from "../../../turn/src/__tests__/fixtures/prepar
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "../harness/runtime-execution.js";
 import { UncommittedTurnCollector } from "../harness/turn-continuity.js";
 import { buildAgentContext } from "../context/context-builder.js";
-import { createDurableHistoryStore } from "../durable-history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { createSemaphore } from "../semaphore.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];

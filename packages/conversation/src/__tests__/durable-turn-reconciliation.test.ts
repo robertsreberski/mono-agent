@@ -8,10 +8,10 @@ import { JsonlSessionRepo } from "@mono-agent/turn/engine";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/turn/host/types";
-import type { DurableHistoryStoreOptions } from "../durable-history.js";
+import type { DurableHistoryStoreOptions } from "../history/canonical/store.js";
 import type { ConversationHistoryTurnInspection } from "../history/contracts.js";
-import { PendingTurnPayloadStore } from "../durable-turn-payloads.js";
-import { createPendingTurnPayload, createPendingInitialInput, createPendingLiveInput } from "../durable-turn-contract.js";
+import { PendingTurnPayloadStore } from "../history/pending-turn/payloads.js";
+import { createPendingTurnPayload, createPendingInitialInput, createPendingLiveInput } from "../history/pending-turn/contract.js";
 const fault = vi.hoisted(() => ({ unlinkFence: false, beforePendingSync: undefined as ((path: string) => Promise<void>) | undefined }));
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
@@ -27,8 +27,8 @@ vi.mock("node:fs/promises", async (original) => {
     return await actual.rm(...args);
   } };
 });
-const { createDurableHistoryStore } = await import("../durable-history.js");
-const { createConversationHarness } = await import("../harness.js");
+const { createDurableHistoryStore } = await import("../history/canonical/store.js");
+const { createConversationHarness } = await import("../harness/index.js");
 const dirs: string[] = [], timestamp = "2026-01-01T00:00:00.000Z", modelKey = "openai:fictional-model", bucket = "fictional-bucket";
 function evidence(request: ConversationHistoryTurnInspection, outcome: "completed" | "failed" | "cancelled" | "interrupted" = "completed"): RuntimeSessionTurnReconciliationResult {
   const { descriptor } = request;

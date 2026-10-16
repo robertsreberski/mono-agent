@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ToolHistoryPersistenceCoordinator } from "../tool-history-persistence-coordinator.js";
+import { ToolHistoryPersistenceCoordinator } from "../tool-history/persistence-coordinator.js";
 
 function controlled<T>(): {
   readonly promise: Promise<T>;

@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   createPendingTurnPayload, createPendingTurnInput, createPendingInitialInput, createPendingLiveInput, durableTurnFenceDigest, parsePendingTurnPayload, serializeDurableTurnFence,
   serializePendingTurnPayload, validateDurableTurnFence, validateDurableTurnReceipt, MAX_PENDING_TURN_BYTES,
-} from "../durable-turn-contract.js";
-import type { DurableTurnFence, PendingTurnPayload } from "../durable-turn-contract.js";
+} from "../history/pending-turn/contract.js";
+import type { DurableTurnFence, PendingTurnPayload } from "../history/pending-turn/contract.js";
 const hash = "a".repeat(64);
 const identity = { purpose: "execution" as const, ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "fictional-turn", handleId: hash, modelKey: "openai:fictional-model", baseRevision: 0, fenceDigest: hash };
 const payload = (): PendingTurnPayload => ({ version: 1, identity, disposition: "admitted", inputs: [{ kind: "initial", id: "initial", placement: "initial", requestDigest: hash, persistText: "Fictional redacted input.", timestamp: "2026-01-01T00:00:00.000Z", senderLabel: "Fictional sender" }] });

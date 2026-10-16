@@ -1,8 +1,8 @@
 import type { AgentContextImportRequest, AgentContextImportResult } from "@mono-agent/contracts";
 import type { RuntimeSessionTurnDescriptor, RuntimeSessionTurnReconciliationResult, RuntimeNativeJournalAuthority } from "@mono-agent/turn/host/types";
 import type { HistoryMessage } from "../context/types.js";
-import type { PendingTurnInput, PendingTurnCandidate, PendingTurnPayload } from "../durable-turn-contract.js";
-import type { ModelSwitchState, ModelSwitchFence, SummaryAttempt, NativeTurnHistory, HandoffReference, CanonicalJournalDescriptor } from "../durable-model-switch-contract.js";
+import type { PendingTurnInput, PendingTurnCandidate, PendingTurnPayload } from "./pending-turn/contract.js";
+import type { ModelSwitchState, ModelSwitchFence, SummaryAttempt, NativeTurnHistory, HandoffReference, CanonicalJournalDescriptor } from "./model-switch/contract.js";
 
 /** A validated history replacement prepared before the turn commit boundary. */
 export interface PreparedHistoryAppend {

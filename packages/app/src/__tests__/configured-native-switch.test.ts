@@ -563,8 +563,8 @@ it("guarded pending unknown billing is never bypassed by typed capture capacity"
   const { f, h } = await switchedToB(), before = await f.record();
   const prep = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-unknown-billing-owner");
   const source = await prep.read(); if (source.source.status !== "supported") throw new Error("Expected source");
-  const captured = await prep.captureNativeEvidence(), { createModelSwitchState } = await import("../../../conversation/dist/model-switch-billing.js");
-  const { switchDigest } = await import("../../../conversation/dist/durable-model-switch-contract.js");
+  const captured = await prep.captureNativeEvidence(), { createModelSwitchState } = await import("../../../conversation/dist/history/model-switch/billing.js");
+  const { switchDigest } = await import("../../../conversation/dist/history/model-switch/contract.js");
   const budget = { policy: "mono-handoff-v1" as const, contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const state = createModelSwitchState({ ownerKey: source.source.ownerKey, historyBucket: "web:fictional-thread",
     sourceCanonicalDigest: source.source.sourceCanonicalDigest, sourceRevision: source.source.sourceRevision, sourceEpoch: source.source.sourceEpoch, source: captured.source,

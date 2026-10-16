@@ -1,6 +1,6 @@
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { type MonoRuntimeLike, type RuntimeModelReference } from "@mono-agent/turn/host/types";
-import { sessionModelKey, assertSessionModelKey } from "./sessions/model-key.js";
+import { sessionModelKey, assertSessionModelKey } from "./model-key.js";
 
 interface SessionRuntimeResolverOptions {
   readonly runtime: MonoRuntimeLike;

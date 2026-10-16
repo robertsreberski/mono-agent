@@ -1,5 +1,5 @@
-import { uniqueSessionHandles, type ProviderSessionHandle, type SessionRuntimeResolver } from "../session-runtime.js";
-import type { RuntimeSessionRecord, RuntimeSessionStore } from "../sessions.js";
+import { uniqueSessionHandles, type ProviderSessionHandle, type SessionRuntimeResolver } from "../sessions/runtime-owner.js";
+import type { RuntimeSessionRecord, RuntimeSessionStore } from "../sessions/warm-store.js";
 import type { ConversationHarnessOptions } from "./contracts.js";
 
 /**

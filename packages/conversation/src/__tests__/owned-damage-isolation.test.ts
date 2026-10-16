@@ -6,10 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/turn/host/types";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { PendingTurnPayloadStore, pendingCoordinates } from "../durable-turn-payloads.js";
-import { createPendingInitialInput, createPendingTurnPayload, pendingPayloadName } from "../durable-turn-contract.js";
-import { MODEL_SWITCH_DIRECTORY } from "../durable-model-switch-contract.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { PendingTurnPayloadStore, pendingCoordinates } from "../history/pending-turn/payloads.js";
+import { createPendingInitialInput, createPendingTurnPayload, pendingPayloadName } from "../history/pending-turn/contract.js";
+import { MODEL_SWITCH_DIRECTORY } from "../history/model-switch/contract.js";
 import type { ConversationHistoryTurnInspection } from "../history/contracts.js";
 
 const dirs: string[] = [], timestamp = "2026-01-01T00:00:00.000Z", modelKey = "openai:fictional-model";

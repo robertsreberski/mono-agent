@@ -1,6 +1,6 @@
 import { AgentResponseCancelledError } from "@mono-agent/contracts";
 
-import type { ConversationHarnessRequest, ConversationHarnessResponse } from "./harness/contracts.js";
+import type { ConversationHarnessRequest, ConversationHarnessResponse } from "../harness/contracts.js";
 
 /**
  * Serializes turns per conversation while letting different conversations run

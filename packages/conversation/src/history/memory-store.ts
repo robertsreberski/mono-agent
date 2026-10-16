@@ -1,7 +1,7 @@
-import { belongsToLogicalConversation } from "./history/conversation-id.js";
-import type { HistoryMessage } from "./context/index.js";
+import { belongsToLogicalConversation } from "./conversation-id.js";
+import type { HistoryMessage } from "../context/index.js";
 
-import type { ConversationHistoryStore, InMemoryHistoryStoreOptions } from "./history/contracts.js";
+import type { ConversationHistoryStore, InMemoryHistoryStoreOptions } from "./contracts.js";
 
 class InMemoryConversationHistoryStore implements ConversationHistoryStore {
   private readonly maxMessages: number;

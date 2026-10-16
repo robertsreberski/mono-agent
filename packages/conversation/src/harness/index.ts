@@ -1,7 +1,7 @@
-import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "./durable-history.js";
-import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "./durable-turn-contract.js";
-import { senderLabel as canonicalSenderLabel } from "./harness/speaker-context.js";
-import { terminalFailureCanRecover, waitForTerminalSettlement, type TerminalRecoverySkipReason } from "./harness/session-recovery.js";
+import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "../history/canonical/store.js";
+import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "../history/pending-turn/contract.js";
+import { senderLabel as canonicalSenderLabel } from "./speaker-context.js";
+import { terminalFailureCanRecover, waitForTerminalSettlement, type TerminalRecoverySkipReason } from "./session-recovery.js";
 import type { RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type {
   AgentContextImportRequest,
@@ -16,26 +16,26 @@ import { monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { modelReferenceKey } from "@mono-agent/turn/host/config";
 import { type RuntimeResult } from "@mono-agent/turn/host/types";
 
-import type { BuiltAgentContext } from "./context/index.js";
+import type { BuiltAgentContext } from "../context/index.js";
 import { NoopRunRecorder } from "@mono-agent/observability";
-import { createLiveSessionManager } from "./live-session.js";
-import type { LiveSessionManager, LiveSessionRunLifecycle } from "./live-session.js";
-import { createLiveInputMailbox } from "./live-input.js";
-import type { LiveInputMailbox } from "./live-input.js";
-import { createSemaphore } from "./semaphore.js";
-import type { Semaphore } from "./semaphore.js";
-import { createRuntimeSessionStore } from "./sessions.js";
+import { createLiveSessionManager } from "../sessions/queue.js";
+import type { LiveSessionManager, LiveSessionRunLifecycle } from "../sessions/queue.js";
+import { createLiveInputMailbox } from "../sessions/live-input.js";
+import type { LiveInputMailbox } from "../sessions/live-input.js";
+import { createSemaphore } from "../semaphore.js";
+import type { Semaphore } from "../semaphore.js";
+import { createRuntimeSessionStore } from "../sessions/warm-store.js";
 import type {
   RuntimeSessionRecord,
   RuntimeSessionSnapshot,
   RuntimeSessionStore,
-} from "./sessions.js";
-import type { ConversationHarness, ConversationHarnessFailure, ConversationHarnessOptions, ConversationHarnessRequest, ConversationHarnessResponse, ConversationHarnessSessionEvent } from "./harness/contracts.js";
-import type { ConversationHistoryProviderSessionTurn, ConversationHistoryTurnReconciliation, ConversationHistoryExclusiveTurn, PreparedHistoryAppend } from "./history/contracts.js";
-import type { ConversationHarnessContinuationClaimCapability } from "./harness/contracts.js";
-import { createSkillsCache } from "./skills/index.js";
-import type { SkillsCache } from "./skills/index.js";
-import { applyHarnessAttachments } from "./harness/attachments.js";
+} from "../sessions/warm-store.js";
+import type { ConversationHarness, ConversationHarnessFailure, ConversationHarnessOptions, ConversationHarnessRequest, ConversationHarnessResponse, ConversationHarnessSessionEvent } from "./contracts.js";
+import type { ConversationHistoryProviderSessionTurn, ConversationHistoryTurnReconciliation, ConversationHistoryExclusiveTurn, PreparedHistoryAppend } from "../history/contracts.js";
+import type { ConversationHarnessContinuationClaimCapability } from "./contracts.js";
+import { createSkillsCache } from "../skills/index.js";
+import type { SkillsCache } from "../skills/index.js";
+import { applyHarnessAttachments } from "./attachments.js";
 import {
   UncommittedTurnCollector,
   cancelledTurnReason,
@@ -44,23 +44,23 @@ import {
   type CancelledTurnReason,
   type FailedTurnReason,
   type TurnContinuityOutcome,
-} from "./harness/turn-continuity.js";
-import { loadHarnessHistory, loadToolHistoryProjection, prepareHarnessContext } from "./harness/context-preparation.js";
-import { ConversationHarnessError } from "./harness/error.js";
+} from "./turn-continuity.js";
+import { loadHarnessHistory, loadToolHistoryProjection, prepareHarnessContext } from "./context-preparation.js";
+import { ConversationHarnessError } from "./error.js";
 import {
   activateContinuationOriginContexts,
   buildContinuationOriginContext,
   continuationCapabilitiesRequiringOriginContext,
   finalizeContinuationOriginContexts,
-} from "./harness/mcp-context.js";
-import { buildSuccessfulTurn, persistSuccessfulMemory } from "./harness/memory-persistence.js";
+} from "./mcp-context.js";
+import { buildSuccessfulTurn, persistSuccessfulMemory } from "./memory-persistence.js";
 import {
   createDefaultRunId,
   requestSessionModel,
   isCronRequest,
   requestOverridesModel,
   runSourceFromRequest,
-} from "./harness/request-routing.js";
+} from "./request-routing.js";
 import {
   cancellationFailureKind,
   commitRecorderFinish,
@@ -74,19 +74,19 @@ import {
   safeRecorderFail,
   shouldRetrySessionResumeError,
   shouldRetryWithoutSession,
-} from "./harness/run-results.js";
-import { prepareConfiguredModelSwitch, type InternalNativeSwitchPolicy, type ConfiguredPreparedTurn } from "./harness/configured-model-switch.js";
-import { coldReplayMessages, runHarnessRuntime } from "./harness/runtime-execution.js";
-import { mergeRuntimeOptions } from "./harness/runtime-options.js";
-import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./harness/session-events.js";
-import { createSessionRuntimeResolver, ProviderSessionModelChangedError, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
-import { sessionModelKey } from "./sessions/model-key.js";
-import { retireRunResultSession } from "./harness/session-retirement.js";
-import { validateOptions, validateRequest } from "./harness/validation.js";
-import { errorToDetails } from "./harness/value-utils.js";
-import { appendVerbatimHistoryTurn } from "./harness/verbatim-history.js";
-import { eligibleContextImport, importHarnessContext } from "./harness/context-import.js";
-import { assertConversationHistoryVersion } from "./sessions.js";
+} from "./run-results.js";
+import { prepareConfiguredModelSwitch, type InternalNativeSwitchPolicy, type ConfiguredPreparedTurn } from "./configured-model-switch.js";
+import { coldReplayMessages, runHarnessRuntime } from "./runtime-execution.js";
+import { mergeRuntimeOptions } from "./runtime-options.js";
+import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./session-events.js";
+import { createSessionRuntimeResolver, ProviderSessionModelChangedError, type ProviderSessionHandle, type SessionRuntimeResolver } from "../sessions/runtime-owner.js";
+import { sessionModelKey } from "../sessions/model-key.js";
+import { retireRunResultSession } from "./session-retirement.js";
+import { validateOptions, validateRequest } from "./validation.js";
+import { errorToDetails } from "./value-utils.js";
+import { appendVerbatimHistoryTurn } from "./verbatim-history.js";
+import { eligibleContextImport, importHarnessContext } from "./context-import.js";
+import { assertConversationHistoryVersion } from "../sessions/warm-store.js";
 
 export { ConversationHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
@@ -689,7 +689,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
     let nativePreparationActive = false;
     let deferredNativeContinuity: ContinuityClaim | undefined;
     let exclusiveHistoryTurn: ConversationHistoryExclusiveTurn | undefined;
-    let exclusiveCapturedHistory: readonly import("./context/index.js").HistoryMessage[] | undefined;
+    let exclusiveCapturedHistory: readonly import("../context/index.js").HistoryMessage[] | undefined;
     let exclusiveHistoryRequired = false;
     let committedHistoryVersion: string | undefined;
     let coordinatedProviderSessionId: string | undefined;
@@ -740,7 +740,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
     let continuityPromise: Promise<void> | undefined;
     // The already-built terminal account, retained so a later waiter can
     // republish it exactly once if the first publication attempt fails.
-    let continuityMessages: readonly import("./context/index.js").HistoryMessage[] | undefined;
+    let continuityMessages: readonly import("../context/index.js").HistoryMessage[] | undefined;
     // Set immediately after the account commit/append succeeds. A republish
     // with this flag must never append again — only redo retirement/reseed.
     let accountCommitted = false;

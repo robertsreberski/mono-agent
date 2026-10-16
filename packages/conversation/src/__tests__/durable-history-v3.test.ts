@@ -3,9 +3,9 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createDurableHistoryStore } from "../durable-history.js";
-import type { TurnHistoryV3 } from "../durable-turn-history.js";
-import { recognizesTurnCommit } from "../durable-turn-history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import type { TurnHistoryV3 } from "../history/pending-turn/canonical-record.js";
+import { recognizesTurnCommit } from "../history/pending-turn/canonical-record.js";
 
 const dirs: string[] = [];
 const conversationId = "fictional-bucket";

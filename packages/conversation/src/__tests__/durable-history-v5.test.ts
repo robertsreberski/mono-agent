@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
-import { createDurableHistoryStore } from "../durable-history.js";
-import type { DurableHistoryStoreOptions } from "../durable-history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import type { DurableHistoryStoreOptions } from "../history/canonical/store.js";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/turn/host/types";
-import { validateNativeTurnHistory } from "../durable-model-switch-contract.js";
-import type { NativeTurnHistory } from "../durable-model-switch-contract.js";
+import { validateNativeTurnHistory } from "../history/model-switch/contract.js";
+import type { NativeTurnHistory } from "../history/model-switch/contract.js";
 import { bucket, modelKey, timestamp, canonicalRecord, conversationKey, evidence } from "./fixtures/canonical-v5-fixture.mjs";
 import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 

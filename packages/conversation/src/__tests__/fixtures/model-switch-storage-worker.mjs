@@ -1,9 +1,9 @@
 import { lstat, chmod, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ModelSwitchPayloadStore } from "../../../dist/model-switch-payloads.js";
-import { createModelSwitchState } from "../../../dist/model-switch-billing.js";
-import { switchDigest } from "../../../dist/durable-model-switch-contract.js";
+import { ModelSwitchPayloadStore } from "../../../dist/history/model-switch/payloads.js";
+import { createModelSwitchState } from "../../../dist/history/model-switch/billing.js";
+import { switchDigest } from "../../../dist/history/model-switch/contract.js";
 const [root, action, phase] = process.argv.slice(2);
 const source = { journalId: "fictional-journal", epoch: "1".repeat(64), handleId: "2".repeat(64),
   ownerKey: "fictional-owner", historyBucket: "fictional-conversation", sourceTipId: "fictional-tip", sourceSeq: 4, sourceDigest: "3".repeat(64),

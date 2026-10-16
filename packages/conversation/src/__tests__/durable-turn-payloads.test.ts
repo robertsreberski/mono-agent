@@ -1,14 +1,14 @@
-import { createDurableHistoryStore } from "../durable-history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { link, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
-import { PendingTurnPayloadStore, pendingCoordinates } from "../durable-turn-payloads.js";
-import type { PendingPayloadOwner } from "../durable-turn-payloads.js";
-import { pendingPayloadName, serializeDurableTurnFence } from "../durable-turn-contract.js";
-import type { PendingTurnPayload } from "../durable-turn-contract.js";
+import { PendingTurnPayloadStore, pendingCoordinates } from "../history/pending-turn/payloads.js";
+import type { PendingPayloadOwner } from "../history/pending-turn/payloads.js";
+import { pendingPayloadName, serializeDurableTurnFence } from "../history/pending-turn/contract.js";
+import type { PendingTurnPayload } from "../history/pending-turn/contract.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true }))); });
 const payload = (text = "Fictional canonical input.", turnId = "fictional-turn"): PendingTurnPayload => ({ version: 1,

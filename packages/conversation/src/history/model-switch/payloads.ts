@@ -4,10 +4,10 @@ import { randomBytes, createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 import { MODEL_SWITCH_DIRECTORY, MAX_MODEL_SWITCH_BYTES, ModelSwitchMessageConsumedError, MAX_MODEL_SWITCH_FENCE_BYTES, boundedSwitchBytes, canonicalSwitchJSON,
   reservationBytes, serializeModelSwitchState, switchConversationKey, switchDigest, switchCoverageDigest, switchHash, switchKeys, switchObject,
-  validateModelSwitchFence, validateModelSwitchState, validateSwitchReference } from "./durable-model-switch-contract.js";
-import type { HandoffReference, ModelSwitchFence, ModelSwitchPointer, ModelSwitchState } from "./durable-model-switch-contract.js";
-import { acceptHandoffReference, admitSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage, finishSummaryAttempt } from "./model-switch-billing.js";
-import type { SummaryAttempt } from "./durable-model-switch-contract.js";
+  validateModelSwitchFence, validateModelSwitchState, validateSwitchReference } from "./contract.js";
+import type { HandoffReference, ModelSwitchFence, ModelSwitchPointer, ModelSwitchState } from "./contract.js";
+import { acceptHandoffReference, admitSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage, finishSummaryAttempt } from "./billing.js";
+import type { SummaryAttempt } from "./contract.js";
 
 interface ModelSwitchDirectoryIdentity { readonly dev: number; readonly ino: number }
 export interface ModelSwitchStorageOwner {

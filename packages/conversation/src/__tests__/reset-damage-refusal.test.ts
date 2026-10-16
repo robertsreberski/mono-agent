@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { OwnedFileDamagedError } from "@mono-agent/turn/engine/owned-fs.js";
-import { PendingTurnPayloadStore } from "../durable-turn-payloads.js";
+import { PendingTurnPayloadStore } from "../history/pending-turn/payloads.js";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createDurableHistoryStore } from "../durable-history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
 vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof fs>() }));
 const roots: string[] = [], id = "fictional-reset-owner", sibling = "fictional-sibling";
 const key = createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");

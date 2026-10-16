@@ -12,4 +12,3 @@ export function assertSessionModelKey(value: unknown): asserts value is string {
     throw new TypeError("Session modelKey must be a canonical model reference.");
   }
 }
-

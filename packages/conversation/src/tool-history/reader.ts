@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { lstat, readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { toolHistoryArtifactAvailable } from "../tool-history-artifacts.js";
+import { toolHistoryArtifactAvailable } from "./artifacts.js";
 import { TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_USER_VERSION, type ToolHistoryArtifactReference, type ToolHistoryGetInput, type ToolHistoryGetResult, type ToolHistoryProjectionItem, type ToolHistoryRecordProjection, type ToolHistorySearchCursor, type ToolHistorySearchInput, type ToolHistorySearchItem, type ToolHistorySearchPage, type ToolHistoryStats } from "./contracts.js";
 import { ToolHistoryWriterError } from "./errors.js";
 import { assertSecureReadableDirectory, assertSecureReadableFile, normalizeId } from "./paths.js";

@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { ConversationHarnessImpl } from "../harness.js";
-import { createInMemoryHistoryStore } from "../history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { ConversationHarnessImpl } from "../harness/index.js";
+import { createInMemoryHistoryStore } from "../history/memory-store.js";
 
 vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof fs>() }));
 type Identity = { dev: number; ino: number };

@@ -4,13 +4,13 @@ import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, Runtim
 import { types as nodeUtilTypes } from "node:util";
 
 import type { HistoryMessage } from "../context/index.js";
-import type { AppliedLiveInput } from "../live-input.js";
+import type { AppliedLiveInput } from "../sessions/live-input.js";
 import {
   boundedToolHistoryPayload,
   TOOL_HISTORY_ARGUMENT_MAX_BYTES,
   TOOL_HISTORY_RESULT_MAX_BYTES,
   utf8Prefix,
-} from "../tool-history-payload.js";
+} from "../tool-history/payload.js";
 import { senderLabel } from "./speaker-context.js";
 
 export const CANCELLED_TURN_HISTORY_KEY_PREFIX = "cancelled-turn:v1:";
