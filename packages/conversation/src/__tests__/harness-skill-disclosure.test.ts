@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness } from "../index.js";
+import { createConversationHarness } from "../index.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -51,11 +51,11 @@ function request(conversationId = "conv-1", userMessage = "hello") {
   return { conversationId, userMessage, abortSignal: new AbortController().signal };
 }
 
-describe("AgentHarness progressive skill disclosure wiring", () => {
+describe("ConversationHarness progressive skill disclosure wiring", () => {
   it("index mode (opt-in) threads discovered skills + skillsRoot so ReadSkill can be created", async () => {
     const { identityPath, skillsRoot } = await fixture(["research", "writing"]);
     const fake = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, skillsRoot, skillDisclosure: "index",
     });
 
@@ -82,7 +82,7 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     // subagent request, and into a child prompt built from it.
     const { identityPath, skillsRoot } = await fixture(["research"]);
     const fake = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, skillsRoot, skillDisclosure: "index",
     });
 
@@ -95,7 +95,7 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
   it("does not thread skills/skillsRoot when no skillsRoot is configured (legacy behavior)", async () => {
     const { identityPath } = await fixture([]);
     const fake = createFakeRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model });
 
     await harness.run(request());
 
@@ -109,7 +109,7 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     const fake = createFakeRuntime();
     // skillDisclosure unset — the default is "full", so ReadSkill must NOT be wired
     // even when a skillsRoot is configured (byte-for-byte legacy behavior).
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, skillsRoot,
     });
 

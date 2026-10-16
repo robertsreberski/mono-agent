@@ -4,9 +4,9 @@ import * as boundary from "../index.js";
 it("exposes only the curated package-root runtime boundary", () => {
   expect(Object.keys(boundary).sort()).toEqual([
     "consumerContractNames",
-    "createConfiguredAgentHarness",
     "createConfiguredAgentResponder",
     "createConfiguredAgentRuntime",
+    "createConfiguredConversationHarness",
     "createConfiguredMemory",
     "createCronChannelDriver",
     "createOpenAIApiChannelDriver",

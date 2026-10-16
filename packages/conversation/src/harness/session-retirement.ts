@@ -1,6 +1,6 @@
 import { uniqueSessionHandles, type ProviderSessionHandle, type SessionRuntimeResolver } from "../session-runtime.js";
 import type { RuntimeSessionRecord, RuntimeSessionStore } from "../sessions.js";
-import type { AgentHarnessOptions } from "./contracts.js";
+import type { ConversationHarnessOptions } from "./contracts.js";
 
 /**
  * Invalidates provider sessions attached to a turn that canonical host history
@@ -9,7 +9,7 @@ import type { AgentHarnessOptions } from "./contracts.js";
  * Missing-authority rejection is preservation, not successful physical cleanup.
  */
 export async function retireRunResultSession(
-  options: AgentHarnessOptions,
+  options: ConversationHarnessOptions,
   runtimeForSession: SessionRuntimeResolver,
   sessionStore: RuntimeSessionStore | undefined,
   sessionsEnabled: boolean,

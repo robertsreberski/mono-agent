@@ -10,8 +10,8 @@ import type {
   AgentResponder,
 } from "@mono-agent/contracts";
 import {
-  createAgentHarness,
-  createAgentResponder,
+  createConversationHarness,
+  createConversationResponder,
   createInMemoryHistoryStore,
   createDurableHistoryStore,
   type ConversationHistoryStore,
@@ -289,7 +289,7 @@ describe("createSlackPostedReplyHistory", () => {
       contextImport: capability,
     };
     const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: observingRuntime().runtime,
       model: MODEL,
@@ -315,13 +315,13 @@ describe("createSlackPostedReplyHistory", () => {
 
     const bridge = createSlackPostedReplyHistory({ maxMessages: 64 });
     const runtime = observingRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: runtime.runtime,
       model: MODEL,
       historyStore: bridge.wrapHistoryStore(canonical),
     });
-    const responder = bridge.wrapResponder(createAgentResponder({ harness }));
+    const responder = bridge.wrapResponder(createConversationResponder({ harness }));
 
     try {
       const response = await responder.respond(slackReplyRequest(), noopStream());
@@ -540,14 +540,14 @@ describe("createSlackPostedReplyHistory", () => {
       if (call === 2) providerTranscript.push(SENT_TEXT);
       return { text: "Model reply.", providerSessionId: "provider-session-1" };
     });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: runtime.runtime,
       model: MODEL,
       historyStore: bridge.wrapHistoryStore(countingStore),
       session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
     });
-    const responder = bridge.wrapResponder(createAgentResponder({ harness }));
+    const responder = bridge.wrapResponder(createConversationResponder({ harness }));
 
     try {
       await responder.respond({
@@ -636,7 +636,7 @@ it.each(["exclusive", "provider"])("posted-reply %s acquisition cancels through 
   const id = "fictional-wrapped-owner", holder = await store.beginProviderSessionPreparation(id, "fictional-holder"), controller = new AbortController();
   const begin = mode === "exclusive" ? vi.spyOn(store.contextImport!, "beginExclusiveTurn") : vi.spyOn(store, "beginProviderSessionTurn");
   const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
-  const runtime = observingRuntime(), harness = createAgentHarness({ identityPath, model: MODEL, runtime: runtime.runtime, historyStore: wrapped,
+  const runtime = observingRuntime(), harness = createConversationHarness({ identityPath, model: MODEL, runtime: runtime.runtime, historyStore: wrapped,
     session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode === "provider" ? { sessionsRoot: join(root, "native") } : {}) });
   let settled = false;
   const pending = harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal }).then((result) => { settled = true; return result; });

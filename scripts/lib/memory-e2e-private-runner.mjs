@@ -208,7 +208,7 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
           releaseTurn: (...args) => service.releaseTurn(...args),
           ...(flags["private-mode"] === "capture" ? { async persistCompletedTurn(...args) { await assertPrivateLocation(memoryRoot, roots.repositories); return store.persistCompletedTurn(...args); } } : {}),
         }, { get(target, key) { if (Object.hasOwn(target, key)) return target[key]; const value = service[key]; return typeof value === "function" ? value.bind(service) : value; } });
-        harness = modules.harness.createAgentHarness({ identityPath: json.context.identityPath, cwd: workspace,
+        harness = modules.harness.createConversationHarness({ identityPath: json.context.identityPath, cwd: workspace,
           model: config.runtime.model, now: () => new Date(currentTurn.timestamp),
           historyStore: modules.harness.createInMemoryHistoryStore({ maxMessages: 100 }),
           memory: observedMemory, memoryWriteMode: config.memory.writeMode,

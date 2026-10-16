@@ -1,8 +1,8 @@
 import { assertAgentContinuationOriginContext } from "@mono-agent/contracts";
 
-import type { AgentHarnessOptions, AgentHarnessRequest } from "./contracts.js";
+import type { ConversationHarnessOptions, ConversationHarnessRequest } from "./contracts.js";
 
-export function validateOptions(options: AgentHarnessOptions): void {
+export function validateOptions(options: ConversationHarnessOptions): void {
   const history = options.historyStore;
   if (history?.providerSessionReconciliation === "v1" && (history.providerSessionRetirement !== "fail-closed"
     || typeof history.beginProviderSessionTurn !== "function" || typeof history.recoverProviderSessionTurn !== "function")) {
@@ -49,7 +49,7 @@ export function validateOptions(options: AgentHarnessOptions): void {
   }
 }
 
-export function validateRequest(request: AgentHarnessRequest): void {
+export function validateRequest(request: ConversationHarnessRequest): void {
   if (typeof request.conversationId !== "string" || request.conversationId.trim().length === 0) {
     throw new TypeError("conversationId must be a non-empty string.");
   }

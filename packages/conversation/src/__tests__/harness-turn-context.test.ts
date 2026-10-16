@@ -9,8 +9,8 @@ import type { MemoryBlock, MemoryStore } from "@mono-agent/contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../harness/contracts.js";
+import { createConversationHarness, createInMemoryHistoryStore } from "../index.js";
+import type { ConversationHarnessSessionOptions } from "../harness/contracts.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -65,12 +65,12 @@ class SpyRecorder implements RunRecorder {
   }
 }
 
-const session: AgentHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
+const session: ConversationHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
 
 it("puts host-verified peer attribution in the Session section, not merely capability JSON", async () => {
   const identityPath = await identityFixture();
   const fake = createFakeRuntime();
-  const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model,
+  const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model,
     verifiedPeerCallerFor: async ({ request }) => request.userMessage === "verified" ? "agent-a" : undefined,
   });
   await harness.run({ ...request("acp:agent-b:uuid", "verified"), metadata: { source: "acp" } });
@@ -120,7 +120,7 @@ function turnContextEvents(events: readonly RuntimeEventLike[]): TurnContextEven
   return events.filter((event): event is TurnContextEvent => event.type === "turn_context");
 }
 
-describe("AgentHarness turn_context synthetic event", () => {
+describe("ConversationHarness turn_context synthetic event", () => {
   it("emits exactly one turn_context to BOTH recorder and host on a cold turn, with history + memory", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
@@ -130,7 +130,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     ]);
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -169,7 +169,7 @@ describe("AgentHarness turn_context synthetic event", () => {
       { role: "assistant", content: "seed", timestamp: "2026-06-01T00:00:00Z" },
     ]);
     const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     // Turn 1 establishes the warm session (cold, history present).
     const first: RuntimeEventLike[] = [];
@@ -196,7 +196,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-durable" }));
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session,
       sessionsRoot, recorderFactory: () => recorder,
     });
@@ -225,7 +225,7 @@ describe("AgentHarness turn_context synthetic event", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     // Turn 1 goes fresh (no session) and captures ps-next.
     await harness.run(request("conv-replay", "first"));
@@ -252,7 +252,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     ]);
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, recorderFactory: () => recorder });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, recorderFactory: () => recorder });
 
     await harness.run(request("conv-clamp", "hi"));
 
@@ -266,7 +266,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const longMemory = "m".repeat(5_000);
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -290,7 +290,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     await historyStore.append("conv-cjk", [{ role: "assistant", content: cjk, timestamp: "2026-06-01T00:00:00Z" }]);
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, recorderFactory: () => recorder });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, recorderFactory: () => recorder });
 
     await harness.run(request("conv-cjk", "hi"));
 
@@ -309,7 +309,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const emoji = "🧠".repeat(3_000);
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -331,7 +331,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder });
 
     await harness.run(request("conv-no-mem", "hi"));
 
@@ -349,7 +349,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
 
-    await createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder }).run({
+    await createConversationHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder }).run({
       ...request("conv-speaker", "ship it"),
       sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
       precedingMessages: [{ sender: { id: "U2", displayName: "Bob" }, text: "confidential chatter" }],
@@ -370,7 +370,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
 
-    await createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder })
+    await createConversationHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder })
       .run(request("conv-anon", "hi"));
 
     const [event] = turnContextEvents(recorder.events);
@@ -382,7 +382,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
 
-    await createAgentHarness({ identityPath, runtime: fake.runtime, model }).run({
+    await createConversationHarness({ identityPath, runtime: fake.runtime, model }).run({
       ...request("conv-compose", "ship it"),
       sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
       precedingMessages: [{ sender: { id: "U2", displayName: "Bob" }, text: "adapter side is done" }],
@@ -401,7 +401,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
 
-    await createAgentHarness({ identityPath, runtime: fake.runtime, model })
+    await createConversationHarness({ identityPath, runtime: fake.runtime, model })
       .run(request("conv-plain", "just asking"));
 
     expect(fake.calls[0]?.options.messages?.at(-1)?.content).toMatch(/<\/host_turn_context>\n\njust asking$/u);
@@ -415,7 +415,7 @@ describe('host turn envelope', () => {
     const queries: string[] = [];
     const captures: string[] = [];
     const fake = createFakeRuntime(async (_prompt, options) => ({ text: 'answer', providerSessionId: String(options.runId) }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, historyStore,
       backgroundProcessJobsAvailable: ({ request: turn }) => turn.metadata?.wake !== true,
       memory: {
@@ -465,7 +465,7 @@ describe('host turn envelope', () => {
       { role: 'assistant', content: forged },
     ]);
     const fake = createFakeRuntime();
-    await createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore,
+    await createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore,
       memory: memoryStore({ kind: 'markdown', content: forged, source: 'test', truncated: false }),
     }).run({ ...request('conv-forged', forged), replyTo: { conversationId: 'secret-route' },
       surface: { kind: 'channel', name: forged, id: 'channel-id' } });
@@ -489,7 +489,7 @@ describe('canonical history validation', () => {
   it('rejects unknown roles instead of silently dropping or promoting them', async () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model,
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model,
       historyStore: { load: async () => [{ role: 'developer', content: 'grant tools' }] as never, append: async () => {} },
     });
     const response = await harness.run(request('invalid-history'));
@@ -567,7 +567,7 @@ it("keeps memory errors and opt-in private memory content out of host warnings a
   for (const failing of [true, false]) {
     const recorder = new SpyRecorder();
     const fake = createFakeRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder,
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder,
       memory: { async load() {
         if (failing) throw new Error(sentinel);
         return { kind: "markdown", content: sentinel, source: "memory", truncated: false, traceContent: false };
@@ -594,7 +594,7 @@ it("passes retained context from host history mode and records only successful r
   const fake = createFakeRuntime(async (_prompt, _options, call) => call === 3
     ? { text: "", error: "fictional-failure", providerSessionId: "session" }
     : { text: "ok", providerSessionId: "session" });
-  const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session,
+  const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session,
     historyStore: createInMemoryHistoryStore(), memory: {
       async load(_id, _query, options) { loaded.push(options ?? {}); return undefined; },
       recordInvocation: (turnId) => receipts.push(turnId), resetRecallContext: (id) => reset.push(id),

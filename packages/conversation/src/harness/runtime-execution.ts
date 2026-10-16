@@ -10,14 +10,14 @@ import { type RuntimeMessage, type RuntimeResult, type RuntimeRunOptions, type R
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, neutralizeTurnEnvelope } from "../context/turn-envelope.js";
 import type { Semaphore } from "../semaphore.js";
-import type { AgentHarnessContinuationClaimCapability, AgentHarnessOptions, AgentHarnessProgressCapability, AgentHarnessRequest, AgentHarnessRuntimeOptionsExtension } from "./contracts.js";
+import type { ConversationHarnessContinuationClaimCapability, ConversationHarnessOptions, ConversationHarnessProgressCapability, ConversationHarnessRequest, ConversationHarnessRuntimeOptionsExtension } from "./contracts.js";
 import type { ConversationHistoryTurnReconciliation } from "../history/contracts.js";
 import type { SessionRuntimeResolver } from "../session-runtime.js";
 import type { LiveInputMailbox } from "../live-input.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "../tool-policy/index.js";
 import type { AttachmentRequestContext } from "./attachments.js";
 import type { UncommittedTurnCollector } from "./turn-continuity.js";
-import { AgentHarnessError } from "./error.js";
+import { ConversationHarnessError } from "./error.js";
 import { injectMcpContinuationContext, injectMcpRequestContext } from "./mcp-context.js";
 import {
   isRuntimeModelReference,
@@ -58,20 +58,20 @@ export interface PreparedHarnessRuntime {
   close(): Promise<void>;
 }
 export interface HarnessRuntimePreparationInput {
-  readonly options: AgentHarnessOptions; readonly runLimiter?: Semaphore; readonly sessionsEnabled: boolean;
-  readonly request: AgentHarnessRequest; readonly recorder: RunRecorder; readonly runId: string;
+  readonly options: ConversationHarnessOptions; readonly runLimiter?: Semaphore; readonly sessionsEnabled: boolean;
+  readonly request: ConversationHarnessRequest; readonly recorder: RunRecorder; readonly runId: string;
   readonly durableSessionsRoot: string; readonly routing: HarnessRuntimeRouting;
   readonly attachmentContext: AttachmentRequestContext;
-  readonly continuationCapabilities: AgentHarnessContinuationClaimCapability[];
+  readonly continuationCapabilities: ConversationHarnessContinuationClaimCapability[];
   readonly turnContinuityCollector: UncommittedTurnCollector;
   readonly liveInputMailbox?: LiveInputMailbox; readonly onProviderStart?: () => void;
   readonly assertOwned: () => Promise<void>;
   /** Called once under the permit and outgoing conversation claim. No P2 admission. */
-  readonly prepareContext: (request: AgentHarnessRequest, options: AgentHarnessOptions) => Promise<PreparedContext>;
+  readonly prepareContext: (request: ConversationHarnessRequest, options: ConversationHarnessOptions) => Promise<PreparedContext>;
 }
 interface PreparationControl {
   assertOwned(): Promise<void>;
-  prepareContext(request: AgentHarnessRequest, options: AgentHarnessOptions): Promise<PreparedContext>;
+  prepareContext(request: ConversationHarnessRequest, options: ConversationHarnessOptions): Promise<PreparedContext>;
   abort(reason: unknown): void;
   ready(lease: RuntimeNativePreparedDispatch, context: PreparedContext): Promise<HarnessPreparedBinding>;
 }
@@ -92,7 +92,7 @@ function freezePreparationData<T>(value: T): T {
  * The original claim is used during preparation; run receives the transferred P2 owner. */
 export function prepareHarnessRuntime(input: HarnessRuntimePreparationInput): Promise<PreparedHarnessRuntime> {
   // Metadata identity carries out-of-band capability bindings; do not clone it.
-  const request = { ...copyPreparationData(input.request), ...(input.request.metadata ? { metadata: input.request.metadata } : {}) }, options: AgentHarnessOptions = { ...input.options,
+  const request = { ...copyPreparationData(input.request), ...(input.request.metadata ? { metadata: input.request.metadata } : {}) }, options: ConversationHarnessOptions = { ...input.options,
     model: { ...input.options.model },
     ...(input.options.runtimeOptions ? { runtimeOptions: copyPreparationData(input.options.runtimeOptions) } : {}),
     ...(input.options.toolPolicy ? { toolPolicy: copyPreparationData(input.options.toolPolicy) } : {}),
@@ -157,10 +157,10 @@ export function runHarnessRuntime(...args: ExecutionArguments): Promise<RuntimeR
 
 async function executeHarnessRuntime(preparation: PreparationControl | undefined,
 
-  options: AgentHarnessOptions,
+  options: ConversationHarnessOptions,
   runLimiter: Semaphore | undefined,
   sessionsEnabled: boolean,
-  request: AgentHarnessRequest,
+  request: ConversationHarnessRequest,
   recorder: RunRecorder,
   context: BuiltAgentContext,
   memory: ContextBlockInput | undefined,
@@ -176,7 +176,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
   historyAsMessages: boolean,
   toolHistoryProjection: string | undefined,
   attachmentContext: AttachmentRequestContext,
-  continuationCapabilities: AgentHarnessContinuationClaimCapability[],
+  continuationCapabilities: ConversationHarnessContinuationClaimCapability[],
   turnContinuityCollector: UncommittedTurnCollector,
   liveInputMailbox?: LiveInputMailbox,
   onProviderStart?: () => void,
@@ -187,12 +187,12 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
     recorder.onEvent(event);
     hostOnEvent?.(event);
   };
-    let requestExtension: AgentHarnessRuntimeOptionsExtension | undefined;
+    let requestExtension: ConversationHarnessRuntimeOptionsExtension | undefined;
     let nativeLease: RuntimeNativePreparedDispatch | undefined;
     let preparedContext: PreparedContext | undefined;
     let requestExtensionCleanup: Promise<void> | undefined;
-    let mcpProgressCapability: AgentHarnessProgressCapability | undefined;
-    let mcpContinuationCapabilities: readonly AgentHarnessContinuationClaimCapability[] = [];
+    let mcpProgressCapability: ConversationHarnessProgressCapability | undefined;
+    let mcpContinuationCapabilities: readonly ConversationHarnessContinuationClaimCapability[] = [];
     let mcpRunOutputCleanup: (() => Promise<void>) | undefined;
     let settlementCleanup: Promise<void> | undefined;
     // Admission precedes per-request extension setup. Extensions may allocate
@@ -371,7 +371,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       ) {
         // A session-capable non-isolated call must execute the canonical primary
         // selected before history assembly; reject late extension mismatches.
-        throw new AgentHarnessError(
+        throw new ConversationHarnessError(
           "undeclared_model_override",
           "A model-changing runtimeOptionsForRequest result must be declared in request metadata before context assembly.",
         );

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createConfiguredAgentHarness, createConfiguredAgentRuntime } from "@mono-agent/app";
+import { createConfiguredConversationHarness, createConfiguredAgentRuntime } from "@mono-agent/app";
 
 const WORKTREE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCENARIOS = new Set(["multi-turn", "durable-reopen", "stateless", "concurrent", "recall-changing", "capability-change"]);
@@ -207,7 +207,7 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
     let toolsEnabled = true;
     let config = makeConfig(root, model, scenario, piAuthPath, toolsEnabled);
     let runtime = createConfiguredAgentRuntime({ config, cwd: root });
-    let harness = await createConfiguredAgentHarness({ config, cwd: root, runtime, memory: scenario === "recall-changing" ? recallFixture() : undefined, runtimeOptions: { ...runtimeOptions, effort, promptCacheDiagnostics: true, piTransport: transport }, onSessionEvent: collectLifecycle });
+    let harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, memory: scenario === "recall-changing" ? recallFixture() : undefined, runtimeOptions: { ...runtimeOptions, effort, promptCacheDiagnostics: true, piTransport: transport }, onSessionEvent: collectLifecycle });
     try {
       for (let turn = 0; turn < turns; turn += 1) {
         if ((scenario === "durable-reopen" || scenario === "capability-change") && turn === Math.ceil(turns / 2)) {
@@ -216,7 +216,7 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
           if (scenario === "capability-change") toolsEnabled = false;
           config = makeConfig(root, model, scenario, piAuthPath, toolsEnabled);
           runtime = createConfiguredAgentRuntime({ config, cwd: root });
-          harness = await createConfiguredAgentHarness({ config, cwd: root, runtime, memory: scenario === "recall-changing" ? recallFixture() : undefined, runtimeOptions: { ...runtimeOptions, effort, promptCacheDiagnostics: true, piTransport: transport }, onSessionEvent: collectLifecycle });
+          harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, memory: scenario === "recall-changing" ? recallFixture() : undefined, runtimeOptions: { ...runtimeOptions, effort, promptCacheDiagnostics: true, piTransport: transport }, onSessionEvent: collectLifecycle });
         }
         const execute = async (conversation) => {
           const events = [];

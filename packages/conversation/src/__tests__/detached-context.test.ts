@@ -6,7 +6,7 @@ import { AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } from "@mono-agent/contracts";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { MonoRuntimeLike, RuntimeRunOptions } from "@mono-agent/turn/host/types";
-import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore, ToolHistoryReader, ToolHistoryWriter } from "../index.js";
+import { createConversationHarness, createDurableHistoryStore, createInMemoryHistoryStore, ToolHistoryReader, ToolHistoryWriter } from "../index.js";
 import type { ConversationHistoryStore, HistoryMessage } from "../index.js";
 
 const roots: string[] = [];
@@ -44,7 +44,7 @@ async function fixture(flavour: "memory" | "custom" | "durable" | "exclusive" | 
   const backupRun = vi.fn(async (_prompt: string, options: RuntimeRunOptions) => { calls.push(options); return { text: "Fictional backup answer", events: [] }; });
   const routed = createMonoRuntime({ fallbackChain: [{ model: primary }, { model: backup }], resolveAttempt: ({ attemptIndex }) => ({ runtime: attemptIndex ? { run: backupRun, configureTools() {} } : primaryRuntime }) });
   const runtime: MonoRuntimeLike = { ...routed, refreshSession: async () => {}, syncSession: async () => true, disposeSession: async () => true, retireDurableSession: async () => {} };
-  const harness = createAgentHarness({ identityPath, model: primary, runtime, session,
+  const harness = createConversationHarness({ identityPath, model: primary, runtime, session,
     toolHistory: { reader, logicalConversationId: (id) => id, writer: { createSink: () => async () => ({ persistence: "persisted" as const }), async finishRun() {}, async resetConversation() {} } },
     ...(historyStore ? { historyStore } : {}), ...(flavour === "durable" ? { sessionsRoot: join(root, "native") } : {}) });
   return { harness, historyStore, calls, exclusiveLoad, backupRun, reader, toolRoot: join(root, "tools"), fail: () => { failing = true; } };
@@ -98,7 +98,7 @@ it("strips extension replay and rejects a retained loader after the run settles"
   const identityPath = join(root, "IDENTITY.md"); await writeFile(identityPath, "Fictional identity");
   const injected = vi.fn(async () => []);
   let retained: RuntimeRunOptions["detachedContext"];
-  const harness = createAgentHarness({ identityPath, model: primary, historyStore: createInMemoryHistoryStore(),
+  const harness = createConversationHarness({ identityPath, model: primary, historyStore: createInMemoryHistoryStore(),
     runtimeOptions: { detachedContext: injected },
     runtimeOptionsForRequest: async () => ({ runtimeOptions: { detachedContext: injected } }),
     runtime: { run: async (_prompt, options) => { retained = options.detachedContext; return { text: "Fictional answer", events: [] }; } } });

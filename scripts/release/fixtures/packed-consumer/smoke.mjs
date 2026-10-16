@@ -30,7 +30,22 @@ for (const specifier of importSpecifiers) {
   }
 }
 
+if (packageNames.includes("@mono-agent/conversation")) {
+  const api = await import("@mono-agent/conversation");
+  for (const name of ["createConversationHarness", "createConversationResponder", "ConversationHarnessError", "ConversationHarnessFailureError"]) {
+    assert.equal(typeof api[name], "function");
+  }
+  for (const name of ["createAgentHarness", "createAgentResponder", "AgentHarnessError", "AgentHarnessFailureError"]) {
+    assert.equal(Object.hasOwn(api, name), false);
+  }
+  assert.equal(new api.ConversationHarnessError("fixture", "Fixture failure").name, "ConversationHarnessError");
+  assert.equal(new api.ConversationHarnessFailureError({ kind: "fixture", message: "Fixture failure" }).name, "ConversationHarnessFailureError");
+}
+
 if (packageNames.includes("@mono-agent/app")) {
+  const api = await import("@mono-agent/app");
+  assert.equal(typeof api.createConfiguredConversationHarness, "function");
+  assert.equal(Object.hasOwn(api, "createConfiguredAgentHarness"), false);
   const appManifest = packageManifests.get("@mono-agent/app");
   if (typeof appManifest.bin === "object" && appManifest.bin["mono-agent-memory-recall"] !== undefined) {
     throw new Error("Packed app still publishes the retired memory-recall binary.");

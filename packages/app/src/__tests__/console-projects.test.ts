@@ -2,11 +2,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { describe, expect, it, vi } from "vitest";
 import { CONSOLE_PROJECT_SCHEMAS, createConsoleProjectsRuntimeExtension, isConsoleProjectToolAllowed } from "../console-projects.js";
 
-const request = (): AgentHarnessRuntimeOptionsInput => ({
+const request = (): ConversationHarnessRuntimeOptionsInput => ({
   request: { conversationId: "web:thread", userMessage: "Organize", abortSignal: new AbortController().signal,
     metadata: { source: "web", web: { threadId: "thread", turnId: "turn", ownerText: "Organize", consoleProjects: { schema: 1 } } } },
   runId: "run", context: {} as never,

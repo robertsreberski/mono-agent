@@ -7,7 +7,7 @@ import { expect, it, vi } from "vitest";
 import { createChannelUserCancelReason } from "@mono-agent/contracts";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness, createDurableHistoryStore } from "../index.js";
+import { createConversationHarness, createDurableHistoryStore } from "../index.js";
 
 function shard(id: string): number {
   const key = createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");
@@ -46,7 +46,7 @@ for (const cancelAt of ["admission", "provider"] as const) {
     });
     let calls = 0;
     let successorPrompt = "";
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model: { provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
       historyStore: store,

@@ -4,7 +4,7 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WebService } from "../../../dist/service.js";
-import { createAgentHarness, createDurableHistoryStore } from "../../../../conversation/dist/index.js";
+import { createConversationHarness, createDurableHistoryStore } from "../../../../conversation/dist/index.js";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 const [root, mode] = process.argv.slice(2), timestamp = "2000-01-01T00:00:00.000Z";
@@ -19,7 +19,7 @@ const store = createDurableHistoryStore({ root: historyRoot, now: () => Date.par
   reconcileProviderSessionTurn: async () => { inspections++; return { status: "absent" }; },
 });
 await writeFile(join(root, "IDENTITY.md"), "Fictional stable instructions.");
-const harness = createAgentHarness({ identityPath: join(root, "IDENTITY.md"), cwd: root,
+const harness = createConversationHarness({ identityPath: join(root, "IDENTITY.md"), cwd: root,
   historyStore: store, model: parseMonoRuntimeModelReference("openai:fictional-model"),
   createRunId: () => "fictional-turn", sessionsRoot: join(root, "native"),
   session: { mode: "continuous", idleTimeoutMs: 60_000 },

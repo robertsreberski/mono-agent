@@ -2,8 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
-import type { AgentHarnessOptions } from "../harness/contracts.js";
+import { createConversationHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
+import type { ConversationHarnessOptions } from "../harness/contracts.js";
 import type { ConversationHistoryStore } from "../history/contracts.js";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
@@ -33,7 +33,7 @@ describe("harness model owner lifecycle", () => {
       const { identityPath } = await fixture();
       const base = runtime();
       const owner = runtime();
-      const harness = createAgentHarness({ identityPath, runtime: base, model,
+      const harness = createConversationHarness({ identityPath, runtime: base, model,
         runtimeForModel: () => owner, historyStore: createInMemoryHistoryStore(),
         runtimeOptionsForRequest: () => ({ runtimeOptions: { model: alternate } }),
         session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 100 } });
@@ -73,11 +73,11 @@ describe("harness model owner lifecycle", () => {
     const historyStore = createDurableHistoryStore({ root: join(dir, "history"),
       retireProviderSession: async (id, key) => { expect(key).toBe(alternate.reference); await owner.retireDurableSession(id, dir); } });
     const { refreshSession: _refresh, ...withoutRefresh } = owner;
-    const options: AgentHarnessOptions = { identityPath, runtime: base, model,
+    const options: ConversationHarnessOptions = { identityPath, runtime: base, model,
       runtimeForModel: () => mode === "missing" ? withoutRefresh : owner,
       historyStore, sessionsRoot: join(dir, "pi"), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 },
       runtimeOptionsForRequest: () => ({ runtimeOptions: { model: alternate } }) };
-    const harness = createAgentHarness(options);
+    const harness = createConversationHarness(options);
     const response = await harness.run(request());
     if (mode === "missing" || mode === "throwing") {
       expect(response.failure).toBeDefined();
@@ -88,7 +88,7 @@ describe("harness model owner lifecycle", () => {
       if (mode === "unsynced") expect(owner.retireDurableSession).toHaveBeenCalled();
       else {
         const id = owner.run.mock.calls[0]![1].sessionId;
-        const reloaded = createAgentHarness(options);
+        const reloaded = createConversationHarness(options);
         expect((await reloaded.run(request())).text).toBe("answer");
         expect(owner.refreshSession.mock.calls).toEqual([[id], [id]]);
         // The original mapping is now one committed revision behind.
@@ -115,7 +115,7 @@ describe("harness model owner lifecycle", () => {
     const historyStore: ConversationHistoryStore = { load: real.load.bind(real), append: real.append.bind(real),
       providerSessionRetirement: "fail-closed", ...(ack === undefined ? {} : { readProviderSessionBinding: real.readProviderSessionBinding.bind(real) }),
       beginProviderSessionTurn: begin };
-    const harness = createAgentHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
+    const harness = createConversationHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
       historyStore, sessionsRoot: join(dir, "pi"), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 },
       runtimeOptionsForRequest: () => ({ runtimeOptions: { model: alternate } }) });
     const response = await harness.run(request());
@@ -141,7 +141,7 @@ describe("harness model owner lifecycle", () => {
     const running = new Promise<void>((resolve) => { started = resolve; });
     const released = new Promise<void>((resolve) => { finish = resolve; });
     owner.run.mockImplementationOnce(async () => { started(); await released; return { text: "late", providerSessionId: "late-id" }; });
-    const harness = createAgentHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
+    const harness = createConversationHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
       historyStore: createInMemoryHistoryStore(), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000 },
       runtimeOptionsForRequest: ({ request: current }) => ({ runtimeOptions: { model: current.metadata?.web ? alternate : model } }) });
     const abort = new AbortController();
@@ -162,7 +162,7 @@ describe("harness model owner lifecycle", () => {
     const base = runtime();
     const owner = runtime();
     const historyStore = createDurableHistoryStore({ root: join(dir, "history"), retireProviderSession: async () => undefined });
-    const harness = createAgentHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
+    const harness = createConversationHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
       historyStore, session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000 },
       runtimeOptionsForRequest: () => ({ runtimeOptions: { model: alternate } }) });
     expect((await harness.run(request())).text).toBe("answer");

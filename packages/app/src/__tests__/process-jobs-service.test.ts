@@ -1,7 +1,7 @@
 import { WorkerActivityTracker } from "../worker-activity.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore, createLiveInputMailbox, createToolPolicy } from "@mono-agent/conversation";
+import { createConversationHarness, createConversationResponder, createInMemoryHistoryStore, createLiveInputMailbox, createToolPolicy } from "@mono-agent/conversation";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import { withProjectContext } from "@mono-agent/web";
 // @ts-expect-error Real native engine test seam; only provider transport is scripted.
@@ -140,11 +140,11 @@ it.each(["tags", "project-and-tags"])("certifies a %s web completion steer over 
   const identityPath = join(fixture.cwd, "IDENTITY.md");
   await writeFile(identityPath, "You are a helpful assistant.");
   const history = createInMemoryHistoryStore();
-  const harness = createAgentHarness({ identityPath, runtime: runtime as never,
+  const harness = createConversationHarness({ identityPath, runtime: runtime as never,
     model: { provider: "faux", model: "claimed-wake", reference: "faux:claimed-wake" }, cwd: fixture.cwd,
     toolPolicy: createToolPolicy({ allowedTools: ["Read", "FinishSilently"] }), historyStore: history,
     runtimeOptions: { finishSilentlyController: { eligible: () => true } }, createRunId: () => "claimed-wake-run" });
-  const responder = bindProcessJobWakeContextToResponder(createAgentResponder({ harness }));
+  const responder = bindProcessJobWakeContextToResponder(createConversationResponder({ harness }));
   const target = registerProcessJobSteeringTarget({ conversationId: "web:claimed-wake", runId: "claimed-wake-run", chainDepth: 1 });
   const operator = await startTuiAdapter({ responder, processJobWakeAdmission: service.wakeAdmission! });
   const controller = new AbortController();

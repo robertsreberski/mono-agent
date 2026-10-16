@@ -10,7 +10,7 @@ import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } fro
 import type { RuntimeResult } from "@mono-agent/turn/host/types";
 import type { SkillsCache } from "../skills/index.js";
 
-import { createAgentHarness, ToolHistoryReader } from "../index.js";
+import { createConversationHarness, ToolHistoryReader } from "../index.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -43,7 +43,7 @@ function request(conversationId: string, userMessage = "hello") {
   return { conversationId, userMessage, abortSignal: new AbortController().signal };
 }
 
-describe("AgentHarness resilience + caching", () => {
+describe("ConversationHarness resilience + caching", () => {
   it("degrades to empty memory and warns (does not fail the turn) when memory.load throws", async () => {
     const identityPath = await identityFixture();
     const events: Array<Record<string, unknown>> = [];
@@ -65,7 +65,7 @@ describe("AgentHarness resilience + caching", () => {
 
     } as unknown as MemoryStore;
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fakeRuntime(),
       model,
@@ -121,7 +121,7 @@ describe("AgentHarness resilience + caching", () => {
         async fail(): Promise<RunSummary> { return summary("failed"); },
       };
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fakeRuntime({ text: "provider succeeded", providerSessionId: "ps-2" }),
       model,
@@ -162,7 +162,7 @@ describe("AgentHarness resilience + caching", () => {
   ] as const)("preserves a successful provider answer for a %s persistence rejection", async (_label, rejection) => {
     const identityPath = await identityFixture();
     const warnings: string[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fakeRuntime({ text: "provider succeeded" }),
       model,
@@ -194,7 +194,7 @@ describe("AgentHarness resilience + caching", () => {
       clear: () => {},
     };
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fakeRuntime(),
       model,
@@ -215,7 +215,7 @@ it("continues provider and tool-history disposal after a throwing recall reset, 
   const identityPath = await identityFixture();
   const lifecycle: string[] = [];
   const sentinel = "FICTIONAL_PRIVATE_RECORD /fictional/private/record.md";
-  const harness = createAgentHarness({ identityPath, model,
+  const harness = createConversationHarness({ identityPath, model,
     runtime: { ...fakeRuntime(), async disposeSession() { lifecycle.push("provider-session"); return true; } },
     session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
     memory: { async load() { return undefined; }, resetRecallContext() { lifecycle.push("memory-reset"); throw new Error(sentinel); } },

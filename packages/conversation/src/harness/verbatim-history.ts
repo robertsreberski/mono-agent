@@ -1,10 +1,10 @@
 import type { RuntimeSessionStore } from "../sessions.js";
-import type { AgentHarnessOptions } from "./contracts.js";
+import type { ConversationHarnessOptions } from "./contracts.js";
 
 const VERBATIM_DELIVERY_STIMULUS = "[A scheduled or triggered task produced the message below, delivered to you proactively.]";
 
 export async function appendVerbatimHistoryTurn(
-  harnessOptions: AgentHarnessOptions,
+  harnessOptions: ConversationHarnessOptions,
   sessionStore: RuntimeSessionStore | undefined,
   conversationId: string,
   text: string,

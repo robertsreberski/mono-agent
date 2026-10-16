@@ -11,7 +11,7 @@ vi.mock("../../../turn/src/execution/pi/run.js", async (original) => ({
   engineTurnAdapter: { id: "session-attribution-test", execute },
 }));
 const { createRequestModelOverrideRuntimeExtension } = await import("../request-model-override.js");
-const { createConfiguredAgentHarness, createConfiguredAgentRuntime } = await import("../index.js");
+const { createConfiguredConversationHarness, createConfiguredAgentRuntime } = await import("../index.js");
 const dirs: string[] = [];
 afterEach(async () => { execute.mockReset(); await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 const model = (name: string) => ({ provider: "faux", model: name, reference: `faux:${name}` });
@@ -37,7 +37,7 @@ it("keeps override fallback answers stateless without a model-change boundary", 
     ? { text: null, error: "overloaded", failureKind: "provider_unavailable", events: [] }
     : { text: "backup answer", model: "faux:backup", events: [] });
   const factory = vi.fn((primary: RuntimeModelReference) => createConfiguredAgentRuntime({ config: settings, cwd: settings.runtime.workspace, model: primary }));
-  const harness = await createConfiguredAgentHarness({ config: settings, cwd: settings.runtime.workspace,
+  const harness = await createConfiguredConversationHarness({ config: settings, cwd: settings.runtime.workspace,
     runtimeForModel: factory, runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: settings.runtime.model }) });
   const events: unknown[] = [];
   try {
@@ -69,7 +69,7 @@ it("keeps retry-only model overrides warm on their cached primary runtime", asyn
   // A process-local store isolates cached router/handle wiring from Pi I/O.
   const { createInMemoryHistoryStore } = await import("@mono-agent/conversation");
   const factory = vi.fn((primary: RuntimeModelReference) => createConfiguredAgentRuntime({ config: settings, cwd: settings.runtime.workspace, model: primary }));
-  const harness = await createConfiguredAgentHarness({ config: settings, cwd: settings.runtime.workspace,
+  const harness = await createConfiguredConversationHarness({ config: settings, cwd: settings.runtime.workspace,
     runtimeForModel: factory, runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: settings.runtime.model }), historyStore: createInMemoryHistoryStore() });
   try {
     for (let i = 0; i < 3; i++) {
@@ -87,7 +87,7 @@ it("refuses a pre-release sessions root before composing a harness or recorder",
   const settings = await config(true), oldPath = join(settings.runtime.session.root!, "mono-v2");
   await mkdir(oldPath, { recursive: true }); await writeFile(join(oldPath, "evidence"), "fictional evidence");
   const before = await readdir(settings.runtime.workspace);
-  await expect(createConfiguredAgentHarness({ config: settings, cwd: settings.runtime.workspace })).rejects.toThrow(
+  await expect(createConfiguredConversationHarness({ config: settings, cwd: settings.runtime.workspace })).rejects.toThrow(
     `Sessions root contains ${oldPath}, written by a pre-release build; restore a backup or remove it after checking nothing in it is needed`);
   expect(execute).not.toHaveBeenCalled();
   expect(await readdir(settings.runtime.workspace)).toEqual(before);

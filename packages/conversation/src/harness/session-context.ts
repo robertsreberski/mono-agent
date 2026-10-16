@@ -1,6 +1,6 @@
 import { NOTHING_TO_REPORT_SENTINEL, type AgentSurface } from "@mono-agent/contracts";
 
-import type { AgentHarnessRequest } from "./contracts.js";
+import type { ConversationHarnessRequest } from "./contracts.js";
 import { clampUtf8Bytes } from "../context/text.js";
 import { sanitizeLabelPart } from "./speaker-context.js";
 
@@ -28,7 +28,7 @@ import type { SessionContextCapabilities } from "./session-capabilities.js";
  * reply that it had no conversation to bind it to.
  */
 export function sessionContextBlock(
-  request: Pick<AgentHarnessRequest, "conversationId" | "metadata" | "replyTo" | "surface">,
+  request: Pick<ConversationHarnessRequest, "conversationId" | "metadata" | "replyTo" | "surface">,
   capabilities: SessionContextCapabilities = {},
 ): string {
   const peerCaller = capabilities.peerCaller;

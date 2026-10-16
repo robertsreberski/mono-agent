@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  createAgentHarness,
-  createAgentResponder,
+  createConversationHarness,
+  createConversationResponder,
   createInMemoryHistoryStore,
   createLiveSessionManager,
 } from "@mono-agent/conversation";
@@ -660,7 +660,7 @@ describe("process-job request availability", () => {
         sandboxEngine: availableSandboxEngine,
       });
       let runtimeCall = 0;
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         model: {
           provider: "openai-codex",
@@ -681,7 +681,7 @@ describe("process-job request availability", () => {
           async disposeSession() { return true; },
         },
       });
-      const responder = bindProcessJobWakeContextToResponder(createAgentResponder({ harness }));
+      const responder = bindProcessJobWakeContextToResponder(createConversationResponder({ harness }));
       const stream = { append: async () => undefined };
       const request = {
         conversationId: "slack:C1:1.1",
@@ -1087,7 +1087,7 @@ it("blocks a real empty-to-retained registry transition with cached inactive pos
   await mkdir(workspace);
   await mkdir(join(dir, "home"), { mode: 0o700 });
   const ownership = await acquireAgentRootOwnership(dir, { homeDir: join(dir, "home") });
-  let harness: ReturnType<typeof createAgentHarness> | undefined;
+  let harness: ReturnType<typeof createConversationHarness> | undefined;
   try {
     const registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, workspace);
     expect(registry.kind).toBe("empty");
@@ -1102,12 +1102,12 @@ it("blocks a real empty-to-retained registry transition with cached inactive pos
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are a fictional test agent.");
     const provider = vi.fn(async (_prompt: string, _options: { sandboxPolicy?: unknown }) => ({ text: "ok" }));
-    harness = createAgentHarness({ identityPath, model,
+    harness = createConversationHarness({ identityPath, model,
       session: { mode: "per-message", idleTimeoutMs: 60_000 },
       historyStore: createInMemoryHistoryStore({ maxMessages: 10 }),
       runtimeOptionsForRequest: extension, runtime: { run: provider },
     });
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
     const request = { conversationId: "test", text: "hello", abortSignal: new AbortController().signal };
     const stream = { append: async () => undefined };
     await responder.respond(request, stream);

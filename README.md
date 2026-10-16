@@ -104,7 +104,7 @@ Keep the workspace for interactive work, or compose the agent into your own Node
 | --- | --- |
 | `startMonoAgentApp` | A full configured host with channels and lifecycle; Mono handles the app composition. |
 | `createConfiguredAgentResponder` | Your transport/server; Mono composes the configured responder, without starting channels or the web console. |
-| `createAgentHarness` / `createAgentResponder` | The runtime, context, memory, history and other dependencies you choose to supply. |
+| `createConversationHarness` / `createConversationResponder` | The runtime, context, memory, history and other dependencies you choose to supply. |
 
 For an existing agent folder, a configured responder starts with:
 

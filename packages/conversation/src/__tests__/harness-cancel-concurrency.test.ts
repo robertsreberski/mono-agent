@@ -6,12 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../harness/contracts.js";
+import { createConversationHarness } from "../index.js";
+import type { ConversationHarnessSessionOptions } from "../harness/contracts.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
-const session: AgentHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
+const session: ConversationHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -37,7 +37,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
-describe("AgentHarness cancel frees the concurrency slot (R10)", () => {
+describe("ConversationHarness cancel frees the concurrency slot (R10)", () => {
   it("a /cancel of an abort-ignoring never-resolving run frees the maxConcurrentRuns slot for the next turn", async () => {
     const identityPath = await identityFixture();
 
@@ -69,7 +69,7 @@ describe("AgentHarness cancel frees the concurrency slot (R10)", () => {
       async disposeAllSessions(): Promise<void> {},
     };
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,

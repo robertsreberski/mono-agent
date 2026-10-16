@@ -1,7 +1,7 @@
 import { mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
 import type { RuntimeModelReference, SandboxPolicy } from "@mono-agent/turn/host/types";
 
-import type { AgentHarnessRuntimeOptionsExtension } from "./contracts.js";
+import type { ConversationHarnessRuntimeOptionsExtension } from "./contracts.js";
 import { isRecord } from "./value-utils.js";
 
 const ENDPOINT_CLEAR_KEYS: ReadonlySet<string> = new Set([
@@ -19,7 +19,7 @@ const TOOL_POLICY_OPTION_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 export function withoutToolPolicyOptions(
-  options: AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined,
+  options: ConversationHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (options === undefined) return undefined;
   return Object.fromEntries(
@@ -28,7 +28,7 @@ export function withoutToolPolicyOptions(
 }
 
 export function mergeRuntimeOptions(
-  ...optionsList: readonly (AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined)[]
+  ...optionsList: readonly (ConversationHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined)[]
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = {};
   for (const options of optionsList) {

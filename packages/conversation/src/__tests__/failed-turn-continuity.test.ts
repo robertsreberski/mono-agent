@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
+import { createConversationHarness, createInMemoryHistoryStore } from "../index.js";
 import type { ConversationHistoryStore, HistoryMessage } from "../index.js";
 import type { PreparedHistoryAppend } from "../history/contracts.js";
 import {
@@ -252,7 +252,7 @@ describe("failed turn natural continuity", () => {
       async disposeSession(): Promise<boolean> { return true; },
       async disposeAllSessions(): Promise<void> {},
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -303,7 +303,7 @@ describe("failed turn natural continuity", () => {
   it("keeps a recovered tool error on the ordinary successful turn", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model,
       historyStore,
@@ -334,7 +334,7 @@ describe("failed turn natural continuity", () => {
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const invalidated: string[] = [];
     let memoryWrites = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model,
       historyStore,
@@ -380,7 +380,7 @@ describe("failed turn natural continuity", () => {
   it("publishes partial evidence from a thrown runtime failure", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model,
       historyStore,
@@ -410,7 +410,7 @@ describe("failed turn natural continuity", () => {
     let runtimeCalls = 0;
     let failAppend = true;
     const appended: HistoryMessage[][] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model,
       historyStore: {
@@ -463,7 +463,7 @@ describe("failed turn natural continuity", () => {
     const stored: HistoryMessage[] = [];
     const boundaries: RuntimeEventLike[] = [];
     const disposedSessions: string[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model,
       historyStore: {
@@ -526,7 +526,7 @@ describe("failed turn natural continuity", () => {
       },
     };
     const calls: RuntimeRunOptions[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model,
       historyStore,
@@ -569,7 +569,7 @@ describe("failed turn natural continuity", () => {
         return prepared;
       },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model,
       historyStore,

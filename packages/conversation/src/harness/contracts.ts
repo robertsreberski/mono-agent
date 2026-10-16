@@ -14,7 +14,7 @@ import type { ConversationHistoryStore } from "../history/contracts.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
 
-export interface AgentHarnessRequest {
+export interface ConversationHarnessRequest {
   /** Host-stamped memory provenance; never inferred from metadata.source. */
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly onLiveInputOwnership?: (event: AgentLiveInputOwnership) => void;
@@ -23,7 +23,7 @@ export interface AgentHarnessRequest {
   readonly abortSignal: AbortSignal;
   readonly metadata?: Record<string, unknown>;
   readonly onEvent?: (event: RuntimeEventLike) => void;
-  readonly sessionBoundary?: AgentHarnessSessionBoundary;
+  readonly sessionBoundary?: ConversationHarnessSessionBoundary;
   /**
    * Multimodal attachments. The harness saves each to `attachmentsDir` and
    * references the saved path (plus inlined text for documents) in the prompt,
@@ -45,7 +45,7 @@ export interface AgentHarnessRequest {
   readonly continuation?: AgentContinuationTurn;
 }
 
-export interface AgentHarnessFailure {
+export interface ConversationHarnessFailure {
   readonly kind: string;
   readonly message: string;
   readonly details?: unknown;
@@ -59,7 +59,7 @@ export interface AgentHarnessFailure {
  */
 export type ExternalRunSummary = Omit<RunSummary, "systemPrompt">;
 
-export interface AgentHarnessResponse {
+export interface ConversationHarnessResponse {
   readonly text?: string;
   readonly metadata: {
     readonly runId: string;
@@ -70,17 +70,17 @@ export interface AgentHarnessResponse {
     readonly runtime?: Record<string, unknown>;
     readonly summary?: ExternalRunSummary;
   };
-  readonly failure?: AgentHarnessFailure;
+  readonly failure?: ConversationHarnessFailure;
 }
 
-export interface AgentHarness {
+export interface ConversationHarness {
   compactConversation?(
     conversationId: string,
     options?: import("@mono-agent/contracts").AgentManualCompactionOptions,
     signal?: AbortSignal,
   ): Promise<import("@mono-agent/contracts").AgentManualCompactionResult>;
   readonly liveInputOwnership?: { readonly version: 1 };
-  run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  run(request: ConversationHarnessRequest): Promise<ConversationHarnessResponse>;
   /** Offer user guidance to this conversation's active interactive turn. */
   offerLiveInput?(request: AgentLiveInputRequest): AgentLiveInputOffer;
   /**
@@ -90,7 +90,7 @@ export interface AgentHarness {
    * racing fresh; different conversations still run concurrently. Falls back to
    * run() outside continuous mode.
    */
-  submit?(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  submit?(request: ConversationHarnessRequest): Promise<ConversationHarnessResponse>;
   /** Abort the in-flight turn for a conversation and clear its queued follow-ups. */
   cancel?(conversationId: string, reason?: unknown): void;
   /** Retire and clear one conversation so its next turn rebuilds startup context. */
@@ -117,11 +117,11 @@ export interface AgentHarness {
 
 export type AgentSessionMode = "continuous" | "per-message";
 
-export type AgentHarnessSessionBoundaryKind = "rollover" | "isolated" | "resume_replay";
+export type ConversationHarnessSessionBoundaryKind = "rollover" | "isolated" | "resume_replay";
 
-export interface AgentHarnessSessionBoundary {
+export interface ConversationHarnessSessionBoundary {
   readonly type: "session_boundary";
-  readonly kind: AgentHarnessSessionBoundaryKind;
+  readonly kind: ConversationHarnessSessionBoundaryKind;
   readonly conversationId: string;
   readonly baseConversationId?: string;
   readonly previousConversationId?: string;
@@ -130,9 +130,9 @@ export interface AgentHarnessSessionBoundary {
   readonly timestamp?: string;
 }
 
-export type AgentHarnessSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
+export type ConversationHarnessSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
 
-export interface AgentHarnessSessionSnapshot {
+export interface ConversationHarnessSessionSnapshot {
   readonly modelKey?: string;
   readonly conversationId: string;
   readonly providerSessionId: string;
@@ -145,9 +145,9 @@ export interface AgentHarnessSessionSnapshot {
   readonly busy: boolean;
 }
 
-export interface AgentHarnessSessionEvent {
+export interface ConversationHarnessSessionEvent {
   readonly modelKey?: string;
-  readonly kind: AgentHarnessSessionEventKind;
+  readonly kind: ConversationHarnessSessionEventKind;
   readonly conversationId: string;
   readonly providerSessionId?: string;
   readonly providerSessionRevision?: number;
@@ -156,10 +156,10 @@ export interface AgentHarnessSessionEvent {
   readonly lastActivityAt?: number;
   readonly busy?: boolean;
   readonly reason?: string;
-  readonly snapshot?: readonly AgentHarnessSessionSnapshot[];
+  readonly snapshot?: readonly ConversationHarnessSessionSnapshot[];
 }
 
-export interface AgentHarnessSessionOptions {
+export interface ConversationHarnessSessionOptions {
   readonly mode: AgentSessionMode;
   readonly idleTimeoutMs: number;
   /** Provider settlement window after cancellation or failure. Defaults to 1,000 ms. */
@@ -179,10 +179,10 @@ export interface AgentHarnessSessionOptions {
    * are unaffected. Default false (no behavior change).
    */
   readonly isolateProactive?: boolean;
-  readonly onSessionEvent?: (event: AgentHarnessSessionEvent) => void | Promise<void>;
+  readonly onSessionEvent?: (event: ConversationHarnessSessionEvent) => void | Promise<void>;
 }
 
-export interface AgentHarnessRecorderFactoryInput {
+export interface ConversationHarnessRecorderFactoryInput {
   readonly runId: string;
   readonly conversationId: string;
   /** The user's prompt for this run, so recorders/exporters can surface it. */
@@ -206,7 +206,7 @@ export interface AgentHarnessRecorderFactoryInput {
  * or memory capture. Implementations must release all run-scoped state after
  * {@link releaseRun}.
  */
-export interface AgentHarnessTurnHistoryEnricher {
+export interface ConversationHarnessTurnHistoryEnricher {
   enrichAssistantHistory(input: {
     readonly runId: string;
     readonly conversationId: string;
@@ -219,7 +219,7 @@ export interface AgentHarnessTurnHistoryEnricher {
 }
 
 /** A short-lived bridge credential that can report progress for one run only. */
-export interface AgentHarnessProgressCapability {
+export interface ConversationHarnessProgressCapability {
   readonly url: string;
   readonly token: string;
   /** Revoke the capability. Safe to call more than once. */
@@ -227,25 +227,25 @@ export interface AgentHarnessProgressCapability {
 }
 
 /** App-owned issuer for request-bound progress capabilities. */
-export interface AgentHarnessProgressCapabilityIssuer {
+export interface ConversationHarnessProgressCapabilityIssuer {
   issueProgressCapability(input: {
     readonly runId: string;
     readonly conversationId: string;
-  }): AgentHarnessProgressCapability | Promise<AgentHarnessProgressCapability>;
+  }): ConversationHarnessProgressCapability | Promise<ConversationHarnessProgressCapability>;
 }
 
-export type AgentHarnessContinuationMode =
+export type ConversationHarnessContinuationMode =
   | "reply"
   | "notify_if_actionable"
   | "silent"
   | "capture";
 
 /** A short-lived claim credential bound to one run, server, and host route. */
-export interface AgentHarnessContinuationClaimCapability {
+export interface ConversationHarnessContinuationClaimCapability {
   readonly url: string;
   readonly token: string;
   readonly fingerprint: string;
-  readonly mode: AgentHarnessContinuationMode;
+  readonly mode: ConversationHarnessContinuationMode;
   /**
    * Report whether a drained capability has any active interactive claims that
    * need the completed origin turn. Valid after `release()`.
@@ -265,7 +265,7 @@ export interface AgentHarnessContinuationClaimCapability {
 }
 
 /** App-owned issuer for destination-bound continuation claim capabilities. */
-export interface AgentHarnessContinuationClaimCapabilityIssuer {
+export interface ConversationHarnessContinuationClaimCapabilityIssuer {
   issueContinuationClaimCapability(input: {
     readonly runId: string;
     readonly serverName: string;
@@ -274,31 +274,31 @@ export interface AgentHarnessContinuationClaimCapabilityIssuer {
     /** Interactive origin snapshot; absent for detached named-route claims. */
     readonly historyBoundary?: string;
   }):
-    | AgentHarnessContinuationClaimCapability
+    | ConversationHarnessContinuationClaimCapability
     | undefined
-    | Promise<AgentHarnessContinuationClaimCapability | undefined>;
+    | Promise<ConversationHarnessContinuationClaimCapability | undefined>;
 }
 
 /**
  * Trusted continuation context injected only into explicitly selected stdio or
  * loopback-HTTP MCP servers. It is independent of raw MCP request context.
  */
-export interface AgentHarnessContinuationContextOptions {
+export interface ConversationHarnessContinuationContextOptions {
   readonly serverNames: readonly string[];
-  readonly capabilityIssuer: AgentHarnessContinuationClaimCapabilityIssuer;
+  readonly capabilityIssuer: ConversationHarnessContinuationClaimCapabilityIssuer;
 }
 
 /**
  * Trusted context injected into explicitly opted-in stdio MCP servers after all
  * runtime/tool-policy option layers have been merged.
  */
-export interface AgentHarnessMcpRequestContextOptions {
+export interface ConversationHarnessMcpRequestContextOptions {
   readonly serverNames: readonly string[];
   readonly runOutputRoot: string;
-  readonly progressCapabilityIssuer?: AgentHarnessProgressCapabilityIssuer;
+  readonly progressCapabilityIssuer?: ConversationHarnessProgressCapabilityIssuer;
 }
 
-export interface AgentHarnessOptions {
+export interface ConversationHarnessOptions {
   readonly identityPath: string;
   readonly soulPath?: string;
   readonly skillsRoot?: string;
@@ -337,17 +337,17 @@ export interface AgentHarnessOptions {
   readonly sessionsRoot?: string;
   readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink" | "detachedContext">;
   readonly runtimeOptionsForRequest?: (
-    input: AgentHarnessRuntimeOptionsInput,
-  ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+    input: ConversationHarnessRuntimeOptionsInput,
+  ) => ConversationHarnessRuntimeOptionsExtension | Promise<ConversationHarnessRuntimeOptionsExtension>;
   /** Model/context policy selection for promptless manual compaction. Must not allocate turn tools. */
   readonly runtimeOptionsForManualCompaction?: (
     model: string,
     context1M?: boolean,
-  ) => Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
-    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider" | "context1MModels">> | Promise<Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
+  ) => Partial<Pick<NonNullable<ConversationHarnessRuntimeOptionsExtension["runtimeOptions"]>,
+    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider" | "context1MModels">> | Promise<Partial<Pick<NonNullable<ConversationHarnessRuntimeOptionsExtension["runtimeOptions"]>,
     "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider" | "context1MModels">>>;
-  readonly mcpRequestContext?: AgentHarnessMcpRequestContextOptions;
-  readonly continuationContext?: AgentHarnessContinuationContextOptions;
+  readonly mcpRequestContext?: ConversationHarnessMcpRequestContextOptions;
+  readonly continuationContext?: ConversationHarnessContinuationContextOptions;
   /**
    * Factory for a runtime bound to a specific model, used when a per-request
    * extension overrides {@link model} (cron job / webhook per-turn model). The
@@ -375,7 +375,7 @@ export interface AgentHarnessOptions {
    * ConversationHistoryStore: starts/results are fsynced while tools run, even
    * when the surrounding turn never reaches the canonical-history commit.
    */
-  readonly toolHistory?: AgentHarnessToolHistoryOptions;
+  readonly toolHistory?: ConversationHarnessToolHistoryOptions;
   /**
    * Whether this turn's `Exec`/`Bash` will carry the `background` field, so the
    * session block can explain a capability the model can actually see. The
@@ -384,21 +384,21 @@ export interface AgentHarnessOptions {
    * runs after context assembly. Hosts must answer with the same predicate that
    * injects the schema — guidance for an absent capability is worse than none.
    */
-  readonly subagentInstancesFor?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => Promise<NonNullable<SessionContextCapabilities["subagentInstances"]>>;
+  readonly subagentInstancesFor?: (input: { readonly request: ConversationHarnessRequest; readonly runId: string }) => Promise<NonNullable<SessionContextCapabilities["subagentInstances"]>>;
   /** App-verified attribution for the Session context; metadata alone is never trusted. */
-  readonly verifiedPeerCallerFor?: (input: { readonly request: AgentHarnessRequest }) => Promise<string | undefined>;
-  readonly backgroundSubagentsAvailable?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => boolean;
+  readonly verifiedPeerCallerFor?: (input: { readonly request: ConversationHarnessRequest }) => Promise<string | undefined>;
+  readonly backgroundSubagentsAvailable?: (input: { readonly request: ConversationHarnessRequest; readonly runId: string }) => boolean;
   readonly backgroundProcessJobsAvailable?: (
-    input: { readonly request: AgentHarnessRequest; readonly runId: string },
+    input: { readonly request: ConversationHarnessRequest; readonly runId: string },
   ) => boolean;
   /** Best-effort enrichment applied only to the assistant history entry. */
-  readonly turnHistoryEnricher?: AgentHarnessTurnHistoryEnricher;
+  readonly turnHistoryEnricher?: ConversationHarnessTurnHistoryEnricher;
   readonly toolPolicy?: ToolPolicy;
   readonly sandboxPolicy?: SandboxPolicy;
-  readonly recorderFactory?: (input: AgentHarnessRecorderFactoryInput) => RunRecorder;
+  readonly recorderFactory?: (input: ConversationHarnessRecorderFactoryInput) => RunRecorder;
   readonly createRunId?: () => string;
   readonly now?: () => Date;
-  readonly session?: AgentHarnessSessionOptions;
+  readonly session?: ConversationHarnessSessionOptions;
   /**
    * Optional concurrency bounds across all conversations served by this
    * harness. Two independent tiers, both unset = unbounded (default):
@@ -422,13 +422,13 @@ export interface AgentHarnessOptions {
   readonly concurrency?: { readonly maxConcurrentRuns?: number; readonly maxPendingRuns?: number };
 }
 
-export interface AgentHarnessRuntimeOptionsInput {
-  readonly request: AgentHarnessRequest;
+export interface ConversationHarnessRuntimeOptionsInput {
+  readonly request: ConversationHarnessRequest;
   readonly runId: string;
   readonly context: BuiltAgentContext;
 }
 
-export interface AgentHarnessRuntimeOptionsExtension {
+export interface ConversationHarnessRuntimeOptionsExtension {
   // `model`/`effort` are allowed so a per-request extension can override them for
   // a single turn (cron/webhook/TUI per-trigger model). In continuous-session
   // mode, a model change must already be declared in that request metadata so
@@ -472,7 +472,7 @@ export interface AgentHarnessRuntimeOptionsExtension {
   readonly settleCleanup?: () => void | Promise<void>;
 }
 
-export interface AgentHarnessToolHistoryOptions {
+export interface ConversationHarnessToolHistoryOptions {
   readonly writer: Pick<ToolHistoryWriter, "createSink" | "finishRun" | "resetConversation">;
   readonly reader: ToolHistoryReader;
   /** Collapse a physical rollover bucket into its current logical session. */

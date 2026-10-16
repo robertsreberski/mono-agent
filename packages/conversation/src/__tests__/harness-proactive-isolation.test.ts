@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { MemoryLoadOptions } from "@mono-agent/contracts";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../harness/contracts.js";
+import { createConversationHarness, createInMemoryHistoryStore } from "../index.js";
+import type { ConversationHarnessSessionOptions } from "../harness/contracts.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -49,8 +49,8 @@ function createSessionFakeRuntime(run: (prompt: string, options: RuntimeRunOptio
   };
 }
 
-const session: AgentHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
-const isolatingSession: AgentHarnessSessionOptions = { ...session, isolateProactive: true };
+const session: ConversationHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
+const isolatingSession: ConversationHarnessSessionOptions = { ...session, isolateProactive: true };
 
 const cronMetadata = { cron: { jobId: "nightly", expression: "0 3 * * *" } } as const;
 
@@ -62,14 +62,14 @@ function request(conversationId: string, userMessage = "hello") {
   return { conversationId, userMessage, abortSignal: new AbortController().signal };
 }
 
-describe("AgentHarness proactive session isolation", () => {
+describe("ConversationHarness proactive session isolation", () => {
   it("distinguishes a warm owner epoch from an isolated cron and preserves subsequent warm memory receipts", async () => {
     const identityPath = await identityFixture();
     const loads: MemoryLoadOptions[] = [];
     const receipts: string[] = [];
     const fake = createSessionFakeRuntime(async (_prompt, options) => ({ text: "Fictional response.",
       providerSessionId: options.sessionKeepAlive ? "shared-fictional-session" : "isolated-fictional-session" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession,
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession,
       memory: { async load(_id, _query, options) { loads.push(options ?? {}); return undefined; },
         recordInvocation: (turnId) => receipts.push(turnId) },
     });
@@ -96,7 +96,7 @@ describe("AgentHarness proactive session isolation", () => {
       controller.abort(new Error("Cron job exceeded maxRunMs (1000ms)."));
       return { text: "late cron answer", providerSessionId: "ps-cancelled-cron" };
     });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -126,7 +126,7 @@ describe("AgentHarness proactive session isolation", () => {
   it("an isolated cron run neither resumes nor persists the shared session", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-cron" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession });
     const events: unknown[] = [];
 
     // First cron run: no session keys requested, no warm session derived.
@@ -154,7 +154,7 @@ describe("AgentHarness proactive session isolation", () => {
   it("an isolated cron turn does not pollute a following interactive turn", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async (_p, _o, call) => ({ text: `answer-${call}`, providerSessionId: `ps-${call}` }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession });
 
     // A cron turn runs ephemerally...
     await harness.run(cronRequest("telegram:morgan", "cron tick"));
@@ -174,7 +174,7 @@ describe("AgentHarness proactive session isolation", () => {
   it("with isolateProactive off, a cron request uses the shared session as before", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-shared" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(cronRequest("cron:nightly", "first"));
     // First turn warms the session (keepalive requested, id captured).
@@ -189,7 +189,7 @@ describe("AgentHarness proactive session isolation", () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session: isolatingSession,
     });
 

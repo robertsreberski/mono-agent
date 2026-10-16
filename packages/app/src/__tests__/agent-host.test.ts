@@ -69,7 +69,7 @@ vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
 }));
 
 import {
-  createConfiguredAgentHarness,
+  createConfiguredConversationHarness,
   createConfiguredAgentResponder,
   createConfiguredAgentRuntime,
   createConfiguredMemory,
@@ -501,7 +501,7 @@ describe("agent host composition helpers", () => {
     let rejection: unknown;
     try {
       if (factory === "harness") {
-        await createConfiguredAgentHarness(options);
+        await createConfiguredConversationHarness(options);
       } else {
         await createConfiguredAgentResponder(options);
       }
@@ -688,7 +688,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "Digest done" }));
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       createRunId: () => "run-cron",
@@ -950,7 +950,7 @@ describe("agent host composition helpers", () => {
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
     await expect(
-      createConfiguredAgentHarness({
+      createConfiguredConversationHarness({
         config: monoConfig({ dir, identityPath, artifactDir, mcpConfigPath: join(dir, "missing.json") }),
         runtime: fake.runtime,
       }),
@@ -1047,7 +1047,7 @@ describe("agent host composition helpers", () => {
       return { text: "ok" };
     });
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: { ...monoConfig({ dir, identityPath, artifactDir }), concurrency: { maxConcurrentRuns: 1 } },
       runtime: fake.runtime,
     });
@@ -1087,7 +1087,7 @@ describe("agent host composition helpers", () => {
 
     // maxPendingRuns is config-only plumbing: if it were not threaded into the
     // harness, the third run would not fail fast.
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: { ...monoConfig({ dir, identityPath, artifactDir }), concurrency: { maxConcurrentRuns: 1, maxPendingRuns: 1 } },
       runtime: fake.runtime,
     });
@@ -1253,7 +1253,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "Harness answer" }));
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       createRunId: () => "run-harness",
@@ -1278,7 +1278,7 @@ describe("agent host composition helpers", () => {
     const config = monoConfig({ dir, identityPath, artifactDir });
     const { maxTurns: _maxTurns, ...runtime } = config.runtime;
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: { ...config, runtime } as MonoAgentConfig,
       runtime: fake.runtime,
     });
@@ -1303,7 +1303,7 @@ describe("agent host composition helpers", () => {
     const unlimitedConfig = { ...config, runtime: unlimitedRuntime } as MonoAgentConfig;
     let turn = 0;
     const firstRuntime = createFakeRuntime(async () => ({ text: `answer-${++turn}` }));
-    const firstHarness = await createConfiguredAgentHarness({ config: unlimitedConfig, runtime: firstRuntime.runtime });
+    const firstHarness = await createConfiguredConversationHarness({ config: unlimitedConfig, runtime: firstRuntime.runtime });
 
     for (let index = 1; index <= 34; index += 1) {
       await firstHarness.run({
@@ -1314,7 +1314,7 @@ describe("agent host composition helpers", () => {
     }
 
     const restartedRuntime = createFakeRuntime(async () => ({ text: "answer-after-restart" }));
-    const restartedHarness = await createConfiguredAgentHarness({
+    const restartedHarness = await createConfiguredConversationHarness({
       config: unlimitedConfig,
       runtime: restartedRuntime.runtime,
     });
@@ -1430,7 +1430,7 @@ describe("agent host composition helpers", () => {
       });
       return { text: "custom-store-answer" };
     });
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: runtime.runtime,
       historyStore,
@@ -1500,7 +1500,7 @@ describe("agent host composition helpers", () => {
         }),
       },
     };
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: runtime.runtime,
       historyStore,
@@ -1522,7 +1522,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async (_prompt, options) => ({ text: "ok", model: options.model.model }));
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       model: { provider: "anthropic", model: "claude-opus-4-7", reference: "anthropic:claude-opus-4-7" },
@@ -1548,7 +1548,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async (_prompt, options) => ({ text: "ok", model: options.model.model }));
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
     });
@@ -1570,7 +1570,7 @@ describe("agent host composition helpers", () => {
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
     const baseConfig = monoConfig({ dir, identityPath, artifactDir });
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: {
         ...baseConfig,
         tools: {
@@ -1616,7 +1616,7 @@ describe("agent host composition helpers", () => {
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
     const baseConfig = monoConfig({ dir, identityPath, artifactDir });
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: {
         ...baseConfig,
         tools: {
@@ -1691,7 +1691,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: {
         ...monoConfig({ dir, identityPath, artifactDir }),
         sandbox: createSandboxPolicy({
@@ -1721,10 +1721,10 @@ describe("agent host composition helpers", () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const createHarness = vi.spyOn(agentHarness, "createAgentHarness");
-    let harness: Awaited<ReturnType<typeof createConfiguredAgentHarness>> | undefined;
+    const createHarness = vi.spyOn(agentHarness, "createConversationHarness");
+    let harness: Awaited<ReturnType<typeof createConfiguredConversationHarness>> | undefined;
     try {
-      harness = await createConfiguredAgentHarness({
+      harness = await createConfiguredConversationHarness({
         config: monoConfig({ dir, identityPath, artifactDir: join(dir, "artifacts") }),
         runtime: createFakeRuntime(async () => ({ text: "unused" })).runtime,
         terminalRecoverySettlementMs: 30_000,
@@ -1746,7 +1746,7 @@ describe("agent host composition helpers", () => {
     const fake = createFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-host-1" }));
 
     const config = monoConfig({ dir, identityPath, artifactDir });
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: {
         ...config,
         runtime: { ...config.runtime, session: { mode: "continuous", idleTimeoutMs: 60_000 } },
@@ -1773,7 +1773,7 @@ describe("agent host composition helpers", () => {
       providerSessionId: String(options.messages.at(-1)?.content).includes("TELEGRAM_") ? "telegram-provider-session" : "openai-api-provider-session",
     }));
     const base = monoConfig({ dir, identityPath, artifactDir });
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: {
         ...base,
         runtime: { ...base.runtime, session: { mode: "continuous", idleTimeoutMs: 60_000 } },
@@ -1814,7 +1814,7 @@ describe("agent host composition helpers", () => {
       text: `answer-${++turn}`,
     }));
     const base = monoConfig({ dir, identityPath, artifactDir });
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: {
         ...base,
         runtime: {
@@ -1860,7 +1860,7 @@ describe("agent host composition helpers", () => {
       providerSessionId: "resumable-provider-session",
     }));
     const base = monoConfig({ dir, identityPath, artifactDir });
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: {
         ...base,
         runtime: {
@@ -1900,7 +1900,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-host-1" }));
 
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
     });
@@ -2098,11 +2098,11 @@ it("retires configured override history through the cached owning runtime", asyn
       runtimeOptions: { model: request.metadata?.web ? override : model } }) };
   const request = { conversationId: "bound-configured", userMessage: "hello", abortSignal: new AbortController().signal,
     metadata: { web: { model: override.reference } } };
-  const first = await createConfiguredAgentHarness(options);
+  const first = await createConfiguredConversationHarness(options);
   expect((await first.run(request)).text).toBe("answer");
   const id = alternate.run.mock.calls[0]![1].sessionId;
   await first.dispose?.();
-  const next = await createConfiguredAgentHarness(options);
+  const next = await createConfiguredConversationHarness(options);
   expect((await next.run(request)).text).toBe("answer");
   expect(alternate.run.mock.calls[1]![1].sessionId).toBe(id);
   await next.resetConversation?.(request.conversationId);

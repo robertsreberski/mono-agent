@@ -1,6 +1,6 @@
 import { stripDailyBucketSuffix, hasDailyBucketSuffix } from "./history/conversation-id.js";
-import type { AgentHarness, AgentHarnessFailure, AgentHarnessSessionBoundary } from "./harness/contracts.js";
-import { AgentHarnessError } from "./harness/error.js";
+import type { ConversationHarness, ConversationHarnessFailure, ConversationHarnessSessionBoundary } from "./harness/contracts.js";
+import { ConversationHarnessError } from "./harness/error.js";
 import type {
   AgentLiveInputRequest,
   AgentManualCompactionOptions,
@@ -22,20 +22,20 @@ interface PendingLiveInputActivity {
   readonly receivedAt: string;
 }
 
-export class AgentHarnessFailureError extends Error {
-  readonly failure: AgentHarnessFailure;
+export class ConversationHarnessFailureError extends Error {
+  readonly failure: ConversationHarnessFailure;
 
-  constructor(failure: AgentHarnessFailure) {
+  constructor(failure: ConversationHarnessFailure) {
     super(failure.message);
-    this.name = "AgentHarnessFailureError";
+    this.name = "ConversationHarnessFailureError";
     this.failure = failure;
   }
 }
 
 type SessionRollover = "none" | "daily";
 
-export function createAgentResponder(options: {
-  readonly harness: AgentHarness;
+export function createConversationResponder(options: {
+  readonly harness: ConversationHarness;
   /**
    * Session rollover policy applied centrally to EVERY channel (cron, telegram,
    * slack, whatsapp, …) that routes through this responder. "daily" appends a
@@ -54,7 +54,7 @@ export function createAgentResponder(options: {
   startNewSession(conversationId: string): Promise<void>;
 } {
   if (typeof options.harness?.run !== "function") {
-    throw new TypeError("createAgentResponder requires a harness with run().");
+    throw new TypeError("createConversationResponder requires a harness with run().");
   }
 
   // Prefer submit() (queue-after-turn: a mid-run follow-up is answered on the
@@ -82,7 +82,7 @@ export function createAgentResponder(options: {
         // Reject rather than joining the normal turn queue. serializeByKey
         // reserves synchronously before its first await, fencing later turns.
         if (responseTailsByBaseConversation.has(key)) {
-          throw new AgentHarnessError("compaction_busy", "This conversation has a turn or compaction in progress.");
+          throw new ConversationHarnessError("compaction_busy", "This conversation has a turn or compaction in progress.");
         }
         return await serializeByKey(responseTailsByBaseConversation, key, async () =>
           await options.harness.compactConversation!(bucket(conversationId), compactionOptions, signal));
@@ -313,7 +313,7 @@ export function createAgentResponder(options: {
     await runtimeEventStream.flush();
 
     if (response.failure !== undefined) {
-      throw new AgentHarnessFailureError(response.failure);
+      throw new ConversationHarnessFailureError(response.failure);
     }
 
     const text = response.metadata?.turnDisposition === "silent"
@@ -1078,7 +1078,7 @@ function rolloverBoundaryForRequest(input: {
   readonly rollover: SessionRollover | undefined;
   readonly lastBucketByBaseConversation: Map<string, string>;
   readonly now: () => Date;
-}): AgentHarnessSessionBoundary | undefined {
+}): ConversationHarnessSessionBoundary | undefined {
   if (input.rollover !== "daily") {
     return undefined;
   }
@@ -1098,7 +1098,7 @@ function rolloverBoundaryForRequest(input: {
   };
 }
 
-function sessionRolloverNotice(boundary: AgentHarnessSessionBoundary): string {
+function sessionRolloverNotice(boundary: ConversationHarnessSessionBoundary): string {
   return `New session bucket started: ${boundary.conversationId}.`;
 }
 

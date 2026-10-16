@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxThinking, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { createAgentHarness, createDurableHistoryStore, createSessionRuntimeResolver, createToolPolicy } from "@mono-agent/conversation";
+import { createConversationHarness, createDurableHistoryStore, createSessionRuntimeResolver, createToolPolicy } from "@mono-agent/conversation";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
@@ -62,7 +62,7 @@ if (legacyUnbound === "true") {
     providerSession: { epoch: "a".repeat(64), revision: 1 },
   })}\n`, { mode: 0o600 });
 }
-const harness = createAgentHarness({
+const harness = createConversationHarness({
   runtime, model, cwd: root, identityPath: join(root, "IDENTITY.md"),
   ...(unrouted === "true" ? {} : { runtimeForModel: (ref) => runtimeForSession(ref.reference) }),
   session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true,

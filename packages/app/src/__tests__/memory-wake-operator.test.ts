@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createAgentHarness, createAgentResponder } from "@mono-agent/conversation";
+import { createConversationHarness, createConversationResponder } from "@mono-agent/conversation";
 import type { MemoryLoadOptions } from "@mono-agent/contracts";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import { OperatorClient } from "@mono-agent/web";
@@ -33,14 +33,14 @@ it("suppresses only the exact host wake through web operator ingress, not the hu
   let release!: () => void;
   const wakeGate = new Promise<void>((resolve) => { release = resolve; });
   let runs = 0;
-  const harness = createAgentHarness({ identityPath, memory, cwd: dir,
+  const harness = createConversationHarness({ identityPath, memory, cwd: dir,
     model: { provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
     runtime: { run: async () => {
       if (++runs === 1) { started(); await wakeGate; }
       return { text: "Noted." };
     } },
   });
-  const adapter = await startTuiAdapter({ responder: bindProcessJobWakeContextToResponder(createAgentResponder({ harness })) });
+  const adapter = await startTuiAdapter({ responder: bindProcessJobWakeContextToResponder(createConversationResponder({ harness })) });
   try {
     let accepted!: () => void;
     const humanAccepted = new Promise<void>((resolve) => { accepted = resolve; });

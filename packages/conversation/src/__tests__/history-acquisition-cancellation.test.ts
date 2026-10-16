@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
-import { MonoAgentHarness } from "../harness.js";
+import { ConversationHarnessImpl } from "../harness.js";
 import { createInMemoryHistoryStore } from "../history.js";
 
 vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof fs>() }));
@@ -176,7 +176,7 @@ it.each(["provider", "exclusive", "compaction"])("harness %s acquisition cancell
   if (mode === "compaction") await f.store.append(id, [{ role: "user", content: "Fictional seed" }]);
   const before = await f.store.load(id), holder = await f.store.beginProviderSessionPreparation(id, "fictional-holder"), controller = new AbortController();
   const run = vi.fn(async () => ({ text: "Fictional response" })), syncSession = vi.fn(async () => true);
-  const harness = new MonoAgentHarness({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
+  const harness = new ConversationHarnessImpl({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
     historyStore: f.store, session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
     ...(mode === "exclusive" ? {} : { sessionsRoot: join(f.root, "..", "native") }),
     runtime: { run, syncSession, refreshSession: async () => {}, disposeSession: async () => true, disposeAllSessions: async () => {} } });
@@ -219,7 +219,7 @@ it.each(["provider", "exclusive"])("cancellation during attachment preflight bef
   vi.spyOn(fs, "mkdir").mockImplementation(async (...args) => { if (args[0] === attachmentsDir) controller.abort(); return mkdir(...args); });
   const append = vi.spyOn(f.store, "prepareAppend"), provider = vi.spyOn(f.store, "beginProviderSessionTurn"), exclusive = vi.spyOn(f.store.contextImport!, "beginExclusiveTurn");
   const run = vi.fn(async () => ({ text: "Fictional response" }));
-  const harness = new MonoAgentHarness({ identityPath, attachmentsDir, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
+  const harness = new ConversationHarnessImpl({ identityPath, attachmentsDir, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
     historyStore: f.store, session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
     ...(mode === "provider" ? { sessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
   let settled = false;
@@ -251,7 +251,7 @@ it.each(["provider", "synchronous-provider", "exclusive", "uncoordinated"])("an 
     vi.spyOn(f.store.contextImport!, "beginExclusiveTurn").mockImplementation(async (...args) => { const turn = await begin(...args); controller.abort(); return turn; });
   }
   const run = vi.fn(async () => { controller.abort(); return { text: "Fictional late response" }; });
-  const harness = new MonoAgentHarness({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" }, historyStore: store,
+  const harness = new ConversationHarnessImpl({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" }, historyStore: store,
     session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode.endsWith("provider") ? { sessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
   try {
     expect((await harness.run({ conversationId: id, userMessage: "Fictional admitted input", abortSignal: controller.signal })).failure?.kind).toBe("cancelled");
@@ -277,7 +277,7 @@ it("an uncoordinated store cancelled inside load before provider start keeps its
   const store = createInMemoryHistoryStore({ maxMessages: 64 }), before = [{ role: "user" as const, content: "Fictional earlier input" }]; await store.append(id, before);
   const load = store.load.bind(store), run = vi.fn(async () => ({ text: "Must not execute" }));
   vi.spyOn(store, "load").mockImplementationOnce(async (...args) => { controller.abort(); return await load(...args); });
-  const harness = new MonoAgentHarness({ identityPath, historyStore: store, runtime: { run }, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" } });
+  const harness = new ConversationHarnessImpl({ identityPath, historyStore: store, runtime: { run }, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" } });
   try {
     expect((await harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal })).failure?.kind).toBe("cancelled");
     expect(run).not.toHaveBeenCalled(); expect(await store.load(id)).toEqual(before);

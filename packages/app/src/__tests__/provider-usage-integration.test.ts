@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import { startWebServer, OperatorClient } from "@mono-agent/web";
-import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { describe, expect, it, vi } from "vitest";
 import { formatProviderUsageLead } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -14,7 +14,7 @@ import { createAgentProviderUsage } from "../provider-usage-scope.js";
 import { createProviderUsageService } from "../provider-usage.js";
 import { createProviderUsageRuntimeExtension, isProviderUsageToolAllowed, PROVIDER_USAGE_INPUT } from "../provider-usage-tool.js";
 
-const request = (): AgentHarnessRuntimeOptionsInput => ({ request: { conversationId: "telegram:fixture", userMessage: "Quota?", abortSignal: new AbortController().signal }, runId: "fixture-run", context: {} as never });
+const request = (): ConversationHarnessRuntimeOptionsInput => ({ request: { conversationId: "telegram:fixture", userMessage: "Quota?", abortSignal: new AbortController().signal }, runId: "fixture-run", context: {} as never });
 describe("ProviderUsage tool", () => {
   it("honors all allow/deny aliases and strict optional input", () => {
     for (const alias of ["ProviderUsage", "mcp__mono-agent-provider-usage__ProviderUsage", "mcp__mono-agent-provider-usage__*", "*"]) {

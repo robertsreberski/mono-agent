@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentAttachment } from "@mono-agent/contracts";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
-import type { AgentHarnessOptions, AgentHarnessRequest } from "./contracts.js";
+import type { ConversationHarnessOptions, ConversationHarnessRequest } from "./contracts.js";
 import { fileIdentity, type AttachmentFileIdentity } from "./file-authority.js";
 import { errorMessageText } from "./value-utils.js";
 
@@ -18,12 +18,12 @@ export interface AttachmentRequestContext {
 }
 
 export async function applyHarnessAttachments(
-  options: AgentHarnessOptions,
-  request: AgentHarnessRequest,
+  options: ConversationHarnessOptions,
+  request: ConversationHarnessRequest,
   runId: string,
   emit: (event: RuntimeEventLike) => void,
 ): Promise<{
-  readonly request: AgentHarnessRequest;
+  readonly request: ConversationHarnessRequest;
   readonly persistUserMessage: string;
   readonly attachmentContext: AttachmentRequestContext;
 }> {

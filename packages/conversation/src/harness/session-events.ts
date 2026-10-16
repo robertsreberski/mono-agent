@@ -1,18 +1,18 @@
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { RuntimeSessionRecord, RuntimeSessionSnapshot } from "../sessions.js";
-import type { AgentHarnessSessionBoundary, AgentHarnessSessionEvent } from "./contracts.js";
+import type { ConversationHarnessSessionBoundary, ConversationHarnessSessionEvent } from "./contracts.js";
 
-export function withSessionBoundaryTimestamp(event: AgentHarnessSessionBoundary, timestamp: string): RuntimeEventLike {
+export function withSessionBoundaryTimestamp(event: ConversationHarnessSessionBoundary, timestamp: string): RuntimeEventLike {
   return event.timestamp === undefined ? { ...event, timestamp } : { ...event };
 }
 
 export function sessionEventFromRecord(
-  kind: AgentHarnessSessionEvent["kind"],
+  kind: ConversationHarnessSessionEvent["kind"],
   record: RuntimeSessionRecord | RuntimeSessionSnapshot,
   reason: string | undefined,
-  snapshot: AgentHarnessSessionEvent["snapshot"],
-): AgentHarnessSessionEvent {
+  snapshot: ConversationHarnessSessionEvent["snapshot"],
+): ConversationHarnessSessionEvent {
   return {
     kind,
     ...(record.modelKey === undefined ? {} : { modelKey: record.modelKey }),

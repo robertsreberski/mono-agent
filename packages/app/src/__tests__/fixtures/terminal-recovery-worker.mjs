@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxThinking, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { ToolHistoryWriter } from "@mono-agent/conversation";
 import { setTimeout as delay } from "node:timers/promises";
-import { createConfiguredAgentHarness } from "@mono-agent/app";
+import { createConfiguredConversationHarness } from "@mono-agent/app";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 const [root, mode, slowWriter] = process.argv.slice(2);
 if (slowWriter === "slow-writer") {
@@ -30,7 +30,7 @@ const sandboxEngine = {
     return { ...command, args: command.args ?? [], cwd: command.cwd ?? root, sandboxed: true };
   },
 };
-const harness = await createConfiguredAgentHarness({ cwd: root,
+const harness = await createConfiguredConversationHarness({ cwd: root,
   terminalRecoverySettlementMs: 30_000,
   config: {
     runtime: { model: { provider: "faux", model: "fixture", reference: "faux:fixture" }, workspace: root,

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness } from "../index.js";
+import { createConversationHarness } from "../index.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -52,7 +52,7 @@ function attachmentRequest(conversationId: string) {
   };
 }
 
-describe("AgentHarness backpressure (maxPendingRuns)", () => {
+describe("ConversationHarness backpressure (maxPendingRuns)", () => {
   it("fails the over-capacity run fast without persisting its attachment or invoking the runtime", async () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();
@@ -75,7 +75,7 @@ describe("AgentHarness backpressure (maxPendingRuns)", () => {
       async disposeAllSessions(): Promise<void> {},
     };
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -127,7 +127,7 @@ describe("AgentHarness backpressure (maxPendingRuns)", () => {
       async disposeSession(): Promise<boolean> { return true; },
       async disposeAllSessions(): Promise<void> {},
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -164,7 +164,7 @@ describe("AgentHarness backpressure (maxPendingRuns)", () => {
       },
       async append() {},
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,

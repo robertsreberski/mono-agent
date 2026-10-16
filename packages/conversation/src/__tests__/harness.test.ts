@@ -19,10 +19,10 @@ import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 import {
-  AgentHarnessFailureError,
+  ConversationHarnessFailureError,
   bindProcessJobLiveInput,
-  createAgentHarness,
-  createAgentResponder,
+  createConversationHarness,
+  createConversationResponder,
   createDurableHistoryStore,
   createInMemoryHistoryStore,
 } from "../index.js";
@@ -121,14 +121,14 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
   };
 }
 
-describe("AgentHarness", () => {
+describe("ConversationHarness", () => {
   it("imports canonical context without invoking the runtime and enforces direct byte limits", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "must not run" }));
     const historyStore = createDurableHistoryStore({ root: join(dir, "history") });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
 
     expect(harness.importContext).toBeTypeOf("function");
     await expect(harness.importContext!("web:cron:job-1", {
@@ -207,7 +207,7 @@ describe("AgentHarness", () => {
         },
       },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: {
         async run() { return { text: "seed", providerSessionId: "provider-session" }; },
@@ -244,14 +244,14 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
     const durableWithoutRetirement = createDurableHistoryStore({ root: join(dir, "history") });
-    expect(createAgentHarness({
+    expect(createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
       historyStore: durableWithoutRetirement,
       sessionsRoot: join(dir, "pi-sessions"),
     }).importContext).toBeUndefined();
-    expect(createAgentHarness({
+    expect(createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -266,7 +266,7 @@ describe("AgentHarness", () => {
     const fake = createFakeRuntime(async () => ({ text: "must not run" }));
     const append = vi.fn(async () => undefined);
     const prepareAppend = vi.fn(async () => ({ commit: async () => undefined, abort: async () => undefined }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -309,7 +309,7 @@ describe("AgentHarness", () => {
       async disposeSession(id: string) { retired.push(id); return true; },
     };
     const storeA = createDurableHistoryStore({ root: historyRoot });
-    const harnessA = createAgentHarness({
+    const harnessA = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -342,7 +342,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "warm-provider-id" }));
     const historyStore = createDurableHistoryStore({ root: join(dir, "history") });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -402,7 +402,7 @@ describe("AgentHarness", () => {
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "custom-provider" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -425,7 +425,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const leaseAbort = vi.fn(async () => undefined);
     const leaseRuntime = createFakeRuntime(async () => ({ text: "must not run" }));
-    const leaseHarness = createAgentHarness({
+    const leaseHarness = createConversationHarness({
       identityPath,
       runtime: leaseRuntime.runtime,
       model,
@@ -457,7 +457,7 @@ describe("AgentHarness", () => {
 
     const appendAbort = vi.fn(async () => undefined);
     const appendRuntime = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "provider" }));
-    const appendHarness = createAgentHarness({
+    const appendHarness = createConversationHarness({
       identityPath,
       runtime: appendRuntime.runtime,
       model,
@@ -511,7 +511,7 @@ describe("AgentHarness", () => {
       next.value.acknowledge?.();
       return { text: "Updated answer" };
     });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -560,7 +560,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     let runtimeCalls = 0;
     const observerError = new Error("ownership observer failed");
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: {
         async run(): Promise<RuntimeResult> {
@@ -609,7 +609,7 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     let runtimeCalls = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: {
         async run(): Promise<RuntimeResult> {
@@ -645,7 +645,7 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "scheduled result" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -683,7 +683,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const runIds = ["run-terminal-one", "run-terminal-two"];
     const ownership: string[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: {
         async run(): Promise<RuntimeResult> {
@@ -765,7 +765,7 @@ describe("AgentHarness", () => {
       },
     };
     const runIds = ["run-owner", "run-abort", "run-failure", "run-later"];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -900,7 +900,7 @@ describe("AgentHarness", () => {
         },
       };
       const runIds = [ownerRunId, laterRunId];
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         runtime,
         model,
@@ -1022,7 +1022,7 @@ describe("AgentHarness", () => {
       processJobWake.value.acknowledge?.();
       return { text: "Wake handled" };
     });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1076,9 +1076,9 @@ describe("AgentHarness", () => {
       wake.value.acknowledge?.();
       return { text: "", turnDisposition: "silent", error: null };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore,
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore,
       createRunId: () => "silent-process-run" });
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
     const running = responder.respond({ conversationId: "wake-thread", text: "A background job completed.",
       abortSignal: new AbortController().signal }, { append: async () => {} });
     await ready;
@@ -1110,7 +1110,7 @@ describe("AgentHarness", () => {
       expect(options.liveInput).toBe(explicitLiveInput);
       return { text: "Done" };
     });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1131,7 +1131,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const recorder = new FakeRecorder("run-private-prompt", "webhook:1");
     const fake = createFakeRuntime(async () => ({ text: "ready" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1193,7 +1193,7 @@ describe("AgentHarness", () => {
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "ready" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1263,7 +1263,7 @@ describe("AgentHarness", () => {
         if (responsePath === "runtime failure") throw new Error("runtime failed");
         return { text: "ready" };
       });
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -1318,7 +1318,7 @@ describe("AgentHarness", () => {
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "ready" }));
-    const getterHarness = createAgentHarness({
+    const getterHarness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1360,7 +1360,7 @@ describe("AgentHarness", () => {
         return summaryWithRequiredGetter;
       },
     };
-    const requiredGetterHarness = createAgentHarness({
+    const requiredGetterHarness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1401,7 +1401,7 @@ describe("AgentHarness", () => {
         return customSummary;
       },
     };
-    const customHarness = createAgentHarness({
+    const customHarness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1430,7 +1430,7 @@ describe("AgentHarness", () => {
       "private prompt returned by a custom recorder",
     );
     const fake = createFakeRuntime(async () => ({ text: "must not run" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1487,7 +1487,7 @@ describe("AgentHarness", () => {
       };
     });
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       skillsRoot,
       selectedSkills: ["research"],
@@ -1550,7 +1550,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
     let runNumber = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1654,7 +1654,7 @@ describe("AgentHarness", () => {
     const summaries: string[] = [];
     const releases: Array<{ runId: string; conversationId: string }> = [];
     const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1718,7 +1718,7 @@ describe("AgentHarness", () => {
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const runIds = ["run-ask", "run-follow-up"];
     const fake = createFakeRuntime(async () => ({ text: "Held—nothing was sent." }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1758,7 +1758,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const releases: string[] = [];
-    const successfulHarness = createAgentHarness({
+    const successfulHarness = createConversationHarness({
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "Original answer" })).runtime,
       model,
@@ -1783,7 +1783,7 @@ describe("AgentHarness", () => {
     expect(response.text).toBe("Original answer");
     expect((await historyStore.load("telegram:42")).at(-1)?.content).toBe("Original answer");
 
-    const failedHarness = createAgentHarness({
+    const failedHarness = createConversationHarness({
       identityPath,
       runtime: createFakeRuntime(async () => {
         throw new Error("provider failed");
@@ -1816,7 +1816,7 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "Digest" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, cwd: dir });
 
     await harness.run({
       conversationId: "cron:digest",
@@ -1847,7 +1847,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createFakeRuntime(async () => ({ text: "unused" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
 
     await harness.appendVerbatimTurn?.("telegram:42", "Your morning brief.");
 
@@ -1864,7 +1864,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createFakeRuntime(async () => ({ text: "unused" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
 
     await harness.appendVerbatimTurn?.("slack:D1:1.1", "Confirmed answer", { idempotencyKey: "continuation:one" });
     await harness.appendVerbatimTurn?.("slack:D1:1.1", "Confirmed answer", { idempotencyKey: "continuation:one" });
@@ -1894,7 +1894,7 @@ describe("AgentHarness", () => {
     await mkdir(join(skillsRoot, "writing"), { recursive: true });
     await writeFile(join(skillsRoot, "writing", "SKILL.md"), "# Writing\n\nDraft concise prose.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       skillsRoot,
       selectedSkills: ["research"],
@@ -1940,7 +1940,7 @@ describe("AgentHarness", () => {
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1982,7 +1982,7 @@ describe("AgentHarness", () => {
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2024,7 +2024,7 @@ describe("AgentHarness", () => {
     const historyStore = createInMemoryHistoryStore({ maxMessages: 4 });
     const fake = createFakeRuntime(async () => ({ text: "Done." }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2053,7 +2053,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ error: "Provider limit", failureKind: "usage_limit" }));
 
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2072,7 +2072,7 @@ describe("AgentHarness", () => {
     const cleanupCalls: string[] = [];
     const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
 
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2128,7 +2128,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2164,8 +2164,8 @@ describe("AgentHarness", () => {
     "rejects %s writing when the memory store has no completed-turn admission method",
     (memoryWriteMode) => {
       const base = { identityPath: "/tmp/unused-identity.md", runtime: createFakeRuntime(async () => ({ text: "unused" })).runtime, model, memoryWriteMode };
-      expect(() => createAgentHarness({ ...base, memory: { load: async () => undefined } })).toThrow(/persistCompletedTurn/);
-      expect(() => createAgentHarness(base)).toThrow(/persistCompletedTurn/);
+      expect(() => createConversationHarness({ ...base, memory: { load: async () => undefined } })).toThrow(/persistCompletedTurn/);
+      expect(() => createConversationHarness(base)).toThrow(/persistCompletedTurn/);
     },
   );
 
@@ -2174,7 +2174,7 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "The read-only memory was available." }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model,
       memory: { load: async () => ({ kind: "markdown", source: "read-only", content: "A durable read-only fact.", truncated: false }) },
       ...(memoryWriteMode === undefined ? {} : { memoryWriteMode }),
@@ -2190,7 +2190,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const queries: string[] = [];
     const admitted: MemoryCompletedTurn[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: createFakeRuntime(async () => ({ text: "Acknowledged." })).runtime, model,
       memoryWriteMode: "capture",
       memory: {
@@ -2229,7 +2229,7 @@ describe("AgentHarness", () => {
       next.value.acknowledge?.();
       return { text: "Noted." };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, memoryWriteMode: "capture",
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, memoryWriteMode: "capture",
       memory: { load: async () => undefined, async persistCompletedTurn(turn) {
         admitted.push(turn);
         return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
@@ -2252,7 +2252,7 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const queries: string[] = [];
-    const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+    const harness = createConversationHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
       model, memory: { async load(_id, query) { queries.push(query ?? ""); return undefined; } } });
     await harness.run({ conversationId: "web:attachment", userMessage: "", metadata: { source: "web", web: { ownerText: "" } },
       captureSpeakerKind: "human-turn", abortSignal: new AbortController().signal,
@@ -2306,7 +2306,7 @@ describe("AgentHarness", () => {
     };
     const fake = createFakeRuntime(async () => ({ text: "The build is green." }));
 
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2348,7 +2348,7 @@ describe("AgentHarness", () => {
       },
     };
 
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "The build is green." })).runtime,
       model,
@@ -2395,7 +2395,7 @@ describe("AgentHarness", () => {
       call("two", "success");
       return { text: "A retry succeeded after the failed execution." };
     });
-    const harness = createAgentHarness({ identityPath, runtime: runtime.runtime, model,
+    const harness = createConversationHarness({ identityPath, runtime: runtime.runtime, model,
       memoryWriteMode: "capture", memory: { load: async () => undefined,
         persistCompletedTurn: async (turn) => {
           admissions.push(turn);
@@ -2434,7 +2434,7 @@ describe("AgentHarness", () => {
       const memory = { load: async (_id: string, _query?: string, options?: import("@mono-agent/contracts").MemoryLoadOptions) => {
         reads.push(options); return undefined;
       } };
-      const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+      const harness = createConversationHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
         model, now: () => new Date("2024-03-01T00:30:00.000Z"), memory });
       await harness.run({ conversationId: "conv-1", userMessage: "Morgan prefers brief notes.",
         captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { id: "fictional-sender" },
@@ -2448,7 +2448,7 @@ describe("AgentHarness", () => {
       expect(reads[1]?.senderToken).toBeUndefined();
       expect(reads[1]?.ownerTurn).toBeUndefined();
       const disabled = createFakeRuntime(async () => ({ text: "No memory." }));
-      await createAgentHarness({ identityPath, runtime: disabled.runtime, model }).run({
+      await createConversationHarness({ identityPath, runtime: disabled.runtime, model }).run({
         conversationId: "conv-3", userMessage: "Morgan", captureSpeakerKind: "human-turn",
         abortSignal: new AbortController().signal,
       });
@@ -2465,7 +2465,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     for (const switchValue of [undefined, true, false]) {
       const admissions: string[] = [];
-      const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+      const harness = createConversationHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
         model, memoryWriteMode: "capture", ...(switchValue === undefined ? {} : { memoryCaptureCron: switchValue }),
         memory: { load: async () => undefined, persistCompletedTurn: async (turn) => {
           admissions.push(turn.conversationId); return { id: turn.runId, runId: turn.runId,
@@ -2489,7 +2489,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     for (const switchValue of [undefined, true, false]) {
       const admissions: string[] = [];
-      const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+      const harness = createConversationHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
         model, memoryWriteMode: "capture", ...(switchValue === undefined ? {} : { memoryCaptureWebhook: switchValue }),
         memory: { load: async () => undefined, persistCompletedTurn: async (turn) => {
           admissions.push(turn.conversationId); return { id: turn.runId, runId: turn.runId,
@@ -2521,7 +2521,7 @@ describe("AgentHarness", () => {
     ];
     for (const entry of cases) {
       const fake = createFakeRuntime(async () => ({ text: "Noted." }));
-      const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model,
+      const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model,
         memory: { load: async () => undefined, persistCompletedTurn: async (turn) => ({ id: turn.runId,
           runId: turn.runId, conversationId: turn.conversationId, source: "test", bytesWritten: 0,
           admissionStatus: "admitted" as const }) },
@@ -2539,7 +2539,7 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const admissions: MemoryCompletedTurn[] = [];
-    await createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Retry worked." })).runtime,
+    await createConversationHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Retry worked." })).runtime,
       model, memoryWriteMode: "capture", memory: { load: async () => undefined,
         persistCompletedTurn: async (turn) => {
           admissions.push(turn);
@@ -2583,7 +2583,7 @@ describe("AgentHarness", () => {
           source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
       },
     };
-    const harness = createAgentHarness({ identityPath,
+    const harness = createConversationHarness({ identityPath,
       runtime: createFakeRuntime(async () => ({ text: "OK" })).runtime,
       model, memory, memoryWriteMode: "capture" });
     for (const [conversationId, metadata, captureSpeakerKind] of [
@@ -2623,7 +2623,7 @@ describe("AgentHarness", () => {
       },
     };
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "The build is green." })).runtime,
       model,
@@ -2650,7 +2650,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const historyStore = createInMemoryHistoryStore();
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "green" })).runtime,
       model,
@@ -2679,7 +2679,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const historyStore = createInMemoryHistoryStore();
     const fake = createFakeRuntime(async () => ({ text: "booked" }));
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2709,7 +2709,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const historyStore = createInMemoryHistoryStore();
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "green" })).runtime,
       model,
@@ -2755,7 +2755,7 @@ describe("AgentHarness", () => {
       },
     };
 
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "Done." })).runtime,
       model,
@@ -2792,7 +2792,7 @@ describe("AgentHarness", () => {
         };
       },
     };
-    const responsePending = createAgentHarness({
+    const responsePending = createConversationHarness({
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "Provider answer." })).runtime,
       model,
@@ -2835,7 +2835,7 @@ describe("AgentHarness", () => {
         },
       };
 
-      const response = await createAgentHarness({
+      const response = await createConversationHarness({
         identityPath,
         runtime: createFakeRuntime(async () => ({ text: assistantText })).runtime,
         model,
@@ -2853,7 +2853,7 @@ describe("AgentHarness", () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are a concise assistant.", "utf8");
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath, model,
       runtime: createFakeRuntime(async () => ({ text: "", error: null,
         runtimeWarnings: [{ warning_kind: "empty_reply_retry", attempt: 1, outcome: "empty" }],
@@ -2868,7 +2868,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const memoryCapture = vi.fn();
     const history = createInMemoryHistoryStore();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, model, historyStore: history,
       runtime: createFakeRuntime(async () => ({ text: "", turnDisposition: "silent", error: null })).runtime,
       memory: { load: async () => undefined, persistCompletedTurn: memoryCapture },
@@ -2888,7 +2888,7 @@ describe("AgentHarness", () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath, model,
       runtime: createFakeRuntime(async () => ({ text: "", turnDisposition: "silent", error: null })).runtime,
       recorderFactory: () => ({
@@ -2924,7 +2924,7 @@ describe("AgentHarness", () => {
     };
     const fake = createFakeRuntime(async () => ({ text: "Done." }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2963,7 +2963,7 @@ describe("AgentHarness", () => {
     };
     const fake = createFakeRuntime(async () => ({ text: "All good." }));
 
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3013,7 +3013,7 @@ describe("AgentHarness", () => {
       const answer = "No focus changes need your attention.";
       const fake = createFakeRuntime(async () => ({ text: answer }));
 
-      await createAgentHarness({
+      await createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -3068,7 +3068,7 @@ describe("AgentHarness", () => {
         };
         const fake = createFakeRuntime(async () => ({ text: finalText }));
 
-        const response = await createAgentHarness({
+        const response = await createConversationHarness({
           identityPath,
           runtime: fake.runtime,
           model,
@@ -3115,7 +3115,7 @@ describe("AgentHarness", () => {
         };
         const fake = createFakeRuntime(async () => ({ text: answer }));
 
-        await createAgentHarness({
+        await createConversationHarness({
           identityPath,
           runtime: fake.runtime,
           model,
@@ -3156,7 +3156,7 @@ describe("AgentHarness", () => {
       };
       const fake = createFakeRuntime(async () => ({ text: "test ok" }));
 
-      await createAgentHarness({
+      await createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -3202,7 +3202,7 @@ describe("AgentHarness", () => {
     };
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3243,7 +3243,7 @@ describe("AgentHarness", () => {
     };
     const fake = createFakeRuntime(async () => ({ text: "done" }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3284,7 +3284,7 @@ describe("AgentHarness", () => {
     };
     const fake = createFakeRuntime(async () => ({ text: "works" }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3323,7 +3323,7 @@ describe("AgentHarness", () => {
     };
     const fake = createFakeRuntime(async () => ({ text: "Done." }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3342,7 +3342,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3389,7 +3389,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3456,7 +3456,7 @@ describe("AgentHarness", () => {
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
     try {
-      await createAgentHarness({
+      await createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -3539,7 +3539,7 @@ describe("AgentHarness", () => {
     const released: string[] = [];
     const fake = createFakeRuntime(async () => ({ text: "accepted" }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3627,7 +3627,7 @@ describe("AgentHarness", () => {
       }
     }("run-origin-snapshot", "slack:C1:thread#2026-07-14");
     const fake = createFakeRuntime(async () => ({ text: "Origin acknowledgement" }));
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3708,7 +3708,7 @@ describe("AgentHarness", () => {
     const oversized = "x".repeat(64 * 1024 + 1);
     let finalized = 0;
     const fake = createFakeRuntime(async () => ({ text: oversized }));
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3751,7 +3751,7 @@ describe("AgentHarness", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const lifecycle: string[] = [];
     const fake = createFakeRuntime(async () => ({ text: "accepted" }));
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3811,7 +3811,7 @@ describe("AgentHarness", () => {
         throw new Error("must not report a committed answer as failed");
       },
     };
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3855,7 +3855,7 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "must not run" }));
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3885,7 +3885,7 @@ describe("AgentHarness", () => {
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "must not run" }));
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3907,7 +3907,7 @@ describe("AgentHarness", () => {
     let issued: Record<string, unknown> | undefined;
     const fake = createFakeRuntime(async () => ({ text: "scheduled" }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -3953,7 +3953,7 @@ describe("AgentHarness", () => {
     const runIds = ["run-origin", "run-later", "run-continuation"];
     const answers = ["origin answer", "later answer", "synthesized final"];
     const fake = createFakeRuntime(async () => ({ text: answers.shift() ?? null }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -4013,7 +4013,7 @@ describe("AgentHarness", () => {
     const runIds = ["run-first", "run-latest", "run-detached"];
     const answers = ["first answer", "latest answer", "detached final"];
     const fake = createFakeRuntime(async () => ({ text: answers.shift() ?? null }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -4056,7 +4056,7 @@ describe("AgentHarness", () => {
       const runIds = ["run-origin", "run-continuation"];
       const fake = createFakeRuntime(async () => ({ text: "answer" }));
       const decorateUserMessage = vi.fn((message: string) => `<project_context name="Trips › Flights">\nPrefer aisle seats.\n</project_context>\n\n${message}`);
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -4110,7 +4110,7 @@ describe("AgentHarness", () => {
         return { text: "ok" };
       });
 
-      await createAgentHarness({
+      await createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -4141,7 +4141,7 @@ describe("AgentHarness", () => {
       throw new Error("runtime should not run");
     });
 
-    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model }).run({
+    const response = await createConversationHarness({ identityPath, runtime: fake.runtime, model }).run({
       conversationId: "c",
       userMessage: "hi",
       abortSignal: controller.signal,
@@ -4162,7 +4162,7 @@ describe("AgentHarness", () => {
       throw new Error("runtime should not run");
     });
 
-    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model }).run({
+    const response = await createConversationHarness({ identityPath, runtime: fake.runtime, model }).run({
       conversationId: "telegram:42",
       userMessage: "cancel me",
       abortSignal: controller.signal,
@@ -4229,7 +4229,7 @@ describe("AgentHarness", () => {
       const fake = createFakeRuntime(async () => {
         throw new Error("runtime should not run");
       });
-      const response = await createAgentHarness({
+      const response = await createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -4265,7 +4265,7 @@ describe("AgentHarness", () => {
       },
     };
     const streamText: string[] = [];
-    const response = await createAgentResponder({ harness }).respond(
+    const response = await createConversationResponder({ harness }).respond(
       { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
       { append: async (delta) => { streamText.push(delta); } },
     );
@@ -4292,7 +4292,7 @@ describe("AgentHarness", () => {
       },
     };
     const streamText: string[] = [];
-    const response = await createAgentResponder({ harness }).respond(
+    const response = await createConversationResponder({ harness }).respond(
       { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
       { append: async (delta) => { streamText.push(delta); } },
     );
@@ -4348,7 +4348,7 @@ describe("AgentHarness", () => {
     };
     const streamText: string[] = [];
     const streamEvents: unknown[] = [];
-    const response = await createAgentResponder({ harness }).respond(
+    const response = await createConversationResponder({ harness }).respond(
       { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
       {
         append: async (delta) => { streamText.push(delta); },
@@ -4381,7 +4381,7 @@ describe("AgentHarness", () => {
     expect(response.text).toBe("final answer");
   });
 
-  it("throws AgentHarnessFailureError from the structural responder", async () => {
+  it("throws ConversationHarnessFailureError from the structural responder", async () => {
     const harness = {
       async run() {
         return {
@@ -4396,10 +4396,10 @@ describe("AgentHarness", () => {
       },
     };
 
-    await expect(createAgentResponder({ harness }).respond(
+    await expect(createConversationResponder({ harness }).respond(
       { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
       { append: async () => undefined },
-    )).rejects.toBeInstanceOf(AgentHarnessFailureError);
+    )).rejects.toBeInstanceOf(ConversationHarnessFailureError);
   });
 });
 
@@ -4414,7 +4414,7 @@ describe('recorded provider projection', () => {
       if (outcome === 'cancel') return { cancelled: true };
       return { text: 'answer' };
     });
-    await createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder })
+    await createConversationHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder })
       .run({ conversationId: 'web:recorded', userMessage: 'current-question-marker', metadata: { source: 'web' }, abortSignal: new AbortController().signal });
     expect(recorder.systemPrompt).toBe(fake.calls[0]?.prompt);
     expect(recorder.systemPrompt).toContain('Recording identity.');
@@ -4453,7 +4453,7 @@ describe("composite failure recording", () => {
       return { text: "answer" };
     });
     const historyStore = createInMemoryHistoryStore({ maxMessages: 64 });
-    const response = await createAgentHarness({
+    const response = await createConversationHarness({
       identityPath, runtime: fake.runtime, model, historyStore,
       createRunId: () => "composite-recording", recorderFactory: () => recorder,
     }).run({
@@ -4510,7 +4510,7 @@ it.each([false, true])("does not admit P2 evidence for an uncertified selected s
   const historyStore = createDurableHistoryStore({ root: join(dir, "history"), retireProviderSession: async () => {}, reconcileProviderSessionTurn: inspect });
   const fake = createFakeRuntime(async () => ({ text: "Fictional custom owner answer." }));
   const uncertified = { ...fake.runtime, reconcileSessionTurn: matcher, async refreshSession() {}, async syncSession() { return true; } };
-  const harness = createAgentHarness({ identityPath, model, cwd: dir, sessionsRoot: join(dir, "pi"), session: { mode: "continuous", idleTimeoutMs: 60_000 }, historyStore,
+  const harness = createConversationHarness({ identityPath, model, cwd: dir, sessionsRoot: join(dir, "pi"), session: { mode: "continuous", idleTimeoutMs: 60_000 }, historyStore,
     runtime: alternate ? { ...uncertified, sessionTurnReconciliation: "v1" } : uncertified, runtimeForModel: () => uncertified,
     ...(alternate ? { runtimeOptionsForRequest: () => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("openai:fictional-alternate") } }) } : {}) });
   expect(await harness.run({ conversationId: "fictional-owner", userMessage: "Fictional input.", abortSignal: new AbortController().signal,
@@ -4522,11 +4522,11 @@ it.each([false, true])("does not admit P2 evidence for an uncertified selected s
 });
 
 it("rejects the renamed harness root option before construction", () => {
-  expect(() => createAgentHarness({ piSessionsRoot: "/fictional/old", sessionsRoot: "/fictional/new" } as never))
+  expect(() => createConversationHarness({ piSessionsRoot: "/fictional/old", sessionsRoot: "/fictional/new" } as never))
     .toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
 });
 
 it("rejects the old sessions root nested in runtime options at construction", () => {
-  expect(() => createAgentHarness({ runtimeOptions: { piSessionsRoot: "/fictional/old" } } as never))
+  expect(() => createConversationHarness({ runtimeOptions: { piSessionsRoot: "/fictional/old" } } as never))
     .toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
 });

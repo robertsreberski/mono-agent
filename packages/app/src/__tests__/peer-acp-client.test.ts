@@ -13,7 +13,7 @@ import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createAgentResponder } from "@mono-agent/conversation";
+import { createConversationResponder } from "@mono-agent/conversation";
 import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
 
 const discovery = vi.hoisted(() => ({ enabled: false, root: "", artifactDir: "", callerArtifactDir: "" }));
@@ -212,7 +212,7 @@ describe("peer ACP client over a real spawned bridge", () => {
         service: { settings: { maxChainDepth: 4 }, controller: vi.fn() } as never,
         sandboxEngine: { id: "test", isAvailable: async () => true } as never,
       });
-      const responder = createAgentResponder({ harness: { run: async (request: {
+      const responder = createConversationResponder({ harness: { run: async (request: {
         conversationId: string; userMessage: string; metadata?: Record<string, unknown>;
       }) => {
         const runtime = await extension({ runId: "run", request, context: {} } as never);

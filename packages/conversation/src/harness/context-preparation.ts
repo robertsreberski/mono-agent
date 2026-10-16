@@ -9,9 +9,9 @@ import type {
   SkillIndexEntry,
   SkillIndexSummary,
 } from "../context/index.js";
-import type { AgentHarnessOptions, AgentHarnessRequest } from "./contracts.js";
+import type { ConversationHarnessOptions, ConversationHarnessRequest } from "./contracts.js";
 import type { SkillsCache } from "../skills/index.js";
-import { AgentHarnessError } from "./error.js";
+import { ConversationHarnessError } from "./error.js";
 import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
 import { memorySenderToken, memoryUserText } from "./memory-persistence.js";
@@ -19,9 +19,9 @@ import { isCronRequest, runSourceFromRequest } from "./request-routing.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
 export async function prepareHarnessContext(
-  options: AgentHarnessOptions,
+  options: ConversationHarnessOptions,
   skillsCache: SkillsCache,
-  request: AgentHarnessRequest,
+  request: ConversationHarnessRequest,
   contextOptions: {
     readonly historyMode: "messages" | "omitted";
     readonly turnId: string;
@@ -115,7 +115,7 @@ export async function prepareHarnessContext(
  * created-on-miss provider session with identical canonical context.
  */
 export function loadToolHistoryProjection(
-  options: AgentHarnessOptions,
+  options: ConversationHarnessOptions,
   conversationId: string,
   turnId: string,
   history: readonly HistoryMessage[],
@@ -194,7 +194,7 @@ function projectToolHistoryBeforeCurrentTurn(
  * name and description cross over — `mainFile` is an absolute host path and is
  * dropped here so it never reaches run options or a prompt built from them.
  */
-async function loadSkillDisclosureEntries(options: AgentHarnessOptions): Promise<readonly SkillIndexSummary[]> {
+async function loadSkillDisclosureEntries(options: ConversationHarnessOptions): Promise<readonly SkillIndexSummary[]> {
     if ((options.skillDisclosure ?? "full") !== "index" || options.skillsRoot === undefined) {
       return [];
     }
@@ -203,9 +203,9 @@ async function loadSkillDisclosureEntries(options: AgentHarnessOptions): Promise
 }
 
 export async function loadHarnessHistory(
-  options: AgentHarnessOptions,
+  options: ConversationHarnessOptions,
   conversationId: string,
-  continuation?: AgentHarnessRequest["continuation"],
+  continuation?: ConversationHarnessRequest["continuation"],
 ): Promise<readonly HistoryMessage[]> {
     if (continuation?.originContext !== undefined) {
       const snapshot = continuation.originContext;
@@ -213,7 +213,7 @@ export async function loadHarnessHistory(
       if (snapshot.conversationId !== conversationId
         || snapshot.originRunId !== continuation.originRunId
         || snapshot.historyBoundary !== continuation.historyBoundary) {
-        throw new AgentHarnessError(
+        throw new ConversationHarnessError(
           "origin_context_binding_mismatch",
           "The pinned continuation origin context does not match this synthesis turn.",
           { continuationId: continuation.continuationId },
@@ -237,7 +237,7 @@ export async function loadHarnessHistory(
       }
     }
     if (boundaryIndex < 0) {
-      throw new AgentHarnessError(
+      throw new ConversationHarnessError(
         "history_boundary_not_found",
         "The continuation history boundary is no longer available.",
         { continuationId: continuation.continuationId, historyBoundary: boundary },
@@ -247,8 +247,8 @@ export async function loadHarnessHistory(
 }
 
 async function loadHarnessMemory(
-  options: AgentHarnessOptions,
-  request: AgentHarnessRequest,
+  options: ConversationHarnessOptions,
+  request: ConversationHarnessRequest,
   turnId: string,
   originalUserMessage?: string,
   emit?: (event: RuntimeEventLike) => void,
@@ -314,7 +314,7 @@ async function loadHarnessMemory(
 }
 
 async function loadHarnessSkills(
-  options: AgentHarnessOptions,
+  options: ConversationHarnessOptions,
   skillsCache: SkillsCache,
 ): Promise<{
   readonly index: readonly SkillIndexEntry[];
@@ -324,7 +324,7 @@ async function loadHarnessSkills(
       return { index: [], instructions: [] };
     }
     if (options.skillsRoot === undefined) {
-      throw new AgentHarnessError("invalid_skill_selection", "selectedSkills requires skillsRoot.");
+      throw new ConversationHarnessError("invalid_skill_selection", "selectedSkills requires skillsRoot.");
     }
     return await skillsCache.loadSelectedSkillsCached({
       skillsRoot: options.skillsRoot,

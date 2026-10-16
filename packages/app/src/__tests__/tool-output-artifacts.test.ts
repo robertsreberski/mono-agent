@@ -2,7 +2,7 @@ import { lstat, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -14,7 +14,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(async (root) => await rm(root, { recursive: true, force: true })));
 });
 
-function input(runId: string): AgentHarnessRuntimeOptionsInput {
+function input(runId: string): ConversationHarnessRuntimeOptionsInput {
   return {
     request: {
       conversationId: "conversation-1",
@@ -23,7 +23,7 @@ function input(runId: string): AgentHarnessRuntimeOptionsInput {
     },
     runId,
     context: {},
-  } as unknown as AgentHarnessRuntimeOptionsInput;
+  } as unknown as ConversationHarnessRuntimeOptionsInput;
 }
 
 describe("createToolOutputArtifactsRuntimeExtension", () => {

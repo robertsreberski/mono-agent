@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
-import type { AgentHarnessOptions, AgentHarnessRequest } from "./contracts.js";
+import type { ConversationHarnessOptions, ConversationHarnessRequest } from "./contracts.js";
 import type { AppliedLiveInput } from "../live-input.js";
 import { senderLabel } from "./speaker-context.js";
 import { compactOneLine } from "./value-utils.js";
@@ -12,7 +12,7 @@ const MEMORY_PERSISTENCE_WARNING = "Memory persistence was not confirmed after t
 
 /** Web passes the unprefixed operator input alongside its model-visible envelope.
  * Other hosts (and non-owner turns) keep their existing memory text. */
-export function memoryUserText(request: AgentHarnessRequest): string {
+export function memoryUserText(request: ConversationHarnessRequest): string {
   const web = request.metadata?.web;
   const ownerText = typeof web === "object" && web !== null && !Array.isArray(web)
     ? (web as Record<string, unknown>).ownerText : undefined;
@@ -26,14 +26,14 @@ export function memoryUserText(request: AgentHarnessRequest): string {
 }
 
 export async function buildSuccessfulTurn(
-  options: AgentHarnessOptions,
+  options: ConversationHarnessOptions,
   conversationId: string,
   userMessage: string,
   liveInputs: readonly AppliedLiveInput[],
   assistantText: string,
   runId: string,
   sender?: AgentMessageSender,
-  request?: AgentHarnessRequest,
+  request?: ConversationHarnessRequest,
   silentTurn = false,
 ): Promise<{
   readonly capturedAt: string;
@@ -83,7 +83,7 @@ export async function buildSuccessfulTurn(
     };
 }
 
-export function composeUserMemoryText(initial: string, liveInputs: readonly AppliedLiveInput[], request?: AgentHarnessRequest): string {
+export function composeUserMemoryText(initial: string, liveInputs: readonly AppliedLiveInput[], request?: ConversationHarnessRequest): string {
   if (liveInputs.length === 0) return initial;
   return [
     initial,
@@ -103,7 +103,7 @@ export function composeUserMemoryText(initial: string, liveInputs: readonly Appl
  * attachment prompt.
  */
 export async function persistSuccessfulMemory(
-  harnessOptions: AgentHarnessOptions,
+  harnessOptions: ConversationHarnessOptions,
   conversationId: string,
   userMessage: string,
   assistantText: string,

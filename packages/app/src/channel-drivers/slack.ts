@@ -3,7 +3,7 @@ import type {
   ChannelInteractionSink,
   NotifyDeliveryResult,
 } from "@mono-agent/contracts";
-import { AgentHarnessFailureError } from "@mono-agent/conversation";
+import { ConversationHarnessFailureError } from "@mono-agent/conversation";
 import type {
   SlackAdapterConfig,
   SlackAdapterStartOptions,
@@ -371,7 +371,7 @@ export function createSlackChannelDriver(
                 retryAfterMs: 1_000,
               } satisfies ContinuationChannelSynthesisResult;
             }
-            if (error instanceof AgentHarnessFailureError && error.failure.kind === "history_boundary_not_found") {
+            if (error instanceof ConversationHarnessFailureError && error.failure.kind === "history_boundary_not_found") {
               return {
                 kind: "unavailable",
                 code: "origin_history_not_ready",

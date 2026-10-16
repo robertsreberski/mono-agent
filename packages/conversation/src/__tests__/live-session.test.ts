@@ -3,17 +3,17 @@ import { describe, expect, it } from "vitest";
 import { isAgentResponseCancelledError } from "@mono-agent/contracts";
 
 import { createLiveSessionManager } from "../live-session.js";
-import type { AgentHarnessRequest, AgentHarnessResponse } from "../index.js";
+import type { ConversationHarnessRequest, ConversationHarnessResponse } from "../index.js";
 
 function req(
   conversationId: string,
   userMessage = "hi",
   abortSignal: AbortSignal = new AbortController().signal,
-): AgentHarnessRequest {
+): ConversationHarnessRequest {
   return { conversationId, userMessage, abortSignal };
 }
 
-function response(text: string, conversationId = "c"): AgentHarnessResponse {
+function response(text: string, conversationId = "c"): ConversationHarnessResponse {
   return {
     text,
     metadata: { runId: "r", conversationId, contextSources: [], contextSectionIds: [] },

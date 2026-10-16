@@ -1,11 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { logicalConversationIdForFence, AgentHarnessError, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/conversation";
+import { logicalConversationIdForFence, ConversationHarnessError, type ConversationHarness, type ConversationHarnessRequest, type ConversationHistoryStore } from "@mono-agent/conversation";
 import { AgentResponseCancelledError } from "@mono-agent/contracts";
 
 /** APP-private identity seam. The host-stamped Web source carries its committed
  * inbound message ID, not a run ID, request UUID or text hash. Background wakes
  * may dispatch the current chain, but never authorize model-change producers. */
-export function persistedWebDeliveryId(request: AgentHarnessRequest): string | undefined {
+export function persistedWebDeliveryId(request: ConversationHarnessRequest): string | undefined {
   if (request.metadata?.source !== "web" || request.continuation !== undefined
     || request.metadata.cron !== undefined || request.metadata.webhook !== undefined
     || request.metadata.processJob !== undefined) return undefined;
@@ -45,7 +45,7 @@ const forwardedKeys = {
   compactConversation: true, liveInputOwnership: true, run: true, submit: true,
   offerLiveInput: true, cancel: true, resetConversation: true,
   appendVerbatimTurn: true, importContext: true, dispose: true,
-} satisfies Record<keyof AgentHarness, true>;
+} satisfies Record<keyof ConversationHarness, true>;
 void forwardedKeys;
 
 /** Opt-in per-logical-conversation gate shared across responder instances.
@@ -54,7 +54,7 @@ void forwardedKeys;
  * submit shares this gate because APP responders prefer it; the harness's own
  * queue is instance-local and cannot protect cross-responder owner admission or
  * detect nested callbacks before they wait on their own durable claim. */
-export function serializeNativeSwitchHarness(harness: AgentHarness, root: string, store: ConversationHistoryStore): AgentHarness {
+export function serializeNativeSwitchHarness(harness: ConversationHarness, root: string, store: ConversationHistoryStore): ConversationHarness {
   let disposed = false;
   let disposal: Promise<void> | undefined;
   const lifetime = new AbortController();
@@ -64,7 +64,7 @@ export function serializeNativeSwitchHarness(harness: AgentHarness, root: string
   const mutation = async <T>(id: string, action: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
     const key = keyFor(id);
     if (disposed) return Promise.reject(cancelled());
-    if (scopes.getStore()?.some((scope) => scope.active && scope.key === key)) return Promise.reject(new AgentHarnessError(
+    if (scopes.getStore()?.some((scope) => scope.active && scope.key === key)) return Promise.reject(new ConversationHarnessError(
       "native_switch_busy", "A nested operation cannot wait on its own conversation claim.", { retryable: true }));
     const abortSignal = signal === undefined ? lifetime.signal : AbortSignal.any([signal, lifetime.signal]);
     return enqueue(key, abortSignal, async () => {
@@ -80,7 +80,7 @@ export function serializeNativeSwitchHarness(harness: AgentHarness, root: string
       finally { scope.active = false; pending.delete(operation); }
     });
   };
-  const run = async (request: AgentHarnessRequest, submit: boolean) => {
+  const run = async (request: ConversationHarnessRequest, submit: boolean) => {
     const controller = new AbortController(); turns.set(controller, request.conversationId);
     const abortSignal = AbortSignal.any([request.abortSignal, controller.signal]);
     try {
@@ -98,17 +98,17 @@ export function serializeNativeSwitchHarness(harness: AgentHarness, root: string
   };
   return {
     run: (request) => run(request, false),
-    ...(harness.submit === undefined ? {} : { submit: (request: AgentHarnessRequest) => run(request, true) }),
+    ...(harness.submit === undefined ? {} : { submit: (request: ConversationHarnessRequest) => run(request, true) }),
     ...(harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: harness.liveInputOwnership }),
     ...(harness.offerLiveInput === undefined ? {} : { offerLiveInput: harness.offerLiveInput.bind(harness) }),
     cancel(conversationId, reason) {
       for (const [controller, id] of turns) if (id === conversationId) controller.abort(reason);
       harness.cancel?.(conversationId, reason);
     },
-    ...(harness.compactConversation === undefined ? {} : { compactConversation: (...args: Parameters<NonNullable<AgentHarness["compactConversation"]>>) => mutation(args[0], () => harness.compactConversation!(...args), args[2]) }),
+    ...(harness.compactConversation === undefined ? {} : { compactConversation: (...args: Parameters<NonNullable<ConversationHarness["compactConversation"]>>) => mutation(args[0], () => harness.compactConversation!(...args), args[2]) }),
     ...(harness.resetConversation === undefined ? {} : { resetConversation: (id: string) => mutation(id, () => harness.resetConversation!(id)) }),
-    ...(harness.appendVerbatimTurn === undefined ? {} : { appendVerbatimTurn: (...args: Parameters<NonNullable<AgentHarness["appendVerbatimTurn"]>>) => mutation(args[0], () => harness.appendVerbatimTurn!(...args)) }),
-    ...(harness.importContext === undefined ? {} : { importContext: (...args: Parameters<NonNullable<AgentHarness["importContext"]>>) => mutation(args[0], () => harness.importContext!(...args)) }),
+    ...(harness.appendVerbatimTurn === undefined ? {} : { appendVerbatimTurn: (...args: Parameters<NonNullable<ConversationHarness["appendVerbatimTurn"]>>) => mutation(args[0], () => harness.appendVerbatimTurn!(...args)) }),
+    ...(harness.importContext === undefined ? {} : { importContext: (...args: Parameters<NonNullable<ConversationHarness["importContext"]>>) => mutation(args[0], () => harness.importContext!(...args)) }),
     dispose() {
       if (disposal) return disposal;
       disposed = true;

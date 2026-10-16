@@ -2,7 +2,7 @@ import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parse
 import type { LocalProviderDefinition, RuntimeModelReference } from "@mono-agent/turn/host/types";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 
 import { createRequestModelOverrideRuntimeExtension, implicitModelRuntimeOptions, requestModelOverrideRoutesOnlyPiNative } from "../request-model-override.js";
 import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
@@ -659,7 +659,7 @@ it("matches harness session-model declaration precedence", async () => {
   const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const { createAgentHarness, createInMemoryHistoryStore } = await import("@mono-agent/conversation");
+  const { createConversationHarness, createInMemoryHistoryStore } = await import("@mono-agent/conversation");
   const dir = await mkdtemp(join(tmpdir(), "override-precedence-"));
   const identityPath = join(dir, "IDENTITY.md");
   await writeFile(identityPath, "You are Mono.");
@@ -668,7 +668,7 @@ it("matches harness session-model declaration precedence", async () => {
   const sources = ["webhook", "cron", "web", "tui", "telegram", "slack"];
   const logger = { warn: vi.fn() };
   const calls: RuntimeModelReference[] = [];
-  const harness = createAgentHarness({ identityPath, model: base, historyStore: createInMemoryHistoryStore(),
+  const harness = createConversationHarness({ identityPath, model: base, historyStore: createInMemoryHistoryStore(),
     session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000 },
     runtime: { run: async (_prompt, options) => { calls.push(options.model); return { text: "ok", providerSessionId: "id" }; } },
     runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: base, logger }) });

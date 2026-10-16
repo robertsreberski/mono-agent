@@ -1,5 +1,5 @@
 import type { AgentContinuationOriginContext } from "@mono-agent/contracts";
-import { AgentHarnessFailureError } from "@mono-agent/conversation";
+import { ConversationHarnessFailureError } from "@mono-agent/conversation";
 import { SerialQueueFullError } from "@mono-agent/channel-slack";
 import { describe, expect, it, vi } from "vitest";
 
@@ -277,7 +277,7 @@ describe("Slack continuation channel wrapper", () => {
   });
 
   it("maps a missing history boundary to origin_history_not_ready", async () => {
-    const error = new AgentHarnessFailureError({
+    const error = new ConversationHarnessFailureError({
       kind: "history_boundary_not_found",
       message: "The continuation history boundary is no longer available.",
     });
@@ -294,8 +294,8 @@ describe("Slack continuation channel wrapper", () => {
     });
   });
 
-  it("rethrows an unrelated AgentHarnessFailureError without mapping it to history readiness", async () => {
-    const error = new AgentHarnessFailureError({
+  it("rethrows an unrelated ConversationHarnessFailureError without mapping it to history readiness", async () => {
+    const error = new ConversationHarnessFailureError({
       kind: "provider_unavailable",
       message: "The selected provider is unavailable.",
     });

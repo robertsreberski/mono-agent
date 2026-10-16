@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createModels, fauxProvider, normalizeContext } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../conversation/src/index.ts';
+import { createConversationHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../conversation/src/index.ts';
 import { resolveJsonMonoAgentConfig } from '../../../../config/src/index.ts';
 import { generateEngineTurnResponse } from '../../execution/pi/run.js';
 import { disposeProviderSession } from '../../runtime/session-fanout.js';
@@ -60,7 +60,7 @@ function host(fixture, continuous) {
   const root = mkdtempSync(join(tmpdir(), 'prompt-cache-payload-'));
   roots.push(root);
   writeFileSync(join(root, 'IDENTITY.md'), 'Stable fixture identity.');
-  return createAgentHarness({
+  return createConversationHarness({
     identityPath: join(root, 'IDENTITY.md'),
     model: { provider: 'cache-fixture', model: 'fixture', reference: 'cache-fixture:fixture' },
     historyStore: createInMemoryHistoryStore({ maxMessages: 64 }),

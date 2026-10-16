@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Rename the conversation harness APIs to `ConversationHarness*`,
+  `createConversationHarness`, and `createConversationResponder` without aliases.
+  Use `ConfiguredConversationHarnessOptions` and
+  `createConfiguredConversationHarness` for app composition. The error names
+  `AgentHarnessError` and `AgentHarnessFailureError` become
+  `ConversationHarnessError` and `ConversationHarnessFailureError`; error codes,
+  messages, configuration, and persisted conversation bytes stay unchanged.
+
 - Curate `@mono-agent/turn` into eleven public entries: import expert AI and
   native-session administration from `/ai`, and direct tools/context from
   `/tools`. Retire file-shaped AI/agent subpaths without aliases. Rename

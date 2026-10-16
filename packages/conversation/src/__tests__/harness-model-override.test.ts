@@ -6,9 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
-import type { AgentHarnessRequest } from "../index.js";
-import type { AgentHarnessSessionEvent, AgentHarnessSessionOptions } from "../harness/contracts.js";
+import { createConversationHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
+import type { ConversationHarnessRequest } from "../index.js";
+import type { ConversationHarnessSessionEvent, ConversationHarnessSessionOptions } from "../harness/contracts.js";
 
 const tempDirs: string[] = [];
 const defaultModel = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
@@ -59,14 +59,14 @@ function request(conversationId = "conv-1", userMessage = "hello") {
   return { conversationId, userMessage, abortSignal: new AbortController().signal };
 }
 
-describe("AgentHarness per-request model/effort override", () => {
+describe("ConversationHarness per-request model/effort override", () => {
   it("runs a different-model override on the runtimeForModel runtime", async () => {
     const identityPath = await identityFixture();
     const base = createFakeRuntime();
     const override = createFakeRuntime();
     const factoryCalls: RuntimeModelReference[] = [];
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -94,7 +94,7 @@ describe("AgentHarness per-request model/effort override", () => {
     const base = createFakeRuntime();
     let factoryCalled = false;
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -118,7 +118,7 @@ describe("AgentHarness per-request model/effort override", () => {
   it("omits effort from the runtime call when an extension selects provider default", async () => {
     const identityPath = await identityFixture();
     const base = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -136,7 +136,7 @@ describe("AgentHarness per-request model/effort override", () => {
     const identityPath = await identityFixture();
     const base = createFakeRuntime();
 
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -154,7 +154,7 @@ describe("AgentHarness per-request model/effort override", () => {
   });
 });
 
-describe("AgentHarness per-request override OWNS the local-provider endpoint block", () => {
+describe("ConversationHarness per-request override OWNS the local-provider endpoint block", () => {
   // These drive the REAL harness mergeRuntimeOptions end-to-end (host default
   // runtimeOptions vs the extension's per-request runtimeOptions) and assert the
   // options actually handed to runtime.run — no inline re-implementation of the
@@ -164,7 +164,7 @@ describe("AgentHarness per-request override OWNS the local-provider endpoint blo
   it("an all-local-default agent overriding to a cloud model CLEARS the leaked local endpoint block", async () => {
     const identityPath = await identityFixture();
     const base = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: localDefaultModel,
@@ -203,7 +203,7 @@ describe("AgentHarness per-request override OWNS the local-provider endpoint blo
       modelCapabilities: { reasoning: false },
       isPrivateProvider: true,
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: localDefaultModel,
@@ -224,7 +224,7 @@ describe("AgentHarness per-request override OWNS the local-provider endpoint blo
   it("an effort-only override PRESERVES the host default endpoint block (no clear)", async () => {
     const identityPath = await identityFixture();
     const base = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: localDefaultModel,
@@ -262,7 +262,7 @@ function createSessionFakeRuntime(run: (call: number) => Promise<RuntimeResult>)
   };
 }
 
-const continuousSession: AgentHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
+const continuousSession: ConversationHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
 
 function webhookOverrideRequest(conversationId: string, modelString: string) {
   return {
@@ -316,11 +316,11 @@ function hostWakeMetadata(
   return metadata;
 }
 
-describe("AgentHarness per-request override session binding", () => {
+describe("ConversationHarness per-request override session binding", () => {
   it("warms an interactive override and records same-run live input before reseeding the default", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 20 });
-    const sessionEvents: AgentHarnessSessionEvent[] = [];
+    const sessionEvents: ConversationHarnessSessionEvent[] = [];
     const base = createSessionFakeRuntime(async (call) => ({
       text: `base-${String(call)}`,
       providerSessionId: `base-session-${String(call)}`,
@@ -343,7 +343,7 @@ describe("AgentHarness per-request override session binding", () => {
       },
     };
     let runNumber = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -450,7 +450,7 @@ describe("AgentHarness per-request override session binding", () => {
         true,
       ),
     })],
-  ] satisfies ReadonlyArray<readonly [string, () => Pick<AgentHarnessRequest, "metadata" | "continuation">]>)(
+  ] satisfies ReadonlyArray<readonly [string, () => Pick<ConversationHarnessRequest, "metadata" | "continuation">]>)(
     "uses the ordinary mailbox policy for %s model work",
     async (_name, requestFields) => {
       const identityPath = await identityFixture();
@@ -467,7 +467,7 @@ describe("AgentHarness per-request override session binding", () => {
           return { text: "isolated result" };
         },
       };
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         runtime,
         model: defaultModel,
@@ -503,7 +503,7 @@ describe("AgentHarness per-request override session binding", () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -551,7 +551,7 @@ describe("AgentHarness per-request override session binding", () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -590,7 +590,7 @@ describe("AgentHarness per-request override session binding", () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -619,7 +619,7 @@ describe("AgentHarness per-request override session binding", () => {
   it("keeps same-model and effort-only Telegram turns on the shared session", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -649,7 +649,7 @@ describe("AgentHarness per-request override session binding", () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime({ text: "wrong runtime", providerSessionId: "override-session" });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -673,7 +673,7 @@ describe("AgentHarness per-request override session binding", () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -708,7 +708,7 @@ describe("AgentHarness per-request override session binding", () => {
   it("an effort-only override is NOT isolated — it uses the shared session", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async () => ({ text: "a", providerSessionId: "ps-shared" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
@@ -734,7 +734,7 @@ describe("model binding admission and attribution", () => {
   it.each([codexModel, defaultModel])("rejects a declared override executed as $reference before provider execution", async (executedModel) => {
     const base = createFakeRuntime();
     const alternate = createFakeRuntime();
-    const harness = createAgentHarness({ identityPath: await identityFixture(), model: defaultModel, runtime: base.runtime,
+    const harness = createConversationHarness({ identityPath: await identityFixture(), model: defaultModel, runtime: base.runtime,
       session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 }, runtimeForModel: () => alternate.runtime,
       runtimeOptionsForRequest: () => ({ runtimeOptions: { model: executedModel } }) });
     const response = await harness.run({ ...request(), metadata: { web: { model: claudeModel.reference } } });
@@ -746,10 +746,10 @@ describe("model binding admission and attribution", () => {
 
   it("keeps a requested primary binding when a runtime reports a backup answer", async () => {
     const calls: RuntimeRunOptions[] = [];
-    const events: AgentHarnessSessionEvent[] = [];
+    const events: ConversationHarnessSessionEvent[] = [];
     const base = createFakeRuntime();
     const identityPath = await identityFixture();
-    const harness = createAgentHarness({ identityPath, model: defaultModel, runtime: base.runtime,
+    const harness = createConversationHarness({ identityPath, model: defaultModel, runtime: base.runtime,
       historyStore: createDurableHistoryStore({ root: join(identityPath, "..", "history"), retireProviderSession: async () => undefined }),
       sessionsRoot: join(identityPath, "..", "pi"),
       session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000,
@@ -776,7 +776,7 @@ describe("model binding admission and attribution", () => {
 it("keeps a pinned proactive override isolated and mailbox-ineligible", async () => {
   const calls: RuntimeRunOptions[] = [];
   const events: Array<Record<string, unknown>> = [];
-  const harness = createAgentHarness({ identityPath: await identityFixture(), model: defaultModel,
+  const harness = createConversationHarness({ identityPath: await identityFixture(), model: defaultModel,
     historyStore: createInMemoryHistoryStore(),
     session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000, isolateProactive: true },
     runtime: { run: async (_prompt, options) => { calls.push(options); return { text: "ok", providerSessionId: "base-id" }; } },

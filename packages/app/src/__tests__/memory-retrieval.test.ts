@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { MemoryCompletedTurn } from "@mono-agent/contracts";
-import { createAgentHarness } from "@mono-agent/conversation";
+import { createConversationHarness } from "@mono-agent/conversation";
 import { createBujoMemoryStore, extractCapturePlanStrict, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import { MemorySearchError } from "@mono-agent/memory/search";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
@@ -1026,7 +1026,7 @@ describe("shared MemoryRecall MCP", () => {
     const seenMcpServers: unknown[] = [];
     try {
       const service = new MemoryRetrievalService(fakeStore());
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         model: {
           provider: "openai-codex",
@@ -1075,7 +1075,7 @@ describe("shared MemoryRecall MCP", () => {
     const events: Array<Record<string, unknown>> = [];
     try {
       const service = new MemoryRetrievalService(store, { maxBytes: 1 });
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         model: {
           provider: "openai-codex",
@@ -1116,7 +1116,7 @@ describe("shared MemoryRecall MCP", () => {
     try {
       const service = new MemoryRetrievalService(fakeStore());
       const activeTurnCount = (): number => (service as unknown as { turns: Map<string, unknown> }).turns.size;
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         model: {
           provider: "openai-codex",

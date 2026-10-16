@@ -1,4 +1,4 @@
-export { createAgentHarness, AgentHarnessError } from "./harness.js";
+export { createConversationHarness, ConversationHarnessError } from "./harness.js";
 export { createLiveSessionManager } from "./live-session.js";
 export { bindProcessJobLiveInput, createLiveInputMailbox } from "./live-input.js";
 export type { LiveInputMailbox } from "./live-input.js";
@@ -21,8 +21,8 @@ export type { ToolHistoryRunBinding, ToolHistorySearchInput, ToolHistorySearchCu
 export type { ToolHistoryWriterHandle } from "./tool-history/writer.js";
 export { CONVERSATION_HISTORY_VERSION_MAX_BYTES } from "./sessions.js";
 export { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "./mcp-server-transport.js";
-export { AgentHarnessFailureError, createAgentResponder } from "./responder.js";
-export type { AgentHarness, AgentHarnessOptions, AgentHarnessRequest, AgentHarnessResponse, AgentHarnessRuntimeOptionsExtension, AgentHarnessRuntimeOptionsInput, AgentHarnessToolHistoryOptions, AgentHarnessTurnHistoryEnricher, ExternalRunSummary } from "./harness/contracts.js";
+export { ConversationHarnessFailureError, createConversationResponder } from "./responder.js";
+export type { ConversationHarness, ConversationHarnessOptions, ConversationHarnessRequest, ConversationHarnessResponse, ConversationHarnessRuntimeOptionsExtension, ConversationHarnessRuntimeOptionsInput, ConversationHarnessToolHistoryOptions, ConversationHarnessTurnHistoryEnricher, ExternalRunSummary } from "./harness/contracts.js";
 export type { ConversationHistoryTurnInspection, ConversationHistoryExclusiveTurn, ConversationHistoryStore, ProviderSessionTurnBinding } from "./history/contracts.js";
 export {
   isReadSkillCompatibleName,

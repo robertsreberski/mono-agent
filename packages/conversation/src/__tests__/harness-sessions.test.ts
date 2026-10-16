@@ -13,15 +13,15 @@ import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/typ
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 import {
-  AgentHarnessError,
-  createAgentHarness,
+  ConversationHarnessError,
+  createConversationHarness,
   createDurableHistoryStore,
   createInMemoryHistoryStore,
   ToolHistoryReader,
   toolHistoryLogicalConversationId,
 } from "../index.js";
 import type { ConversationHistoryStore } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../harness/contracts.js";
+import type { ConversationHarnessSessionOptions } from "../harness/contracts.js";
 import type { SkillsCache } from "../skills/index.js";
 
 const tempDirs: string[] = [];
@@ -113,7 +113,7 @@ function createSessionFakeRuntime(
   };
 }
 
-const session: AgentHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
+const session: ConversationHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
 
 async function primedHistoryStore(conversationId: string) {
   const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
@@ -230,7 +230,7 @@ async function manualFixture(options: {
       model: parseMonoRuntimeModelReference(selected), ...(options.defaultPrivateEndpoint ? { isPrivateProvider: null } : {}),
     } };
   };
-  const makeHarness = () => createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore,
+  const makeHarness = () => createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore,
     session, sessionsRoot: join(root, "pi"), runtimeOptionsForRequest,
     ...(options.withContext1M ? {
       runtimeOptions: { context1MModels: { [`${model.provider}:${model.model}`]: true } },
@@ -244,7 +244,7 @@ async function manualFixture(options: {
   return { fake, historyStore, makeHarness, revision: async () => (await readHistoryRecord(historyRoot, "manual")).providerSession.revision };
 }
 
-describe("AgentHarness manual compaction", () => {
+describe("ConversationHarness manual compaction", () => {
   it("passes explicit false through the manual policy hook even on the configured primary", async () => {
     const { fake, makeHarness } = await manualFixture({ withContext1M: true });
     await expect(makeHarness().compactConversation!("manual", { context1M: false })).resolves.toMatchObject({ status: "succeeded" });
@@ -349,7 +349,7 @@ describe("AgentHarness manual compaction", () => {
       const before = await historyStore.load("manual");
       failNextCommit.armed = failure === "commit";
       const error = await harness.compactConversation!("manual").catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(AgentHarnessError);
+      expect(error).toBeInstanceOf(ConversationHarnessError);
       expect(error).toMatchObject({ failureKind: "compaction_failed" });
       expect(String((error as Error).message)).not.toContain("PRIVATE");
       expect(fake.invalidatedSessions).toContain(sessionId);
@@ -485,18 +485,18 @@ describe("AgentHarness manual compaction", () => {
     await expect(makeHarness().compactConversation!("manual")).resolves.toMatchObject({ status: "skipped", reason: "nothing_to_compact" });
     expect(fake.calls).toEqual([]);
     const identityPath = await identityFixture();
-    const volatile = createAgentHarness({ identityPath, runtime: fake.runtime, model,
+    const volatile = createConversationHarness({ identityPath, runtime: fake.runtime, model,
       historyStore: await primedHistoryStore("manual"), session });
     await expect(volatile.compactConversation!("manual")).rejects.toMatchObject({ failureKind: "compaction_unsupported" });
   });
 });
 
-describe("AgentHarness continuous sessions", () => {
+describe("ConversationHarness continuous sessions", () => {
   it("first run goes fresh with history, second run resumes without history", async () => {
     const identityPath = await identityFixture();
     const historyStore = await primedHistoryStore("conv-1");
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     const first = await harness.run(request("conv-1", "first question"));
     expect(first.text).toBe("answer");
@@ -525,7 +525,7 @@ describe("AgentHarness continuous sessions", () => {
         providerSessionId: attributionSessionId,
       };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("telegram:42", "first"));
     await harness.run(request("telegram:42", "second"));
@@ -555,7 +555,7 @@ describe("AgentHarness continuous sessions", () => {
       async append() {},
     };
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-warm" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -582,7 +582,7 @@ describe("AgentHarness continuous sessions", () => {
       },
     };
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-history" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -626,7 +626,7 @@ describe("AgentHarness continuous sessions", () => {
       if (disposeShouldThrow) throw new Error("dispose unavailable");
       return await innerDispose(providerSessionId);
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -692,7 +692,7 @@ describe("AgentHarness continuous sessions", () => {
         async fail() { return summary("failed"); },
       };
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -719,7 +719,7 @@ describe("AgentHarness continuous sessions", () => {
       providerSessionId: call < 3 ? "ps-continuation" : "ps-fresh",
     }));
     let requiresCalls = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -767,7 +767,7 @@ describe("AgentHarness continuous sessions", () => {
   it("releases an acquired session when boundary event callbacks throw before runtime", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-boundary", "first"));
     const failed = await harness.run({
@@ -810,7 +810,7 @@ describe("AgentHarness continuous sessions", () => {
       },
     };
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, memory, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, memory, session });
 
     await harness.run(request("conv-mem", "first question"));
     await harness.run(request("conv-mem", "second question"));
@@ -839,7 +839,7 @@ describe("AgentHarness continuous sessions", () => {
       text: "answer",
       providerSessionId: options.sessionId as string,
     }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session,
       sessionsRoot,
     });
@@ -892,7 +892,7 @@ describe("AgentHarness continuous sessions", () => {
       text: "answer",
       providerSessionId: options.sessionId as string,
     }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session,
       sessionsRoot: join(durableRoot, "pi-sessions"),
     });
@@ -924,7 +924,7 @@ describe("AgentHarness continuous sessions", () => {
       providerSessionId: options.sessionId as string,
     }));
 
-    await createAgentHarness({
+    await createConversationHarness({
       identityPath, runtime: fake.runtime, model, historyStore, session,
       sessionsRoot: join(durableRoot, "pi-sessions"),
     }).run(request("conv-forged", "next"));
@@ -948,7 +948,7 @@ describe("AgentHarness continuous sessions", () => {
       text: "answer-from-b",
       providerSessionId: options.sessionId as string,
     }));
-    const harnessA = createAgentHarness({
+    const harnessA = createConversationHarness({
       identityPath,
       runtime: fakeA.runtime,
       model,
@@ -956,7 +956,7 @@ describe("AgentHarness continuous sessions", () => {
       session,
       sessionsRoot,
     });
-    const harnessB = createAgentHarness({
+    const harnessB = createConversationHarness({
       identityPath,
       runtime: fakeB.runtime,
       model,
@@ -995,7 +995,7 @@ describe("AgentHarness continuous sessions", () => {
       text: "answer-from-b",
       providerSessionId: options.sessionId as string,
     }));
-    const harnessA = createAgentHarness({
+    const harnessA = createConversationHarness({
       identityPath,
       runtime: fakeA.runtime,
       model,
@@ -1006,7 +1006,7 @@ describe("AgentHarness continuous sessions", () => {
 
     await harnessA.run(request("conv-reloaded", "question-a1"));
     const durableId = fakeA.calls[0]?.options.sessionId as string;
-    const harnessB = createAgentHarness({
+    const harnessB = createConversationHarness({
       identityPath,
       runtime: fakeB.runtime,
       model,
@@ -1019,7 +1019,7 @@ describe("AgentHarness continuous sessions", () => {
     // A newly constructed harness has an empty local RuntimeSessionStore, but
     // it shares fakeA's process-level provider registry. The durable revision
     // barrier must still refresh that registry before resuming the epoch.
-    const reloadedHarnessA = createAgentHarness({
+    const reloadedHarnessA = createConversationHarness({
       identityPath,
       runtime: fakeA.runtime,
       model,
@@ -1043,7 +1043,7 @@ describe("AgentHarness continuous sessions", () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "warm-only" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1101,7 +1101,7 @@ describe("AgentHarness continuous sessions", () => {
     await historyStore.append(conversationId, [{ role: "assistant", content: HISTORY_MARKER }]);
     const sessionEvents: Array<{ kind: string; reason?: string }> = [];
     const events: RuntimeEventLike[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath, runtime: fake.runtime, model, historyStore, sessionsRoot,
       session: { ...session, onSessionEvent: (event) => { sessionEvents.push(event); } },
     });
@@ -1163,7 +1163,7 @@ describe("AgentHarness continuous sessions", () => {
     const historyRoot = join(identityPath, "..", "history");
     const fake = createSessionFakeRuntime(async (_prompt, options) => ({ text: "primary", providerSessionId: options.sessionId as string }));
     const historyStore = createCoordinatedDurableHistoryStore({ root: historyRoot });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session,
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session,
       sessionsRoot: join(identityPath, "..", "pi") });
     try {
       await harness.run(request("primary", "first"));
@@ -1190,7 +1190,7 @@ describe("AgentHarness continuous sessions", () => {
     const { invalidateSession: _invalidate, ...runtime } = fake.runtime;
     const sessionsRoot = join(identityPath, "..", "pi");
     const historyStore = createCoordinatedDurableHistoryStore({ root: join(identityPath, "..", "history") });
-    const harness = createAgentHarness({ identityPath, runtime, model, historyStore, session, sessionsRoot });
+    const harness = createConversationHarness({ identityPath, runtime, model, historyStore, session, sessionsRoot });
     try {
       await harness.run(request("cold-backup"));
       const id = fake.calls[0]?.options.sessionId;
@@ -1212,7 +1212,7 @@ describe("AgentHarness continuous sessions", () => {
       async (_prompt, options) => ({ text: "canonical answer", providerSessionId: options.sessionId as string }),
       async () => false,
     );
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1262,7 +1262,7 @@ describe("AgentHarness continuous sessions", () => {
           providerSessionId: options.sessionId as string,
         };
       });
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -1302,7 +1302,7 @@ describe("AgentHarness continuous sessions", () => {
       text: "answer",
       providerSessionId: options.sessionId as string,
     }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1327,7 +1327,7 @@ describe("AgentHarness continuous sessions", () => {
     const identityPath = await identityFixture();
     const ids = ["ps-1", "ps-2", "ps-3"];
     const fake = createSessionFakeRuntime(async (_p, _o, call) => ({ text: "ok", providerSessionId: ids[call - 1] ?? null }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     await harness.run(request("conv-1"));
@@ -1348,7 +1348,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     const first = await harness.run(request("conv-1"));
     expect(first.text).toBe("recovered");
@@ -1375,11 +1375,11 @@ describe("AgentHarness continuous sessions", () => {
     const historyStore = await primedHistoryStore("conv-1");
     const fake = createSessionFakeRuntime(async (_prompt, options) => {
       if (options.sessionId !== undefined) {
-        throw new AgentHarnessError("session_not_found", "session expired");
+        throw new ConversationHarnessError("session_not_found", "session expired");
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     const first = await harness.run(request("conv-1"));
     expect(first.text).toBe("recovered");
@@ -1402,7 +1402,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1", "again"));
@@ -1422,7 +1422,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -1440,7 +1440,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -1451,7 +1451,7 @@ describe("AgentHarness continuous sessions", () => {
   it("never passes session keys when resume is unsupported", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1469,7 +1469,7 @@ describe("AgentHarness continuous sessions", () => {
   it("strips static and request-scoped provider-session keys when sessions are disabled", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "unexpected" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1502,7 +1502,7 @@ describe("AgentHarness continuous sessions", () => {
   it("never passes session keys in per-message mode", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1521,7 +1521,7 @@ describe("AgentHarness continuous sessions", () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1", "first"));
     await harness.run(request("conv-1", "second"));
@@ -1539,7 +1539,7 @@ describe("AgentHarness continuous sessions", () => {
       loadSelectedSkillsCached: async () => ({ index: [], instructions: [], loaded: [] }),
       clear: () => { cacheClears += 1; },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1566,7 +1566,7 @@ describe("AgentHarness continuous sessions", () => {
       append: (conversationId, messages) => backingStore.append(conversationId, messages),
     };
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-preserved" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1592,7 +1592,7 @@ describe("AgentHarness continuous sessions", () => {
     };
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-rollover-preserved" }));
     const resetToolHistory: string[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1634,7 +1634,7 @@ describe("AgentHarness continuous sessions", () => {
     await backingStore.append("telegram:42#2026-08-13", [{ role: "assistant", content: "old bucket" }]);
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-logical-reset" }));
     const toolResets: string[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1674,7 +1674,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: `answer-${call}`, providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1", "seed"));
     const inFlight = harness.run(request("conv-1", "long"));
@@ -1690,7 +1690,7 @@ describe("AgentHarness continuous sessions", () => {
   it("dispose retires this harness's tracked sessions, latches admission, and leaves process-global registries alone", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     await harness.dispose?.();
@@ -1711,7 +1711,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     await harness.run(request("conv-1"));
@@ -1733,7 +1733,7 @@ describe("AgentHarness continuous sessions", () => {
         ? { failureKind: "session_not_found", error: "gone" }
         : { failureKind: "provider_unavailable", error: "still down" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -1750,7 +1750,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1", "again"));
@@ -1775,7 +1775,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -1792,7 +1792,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -1807,7 +1807,7 @@ describe("AgentHarness continuous sessions", () => {
   it("request extensions cannot clobber the harness session keys", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1833,7 +1833,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     await harness.run({ ...request("conv-1"), onEvent: (event) => events.push(event) });
@@ -1857,7 +1857,7 @@ describe("AgentHarness continuous sessions", () => {
       controller.abort(new Error("cancelled mid-turn"));
       return { text: "done", providerSessionId: "ps-x" };
     });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -1907,7 +1907,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "answer", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1", "first"));
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
@@ -1968,7 +1968,7 @@ describe("AgentHarness continuous sessions", () => {
         },
       };
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2019,7 +2019,7 @@ describe("AgentHarness continuous sessions", () => {
       },
     };
     const fake = createSessionFakeRuntime(async () => ({ text: "done", providerSessionId: "ps-history-prepare" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2080,7 +2080,7 @@ describe("AgentHarness continuous sessions", () => {
         async fail(): Promise<RunSummary> { return summary("failed", {}); },
       };
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -2110,7 +2110,7 @@ describe("AgentHarness continuous sessions", () => {
 });
 
 describe("coordinated terminal recovery", () => {
-  async function fixture(sessionOverrides: Partial<AgentHarnessSessionOptions> = {}) {
+  async function fixture(sessionOverrides: Partial<ConversationHarnessSessionOptions> = {}) {
     const identityPath = await identityFixture();
     const root = join(identityPath, "..");
     const retired: string[] = [];
@@ -2158,7 +2158,7 @@ describe("coordinated terminal recovery", () => {
     const sidecar = toolHistoryStatusSpy(identityPath, []);
     const finishRun = sidecar.writer.finishRun;
     sidecar.writer.finishRun = async (...args) => { if (failSidecar) throw new Error("injected sidecar failure"); await finishRun(...args); };
-    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, memory: { load: async () => undefined, recordInvocation: (turnId) => memoryInvocationReceipts.push(turnId) }, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, sessionsRoot: join(root, "pi") });
+    const makeHarness = () => createConversationHarness({ identityPath, model, runtime, memory: { load: async () => undefined, recordInvocation: (turnId) => memoryInvocationReceipts.push(turnId) }, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, sessionsRoot: join(root, "pi") });
     let harness = makeHarness();
     return { fake, retired, native, prefixes, receipts, memoryInvocationReceipts, historyStore, events, runtime,
       cancel() { controller.abort(new Error("injected cancel")); },
@@ -2355,7 +2355,7 @@ describe("coordinated terminal recovery", () => {
   });
 
   it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])("rejects invalid terminalRecoverySettlementMs: %s", (terminalRecoverySettlementMs) => {
-    expect(() => createAgentHarness({ identityPath: "IDENTITY.md", model,
+    expect(() => createConversationHarness({ identityPath: "IDENTITY.md", model,
       runtime: createSessionFakeRuntime(async () => ({ text: "unused" })).runtime,
       session: { ...session, terminalRecoverySettlementMs },
     })).toThrow(new TypeError("terminalRecoverySettlementMs must be a positive safe integer."));

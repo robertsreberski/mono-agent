@@ -157,7 +157,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       driver.processJobs?.conversationScheme,
     );
     // The AgentResponder contract has no dispose(), but the configured responder
-    // (createAgentResponder) exposes one that tears down the harness + live-session
+    // (createConversationResponder) exposes one that tears down the harness + live-session
     // manager. Read it LAZILY (at teardown time) off the `responder` so both the
     // normal stop/reload path AND the onFailure (transport-death) path retire the
     // per-channel harness rather than orphan it, and any wrapper applied to the
