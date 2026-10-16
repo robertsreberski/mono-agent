@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Remove unused conversation and app package-root exports and the inert
+  `preferAppPluginInstall` composition option without compatibility aliases.
+  Import `NoopRunRecorder` from `@mono-agent/observability` instead of
+  `@mono-agent/conversation`; configured host and CLI behavior stay unchanged.
+
 - Fix `FinishSilently` on host notification turns that consume additional
   process-job completion wakes, including project/tag-prefixed web wakes with
   host admission proof; keep user or unknown live input visible and retry empty
