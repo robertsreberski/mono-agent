@@ -16,12 +16,8 @@
 
 import { types as nodeUtilTypes } from "node:util";
 
-import type {
-  AgentMessageFinishOptions,
-  AgentMessageStream as AgentMessageStreamBase,
-  AgentReplyPart,
-  AgentStreamEvent,
-} from "./index.js";
+import type { AgentMessageFinishOptions, AgentReplyPart } from "./response.js";
+import type { AgentMessageStream as AgentMessageStreamBase, AgentStreamEvent } from "./stream.js";
 import {
   DEFAULT_EMPTY_FINAL_TEXT,
   DEFAULT_MAX_MESSAGE_CHARS,

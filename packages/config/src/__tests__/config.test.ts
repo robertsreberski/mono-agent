@@ -3,10 +3,15 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { ALLOW_ALL_TOOLS, MonoAgentConfigError, redactMonoAgentConfig, resolveConfiguredProviders } from "../index.js";
+import {
+  ALLOW_ALL_TOOLS,
+  MonoAgentConfigError,
+  redactMonoAgentConfig,
+  resolveConfiguredProviders,
+} from "../index.js";
 import { resolveJsonMonoAgentConfig } from "../config.js";
 import type { MemoryBackend } from "../types.js";
-import type { MonoAgentConfigJson } from "../json-source.js";
+import type { MonoAgentConfigJson } from "../json-types.js";
 
 const baseJson: MonoAgentConfigJson = {
   runtime: {
@@ -2127,7 +2132,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     // Deliberate split of duties: load admits the route (an undeclared local id
     // is not a config error), and NOTHING here invents an endpoint the operator
     // never declared. `doctor`/`validate` owns the diagnosis -- see
-    // `piModelResolutionIssue` in agent-app, which reports
+    // `piModelResolutionIssue` in app, which reports
     // `pi model not found: ollama:gemma4:31b` with the exact repair. Synthesizing
     // `http://localhost:11434` here would turn that honest error into a false
     // "ok" and move the failure to a connection error on the first turn.
@@ -4516,7 +4521,6 @@ describe("echoed model references are bounded and cannot forge diagnostic lines"
   });
 });
 
-
 it("reads cache retention from provider JSON, with a long default and strict values", () => {
   const json: MonoAgentConfigJson = {
     runtime: { model: "anthropic:claude-sonnet-4-6" },
@@ -4560,7 +4564,6 @@ describe("computer-use config", () => {
     expect(() => load(value)).toThrow(/tools\.computerUse.*docs\/tools\/computer-use\.md/u);
   });
 });
-
 
 describe("dated conversation evidence opt-in", () => {
   const bujo = { ...baseJson, memory: { path: "memory", mode: "bujo" as const,

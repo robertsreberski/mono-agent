@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MonoAgentConfigError } from "../index.js";
 import { readMonoAgentConfigJson, writeMonoAgentConfigJson } from "../json-source.js";
-import type { MonoAgentConfigJson } from "../json-source.js";
+import type { MonoAgentConfigJson } from "../json-types.js";
 
 let dir: string;
 

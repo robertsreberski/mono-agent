@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveJsonMonoAgentConfig } from "../config.js";
-import { readMonoAgentConfigJson, writeMonoAgentConfigJson, type MonoAgentConfigJson } from "../json-source.js";
+import { readMonoAgentConfigJson, writeMonoAgentConfigJson } from "../json-source.js";
 const ref = "openai-codex:gpt-6.1-sol";
 const load = (json: unknown) => resolveJsonMonoAgentConfig({ cwd: "/synthetic", json: { context: { identityPath: "IDENTITY.md" }, ...json as MonoAgentConfigJson } });
 describe("model declarations with 1M context", () => {
@@ -53,3 +53,5 @@ describe("model declarations with 1M context", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
+
+import type { MonoAgentConfigJson } from "../json-types.js";

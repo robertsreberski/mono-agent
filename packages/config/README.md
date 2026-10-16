@@ -42,7 +42,7 @@ Core settings resolve from `mono-agent.config.json`, then built-in defaults.
 `MONO_AGENT_*` core configuration variables are ignored. A missing or empty JSON
 file contributes an empty JSON source. Duplicate object keys are returned as
 `duplicateKeyPaths` by `readMonoAgentConfigJson`; loading warns and retains JSON's
-last-value-wins result. Agent-app's validate/doctor treats these as errors.
+last-value-wins result. App's validate/doctor treats these as errors.
 
 ### Computer use
 
@@ -355,11 +355,13 @@ Configuration follows one deterministic pipeline:
 
 | Module | Purpose |
 | --- | --- |
-| `json-source.ts` | Typed JSON file shape plus safe read/write operations. |
-| `layered-loader.ts` | JSON file loading and JSON-path diagnostics. |
-| `config.ts` | Authoritative parsing, defaults, validation, and redaction. |
+| `json-types.ts`, `json-source.ts` | Authored JSON shapes and generic settings I/O adaptation. |
+| `errors.ts`, `retired-fields.ts` | Typed diagnostics and ordered retired-field policy. |
+| `load.ts` | JSON/default loading and per-path/version warning deduplication. |
+| `config.ts`, `parse/` | Explicit validation pipeline and domain parsers, preserving first-error order. |
 | `types.ts`, `enums.ts` | Resolved config contracts and closed value sets. |
-| `config-view.ts` | Source-annotated, secret-safe settings UI model. |
+| `redact.ts` | Secret-safe projection without credential resolution. |
+| `config-view.ts`, `view/` | Ordered section composition, field provenance and advisory warnings. |
 
 ## Public API
 

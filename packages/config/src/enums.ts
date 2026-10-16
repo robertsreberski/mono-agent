@@ -1,11 +1,11 @@
 /**
- * Closed enum sets shared between the loader's `MONO_AGENT_*` validation and the
- * config-view builder's select options, so the two surfaces never drift.
+ * Closed enum sets shared by JSON validation and the config-view builder's
+ * select options, so the two surfaces never drift.
  */
 
 /**
  * Closed set of reasoning-effort hints, validated by the loader's
- * `MONO_AGENT_EFFORT` parsing and surfaced as the runtime effort options.
+ * `runtime.effort` parsing and surfaced as the runtime effort options.
  */
 export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 

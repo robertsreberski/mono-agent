@@ -1,4 +1,5 @@
-import type { AgentMessageFinishOptions, AgentMessageStream, AgentStreamEvent } from "./index.js";
+import type { AgentMessageFinishOptions } from "./response.js";
+import type { AgentMessageStream, AgentStreamEvent } from "./stream.js";
 import { appendReplyPartFallback } from "./resilient-message-stream.js";
 
 interface BufferedMessageStreamOptions {

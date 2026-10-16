@@ -1,4 +1,10 @@
-import type { LocalProviderDefinition, PiTransport, ProviderDefinition, RuntimeCompactionPolicy, RuntimeModelReference } from "@mono-agent/turn/host/types";
+import type {
+  LocalProviderDefinition,
+  PiTransport,
+  ProviderDefinition,
+  RuntimeCompactionPolicy,
+  RuntimeModelReference,
+} from "@mono-agent/turn/host/types";
 import type { SandboxPolicy } from "@mono-agent/turn/host/types";
 import type { RedactedSecretValue } from "@mono-agent/contracts";
 
@@ -69,7 +75,7 @@ export interface MemoryEmbeddingsConfig {
    * resolves embeddings below this root at `/v1/embeddings`.
    */
   readonly endpoint?: string;
-  /** Resolved key value (inline or read from `apiKeyEnv` at load time). */
+  /** Inline key value only; `apiKeyEnv` is resolved by the runtime at call time. */
   readonly apiKey?: string;
   /**
    * Name of the env var configured for the key. Optional-auth local providers

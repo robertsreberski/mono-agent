@@ -1,4 +1,4 @@
-import type { AgentRequestBase } from "./index.js";
+import type { AgentRequestBase } from "./request.js";
 
 // Request-identity admission, deliberately not a JSON metadata flag. Only the
 // cron/webhook drivers register their notify-enabled responder requests.

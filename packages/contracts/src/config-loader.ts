@@ -253,8 +253,8 @@ export function readJsonSection(
 /**
  * Canonical redacted-secret marker for adapter `redact<X>Config` helpers, so
  * each adapter stops inlining its own `{ present, redacted: true }` shape. This
- * is the diagnostics/redaction shape (distinct from the field-group-driven
- * {@link import("./redact.js").RedactedSecret} consumed by operator surfaces).
+ * marker records presence without retaining the secret value; source-annotated
+ * config views carry their own display-ready field records.
  */
 export interface RedactedSecretValue {
   readonly present: boolean;

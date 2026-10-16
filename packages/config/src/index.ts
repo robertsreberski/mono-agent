@@ -1,29 +1,14 @@
-export {
-  assertNoRetiredMonoAgentConfig,
-  MAX_AGENT_NAME_LENGTH,
-  MonoAgentConfigError,
-  redactMonoAgentConfig,
-  resolveConfiguredProviders,
-  resolveJsonMonoAgentConfig,
-} from "./config.js";
+export { resolveJsonMonoAgentConfig } from "./config.js";
 
-export type {
-  ArtifactRetentionConfig,
-  EffortLevel,
-  MemoryMode,
-  MonoAgentConfig,
-} from "./types.js";
-export { loadMonoAgentConfig } from "./layered-loader.js";
+export type { ArtifactRetentionConfig, EffortLevel, MemoryMode, MonoAgentConfig } from "./types.js";
+export { loadMonoAgentConfig } from "./load.js";
 
-export {
-  readMonoAgentConfigJson,
-  writeMonoAgentConfigJson,
-} from "./json-source.js";
+export { readMonoAgentConfigJson, writeMonoAgentConfigJson } from "./json-source.js";
 export type {
   MonoAgentMemoryEmbeddingsJson,
   MonoAgentRuntimeFallbackJson,
   MonoAgentConfigJson,
-} from "./json-source.js";
+} from "./json-types.js";
 export {
   ALLOW_ALL_TOOLS,
   EFFORT_LEVELS,
@@ -37,10 +22,18 @@ export {
   renamedToolMessage,
   renamedToolName,
 } from "./enums.js";
-export { buildMonoAgentConfigView, CORE_CONFIG_FIELD_IDS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
-export type {
-  ConfigViewField,
-  ConfigViewSection,
-} from "./config-view.js";
+export { buildMonoAgentConfigView } from "./config-view.js";
+export { CORE_CONFIG_FIELD_IDS } from "./view/fields.js";
+export { findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./view/warnings.js";
+export type { ConfigViewField, ConfigViewSection } from "./view/types.js";
 
-export { modelReferenceFromConfigJson } from "./json-source.js";
+export { modelReferenceFromConfigJson } from "./json-types.js";
+
+export { assertNoRetiredMonoAgentConfig } from "./retired-fields.js";
+export { MonoAgentConfigError } from "./errors.js";
+
+export { resolveConfiguredProviders } from "./parse/providers.js";
+
+export { MAX_AGENT_NAME_LENGTH } from "./parse/agent.js";
+
+export { redactMonoAgentConfig } from "./redact.js";

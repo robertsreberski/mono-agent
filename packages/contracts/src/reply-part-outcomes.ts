@@ -1,7 +1,4 @@
-import type {
-  AgentReplyPart,
-  AgentReplyPartFailure,
-} from "./index.js";
+import type { AgentReplyPart, AgentReplyPartFailure } from "./response.js";
 import { MAX_AGENT_REPLY_PARTS } from "./stream-wire.js";
 
 export type AgentReplyPartDeliveryType = AgentReplyPart["type"] | "unknown";
