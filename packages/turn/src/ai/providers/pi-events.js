@@ -1,4 +1,4 @@
-import { normalizePiBuiltinToolParams } from "../../agent/tools/pi-bridge.js";
+import { normalizePiBuiltinToolParams } from "../../agent/tools/pi-tools.js";
 
 export function streamContentKey(streamEvent, fallback) {
   return streamEvent?.contentIndex ?? fallback;

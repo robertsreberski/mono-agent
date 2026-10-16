@@ -2,7 +2,7 @@
 // surface that callers outside this directory consume (the path/workdir
 // guards plus the ripgrep resolver used by the configured doctor command. Each tool
 // implementation lives in its own file under `./` and pulls helpers from
-// `./shared/`. `pi-bridge.js` imports the tool impls from this barrel.
+// `./shared/`. `pi-tools.js` imports the tool impls from this barrel.
 
 export { readToolImpl } from "./read.js";
 export { writeToolImpl } from "./write.js";

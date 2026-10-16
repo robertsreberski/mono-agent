@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { bashToolRun, execToolRun } from "../../agent/tools/index.js";
-import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
+import { getPiBuiltinTools } from "../../agent/tools/pi-tools.js";
 import {
   killProcessGroup,
   startPreparedProcess,

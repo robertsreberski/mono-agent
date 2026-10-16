@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { bashToolImpl } from "../../agent/tools/bash.js";
-import { prepareMcpStdioCommand } from "../../agent/tools/pi-bridge.js";
+import { prepareMcpStdioCommand } from "../../agent/tools/mcp/connection.js";
 import { webFetchToolImpl } from "../../agent/tools/web-fetch.js";
 import { webSearchToolImpl } from "../../agent/tools/web-search.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";

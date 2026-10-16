@@ -5,7 +5,7 @@
 // host hands the kernel, not code the kernel imports. A host constructs a
 // `RuntimeSandbox` implementation and passes it to `createRuntime({sandbox})`
 // (see runtime.js); every internal tool helper that used to import the sandbox
-// implementation directly (bash.js, pi-bridge.js's MCP-stdio launcher,
+// implementation directly (bash.js, tools/mcp/connection.js's MCP-stdio launcher,
 // web-fetch.js, web-search.js,
 // tool-context.js's policy merge) now reads `ctx.sandbox` and calls through
 // this interface instead.

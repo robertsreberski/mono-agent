@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createSandboxPolicy, createSrtSandboxEngine } from "@mono-agent/turn/host/sandbox";
 import { monoSandboxImpl } from "../../../../turn/dist/host/sandbox-impl.js";
 import { createToolContext } from "../../../../turn/src/agent/tools/shared/tool-context.js";
-import { getPiBuiltinTools } from "../../../../turn/src/agent/tools/pi-bridge.js";
+import { getPiBuiltinTools } from "../../../../turn/src/agent/tools/pi-tools.js";
 import { acquireAgentRootOwnership } from "../../../dist/agent-root-coordinator.js";
 import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
 import { openProcessJobsService } from "../../../dist/process-jobs-service.js";

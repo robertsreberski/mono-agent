@@ -38,7 +38,7 @@ import {
   resolveAgentCompactionPolicy,
 } from "../../agent/compaction.js";
 import { subagentInvocationCount, subagentUsageForRun } from "../../agent/tools/agent-tool.js";
-import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
+import { closePiMcpClients } from "../../agent/tools/mcp/tools.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { withContext1M, withContext1MModels } from "../context-1m.js";

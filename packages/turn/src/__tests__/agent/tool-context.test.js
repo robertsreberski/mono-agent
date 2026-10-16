@@ -17,7 +17,7 @@ import {
   webFetchToolImpl,
   webSearchToolImpl,
 } from "../../agent/tools/index.js";
-import { prepareMcpStdioCommand } from "../../agent/tools/pi-bridge.js";
+import { prepareMcpStdioCommand } from "../../agent/tools/mcp/connection.js";
 import { createNodeReplController } from "../../agent/tools/node-repl.js";
 
 const tempDirs = [];

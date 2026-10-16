@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createAskParentTool } from "../../agent/tools/ask-parent-tool.js";
-import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
+import { getPiBuiltinTools } from "../../agent/tools/pi-tools.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
 const ctx = createToolContext();

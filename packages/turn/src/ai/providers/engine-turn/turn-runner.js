@@ -8,12 +8,8 @@ import { assertNativeSessionAccess } from "../../../engine/session-authority.js"
 // state; run state (harness, removeAbortHandler, externalAbort) lives on the
 // caller-owned runState.
 
-import {
-  createStructuredOutputTool,
-  getPiBuiltinTools,
-  initPiMcpTools,
-  closePiMcpClients,
-} from "../../../agent/tools/pi-bridge.js";
+import { createStructuredOutputTool, getPiBuiltinTools } from "../../../agent/tools/pi-tools.js";
+import { initPiMcpTools, closePiMcpClients } from "../../../agent/tools/mcp/tools.js";
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
@@ -100,7 +96,7 @@ export async function buildTurnTools(runState, {
 
   // REUSED custom pieces: built-in tool sandboxing + allowlist/bloat filter +
   // approval gates. These are identical to the legacy bridge.
-  // Cast: pi-bridge's tool-builder option bags are not precisely typed (their
+  // Cast: pi-tools' tool-builder option bags are not precisely typed (their
   // no-default destructured keys drop out of structural inference), so the
   // caller's full bag is passed through an `any` boundary — matching how the
   // pre-split (non-@ts-check) orchestrator called these.
@@ -109,7 +105,7 @@ export async function buildTurnTools(runState, {
     const builtIns = capabilities.tool_use === false
       ? []
       : getPiBuiltinTools(options.allowedTools, /** @type {any} */ ({
-        // deny-wins filter applied over the built-ins + ReadSkill inside pi-bridge.
+        // deny-wins filter applied over the built-ins + ReadSkill inside pi-tools.
         disallowedTools: options.disallowedTools,
         skillNames: (options.skills || []).map((/** @type {{name: string}} */ skill) => skill.name),
         // Full skill objects so ReadSkill can honor pi's neutral Skill shape
@@ -179,7 +175,7 @@ export async function buildTurnTools(runState, {
     if (structuredTool) reservedNames.add(structuredTool.name);
 
     // REUSED MCP tool bridge: same initPiMcpTools sandboxing path (see the cast
-    // note above — the option bag crosses the same untyped pi-bridge boundary).
+    // note above — the option bag crosses the same untyped tool-builder boundary).
     const mcpInit = capabilities.tool_use === false
       ? { clients: [], tools: [], warnings: [] }
       : await initPiMcpTools(options.mcpServers || {}, reservedNames, /** @type {any} */ ({

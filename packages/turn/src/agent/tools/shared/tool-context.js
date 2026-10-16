@@ -1,7 +1,7 @@
 // Per-runtime-instance tool context.
 //
 // A ToolContext carries the configuration the kernel's internal tool helpers
-// (output-truncation, ripgrep, path-resolver, pi-bridge, the tool impls) need
+// (output-truncation, ripgrep, path-resolver, pi-tools, the tool impls) need
 // to resolve workdirs, artifact paths, the ripgrep binary, sandbox policy, and
 // host-specific brand strings. `createRuntime` builds ONE context per runtime
 // instance and threads it to every bridge via `options.toolContext`. Direct
