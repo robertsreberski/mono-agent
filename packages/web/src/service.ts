@@ -4037,11 +4037,15 @@ export class WebService {
               status: "failed", reason: "unsupported" });
             this.emitStoredThread(threadId, ["thread.changed"]);
           }
-          // Do not apply preparation to a replaced schedule or a new connection.
-          if (!this.stopped && this.connections.get(thread.sourceId) === connection
+          // Discovery refreshes replace connection objects even for the same
+          // running endpoint. Keep that preparation; only a generation change
+          // (or disconnection) invalidates it and requires another compaction.
+          const current = this.connections.get(thread.sourceId);
+          if (!this.stopped && current !== undefined && current.generation === connection.generation
+            && current.processGeneration === connection.processGeneration
             && this.store.wakeSchedule(threadId)?.scheduleId === schedule.scheduleId
             && this.store.wakeSchedule(threadId)?.revision === schedule.revision) {
-            this.launchScheduledWake(threadId, connection, true);
+            this.launchScheduledWake(threadId, current, true);
           }
         } finally {
           if (!this.stopped) this.emitStoredThread(threadId, ["thread.changed"]);

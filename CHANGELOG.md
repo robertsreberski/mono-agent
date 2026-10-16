@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix failed manual compactions blocking later conversation turns, recover
+  affected no-op compactions safely, and avoid duplicate wake-up compactions
+  during agent discovery refreshes.
+
 - Name `runtime.session.root` when `validate`, `config` or startup meets the old
   `providers.piNative.piSessionsRoot` key, instead of reporting a generic
   unknown key.

@@ -15,6 +15,23 @@ export function pendingTurnDescriptor(payload: PendingTurnPayload): RuntimeSessi
 export function turnInputDigest(payload: PendingTurnPayload): string { return sha256(Buffer.from(JSON.stringify(payload.inputs))); }
 export function turnCandidateDigest(payload: PendingTurnPayload): string { return sha256(Buffer.from(JSON.stringify(payload.candidate ?? null))); }
 
+type MatchedTurn = Extract<RuntimeSessionTurnReconciliationResult, { status: "matched" }>;
+
+/** Legacy manual no-op bug: a declined cut sealed success over a failed op.
+ * Never adopt execution, changed context, inputs, or partial operation work. */
+function isLegacyFailedCompactionNoop(payload: PendingTurnPayload, result: MatchedTurn): boolean {
+  const operation = result.operations[0];
+  return payload.identity.purpose === "compaction" && payload.inputs.length === 0
+    && result.inputs.length === 0 && result.admittedInputs.length === 0 && result.consumedInputIds.length === 0
+    && result.outcome === "completed" && result.seal?.outcome === "completed"
+    && result.operations.length === 1 && operation?.type === "compaction" && operation.cause === "manual"
+    && operation.parentOperationId === null && !operation.suspended
+    && (operation.status === "failed" || operation.status === "aborted")
+    && result.tipId === result.baselineTipId && result.currentTipId === result.baselineTipId
+    && operation.baselineTipId === result.baselineTipId && operation.tipId === result.baselineTipId
+    && result.interruptionEvidence.length === 0;
+}
+
 /** Defense-in-depth over the storage-only native matcher. No partial operation adoption. */
 export function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extract<RuntimeSessionTurnReconciliationResult, { status: "matched" }>): void {
   const descriptor = pendingTurnDescriptor(payload);
@@ -51,7 +68,7 @@ export function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extrac
   // execution always requires the final completed prompt operation.
   if (result.outcome === "completed" && ((!finalOperation && payload.identity.purpose !== "compaction")
     || (finalOperation && finalOperation.status !== "completed") || !result.seal
-    || result.seal.outcome !== "completed")) throw new Error("Native completion is not sealed");
+    || result.seal.outcome !== "completed") && !isLegacyFailedCompactionNoop(payload, result)) throw new Error("Native completion is not sealed");
 }
 
 export interface TurnSettlement {
@@ -68,10 +85,11 @@ export function projectTurnSettlement(payload: PendingTurnPayload, result: Runti
   const matched = result.status === "matched" ? result : undefined;
   if (matched) assertWholeTurnMatch(payload, matched);
   else if (result.status === "mismatch" && result.reason !== "unbound_turn") throw new Error(`Native reconciliation mismatch: ${result.reason}`);
-  let outcome: DurableTurnOutcome = matched?.outcome ?? "interrupted";
+  const legacyCompactionNoop = matched !== undefined && isLegacyFailedCompactionNoop(payload, matched);
+  let outcome: DurableTurnOutcome = legacyCompactionNoop ? "failed" : matched?.outcome ?? "interrupted";
   const detached = payload.disposition === "detached";
-  if (payload.disposition === "cancelled") outcome = "cancelled";
-  else if (detached) outcome = payload.candidate?.outcome ?? "interrupted";
+  if (!legacyCompactionNoop && payload.disposition === "cancelled") outcome = "cancelled";
+  else if (!legacyCompactionNoop && detached) outcome = payload.candidate?.outcome ?? "interrupted";
   else if (payload.disposition === "failed" && (result.status === "absent" || (matched && (matched.outcome === "completed" || matched.outcome === "failed")))) outcome = "failed";
   const seal = matched?.commitCandidate ?? matched?.seal?.result;
   const useHost = payload.candidate && (detached || (outcome === "completed" && payload.candidate.initialTimestamp !== undefined) || ((payload.disposition === "cancelled" || payload.disposition === "failed") && payload.candidate.outcome === outcome));

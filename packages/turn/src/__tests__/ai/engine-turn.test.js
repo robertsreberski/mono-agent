@@ -26,7 +26,7 @@ import {
   fauxToolCall,
   getCurrentTools,
 } from "@earendil-works/pi-ai";
-import { MemorySessionRepo } from "../../engine/session-store.js";
+import { JsonlSessionRepo, MemorySessionRepo } from "../../engine/session-store.js";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -37,6 +37,7 @@ import {
 } from "../../ai/providers/engine-turn.js";
 import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
 import { createPiSessionAdapter } from "../../engine/session-adapter.js";
+import { readTurnEvidence } from "../../engine/turn-evidence.js";
 import { ENGINE_CONTEXT } from "@mono-agent/turn/engine";
 import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/engine-turn/result-builder.js";
 import {
@@ -2271,6 +2272,63 @@ describe("pi-native auto-compaction", () => {
     expect(reply.text).toBe("continued");
     expect(JSON.stringify(resumedContext)).toContain("SUMMARY durable cut");
     expect(JSON.stringify(resumedContext)).not.toContain("u0 xxxxx");
+  });
+
+  it("does not seal a second manual compaction completed when its native cut fails as a no-op", async () => {
+    const base = setup();
+    const id = "manual-seal-noop";
+    const descriptor = (turnId) => ({ kind: "host", ownerKey: id, historyBucket: id, turnId, handleId: id, baseRevision: 0,
+      reconciliation: { version: 1, purpose: "compaction", fenceDigest: "a".repeat(64), initialInputId: null } });
+    const options = { manualCompaction: true, sessionId: id, providerSessionId: id, sessionKeepAlive: true,
+      sessionsRoot, resolvePiApiKey: async () => "faux-key",
+      compaction: { keepRecentTokens: 20_000, summaryMaxTokens: 2000, minSavingsTokens: 0 } };
+    faux.setResponses([fauxAssistantMessage([fauxText("Fictional first summary.")])]);
+    const first = await generateEngineTurnResponse("system", runOptions(base, {
+      ...options, sessionTurn: descriptor("first-manual"), messages: bigHistory(60, 2000),
+    }));
+    expect(first.manualCompaction?.status).toBe("succeeded");
+    // Retained context passes the preflight estimate, but has no new prefix
+    // to cut. The guard emits skipped while compact() closes its op failed.
+    faux.setResponses([]);
+    const second = await generateEngineTurnResponse("system", runOptions(base, {
+      ...options, sessionTurn: descriptor("second-manual"),
+    }));
+    expect(second.manualCompaction).toMatchObject({ status: "skipped", reason: "nothing_to_compact" });
+    await refreshProviderSession(id);
+    const repo = new JsonlSessionRepo({ sessionsRoot });
+    const raw = await repo.open(await repo.find(id), { repair: false });
+    try {
+      const firstEvidence = await readTurnEvidence(raw, "first-manual");
+      expect(firstEvidence.operations.at(-1)?.status).toBe("completed");
+      expect(firstEvidence.seal.outcome).toBe("completed");
+      const evidence = await readTurnEvidence(raw, "second-manual");
+      expect(evidence.operations.at(-1)?.status).toBe("failed");
+      expect(evidence.status).toBe("failed"); expect(evidence.seal.outcome).toBe("failed");
+      expect(evidence.tipId).toBe(evidence.baselineTipId);
+    } finally { await raw.close(); }
+  });
+
+  it.each(["failed", "cancelled"])("never seals a %s manual summary as completed", async (outcome) => {
+    const base = setup(), id = `manual-seal-${outcome}`, controller = new AbortController();
+    faux.setResponses([outcome === "failed"
+      ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional summary failure." })
+      : () => { controller.abort(); return fauxAssistantMessage([fauxText("Fictional cancelled summary.")]); }]);
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
+      manualCompaction: true, messages: bigHistory(60, 2000), abortSignal: controller.signal,
+      sessionId: id, providerSessionId: id, sessionKeepAlive: true, sessionsRoot,
+      sessionTurn: { kind: "host", ownerKey: id, historyBucket: id, turnId: "manual-failure", handleId: id, baseRevision: 0,
+        reconciliation: { version: 1, purpose: "compaction", fenceDigest: "a".repeat(64), initialInputId: null } },
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(result.manualCompaction).toBeUndefined();
+    await refreshProviderSession(id);
+    const repo = new JsonlSessionRepo({ sessionsRoot }), raw = await repo.open(await repo.find(id), { repair: false });
+    try {
+      const evidence = await readTurnEvidence(raw, "manual-failure");
+      expect(evidence.operations.at(-1)?.status).toBe("failed");
+      expect(evidence.status).toBe(outcome === "cancelled" ? "aborted" : "failed");
+      expect(evidence.seal.outcome).toBe(outcome === "cancelled" ? "cancelled" : "failed");
+    } finally { await raw.close(); }
   });
 
   it("aborts an in-flight manual summary when the host cancels", async () => {
