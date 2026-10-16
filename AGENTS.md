@@ -38,6 +38,15 @@ This repository is a config-first agent framework built from npm packages under 
 - `agents/` holds the subagent templates; each `agents/*.md` has a `.toml` companion kept in sync by `pnpm run check:codex-discoverability`.
 - Canonical website pages under `docs/` use frontmatter `title` and `description` as their page heading; do not add a second Markdown H1. Run `pnpm run check:docs` for headings, code-fence labels, accessible link text, diagram summaries, and local links.
 
+## Core source scans
+
+Run `pnpm run scan:core` for contracts, config, turn, conversation, and app, or
+run `pnpm run scan:dead-code` (all three Knip modes) and `pnpm run scan:cycles`
+independently. See the
+[core scan policy](./scripts/core-scans/README.md) for pinned tools, report paths,
+exit codes, and exact exceptions; the [app smoke index](./packages/app/scripts/README.md)
+registers the five standalone proof programs. Scans do not execute those proofs.
+
 ## Package expectations
 
 - Each package should have one clear responsibility and a focused public API.
