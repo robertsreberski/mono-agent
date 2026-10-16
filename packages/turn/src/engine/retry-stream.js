@@ -1,6 +1,47 @@
-import { isContextOverflow, isRecoverableLength, retryAssistantCall } from "@earendil-works/pi-ai";
+import { isContextOverflow, isRecoverableLength, isRetryableAssistantError } from "@earendil-works/pi-ai";
 
 export const BACKOFF_ABORT = Symbol("mono-pi-backoff-abort");
+
+function backoff(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(undefined); }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Pi's retryAssistantCall shape, plus a host predicate. `policy.shouldRetry`
+ * receives the failed message and whether that attempt's response started
+ * (the provider emitted `start`); the default keeps Pi's classifier.
+ */
+async function retryRequest(produce, policy, signal, callbacks) {
+  const maxRetries = policy?.enabled ? policy.maxRetries : 0;
+  const shouldRetry = typeof policy?.shouldRetry === "function" ? policy.shouldRetry
+    : (message) => isRetryableAssistantError(message);
+  let retries = 0;
+  for (;;) {
+    const { response, responseStarted } = await produce();
+    if (response.stopReason === "aborted" || response.stopReason !== "error"
+      || retries >= maxRetries || !shouldRetry(response, { responseStarted, retries })) {
+      if (retries > 0) await callbacks.onRetryFinished(response.stopReason !== "error" && response.stopReason !== "aborted",
+        retries, response.stopReason === "error" ? response.errorMessage : undefined);
+      return response;
+    }
+    retries += 1;
+    const errorMessage = response.errorMessage || "Unknown error";
+    const delayMs = Math.min(policy.baseDelayMs * 2 ** (retries - 1), policy.maxDelayMs ?? 60_000);
+    await callbacks.onRetryScheduled(retries, maxRetries, delayMs, errorMessage);
+    try { await backoff(delayMs, signal); } catch {
+      // Normalize an aborted backoff to the provider-abort message shape.
+      await callbacks.onRetryFinished(false, retries, errorMessage);
+      const { errorMessage: _discarded, ...rest } = response;
+      return { ...rest, stopReason: "aborted" };
+    }
+    await callbacks.onRetryAttemptStart();
+  }
+}
 
 // Single-item, acknowledged channel: retry callbacks cannot overtake streamed
 // deltas. The loop acknowledges a yielded event only after its awaited sink ran.
@@ -52,13 +93,17 @@ export function createRetryStream(models, model, context, options, policy, emit)
   let ordinal = 0, hasStart = false;
   void (async () => {
     try {
-      const final = await retryAssistantCall(async () => {
+      const final = await retryRequest(async () => {
         assertConsumerOpen();
+        // Each attempt re-sends the same request context: the failed partial is
+        // journaled (and billed) through message_end, never projected into it.
         const stream = await models.streamSimple(requestModel, context, { ...options, signal: controller.signal });
         ordinal += 1;
+        let responseStarted = false;
         for await (const event of stream) {
           if (event.type === "done" || event.type === "error") continue;
           if (event.type === "start") {
+            responseStarted = true;
             if (!hasStart) { hasStart = true; await channel.push(event); }
             else await emitIfOpen({ type: "message_start", message: event.partial });
           } else await channel.push(event);
@@ -74,7 +119,7 @@ export function createRetryStream(models, model, context, options, policy, emit)
           || isRecoverableLength(last, requestModel.maxTokens))) {
           last = { ...last, stopReason: "error", errorMessage: last.errorMessage ?? "Assistant request exceeded the context window" };
         }
-        return last;
+        return { response: last, responseStarted };
       }, policy, controller.signal, {
         onRetryScheduled: async (attempt, maxRetries, delayMs, errorMessage) => {
           assertConsumerOpen();

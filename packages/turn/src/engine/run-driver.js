@@ -147,7 +147,9 @@ export function createRunDriver(store, options) {
   let tools = wrapTools(options.tools || []);
   const retry = { enabled: true, maxRetries: 3, baseDelayMs: 1000, ...options.retry };
   if (!Number.isSafeInteger(retry.maxRetries) || retry.maxRetries < 0
-    || !Number.isSafeInteger(retry.baseDelayMs) || retry.baseDelayMs < 0) throw new RangeError("Invalid Pi retry policy");
+    || !Number.isSafeInteger(retry.baseDelayMs) || retry.baseDelayMs < 0
+    || (retry.maxDelayMs !== undefined && !(Number.isFinite(retry.maxDelayMs) && retry.maxDelayMs >= 0))
+    || (retry.shouldRetry !== undefined && typeof retry.shouldRetry !== "function")) throw new RangeError("Invalid Pi retry policy");
 
   function on(type, handler) {
     const handlers = registrations.get(type) || new Set();

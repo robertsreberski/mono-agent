@@ -18,6 +18,7 @@ import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
 import { createHarnessAdapter } from "./engine-adapter.js";
+import { requestRetryPolicy } from "./request-retry.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
 import { createStreamSubscriber } from "./stream-subscriber.js";
 
@@ -311,9 +312,10 @@ export async function buildTurnHarness(runState, {
     streamOptions: { transport: providerCheck ? "sse" : transport, maxRetries: providerCheck ? 0 : maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },
-    // Pi providers retry SDK-policy failures only before a response starts.
-    // Never resend their settled error: it may describe a partial paid stream.
-    retry: { enabled: false, maxRetries: 0 },
+    // Pi providers retry SDK-policy failures only before a response starts. The
+    // driver re-issues only a transient failure after the response started; the
+    // journaled partial keeps its usage and never reaches the retried context.
+    retry: requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck }),
     steeringMode,
     followUpMode: steeringMode,
     assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.sessionsRoot) : undefined,
@@ -357,7 +359,7 @@ export async function buildTurnHarness(runState, {
  * lifecycle events for manual appendMessage() calls; subscribing earlier makes
  * restored assistant messages look like fresh output boundaries.
  * @param {any} runState
- * @param {{harness: any, onEvent: (event: any) => void, options: any, toolLimits: any, sdk: string, reference: string}} deps
+ * @param {{harness: any, onEvent: (event: any) => void, options: any, toolLimits: any, sdk: string, reference: string, runtimeWarnings?: any[]}} deps
  */
 export function activateTurnHarness(runState, {
   harness,
@@ -366,6 +368,7 @@ export function activateTurnHarness(runState, {
   toolLimits,
   sdk,
   reference,
+  runtimeWarnings,
 }) {
   if (runState.dispatchProgress) {
     // Conservative admission: later hooks may block execution, but reaching
@@ -380,6 +383,7 @@ export function activateTurnHarness(runState, {
     harness,
     sdk,
     model: reference,
+    runtimeWarnings,
   }));
 
   const abortHandler = () => {

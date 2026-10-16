@@ -362,6 +362,7 @@ export function buildDiagnostics(params) {
     contextCompactionDiagnostics,
     transportErrorCode,
     transportErrorSource,
+    requestRetries = 0,
   } = params;
   return {
     provider_session_id: providerSessionId,
@@ -373,6 +374,8 @@ export function buildDiagnostics(params) {
     external_abort: externalAbort,
     pi_max_retries: maxRetries,
     pi_transport_requested: piTransport,
+    // Mid-stream request retries this run (each re-sent one failed request).
+    ...(requestRetries > 0 ? { pi_request_retries: requestRetries } : {}),
     ...(lastToolName ? { last_tool_name: lastToolName } : {}),
     // Present only when an opaque transport failure was resolved to a real
     // reason. `provider_transport_error_source` says whether that came from the

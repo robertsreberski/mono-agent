@@ -7,6 +7,16 @@
   so timer coalescing under lower-priority scheduling no longer stretches it
   past the foreground ceiling or stalls later lifecycle writes for seconds.
 
+- Fix turns failing on transient provider drops after a response started, such
+  as Codex `WebSocket error`, `WebSocket closed …` or `WebSocket stream closed
+  before response.completed`. Re-send only that assistant request, up to three
+  times (1 s/2 s/4 s), including on primary-only durable Web turns. Never re-run
+  a tool, and never retry auth, quota, context, safety or validation errors.
+  Keep the failed partial's usage billed and its error journaled, report each
+  retry as a `provider_request_retry` warning, and name the attempt count when
+  all attempts fail. `providers.piNative.piMaxRetries: 0` disables it; provider
+  checks and summaries stay single-shot.
+
 - Fix nested compaction blocking completed conversation turns and wake-ups.
   Recover their pending publication without replaying tools, and account the
   last closed operation when an interrupted turn has nested operations.

@@ -101,7 +101,10 @@ const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|no api 
 // transports emit a similar "Stream ended without a finish or error frame." that is a
 // local protocol fault and must NOT trigger a provider failover.
 const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?overloaded|try again later|retry your request|request id|service unavailable|temporar(?:y|ily)|timed? ?out|stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|etimedout|network|429|too many requests|500|502|503|504|gateway|internal server error|\bconnection (?:error|refused|failed)\b|\bcould not connect\b|\bstream ended without finish_reason\b)/i;
-export const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|socket hang up|und_err_socket|econnreset|premature close)\b/i;
+// Includes streams that closed before their terminal event (Codex websocket
+// "stream closed before response.completed", Anthropic "stream ended before
+// message_stop"): the transport dropped mid-response, not a request fault.
+export const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|(?:websocket )?stream (?:ended|closed) before|socket hang up|und_err_socket|econnreset|premature close)\b/i;
 
 /**
  * @param {string} text

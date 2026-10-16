@@ -18,6 +18,7 @@ import {
 } from "../pi-events.js";
 import { contextUsageFromAssistantMessage } from "./result-builder.js";
 import { classifyPiToolResult, toolLifecycleMetadata } from "../../tool-lifecycle.js";
+import { retryableProviderFailureInfo } from "../../failure.js";
 
 function toolResultFileChange(result) {
   const fileChange = result?.details?.file_change;
@@ -105,21 +106,51 @@ function toolResultOutcome(result) {
  * @property {boolean} silentCompletedThisTurn
  * @property {{soleCall: boolean, visibleContent: boolean, pendingQuestion: boolean, failed: boolean, accepted: boolean, completed: boolean}} silentTurn
  * @property {unknown} structuredResult
+ * @property {{retries: number, failedAttempts: number|null, textMark: number, thinkingMark: number}} [requestRetry]
  */
 
 /**
  * Subscribe to the engine driver; runtime owns maxTurns abort and event presentation.
  * @param {StreamSubscriberState} runState
- * @param {{onEvent: (event: any) => void, options: any, toolLimits: any, harness: any, sdk: string, model: string}} deps
+ * @param {{onEvent: (event: any) => void, options: any, toolLimits: any, harness: any, sdk: string, model: string, runtimeWarnings?: any[]}} deps
  * @returns {(event: any) => void}
  */
-export function createStreamSubscriber(runState, { onEvent, options, toolLimits, harness, sdk, model }) {
+export function createStreamSubscriber(runState, { onEvent, options, toolLimits, harness, sdk, model, runtimeWarnings }) {
+  const requestRetry = runState.requestRetry ??= { retries: 0, failedAttempts: null, textMark: 0, thinkingMark: 0 };
   return (event) => {
+    if (event.type === "message_start" && event.message?.role === "assistant") {
+      requestRetry.textMark = runState.assistantTexts.length;
+      requestRetry.thinkingMark = runState.assistantThinking.length;
+    }
     if (event.type === "message_start" && event.message?.role === "assistant" && runState.silentTurn?.accepted) {
       // A continuation after the terminal tool is not the certified completion.
       runState.silentTurn.accepted = false;
       runState.silentTurn.completed = false;
     }
+    if (event.type === "retry_scheduled") {
+      // The failed partial stays journaled and billed, but its streamed text is
+      // not part of the answer: the retried request regenerates it.
+      runState.assistantTexts.length = Math.min(runState.assistantTexts.length, requestRetry.textMark);
+      runState.assistantThinking.length = Math.min(runState.assistantThinking.length, requestRetry.thinkingMark);
+      requestRetry.retries += 1;
+      const errorMessage = String(event.errorMessage || "Unknown error").slice(0, 300);
+      const warning = {
+        warning_kind: "provider_request_retry", source: "pi", model,
+        attempt: event.attempt, max_attempts: event.maxAttempts, delay_ms: event.delayMs,
+        reason: retryableProviderFailureInfo({ errorText: errorMessage, failureKind: "provider_unavailable" }).subkind,
+        message: `Pi provider request failed after its response started (${errorMessage}); `
+          + `retrying the request (attempt ${event.attempt} of ${event.maxAttempts}) without re-running tools.`,
+      };
+      runtimeWarnings?.push(warning);
+      onEvent({ type: "runtime_warning", ...warning });
+      return;
+    }
+    if (event.type === "retry_end") {
+      requestRetry.failedAttempts = event.success ? null : event.attempt;
+      return;
+    }
+    // A new assistant request starts its own attempt count.
+    if (event.type === "run_start" || event.type === "turn_start") requestRetry.failedAttempts = null;
     if (event.type === "message_update") {
       const streamEvent = event.assistantMessageEvent;
       if (streamEvent?.type === "text_delta" && streamEvent.delta) {

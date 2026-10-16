@@ -1814,7 +1814,7 @@ function descriptionFor(id: string): string {
     return "Public display identity used for trace labels and default A2A metadata; never used in paths or service ids.";
   }
   if (id === "providers.piNative.piMaxRetries") {
-    return "Provider SDK-policy retries before a response starts (0–8, default 2): connection errors, HTTP 408/409/429/5xx and provider retry headers. Started streams are not repeated by this layer; probes and summaries are single-shot.";
+    return "Provider SDK-policy retries before a response starts (0–8, default 2): connection errors, HTTP 408/409/429/5xx and provider retry headers. A transient failure after a response started (websocket error/close, terminated stream, 5xx/429) re-sends that one assistant request up to three times (1 s/2 s/4 s), never a tool; 0 disables both. Probes and summaries are single-shot.";
   }
   if (id === "providers.piNative.maxRetryDelayMs") {
     return "Ceiling for provider-requested retry delays in milliseconds (default 60000). Nonpositive embedder values use the default; longer requested delays fail.";

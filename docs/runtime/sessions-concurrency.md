@@ -155,9 +155,12 @@ other surface keeps today's behavior described above.
 With the opt-in on, persisted-ID Web turns (including the first message) and
 no-ID wakes on native-bound conversations use prepared native dispatch with the
 **primary model only**. These turns get no configured fallback-chain backup model
-and no router-level re-attempt; pre-response transport retries within the attempt are bounded by
-`providers.piNative.piMaxRetries`; the driver does not retry streamed responses. A primary failure is returned for that message; send another message
-to try again. Other turns keep their configured fallbacks. A cancel that
+and no router-level re-attempt. Within the attempt, pre-response transport
+retries are bounded by `providers.piNative.piMaxRetries`, and the driver re-sends
+a request whose started response failed transiently (such as a Codex websocket
+drop) up to three times, never re-running a tool (see
+[Fallback](/runtime/fallback/#same-model-retries)). A primary failure is returned
+for that message; send another message to try again. Other turns keep their configured fallbacks. A cancel that
 arrives after such a turn's preparation has started, but before admission, is
 reported and not appended to history.
 
@@ -631,7 +634,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 | --- | --- | --- |
 | `providers.piNative.transport` | `auto` (default), `sse`, `websocket`, `websocket-cached` | Preferred provider transport; providers without multiple transports ignore it |
 | `providers.piNative.promptCacheDiagnostics` | boolean; default `false` | Metadata-only request fingerprints in run artifacts |
-| `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Provider SDK-policy retries before a response starts; streamed responses are not repeated (see [Fallback](/runtime/fallback/)) |
+| `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Provider SDK-policy retries before a response starts; a nonzero value also enables up to three re-sends of a request whose started response failed transiently (see [Fallback](/runtime/fallback/)) |
 | `providers.piNative.maxRetryDelayMs` | default `60000` | Ceiling for provider-requested Retry-After delays (ms); longer requested delays fail |
 | `runtime.session.root` | path; unset = in-memory | Durable JSONL session store enabling resume across restarts |
 

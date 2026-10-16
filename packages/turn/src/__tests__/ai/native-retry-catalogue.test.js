@@ -7,6 +7,12 @@ import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
 
+// Keep the real mid-stream retry policy, without its 1 s/2 s/4 s backoff.
+vi.mock("../../ai/providers/engine-turn/request-retry.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, requestRetryPolicy: (params) => ({ ...actual.requestRetryPolicy(params), baseDelayMs: 0 }) };
+});
+
 let faux, fauxModels;
 afterEach(() => { vi.restoreAllMocks(); });
 function setup() {
@@ -44,7 +50,7 @@ it.each(["find"])("refuses cold reopen when the native %s throws", async (method
   }
 });
 
-it.each([0, 1, 2, undefined])("piMaxRetries=%s sizes exactly one request retry layer", async (piMaxRetries) => {
+it.each([0, 1, 2, undefined])("piMaxRetries=%s sizes SDK retries and gates mid-stream request retries", async (piMaxRetries) => {
   const model = setup();
   const requests = [];
   fauxModels.setProvider({ ...faux.provider, streamSimple(model, context, options) {
@@ -58,7 +64,9 @@ it.each([0, 1, 2, undefined])("piMaxRetries=%s sizes exactly one request retry l
       piMaxRetries, maxRetryDelayMs: 0, messages: [{ role: "user", content: "Fictional request" }],
     }));
     expect(result.error).toContain("503");
-    expect(faux.state.callCount).toBe(1); // A settled error may be a partial paid stream.
+    // Faux errors start a response first: a mid-stream 503 is re-sent three
+    // times unless piMaxRetries=0 disables both layers.
+    expect(faux.state.callCount).toBe(piMaxRetries === 0 ? 1 : 4);
     expect(requests.every((options) => options.maxRetries === (piMaxRetries ?? 2))).toBe(true);
     expect(result.events.filter((event) => event.type === "tool_call_started")).toEqual([]);
   } finally { vi.restoreAllMocks(); }

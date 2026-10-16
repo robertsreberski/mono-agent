@@ -394,6 +394,8 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     assistantThinking: [],
     textDeltaIndexes: new Set(),
     thinkingDeltaIndexes: new Set(),
+    // Mid-stream request retries observed by the stream subscriber.
+    requestRetry: { retries: 0, failedAttempts: null, textMark: 0, thinkingMark: 0 },
     toolStartTimes: new Map(),
     toolApprovals: new Map(),
     turnCount: 0,
@@ -852,6 +854,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       toolLimits,
       sdk: "pi",
       reference,
+      runtimeWarnings,
     });
 
     // Re-check abort right before issuing the provider request. The abort
@@ -1120,7 +1123,12 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       normalizePiErrorMessage(rawErrorMessage),
       runError,
     );
-    const errorMessage = annotatedError.message;
+    // A request that failed again after mid-stream retries names its attempt
+    // count; the provider text (and thus its classification) stays first.
+    const requestAttempts = stopReason === "error" ? runState.requestRetry.failedAttempts : null;
+    const errorMessage = annotatedError.message && requestAttempts
+      ? `${annotatedError.message} (failed after ${requestAttempts} provider request attempts)`
+      : annotatedError.message;
 
     const structuredRetry = {
       attempts: structuredOutputFinalizationRetryAttempts,
@@ -1142,6 +1150,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       contextCompactionDiagnostics: runState.compaction.diagnostics,
       transportErrorCode: annotatedError.causeCode,
       transportErrorSource: annotatedError.causeSource,
+      requestRetries: runState.requestRetry.retries,
     });
     const errorDetails = buildErrorDetails({
       errorMessage,
