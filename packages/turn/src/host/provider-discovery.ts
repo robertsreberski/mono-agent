@@ -69,7 +69,9 @@ const DEFAULT_LOCAL_PROVIDERS: readonly {
   { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234" },
 ];
 
-/** Clear process-local probe state, primarily for deterministic host tests. */
+/** Clear process-local probe state, primarily for deterministic host tests.
+ * @coreScanRetained
+ */
 export function clearLocalProviderDiscoveryCache(): void {
   discoveryCache.clear();
   // Retire every probe already in flight along with the entries. Without this a

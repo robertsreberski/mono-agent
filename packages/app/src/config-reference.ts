@@ -991,6 +991,7 @@ function propertyPresentSchema(property: string): JsonSchema {
   };
 }
 
+/** @coreScanRetained */
 export function buildGeneratedConfigReferenceMarkdown(): string {
   const rows = allConfigReferenceFields()
     .slice()

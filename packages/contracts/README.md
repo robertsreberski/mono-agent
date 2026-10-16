@@ -328,7 +328,6 @@ AgentSurfaceMessageBudget
 AgentToolEnvironment
 BoundedHttpResponseWriter
 BufferedMessageStream
-BufferedMessageStreamOptions
 ChannelAskAnswer
 ChannelAskOption
 ChannelAskQuestion
@@ -435,7 +434,6 @@ ProcessJobOperator
 ProcessJobProjection
 ProcessJobState
 ProcessJobSubagentProgress
-ProcessJobWakeDeliveryInput
 ProcessJobWakeDeliveryResult
 ProcessJobWakeDisposition
 ProviderAuthCheckOperator
@@ -457,15 +455,11 @@ ProviderUsage
 ProviderUsageErrorCode
 ProviderUsageId
 ProviderUsageOperator
-ProviderUsageProjection
 ProviderUsageSnapshot
 ProviderUsageWindow
-ProviderUsageWindowProjection
 RedactedSecretValue
-ResilientAgentMessageStream
 ResilientMessageStream
 ResilientMessageStreamLogger
-ResilientMessageStreamOptions
 RunningChannel
 RunningProcessJobChannel
 SecretSafeLogSink
@@ -574,10 +568,8 @@ ProviderUsage
 ProviderUsageErrorCode
 ProviderUsageId
 ProviderUsageOperator
-ProviderUsageProjection
 ProviderUsageSnapshot
 ProviderUsageWindow
-ProviderUsageWindowProjection
 formatProviderUsageLead
 isProviderUsageId
 parseProviderUsageSnapshot

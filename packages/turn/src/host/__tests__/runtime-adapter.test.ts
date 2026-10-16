@@ -1,4 +1,3 @@
-import { listMonoRuntimeBackends, runtimeBackendForModel } from "../runtime-adapter.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,15 +76,10 @@ describe("runtime adapter model references", () => {
     }
   });
 
-  it("exposes one frozen Pi backend descriptor", () => {
+  it("describes a frozen Pi backend through the production support API", () => {
     const model = parseMonoRuntimeModelReference("github-copilot:gpt-4.1");
-    const backends = listMonoRuntimeBackends();
-
-    expect(backends).toHaveLength(1);
-    const backend = backends[0];
-    if (backend === undefined) {
-      throw new Error("Expected the sole Pi runtime backend.");
-    }
+    const backend = describeMonoRuntimeSupport(model).backend;
+    if (backend === undefined) throw new Error("Expected a compatible Pi backend.");
     expect(backend).toMatchObject({
       id: "pi-sdk",
       runtimeBridgeId: "pi",
@@ -100,18 +94,16 @@ describe("runtime adapter model references", () => {
         tool_policy: "projected",
       }),
     });
-    expect(runtimeBackendForModel(model)).toBe(backend);
-    expect(Object.isFrozen(backends)).toBe(true);
     expect(Object.isFrozen(backend)).toBe(true);
     expect(Object.isFrozen(backend.capabilities)).toBe(true);
   });
 
   it("describes every parsed model through the sole Pi backend", () => {
     const model = parseMonoRuntimeModelReference("ollama:qwen3:8b");
-    expect(describeMonoRuntimeSupport(model)).toEqual({
+    expect(describeMonoRuntimeSupport(model)).toMatchObject({
       model,
       compatible: true,
-      backend: runtimeBackendForModel(model),
+      backend: { id: "pi-sdk", runtimeBridgeId: "pi" },
     });
   });
 });

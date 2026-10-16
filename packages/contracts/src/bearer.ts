@@ -5,7 +5,9 @@
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
-/** Generate a 32-byte random hex token for per-boot bearer auth. */
+/** Generate a 32-byte random hex token for per-boot bearer auth.
+ * @coreScanRetained
+ */
 export function generateBearerToken(): string {
   return randomBytes(32).toString("hex");
 }

@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { globSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import config from "../core-scans/knip.ts";
+import config, { retainedEntries, retainedExports } from "../core-scans/knip.ts";
+import ts from "typescript";
 import { packages, root, run, scanArguments, summarize } from "../core-scans/run.mjs";
 
 const directories = [];
@@ -53,6 +54,39 @@ describe("core scan policy", () => {
     for (const entry of config.workspaces["packages/app"].entry.filter((entry) => !entry.endsWith("!"))) {
       expect(smoke).toContain(entry);
     }
+  });
+
+  test("uses native local-use analysis and only registered per-symbol annotations", () => {
+    expect(config.ignoreExportsUsedInFile).toBe(true);
+    expect(config.tags).toEqual(["-coreScanRetained"]);
+    const expected = new Set(retainedExports.flatMap((entry) => entry.taggedNames.map((name) => `${entry.file}:${name}`)));
+    const actual = new Set();
+    for (const file of globSync("packages/{contracts,config,turn,conversation,app}/src/**/*.{js,ts}", { cwd: root })) {
+      if (file.includes("/__tests__/")) continue;
+      const source = readFileSync(resolve(root, file), "utf8");
+      if (!source.includes("@coreScanRetained")) continue;
+      const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+      for (const node of ast.statements) {
+        if (!ts.getJSDocTags(node).some((tag) => tag.tagName.text === "coreScanRetained")) continue;
+        const name = node.name?.text ?? (ts.isVariableStatement(node) ? node.declarationList.declarations[0]?.name.getText(ast) : undefined);
+        expect(name, file).toBeTruthy();
+        actual.add(`${file}:${name}`);
+      }
+    }
+    expect([...actual].sort()).toEqual([...expected].sort());
+    for (const entry of [...retainedExports, ...retainedEntries]) {
+      expect(entry.reason).toMatch(/^(documented extension|consumed|test isolation control|indirect|deferred):? /);
+      const citation = entry.citation.split(/[:#]/)[0];
+      const evidence = readFileSync(resolve(root, citation), "utf8")
+        .replace(/<!-- public-api-inventory:start -->[\s\S]*?<!-- public-api-inventory:end -->/g, "");
+      expect(evidence.trim()).not.toBe("");
+      if ("names" in entry) for (const name of entry.names) expect(readFileSync(resolve(root, entry.file), "utf8")).toContain(name);
+    }
+    expect(retainedEntries).toContainEqual({
+      file: "packages/turn/src/agent/allowlists.js",
+      reason: "deferred: turn entry regrouping",
+      citation: "packages/turn/package.json",
+    });
   });
 
   test("summarizes findings without counting consumers", () => {

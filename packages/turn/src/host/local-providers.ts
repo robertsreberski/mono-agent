@@ -132,6 +132,7 @@ const DEFAULT_DISCOVERY_TIMEOUT_MS = 1500;
  * this is called on the `/v1/info` request path and must never fail it. Only
  * enabled providers are probed; a disabled provider is skipped without a
  * network call.
+  * @coreScanRetained
  */
 export async function discoverLocalProviderModels(
   providers: readonly LocalProviderDefinition[] | undefined,
@@ -278,6 +279,7 @@ export interface ModelEffortLevels {
  * reasoning levels precisely would require reaching into the pi-ai model
  * registry from this package, which would cycle back through config; the TUI
  * falls back to the global effort enum for those. Never throws.
+  * @coreScanRetained
  */
 export function resolveModelEffortLevels(
   ref: RuntimeModelReference,
@@ -302,6 +304,7 @@ export function resolveModelEffortLevels(
   }
 }
 
+/** @coreScanRetained */
 export function runtimeOptionsForLocalProvider(
   model: RuntimeModelReference,
   providers: readonly LocalProviderDefinition[] | undefined,
@@ -399,7 +402,9 @@ export function validateProviderDefinition(provider: ProviderDefinition): Provid
   };
 }
 
-/** True when Pi's version-pinned, in-process catalog owns the provider id. */
+/** True when Pi's version-pinned, in-process catalog owns the provider id.
+ * @coreScanRetained
+ */
 export function isPiBuiltinProvider(providerId: string): boolean {
   const cached = piBuiltinProviderCache.get(providerId);
   if (cached !== undefined) {
@@ -415,7 +420,9 @@ export function isPiBuiltinProvider(providerId: string): boolean {
   }
 }
 
-/** Local ids whose default endpoints can be checked without configuration. */
+/** Local ids whose default endpoints can be checked without configuration.
+ * @coreScanRetained
+ */
 export function isAutodiscoverableProviderId(providerId: string): boolean {
   return AUTODISCOVERABLE_PROVIDER_TYPES.has(providerId);
 }

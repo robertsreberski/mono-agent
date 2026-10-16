@@ -26,29 +26,22 @@ type KernelRouterOptions = NonNullable<Parameters<typeof createRouterRuntime>[0]
 type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
 type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 
-export function listMonoRuntimeBackends(): readonly MonoRuntimeBackendDescriptor[] {
-  return MONO_RUNTIME_BACKENDS;
-}
-
-export function runtimeBackendForModel(
-  model: RuntimeModelReference,
-): MonoRuntimeBackendDescriptor {
-  assertParsedRuntimeModelReference(model);
-  return PI_RUNTIME_BACKEND;
-}
-
+/** @coreScanRetained */
 export function monoRuntimeSupportsSessionResume(): boolean {
   return PI_RUNTIME_BACKEND.capabilities.supports_session_resume === true;
 }
 
+/** @coreScanRetained */
 export function monoRuntimeSupportsLiveInput(): boolean {
   return PI_RUNTIME_BACKEND.capabilities.supports_live_input === true;
 }
 
+/** @coreScanRetained */
 export function monoRuntimeSupportsMcpApps(): boolean {
   return PI_RUNTIME_BACKEND.capabilities.supports_mcp_apps === true;
 }
 
+/** @coreScanRetained */
 export function describeMonoRuntimeSupport(
   model: RuntimeModelReference,
 ): MonoRuntimeSupportDescription {
@@ -138,6 +131,7 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
   readonly sessionTurnReconciliation?: "v1";
 }
 
+/** @coreScanRetained */
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
   const { fallbackChain, retry, resolveAttempt, sessionTurnReconciliation, ...hostOptions } = options;
   const chain = normalizeFallbackChain(fallbackChain);
@@ -400,8 +394,6 @@ const PI_RUNTIME_BACKEND = Object.freeze<MonoRuntimeBackendDescriptor>({
   acceptsProviderIds: true,
   capabilities: Object.freeze(capabilitiesForRuntimeBridge("pi")),
 });
-
-const MONO_RUNTIME_BACKENDS = Object.freeze([PI_RUNTIME_BACKEND]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

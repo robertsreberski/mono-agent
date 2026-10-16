@@ -264,11 +264,14 @@ export function failClosedSandboxPolicy(input: Omit<SandboxPolicyInput, "mode" |
   });
 }
 
+/** @coreScanRetained */
 export function sandboxPolicyToRuntimeOptions(policy: SandboxPolicy): SandboxPolicyRuntimeOptions {
   return { sandboxPolicy: policy };
 }
 
-/** Add host-owned canonical roots without exposing a configuration surface. */
+/** Add host-owned canonical roots without exposing a configuration surface.
+ * @coreScanRetained
+ */
 export function protectSandboxRoots(
   policy: SandboxPolicy,
   roots: readonly string[],
@@ -514,6 +517,7 @@ function resolveDefaultEngine(policy: SandboxPolicy): SandboxEngine | undefined 
   return engine;
 }
 
+/** @coreScanRetained */
 export async function resolveSandboxEffectiveState(input: {
   readonly policy?: SandboxPolicy;
   readonly engine?: SandboxEngine;
@@ -560,6 +564,7 @@ export async function resolveSandboxEffectiveState(input: {
   };
 }
 
+/** @coreScanRetained */
 export function sandboxEffectiveStateWarning(state: SandboxEffectiveState): string | undefined {
   if (state.fallbackActive && state.effective === "unsafe-host-process") {
     return `WARNING: Unsafe sandbox fallback is active: ${UNSAFE_HOST_PROCESS_CONSEQUENCE}.`;
@@ -567,6 +572,7 @@ export function sandboxEffectiveStateWarning(state: SandboxEffectiveState): stri
   return undefined;
 }
 
+/** @coreScanRetained */
 export function describeSandboxEffectiveState(state: SandboxEffectiveState): string {
   if (!state.configured || state.effective === "off") {
     return "Sandbox is off; commands run without mono-agent sandbox wrapping.";

@@ -67,7 +67,7 @@ function rate(value, fallback = 0) {
  * @param {number} [options.missing]
  * @returns {NormalizedPricing|null}
  */
-function normalizePricing(pricing, { source, priced = true, missing = 0 } = {}) {
+export function normalizePricing(pricing, { source, priced = true, missing = 0 } = {}) {
   if (!pricing || typeof pricing !== "object") return null;
   const input = rate(pricing.input ?? pricing.input_per_million, missing);
   const cacheRead = rate(
@@ -89,15 +89,16 @@ function normalizePricing(pricing, { source, priced = true, missing = 0 } = {}) 
 /**
  * @param {string} source
  * @returns {NormalizedPricing}
+  * @coreScanRetained
  */
-function zeroPricing(source) {
+export function zeroPricing(source) {
   return { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, source, priced: true };
 }
 
 /**
  * @returns {NormalizedPricing}
  */
-function unknownPricing() {
+export function unknownPricing() {
   return { input: null, cacheRead: null, cacheWrite: null, output: null, source: "unknown", priced: false };
 }
 
@@ -105,7 +106,7 @@ function unknownPricing() {
  * @param {string} reference
  * @returns {ParsedModelReference|null}
  */
-function parseReference(reference) {
+export function parseReference(reference) {
   if (typeof reference !== "string" || reference.length === 0 || reference.trim() !== reference) return null;
   const separator = reference.indexOf(":");
   if (separator <= 0 || separator === reference.length - 1) return null;
@@ -118,8 +119,9 @@ function parseReference(reference) {
 /**
  * @param {string} baseUrl
  * @returns {boolean}
+  * @coreScanRetained
  */
-function isPrivateHost(baseUrl) {
+export function isPrivateHost(baseUrl) {
   try {
     const host = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "");
     return host === "localhost"
@@ -138,8 +140,9 @@ function isPrivateHost(baseUrl) {
 /**
  * @param {PricingInputRow} [pricing]
  * @returns {boolean}
+  * @coreScanRetained
  */
-function pricingHasRates(pricing = {}) {
+export function pricingHasRates(pricing = {}) {
   return [
     pricing.input_per_million,
     pricing.cached_input_per_million,
@@ -211,7 +214,6 @@ function estimatePiCatalogCost(model, usage) {
   }).total;
 }
 
-export { normalizePricing, zeroPricing, unknownPricing, pricingHasRates, isPrivateHost, parseReference };
 
 /**
  * @param {Object} [options]

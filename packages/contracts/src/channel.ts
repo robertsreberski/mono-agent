@@ -83,7 +83,7 @@ export interface HostWakeDeliveryResult extends NotifyDeliveryResult {
 export type ProcessJobWakeDisposition = HostWakeDisposition;
 
 /** One durable background-job completion routed to its exact origin. */
-export interface ProcessJobWakeDeliveryInput {
+interface ProcessJobWakeDeliveryInput {
   readonly conversationId: string;
   readonly text: string;
   readonly deliveryKey: string;

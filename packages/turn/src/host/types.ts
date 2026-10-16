@@ -147,10 +147,14 @@ export interface RuntimeEventLike {
 import type { RuntimeToolLifecycleTerminalState } from "#kernel/types";
 export type { RuntimeToolLifecycleTerminalState } from "#kernel/types";
 
-/** Provider-neutral, host-persisted half of a managed tool lifecycle. */
+/** Provider-neutral, host-persisted half of a managed tool lifecycle.
+ * @coreScanRetained
+ */
 export type RuntimeToolLifecycleEvent = Kernel.RuntimeToolLifecycleEvent;
 
-/** Host acknowledgement for one accepted lifecycle half. */
+/** Host acknowledgement for one accepted lifecycle half.
+ * @coreScanRetained
+ */
 export type RuntimeToolLifecyclePersistence = Kernel.RuntimeToolLifecyclePersistence;
 
 /** Awaited host boundary used to persist managed tool lifecycles. */

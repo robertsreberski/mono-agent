@@ -521,7 +521,9 @@ function abortedResult() {
   };
 }
 
-/** Test hook for process-shared broker state. */
+/** Test hook for process-shared broker state.
+ * @coreScanRetained
+ */
 export async function __resetCodexSubscriptionSearchForTests() {
   quotaSnapshot = undefined;
   await enqueue(async () => { await closeBroker(); });

@@ -954,6 +954,7 @@ export async function verifyManagedRuntimeClosureForProvenance(
  * Prove, without installing or repairing anything, that a persisted managed
  * runtime is the canonical private copy of the exact deploy-source execution
  * closure (including config-selected plugin roots).
+  * @coreScanRetained
  */
 export async function attestManagedBackgroundRuntime(
   input: ManagedBackgroundRuntimeAttestationInput,

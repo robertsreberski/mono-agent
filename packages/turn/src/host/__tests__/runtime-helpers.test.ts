@@ -1,5 +1,4 @@
 import { isPlainObject } from "../runtime-helpers.js";
-import { listMonoRuntimeBackends } from "../runtime-adapter.js";
 import { describe, expect, it } from "vitest";
 
 import { isValidMcpServerName, parseMcpServers } from "@mono-agent/turn/host/config";
@@ -47,17 +46,5 @@ describe("parseMcpServers", () => {
         notobj: "nope" as unknown as Record<string, unknown>,
       }),
     ).toEqual([]);
-  });
-});
-
-describe("runtime backend descriptor", () => {
-  it("exposes only the agent-runtime-backed Pi descriptor", () => {
-    expect(listMonoRuntimeBackends()).toEqual([
-      expect.objectContaining({
-        id: "pi-sdk",
-        runtimeBridgeId: "pi",
-        providerBoundary: expect.stringContaining("@mono-agent/turn"),
-      }),
-    ]);
   });
 });

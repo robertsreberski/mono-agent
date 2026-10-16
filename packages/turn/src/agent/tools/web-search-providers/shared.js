@@ -120,6 +120,7 @@ function sleep(ms, signal) {
  * state. Module-scoped state would otherwise leak between test cases.
  *
  * @param {{maxConcurrency?: number, minSpacingMs?: number, cooldownMs?: number}} [overrides]
+  * @coreScanRetained
  */
 export function __resetWebSearchThrottleForTests(overrides = {}) {
   keylessThrottle = { ...KEYLESS_DEFAULT_THROTTLE, ...overrides };

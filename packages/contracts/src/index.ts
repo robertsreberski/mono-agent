@@ -1164,9 +1164,6 @@ export type {
 export {
   BufferedMessageStream,
 } from "./buffered-message-stream.js";
-export type {
-  BufferedMessageStreamOptions,
-} from "./buffered-message-stream.js";
 export {
   DEFAULT_EMPTY_FINAL_TEXT,
   DEFAULT_MAX_MESSAGE_CHARS,
@@ -1192,9 +1189,7 @@ export type {
   ChannelMessageContentKind,
   ChannelSendOutcome,
   MessageRef,
-  ResilientMessageStreamOptions,
   ResilientMessageStreamLogger,
-  ResilientAgentMessageStream,
 } from "./resilient-message-stream.js";
 export type {
   ChannelConfigInput,
@@ -1220,7 +1215,6 @@ export type {
   NotifyDestination,
   HostWakeDeliveryResult,
   HostWakeDisposition,
-  ProcessJobWakeDeliveryInput,
   ProcessJobWakeDeliveryResult,
   ProcessJobWakeDisposition,
   RunningChannel,
