@@ -8,7 +8,7 @@ import {
   sameJsonValue,
 } from "../config-view.js";
 import type { ConfigViewSection } from "../config-view.js";
-import type { MonoAgentConfigJson } from "../json-source.js";
+import type { MonoAgentConfigJson } from "../json-types.js";
 
 function buildView(json: MonoAgentConfigJson): readonly ConfigViewSection[] {
   const complete: MonoAgentConfigJson = {

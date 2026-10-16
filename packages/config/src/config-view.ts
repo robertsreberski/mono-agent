@@ -1,5 +1,5 @@
 import { ALLOW_ALL_TOOLS } from "./enums.js";
-import type { MonoAgentConfigJson } from "./json-source.js";
+import type { MonoAgentConfigJson } from "./json-types.js";
 import type {
   RedactedProviderDefinition,
   RedactedMemoryConfig,

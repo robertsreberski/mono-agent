@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ALLOW_ALL_TOOLS, MonoAgentConfigError, redactMonoAgentConfig, resolveConfiguredProviders } from "../index.js";
 import { resolveJsonMonoAgentConfig } from "../config.js";
 import type { MemoryBackend } from "../types.js";
-import type { MonoAgentConfigJson } from "../json-source.js";
+import type { MonoAgentConfigJson } from "../json-types.js";
 
 const baseJson: MonoAgentConfigJson = {
   runtime: {

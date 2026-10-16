@@ -1,7 +1,5 @@
 export {
-  assertNoRetiredMonoAgentConfig,
   MAX_AGENT_NAME_LENGTH,
-  MonoAgentConfigError,
   redactMonoAgentConfig,
   resolveConfiguredProviders,
   resolveJsonMonoAgentConfig,
@@ -23,7 +21,7 @@ export type {
   MonoAgentMemoryEmbeddingsJson,
   MonoAgentRuntimeFallbackJson,
   MonoAgentConfigJson,
-} from "./json-source.js";
+} from "./json-types.js";
 export {
   ALLOW_ALL_TOOLS,
   EFFORT_LEVELS,
@@ -43,4 +41,7 @@ export type {
   ConfigViewSection,
 } from "./config-view.js";
 
-export { modelReferenceFromConfigJson } from "./json-source.js";
+export { modelReferenceFromConfigJson } from "./json-types.js";
+
+export { assertNoRetiredMonoAgentConfig } from "./retired-fields.js";
+export { MonoAgentConfigError } from "./errors.js";

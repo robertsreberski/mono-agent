@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MonoAgentConfigError } from "../config.js";
+import { MonoAgentConfigError } from "../errors.js";
 import { loadMonoAgentConfig } from "../layered-loader.js";
 
 let dir: string;

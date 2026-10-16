@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveJsonMonoAgentConfig } from "../config.js";
-import type { MonoAgentConfigJson } from "../json-source.js";
+import type { MonoAgentConfigJson } from "../json-types.js";
 
 const base = {
   runtime: { model: "pi:openai-codex:gpt-5.5" },
