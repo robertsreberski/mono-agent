@@ -28,6 +28,12 @@ function baseRequest(conversationId = "c1") {
 }
 
 describe("createConversationResponder", () => {
+  it("names the public factory in the exact invalid-harness diagnostic", () => {
+    expect(() => createConversationResponder({ harness: {} as ConversationHarness })).toThrowError(
+      new TypeError("createConversationResponder requires a harness with run()."),
+    );
+  });
+
   it("rejects manual compaction during an active or queued turn and fences concurrent clicks", async () => {
     let finishTurn!: () => void;
     let finishCompact!: () => void;
