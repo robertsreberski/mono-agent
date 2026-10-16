@@ -43,7 +43,7 @@ import {
   type ManagedSrtHooks,
   type SandboxManagerOptions,
 } from "../sandbox-manager.js";
-import type { ProcessIncarnation } from "../process-incarnation.js";
+import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const resourceRoot = fileURLToPath(new URL("../../resources/srt", import.meta.url));
 const tempDirs: string[] = [];

@@ -9,7 +9,7 @@ import { WorkerActivityTracker,trackResponderActivity } from "../worker-activity
 import { allowUnattendedMaintenanceStop } from "../launchd-maintenance-activity.js";
 import { probeWorkerActivity,publishWorkerActivity } from "../worker-activity-snapshot.js";
 import { writePrivateLaunchdState } from "../private-launchd-state.js";
-import { currentProcessIncarnation } from "../process-incarnation.js";
+import { currentProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import type { BackgroundLifecycleTarget } from "../launchd-lifecycle-lock.js";
 import type { AgentResponder } from "@mono-agent/contracts";
 import { bindProcessJobWakeContextToResponder,runWithProcessJobWakeContext } from "../process-jobs-context.js";

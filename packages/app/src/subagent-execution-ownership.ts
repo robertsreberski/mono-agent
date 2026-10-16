@@ -2,7 +2,7 @@ import type { SubagentExecutionOwnership,SubagentOwnedCommand } from "./subagent
 import type { InstanceUsage } from "./subagents/types.js";
 import type { SubagentDisposition } from "./subagents/types.js";
 import { basename,dirname,isAbsolute,resolve } from "node:path";
-import { processIncarnationFromJson,type ProcessIncarnation } from "./process-incarnation.js";
+import { processIncarnationFromJson,type ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const SUBAGENT_OWNERSHIP_MAX_BYTES = 40 * 1024;
 const SUBAGENT_COMMAND_MAX_BYTES = 4 * 1024;

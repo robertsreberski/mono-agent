@@ -51,7 +51,7 @@ currentProcessIncarnation,
 isSameProcessIncarnation,
 readProcessIncarnation,
 type ProcessIncarnation,
-} from "./process-incarnation.js";
+} from "@mono-agent/conversation/process-incarnation";
 import {
 isTerminalProcessJobState,
 isProcessJobOriginRecord,

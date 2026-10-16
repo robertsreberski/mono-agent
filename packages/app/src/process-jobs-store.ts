@@ -37,7 +37,7 @@ import { PROCESS_JOBS_CAPS,type ProcessJobsSettings } from "./process-jobs-confi
 import {
 processIncarnationFromJson,
 type ProcessIncarnation,
-} from "./process-incarnation.js";
+} from "@mono-agent/conversation/process-incarnation";
 import { secureFileReplace } from "./secure-file-replace.js";
 import {
 readBoundedOwnerOnlyFile,

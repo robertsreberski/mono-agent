@@ -17,7 +17,7 @@ import {
   verifyManagedRuntimeLaunch,
 } from "../background-runtime.js";
 import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput, ManagedRuntimeProgress } from "../background-runtime.js";
-import type { ProcessIncarnation } from "../process-incarnation.js";
+import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const io = vi.hoisted(() => ({
   beforeCopy: undefined as undefined | ((source: string) => Promise<void>),

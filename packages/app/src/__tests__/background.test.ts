@@ -27,7 +27,7 @@ import type { LaunchdLogInspection } from "../launchd-logs.js";
 import { buildLaunchdProgramArguments,deriveLaunchdLabel } from "../launchd.js";
 import { recordManagedSnapshotRefusal } from "../cli-background-command.js";
 import type { LaunchctlRunner } from "../launchd.js";
-import type { ProcessIncarnation } from "../process-incarnation.js";
+import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import type { OwnerPrivateLock } from "../owner-private-lock.js";
 import { readLaunchdSnapshotRefusal,clearLaunchdSnapshotRefusal } from "../launchd-snapshot-refusal.js";
 import {

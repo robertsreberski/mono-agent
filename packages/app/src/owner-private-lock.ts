@@ -10,8 +10,8 @@ import {
   currentProcessIncarnation,
   isProcessIncarnationLive,
   processIncarnationFromJson,
-} from "./process-incarnation.js";
-import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
+} from "@mono-agent/conversation/process-incarnation";
+import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { secureFileReplace } from "./secure-file-replace.js";
 
 const OWNER_MAX_BYTES = 4 * 1024;

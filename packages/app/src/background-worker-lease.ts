@@ -15,7 +15,7 @@ import {
   validateOwnerPrivateLockInputs,
   type LegacyLockHolder,
 } from "./owner-private-lock.js";
-import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
+import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const LEASE_SCHEMA = "mono-agent.background-worker-lease.v2";
 const DEFAULT_OWNERLESS_GRACE_MS = 5 * 60_000;

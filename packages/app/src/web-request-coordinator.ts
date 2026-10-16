@@ -8,7 +8,7 @@ import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
 import {
   HISTORY_PROCESS_INCARNATION_SCHEMA, PROCESS_INCARNATION_SCHEMA, currentProcessIncarnation, isProcessIncarnationLive,
   processIncarnationFromJson, type ProcessIncarnation,
-} from "./process-incarnation.js";
+} from "@mono-agent/conversation/process-incarnation";
 import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 
 type Coordinator = NonNullable<RuntimeRunOptions["webRequestCoordinator"]>;

@@ -19,8 +19,8 @@ baselineWebLeaseAccepted,
 // Records written by new binaries must stay readable by old ones (sidecar), and
 // a live owner must never be reclaimed because of Darwin identity drift (#1264).
 const identity = vi.hoisted(() => ({ override: undefined as undefined | ((schema?: string) => unknown) }));
-vi.mock("../process-incarnation.js", async (original) => {
-  const real = await original<typeof import("../process-incarnation.js")>();
+vi.mock("@mono-agent/conversation/process-incarnation", async (original) => {
+  const real = await original<typeof import("@mono-agent/conversation/process-incarnation")>();
   return {
     ...real,
     currentProcessIncarnation: async (schema?: Parameters<typeof real.currentProcessIncarnation>[0]) =>
@@ -160,7 +160,7 @@ describe("owner-private-lock sidecar", () => {
     const held = await acquireOwnerPrivateLock(lockOptions(path));
     expect(held).toBeDefined();
     await held!.release();
-    const { readProcessIncarnation } = await vi.importActual<typeof import("../process-incarnation.js")>("../process-incarnation.js");
+    const { readProcessIncarnation } = await vi.importActual<typeof import("@mono-agent/conversation/process-incarnation")>("@mono-agent/conversation/process-incarnation");
     await baselineLock(path, owner.pid!, { stableIncarnation: await readProcessIncarnation(owner.pid!) });
     await expect(acquireOwnerPrivateLock(lockOptions(path))).resolves.toBeUndefined();
   });

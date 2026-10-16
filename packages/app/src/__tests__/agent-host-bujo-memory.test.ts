@@ -26,8 +26,8 @@ const coordinatorHome = vi.hoisted(() => ({ path: "" }));
 vi.mock("../account-home.js", () => ({
   accountHomeDirectory: () => coordinatorHome.path,
 }));
-vi.mock("../process-incarnation.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/conversation/process-incarnation")>(),
   currentProcessIncarnation: async () => ({
     schema: "mono-agent.process-incarnation.v1" as const,
     bootSessionId: "test-boot",

@@ -9,7 +9,7 @@ import {
   validateOwnerPrivateLockInputs,
   type OwnerPrivateLock,
 } from "./owner-private-lock.js";
-import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
+import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { accountHomeDirectory } from "./account-home.js";
 
 const AGENT_ROOT_LEASE_SCHEMA = "mono-agent.agent-root-lease.v1";

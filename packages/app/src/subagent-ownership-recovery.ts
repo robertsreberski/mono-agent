@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { processIncarnationsEqual,type ProcessIncarnation } from "./process-incarnation.js";
+import { processIncarnationsEqual,type ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import type { SubagentExecutionOwnership } from "./subagents/types.js";
 
 /** Owner-supplied capabilities only. No command creation, registry writes or path discovery. */

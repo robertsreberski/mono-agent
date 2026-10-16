@@ -13,8 +13,8 @@ const processIdentity = vi.hoisted(() => ({
   processStartId: "vitest-sessions",
 }));
 
-vi.mock("../process-incarnation.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/conversation/process-incarnation")>(),
   currentProcessIncarnation: async () => processIdentity,
   isSameProcessIncarnation: () => true,
   isProcessIncarnationLive: () => true,
