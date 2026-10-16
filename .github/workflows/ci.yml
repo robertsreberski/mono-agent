@@ -115,11 +115,11 @@ jobs:
       - name: Check package architecture
         run: pnpm run check:architecture
 
-      - name: Check core dead code (all three modes)
-        run: pnpm run scan:dead-code
-
       - name: Build packages
         run: pnpm run build
+
+      - name: Check core dead code (all three modes)
+        run: pnpm run scan:dead-code
 
       - name: Typecheck marked documentation snippets
         run: pnpm run check:doc-snippets

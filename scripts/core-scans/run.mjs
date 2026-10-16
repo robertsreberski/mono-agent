@@ -1,11 +1,24 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const packages = ["contracts", "config", "turn", "conversation", "app"];
 export const root = fileURLToPath(new URL("../../", import.meta.url));
 export const outputDirectory = resolve(root, "node_modules/.cache/core-scans");
+
+// Include every conditional/subpath target, not just the package-root JS file.
+export function missingPackageEntryPoints(directory = root) {
+  const targets = (value) => typeof value === "string" ? [value]
+    : value && typeof value === "object" ? Object.values(value).flatMap(targets) : [];
+  return packages.flatMap((name) => {
+    const packageDirectory = resolve(directory, "packages", name);
+    const manifest = JSON.parse(readFileSync(resolve(packageDirectory, "package.json"), "utf8"));
+    return [...new Set([manifest.main, manifest.types, ...targets(manifest.exports)])]
+      .filter((target) => typeof target === "string" && !existsSync(resolve(packageDirectory, target)))
+      .map((target) => `packages/${name}/${target.replace(/^\.\//, "")}`);
+  });
+}
 
 export function summarize(report, packageName) {
   const prefix = `packages/${packageName}/`;
@@ -47,12 +60,25 @@ export function scanArguments(kind) {
 
 // Findings are a non-zero result, not a launcher failure. Always finish every
 // mode/package; never make a red baseline look green with --no-exit-code.
-export function run(kind, { execute = spawnSync, directory = outputDirectory } = {}) {
+export function run(kind, { execute = spawnSync, directory = outputDirectory, checkBuild = missingPackageEntryPoints } = {}) {
   if (kind === "all") {
-    return Math.max(run("dead-code", { execute, directory }), run("cycles", { execute, directory }));
+    return Math.max(run("dead-code", { execute, directory, checkBuild }), run("cycles", { execute, directory, checkBuild }));
   }
   const scans = scanArguments(kind);
   mkdirSync(directory, { recursive: true });
+  if (kind === "dead-code") {
+    const missing = checkBuild();
+    if (missing.length > 0) {
+      const message = `Core dead-code scan requires built package entry points. Run \`pnpm run build\` first.\nMissing:\n${missing.map((file) => `  ${file}`).join("\n")}`;
+      console.error(message);
+      // Invalidate stale findings: an unbuilt tree has no meaningful scan verdict.
+      for (const scan of scans) {
+        writeFileSync(resolve(directory, `${scan.name}.json`), `${JSON.stringify({ error: message })}\n`);
+        writeFileSync(resolve(directory, `${scan.name}.stderr.txt`), `${message}\n`);
+      }
+      return 2;
+    }
+  }
   let findings = false;
   let errors = false;
   for (const scan of scans) {

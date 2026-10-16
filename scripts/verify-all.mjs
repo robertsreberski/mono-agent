@@ -157,8 +157,8 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
     { label: "check:changelog", command: "pnpm", args: ["run", "check:changelog"] },
     { label: "release:validate", command: "pnpm", args: ["run", "release:validate", "--", "--tag", releaseTag] },
     { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
-    { label: "scan:dead-code", command: "pnpm", args: ["run", "scan:dead-code"] },
     { label: "build", command: "pnpm", args: ["run", "build"] },
+    { label: "scan:dead-code", command: "pnpm", args: ["run", "scan:dead-code"] },
     { label: "check:doc-snippets", command: "pnpm", args: ["run", "check:doc-snippets"] },
     { label: "check:deep-imports", command: "pnpm", args: ["run", "check:deep-imports"] },
     {

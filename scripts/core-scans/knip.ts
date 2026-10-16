@@ -1,4 +1,5 @@
-// Source-only scan: no build products or temporary package tsconfigs required.
+// Scan source declarations after `pnpm run build`: cross-package consumers resolve
+// through built manifest entry points. No temporary package tsconfigs required.
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 

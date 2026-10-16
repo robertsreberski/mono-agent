@@ -4,6 +4,7 @@ From the repository root, with the supported Node/pnpm versions:
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm run build
 pnpm run scan:core
 ```
 
@@ -14,7 +15,14 @@ contracts, config, turn, conversation, and app. Knip is an exact-pinned root
 devDependency, invoked through `pnpm exec knip`; all three modes are a required
 step in the existing CI verify job and local `verify:all` gate. Madge remains
 pinned in the launcher and fetched with `pnpm dlx`, outside the CI guard.
-No package build is needed. Madge first use needs registry access (or a warm dlx cache).
+Run `pnpm run build` before dead-code scanning: Knip resolves cross-package
+consumers through manifest runtime/declaration entry points. CI and `verify:all`
+run the guard immediately after building. The launcher refuses an unbuilt tree
+with exit 2 and a build instruction, invalidating stale reports instead of
+reporting misleading findings. It checks every core manifest export condition,
+subpath and top-level types/main target. Existence is not a freshness proof;
+rebuild after changing source or switching revisions. Madge alone has no build
+precondition; its first use needs registry access (or a warm dlx cache).
 
 Both commands finish all scans even when findings exist. Exit codes are **0**
 (clean), **1** (findings), and **2** (tool/configuration failure). A red scan is

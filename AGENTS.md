@@ -40,7 +40,10 @@ This repository is a config-first agent framework built from npm packages under 
 
 ## Core source scans
 
-Run `pnpm run scan:core` for contracts, config, turn, conversation, and app, or
+Run `pnpm run build` first: dead-code analysis needs built package entry points
+to resolve cross-package consumers and refuses an unbuilt tree. Rebuild after
+source or revision changes; entry-point existence does not prove freshness.
+Then run `pnpm run scan:core` for contracts, config, turn, conversation, and app, or
 run `pnpm run scan:dead-code` (all three Knip modes) and `pnpm run scan:cycles`
 independently. See the
 [core scan policy](./scripts/core-scans/README.md) for pinned tools, report paths,
