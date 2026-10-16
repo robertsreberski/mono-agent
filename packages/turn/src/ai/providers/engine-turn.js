@@ -794,9 +794,18 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
         runState.removeAbortHandler = () => options.abortSignal.removeEventListener?.("abort", abortManual);
         if (options.abortSignal.aborted) throw new Error("Manual compaction was cancelled.");
       }
-      if (!tooSmall) await tryCompact(harness, {
+      /** @type {{status: string, operationId: string, reason?: string, tokensBefore?: number, tokensAfter?: number, tokenCountsExact?: boolean}|undefined} */
+      let terminal = tooSmall
+        ? { status: "skipped", operationId: randomUUID(), reason: "nothing_to_compact" }
+        : undefined;
+      const attempt = tooSmall ? undefined : await tryCompact(harness, {
         trigger: "manual",
-        onEvent,
+        onEvent: (event) => {
+          // Observe only this attempt, never infer native success from a UI
+          // "skipped" event (the guarded driver may have declined the cut).
+          if (event?.type === "context_compaction" && event.trigger === "manual" && event.status !== "running") terminal = event;
+          onEvent(event);
+        },
         runtimeWarnings,
         onCompactionRecorded: options.onCompactionRecorded,
         runId: options.runId,
@@ -804,13 +813,15 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
         session: runState.session,
         policy,
       });
-      const terminal = tooSmall
-        ? { status: "skipped", operationId: randomUUID(), reason: "nothing_to_compact" }
-        : [...events].reverse().find((event) => event?.type === "context_compaction" && event?.trigger === "manual" && event?.status !== "running");
-      if (!terminal || terminal.status === "failed" || options.abortSignal?.aborted) {
+      if (!terminal || !["succeeded", "skipped"].includes(terminal.status) || options.abortSignal?.aborted
+        || (terminal.status === "succeeded" && attempt?.applied !== true)) {
         throw new Error("Manual compaction failed or was cancelled.");
       }
-      await harness.endTurn("completed", { text: "", error: null, failureKind: null, cancelled: false, stopReason: "compaction" });
+      // compact() closes a declined operation as failed, even for a benign
+      // no-op. Preserve the public skipped result, but seal native evidence
+      // consistently. Only the preflight no-op has no operation to close.
+      await harness.endTurn(tooSmall || attempt?.applied === true ? "completed" : "failed",
+        { text: "", error: null, failureKind: null, cancelled: false, stopReason: "compaction" });
       await commitSession(runState, {
         options,
         requestedSessionId,

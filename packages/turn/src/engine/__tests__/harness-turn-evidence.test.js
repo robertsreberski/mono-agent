@@ -91,6 +91,23 @@ describe("indexed protected turn evidence", () => {
     }
     expect(() => validateSessionTurn({ ...descriptor, kind: "instance", historyBucket: null }, descriptor.handleId)).toThrow("reconciliation");
   });
+  it.each(["completed", "failed", "aborted"])("accounts the enclosing prompt after a nested %s compaction closes", async (status) => {
+    const raw = await fixture(); await input(raw, "parent");
+    await raw.openOperation("child", { model }, "compaction", "threshold");
+    await raw.closeOperation("child", status);
+    // While the parent is open it remains the interruption owner.
+    expect(selectTurnInterruptionAccounts(raw, descriptor.turnId)).toEqual([{ operationId: "parent", cause: "crashed" }]);
+    await raw.appendMessage({ role: "assistant", content: [], stopReason: "deferred" });
+    await raw.closeOperation("parent", "failed");
+    expect(selectTurnInterruptionAccounts(raw, descriptor.turnId)).toEqual([{ operationId: "parent", cause: "suspended_not_resumed" }]);
+    // Reopen between operation_end and turn_end must account the parent.
+    await repairInterruptedSession(raw);
+    const evidence = await readTurnEvidence(raw, descriptor.turnId);
+    expect(evidence.operations.map((op) => op.operationId)).toEqual(["parent", "child"]);
+    expect(evidence.finalOperationId).toBe("parent");
+    expect(evidence.interruptionEvidence).toMatchObject([{ cause: "suspended_not_resumed", operationIds: ["parent"] }]);
+    const seq = raw.seq; await repairInterruptedSession(raw); expect(raw.seq).toBe(seq); await raw.close();
+  });
 });
 
 it("validates consumed digests against persisted content and scoped later ownership bindings", async () => {

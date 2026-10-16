@@ -15,9 +15,10 @@ export function createTurnBinding(descriptor, model) {
 
 /** Open operations take precedence; an unsealed turn can instead have a last closed operation. */
 export function selectTurnInterruptionAccounts(store, turnId, cause = "crashed") {
-  const operations = store.validator.turns.get(turnId)?.operations ?? [];
+  const turn = store.validator.turns.get(turnId);
+  const operations = turn?.operations ?? [];
   const open = operations.filter((id) => !store.validator.operations.get(id)?.end);
-  const selected = open.length ? open : operations.slice(-1);
+  const selected = open.length ? open : turn?.finalOperationId ? [turn.finalOperationId] : [];
   return (selected.length ? selected : [null]).map((operationId) => ({ operationId,
     cause: operationId !== null && store.validator.operations.get(operationId)?.suspended ? "suspended_not_resumed" : cause }));
 }

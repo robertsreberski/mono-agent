@@ -15,6 +15,23 @@ export function pendingTurnDescriptor(payload: PendingTurnPayload): RuntimeSessi
 export function turnInputDigest(payload: PendingTurnPayload): string { return sha256(Buffer.from(JSON.stringify(payload.inputs))); }
 export function turnCandidateDigest(payload: PendingTurnPayload): string { return sha256(Buffer.from(JSON.stringify(payload.candidate ?? null))); }
 
+type MatchedTurn = Extract<RuntimeSessionTurnReconciliationResult, { status: "matched" }>;
+
+/** Legacy manual no-op bug: a declined cut sealed success over a failed op.
+ * Never adopt execution, changed context, inputs, or partial operation work. */
+function isLegacyFailedCompactionNoop(payload: PendingTurnPayload, result: MatchedTurn): boolean {
+  const operation = result.operations[0];
+  return payload.identity.purpose === "compaction" && payload.inputs.length === 0
+    && result.inputs.length === 0 && result.admittedInputs.length === 0 && result.consumedInputIds.length === 0
+    && result.outcome === "completed" && result.seal?.outcome === "completed"
+    && result.operations.length === 1 && operation?.type === "compaction" && operation.cause === "manual"
+    && operation.parentOperationId === null && !operation.suspended
+    && (operation.status === "failed" || operation.status === "aborted")
+    && result.tipId === result.baselineTipId && result.currentTipId === result.baselineTipId
+    && operation.baselineTipId === result.baselineTipId && operation.tipId === result.baselineTipId
+    && result.interruptionEvidence.length === 0;
+}
+
 /** Defense-in-depth over the storage-only native matcher. No partial operation adoption. */
 export function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extract<RuntimeSessionTurnReconciliationResult, { status: "matched" }>): void {
   const descriptor = pendingTurnDescriptor(payload);
@@ -37,21 +54,34 @@ export function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extrac
     const admitted = expected.get(input.id);
     if (!admitted || input.requestDigest !== admitted.requestDigest || input.placement !== admitted.placement) throw new Error("Native admitted input mismatch");
   }
-  const operations = new Set<string>(); let startSeq = -1;
+  type Operation = MatchedTurn["operations"][number];
+  const operations = new Set<string>(), sequences = new Set<number>();
+  const active: Operation[] = [];
+  let startSeq = -1, finalOperation: Operation | undefined;
   for (const operation of result.operations) {
+    while (active.length && active.at(-1)!.endSeq! < operation.startSeq) active.pop();
+    const parent = active.at(-1);
     if (operations.has(operation.operationId) || !Number.isSafeInteger(operation.startSeq) || operation.startSeq <= startSeq
-      || operation.endSeq === null || operation.endSeq <= operation.startSeq || operation.status === null
-      || (operation.parentOperationId !== null && !operations.has(operation.parentOperationId))) throw new Error("Native ordered operation evidence mismatch");
+      || operation.startSeq < 0 || operation.endSeq === null || !Number.isSafeInteger(operation.endSeq)
+      || operation.endSeq <= operation.startSeq || operation.status === null
+      || sequences.has(operation.startSeq) || sequences.has(operation.endSeq)
+      || operation.parentOperationId !== (parent?.operationId ?? null)
+      || (parent && (active.length !== 1 || parent.type !== "prompt" || operation.type !== "compaction"
+        || operation.endSeq >= parent.endSeq!))) throw new Error("Native ordered operation evidence mismatch");
     operations.add(operation.operationId); startSeq = operation.startSeq;
+    sequences.add(operation.startSeq); sequences.add(operation.endSeq); active.push(operation);
+    // Nested compactions start after their prompt and finish before it.
+    // The journal's final operation is the last one closed, not started.
+    if (!finalOperation || operation.endSeq > finalOperation.endSeq!) finalOperation = operation;
   }
-  if (result.finalOperationId !== (result.operations.at(-1)?.operationId ?? null)) throw new Error("Native final operation mismatch");
-  const finalOperation = result.operations.at(-1);
+  if (result.finalOperationId !== (finalOperation?.operationId ?? null)) throw new Error("Native final operation mismatch");
   // Manual compaction can close without an operation when the retained tail
   // is already too small. Its completed turn seal still proves the no-op;
   // execution always requires the final completed prompt operation.
   if (result.outcome === "completed" && ((!finalOperation && payload.identity.purpose !== "compaction")
+    || (finalOperation && payload.identity.purpose === "execution" && finalOperation.type !== "prompt")
     || (finalOperation && finalOperation.status !== "completed") || !result.seal
-    || result.seal.outcome !== "completed")) throw new Error("Native completion is not sealed");
+    || result.seal.outcome !== "completed") && !isLegacyFailedCompactionNoop(payload, result)) throw new Error("Native completion is not sealed");
 }
 
 export interface TurnSettlement {
@@ -68,10 +98,11 @@ export function projectTurnSettlement(payload: PendingTurnPayload, result: Runti
   const matched = result.status === "matched" ? result : undefined;
   if (matched) assertWholeTurnMatch(payload, matched);
   else if (result.status === "mismatch" && result.reason !== "unbound_turn") throw new Error(`Native reconciliation mismatch: ${result.reason}`);
-  let outcome: DurableTurnOutcome = matched?.outcome ?? "interrupted";
+  const legacyCompactionNoop = matched !== undefined && isLegacyFailedCompactionNoop(payload, matched);
+  let outcome: DurableTurnOutcome = legacyCompactionNoop ? "failed" : matched?.outcome ?? "interrupted";
   const detached = payload.disposition === "detached";
-  if (payload.disposition === "cancelled") outcome = "cancelled";
-  else if (detached) outcome = payload.candidate?.outcome ?? "interrupted";
+  if (!legacyCompactionNoop && payload.disposition === "cancelled") outcome = "cancelled";
+  else if (!legacyCompactionNoop && detached) outcome = payload.candidate?.outcome ?? "interrupted";
   else if (payload.disposition === "failed" && (result.status === "absent" || (matched && (matched.outcome === "completed" || matched.outcome === "failed")))) outcome = "failed";
   const seal = matched?.commitCandidate ?? matched?.seal?.result;
   const useHost = payload.candidate && (detached || (outcome === "completed" && payload.candidate.initialTimestamp !== undefined) || ((payload.disposition === "cancelled" || payload.disposition === "failed") && payload.candidate.outcome === outcome));
