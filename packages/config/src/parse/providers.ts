@@ -4,32 +4,54 @@ import { resolve } from "node:path";
 
 import { supportsPiContext1M } from "@mono-agent/turn/host/config";
 
-import { isAutodiscoverableProviderId,isPiBuiltinProvider,modelReferenceKey,RuntimeAdapterError,validateLocalProviderDefinition,validateProviderDefinition } from "@mono-agent/turn/host/config";
+import {
+  isAutodiscoverableProviderId,
+  isPiBuiltinProvider,
+  modelReferenceKey,
+  RuntimeAdapterError,
+  validateLocalProviderDefinition,
+  validateProviderDefinition,
+} from "@mono-agent/turn/host/config";
 
 import { PI_TRANSPORTS } from "@mono-agent/turn/host/types";
 
-import type { LocalProviderDefinition,LocalProviderModelDefinition,PiTransport,ProviderDefinition,RuntimeModelReference } from "@mono-agent/turn/host/types";
+import type {
+  LocalProviderDefinition,
+  LocalProviderModelDefinition,
+  PiTransport,
+  ProviderDefinition,
+  RuntimeModelReference,
+} from "@mono-agent/turn/host/types";
 
-
-
-import {
-normalizeOptionalString,
-readChoice
-} from "@mono-agent/contracts";
-
+import { normalizeOptionalString, readChoice } from "@mono-agent/contracts";
 
 import type { MonoAgentConfigJson } from "../json-types.js";
 
-import type { MonoAgentConfig,PiNativeProviderConfig,ResolvedProviders,RuntimeFallbackConfig } from "../types.js";
+import type {
+  MonoAgentConfig,
+  PiNativeProviderConfig,
+  ResolvedProviders,
+  RuntimeFallbackConfig,
+} from "../types.js";
 
-import { invalidJson,MonoAgentConfigError } from "../errors.js";
-
+import { invalidJson, MonoAgentConfigError } from "../errors.js";
 
 import { isRecord } from "./scalars.js";
 
-import { jsonChoice,jsonOptionalBoolean,jsonOptionalInteger,jsonRecord,jsonString,readObjectBoolean,readObjectInteger,readObjectString,readPlainObject,requireJsonString } from "./scalars.js";
+import {
+  jsonChoice,
+  jsonOptionalBoolean,
+  jsonOptionalInteger,
+  jsonRecord,
+  jsonString,
+  readObjectBoolean,
+  readObjectInteger,
+  readObjectString,
+  readPlainObject,
+  requireJsonString,
+} from "./scalars.js";
 
-import { parseModel,readModelSelection } from "./model-reference.js";
+import { parseModel, readModelSelection } from "./model-reference.js";
 
 export const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 

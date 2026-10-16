@@ -1,16 +1,6 @@
 
 
-
-
-
-
-
-
-
 import type { ConfigErrorFactory } from "@mono-agent/contracts";
-
-
-
 
 type MonoAgentConfigErrorCode =
   | "missing_required_env"

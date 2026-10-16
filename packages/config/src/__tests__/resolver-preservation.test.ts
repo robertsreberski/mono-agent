@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 
 import { describe, expect, it } from "vitest";
 
-import { resolveJsonMonoAgentConfig, redactMonoAgentConfig } from "../config.js";
+import { resolveJsonMonoAgentConfig } from "../config.js";
+import { redactMonoAgentConfig } from "../redact.js";
 import { buildMonoAgentConfigView } from "../config-view.js";
 import type { MonoAgentConfigJson } from "../json-types.js";
 

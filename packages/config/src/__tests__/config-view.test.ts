@@ -1,13 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { redactMonoAgentConfig, resolveJsonMonoAgentConfig } from "../config.js";
-import {
-  buildMonoAgentConfigView,
-  findJsonSecretConfigWarnings,
-  findRemovedConfigWarnings,
-  sameJsonValue,
-} from "../config-view.js";
-import type { ConfigViewSection } from "../config-view.js";
+import { resolveJsonMonoAgentConfig } from "../config.js";
+import { redactMonoAgentConfig } from "../redact.js";
+import { buildMonoAgentConfigView } from "../config-view.js";
+import type { ConfigViewSection } from "../view/types.js";
 import type { MonoAgentConfigJson } from "../json-types.js";
 
 function buildView(json: MonoAgentConfigJson): readonly ConfigViewSection[] {
@@ -88,3 +84,6 @@ describe("sameJsonValue", () => {
     expect(sameJsonValue([1, 2], [2, 1])).toBe(false);
   });
 });
+
+import { sameJsonValue } from "../view/fields.js";
+import { findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "../view/warnings.js";

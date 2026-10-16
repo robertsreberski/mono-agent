@@ -1,6 +1,5 @@
 
 
-
 /** One host-owned message in a pinned continuation origin snapshot. */
 export interface AgentContinuationContextMessage {
   readonly role: "system" | "user" | "assistant" | "tool";

@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/config",
   "version": "0.25.1",
-  "description": "Strict environment/file config parser for agent hosts.",
+  "description": "Typed JSON/default config parser for agent hosts.",
   "type": "module",
   "license": "GPL-3.0-only",
   "repository": {

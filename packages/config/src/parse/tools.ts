@@ -2,27 +2,13 @@
 
 import { isPrivateBaseUrl } from "@mono-agent/turn/host/config";
 
+import { normalizeOptionalString, readBoolean, readCsv, readInteger } from "@mono-agent/contracts";
 
+import type { MonoAgentConfig, WebSearchBackend } from "../types.js";
 
+import { invalidJson, MonoAgentConfigError } from "../errors.js";
 
-import {
-normalizeOptionalString,
-readBoolean,
-readCsv,
-readInteger
-} from "@mono-agent/contracts";
-
-
-
-import type { MonoAgentConfig,WebSearchBackend } from "../types.js";
-
-import { invalidJson,MonoAgentConfigError } from "../errors.js";
-
-
-
-import { jsonContainer,jsonRecord,jsonString } from "./scalars.js";
-
-
+import { jsonContainer, jsonRecord, jsonString } from "./scalars.js";
 
 import { readPath } from "./paths.js";
 

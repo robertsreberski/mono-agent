@@ -1,7 +1,5 @@
 import { AGENT_ATTACHMENT_MIME_ALIASES } from "./attachment-mime-aliases.js";
 
-
-
 /**
  * A multimodal attachment that accompanies a request — an image to be fed to a
  * vision model, or a document whose bytes (and/or extracted text) can be inlined

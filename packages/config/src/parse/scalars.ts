@@ -1,41 +1,12 @@
 
 
-
-
-
-
-
-
-
-
-
-
-
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+import { normalizeOptionalString, readBoolean, readChoice, readCsv, readInteger } from "@mono-agent/contracts";
 
-
-
-
-
-
-
-
-import {
-normalizeOptionalString,
-readBoolean,
-readChoice,
-readCsv,
-readInteger
-} from "@mono-agent/contracts";
-
-
-
-
-import { invalidJson,MonoAgentConfigError } from "../errors.js";
-
+import { invalidJson, MonoAgentConfigError } from "../errors.js";
 
 /**
  * JSON scalar coercion for direct `mono-agent.config.json` parsing.

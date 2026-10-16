@@ -1,10 +1,16 @@
 
-import type { SettingsJson,SettingsJsonValue } from "@mono-agent/contracts";
+import type { SettingsJson, SettingsJsonValue } from "@mono-agent/contracts";
 
 import type { PiTransport } from "@mono-agent/turn/host/types";
 
-
-import type { MemoryBackend,MemoryEmbeddingsInstructions,MemoryEmbeddingsProvider,MemoryLlmProvider,MemoryMode,MemoryWriteMode } from "./types.js";
+import type {
+  MemoryBackend,
+  MemoryEmbeddingsInstructions,
+  MemoryEmbeddingsProvider,
+  MemoryLlmProvider,
+  MemoryMode,
+  MemoryWriteMode,
+} from "./types.js";
 
 /** An opt-in model declaration; effort remains a sibling runtime setting. */
 export type MonoAgentModelSelectionJson = string | { readonly model: string; readonly context1M?: boolean };
@@ -113,8 +119,8 @@ export type MonoAgentMemoryLlmJson = {
 /**
  * Serializable shape of MonoAgentConfig persisted as `mono-agent.config.json`.
  *
- * All fields are optional so a partially-configured file is acceptable. Env
- * variables can still satisfy missing fields when the layered loader runs.
+ * All fields are optional for partial authoring. The resolver validates required
+ * fields and applies built-in defaults; core environment variables are ignored.
  *
  * Paths inside this file are relative to the file's containing directory (or
  * the loader's `cwd`); they are resolved by the loader, not at write time.
@@ -180,7 +186,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly maxTurns?: number;
     /**
      * Ceiling on a subagent the MODEL authors at call time. Parsed and validated
-     * by readSubagentsConfig, and read by agent-app and doctor — it was simply
+     * by readSubagentsConfig, and read by app composition and doctor — it was simply
      * missing from this interface, so a config that set it typechecked only by
      * accident of the whole block being optional.
      */

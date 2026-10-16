@@ -2,33 +2,45 @@
 
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
-
-
-
-import {
-normalizeOptionalString
-} from "@mono-agent/contracts";
+import { normalizeOptionalString } from "@mono-agent/contracts";
 
 import {
-MEMORY_BACKENDS,
-MEMORY_EMBEDDINGS_INSTRUCTIONS,
-MEMORY_EMBEDDINGS_PROVIDERS,
-MEMORY_LLM_PROVIDERS,
-MEMORY_MODES,
-MEMORY_WRITE_MODES
+  MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_INSTRUCTIONS,
+  MEMORY_EMBEDDINGS_PROVIDERS,
+  MEMORY_LLM_PROVIDERS,
+  MEMORY_MODES,
+  MEMORY_WRITE_MODES,
 } from "../enums.js";
 
-
-import type { MemoryBackend,MemoryConsolidationConfig,MemoryEmbeddingsCircuitBreakerConfig,MemoryEmbeddingsConfig,MemoryEmbeddingsInstructions,MemoryEmbeddingsProvider,MemoryLlmConfig,MemoryLlmProvider,MemoryMode,MemoryWriteMode,MonoAgentConfig } from "../types.js";
+import type {
+  MemoryBackend,
+  MemoryConsolidationConfig,
+  MemoryEmbeddingsCircuitBreakerConfig,
+  MemoryEmbeddingsConfig,
+  MemoryEmbeddingsInstructions,
+  MemoryEmbeddingsProvider,
+  MemoryLlmConfig,
+  MemoryLlmProvider,
+  MemoryMode,
+  MemoryWriteMode,
+  MonoAgentConfig,
+} from "../types.js";
 
 import { MonoAgentConfigError } from "../errors.js";
 
+import {
+  assertJsonScalarFields,
+  jsonBoolean,
+  jsonChoice,
+  jsonInteger,
+  jsonOptionalBoolean,
+  jsonOptionalInteger,
+  jsonRecord,
+  jsonString,
+} from "./scalars.js";
 
-
-import { assertJsonScalarFields,jsonBoolean,jsonChoice,jsonInteger,jsonOptionalBoolean,jsonOptionalInteger,jsonRecord,jsonString } from "./scalars.js";
-
-import { modelReferenceEcho,modelReferenceReason } from "./model-reference.js";
-
+import { modelReferenceEcho, modelReferenceReason } from "./model-reference.js";
 
 import { readPath } from "./paths.js";
 

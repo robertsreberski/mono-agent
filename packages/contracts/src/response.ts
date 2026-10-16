@@ -1,7 +1,6 @@
 
 
-
-import { MCP_APP_RESOURCE_MIME_TYPE,MCP_APP_SUPPORTED_VERSIONS } from "./mcp-apps.js";
+import { MCP_APP_RESOURCE_MIME_TYPE, MCP_APP_SUPPORTED_VERSIONS } from "./mcp-apps.js";
 
 export type AgentResponseMetadata = Record<string, unknown> & {
   /** Host-certified terminal delivery intent; absence preserves legacy text classification. */

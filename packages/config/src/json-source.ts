@@ -1,14 +1,7 @@
-import {
-readSettingsJson,
-SettingsJsonError,
-writeSettingsJson,
-} from "@mono-agent/contracts";
-
-
+import { readSettingsJson, SettingsJsonError, writeSettingsJson } from "@mono-agent/contracts";
 
 import { MonoAgentConfigError } from "./errors.js";
 import { assertNoRetiredMonoAgentConfigJson } from "./retired-fields.js";
-
 
 import type { MonoAgentConfigJson } from "./json-types.js";
 
@@ -26,7 +19,7 @@ interface ReadMonoAgentConfigJsonResult {
 
 /**
  * Read a JSON config file. Missing file returns an empty config rather than
- * throwing; that lets hosts ship a blank config and fall back to env defaults.
+ * throwing. Resolution still validates required fields and applies built-in defaults.
  */
 export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAgentConfigJsonResult> {
   let result: Awaited<ReturnType<typeof readSettingsJson>>;
@@ -43,9 +36,9 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
 }
 
 /**
- * Atomically write a JSON config file. Writes to `<path>.tmp` first, fsyncs,
- * then renames over the target. The temp file is unlinked on failure so we
- * never leave a half-written `.tmp` behind on the next run.
+ * Write a sparse JSON patch through the generic settings writer. It writes to
+ * `<path>.tmp`, renames over the target and attempts to set mode 0o600. It does
+ * not fsync; failure cleanup attempts to unlink the temporary file.
  */
 export async function writeMonoAgentConfigJson(input: {
   readonly path: string;

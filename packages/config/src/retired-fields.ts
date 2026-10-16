@@ -1,18 +1,6 @@
 
 
-
-
-
-
-
-
-import {
-normalizeOptionalString
-} from "@mono-agent/contracts";
-
-
-
-
+import { normalizeOptionalString } from "@mono-agent/contracts";
 
 import { MonoAgentConfigError } from "./errors.js";
 
@@ -104,7 +92,7 @@ const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
 
 /**
  * Reject active retired fields on any config-shaped object, including direct
- * JavaScript callers that bypass the JSON/environment loaders. Diagnostics name
+ * JavaScript callers that bypass the JSON loader. Diagnostics name
  * only stable field paths and migration guidance; retired values are never
  * included because they may contain credentials or private service locations.
  */

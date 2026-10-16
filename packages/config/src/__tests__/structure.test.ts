@@ -21,7 +21,7 @@ describe("config leaf ownership", () => {
   it("keeps policy, types and parser leaves independent of resolver composition", () => {
     for (const file of sourceFiles(source)) {
       const ast = ts.createSourceFile(file.pathname, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
-      if (["index.ts", "load.ts", "layered-loader.ts"].some((name) => file.pathname.endsWith(`/${name}`))) continue;
+      if (["index.ts", "load.ts"].some((name) => file.pathname.endsWith(`/${name}`))) continue;
       for (const statement of ast.statements) {
         if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
           expect(statement.moduleSpecifier.text, file.pathname).not.toMatch(/(?:^|\/)(?:config|index|json-source)\.js$/u);

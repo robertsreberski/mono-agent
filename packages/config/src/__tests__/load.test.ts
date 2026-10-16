@@ -1,11 +1,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MonoAgentConfigError } from "../errors.js";
-import { loadMonoAgentConfig } from "../layered-loader.js";
+import { loadMonoAgentConfig } from "../load.js";
 
 let dir: string;
 
@@ -29,6 +29,27 @@ const base = {
 };
 
 describe("loadMonoAgentConfig JSON diagnostics", () => {
+  it("clears duplicate-version state without clearing per-path deprecation state", async () => {
+    const path = join(dir, "warning-state.json");
+    const duplicate = `{"runtime":{"model":"openai-codex:gpt-5.5","maxTurns":3,"maxTurns":5},"context":{"identityPath":"IDENTITY.md"},"monitors":{}}`;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await writeFile(path, duplicate);
+      await loadMonoAgentConfig({ cwd: dir, jsonPath: path });
+      expect(warn).toHaveBeenCalledTimes(2);
+      await loadMonoAgentConfig({ cwd: dir, jsonPath: relative(process.cwd(), path) });
+      expect(warn).toHaveBeenCalledTimes(2);
+      await writeFile(path, JSON.stringify({ ...base, monitors: {} }));
+      await loadMonoAgentConfig({ cwd: dir, jsonPath: path });
+      expect(warn).toHaveBeenCalledTimes(2);
+      await writeFile(path, duplicate);
+      await loadMonoAgentConfig({ cwd: dir, jsonPath: path });
+      expect(warn).toHaveBeenCalledTimes(3);
+      expect(warn.mock.calls[2]?.[0]).toContain("Duplicate config keys");
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it("warns once per duplicate config version, continues with the last value and respects silence", async () => {
     const path = join(dir, "duplicate.json");
     const text = (last: number) => `{"runtime":{"model":"openai-codex:gpt-5.5","maxTurns":3,"maxTurns":${last}},"context":{"identityPath":"IDENTITY.md"}}`;

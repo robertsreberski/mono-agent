@@ -1,26 +1,22 @@
 
 
-
-import { MODEL_REFERENCE_ECHO_MAX_BYTES,MODEL_REFERENCE_REASON_MAX_BYTES,parseMonoRuntimeModelReference,RuntimeAdapterError,sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
-
-
-
-
-
-
-
+import {
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
+  parseMonoRuntimeModelReference,
+  RuntimeAdapterError,
+  sanitizeModelReferenceText,
+} from "@mono-agent/turn/host/config";
 
 import type { MonoAgentConfig } from "../types.js";
 
 import { MonoAgentConfigError } from "../errors.js";
 
-
-
 import { requireJsonString } from "./scalars.js";
 
 /**
  * The concrete repair for a rejected model reference (`codex:x` -> `openai-codex:x`, a tier
- * alias, the `<provider>:<model>` grammar) is built by the kernel parser and nested by the
+ * alias, the `<provider>:<model>` grammar) is built by the turn model parser and nested by the
  * runtime adapter in `details.reason`. Config used to keep only the adapter's generic outer
  * sentence, which is the one string every operator surface prints — so the repair the code
  * already knew was thrown away before anyone saw it. Unwrap one layer so the message carries

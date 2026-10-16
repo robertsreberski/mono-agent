@@ -1,33 +1,27 @@
 
 
-import { modelReferenceKey,parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 
+import { readChoice } from "@mono-agent/contracts";
 
+import { ALLOW_ALL_TOOLS, EFFORT_LEVELS, renamedToolMessage, renamedToolName } from "../enums.js";
 
-import {
-readChoice
-} from "@mono-agent/contracts";
+import type {
+  EffortLevel,
+  MonoAgentConfig,
+  MonoAgentInlineSubagentsConfig,
+  MonoAgentSubagentConfig,
+  MonoAgentSubagentModelChoice,
+  MonoAgentSubagentsConfig,
+} from "../types.js";
 
-import {
-ALLOW_ALL_TOOLS,
-EFFORT_LEVELS,
-renamedToolMessage,
-renamedToolName
-} from "../enums.js";
-
-
-import type { EffortLevel,MonoAgentConfig,MonoAgentInlineSubagentsConfig,MonoAgentSubagentConfig,MonoAgentSubagentModelChoice,MonoAgentSubagentsConfig } from "../types.js";
-
-import { invalidJson,MonoAgentConfigError } from "../errors.js";
-
-
+import { invalidJson, MonoAgentConfigError } from "../errors.js";
 
 import { jsonRecord } from "./scalars.js";
 
-import { modelReferenceEcho,modelReferenceReason,readModelSelection } from "./model-reference.js";
-
+import { modelReferenceEcho, modelReferenceReason, readModelSelection } from "./model-reference.js";
 
 import { readPath } from "./paths.js";
 

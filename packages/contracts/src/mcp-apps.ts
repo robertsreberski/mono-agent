@@ -1,6 +1,5 @@
 
 
-
 /** Spec MIME type used for MCP App resources. */
 export const MCP_APP_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 

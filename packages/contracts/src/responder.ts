@@ -1,9 +1,23 @@
 
 
+import type {
+  AgentContextImportRequest,
+  AgentContextImportResult,
+  AgentLiveInputOffer,
+  AgentLiveInputRequest,
+  AgentManualCompactionOptions,
+  AgentManualCompactionResult,
+  AgentRequestBase,
+} from "./request.js";
 
-import type { AgentContextImportRequest,AgentContextImportResult,AgentLiveInputOffer,AgentLiveInputRequest,AgentManualCompactionOptions,AgentManualCompactionResult,AgentRequestBase } from "./request.js";
-
-import type { AgentMcpAppHostRequest,AgentMcpAppLoadRequest,AgentMcpAppResource,AgentReplyArtifactOpenRequest,AgentReplyArtifactStream,AgentResponse } from "./response.js";
+import type {
+  AgentMcpAppHostRequest,
+  AgentMcpAppLoadRequest,
+  AgentMcpAppResource,
+  AgentReplyArtifactOpenRequest,
+  AgentReplyArtifactStream,
+  AgentResponse,
+} from "./response.js";
 
 import type { AgentMessageStream } from "./stream.js";
 

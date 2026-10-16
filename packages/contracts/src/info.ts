@@ -1,6 +1,5 @@
 
 
-
 /**
  * Maximum serialized size of an agent's `/v1/info` body.
  *

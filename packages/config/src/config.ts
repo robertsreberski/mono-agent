@@ -1,45 +1,76 @@
-
 import { resolve } from "node:path";
 
 import { localProviderDefinitionFor } from "@mono-agent/turn/host/config";
 
-import type { LocalProviderDefinition,ProviderDefinition } from "@mono-agent/turn/host/types";
+import type { LocalProviderDefinition } from "@mono-agent/turn/host/types";
 
-
-
-import {
-redactedSecret
-} from "@mono-agent/contracts";
-
-import {
-ALLOW_ALL_TOOLS
-} from "./enums.js";
+import { ALLOW_ALL_TOOLS } from "./enums.js";
 
 import type { MonoAgentConfigJson } from "./json-types.js";
 
-import type { MonoAgentConfig,RedactedMonoAgentConfig,SkillDisclosureMode,WebFetchRenderMode,WebSearchBackend } from "./types.js";
+import type { MonoAgentConfig, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 import { MonoAgentConfigError } from "./errors.js";
 
 import { assertNoRetiredMonoAgentConfig } from "./retired-fields.js";
 
-import { assertConfiguredProviderCoverage,collectContext1MDeclarations,DEFAULT_PI_AUTH_PATH,readConfiguredProviders,readPiNativeProviderConfig,resolveConfiguredProviders,subagentProviderRoutes } from "./parse/providers.js";
+import {
+  assertConfiguredProviderCoverage,
+  collectContext1MDeclarations,
+  DEFAULT_PI_AUTH_PATH,
+  readConfiguredProviders,
+  readPiNativeProviderConfig,
+  resolveConfiguredProviders,
+  subagentProviderRoutes,
+} from "./parse/providers.js";
 
-import { jsonChoice,jsonContainer,jsonInteger,jsonOptionalInteger,jsonString,jsonStringArray,requireJsonString } from "./parse/scalars.js";
+import {
+  jsonChoice,
+  jsonContainer,
+  jsonInteger,
+  jsonOptionalInteger,
+  jsonString,
+  jsonStringArray,
+  requireJsonString,
+} from "./parse/scalars.js";
 
-import { parseModel,readModelSelection } from "./parse/model-reference.js";
+import { parseModel, readModelSelection } from "./parse/model-reference.js";
 
-import { assertUniqueFallbackRoutes,readEffort,readFallbacks,readMaxTurns,readRetryConfig,readRuntimeCompactionConfig,readSessionConfig } from "./parse/runtime.js";
+import {
+  assertUniqueFallbackRoutes,
+  readEffort,
+  readFallbacks,
+  readMaxTurns,
+  readRetryConfig,
+  readRuntimeCompactionConfig,
+  readSessionConfig,
+} from "./parse/runtime.js";
 
-import { normalizeCwd,readOptionalPath,readPath,readUserPath } from "./parse/paths.js";
+import { normalizeCwd, readOptionalPath, readPath, readUserPath } from "./parse/paths.js";
 
-import { readAgentName,readConcurrencyConfig,readPeerConfig } from "./parse/agent.js";
+import { readAgentName, readConcurrencyConfig, readPeerConfig } from "./parse/agent.js";
 
-import { readArtifactRetentionConfig,readMemoryArtifactRetentionConfig,replyFileByteLimit } from "./parse/artifacts.js";
+import {
+  readArtifactRetentionConfig,
+  readMemoryArtifactRetentionConfig,
+  replyFileByteLimit,
+} from "./parse/artifacts.js";
 
 import { readSubagentsConfig } from "./parse/subagents.js";
 
-import { readComputerUseConfig,readFileToolRoots,readOllamaWebSearchConfig,readOptionalTimeoutMs,readParallelWebConfig,readWebBrowserCommand,readWebProviderSelection,readWebSearchCodexModel,readWebSearchEndpoint,searchAutoRepair,selectedWebProvider } from "./parse/tools.js";
+import {
+  readComputerUseConfig,
+  readFileToolRoots,
+  readOllamaWebSearchConfig,
+  readOptionalTimeoutMs,
+  readParallelWebConfig,
+  readWebBrowserCommand,
+  readWebProviderSelection,
+  readWebSearchCodexModel,
+  readWebSearchEndpoint,
+  searchAutoRepair,
+  selectedWebProvider,
+} from "./parse/tools.js";
 
 import { readSandboxConfig } from "./parse/sandbox.js";
 
@@ -300,114 +331,4 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     return { ...config, memory };
   }
   return config;
-}
-
-export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
-  assertNoRetiredMonoAgentConfig(config);
-  const { web: configuredWeb, ...toolsWithoutWeb } = config.tools;
-  const configuredSearch = configuredWeb?.search;
-  const {
-    ollama: configuredOllamaSearch,
-    codex: configuredCodexSearch,
-    ...searchWithoutSecrets
-  } = configuredSearch ?? { backend: ["parallel", "ollama"] as const, maxRequestsPerRun: 4 };
-  const redacted: RedactedMonoAgentConfig = {
-    ...(config.agent === undefined ? {} : { agent: { ...config.agent } }),
-    runtime: { ...config.runtime },
-    ...(config.concurrency === undefined ? {} : { concurrency: { ...config.concurrency } }),
-    ...(config.peers === undefined ? {} : { peers: Object.fromEntries(Object.entries(config.peers).map(([name, peer]) => [name, { ...peer }])) }),
-    context: { ...config.context, selectedSkills: [...config.context.selectedSkills] },
-    tools: {
-      ...toolsWithoutWeb,
-      allowedTools: [...config.tools.allowedTools],
-      disallowedTools: [...config.tools.disallowedTools],
-      ...(config.tools.filesystem === undefined ? {} : {
-        filesystem: {
-          readableRoots: [...config.tools.filesystem.readableRoots],
-          writableRoots: [...config.tools.filesystem.writableRoots],
-        },
-      }),
-      ...(configuredWeb === undefined ? {} : {
-        web: {
-          coordination: configuredWeb.coordination ?? "process",
-          search: {
-            ...searchWithoutSecrets,
-            ...(configuredOllamaSearch === undefined
-              ? {}
-              : { ollama: redactApiKeyBlock(configuredOllamaSearch) }),
-            ...(configuredCodexSearch === undefined
-              ? {}
-              : { codex: { ...configuredCodexSearch } }),
-          },
-          fetch: { ...configuredWeb.fetch },
-        },
-      }),
-    },
-    ...(config.sandbox === undefined ? {} : { sandbox: { ...config.sandbox } }),
-    artifacts: { ...config.artifacts },
-    traceability: { ...config.traceability },
-  };
-  if (config.memory !== undefined) {
-    // The only tolerated direct legacy shape is an inert empty tombstone. It is
-    // compatibility input, not resolved output, so never carry it into views.
-    const { embeddings, supermemory: _retiredSupermemory, ...memory } = config.memory as
-      NonNullable<MonoAgentConfig["memory"]> & { readonly supermemory?: unknown };
-    return withRedactedProviders({
-      ...redacted,
-      memory: {
-        ...memory,
-        ...(embeddings === undefined ? {} : { embeddings: redactApiKeyBlock(embeddings) }),
-      },
-    }, config);
-  }
-  return withRedactedProviders(redacted, config);
-}
-
-/** Replace an `apiKey` literal with a redacted secret marker, leaving the rest of the block intact. */
-function redactApiKeyBlock<T extends { readonly apiKey?: string }>(
-  block: T,
-): Omit<T, "apiKey"> & { readonly apiKey?: ReturnType<typeof redactedSecret> } {
-  const { apiKey, ...rest } = block;
-  return {
-    ...rest,
-    ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
-  };
-}
-
-function withRedactedProviders(
-  redacted: RedactedMonoAgentConfig,
-  config: MonoAgentConfig,
-): RedactedMonoAgentConfig {
-  if (config.providers === undefined) {
-    return redacted;
-  }
-  return {
-    ...redacted,
-    providers: {
-      ...(config.providers.piAuthPath === undefined ? {} : { piAuthPath: config.providers.piAuthPath }),
-      // pi-native knobs carry no secrets — pass them through so redacted config
-      // surfaces (e.g. the TUI config pane) still show them.
-      ...(config.providers.piNative === undefined ? {} : { piNative: config.providers.piNative }),
-      ...(config.providers.entries === undefined
-        ? {}
-        : {
-            entries: config.providers.entries.map((provider) => redactProviderDefinition(provider)),
-          }),
-      ...(config.providers.local === undefined
-        ? {}
-        : {
-            local: config.providers.local.map((provider) => redactProviderDefinition(provider)),
-          }),
-    },
-  };
-}
-
-function redactProviderDefinition<T extends ProviderDefinition>(provider: T): Omit<T, "apiKey"> & {
-  readonly apiKey?: ReturnType<typeof redactedSecret>;
-} {
-  const { apiKey, ...safeProvider } = provider;
-  return {
-    ...safeProvider,
-    ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
-  };
 }

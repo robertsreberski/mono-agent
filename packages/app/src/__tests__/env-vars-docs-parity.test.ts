@@ -105,7 +105,7 @@ function markdownLineStartingWith(source: string, prefix: string): string | unde
 function codeEnvKeys(root: string): Set<string> {
   const files: string[] = [
     join(root, "packages/config/src/config.ts"),
-    join(root, "packages/config/src/layered-loader.ts"),
+    join(root, "packages/config/src/load.ts"),
     // App-level loaders that read their own MONO_AGENT_* keys outside the core config.
     join(root, "packages/app/src/interaction-bridge.ts"),
     join(root, "packages/app/src/adapter-send-tools.ts"),

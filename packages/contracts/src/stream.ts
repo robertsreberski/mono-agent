@@ -1,7 +1,6 @@
 
 
-
-import type { AgentMessageFinishOptions,AgentResponseMetadata } from "./response.js";
+import type { AgentMessageFinishOptions, AgentResponseMetadata } from "./response.js";
 
 export type SessionToolHistoryTerminalState =
   | "success"

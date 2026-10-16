@@ -2,24 +2,11 @@ import { homedir } from "node:os";
 
 import { resolve } from "node:path";
 
-
-
-
-
-import {
-normalizeOptionalString
-} from "@mono-agent/contracts";
-
-
+import { normalizeOptionalString } from "@mono-agent/contracts";
 
 import type { MonoAgentConfig } from "../types.js";
 
-
-
-
-import { jsonBoolean,jsonInteger,jsonRecord,jsonString } from "./scalars.js";
-
-
+import { jsonBoolean, jsonInteger, jsonRecord, jsonString } from "./scalars.js";
 
 import { readPath } from "./paths.js";
 

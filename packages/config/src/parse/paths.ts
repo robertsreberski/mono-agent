@@ -2,22 +2,9 @@ import { homedir } from "node:os";
 
 import { resolve } from "node:path";
 
-
-
-
-
-
-
-import {
-normalizeOptionalString
-} from "@mono-agent/contracts";
-
-
-
+import { normalizeOptionalString } from "@mono-agent/contracts";
 
 import { MonoAgentConfigError } from "../errors.js";
-
-
 
 export function readPath(raw: string | undefined, cwd: string, defaultPath?: string): string {
   const normalized = normalizeOptionalString(raw);

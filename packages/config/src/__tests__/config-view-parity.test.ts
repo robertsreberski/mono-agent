@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { redactMonoAgentConfig, resolveJsonMonoAgentConfig } from "../config.js";
-import { buildMonoAgentConfigView, CORE_CONFIG_FIELD_IDS } from "../config-view.js";
+import { resolveJsonMonoAgentConfig } from "../config.js";
+import { redactMonoAgentConfig } from "../redact.js";
+import { buildMonoAgentConfigView } from "../config-view.js";
 
 describe("config view field parity", () => {
   it("only emits registered core field ids", () => {
@@ -18,3 +19,5 @@ describe("config view field parity", () => {
       .filter((id) => !known.has(id))).toEqual([]);
   });
 });
+
+import { CORE_CONFIG_FIELD_IDS } from "../view/fields.js";

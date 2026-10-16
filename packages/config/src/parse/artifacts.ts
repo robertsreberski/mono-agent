@@ -1,22 +1,10 @@
 
 
-
-
-
-
-
-
-
 import type { MonoAgentConfig } from "../types.js";
 
 import { MonoAgentConfigError } from "../errors.js";
 
-
-
-import { jsonBoolean,jsonInteger,jsonRecord } from "./scalars.js";
-
-
-
+import { jsonBoolean, jsonInteger, jsonRecord } from "./scalars.js";
 
 const DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS = 365;
 

@@ -1,7 +1,6 @@
 
 import { types as nodeUtilTypes } from "node:util";
 
-
 export interface AgentResponseCancelledErrorOptions {
   readonly reason?: unknown;
 }

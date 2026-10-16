@@ -1,22 +1,10 @@
 
 
-
-
-
-
-
-
-
 import type { MonoAgentConfig } from "../types.js";
 
 import { MonoAgentConfigError } from "../errors.js";
 
-
-
-import { jsonOptionalInteger,jsonRecord } from "./scalars.js";
-
-
-
+import { jsonOptionalInteger, jsonRecord } from "./scalars.js";
 
 const PEER_NAME = /^[a-z][a-z0-9-]{0,39}$/u;
 
