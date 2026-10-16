@@ -223,14 +223,14 @@
  * @property {"silent"|"visible"} [turnDisposition] Host-certified silent completion, when applicable.
  * @property {*} [structuredResult]
  * @property {string|null} [structuredResultSource]
- * @property {ReadonlyArray<import("./events.js").RuntimeEventLike>} [events]
+ * @property {Array<RuntimeEvent>} [events]
  * @property {Object} [usage]
  * @property {number} [durationMs]
  * @property {number} [numTurns]
  * @property {string} [model]
  * @property {string} [effort]
  * @property {string} [effectiveEffort] Provider-effective reasoning/thinking level when reported.
- * @property {RuntimeSdkId | (string & {})} [sdk]
+ * @property {RuntimeSdkId} [sdk]
  * @property {boolean} [cancelled]
  * @property {string|null} [error]
  * @property {Object|null} [errorDetails]
@@ -239,7 +239,7 @@
  * @property {{runId: string, revision: number, providerSessionId: string, modelKey: string, tipId: string}} [providerSessionRecovery]
  * @property {string|null} [providerSessionId]
  * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (ai/failure.js).
- * @property {unknown} [runtimeWarnings]
+ * @property {Array<Object>} [runtimeWarnings]
  * @property {Object} [diagnostics]
  * @property {Object} [capabilitiesUsed]
  * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object}>} [failoverHistory] Set by createRouterRuntime (runtime/router.js) on every failed/skipped attempt.
@@ -425,12 +425,30 @@
  */
 
 /**
+ * Host-attempt telemetry is intentionally opaque; it must not weaken the public
+ * createRuntime result, whose events and warnings retain their array contracts.
+ * @typedef {Omit<RuntimeResult, "events" | "runtimeWarnings" | "sdk"> & {
+ *   events?: ReadonlyArray<import("./events.js").RuntimeEventLike>,
+ *   runtimeWarnings?: unknown,
+ *   sdk?: string,
+ * }} RuntimeAttemptResult
+ */
+
+/** @typedef {Omit<RuntimeRunOptions, "onSessionTurnDetached"> & {
+ * onSessionTurnDetached?: (attempt: {descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeAttemptResult}) => Promise<void>
+ * }} RuntimeAttemptRunOptions */
+
+/** @typedef {Omit<NativePreparedDispatch, "run"> & {
+ * run(binding?: NativeDispatchBinding): Promise<RuntimeAttemptResult>
+ * }} RuntimeAttemptPreparedDispatch */
+
+/**
  * Structural attempt runtime, distinct from the concrete factory's complete
  * lifecycle API. The router checks optional preparation/tool projection at use.
  * Method signatures preserve structural host projections with stricter inputs.
  * @typedef {{
- *   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>,
+ *   run(systemPrompt: string, options: RuntimeAttemptRunOptions): Promise<RuntimeAttemptResult>,
  *   configureTools?(next?: TurnToolOptions): void,
- *   prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<NativePreparedDispatch>,
+ *   prepareNativeDispatch?(systemPrompt: string, options: RuntimeAttemptRunOptions): Promise<RuntimeAttemptPreparedDispatch>,
  * }} RuntimeAttempt
  */

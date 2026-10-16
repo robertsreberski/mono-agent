@@ -173,7 +173,7 @@ function withoutCallerSandbox<T extends Readonly<Record<string, unknown>> & { re
   input: T,
 ): T {
   const { sandbox: _callerSandbox, ...rest } = input;
-  // Sandbox is forbidden by the host contract; retain its named fields and open index.
+  // Only the optional-never sandbox key is omitted; Omit loses named fields on indexed host bags.
   return rest as T;
 }
 

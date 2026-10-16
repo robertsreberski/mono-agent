@@ -1,6 +1,6 @@
 // Shared structural contract; no host implementation or process runner imports.
 
-/** @typedef {import("../agent/sandbox-seam.js").PreparedSandboxCommand} PreparedSandboxCommand */
+/** @typedef {Readonly<import("../agent/sandbox-seam.js").PreparedSandboxCommand>} PreparedSandboxCommand */
 /** @typedef {import("@mono-agent/contracts").ProcessJobState} ProcessJobState */
 
 /** False only when bounded termination settled without proof that the owned group disappeared. */

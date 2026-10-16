@@ -12,6 +12,8 @@ import type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
   RuntimeEventLike,
+  ProcessJobStartRequest,
+  OwnedForegroundProcessRequest,
   RuntimeLiveInputMessage,
   RuntimeModelReference,
   RuntimeResult,
@@ -71,6 +73,67 @@ function assertAssignable<T>(_value: T): void {
 }
 
 describe("host public contract", () => {
+  it("retains the public core result and nested host request guarantees", () => {
+    expectTypeOf<RuntimeResult["structuredResult"]>().toBeUnknown();
+    expectTypeOf<TurnRunResult["sdk"]>().toEqualTypeOf<"pi" | undefined>();
+    expectTypeOf<ReturnType<typeof createRouterRuntime>["run"]>().toEqualTypeOf<TurnRuntimeInstance["run"]>();
+    if (false) {
+      const host = null as unknown as RuntimeRunOptions;
+      // @ts-expect-error model provider remains a readonly host projection.
+      host.model.provider = "fictional";
+      // @ts-expect-error model id remains a readonly host projection.
+      host.model.model = "fictional";
+      // @ts-expect-error model reference remains a readonly host projection.
+      host.model.reference = "fictional:fictional";
+      const result = null as unknown as RuntimeResult;
+      // @ts-expect-error structured output must be narrowed from unknown before use.
+      result.structuredResult.uncheckedProperty;
+      const core = null as unknown as TurnRunResult;
+      core.events?.map((event) => event.type.toLowerCase());
+      core.events?.push({ type: "fictional" });
+      core.runtimeWarnings?.map((warning) => Object.keys(warning));
+      core.runtimeWarnings?.push({ warning_kind: "fictional" });
+      // @ts-expect-error core events still require a type.
+      core.events?.push({});
+      // @ts-expect-error the public core bridge result remains Pi-only.
+      core.sdk = "fictional";
+      const background = null as unknown as ProcessJobStartRequest;
+      // @ts-expect-error background prepared command command is readonly.
+      background.prepared.command = "fictional";
+      // @ts-expect-error background prepared command args is readonly.
+      background.prepared.args = [];
+      // @ts-expect-error background prepared command cwd is readonly.
+      background.prepared.cwd = "/fictional";
+      // @ts-expect-error background prepared command env is readonly.
+      background.prepared.env = {};
+      // @ts-expect-error background prepared command allowLocalBinding is readonly.
+      background.prepared.allowLocalBinding = false;
+      // @ts-expect-error background prepared command sandboxed is readonly.
+      background.prepared.sandboxed = false;
+      // @ts-expect-error background prepared command sandboxSettingsPath is readonly.
+      background.prepared.sandboxSettingsPath = "/fictional/settings";
+      // @ts-expect-error background prepared command cleanup is readonly.
+      background.prepared.cleanup = async () => {};
+      const foreground = null as unknown as OwnedForegroundProcessRequest;
+      // @ts-expect-error foreground prepared command command is readonly.
+      foreground.prepared.command = "fictional";
+      // @ts-expect-error foreground prepared command args is readonly.
+      foreground.prepared.args = [];
+      // @ts-expect-error foreground prepared command cwd is readonly.
+      foreground.prepared.cwd = "/fictional";
+      // @ts-expect-error foreground prepared command env is readonly.
+      foreground.prepared.env = {};
+      // @ts-expect-error foreground prepared command allowLocalBinding is readonly.
+      foreground.prepared.allowLocalBinding = false;
+      // @ts-expect-error foreground prepared command sandboxed is readonly.
+      foreground.prepared.sandboxed = false;
+      // @ts-expect-error foreground prepared command sandboxSettingsPath is readonly.
+      foreground.prepared.sandboxSettingsPath = "/fictional/settings";
+      // @ts-expect-error foreground prepared command cleanup is readonly.
+      foreground.prepared.cleanup = async () => {};
+    }
+  });
+
   it("preserves nested readonly host projections of shared facts", () => {
     if (false) {
       const result = null as unknown as RuntimeResult;
@@ -346,8 +409,8 @@ function checkFullRequest(options: RuntimeRunOptions): void {
   void createRuntime().run("SYSTEM", options);
 }
 function checkAttemptResolution(resolution: MonoRuntimeAttemptResolution): void {
-  const accept: NonNullable<Parameters<typeof createRouterRuntime>[0]>["resolveAttempt"] = () => resolution;
-  void accept;
+  // Exercise the host overload, not Parameters' preserved public-core signature.
+  void createRouterRuntime({ resolveAttempt: () => resolution });
 }
 if (false) {
   checkFullRequest({ model: parseRuntimeModelReference("fictional:fixture"), messages: [], abortSignal: new AbortController().signal });

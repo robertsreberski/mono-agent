@@ -62,8 +62,8 @@ import { createWebSearchRunState } from "../tools/web/web-search-state.js";
  * @typedef {import("../contracts/model.js").RuntimeModelRef} RuntimeModelRef
  * @typedef {import("../contracts/runtime.js").TurnHostOptions} TurnHostOptions
  * @typedef {import("../contracts/runtime.js").AgentRuntimeInstance} AgentRuntimeInstance
- * @typedef {import("../contracts/runtime.js").RuntimeRunOptions} RuntimeRunOptions
- * @typedef {import("../contracts/runtime.js").RuntimeResult} RuntimeResult
+ * @typedef {import("../contracts/runtime.js").RuntimeAttemptRunOptions} RuntimeRunOptions
+ * @typedef {import("../contracts/runtime.js").RuntimeAttemptResult} RuntimeResult
  */
 
 /**
@@ -94,7 +94,7 @@ import { createWebSearchRunState } from "../tools/web/web-search-state.js";
  * @typedef {Object} RouterAttemptResolution
  * Private host seam for route-specific provider options/runtime ownership.
  * Returned options are never copied into router telemetry.
- * @property {import("../contracts/runtime.js").RuntimeAttempt} [runtime] Must emit its tool events and
+ * @property {AgentRuntimeInstance} [runtime] Must emit its tool events and
  * settle every live-input lease before run() returns: the router re-checks a
  * failed attempt's side effects only until it admits the next attempt.
  * @property {Object<string, *>} [options]
@@ -128,14 +128,39 @@ class ResolverProtectedOptionError extends Error {
 }
 
 /**
- * @param {Object} [options]
- * @param {TurnHostOptions} [options.host]
- * @param {ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>} [options.chain]
- * @param {(input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (RouterAttemptResolution|undefined|Promise<RouterAttemptResolution|undefined>)} [options.resolveAttempt]
- * @param {Partial<RouterRetryPolicy>} [options.retry] Backoff shape for same-model
+ * @typedef {Object} RouterOptions
+ * @property {TurnHostOptions} [host]
+ * @property {ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>} [chain]
+ * @property {(input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (RouterAttemptResolution|Promise<RouterAttemptResolution>)} [resolveAttempt]
+ * @property {Partial<RouterRetryPolicy>} [retry] Backoff shape for same-model
  *   retries. Per-route retry counts live on each chain entry's `attempts`.
- * @param {"v1"} [options.sessionTurnReconciliation] Explicit ownership assertion for a custom resolver that preserves the native owner.
+ * @property {"v1"} [sessionTurnReconciliation] Explicit ownership assertion for a custom resolver that preserves the native owner.
+ */
+/** @typedef {Omit<RouterAttemptResolution, "runtime"> & {runtime?: import("../contracts/runtime.js").RuntimeAttempt}} HostRouterAttemptResolution */
+/** @typedef {Omit<RouterOptions, "resolveAttempt"> & {
+ * resolveAttempt?: (input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (HostRouterAttemptResolution|undefined|Promise<HostRouterAttemptResolution|undefined>)
+ * }} HostRouterOptions */
+/** @typedef {Omit<AgentRuntimeInstance, "run" | "prepareNativeDispatch"> & {
+ * run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>,
+ * prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<import("../contracts/runtime.js").RuntimeAttemptPreparedDispatch>,
+ * chain(): Array<RouterChainEntry>
+ * }} HostRouterRuntime */
+
+/** @overload
+ * @param {RouterOptions} [options]
  * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
+ */
+/** @overload
+ * @param {HostRouterOptions} options
+ * @returns {HostRouterRuntime}
+ */
+// Preserve Parameters/ReturnType of the original public signature as well as direct calls.
+/** @overload
+ * @param {RouterOptions} [options]
+ * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
+ */
+/** @param {HostRouterOptions} [options]
+ * @returns {HostRouterRuntime}
  */
 export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry, sessionTurnReconciliation } = {}) {
   const retryPolicy = normalizeRetryPolicy(retry);
@@ -373,6 +398,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
                 message: "Conversation history unavailable; no retry or backup model was started." };
               const failure = normalizeAttemptResult(lastResult || lastRouteSkip || { error: "Conversation history unavailable", failureKind: "provider_unavailable", events: [] }, !detachedAcknowledged);
               emit(callOptions, { type: "runtime_warning", ...warning });
+              // Opaque host warnings already pass through as iterables; narrowing would change failure behavior.
               return { ...failure, runtimeWarnings: [.../** @type {ReadonlyArray<unknown>} */ (failure.runtimeWarnings || []), warning], failoverHistory };
             }
             callOptions.messages = [...detachedMessages, ...options.messages.slice(-1)];
@@ -876,7 +902,7 @@ function projectPiRuntimeToolContext(runtime, toolOptions) {
   runtime.configureTools(toolOptions);
 }
 
-/** @param {RouterAttemptResolution|undefined} value */
+/** @param {HostRouterAttemptResolution|undefined} value */
 function normalizeAttemptResolution(value) {
   if (value === undefined) return undefined;
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
