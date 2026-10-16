@@ -1,3 +1,5 @@
+import { MCP_APPS_EXTENSION_ID, MCP_APP_RESOURCE_MIME_TYPE, MCP_APP_SUPPORTED_VERSIONS } from "@mono-agent/contracts";
+import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "../mcp-timeouts.js";
 import { silentTurnRefusalReason } from "../../ai/silent-turn.js";
 import { sandboxFailureDiagnostic } from "./shared/sandbox-diagnostics.js";
 import { startPreparedProcess } from "./shared/process-runner.js";
@@ -57,15 +59,9 @@ function isImageToolResult(raw) {
 }
 
 const MCP_TEXT_RESULT_LIMIT = 12_000;
-// Fallback hard cap per MCP call when limits.mcpCallMaxTotalTimeoutMs is not
-// provided; mirrors DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS in agent/compaction.js.
-const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 2_700_000;
 const MCP_RAW_DETAIL_LIMIT = 4_000;
 const MCP_IMAGE_INLINE_MAX_BYTES = 250_000;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
-const MCP_APPS_EXTENSION_ID = "io.modelcontextprotocol/ui";
-const MCP_APP_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
-const MCP_APP_SUPPORTED_PROTOCOL_VERSIONS = ["2026-01-26", "2025-11-21"];
 const MCP_APP_RESOURCE_MAX_BYTES = 2 * 1024 * 1024;
 const PRIVATE_CAPABILITY_URL = Symbol.for("@mono-agent/private-capability-url");
 
@@ -1255,7 +1251,7 @@ async function registerMcpAppForToolResult({
   const hostVersions = Array.isArray(mcpApps.protocolVersions)
     ? mcpApps.protocolVersions.filter((value) => typeof value === "string")
     : [];
-  const protocolVersion = MCP_APP_SUPPORTED_PROTOCOL_VERSIONS.find((version) => hostVersions.includes(version));
+  const protocolVersion = MCP_APP_SUPPORTED_VERSIONS.find((version) => hostVersions.includes(version));
   const hostMimeTypes = Array.isArray(mcpApps.mimeTypes)
     ? mcpApps.mimeTypes.filter((value) => typeof value === "string")
     : [];

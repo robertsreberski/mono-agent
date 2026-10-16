@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MCP_APPS_EXTENSION_ID,
+  MCP_APP_RESOURCE_MIME_TYPE,
+  MCP_APP_SUPPORTED_VERSIONS,
   isAgentReplyPartDeliveryOutcomes,
   appendReplyPartFallback,
   sanitizeRestartProposalReason,
@@ -297,4 +300,10 @@ it("sanitizes quick replies without copying choice labels into machine outcomes"
     message: "Quick reply buttons are available only in the web console." }]);
   expect(isAgentReplyPartDeliveryOutcomes(outcomes)).toBe(true);
   expect(JSON.stringify(outcomes)).not.toContain("Review draft");
+});
+
+it("owns the MCP Apps identity, MIME and protocol preference order", () => {
+  expect(MCP_APPS_EXTENSION_ID).toBe("io.modelcontextprotocol/ui");
+  expect(MCP_APP_RESOURCE_MIME_TYPE).toBe("text/html;profile=mcp-app");
+  expect(MCP_APP_SUPPORTED_VERSIONS).toEqual(["2026-01-26", "2025-11-21"]);
 });

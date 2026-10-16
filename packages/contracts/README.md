@@ -244,6 +244,10 @@ editing in place and never changes final-answer delivery.
 
 ## Public API
 
+The shared MCP Apps contract owns `MCP_APPS_EXTENSION_ID`,
+`MCP_APP_RESOURCE_MIME_TYPE`, and the ordered `MCP_APP_SUPPORTED_VERSIONS`.
+Runtime bridges and hosts consume the same negotiation identities.
+
 ### Start here
 
 | Need | Primary API |
@@ -409,6 +413,7 @@ MAX_PROVIDER_AUTH_ITEMS
 MAX_PROVIDER_AUTH_OPTIONS
 MAX_PROVIDER_AUTH_STRING_BYTES
 MAX_PROVIDER_AUTH_TEXT_INPUT_BYTES
+MCP_APPS_EXTENSION_ID
 MCP_APP_RESOURCE_MIME_TYPE
 MCP_APP_SUPPORTED_VERSIONS
 MemoryBlock
