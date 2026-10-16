@@ -25,6 +25,13 @@ describe("final reply text", () => {
     ])).toBe("Approve option A");
   });
 
+  it("skips a retried failed partial inside the presentation chain", () => {
+    const partial = { ...assistant("Fictional partial", "SuggestReplies"), stopReason: "error", errorMessage: "WebSocket error" };
+    expect(select([assistant("Approve option A", "SuggestReplies"), partial, assistant("Saved.")]))
+      .toBe("Approve option A\n\nSaved.");
+    expect(select([partial])).toBe("Fictional partial");
+  });
+
   it("does not promote ordinary tool narration", () => {
     expect(select([assistant("Unrelated narration", "Bash"), assistant("Saved.")])).toBe("Saved.");
   });

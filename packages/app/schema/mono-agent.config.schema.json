@@ -2213,7 +2213,7 @@
               ]
             },
             "piMaxRetries": {
-              "description": "Provider SDK-policy retries before a response starts (0–8, default 2): connection errors, HTTP 408/409/429/5xx and provider retry headers. Started streams are not repeated by this layer; probes and summaries are single-shot.",
+              "description": "Provider SDK-policy retries before a response starts (0–8, default 2): connection errors, HTTP 408/409/429/5xx and provider retry headers. A transient failure after a response started (websocket error/close, terminated stream, 5xx/429) re-sends that one assistant request up to three times (1 s/2 s/4 s), never a tool; 0 disables both. Probes and summaries are single-shot.",
               "examples": [
                 2
               ],

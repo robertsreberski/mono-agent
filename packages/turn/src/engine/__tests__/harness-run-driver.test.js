@@ -44,6 +44,31 @@ describe("owned run driver", () => {
     try { expect((await adapter.prompt("Fictional request.")).status).toBe("failed"); expect(faux.state.callCount).toBe(1); }
     finally { await adapter.close(); await raw.close(); }
   });
+  it("lets the host policy decide from whether the failed response started", async () => {
+    const shouldRetry = vi.fn((message, { responseStarted }) => responseStarted && message.errorMessage === "WebSocket error");
+    const { adapter, raw, faux } = await harness([error("WebSocket error"), error("Fictional deterministic failure")], { shouldRetry, maxDelayMs: 0 });
+    try {
+      expect((await adapter.prompt("Fictional request.")).status).toBe("failed");
+      expect(faux.state.callCount).toBe(2);
+      expect(shouldRetry.mock.calls.map(([message, attempt]) => [message.errorMessage, attempt])).toEqual([
+        ["WebSocket error", { responseStarted: true, retries: 0 }], ["Fictional deterministic failure", { responseStarted: true, retries: 1 }]]);
+      expect((await raw.getEntries()).filter((e) => e.message.role === "assistant").map((e) => e.message.errorMessage))
+        .toEqual(["WebSocket error", "Fictional deterministic failure"]);
+    } finally { await adapter.close(); await raw.close(); }
+  });
+  it("reports a response that failed before starting as not started", async () => {
+    const model = { provider: "faux", id: "unstarted", contextWindow: 100000, maxTokens: 1000 };
+    const message = error("WebSocket error"); let calls = 0;
+    const models = { getModel: () => model, streamSimple: async () => { calls += 1; return { async *[Symbol.asyncIterator]() { yield { type: "error", reason: "error", error: message }; }, result: async () => message }; } };
+    const shouldRetry = vi.fn(() => false);
+    const stream = createRetryStream(models, model, { messages: [] }, {}, { enabled: true, maxRetries: 3, baseDelayMs: 0, shouldRetry }, async () => {});
+    for await (const _event of stream) { /* drain */ }
+    expect(await stream.result()).toBe(message); expect(calls).toBe(1);
+    expect(shouldRetry).toHaveBeenCalledWith(message, { responseStarted: false, retries: 0 });
+  });
+  it.each([{ shouldRetry: true }, { maxDelayMs: -1 }])("rejects an invalid retry policy %j", async (retry) => {
+    await expect(harness([], retry)).rejects.toThrow("Invalid Pi retry policy");
+  });
   it("aborts during backoff without repeating a request or billing the failed attempt twice", async () => {
     const { adapter, raw, faux } = await harness([error("503 service unavailable")], { baseDelayMs: 10000 });
     const events = [];

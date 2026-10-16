@@ -144,13 +144,45 @@ turns can also re-send once when the server rejects a cached continuation with
 budget, so the AWS SDK's own retries apply to every Bedrock request: three
 attempts by default, or `AWS_MAX_ATTEMPTS` / the profile's `max_attempts`.
 
-The driver never retries a settled response; failed-response journaling and
-reported usage are preserved. A response that fails after streaming starts is
-not repeated by this SDK layer; configured router fallback or re-attempt rules
-still apply to failed turns. Durable native Web turns are primary-only, without
-router fallback or re-attempt. SDK retries do not replay tools or whole turns;
-several assistant requests can exceed a per-request budget. Provider checks,
-compaction summaries and handoff summaries force SSE with zero retries, avoiding
+A response that fails after streaming starts is not repeated by the SDK
+layer. The native driver retries that one assistant request instead, but only
+when the provider had already started the response (emitted its first stream
+event) and the failure is transient: websocket error/close, connection reset,
+terminated or prematurely closed stream, timeout, overloaded, 5xx or 429.
+Codex `WebSocket error`, `WebSocket closed …` and `WebSocket stream closed
+before response.completed` are the common cases. It makes up to three further
+attempts with 1 s, 2 s and 4 s backoff (capped by `maxRetryDelayMs`) and emits a
+`provider_request_retry` runtime warning per retry; the run reports the total
+as `diagnostics.pi_request_retries`. Auth, quota/usage limits,
+context limits, safety and validation failures are never retried, and
+cancellation during the backoff ends the turn immediately. `piMaxRetries: 0`
+disables this layer too.
+
+A failed assistant message never executes its tool calls, and live input is
+only consumed between requests, so the retry repeats no tool or input. It
+re-sends the same request: earlier assistant messages and tool results stay;
+the failed partial does not. That partial stays in the native journal as an
+error message, so its usage is billed and its error is traceable. The reply
+excludes it. When every attempt fails, the turn keeps its usual
+`provider_unavailable` classification and the error names the attempt count,
+for example `WebSocket error (failed after 4 provider request attempts)`. After
+any Codex websocket failure, pi-ai pins that session to SSE, so the retry and
+later requests in the session use SSE.
+
+The two layers never act on the same failure: SDK retries handle failures
+before a response starts; the driver handles failures after it started. Each
+assistant request in one router attempt therefore makes at most four started
+responses and `4 × (N + 1)` provider requests: 12 with the default `N = 2`.
+Codex can add its websocket-to-SSE fallback and continuation re-send to each of
+those requests before a response starts. Router re-attempts multiply the whole
+turn: `primaryAttempts: 2` allows 24 requests and 8 started responses per
+assistant request before the chain advances. Durable native Web turns are
+primary-only, without router fallback or re-attempt, so their bound is 12
+requests and 4 started responses. These retries never replay tools or whole
+turns; a turn with several assistant requests can exceed a per-request bound.
+
+Provider checks, compaction summaries and handoff summaries force SSE with zero
+retries and no mid-stream retry, avoiding
 Codex websocket-to-SSE re-sends and keeping each generation single-request on
 every provider except Bedrock, whose AWS SDK retries still apply (set
 `AWS_MAX_ATTEMPTS=1` to make Bedrock single-request).

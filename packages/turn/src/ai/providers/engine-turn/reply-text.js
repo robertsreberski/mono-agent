@@ -16,7 +16,10 @@ function toolCalls(message) {
  * not extended with earlier presentation prose.
  * The whole-run stream remains the fallback only when this chain has no text.
  */
-export function finalReplyText(assistantMessages, assistantTexts) {
+export function finalReplyText(allAssistantMessages, assistantTexts) {
+  // A failed partial before the terminal message was retried; never reply with it.
+  const terminal = allAssistantMessages.at(-1);
+  const assistantMessages = allAssistantMessages.filter((message) => message === terminal || message?.stopReason !== "error");
   let first = assistantMessages.length - 1;
   const terminalIsAnswer = toolCalls(assistantMessages[first]).every((call) => isReplyPresentationTool(call.name));
   while (terminalIsAnswer && first > 0) {

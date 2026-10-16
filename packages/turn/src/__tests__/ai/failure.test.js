@@ -196,6 +196,9 @@ describe("retryableProviderFailureInfo", () => {
     "Premature close",
     "Stream disconnected before completion",
     "WebSocket error",
+    "WebSocket closed 1006",
+    "WebSocket stream closed before response.completed",
+    "Anthropic stream ended before message_stop",
     "websocket disconnected before completion",
   ])("treats %s as a retryable provider termination", (message) => {
     expect(retryableProviderFailureInfo({

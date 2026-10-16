@@ -4,6 +4,11 @@ import { streamSimple as sdkStreamSimple } from "../../../node_modules/@earendil
 import { streamSimple as sdkCodexStreamSimple } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js";
 import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 
+// Keep the real mid-stream retry policy, without its 1 s/2 s/4 s backoff.
+vi.mock("../../ai/providers/engine-turn/request-retry.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, requestRetryPolicy: (params) => ({ ...actual.requestRetryPolicy(params), baseDelayMs: 0 }) };
+});
 afterEach(() => vi.restoreAllMocks());
 async function run(fetch, overrides = {}, sdk = sdkStreamSimple) {
   const codex = sdk === sdkCodexStreamSimple;
@@ -44,7 +49,9 @@ it("honours Retry-After instead of silently replacing it with driver backoff", a
   const { result } = await run(fetch, { maxRetryDelayMs: 1000 });
   expect(result.error).toContain("Server requested 20s retry delay"); expect(fetch).toHaveBeenCalledOnce();
 });
-it.each(["terminated", "The upstream provider returned an error"])("does not repeat a paid response after its stream starts (%s)", async (message) => {
+// The SDK never repeats a started stream; the driver re-sends only transient
+// mid-stream failures (three times), each as one fresh SDK request.
+it.each([["terminated", 4], ["The upstream provider returned an error", 1]])("repeats a started stream only for transient failures (%s)", async (message, count) => {
   const encoder = new TextEncoder();
   const fetch = vi.fn(async () => {
     let sent = false;
@@ -55,7 +62,8 @@ it.each(["terminated", "The upstream provider returned an error"])("does not rep
     } }), { headers: { "content-type": "text/event-stream" } });
   });
   const { result, requests } = await run(fetch);
-  expect(result.error).toContain(message); expect(fetch).toHaveBeenCalledOnce(); expect(requests).toHaveLength(1);
+  expect(result.error).toContain(message); expect(fetch).toHaveBeenCalledTimes(count); expect(requests).toHaveLength(count);
+  expect(requests.every((options) => options.maxRetries === 2)).toBe(true);
 });
 it("keeps real health probes single-shot even if an embedder supplies a retry budget", async () => {
   const fetch = vi.fn(async () => refusal(503));
