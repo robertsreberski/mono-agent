@@ -4,7 +4,7 @@ import { readMonoAgentConfigJson } from "./json-source.js";
 import { resolveJsonMonoAgentConfig } from "./config.js";
 import type { MonoAgentConfig } from "./types.js";
 
-export interface LoadMonoAgentConfigInput {
+interface LoadMonoAgentConfigInput {
   readonly cwd: string;
   /** Optional path to a JSON config file. Missing or empty file is OK. */
   readonly jsonPath?: string;

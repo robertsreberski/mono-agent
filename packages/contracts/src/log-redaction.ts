@@ -8,7 +8,7 @@ export interface SecretSafeLogSink {
 }
 
 /** Trusted adapter-owned patterns and diagnostic markers, never log input. */
-export interface LogRedactorOptions {
+interface LogRedactorOptions {
   readonly tokenMarker: string;
   readonly unavailableMarker: string;
   readonly truncatedMarker: string;
@@ -19,7 +19,7 @@ export interface LogRedactorOptions {
   }[];
 }
 
-export interface LogRedactor {
+interface LogRedactor {
   redactText(text: string, knownSecrets?: readonly string[]): string;
   redactErrorMessage(error: unknown, knownSecrets?: readonly string[]): string;
   redactError(error: unknown, knownSecrets: readonly string[]): Error;

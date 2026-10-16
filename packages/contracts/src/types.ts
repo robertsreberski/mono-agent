@@ -1,4 +1,4 @@
-export type SettingsPrimitive = string | number | boolean | null;
+type SettingsPrimitive = string | number | boolean | null;
 export type SettingsJsonValue =
   | SettingsPrimitive
   | readonly SettingsJsonValue[]

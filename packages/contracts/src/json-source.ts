@@ -4,9 +4,9 @@ import { dirname } from "node:path";
 
 import type { SettingsJson } from "./types.js";
 
-export type SettingsJsonErrorCode = "invalid_json_source";
+type SettingsJsonErrorCode = "invalid_json_source";
 
-export interface SettingsJsonErrorDetails {
+interface SettingsJsonErrorDetails {
   readonly code?: SettingsJsonErrorCode;
   readonly path?: string;
   readonly reason?: string;
@@ -25,7 +25,7 @@ export class SettingsJsonError extends Error {
   }
 }
 
-export interface ReadSettingsJsonResult {
+interface ReadSettingsJsonResult {
   readonly json: SettingsJson;
   /** sha-256 of the parsed content, or empty string when the file is missing. */
   readonly version: string;

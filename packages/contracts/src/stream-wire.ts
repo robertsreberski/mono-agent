@@ -1,5 +1,4 @@
 import type {
-  AgentMessageStream,
   AgentReplyPart,
   AgentResponseMetadata,
   AgentStreamEvent,
@@ -89,35 +88,6 @@ export function parseAgentStreamFrame(line: string): AgentStreamWireFrame {
   }
   // "finish" has no required fields; unknown kinds pass through untouched.
   return parsed as AgentStreamWireFrame;
-}
-
-/**
- * Client-side dispatcher: replays parsed frames onto a local AgentMessageStream.
- * "finish"/"error" frames are terminal transport concerns (return value /
- * thrown error) and are NOT dispatched here — callers handle them in their
- * read loop. Unknown frame kinds are ignored.
- */
-export function frameFeedingMessageStream(
-  stream: AgentMessageStream,
-): (frame: AgentStreamWireFrame) => Promise<void> {
-  return async (frame: AgentStreamWireFrame): Promise<void> => {
-    switch (frame.kind) {
-      case "status":
-        await stream.status?.(frame.text);
-        return;
-      case "append":
-        await stream.append(frame.delta);
-        return;
-      case "replace":
-        await stream.replace?.(frame.text);
-        return;
-      case "event":
-        await stream.event?.(frame.event);
-        return;
-      default:
-        return;
-    }
-  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

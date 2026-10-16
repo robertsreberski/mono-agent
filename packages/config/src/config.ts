@@ -64,13 +64,13 @@ function readPeerConfig(value: unknown): MonoAgentConfig["peers"] {
   return result;
 }
 
-export type MonoAgentConfigErrorCode =
+type MonoAgentConfigErrorCode =
   | "missing_required_env"
   | "invalid_env"
   | "invalid_json"
   | "invalid_model_reference";
 
-export interface MonoAgentConfigErrorDetails {
+interface MonoAgentConfigErrorDetails {
   readonly code?: MonoAgentConfigErrorCode;
   readonly env?: string;
   readonly reason?: string;
@@ -105,7 +105,7 @@ const invalidJson: ConfigErrorFactory = (message, details) => {
   });
 };
 
-export interface ResolveJsonMonoAgentConfigInput {
+interface ResolveJsonMonoAgentConfigInput {
   /**
    * Parsed `mono-agent.config.json` content. The core loader reads nothing else:
    * no process environment variable influences the resolved config.
@@ -123,7 +123,7 @@ export interface ResolveJsonMonoAgentConfigInput {
  * `MONO_AGENT_*` environment variables are silently ignored and never reported
  * here: there is no surface left that reads them.
  */
-export interface RetiredConfigField {
+interface RetiredConfigField {
   readonly path: string;
   readonly message: string;
   /** Return true only when the legacy JSON value represented active behavior. */
@@ -151,7 +151,7 @@ const RETIRED_SUPERMEMORY_SELECTOR_JSON_MESSAGE =
 const RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE =
   "`memory.supermemory` was removed with first-party Supermemory support. Remove the block before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.";
 
-export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
+const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
   {
     path: "runtime.permissionMode",
     message: "`runtime.permissionMode` was removed because the Pi runtime never enforced it. Delete the key; configure `sandbox` for enforced tool isolation.",
@@ -237,17 +237,17 @@ const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
  * JSON paths that activate the `memory.llm` block. Keep model first: diagnostics
  * attribute an incompatible `memory.llm` block to the most informative field.
  */
-export const MEMORY_LLM_JSON_PATHS = [
+const MEMORY_LLM_JSON_PATHS = [
   "memory.llm.model",
   "memory.llm.provider",
   "memory.llm.endpoint",
   "memory.llm.trace",
   "memory.llm.timeoutMs",
 ] as const;
-export const DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS = 365;
-export const DEFAULT_ARTIFACT_RETENTION_MAX_COUNT = 50_000;
-export const DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_AGE_DAYS = 7;
-export const DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_COUNT = 5_000;
+const DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS = 365;
+const DEFAULT_ARTIFACT_RETENTION_MAX_COUNT = 50_000;
+const DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_AGE_DAYS = 7;
+const DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_COUNT = 5_000;
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
 const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
@@ -456,7 +456,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
   // expansion explicit and limited to this user-owned credential path.
   const providerEnvelope = readConfiguredProviders(json.providers);
   const piAuthPath = readUserPath(providerEnvelope.piAuthPath, cwd, DEFAULT_PI_AUTH_PATH);
-  const piNative = readPiNativeProviderConfig(providerEnvelope.piNative, cwd);
+  const piNative = readPiNativeProviderConfig(providerEnvelope.piNative);
   const localProviders = providerEnvelope.entries
     .map((provider) => localProviderDefinitionFor(provider))
     .filter((provider): provider is LocalProviderDefinition => provider !== undefined);
@@ -671,7 +671,7 @@ export function resolveConfiguredProviders(
 }
 
 /** One authored model reference to validate, with the config path that owns it. */
-export interface ProviderCoverageRoute {
+interface ProviderCoverageRoute {
   readonly model: RuntimeModelReference;
   /** Config path used verbatim in the failure message, e.g. `runtime.model`. */
   readonly path: string;
@@ -701,7 +701,7 @@ function subagentProviderRoutes(
  * `additionalRoutes` carries model references authored outside
  * `runtime.model`/`runtime.fallbacks[]` (today: subagent profiles).
  */
-export function assertConfiguredProviderCoverage(
+function assertConfiguredProviderCoverage(
   model: RuntimeModelReference,
   fallbacks: readonly RuntimeFallbackConfig[] | undefined,
   providers: ResolvedProviders,
@@ -2419,7 +2419,6 @@ function readConcurrencyConfig(value: unknown): MonoAgentConfig["concurrency"] |
 
 function readPiNativeProviderConfig(
   value: Readonly<Record<string, unknown>> | undefined,
-  cwd: string,
 ): PiNativeProviderConfig {
   const piNative = value ?? {};
   const transport = normalizeOptionalString(jsonString(piNative.transport, "providers.piNative.transport")) === undefined

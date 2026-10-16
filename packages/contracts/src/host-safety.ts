@@ -102,7 +102,7 @@ export function assertSafeBind(
   throw onUnsafe(host);
 }
 
-export interface ListenErrorFactories {
+interface ListenErrorFactories {
   /** Build the error raised when the underlying server emits a listen error. */
   readonly listenFailed: (reason: string) => Error;
   /** Build the error raised when no TCP address is available after listen. */
@@ -181,7 +181,7 @@ export async function closeServerBounded(
   ]);
 }
 
-export interface BoundedHttpResponseWriterOptions {
+interface BoundedHttpResponseWriterOptions {
   /** Total UTF-8 bytes callers may queue while the socket is backpressured. */
   readonly maxPendingBytes?: number;
   /** Maximum time a single write may wait for the response's `drain` event. */

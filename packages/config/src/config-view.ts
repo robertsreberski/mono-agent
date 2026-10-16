@@ -10,7 +10,7 @@ import type {
  * Where a displayed value came from. Core fields emit only `json` or
  * `default`; the shared app view retains `env` for adapter-owned fields.
  */
-export type ConfigViewFieldSource = "env" | "json" | "default";
+type ConfigViewFieldSource = "env" | "json" | "default";
 
 /**
  * Section-level lifecycle, aligned with the doctor's vocabulary. Optional
@@ -42,7 +42,7 @@ export interface ConfigViewSection {
   readonly fields: readonly ConfigViewField[];
 }
 
-export interface BuildMonoAgentConfigViewInput {
+interface BuildMonoAgentConfigViewInput {
   readonly redacted: RedactedMonoAgentConfig;
   readonly json: MonoAgentConfigJson;
 }
@@ -173,12 +173,11 @@ export const CORE_CONFIG_FIELD_IDS = {
   "runtime.session.root": true,
 } as const satisfies Record<string, true>;
 
-export type ConfigViewFieldId = keyof typeof CORE_CONFIG_FIELD_IDS;
+type ConfigViewFieldId = keyof typeof CORE_CONFIG_FIELD_IDS;
 
 const PLACEHOLDER = "—";
 
 function resolveSource(
-  _id: ConfigViewFieldId,
   jsonPresent: boolean,
 ): ConfigViewFieldSource {
   return jsonPresent ? "json" : "default";
@@ -200,7 +199,7 @@ interface FieldSpec {
 function toField(
   spec: FieldSpec,
 ): ConfigViewField {
-  const source = spec.source ?? resolveSource(spec.id, spec.jsonPresent);
+  const source = spec.source ?? resolveSource(spec.jsonPresent);
   return {
     id: spec.id,
     label: spec.label,
@@ -999,7 +998,7 @@ function buildSandboxSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
 function buildArtifactsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
   const { redacted, json } = input;
   const memoryDryRunJsonPresent = json.artifacts?.memoryRetention?.dryRun !== undefined;
-  const inheritedDryRunSource = resolveSource("artifacts.retention.dryRun", json.artifacts?.retention?.dryRun !== undefined);
+  const inheritedDryRunSource = resolveSource(json.artifacts?.retention?.dryRun !== undefined);
   const memoryDryRunSource = memoryDryRunJsonPresent ? "json" : inheritedDryRunSource;
   return {
     id: "artifacts",
@@ -1239,7 +1238,7 @@ export function findJsonSecretConfigWarnings(
   return warnings;
 }
 
-export interface RemovedConfigWarningsInput {
+interface RemovedConfigWarningsInput {
   readonly json: MonoAgentConfigJson;
 }
 

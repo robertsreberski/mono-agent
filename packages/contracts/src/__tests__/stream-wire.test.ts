@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentMessageStream, AgentStreamEvent, AgentStreamWireFrame } from "../index.js";
+import type { AgentStreamEvent, AgentStreamWireFrame } from "../index.js";
 import {
-  frameFeedingMessageStream,
-  isCodedError,
+  CodedError,
   MAX_AGENT_REPLY_PARTS,
   parseAgentStreamFrame,
   serializeAgentStreamFrame,
@@ -124,63 +123,8 @@ describe("serialize/parse round-trip", () => {
       parseAgentStreamFrame(line);
       expect.unreachable("expected parseAgentStreamFrame to throw");
     } catch (error) {
-      expect(isCodedError(error)).toBe(true);
+      expect(error).toBeInstanceOf(CodedError);
       expect((error as { code: string }).code).toBe("invalid_frame");
     }
-  });
-});
-
-describe("frameFeedingMessageStream", () => {
-  function recordingStream(): { stream: AgentMessageStream; calls: Array<[string, unknown]> } {
-    const calls: Array<[string, unknown]> = [];
-    return {
-      calls,
-      stream: {
-        status: async (text) => void calls.push(["status", text]),
-        append: async (delta) => void calls.push(["append", delta]),
-        replace: async (text) => void calls.push(["replace", text]),
-        event: async (event) => void calls.push(["event", event]),
-      },
-    };
-  }
-
-  it("replays status/append/replace/event onto the local stream in order", async () => {
-    const { stream, calls } = recordingStream();
-    const feed = frameFeedingMessageStream(stream);
-
-    await feed({ kind: "status", text: "working" });
-    await feed({ kind: "append", delta: "a" });
-    await feed({ kind: "replace", text: "ab" });
-    await feed({ kind: "event", event: { type: "assistant_thought", text: "hmm" } });
-
-    expect(calls).toEqual([
-      ["status", "working"],
-      ["append", "a"],
-      ["replace", "ab"],
-      ["event", { type: "assistant_thought", text: "hmm" }],
-    ]);
-  });
-
-  it("does not dispatch terminal finish/error frames and ignores unknown kinds", async () => {
-    const { stream, calls } = recordingStream();
-    const feed = frameFeedingMessageStream(stream);
-
-    await feed({ kind: "finish", finalText: "done" });
-    await feed({ kind: "error", message: "boom" });
-    await feed(parseAgentStreamFrame('{"kind":"heartbeat"}'));
-
-    expect(calls).toEqual([]);
-  });
-
-  it("tolerates streams that omit optional callbacks", async () => {
-    const appended: string[] = [];
-    const feed = frameFeedingMessageStream({ append: async (delta) => void appended.push(delta) });
-
-    await feed({ kind: "status", text: "s" });
-    await feed({ kind: "replace", text: "r" });
-    await feed({ kind: "event", event: { type: "runtime_warning", message: "w" } });
-    await feed({ kind: "append", delta: "only this lands" });
-
-    expect(appended).toEqual(["only this lands"]);
   });
 });

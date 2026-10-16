@@ -161,7 +161,7 @@ const SUBAGENT_LAUNCH_NAMES = new Set(["agent", "agentmanage", "task", "subagent
  * ran (`researcher▸Read`), so concurrent subagents stay visually distinct on
  * surfaces that render one flat list.
  */
-export const SUBAGENT_TOOL_SEPARATOR = "▸";
+const SUBAGENT_TOOL_SEPARATOR = "▸";
 
 /** Whether this tool name launches a subagent (case/namespace insensitive). */
 export function isSubagentLaunchToolName(toolName: string): boolean {
@@ -205,7 +205,7 @@ const KNOWN_SECRET_PATTERNS: readonly RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu,
 ];
 
-export interface ToolActivityLineOptions {
+interface ToolActivityLineOptions {
   /** Agent root used to relativize local paths; defaults to process.cwd(). */
   readonly workspaceRoot?: string;
   /** Home directory collapsed to `~`; defaults to os.homedir(). */

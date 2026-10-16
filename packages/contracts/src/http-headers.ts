@@ -7,7 +7,7 @@ const SENSITIVE_INBOUND_HTTP_HEADERS = new Set([
   "x-api-key",
 ]);
 
-export type InboundHttpHeaders = Readonly<
+type InboundHttpHeaders = Readonly<
   Record<string, string | string[] | undefined>
 >;
 

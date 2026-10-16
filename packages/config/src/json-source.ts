@@ -34,7 +34,7 @@ export type MonoAgentArtifactRetentionJson = {
 };
 
 /** JSON-serialisable shape for the embeddings circuit-breaker block. */
-export type MonoAgentMemoryEmbeddingsCircuitBreakerJson = {
+type MonoAgentMemoryEmbeddingsCircuitBreakerJson = {
   readonly failureThreshold?: number;
   readonly cooldownMs?: number;
 };
@@ -61,7 +61,7 @@ export type MonoAgentMemoryConsolidationJson = {
   readonly cron?: string;
 };
 
-export type MonoAgentLocalProviderModelJson = {
+type MonoAgentLocalProviderModelJson = {
   readonly name?: string;
   readonly alias?: string;
   readonly displayName?: string;
@@ -70,7 +70,7 @@ export type MonoAgentLocalProviderModelJson = {
   readonly pricing?: { readonly [key: string]: SettingsJsonValue };
 };
 
-export type MonoAgentLocalProviderJson = {
+type MonoAgentLocalProviderJson = {
   readonly id?: string;
   readonly type?: string;
   readonly baseUrl?: string;
@@ -83,7 +83,7 @@ export type MonoAgentLocalProviderJson = {
 };
 
 /** Map entry form; its provider id is the containing `providers` key. */
-export type MonoAgentProviderJson = Omit<MonoAgentLocalProviderJson, "id">;
+type MonoAgentProviderJson = Omit<MonoAgentLocalProviderJson, "id">;
 
 type MonoAgentPiNativeProviderJson = {
   readonly transport?: PiTransport;
@@ -325,7 +325,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
   readonly providers?: MonoAgentProvidersJson;
 }
 
-export interface ReadMonoAgentConfigJsonResult {
+interface ReadMonoAgentConfigJsonResult {
   readonly json: MonoAgentConfigJson;
   /** sha-256 of the parsed content (or empty string when the file is missing). */
   readonly version: string;
@@ -363,7 +363,7 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
  * time. `path` stays the first match so existing single-key consumers are unchanged;
  * `paths` carries the full set.
  */
-export function assertNoRetiredMonoAgentConfigJson(json: object): void {
+function assertNoRetiredMonoAgentConfigJson(json: object): void {
   assertNoRetiredMonoAgentConfig(json);
   // JSON-only: resolved configs never carry this key, and checking it there would
   // read provider settings during retired-field rejection.
