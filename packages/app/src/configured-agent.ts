@@ -15,24 +15,16 @@ import {
   createConversationHarness,
   createSessionRuntimeResolver,
   createConversationResponder,
-  acquireToolHistoryWriter,
   createDurableHistoryStore,
   createToolPolicy,
   renderSkillIndexSection,
-  ToolHistoryReader,
-  toolHistoryLogicalConversationId,
 } from "@mono-agent/conversation";
 import type {
   ConversationHarness,
   ConversationHarnessOptions,
   ConversationHarnessRequest,
-  ConversationHarnessRuntimeOptionsExtension,
-  ConversationHarnessRuntimeOptionsInput,
-  ConversationHarnessToolHistoryOptions,
-  ConversationHistoryStore,
   LiveInputMailbox,
   SkillIndexSummary,
-  ToolHistoryWriterHandle,
 } from "@mono-agent/conversation";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -45,19 +37,13 @@ import type { AgentResponder, MemoryStore } from "@mono-agent/contracts";
 import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
-import { createJsonlRunRecorder } from "@mono-agent/observability";
-import type {
-  RunRecorder,
-  RunSummary,
-  RuntimeResultLike,
-} from "@mono-agent/observability";
 import { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 import { createSrtSandboxEngine, mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
 import { modelReferenceKey, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/turn/host/config";
 import type { MonoRuntimeFallbackChainEntry, MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
-import type { SandboxEngine, SandboxPolicy } from "@mono-agent/turn/host/types";
+import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import { createToolOutputArtifactsRuntimeExtension } from "./tool-output-artifacts.js";
@@ -67,7 +53,6 @@ import {
   releaseAgentRootOwnershipWhenIdle,
   type AgentRootOwnership,
 } from "./durable-state/agent-root-coordinator.js";
-import type { ChannelId } from "./channels/types.js";
 import { textFromMemoryRuntimeResult } from "./memory-llm-result.js";
 import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import {
@@ -98,7 +83,6 @@ import {
   configuredRuntimeFallbackModels,
   runtimeUsesFallbackRouter,
 } from "./runtime-routes.js";
-import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
@@ -116,299 +100,21 @@ import {
   loadProcessJobsRootRegistryProtection,
   processJobsProtectionPolicyRoots,
   registerProcessJobsRoot,
-  type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
-import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
 import { isReadSkillDenied } from "./skill-registry.js";
+import type {
+  ConfiguredAgentInternalHooks,
+  ConfiguredAgentResponderOptions,
+  ConfiguredAgentRuntimeOptions,
+  ConfiguredConversationHarnessOptions,
+  ConversationHarnessSessionOptionsWithEvents,
+  RecorderCompositionDeps,
+  StaticRuntimeOptions,
+} from "./composition/configured-agent-options.js";
+import { composeRunRecorder, recorderCompositionDeps } from "./composition/run-recording.js";
+import { lazyConfiguredToolHistory } from "./composition/configured-tool-history.js";
 
-type StaticRuntimeOptions = NonNullable<ConversationHarnessOptions["runtimeOptions"]>;
-
-export interface ConfiguredAgentRuntimeOptions {
-  readonly config: MonoAgentConfig;
-  /** Canonical agent-root authority. A raw public runtime fails before run() when omitted. */
-  readonly cwd?: string;
-  readonly model?: RuntimeModelReference;
-  readonly sandboxEngine?: SandboxEngine;
-}
-
-export type ConfiguredAgentSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
-
-export interface ConfiguredAgentSessionSnapshot {
-  readonly modelKey?: string;
-  readonly conversationId: string;
-  readonly providerSessionId: string;
-  readonly createdAt: number;
-  readonly lastActivityAt: number;
-  readonly busy: boolean;
-}
-
-export interface ConfiguredAgentSessionEvent {
-  readonly modelKey?: string;
-  readonly kind: ConfiguredAgentSessionEventKind;
-  readonly conversationId: string;
-  readonly providerSessionId?: string;
-  readonly createdAt?: number;
-  readonly lastActivityAt?: number;
-  readonly busy?: boolean;
-  readonly reason?: string;
-  readonly snapshot?: readonly ConfiguredAgentSessionSnapshot[];
-}
-
-type ConfiguredAgentSessionEventHandler = (event: ConfiguredAgentSessionEvent) => void | Promise<void>;
-type ConversationHarnessSessionOptionsWithEvents = NonNullable<ConversationHarnessOptions["session"]> & {
-  readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
-};
-
-export interface ConfiguredConversationHarnessOptions {
-  /** Managed workers resolve optional exporters only from their immutable app closure. */
-  readonly config: MonoAgentConfig;
-  /**
-   * Canonical agent-root authority and plugin-resolution folder. Configured
-   * harnesses/responders retain their historical current-folder default.
-   */
-  readonly cwd?: string;
-  readonly runtime?: MonoRuntimeLike;
-  readonly model?: RuntimeModelReference;
-  readonly memory?: MemoryStore;
-  /**
-   * Authoritative process environment, as resolved by the host. Credential
-   * checks that must recognize this agent's own configured secrets read it, so
-   * a host started with an explicit `env` must pass the same map here rather
-   * than let those checks fall back to `process.env`.
-   */
-  readonly env?: Record<string, string | undefined>;
-  readonly historyStore?: ConversationHistoryStore;
-  /** App-owned run-scoped interaction details to add only to replay history. */
-  readonly turnHistoryEnricher?: ConversationHarnessOptions["turnHistoryEnricher"];
-  /** App-owned issuer for request-scoped project-MCP progress credentials. */
-  readonly progressCapabilityIssuer?: NonNullable<ConversationHarnessOptions["mcpRequestContext"]>["progressCapabilityIssuer"];
-  /** App-owned issuer for destination-bound asynchronous continuation claims. */
-  readonly continuationCapabilityIssuer?: NonNullable<ConversationHarnessOptions["continuationContext"]>["capabilityIssuer"];
-  readonly createRunId?: ConversationHarnessOptions["createRunId"];
-  readonly now?: ConversationHarnessOptions["now"];
-  readonly runtimeOptions?: ConversationHarnessOptions["runtimeOptions"];
-  readonly sandboxEngine?: SandboxEngine;
-  readonly runtimeOptionsForRequest?: (
-    input: ConversationHarnessRuntimeOptionsInput,
-  ) => ConversationHarnessRuntimeOptionsExtension | Promise<ConversationHarnessRuntimeOptionsExtension>;
-  readonly runtimeOptionsForManualCompaction?: ConversationHarnessOptions["runtimeOptionsForManualCompaction"];
-  /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
-  readonly onMemoryRecallUnavailable?: (error: unknown) => void;
-  /** Best-effort diagnostic when the chronological MemoryJournal endpoint cannot start. */
-  readonly onMemoryJournalUnavailable?: (error: unknown) => void;
-  /** Best-effort diagnostic when the durable Remember endpoint cannot start. */
-  readonly onMemoryRememberUnavailable?: (error: unknown) => void;
-  /** Best-effort host diagnostic for post-provider memory write failures. */
-  readonly onMemoryWarning?: (message: string) => void;
-  /** Startup diagnostic when the optional desktop driver is unavailable. */
-  readonly onComputerUseWarning?: (message: string) => void;
-  /** Best-effort diagnostic for bounded lifecycle-sidecar write failures. */
-  readonly onToolHistoryWarning?: (message: string) => void;
-  readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
-  /** Host-only provider settlement window; defaults to 1,000 ms. */
-  readonly terminalRecoverySettlementMs?: number;
-  /**
-   * Factory for a runtime bound to a per-request override model (cron/webhook
-   * per-trigger model). Wired by the app so override runtimes share the
-   * configured fallback chain and participate in config-reload disposal.
-   */
-  readonly runtimeForModel?: ConversationHarnessOptions["runtimeForModel"];
-  /**
-   * App-owned trace-source identity and config-path context retained for local
-   * recording callers and host correlation.
-   */
-  readonly observabilityContext?: {
-    readonly sourceId?: string;
-    readonly sourceLabel?: string;
-    readonly configPath?: string;
-  };
-}
-
-export interface ConfiguredAgentResponderOptions extends ConfiguredConversationHarnessOptions {}
-
-interface RunArtifactCommitEvent {
-  readonly phase: "started" | "finished";
-  readonly runId: string;
-  readonly conversationId: string;
-  /** Present only for the terminal artifact commit. */
-  readonly summary?: RunSummary;
-}
-
-type RunArtifactCommitHook = (event: RunArtifactCommitEvent) => void | Promise<void>;
-
-interface ConfiguredAgentInternalHooks {
-  /**
-   * App-owned hook invoked after the local JSONL running/terminal summary is
-   * committed. A returned
-   * promise is not awaited and all hook failures are ignored.
-   */
-  readonly onRunArtifactCommitted?: RunArtifactCommitHook;
-  /** App-only read decoration around the configured canonical history store. */
-  readonly wrapHistoryStore?: (store: ConversationHistoryStore) => ConversationHistoryStore;
-  /**
-   * Overrides `runtime.session.rollover` for THIS channel's responder. The app
-   * builds one responder per channel, and a channel whose conversations already
-   * carry an explicit user-owned session boundary (the console's threads) must
-   * not have a second one imposed by the calendar.
-   */
-  readonly sessionRollover?: MonoAgentConfig["runtime"]["session"]["rollover"];
-  /** App-published generation and live-controller injection for this channel. */
-  readonly processJobs?: {
-    readonly registry: ProcessJobsRootRegistrySnapshot;
-    readonly service: ProcessJobsServiceHandle | undefined;
-    readonly channelId: ChannelId | undefined;
-    readonly conversationScheme?: string | undefined;
-    readonly protectionPosture: ProcessJobsProtectionPosture;
-    readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
-  };
-  /**
-   * App-local bootstrap seam for a configured responder that does not own the
-   * ProcessJobs service (currently `tui --local`). Registration happens only
-   * after this harness acquires the canonical agent-root owner.
-   */
-  readonly bootstrapProcessJobs?: {
-    readonly settings: ProcessJobsSettings;
-    readonly stateDir?: string;
-  };
-}
-
-/**
- * Inputs local recording needs that are stable across a run. Shared by the
- * channel-run `recorderFactory` and the memory LLM so both produce identical
- * JSONL artifacts. The app-owned observability context remains available to
- * callers for trace-source identity and config-path correlation.
- */
-interface RecorderCompositionDeps {
-  readonly artifactDir: string;
-  readonly observabilityContext?: ConfiguredConversationHarnessOptions["observabilityContext"];
-  readonly onRunArtifactCommitted?: RunArtifactCommitHook;
-}
-
-/**
- * Build a recorder for one run. The JSONL recorder is always built first and is
- * returned unchanged when no artifact hook is configured. The optional artifact
- * hook wraps only its commit boundary.
- */
-function composeRunRecorder(
-  deps: RecorderCompositionDeps,
-  args: {
-    readonly runId: string;
-    readonly conversationId: string;
-    readonly userInput?: string;
-    readonly systemPrompt?: string;
-    readonly runKind?: "memory" | "channel";
-    readonly memoryOperation?: string;
-    readonly isolated?: boolean;
-    /** Originating channel/trigger kind, e.g. "tui" | "cron" | "webhook" | "memory". */
-    readonly source?: string;
-    /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
-    readonly sourceDetail?: string;
-  },
-): RunRecorder {
-  const jsonl = withArtifactCommitHook(createJsonlRunRecorder({
-    runId: args.runId,
-    conversationId: args.conversationId,
-    artifactDir: deps.artifactDir,
-    ...(args.runKind === "memory" ? { artifactKind: "memory" as const } : {}),
-    ...(args.isolated === undefined ? {} : { isolated: args.isolated }),
-    ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
-    ...(args.systemPrompt === undefined ? {} : { systemPrompt: args.systemPrompt }),
-    ...(args.source === undefined ? {} : { source: args.source }),
-    ...(args.sourceDetail === undefined ? {} : { sourceDetail: args.sourceDetail }),
-  }), deps.onRunArtifactCommitted, args);
-  return jsonl;
-}
-
-/**
- * Notify the app at the exact local-artifact boundary so artifact-derived caches
- * update after JSONL has committed.
- */
-function withArtifactCommitHook(
-  recorder: RunRecorder,
-  onCommitted: RunArtifactCommitHook | undefined,
-  args: { readonly runId: string; readonly conversationId: string },
-): RunRecorder {
-  if (onCommitted === undefined) {
-    return recorder;
-  }
-  let terminalPromise: Promise<RunSummary> | undefined;
-  const notify = (phase: "started" | "finished", summary?: RunSummary): void => {
-    try {
-      // The cache invalidation used by the app is synchronous. Promise.resolve
-      // also contains an async implementation without delaying
-      // the JSONL pipeline or leaking an unhandled rejection.
-      void Promise.resolve(onCommitted({
-        phase,
-        runId: args.runId,
-        conversationId: args.conversationId,
-        ...(summary === undefined ? {} : { summary }),
-      }))
-        .catch(() => undefined);
-    } catch {
-      // Best-effort host bookkeeping must never alter the recorded run outcome.
-    }
-  };
-  const commitTerminal = (operation: () => Promise<RunSummary>): Promise<RunSummary> => {
-    terminalPromise ??= operation().then((summary) => {
-      notify("finished", summary);
-      return summary;
-    });
-    return terminalPromise;
-  };
-  const wrapped: RunRecorder = {
-    onEvent(event): void {
-      recorder.onEvent(event);
-    },
-    async prepareFinish(result: RuntimeResultLike): Promise<void> {
-      await recorder.prepareFinish?.(result);
-    },
-    async commitFinish(result: RuntimeResultLike): Promise<RunSummary> {
-      return await commitTerminal(async () => recorder.commitFinish === undefined
-        ? await recorder.finish(result)
-        : await recorder.commitFinish(result));
-    },
-    async finish(result: RuntimeResultLike): Promise<RunSummary> {
-      await wrapped.prepareFinish?.(result);
-      return await wrapped.commitFinish!(result);
-    },
-    async fail(error: unknown, context?: { readonly systemPrompt?: string }): Promise<RunSummary> {
-      return await commitTerminal(async () => context === undefined
-        ? await recorder.fail(error)
-        : await recorder.fail(error, context));
-    },
-  };
-  if (recorder.start !== undefined) {
-    wrapped.start = async (): Promise<RunSummary> => {
-      const summary = await recorder.start!();
-      notify("started");
-      return summary;
-    };
-  }
-  return wrapped;
-}
-
-/** Collect the recorder-composition deps from the host config + harness options. */
-async function recorderCompositionDeps(
-  config: MonoAgentConfig,
-  options: Pick<ConfiguredConversationHarnessOptions, "observabilityContext">,
-  internalHooks: ConfiguredAgentInternalHooks = {},
-): Promise<RecorderCompositionDeps> {
-  const sourceLabel = options.observabilityContext?.sourceLabel ?? config.agent?.name;
-  const observabilityContext = options.observabilityContext === undefined && sourceLabel === undefined
-    ? undefined
-    : {
-        ...options.observabilityContext,
-        ...(sourceLabel === undefined ? {} : { sourceLabel }),
-      };
-  return {
-    artifactDir: config.artifacts.dir,
-    ...(observabilityContext === undefined ? {} : { observabilityContext }),
-    ...(internalHooks.onRunArtifactCommitted === undefined
-      ? {}
-      : { onRunArtifactCommitted: internalHooks.onRunArtifactCommitted }),
-  };
-}
 
 export function createConfiguredAgentRuntime(config: MonoAgentConfig): MonoRuntimeLike;
 export function createConfiguredAgentRuntime(options: ConfiguredAgentRuntimeOptions): MonoRuntimeLike;
@@ -1675,330 +1381,6 @@ function harnessWithAgentRootOwnership(
   };
 }
 
-interface LazyConfiguredToolHistoryOptions {
-  readonly root: string;
-  readonly artifactRoot: string;
-  readonly rollover: "none" | "daily" | undefined;
-  readonly onWarning?: (message: string) => void;
-  /** Internal seam for deterministic acquisition-retry tests. */
-  readonly acquireWriter?: typeof acquireToolHistoryWriter;
-  /** Internal seam for deterministic progressive post-failure backoff tests. */
-  readonly acquisitionFailureBackoffMs?: number;
-  /** Internal seam for the bounded progressive-backoff ceiling. */
-  readonly acquisitionFailureBackoffMaxMs?: number;
-  /** Internal monotonic-enough clock seam; production uses wall time. */
-  readonly now?: () => number;
-}
-
-interface ConfiguredWriterAttempt {
-  promise: Promise<ToolHistoryWriterHandle>;
-  failurePromise?: Promise<ToolHistoryWriterHandle>;
-  handle?: ToolHistoryWriterHandle;
-  failed: boolean;
-  retryAtMs?: number;
-  retired: boolean;
-}
-
-interface ConfiguredTurnWriterState {
-  readonly generation: number;
-  attempt?: ConfiguredWriterAttempt;
-  failure?: Promise<ToolHistoryWriterHandle>;
-}
-
-const TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS = 30_000;
-const TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
-
-export function lazyConfiguredToolHistory(
-  options: LazyConfiguredToolHistoryOptions,
-): ConversationHarnessToolHistoryOptions {
-  const failureBackoffMs = options.acquisitionFailureBackoffMs
-    ?? TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS;
-  if (!Number.isSafeInteger(failureBackoffMs) || failureBackoffMs < 1) {
-    throw new TypeError("tool history acquisition failure backoff must be a positive integer.");
-  }
-  const failureBackoffMaxMs = options.acquisitionFailureBackoffMaxMs
-    ?? Math.max(TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MAX_MS, failureBackoffMs);
-  if (
-    !Number.isSafeInteger(failureBackoffMaxMs)
-    || failureBackoffMaxMs < failureBackoffMs
-  ) {
-    throw new TypeError("tool history acquisition failure backoff maximum must be an integer at least as large as the initial backoff.");
-  }
-  const now = options.now ?? Date.now;
-  let sharedAttempt: ConfiguredWriterAttempt | undefined;
-  let latestTurnGeneration = 0;
-  const turnStates = new Map<string, ConfiguredTurnWriterState>();
-  let resetTail: Promise<void> = Promise.resolve();
-  let retirementTail: Promise<void> = Promise.resolve();
-  let acquisitionOutage = false;
-  let consecutiveAcquisitionFailures = 0;
-  const reader = new ToolHistoryReader(options.root);
-  const warn = (message: string): void => {
-    try { options.onWarning?.(message); } catch { /* diagnostics are best-effort */ }
-  };
-  const turnKey = (conversationId: string, runId: string): string =>
-    JSON.stringify([conversationId, runId]);
-  const stateFor = (conversationId: string, runId: string): ConfiguredTurnWriterState => {
-    const key = turnKey(conversationId, runId);
-    const existing = turnStates.get(key);
-    if (existing !== undefined) return existing;
-    const state: ConfiguredTurnWriterState = { generation: ++latestTurnGeneration };
-    if (
-      sharedAttempt?.failed === true
-      && sharedAttempt.retryAtMs !== undefined
-      && now() < sharedAttempt.retryAtMs
-    ) {
-      state.attempt = sharedAttempt;
-    }
-    turnStates.set(key, state);
-    return state;
-  };
-  const failedPromise = (code: string): Promise<ToolHistoryWriterHandle> => {
-    const error = Object.assign(new Error("Tool history writer became unavailable; a fresh boundary must reacquire it."), { code });
-    const failure = Promise.reject<ToolHistoryWriterHandle>(error);
-    void failure.catch(() => undefined);
-    return failure;
-  };
-  const nextFailureBackoffMs = (): number => {
-    let backoffMs = failureBackoffMs;
-    for (let index = 0; index < consecutiveAcquisitionFailures && backoffMs < failureBackoffMaxMs; index += 1) {
-      backoffMs = backoffMs > Math.floor(failureBackoffMaxMs / 2)
-        ? failureBackoffMaxMs
-        : Math.min(failureBackoffMaxMs, backoffMs * 2);
-    }
-    consecutiveAcquisitionFailures += 1;
-    return backoffMs;
-  };
-  const retire = (attempt: ConfiguredWriterAttempt): void => {
-    if (attempt.retired || attempt.handle === undefined) return;
-    attempt.retired = true;
-    retirementTail = retirementTail.then(async () => {
-      try { await attempt.handle?.release(); } catch { /* replacement acquisition must remain armed */ }
-    });
-  };
-  const latchExistingTurns = (
-    attempt: ConfiguredWriterAttempt,
-    failure: Promise<ToolHistoryWriterHandle>,
-  ): void => {
-    const failedThrough = latestTurnGeneration;
-    for (const state of turnStates.values()) {
-      if (state.generation > failedThrough) continue;
-      if (state.attempt === undefined || state.attempt === attempt) state.failure = failure;
-    }
-  };
-  const invalidate = (attempt: ConfiguredWriterAttempt, code: string): Promise<ToolHistoryWriterHandle> => {
-    if (attempt.failed) return attempt.failurePromise ?? attempt.promise;
-    const failure = failedPromise(code);
-    attempt.failed = true;
-    attempt.failurePromise = failure;
-    attempt.retryAtMs = now() + nextFailureBackoffMs();
-    latchExistingTurns(attempt, failure);
-    retire(attempt);
-    if (sharedAttempt === attempt) {
-      sharedAttempt = {
-        promise: failure,
-        failurePromise: failure,
-        failed: true,
-        retryAtMs: attempt.retryAtMs,
-        retired: true,
-      };
-    }
-    acquisitionOutage = true;
-    return failure;
-  };
-  const startAttempt = (): ConfiguredWriterAttempt => {
-    const acquisition = retirementTail.then(async () => await (options.acquireWriter ?? acquireToolHistoryWriter)({
-      root: options.root,
-      artifactRoot: options.artifactRoot,
-      ...(options.onWarning === undefined ? {} : { onWarning: options.onWarning }),
-    }));
-    const attempt: ConfiguredWriterAttempt = {
-      promise: acquisition,
-      failed: false,
-      retired: false,
-    };
-    attempt.promise = acquisition.then((handle) => {
-      attempt.handle = handle;
-      consecutiveAcquisitionFailures = 0;
-      if (acquisitionOutage) {
-        warn("Tool history writer acquisition recovered; lifecycle persistence resumed.");
-      }
-      acquisitionOutage = false;
-      return handle;
-    }).catch((error: unknown) => {
-      attempt.failed = true;
-      attempt.failurePromise = attempt.promise;
-      const retryBackoffMs = nextFailureBackoffMs();
-      attempt.retryAtMs = now() + retryBackoffMs;
-      latchExistingTurns(attempt, attempt.promise);
-      if (!acquisitionOutage) {
-        acquisitionOutage = true;
-        warn(`Tool history writer acquisition failed (${toolHistoryAcquisitionErrorCode(error)}); new turns fail fast for ${String(retryBackoffMs)} ms and repeated failures back off to ${String(failureBackoffMaxMs)} ms, while explicit reset may retry immediately.`);
-      }
-      throw error;
-    });
-    void attempt.promise.catch(() => undefined);
-    sharedAttempt = attempt;
-    return attempt;
-  };
-  const selectAttempt = (bypassFailureBackoff: boolean): ConfiguredWriterAttempt => {
-    if (sharedAttempt !== undefined) {
-      if (sharedAttempt.handle?.writer.isClosed === true) {
-        invalidate(sharedAttempt, "history_writer_closed");
-      }
-      const withinFailureBackoff = sharedAttempt.retryAtMs !== undefined
-        && now() < sharedAttempt.retryAtMs;
-      if (
-        !sharedAttempt.failed
-        || (!bypassFailureBackoff && withinFailureBackoff)
-      ) {
-        return sharedAttempt;
-      }
-      sharedAttempt = undefined;
-    }
-    return startAttempt();
-  };
-  const acquireForTurn = async (state: ConfiguredTurnWriterState): Promise<ToolHistoryWriterHandle> => {
-    if (state.failure !== undefined) return await state.failure;
-    state.attempt ??= selectAttempt(false);
-    const handle = await state.attempt.promise;
-    if (handle.writer.isClosed) {
-      state.failure = invalidate(state.attempt, "history_writer_closed");
-      return await state.failure;
-    }
-    return handle;
-  };
-  const writer: ConversationHarnessToolHistoryOptions["writer"] = {
-    createSink(binding) {
-      const state = stateFor(binding.conversationId, binding.runId);
-      return async (event) => {
-        const handle = await acquireForTurn(state);
-        try {
-          const result = await handle.writer.persist(binding, event);
-          const terminalCode = terminalToolHistoryWriterFailureCode(result, handle);
-          if (terminalCode !== undefined && state.attempt !== undefined) {
-            state.failure = invalidate(state.attempt, terminalCode);
-          }
-          return result;
-        } catch (error) {
-          const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
-          if (terminalCode !== undefined && state.attempt !== undefined) {
-            state.failure = invalidate(state.attempt, terminalCode);
-          }
-          throw error;
-        }
-      };
-    },
-    async finishRun(binding, status, failureKind, cancellationReasonCode) {
-      const key = turnKey(binding.conversationId, binding.runId);
-      const state = turnStates.get(key);
-      try {
-        if (state?.attempt === undefined || state.failure !== undefined) return;
-        const handle = await state.attempt.promise.catch(() => undefined);
-        try {
-          await handle?.writer.finishRun(binding, status, failureKind, cancellationReasonCode);
-        } catch (error) {
-          if (handle === undefined) return;
-          const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
-          if (terminalCode === undefined) throw error;
-          invalidate(state.attempt, terminalCode);
-          return;
-        }
-        const terminalCode = handle === undefined
-          ? undefined
-          : terminalToolHistoryWriterFailureCode(undefined, handle);
-        if (terminalCode !== undefined) invalidate(state.attempt, terminalCode);
-      } finally {
-        turnStates.delete(key);
-      }
-    },
-    async resetConversation(logicalConversationId) {
-      const reset = resetTail.then(async () => {
-        if (!await reader.exists()) return;
-        // Reset is serialized and host-explicit, so it may bypass only the
-        // progressive post-failure cooldown. It still reuses a healthy/pending handle
-        // and every fresh acquisition keeps the full restart-handoff ceiling.
-        const observedAttempt = sharedAttempt;
-        if (observedAttempt !== undefined && !observedAttempt.failed) {
-          await observedAttempt.promise.catch(() => undefined);
-        }
-        let recoveryRetriesRemaining = 1;
-        for (;;) {
-          const attempt = selectAttempt(true);
-          const handle = await attempt.promise;
-          try {
-            await handle.writer.resetConversation(logicalConversationId);
-          } catch (error) {
-            const terminalCode = reportedToolHistoryWriterFailureCode(error);
-            if (terminalCode === undefined) {
-              if (handle.writer.isClosed) invalidate(attempt, "history_writer_closed");
-              throw error;
-            }
-            invalidate(attempt, terminalCode);
-            if (recoveryRetriesRemaining === 0) throw error;
-            recoveryRetriesRemaining -= 1;
-            continue;
-          }
-          const terminalCode = terminalToolHistoryWriterFailureCode(undefined, handle);
-          if (terminalCode !== undefined) invalidate(attempt, terminalCode);
-          // A resolved reset was acknowledged only after its transaction
-          // committed. Retire a concurrently closed handle, but never open a
-          // second destructive reset window for an operation that succeeded.
-          return;
-        }
-      });
-      resetTail = reset.then(
-        () => undefined,
-        () => undefined,
-      );
-      await reset;
-    },
-  };
-  return {
-    writer,
-    reader,
-    logicalConversationId: (conversationId) =>
-      toolHistoryLogicalConversationId(conversationId, options.rollover),
-    async release(): Promise<void> {
-      const attempt = sharedAttempt;
-      sharedAttempt = undefined;
-      if (attempt !== undefined) {
-        await attempt.promise.catch(() => undefined);
-        retire(attempt);
-      }
-      await retirementTail;
-    },
-  };
-}
-
-function terminalToolHistoryWriterFailureCode(
-  value: unknown,
-  handle: ToolHistoryWriterHandle,
-): string | undefined {
-  return reportedToolHistoryWriterFailureCode(value)
-    ?? (handle.writer.isClosed ? "history_writer_closed" : undefined);
-}
-
-function reportedToolHistoryWriterFailureCode(value: unknown): string | undefined {
-  const candidate = typeof value === "object" && value !== null
-    ? "errorCode" in value
-      ? (value as { readonly errorCode?: unknown }).errorCode
-      : "code" in value
-        ? (value as { readonly code?: unknown }).code
-        : undefined
-    : undefined;
-  if (candidate === "history_writer_closed") return candidate;
-  return undefined;
-}
-
-function toolHistoryAcquisitionErrorCode(error: unknown): string {
-  const candidate = typeof error === "object" && error !== null && "code" in error
-    ? (error as { readonly code?: unknown }).code
-    : undefined;
-  return typeof candidate === "string" && /^history_[a-z0-9_]+$/u.test(candidate)
-    ? candidate
-    : "history_writer_unavailable";
-}
 
 function configuredMemoryForHarness(
   config: MonoAgentConfig,

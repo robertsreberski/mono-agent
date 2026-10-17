@@ -21,7 +21,7 @@ import {
   shouldMirrorTraceSourceGlobally,
 } from "./app-config.js";
 import type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
-import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
+import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent-options.js";
 import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import {

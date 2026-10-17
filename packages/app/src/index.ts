@@ -6,7 +6,7 @@ export {
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "./configured-agent.js";
-export type { ConfiguredConversationHarnessOptions, ConfiguredAgentResponderOptions } from "./configured-agent.js";
+export type { ConfiguredConversationHarnessOptions, ConfiguredAgentResponderOptions } from "./composition/configured-agent-options.js";
 export {
   createCronChannelDriver,
   createOpenAIApiChannelDriver,

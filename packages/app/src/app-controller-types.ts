@@ -1,5 +1,5 @@
 import type { SandboxEffectiveState } from "@mono-agent/turn/host/types";
-import type { ConfiguredAgentSessionEvent, ConfiguredAgentSessionSnapshot } from "./configured-agent.js";
+import type { ConfiguredAgentSessionEvent, ConfiguredAgentSessionSnapshot } from "./composition/configured-agent-options.js";
 
 
 /** Outcome of applying a saved configuration to the running app. */

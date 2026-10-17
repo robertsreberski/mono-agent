@@ -5,9 +5,84 @@ import { join } from "node:path";
 import { ToolHistoryWriter, type ToolHistoryWriterHandle } from "@mono-agent/conversation";
 import { describe, expect, it, vi } from "vitest";
 
-import { lazyConfiguredToolHistory } from "../configured-agent.js";
+import { lazyConfiguredToolHistory } from "../composition/configured-tool-history.js";
 
 describe("configured tool-history acquisition", () => {
+  it("releases an unused resource repeatedly without acquiring a writer", async () => {
+    const acquireWriter = vi.fn();
+    const history = lazyConfiguredToolHistory({ root: "/fictional/history", artifactRoot: "/fictional/artifacts",
+      rollover: undefined, acquireWriter });
+    await Promise.all([history.release?.(), history.release?.()]);
+    expect(acquireWriter).not.toHaveBeenCalled();
+  });
+
+  it("waits for a pending acquisition and retires its handle exactly once", async () => {
+    const release = vi.fn(async () => undefined);
+    let settle!: (handle: ToolHistoryWriterHandle) => void;
+    const acquireWriter = vi.fn(() => new Promise<ToolHistoryWriterHandle>((resolve) => { settle = resolve; }));
+    const history = lazyConfiguredToolHistory({ root: "/fictional/history", artifactRoot: "/fictional/artifacts",
+      rollover: undefined, acquireWriter });
+    const persist = vi.fn(async () => ({ persistence: "persisted" as const }));
+    const writing = history.writer.createSink({ conversationId: "chat:fixture", logicalConversationId: "chat:fixture",
+      runId: "fixture-run", isolated: false })({ phase: "invocation", toolCallId: "fixture-call", toolName: "Read", arguments: {} });
+    await vi.waitFor(() => expect(acquireWriter).toHaveBeenCalledOnce(), { timeout: 5_000 });
+    const releasing = history.release?.();
+    settle({ writer: { persist } as unknown as ToolHistoryWriter, release });
+    await writing;
+    await releasing;
+    await history.release?.();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("releases a handle once when a late persist observes the writer closed by release", async () => {
+    let finishPersist!: () => void;
+    let persisted!: () => void;
+    const started = new Promise<void>((resolve) => { persisted = resolve; });
+    let closed = false;
+    const release = vi.fn(async () => { closed = true; });
+    const persist = vi.fn(async () => {
+      persisted();
+      await new Promise<void>((resolve) => { finishPersist = resolve; });
+      return { persistence: "persisted" as const };
+    });
+    const writer = { persist, get isClosed() { return closed; } } as unknown as ToolHistoryWriter;
+    const history = lazyConfiguredToolHistory({ root: "/fictional/history", artifactRoot: "/fictional/artifacts",
+      rollover: undefined, acquireWriter: async () => ({ writer, release }) });
+    const writing = history.writer.createSink({ conversationId: "chat:fixture", logicalConversationId: "chat:fixture",
+      runId: "fixture-late-persist", isolated: false })({ phase: "invocation", toolCallId: "fixture-call", toolName: "Read", arguments: {} });
+    await started;
+    await history.release?.();
+    expect(release).toHaveBeenCalledOnce();
+    finishPersist();
+    await writing;
+    await history.release?.();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("resolves a second concurrent release before a pending acquisition retires", async () => {
+    const order: string[] = [];
+    let settle!: (handle: ToolHistoryWriterHandle) => void;
+    let acquired!: () => void;
+    const started = new Promise<void>((resolve) => { acquired = resolve; });
+    const acquireWriter = vi.fn(() => {
+      acquired();
+      return new Promise<ToolHistoryWriterHandle>((resolve) => { settle = resolve; });
+    });
+    const history = lazyConfiguredToolHistory({ root: "/fictional/history", artifactRoot: "/fictional/artifacts",
+      rollover: undefined, acquireWriter });
+    const writing = history.writer.createSink({ conversationId: "chat:fixture", logicalConversationId: "chat:fixture",
+      runId: "fixture-concurrent-release", isolated: false })({ phase: "invocation", toolCallId: "fixture-call", toolName: "Read", arguments: {} });
+    await started;
+    const first = history.release!().then(() => { order.push("release#1"); });
+    await history.release!().then(() => { order.push("release#2"); });
+    expect(order).toEqual(["release#2"]);
+    const release = vi.fn(async () => { order.push("handle.release"); });
+    settle({ writer: { persist: async () => ({ persistence: "persisted" as const }) } as unknown as ToolHistoryWriter, release });
+    await Promise.all([writing, first]);
+    expect(order).toEqual(["release#2", "handle.release", "release#1"]);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("bounds the initial wait, progressively fast-fails ordinary outage cadence, and recovers without poison", async () => {
     const persist = vi.fn(async () => ({ persistence: "persisted" as const }));
     const finishRun = vi.fn(async () => undefined);

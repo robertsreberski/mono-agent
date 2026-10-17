@@ -21,7 +21,8 @@ import {
   createConfiguredAgentRuntimeForApp,
   DEFAULT_HISTORY_MAX_MESSAGES,
 } from "./configured-agent.js";
-import type { ConfiguredAgentSessionEvent, createConfiguredMemory } from "./configured-agent.js";
+import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent-options.js";
+import type { createConfiguredMemory } from "./configured-agent.js";
 import {
   adapterSendToolNames,
   createAdapterSendToolsRuntimeExtension,
