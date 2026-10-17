@@ -1499,6 +1499,7 @@ path:
 | Domain contracts and transport | `memory/recall-contract.ts`, `subagents/types.ts`, `mcp/loopback-transport.ts` | Erased recall/subagent contracts and one stateless loopback transport; callers retain endpoint policy and lifetime release hooks. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts`, `delivery/send-tools/` | Structured interaction state and settings/policy facade; separate host extension, child env/client/server, tool registration, delivery history, and pinned file/output owners. The compiled child stays at `dist/adapter-send-tools-main.js`. |
 | Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-runs.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
+| MCP Apps storage | `mcp-apps.ts`, `mcp-apps/audit-storage.ts`, `mcp-apps/artifact-store.ts` | Bridge lifetime delegates to one process-global audit inventory and bounded artifact publication; stored identities and action-audit fences are unchanged. |
 | Host services | `run-history.ts`, `session-history.ts`, `conversation-title.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, bounded local memory chronology, automatic web conversation titles, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
 
 ## Public API
