@@ -1509,6 +1509,7 @@ path:
 | Process-job policy | `process-jobs-service.ts`, `process-jobs/policy.ts`, `process-jobs/presentation.ts` | One service owns mutable execution state; readonly policy inputs and bounded presentation preserve admission, terminal reporting and safe diagnostics. |
 | MCP Apps storage | `mcp-apps.ts`, `mcp-apps/audit-storage.ts`, `mcp-apps/artifact-store.ts` | Bridge lifetime delegates to one process-global audit inventory and bounded artifact publication; stored identities and action-audit fences are unchanged. |
 | Memory command reads and bundles | `memory-command.ts`, `cli/commands/memory/` | Usage-first dispatch composes lazy read, health/intake, bundle, private-plan, context and presentation owners; early CLI refusals load only bounded failure leaves. |
+| Memory command mutations | `cli/commands/memory/forget.ts`, `cli/commands/memory/replay-adoption.ts`, `cli/commands/memory/curate.ts` | Stopped-store adapters retain private-plan validation, lazy model construction, closed refusals and package-owned writer/backup/recovery ordering. |
 | Host services | `run-history.ts`, `session-history.ts`, `conversation-title.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, bounded local memory chronology, automatic web conversation titles, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
 
 ## Public API

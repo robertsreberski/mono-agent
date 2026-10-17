@@ -107,3 +107,4 @@ export function isUnderDirectory(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
 }
+export const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
