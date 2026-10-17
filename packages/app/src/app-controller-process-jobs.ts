@@ -1,3 +1,4 @@
+import { ProcessJobServiceError } from "./process-jobs/errors.js";
 import type { WorkerActivityTracker } from "./durable-state/worker-activity.js";
 import { loadAppCoreConfig, isAppCoreConfigError } from "./app-config.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
@@ -10,7 +11,6 @@ import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import { runWithProcessJobWakeContext } from "./process-jobs-context.js";
 import {
   openProcessJobsService,
-  ProcessJobServiceError,
   type ProcessJobsHealth,
   type ProcessJobsServiceHandle,
 } from "./process-jobs-service.js";

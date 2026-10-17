@@ -1,3 +1,4 @@
+import type { ProcessJobWakeInput } from "../process-jobs/types.js";
 import { WorkerActivityTracker } from "../durable-state/worker-activity.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -21,7 +22,6 @@ import type { ProcessJobsSettings } from "../process-jobs-config.js";
 import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
 import {
   openProcessJobsService,
-  type ProcessJobWakeInput,
   type ProcessJobsHealth,
   type ProcessJobsServiceHandle,
 } from "../process-jobs-service.js";

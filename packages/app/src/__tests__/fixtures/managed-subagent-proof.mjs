@@ -1,9 +1,10 @@
 // Automated built-seam proof. Transport alone is fake; no interactive/live consumer.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/turn/host";
+import { JsonlSessionRepo, projectContext } from "@mono-agent/turn/engine";
 import { acquireAgentRootOwnership } from "../../../dist/durable-state/agent-root-coordinator.js";
 import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
 import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
@@ -97,8 +98,16 @@ try {
   assert.equal(instance.turns, 1); assert.equal(instance.recovery, undefined);
   const jsonl = (await readdir(instance.sessionsRoot, { recursive: true })).filter((path) => path.endsWith(".jsonl"));
   assert.equal(jsonl.length, 1);
-  const transcript = (await readFile(resolve(instance.sessionsRoot, jsonl[0]), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  const execution = transcript.flat().map((entry) => entry.message).find((message) => message?.role === "toolResult" && message.toolName === "Exec");
+  const repo = new JsonlSessionRepo({ sessionsRoot: instance.sessionsRoot });
+  const metadata = (await repo.list()).find((entry) => entry.path === resolve(instance.sessionsRoot, jsonl[0]));
+  const journal = await repo.open(metadata, { repair: false });
+  let transcript;
+  try {
+    transcript = projectContext(await journal.getEntries()).messages;
+  } finally {
+    await journal.close();
+  }
+  const execution = transcript.find((message) => message?.role === "toolResult" && message.toolName === "Exec");
   assert(execution && execution.isError !== true);
   assert(JSON.stringify(execution.content).includes("owned-proof-completed"));
   const elapsedMs = Date.now() - startedAt;

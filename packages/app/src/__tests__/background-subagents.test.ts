@@ -1,3 +1,4 @@
+import type { ProcessJobWakeInput } from "../process-jobs/types.js";
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 import { createLiveInputMailbox } from "@mono-agent/conversation";
@@ -19,7 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
 import { writeJsonAtomic } from "../durable-state/private-files.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
-import { openProcessJobsService, type ProcessJobsServiceHandle, type ProcessJobWakeInput } from "../process-jobs-service.js";
+import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
 import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
 import { hasSubagentObligation } from "../subagent-execution-ownership.js";

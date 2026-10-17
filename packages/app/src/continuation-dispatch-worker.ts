@@ -15,7 +15,6 @@ import {
   safeReason,
   synthesisInput,
 } from "./continuation-service-helpers.js";
-import { ContinuationOriginService } from "./continuation-service-origin.js";
 import {
   DEFAULT_DELIVERY_ATTEMPTS,
   MAX_TEXT_CHARS,
@@ -27,14 +26,15 @@ import {
   TERMINAL_CONTINUATION_STATES,
   type ContinuationNativeDeliveryResult,
 } from "./continuations.js";
+import type { ContinuationDispatchDependencies } from "./continuations/operation-ports.js";
 
-export abstract class ContinuationDispatchWorker extends ContinuationOriginService {
-  async recover(startup = false): Promise<void> {
-    const now = this.now().getTime();
-    const current = await this.store.list();
+export function createContinuationDispatchOperations(dependencies: ContinuationDispatchDependencies) {
+  async function recover(startup = false): Promise<void> {
+    const now = dependencies.now().getTime();
+    const current = await dependencies.store.list();
     const needsRecovery = current.some((record) =>
       !TERMINAL_CONTINUATION_STATES.has(record.state)
-      && (startup || !this.inFlight.has(record.continuationId))
+      && (startup || !dependencies.isSupervised(record.continuationId))
       && (
         (startup && record.originContextState === "pending")
         || (startup && record.leaseOwner !== undefined)
@@ -42,13 +42,13 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
         || (record.leaseUntil !== undefined && Date.parse(record.leaseUntil) <= now)
       ));
     if (!needsRecovery) return;
-    await this.store.mutate((records) => {
+    await dependencies.store.mutate((records) => {
       for (const record of records.values()) {
         if (TERMINAL_CONTINUATION_STATES.has(record.state)) continue;
         if (startup && record.originContextState === "pending") {
           record.originContextState = "abandoned";
           delete record.originContextRef;
-          record.updatedAt = this.now().toISOString();
+          record.updatedAt = dependencies.now().toISOString();
           record.lastError = errorRecord(
             "origin_context_unavailable",
             "The service restarted before the origin context was pinned.",
@@ -56,7 +56,7 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
           );
           clearLease(record);
         }
-        if (!startup && this.inFlight.has(record.continuationId)) continue;
+        if (!startup && dependencies.isSupervised(record.continuationId)) continue;
         const abandonedAtStartup = startup && record.leaseOwner !== undefined;
         const leaseExpired = record.leaseUntil !== undefined && Date.parse(record.leaseUntil) <= now;
         if (record.deliveryStartedAt !== undefined
@@ -65,13 +65,13 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
           record.lastError = errorRecord(
             "delivery_outcome_unknown",
             "Process stopped after native delivery began; automatic replay is unsafe.",
-            this.now().toISOString(),
+            dependencies.now().toISOString(),
           );
           clearLease(record);
           continue;
         }
         if (Date.parse(record.deadline) <= now) {
-          expire(record, this.now().toISOString());
+          expire(record, dependencies.now().toISOString());
           continue;
         }
         if (!abandonedAtStartup && !leaseExpired) continue;
@@ -84,7 +84,7 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
             record.lastError = errorRecord(
               "synthesis_outcome_unknown",
               "Process stopped after synthesis began; synthesis was not repeated.",
-              this.now().toISOString(),
+              dependencies.now().toISOString(),
             );
             clearLease(record);
           }
@@ -95,71 +95,34 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     });
   }
 
-  async processDue(limit = this.limits.maxConcurrent): Promise<number> {
-    if (this.stopped) return 0;
+  async function processDue(limit = dependencies.limits.maxConcurrent): Promise<number> {
+    if (dependencies.isStopped()) return 0;
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new Error("Continuation process limit must be a non-negative safe integer.");
     }
-    const jobs = await this.startDueJobs(limit);
+    const jobs = await dependencies.startDueJobs(limit);
     const outcomes = await Promise.all(jobs);
     return outcomes.filter(Boolean).length;
   }
 
-  private async startDueJobs(limit: number): Promise<readonly Promise<boolean>[]> {
-    const dispatch = this.dispatchTail.then(async () => {
-      if (this.stopped) return [];
-      await this.recover();
-      if (this.stopped) return [];
-      const capacity = Math.max(0, Math.min(limit, this.limits.maxConcurrent - this.inFlight.size));
-      if (capacity === 0) return [];
-      const nowMs = this.now().getTime();
-      const candidates = (await this.store.list())
-        .filter((record) =>
-          !this.inFlight.has(record.continuationId)
-          && (
-            (record.state === "result_received" && Date.parse(record.nextAttemptAt ?? record.updatedAt) <= nowMs)
-            || record.state === "ready_to_deliver"
-            || (record.state === "delivery_retry" && Date.parse(record.nextAttemptAt ?? record.updatedAt) <= nowMs)
-          ))
-        .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt))
-        .slice(0, capacity);
-      if (this.stopped) return [];
-      return candidates.map((candidate) => this.startOne(candidate.continuationId));
-    });
-    this.dispatchTail = dispatch.then(() => undefined, () => undefined);
-    return await dispatch;
-  }
-
-  private startOne(id: string): Promise<boolean> {
-    const existing = this.inFlight.get(id);
-    if (existing !== undefined) return existing;
-    const job = this.processOne(id);
-    this.inFlight.set(id, job);
-    void job.then(
-      () => { if (this.inFlight.get(id) === job) this.inFlight.delete(id); },
-      () => { if (this.inFlight.get(id) === job) this.inFlight.delete(id); },
-    );
-    return job;
-  }
-
-  private async processOne(id: string): Promise<boolean> {
-    this.throwIfStopping();
-    const leased = await this.acquireLease(id);
+  async function processOne(id: string): Promise<boolean> {
+    dependencies.throwIfStopping();
+    const leased = await acquireLease(id);
     if (leased === undefined) return false;
-    this.throwIfStopping();
+    dependencies.throwIfStopping();
     let record = leased;
     if (record.originContextState === "pending") {
-      await this.deferOriginContext(record.continuationId);
+      await deferOriginContext(record.continuationId);
       return true;
     }
     if (record.synthesizedText === undefined && record.mode !== "silent") {
-      const originContext = await this.resolveOriginContext(record);
+      const originContext = await dependencies.resolveOriginContext(record);
       if (originContext.kind === "pending") {
-        await this.deferOriginContext(record.continuationId);
+        await deferOriginContext(record.continuationId);
         return true;
       }
       if (originContext.kind === "invalid") {
-        await this.deadLetter(
+        await deadLetter(
           record.continuationId,
           originContext.code,
           "Pinned continuation binding failed integrity verification; native delivery was blocked.",
@@ -167,48 +130,48 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
         return true;
       }
       if (originContext.kind === "unavailable") {
-        record = await this.prepareOriginContextFallback(record.continuationId);
+        record = await prepareOriginContextFallback(record.continuationId);
       } else {
-        const available = await this.synthesisAvailable(record, originContext);
+        const available = await synthesisAvailable(record, originContext);
         if (!available.ready) {
-          await this.deferSynthesis(record.continuationId, available.code, available.reason, available.retryAfterMs);
+          await deferSynthesis(record.continuationId, available.code, available.reason, available.retryAfterMs);
           return true;
         }
-        record = await this.synthesize(record, originContext);
+        record = await synthesize(record, originContext);
       }
       if (record.state !== "ready_to_deliver") return true;
     } else if (record.state !== "ready_to_deliver") {
-      record = await this.markReady(record.continuationId);
+      record = await markReady(record.continuationId);
     }
-    if (await this.expireBeforeDeliveryIfNeeded(record.continuationId)) return true;
-    this.throwIfStopping();
+    if (await expireBeforeDeliveryIfNeeded(record.continuationId)) return true;
+    dependencies.throwIfStopping();
 
     if (record.mode === "silent") {
-      await this.markDelivered(record.continuationId, { kind: "silent", deliveredAt: this.now().toISOString() });
+      await markDelivered(record.continuationId, { kind: "silent", deliveredAt: dependencies.now().toISOString() });
       return true;
     }
     if (record.mode === "capture") {
-      await this.markDelivered(record.continuationId, { kind: "captured", deliveredAt: this.now().toISOString() });
+      await markDelivered(record.continuationId, { kind: "captured", deliveredAt: dependencies.now().toISOString() });
       return true;
     }
     if (record.mode === "notify_if_actionable" && record.actionable === false) {
-      await this.markDelivered(record.continuationId, { kind: "suppressed", deliveredAt: this.now().toISOString() });
+      await markDelivered(record.continuationId, { kind: "suppressed", deliveredAt: dependencies.now().toISOString() });
       return true;
     }
-    await this.deliver(record);
+    await deliver(record);
     return true;
   }
 
-  private async synthesisAvailable(
+  async function synthesisAvailable(
     record: DurableContinuationRecord,
     originContext: Extract<ResolvedOriginContext, { readonly kind: "ready" }>,
   ): Promise<ContinuationSynthesisAvailability> {
-    if (this.options.synthesisPreflight === undefined) return { ready: true };
+    if (dependencies.synthesisPreflight === undefined) return { ready: true };
     try {
-      return await this.runBoundedOperation(
+      return await dependencies.runBoundedOperation(
         "synthesis",
-        Math.min(this.limits.synthesisTimeoutMs, 30_000),
-        async () => await this.options.synthesisPreflight?.(synthesisInput(record, originContext)) ?? { ready: true },
+        Math.min(dependencies.limits.synthesisTimeoutMs, 30_000),
+        async () => await dependencies.synthesisPreflight?.(synthesisInput(record, originContext)) ?? { ready: true },
       );
     } catch (error) {
       if (error instanceof ContinuationServiceStoppingError) throw error;
@@ -222,12 +185,12 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     }
   }
 
-  private async deferOriginContext(id: string): Promise<DurableContinuationRecord> {
-    return await this.store.mutate((records) => {
+  async function deferOriginContext(id: string): Promise<DurableContinuationRecord> {
+    return await dependencies.store.mutate((records) => {
       const current = requireRecord(records, id);
-      requireLease(current, this.instanceId);
+      requireLease(current, dependencies.instanceId);
       current.synthesisDeferrals += 1;
-      const at = this.now();
+      const at = dependencies.now();
       current.state = "result_received";
       current.updatedAt = at.toISOString();
       current.nextAttemptAt = new Date(at.getTime() + backoffMs(
@@ -245,31 +208,31 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     });
   }
 
-  private async prepareOriginContextFallback(id: string): Promise<DurableContinuationRecord> {
-    return await this.store.mutate((records) => {
+  async function prepareOriginContextFallback(id: string): Promise<DurableContinuationRecord> {
+    return await dependencies.store.mutate((records) => {
       const current = requireRecord(records, id);
-      requireLease(current, this.instanceId);
+      requireLease(current, dependencies.instanceId);
       current.synthesizedText = ORIGIN_CONTEXT_UNAVAILABLE_TEXT;
       current.completionKind = "origin_context_unavailable";
       current.state = "ready_to_deliver";
-      current.updatedAt = this.now().toISOString();
+      current.updatedAt = dependencies.now().toISOString();
       delete current.nextAttemptAt;
       delete current.synthesisStartedAt;
       return structuredClone(current);
     });
   }
 
-  private async deferSynthesis(
+  async function deferSynthesis(
     id: string,
     code: string,
     reason: string,
     retryAfterMs = 1_000,
     consumedAttempt = false,
   ): Promise<DurableContinuationRecord> {
-    return await this.store.mutate((records) => {
+    return await dependencies.store.mutate((records) => {
       const current = requireRecord(records, id);
-      requireLease(current, this.instanceId);
-      const at = this.now();
+      requireLease(current, dependencies.instanceId);
+      const at = dependencies.now();
       current.state = "result_received";
       current.updatedAt = at.toISOString();
       current.nextAttemptAt = new Date(at.getTime() + Math.max(0, retryAfterMs)).toISOString();
@@ -281,20 +244,20 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     });
   }
 
-  private async expireBeforeDeliveryIfNeeded(id: string): Promise<boolean> {
-    const now = this.now();
-    return await this.store.mutate((records) => {
+  async function expireBeforeDeliveryIfNeeded(id: string): Promise<boolean> {
+    const now = dependencies.now();
+    return await dependencies.store.mutate((records) => {
       const current = requireRecord(records, id);
-      requireLease(current, this.instanceId);
+      requireLease(current, dependencies.instanceId);
       if (Date.parse(current.deadline) > now.getTime()) return false;
       expire(current, now.toISOString());
       return true;
     });
   }
 
-  private async acquireLease(id: string): Promise<DurableContinuationRecord | undefined> {
-    const now = this.now();
-    return await this.store.mutate((records) => {
+  async function acquireLease(id: string): Promise<DurableContinuationRecord | undefined> {
+    const now = dependencies.now();
+    return await dependencies.store.mutate((records) => {
       const record = records.get(id);
       if (record === undefined || TERMINAL_CONTINUATION_STATES.has(record.state)) return undefined;
       if (record.leaseUntil !== undefined && Date.parse(record.leaseUntil) > now.getTime()) return undefined;
@@ -302,22 +265,22 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
         expire(record, now.toISOString());
         return undefined;
       }
-      record.leaseOwner = this.instanceId;
-      record.leaseUntil = new Date(now.getTime() + this.leaseMs).toISOString();
+      record.leaseOwner = dependencies.instanceId;
+      record.leaseUntil = new Date(now.getTime() + dependencies.leaseMs).toISOString();
       record.updatedAt = now.toISOString();
       return structuredClone(record);
     });
   }
 
-  private async synthesize(
+  async function synthesize(
     record: DurableContinuationRecord,
     originContext: Extract<ResolvedOriginContext, { readonly kind: "ready" }>,
   ): Promise<DurableContinuationRecord> {
-    const startedAt = this.now().toISOString();
-    const prepared = await this.store.mutate((records) => {
-      this.throwIfStopping();
+    const startedAt = dependencies.now().toISOString();
+    const prepared = await dependencies.store.mutate((records) => {
+      dependencies.throwIfStopping();
       const current = requireRecord(records, record.continuationId);
-      requireLease(current, this.instanceId);
+      requireLease(current, dependencies.instanceId);
       current.state = "synthesizing";
       current.synthesisAttempts += 1;
       current.synthesisStartedAt = startedAt;
@@ -326,26 +289,26 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
       return structuredClone(current);
     });
     try {
-      const result = await this.runBoundedOperation(
+      const result = await dependencies.runBoundedOperation(
         "synthesis",
-        this.limits.synthesisTimeoutMs,
-        async () => await this.options.synthesize(synthesisInput(prepared, originContext)),
+        dependencies.limits.synthesisTimeoutMs,
+        async () => await dependencies.synthesize(synthesisInput(prepared, originContext)),
       );
-      this.throwIfStopping();
+      dependencies.throwIfStopping();
       const text = result.text.trim();
       if (text.length === 0 || text.length > MAX_TEXT_CHARS) {
         throw new Error(text.length === 0
           ? "Synthesis returned empty text."
           : "Synthesis exceeded the 200,000 character limit.");
       }
-      return await this.store.mutate((records) => {
+      return await dependencies.store.mutate((records) => {
         const current = requireRecord(records, prepared.continuationId);
-        requireLease(current, this.instanceId);
+        requireLease(current, dependencies.instanceId);
         current.synthesizedText = text;
         current.completionKind = "synthesized";
         if (result.actionable !== undefined) current.actionable = result.actionable;
         current.state = "ready_to_deliver";
-        current.updatedAt = this.now().toISOString();
+        current.updatedAt = dependencies.now().toISOString();
         delete current.lastError;
         delete current.synthesisStartedAt;
         return structuredClone(current);
@@ -353,7 +316,7 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     } catch (error) {
       if (error instanceof ContinuationServiceStoppingError) throw error;
       if (error instanceof ContinuationSynthesisUnavailableError) {
-        return await this.deferSynthesis(
+        return await deferSynthesis(
           prepared.continuationId,
           error.code,
           error.message,
@@ -361,10 +324,10 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
           true,
         );
       }
-      return await this.store.mutate((records) => {
+      return await dependencies.store.mutate((records) => {
         const current = requireRecord(records, prepared.continuationId);
-        requireLease(current, this.instanceId);
-        const at = this.now().toISOString();
+        requireLease(current, dependencies.instanceId);
+        const at = dependencies.now().toISOString();
         current.lastError = errorRecord(
           error instanceof ContinuationOperationTimeoutError
             ? "synthesis_timeout_outcome_unknown"
@@ -380,27 +343,27 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     }
   }
 
-  private async markReady(id: string): Promise<DurableContinuationRecord> {
-    return await this.store.mutate((records) => {
+  async function markReady(id: string): Promise<DurableContinuationRecord> {
+    return await dependencies.store.mutate((records) => {
       const record = requireRecord(records, id);
-      requireLease(record, this.instanceId);
+      requireLease(record, dependencies.instanceId);
       record.state = "ready_to_deliver";
-      record.updatedAt = this.now().toISOString();
+      record.updatedAt = dependencies.now().toISOString();
       return structuredClone(record);
     });
   }
 
-  private async deliver(record: DurableContinuationRecord): Promise<void> {
+  async function deliver(record: DurableContinuationRecord): Promise<void> {
     if (record.replyToConversationId === undefined || record.synthesizedText === undefined) {
-      await this.deadLetter(record.continuationId, "missing_delivery_binding", "Continuation has no bound native destination or synthesized text.");
+      await deadLetter(record.continuationId, "missing_delivery_binding", "Continuation has no bound native destination or synthesized text.");
       return;
     }
-    const started = await this.store.mutate((records) => {
-      this.throwIfStopping();
+    const started = await dependencies.store.mutate((records) => {
+      dependencies.throwIfStopping();
       const current = requireRecord(records, record.continuationId);
-      requireLease(current, this.instanceId);
+      requireLease(current, dependencies.instanceId);
       current.deliveryAttempts += 1;
-      const at = this.now().toISOString();
+      const at = dependencies.now().toISOString();
       current.deliveryStartedAt = at;
       current.updatedAt = at;
       return structuredClone(current);
@@ -408,22 +371,22 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     const conversationId = started.replyToConversationId;
     const text = started.synthesizedText;
     if (conversationId === undefined || text === undefined) {
-      await this.deadLetter(started.continuationId, "missing_delivery_binding", "Continuation delivery binding disappeared before native delivery.");
+      await deadLetter(started.continuationId, "missing_delivery_binding", "Continuation delivery binding disappeared before native delivery.");
       return;
     }
     let result: ContinuationNativeDeliveryResult;
     try {
-      result = await this.runBoundedOperation(
+      result = await dependencies.runBoundedOperation(
         "delivery",
-        this.limits.deliveryTimeoutMs,
-        async () => await this.options.deliver({
+        dependencies.limits.deliveryTimeoutMs,
+        async () => await dependencies.deliver({
           continuationId: started.continuationId,
           conversationId,
           text,
           deliveryKey: `continuation:${started.continuationId}`,
         }),
       );
-      this.throwIfStopping();
+      dependencies.throwIfStopping();
     } catch (error) {
       if (error instanceof ContinuationServiceStoppingError) throw error;
       result = {
@@ -434,10 +397,10 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
         reason: safeReason(error),
       };
     }
-    await this.store.mutate((records) => {
+    await dependencies.store.mutate((records) => {
       const current = requireRecord(records, started.continuationId);
-      requireLease(current, this.instanceId);
-      const at = this.now().toISOString();
+      requireLease(current, dependencies.instanceId);
+      const at = dependencies.now().toISOString();
       current.updatedAt = at;
       clearLease(current);
       if (result.kind === "delivered") {
@@ -460,7 +423,7 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
         delete current.deliveryStartedAt;
         current.lastError = errorRecord(result.code, result.reason, at);
         const delay = result.retryAfterMs ?? backoffMs(current.deliveryAttempts, 1_000, 60 * 60 * 1_000);
-        current.nextAttemptAt = new Date(this.now().getTime() + delay).toISOString();
+        current.nextAttemptAt = new Date(dependencies.now().getTime() + delay).toISOString();
       } else if (result.kind === "unknown") {
         current.state = "delivery_unknown";
         current.lastError = errorRecord(result.code, result.reason, at);
@@ -473,13 +436,13 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     });
   }
 
-  protected async markDelivered(
+  async function markDelivered(
     id: string,
     receipt: NonNullable<DurableContinuationRecord["receipt"]>,
   ): Promise<void> {
-    await this.store.mutate((records) => {
+    await dependencies.store.mutate((records) => {
       const record = requireRecord(records, id);
-      requireLease(record, this.instanceId);
+      requireLease(record, dependencies.instanceId);
       record.state = "delivered";
       record.receipt = receipt;
       record.updatedAt = receipt.deliveredAt;
@@ -489,13 +452,14 @@ export abstract class ContinuationDispatchWorker extends ContinuationOriginServi
     });
   }
 
-  protected async deadLetter(id: string, code: string, reason: string): Promise<void> {
-    await this.store.mutate((records) => {
+  async function deadLetter(id: string, code: string, reason: string): Promise<void> {
+    await dependencies.store.mutate((records) => {
       const record = requireRecord(records, id);
       record.state = "dead_lettered";
-      record.updatedAt = this.now().toISOString();
+      record.updatedAt = dependencies.now().toISOString();
       record.lastError = errorRecord(code, reason, record.updatedAt);
       clearLease(record);
     });
   }
+  return { recover, processDue, processOne };
 }

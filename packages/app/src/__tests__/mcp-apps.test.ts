@@ -1992,6 +1992,60 @@ describe("MCP Apps registry", () => {
     await service.dispose();
   });
 
+  it.each(["preflight", "completion"] as const)("shares audit admission across two services (%s failure)", async (failure) => {
+    const artifactDir = await tempDir();
+    const root = join(artifactDir, "mcp-apps");
+    const entered = deferred();
+    const barrier = deferred();
+    let inventories = 0;
+    const beforeAuditStorageOperation = async (operation: string, path: string) => {
+      if (operation === "readdir" && path === root) {
+        inventories += 1;
+        entered.resolve();
+        await barrier.promise;
+      }
+    };
+    const options = { artifactDir, auditMaxBytes: 1_024, auditRetainedFiles: 1,
+      auditStorageMaxBytes: 2_048, beforeAuditStorageOperation };
+    const services = [createMcpAppService(options), createMcpAppService(options)];
+    try {
+      const owners = await Promise.all(services.map(async (service, index) => {
+        const live = connection(`fictional-connection-${index}`);
+        const host = await hostFor(service, `fictional-run-${index}`, "conversation");
+        const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+        const directory = join(root, app.invocationId);
+        if (failure === "preflight") {
+          // Both live services protect their active files from cross-owner reclamation.
+          await writeFile(join(directory, "audit.jsonl"), Buffer.alloc(1_024, 0x61));
+        } else {
+          live.callTool.mockImplementationOnce(async () => {
+            await mkdir(join(directory, "audit.1.jsonl"));
+            return { ok: true };
+          });
+        }
+        return { service, live, app };
+      }));
+      const first = owners[0]!;
+      const second = owners[1]!;
+      const one = expect(first.service.request(confirmedToolCall(first.app))).rejects.toMatchObject({
+        code: failure === "preflight" ? "app_audit_failed" : "app_audit_incomplete",
+      });
+      await entered.promise;
+      const two = expect(second.service.request(confirmedToolCall(second.app))).rejects.toMatchObject({
+        code: failure === "preflight" ? "app_audit_failed" : "app_audit_incomplete",
+      });
+      expect(first.live.callTool).not.toHaveBeenCalled();
+      expect(second.live.callTool).not.toHaveBeenCalled();
+      barrier.resolve();
+      await Promise.all([one, two]);
+      expect(inventories).toBe(1);
+      for (const { live } of owners) expect(live.callTool).toHaveBeenCalledTimes(failure === "preflight" ? 0 : 1);
+    } finally {
+      barrier.resolve();
+      await Promise.all(services.map(async (service) => await service.dispose()));
+    }
+  });
+
   it("requires one audit option set for every service sharing an artifact root", async () => {
     const artifactDir = await tempDir();
     const first = createMcpAppService({
