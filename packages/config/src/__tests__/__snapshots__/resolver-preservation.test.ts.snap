@@ -2,33 +2,33 @@
 
 exports[`resolver extraction preservation > preserves complete shapes and ordered views: defaults 1`] = `
 {
-  "config": "9963e1ff7b2690aefca888adc0ac3383745cf50c9b809c3852932d83a527a166",
-  "redacted": "9963e1ff7b2690aefca888adc0ac3383745cf50c9b809c3852932d83a527a166",
-  "view": "5717786bdf9f9fc3a635726734bb41303c36dad090573cf56e9fe74facb4d5c4",
+  "config": "a69179f0c6d84eec6ef4e94c35ba6d47738750346f168a28e7ddf10be2fe8867",
+  "redacted": "a69179f0c6d84eec6ef4e94c35ba6d47738750346f168a28e7ddf10be2fe8867",
+  "view": "a3ddfd7b410b9c00df87bd15fa7c0e1a9d2daa914724904be309b73495261ba4",
 }
 `;
 
 exports[`resolver extraction preservation > preserves complete shapes and ordered views: domains 1`] = `
 {
-  "config": "e186f97e1047e2321cb0d966e7c4c74e26073b4d5a8a51a3d61c297ef3638717",
-  "redacted": "6a00155c7c0bd886cd977b80fde102d7233f2bc3b8a98bbfb83209ea905bfa19",
-  "view": "e8562398b545d21d1adcb94f2ce336603582ac2acd19139ecc0849aa0bdff22c",
+  "config": "48a66bc44ace011a9a72a916ad72d4b1ae4b76b0ab7d40bb3ee2945a5bd14bcb",
+  "redacted": "cb19ce0dffae9712db24ed5098f49ac8d99915b9dd0067a6a94318e5de1f9d8e",
+  "view": "cf4ecf86b487fa2cd18d86bffff0abee753b64c75dde7da4eea6900724bb9248",
 }
 `;
 
 exports[`resolver extraction preservation > preserves complete shapes and ordered views: providers 1`] = `
 {
-  "config": "da242ccafb79508919e708a907d77c28572cf4e3ede508ef6a6e51012501a9fa",
-  "redacted": "04d773f23e10a774ddf34bfd187f50240776d6993b4ec0307824c9f2d59e3582",
-  "view": "28b59cf95c7a3b07f7ad0ef0a181c934a85861646d57d08401576ca7ebfccd96",
+  "config": "a270852b5f17138e5302e39682b1b5545c2ba0f59f02f3002f9b24c32ab26606",
+  "redacted": "ba56174be3aef3c6eeeaf0fdb569bc337b4f5f8cad68103900f6ca04145f7ab7",
+  "view": "8a8b250b3687cf458e53762d960d8b315408ecff94fde7abb25c58e428e91c74",
 }
 `;
 
 exports[`resolver extraction preservation > preserves complete shapes and ordered views: sparse 1`] = `
 {
-  "config": "6476d0f099cb53a2e576d78420991cecf30e3510f6b441041e3bffd2e5b5489f",
-  "redacted": "e226ea3b916353841affdacb68f93031e7faaee53f4a7fea765b18e0ff771a58",
-  "view": "524e210120b96e7d221d512749ad586b8d6d485fd06b795ee9db0f1db8c808ea",
+  "config": "6b1184193224895e544cc0785b04516b37333cf6b0bb93ef4083a05da6955d06",
+  "redacted": "30ff28ca8614a1b5dbd307da19774350840a04936179dd0394de379121ba48f6",
+  "view": "0624a11a7c9bae52fa0a5660f429fe58f9818c651398b61cab4aec610ffe54b1",
 }
 `;
 

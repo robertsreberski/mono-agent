@@ -26,6 +26,13 @@
 - Add `@mono-agent/memory/health-metadata` for ordered health issue codes
   without loading SQLite, the memory store, or provider SDKs.
 
+- Fix fallback context fit and strict-provider tool schemas without replaying
+  side effects, and report provider-serialized effective reasoning effort.
+- Reject summaries without useful output headroom before any provider call,
+  with explicit zero-cost accounting and unchanged-failure suppression.
+- Include reported compaction spend in run totals and a separate web cost line,
+  including rejected summaries and bounded manual-compaction receipts.
+
 - Fix repeated long-context summary failures with independent compaction effort,
   adaptive reasoning headroom, and configurable unchanged-failure suppression.
 

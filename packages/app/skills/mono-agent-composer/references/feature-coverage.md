@@ -246,3 +246,10 @@ rollback restores those backups. Only persisted Web inbound message IDs authoriz
 switch/summary work; pending messages are not replayed. This does not enable native
 switching on fallback routes, TUI/ACP requests or subagents. See the session-switch
 section in the runtime sessions documentation for limits and billing behavior.
+
+Long-context compaction uses independent `runtime.compaction.effort` (`auto`),
+not conversation effort. `failureCooldownMs` defaults to 900000 (0 disables
+unchanged-failure suppression). `summaryMaxTokens` is the combined text target;
+adaptive thinking has separately accounted bounded headroom. Context-limit
+fallback skips known too-small windows. Compaction costs, even rejected summary
+requests with usage, are included in the run total and shown separately in web.

@@ -362,6 +362,11 @@ and root drain/serialization remain prerequisites for a supported opt-in.
 
 ## Architecture
 
+Manual compaction carries optional bounded billing accounting. A known settled
+failed summary returns `status: failed` after failure reconciliation without
+reusing the retired session. Lost/cancelled/unsettled outcomes remain errors.
+
+
 Memory reads receive the host-confirmed `retainedContext` signal from history
 mode. Optional `recordInvocation` and `resetRecallContext` store hooks maintain
 volatile automatic-recall receipts only after successful retained provider

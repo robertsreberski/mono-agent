@@ -1499,6 +1499,14 @@ Manual actions bypass suppression. The bounded process-local cache clears on
 restart; one suppression warning explains why automatic compaction was skipped.
 Overflow remains a real failure and may continue through the fallback chain.
 
+A summary that cannot retain a useful answer after context/model and reasoning
+reserves is rejected **before invoking the provider**, with
+`insufficient_summary_headroom` accounting and a runtime warning. The useful
+minimum is Pi's 1024 tokens, or the intentionally smaller split/text budget.
+Known local non-dispatch has zero cost; missing provider usage remains unknown.
+Cheap headroom failures also enter suppression until growth, cooldown or policy/
+model-ceiling changes permit retry.
+
 Summary preparation preserves labelled heads and tails of text tool results within
 Pi's 2,000-character serializer allowance. Copies retain tool identities and
 arguments; live results remain unchanged. Confirmed `Read`/`Write`/`Edit` results
@@ -1510,10 +1518,11 @@ without a proven host resolver.
 A versioned focus supplements both Pi summary requests, including split turns:
 intent, approval constraints, open work, decisions, exact symbols, errors, and next
 action, distinguishing current instructions from superseded ones. Pi's prompts,
-cut rules, recent tail and output budgets remain unchanged. Empty, malformed,
+cut rules and recent tail remain unchanged. Runtime summary reasoning/output
+preparation is independent of conversation effort. Empty, malformed,
 aborted and output-truncated summaries are rejected before persistence.
 
-Each `context_compaction` event includes metadata-only `accounting` (version 1).
+Each `context_compaction` event includes metadata-only `accounting` (version 2).
 Terminal events retain separately identified summary requests and their status,
 duration, provider tokens and cost, including rejected requests. Missing usage or
 cost stays `null`. Transcript and full-request before/after estimates are comparable
@@ -1525,7 +1534,10 @@ paths, tool arguments and raw cache keys are excluded from accounting.
 With prompt-cache diagnostics enabled, assistant payload diagnostics and usage
 share a request ID and phase. `context_usage.providerCostUsd` preserves unknown
 provider cost as `null` alongside the existing compatibility cost field. Summary requests use operation-scoped IDs in
-compaction accounting; their usage never flows into assistant request totals.
+compaction accounting. Their usage is included once in run totals (including
+rejected summaries), but never becomes assistant-request context occupancy.
+The run usage bag retains a separate `compaction` slice deduped by request ID.
+Unknown costs remain null, or a marked partial subtotal for mixed reports.
 `scripts/summarize-prompt-cache.mjs` reports boundaries, separate assistant/summary
 cost, and first differing observed message fingerprints for full inputs. Differences
 are evidence of payload changes, not proof of cache misses; delta/unsupported

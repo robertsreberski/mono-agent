@@ -142,6 +142,11 @@ field does not introduce a new capability or change conversation history.
 
 ## Architecture
 
+`AgentManualCompactionResult.accounting` is an optional metadata-only receipt
+validated by `isAgentCompactionAccounting`: at most two summary requests,
+bounded identifiers and numeric/null usage. It contains no summary prose.
+
+
 Optional memory context fields carry host-confirmed retained-provider context and
 closed degradation codes. `MemoryStore.recordInvocation` acknowledges a
 successful retained invocation or certified recovery, and `resetRecallContext` clears volatile recall
@@ -289,6 +294,7 @@ AGENT_PRECEDING_MESSAGES_MAX_COUNT
 AGENT_PRECEDING_MESSAGES_MAX_TOTAL_BYTES
 AGENT_PRECEDING_MESSAGE_MAX_TEXT_BYTES
 AgentAttachment
+AgentCompactionAccounting
 AgentContextImportConflictReason
 AgentContextImportRequest
 AgentContextImportResult
@@ -497,6 +503,7 @@ formatLiveInputActivityLine
 formatProviderUsageLead
 generateBearerToken
 hostForUrl
+isAgentCompactionAccounting
 isAgentReplyOptions
 isAgentReplyPartDeliveryOutcomes
 isAgentResponseCancelledError

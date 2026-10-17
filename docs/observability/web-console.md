@@ -869,6 +869,13 @@ In the header the control is a single percentage, because it shares one narrow r
 
 The header never calls an in-flight measurement current. A running turn is labeled **Updating** in the popover; failed, cancelled, and interrupted turns ignore their own snapshots and retain only the prior successful **Last measured** value. Changing the selected model also labels the previous model's value **Last measured** and names that measured model. A running or successful compaction invalidates every older value immediately, showing **—** in the header and **Awaiting** in the popover until a newer exact provider measurement arrives. A skipped or failed compaction does not invalidate the prior measurement. This is why an exact value may legitimately decrease after compaction.
 
+The cost breakdown includes a separate **Compaction** line for directly observed
+context-summary requests. This is an included subset of the total, not a
+surcharge. Rejected/failed summaries still count when usage was reported. Unknown
+costs display as **—**; mixed pricing is a **≥** known subtotal, not zero. Child
+summary spend stays in the existing subagents subset. Manual accounting notices
+add their reported cost to the prior answer without generating a new turn.
+
 The popover keeps aggregate last-turn processed tokens and accumulated conversation cost separate from context occupancy. Older conversations without exact telemetry show **—** and may still show their processed-token breakdown and cost; no aggregate number is converted into a context percentage.
 
 Reported cost and processed tokens include what the run's subagents spent. A delegation is work the run asked for and is billed to the same account, so the Pi runtime folds each subagent's reported usage into the parent run's own before publishing it — which is also why exported metrics agree with the console. The trade is attribution: a subagent running on a different model has its spend reported under the parent run's model, which is the right answer for a run total and the wrong one for a per-model breakdown.
