@@ -1,0 +1,25 @@
+// Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
+// Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
+
+export function addUsage(left: any, right: any) {
+    return {
+        input: left.input + right.input,
+        output: left.output + right.output,
+        cacheRead: left.cacheRead + right.cacheRead,
+        cacheWrite: left.cacheWrite + right.cacheWrite,
+        ...(left.cacheWrite1h === undefined && right.cacheWrite1h === undefined
+            ? {}
+            : { cacheWrite1h: (left.cacheWrite1h ?? 0) + (right.cacheWrite1h ?? 0) }),
+        ...(left.reasoning === undefined && right.reasoning === undefined
+            ? {}
+            : { reasoning: (left.reasoning ?? 0) + (right.reasoning ?? 0) }),
+        totalTokens: left.totalTokens + right.totalTokens,
+        cost: {
+            input: left.cost.input + right.cost.input,
+            output: left.cost.output + right.cost.output,
+            cacheRead: left.cost.cacheRead + right.cost.cacheRead,
+            cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
+            total: left.cost.total + right.cost.total,
+        },
+    };
+}

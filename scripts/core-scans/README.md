@@ -49,14 +49,14 @@ exceptions below. Existing findings are deliberately not grandfathered in.
   outside discovery, not exceptions. Test directories are non-production inputs,
   so production discovery excludes `src/**/__tests__/` including their helpers.
 - Existing package tsconfigs map normal `dist` exports back to source. Turn's
-  default `tsconfig.json` extends its existing host project so tools that resolve
-  that conventional filename, including Knip, can map the four built host entries
-  back to their TS owners. Package defaults resolve before fallback path aliases;
-  aliases alone cannot establish that identity in a built checkout. The facade
-  adds no compiler options or build steps; turn's explicit build/typecheck commands
-  keep using the split JS/host projects. The later TypeScript conversion replaces
-  those split configs. Exact host specifier mappings and entries remain explicit
-  in `knip.ts`; no ignore entries compensate for source-mapping gaps.
+  staged build keeps its legacy public paths, with exact compiler-owned products
+  at converted source locations. Architecture and scan commands hide those
+  implementation products for an authored-only view and restore them even when
+  a scanner fails. Strict-check declaration overlays are absent between turn
+  compiler invocations, so dependent packages never discover them accidentally.
+  Knip mappings in `knip.ts` derive all retained entries/private keys from the
+  manifest and prefer authored TS twins. Build preflight happens before hiding
+  runtime products. No export ignores compensate for source-mapping gaps.
 - Madge scans production source (`ts,js,mjs,mts`) with `__tests__` excluded.
   Type-only edges are included. It follows reachable source dependencies across
   core packages: repeated cycles with `../../` prefixes are expected. Do not

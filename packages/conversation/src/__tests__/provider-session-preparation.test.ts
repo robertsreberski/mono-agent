@@ -4,12 +4,15 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { validateFrozenHandoffBudget } from "../history/model-switch/contract.js";
 function frozenBudget(f: Awaited<ReturnType<typeof fixture>>) { validateFrozenHandoffBudget(f.budget); return f.budget; }
 import { createPendingInitialInput } from "../history/pending-turn/contract.js";
 import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { fixture, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 
+const engineEntryUrl = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/engine"));
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function root() { const path = await mkdtemp(join(tmpdir(), "mono-prepared-owner-")); roots.push(path); return path; }
@@ -295,7 +298,7 @@ it("captures and hands off composed checkpoints covering exactly the inherited p
   const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] }, summary: {
     intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] } };
   expect(f.native.buildHandoff(captured.view, options).status).toBe("ready");
-  const { createEvidenceView, evidenceDigest } = await import(new URL("../../../turn/src/engine/evidence-view.js", import.meta.url).href) as typeof import("../../../turn/types/engine/evidence-view.js");
+  const { createEvidenceView, evidenceDigest } = await import(new URL("./evidence-view.js", engineEntryUrl).href) as typeof import("../../../turn/dist/engine/evidence-view.js");
   // The view retains only the suffix after that checkpoint; forge the complete raw journal instead.
   const [header, ...records] = (await readFile(metadata.path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
@@ -312,7 +315,7 @@ it("capture streams journals of any physical size; damage or growth between its 
   await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
   await expect(f.native.captureEvidence(source, context)).rejects.toThrow("Managed native journal evidence changed or is unavailable");
   await writeFile(f.nativePath, f.original);
-  const { JournalReader } = await import(new URL("../../../turn/src/engine/journal-reader.js", import.meta.url).href) as typeof import("../../../turn/types/engine/journal-reader.js"), original = JournalReader.prototype.scan; let passes = 0;
+  const { JournalReader } = await import(new URL("./journal-reader.js", engineEntryUrl).href) as typeof import("../../../turn/dist/engine/journal-reader.js"), original = JournalReader.prototype.scan; let passes = 0;
   const growing = vi.spyOn(JournalReader.prototype, "scan").mockImplementation(async function (this: typeof JournalReader.prototype, visit: Parameters<typeof original>[0]) {
     if (++passes === 2) await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
     return original.call(this, visit);
@@ -331,7 +334,7 @@ it("capture maps missing and other filesystem errors to generic unavailable with
   };
   await check({ ...source, journalId: "fictional-missing" }); // lstat ENOENT
   await check({ ...source, journalId: "j".repeat(4096) }); // other preflight filesystem failure
-  const { JournalReader } = await import(new URL("../../../turn/src/engine/journal-reader.js", import.meta.url).href) as typeof import("../../../turn/types/engine/journal-reader.js");
+  const { JournalReader } = await import(new URL("./journal-reader.js", engineEntryUrl).href) as typeof import("../../../turn/dist/engine/journal-reader.js");
   const scan = vi.spyOn(JournalReader.prototype, "scan").mockRejectedValueOnce(Object.assign(new Error(`EACCES: ${f.nativePath}`), { code: "EACCES", path: f.nativePath }));
   await check(source); scan.mockRestore(); await prep.abort();
 });

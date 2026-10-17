@@ -27,7 +27,7 @@
     "check:docs": "node scripts/check-docs.mjs",
     "check:changelog": "node scripts/check-changelog.mjs",
     "check:doc-snippets": "node scripts/check-doc-snippets.mjs",
-    "check:architecture": "node scripts/check-package-architecture.mjs",
+    "check:architecture": "node packages/turn/scripts/staged-build.mjs source-view -- node scripts/check-package-architecture.mjs",
     "check:deep-imports": "node scripts/verify-deep-imports.mjs",
     "verify:consumers": "node scripts/verify-consumers.mjs",
     "verify:all": "node scripts/verify-all.mjs",

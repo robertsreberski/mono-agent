@@ -67,10 +67,12 @@
   "main": "./src/index.js",
   "types": "./types/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.types.json && tsc -p tsconfig.host.build.json && node -e \"require('node:fs').copyFileSync('src/host/sandbox/srt-embed-runner.mjs','dist/host/sandbox/srt-embed-runner.mjs')\"",
-    "typecheck": "tsc -p tsconfig.types.json --noEmit && tsc -p tsconfig.host.json --noEmit",
+    "build": "node scripts/staged-build.mjs build",
+    "typecheck": "node scripts/staged-build.mjs typecheck",
     "prepack": "pnpm run build",
-    "test": "vitest run"
+    "test": "node scripts/emit-test-fixtures.mjs && vitest run",
+    "test:fixtures": "node scripts/emit-test-fixtures.mjs",
+    "compare:public-types": "node scripts/compare-public-declarations.mjs"
   },
   "files": [
     "src/**/*.js",
