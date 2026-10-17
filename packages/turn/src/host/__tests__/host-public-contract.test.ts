@@ -73,6 +73,28 @@ function assertAssignable<T>(_value: T): void {
 }
 
 describe("host public contract", () => {
+  it("keeps public core handoff records open without loosening host storage", () => {
+    type Dispatch = Awaited<ReturnType<NonNullable<TurnRuntimeInstance["prepareNativeDispatch"]>>>;
+    type Input = Parameters<NonNullable<Dispatch["checkHandoffSummary"]>>[0];
+    type Result = Awaited<ReturnType<NonNullable<Dispatch["produceHandoffSummary"]>>>;
+    if (false) {
+      const input: Input = { prepared: { status: "prepared", checkpoints: [], ledger: [], recent: [], older: [], coverage: [] }, outputReserve: 1 };
+      input.prepared.status = "prepared";
+      input.prepared.checkpoints[0]!.legacyField.nested = true;
+      input.prepared.coverage[0]!.legacyField.nested = true;
+      const result = null as unknown as Extract<Result, { status: "ready" }>;
+      if (result.status === "ready") {
+        result.usage.legacyField.nested = true;
+        result.status = "ready";
+        // @ts-expect-error summary arrays remain readonly in the public core result.
+        result.summary.intent.push("fictional");
+      }
+      const host = null as unknown as import("../types.js").RuntimeHandoffProducerRequest;
+      // @ts-expect-error host checkpoint evidence still requires narrowing from unknown.
+      host.prepared.checkpoints[0]!.legacyField.nested = true;
+    }
+  });
+
   it("retains the public core result and nested host request guarantees", () => {
     expectTypeOf<RuntimeResult["structuredResult"]>().toBeUnknown();
     expectTypeOf<TurnRunResult["sdk"]>().toEqualTypeOf<"pi" | undefined>();

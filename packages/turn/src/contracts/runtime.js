@@ -392,9 +392,21 @@
  * @property {any} [nativeSessionProjection]
  */
 
-/** @typedef {import("./native-storage.js").RuntimeHandoffProducerRequest} NativeHandoffProducerRequest */
+/**
+ * Public core handoff input keeps its open-record compatibility view; host
+ * storage retains the richer readonly, unknown-data contract in native-storage.
+ * @typedef {{
+ *   prepared: {status: import("./native-storage.js").RuntimePreparedHandoff["status"]}
+ *     & Record<"checkpoints" | "ledger" | "recent" | "older" | "coverage", ReadonlyArray<Record<string, any>>>
+ *     & Partial<Omit<import("./native-storage.js").RuntimePreparedHandoff, "status" | "checkpoints" | "ledger" | "recent" | "older" | "coverage">>,
+ *   outputReserve: import("./native-storage.js").RuntimeHandoffProducerRequest["outputReserve"]
+ * }} NativeHandoffProducerRequest
+ */
 /** @typedef {import("./native-storage.js").RuntimeHandoffSummary} NativeHandoffSummary */
-/** @typedef {import("./native-storage.js").RuntimeHandoffProducerResult} NativeHandoffProducerResult */
+/** @template T
+ * @typedef {{-readonly [K in keyof T]: K extends "usage" ? any : T[K]}} NativeHandoffResultView
+ */
+/** @typedef {NativeHandoffResultView<import("./native-storage.js").RuntimeHandoffProducerResult>} NativeHandoffProducerResult */
 
 /**
  * @typedef {Object} NativePreparedDispatch
@@ -438,8 +450,10 @@
  * onSessionTurnDetached?: (attempt: {descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeAttemptResult}) => Promise<void>
  * }} RuntimeAttemptRunOptions */
 
-/** @typedef {Omit<NativePreparedDispatch, "run"> & {
- * run(binding?: NativeDispatchBinding): Promise<RuntimeAttemptResult>
+/** @typedef {Omit<NativePreparedDispatch, "run" | "checkHandoffSummary" | "produceHandoffSummary"> & {
+ * run(binding?: NativeDispatchBinding): Promise<RuntimeAttemptResult>,
+ * checkHandoffSummary?(input: import("./native-storage.js").RuntimeHandoffProducerRequest): import("./native-storage.js").RuntimeHandoffFit,
+ * produceHandoffSummary?(input: import("./native-storage.js").RuntimeHandoffProducerRequest): Promise<import("./native-storage.js").RuntimeHandoffProducerResult>
  * }} RuntimeAttemptPreparedDispatch */
 
 /**

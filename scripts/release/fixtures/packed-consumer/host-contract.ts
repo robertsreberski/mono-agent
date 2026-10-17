@@ -67,3 +67,18 @@ if (false) {
   // @ts-expect-error public core events cannot lose their type discriminator.
   core.events?.push({});
 }
+
+if (false) {
+  type Dispatch = Awaited<ReturnType<NonNullable<ReturnType<typeof createRuntime>["prepareNativeDispatch"]>>>;
+  const dispatch = null as unknown as Dispatch;
+  dispatch.checkHandoffSummary?.({ prepared: { status: "prepared", checkpoints: [], ledger: [], recent: [], older: [], coverage: [] }, outputReserve: 1 });
+  type Summary = Extract<Awaited<ReturnType<NonNullable<Dispatch["produceHandoffSummary"]>>>, { status: "ready" }>;
+  const summary = null as unknown as Summary;
+  summary.usage.legacyField.nested = true;
+  summary.status = "ready";
+  // @ts-expect-error public summary field arrays remain readonly.
+  summary.summary.intent.push("fictional");
+  const host = null as unknown as import("@mono-agent/turn/host/types").RuntimeHandoffProducerRequest;
+  // @ts-expect-error host checkpoint evidence stays unknown until narrowed.
+  host.prepared.checkpoints[0]!.legacyField.nested = true;
+}
