@@ -14,6 +14,10 @@ import {
   verifyManagedRuntimeLaunch,
 } from "../background-runtime.js";
 import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput, ManagedRuntimeProgress } from "../service/managed-runtime/types.js";
+import { fingerprintClosureFile } from "../service/managed-runtime/installed-closure.js";
+import { runtimeLayout } from "../service/managed-runtime/layout.js";
+import { runtimeMarkerFromJson } from "../service/managed-runtime/marker.js";
+import { verifyRuntimeFast } from "../service/managed-runtime/reuse-proof.js";
 import { deduplicateSourceReuseProofLinks } from "../service/managed-runtime/source-closure.js";
 import { MANAGED_BACKGROUND_WORKER_ENV, sanitizeManagedBackgroundWorkerEnvironment } from "../background-environment.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
@@ -23,6 +27,7 @@ const io = vi.hoisted(() => ({
   beforeLstat: undefined as undefined | ((path: string) => Promise<void>),
   beforeRead: undefined as undefined | ((path: string) => Promise<void>),
   beforeRename: undefined as undefined | ((source: string, destination: string) => Promise<void>),
+  readFileReplacement: undefined as undefined | { path: string; bytes: Buffer; reads: number },
   opened: [] as string[],
   reads: 0,
   peakReads: 0,
@@ -45,6 +50,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...fs,
     lstat: trackedLstat,
+    readFile: async (...args: Parameters<typeof fs.readFile>) => {
+      if (String(args[0]) === io.readFileReplacement?.path) {
+        io.readFileReplacement.reads += 1;
+        return io.readFileReplacement.bytes;
+      }
+      return await fs.readFile(...args);
+    },
     rename: async (...args: Parameters<typeof fs.rename>) => {
       await io.beforeRename?.(String(args[0]), String(args[1]));
       return await fs.rename(...args);
@@ -106,6 +118,7 @@ afterEach(async () => {
   io.beforeLstat = undefined;
   io.beforeRead = undefined;
   io.beforeRename = undefined;
+  io.readFileReplacement = undefined;
   io.opened = [];
   io.peakReads = 0;
   io.peakCopies = 0;
@@ -1853,3 +1866,59 @@ async function recursiveNames(path: string): Promise<string[]> {
     return [];
   }
 }
+
+
+it("refuses a manifest byte change between fingerprint and warm-proof comparison", async () => {
+  const source = await fixturePackage();
+  const homeDir = await homeFixture();
+  const runtime = await ensureManagedBackgroundRuntime({
+    currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+  }, fakeInstallerDeps(async (input) => {
+    await materializeInstalledPackage(input, await readFile(source.cliPath));
+  }));
+  const marker = JSON.parse(await readFile(join(runtime.installRoot, ".mono-agent-runtime.json"), "utf8"));
+  const layout = runtimeLayout(await realpath(homeDir), marker, "guarantee", 0);
+  await expect(verifyRuntimeFast(layout, marker, await realpath(source.root), [])).resolves.toBe(true);
+  const originalManifest = await readFile(layout.closureManifestPath);
+  // Same parsed entries/modes/targets, different bytes. Only the second read
+  // sees the race, after the independent on-disk fingerprint has passed.
+  io.readFileReplacement = {
+    path: layout.closureManifestPath, bytes: Buffer.concat([originalManifest, Buffer.from("\n")]), reads: 0,
+  };
+  await expect(verifyRuntimeFast(layout, marker, await realpath(source.root), [])).resolves.toBe(false);
+  expect(io.readFileReplacement.reads).toBe(1);
+});
+
+it("refuses a runtime marker with a foreign package discriminator", () => {
+  const identity = {
+    packageVersion: "1.2.3", cliSha256: "a".repeat(64), sourceClosureSha256: "b".repeat(64),
+    nodeAbi: "fixture-abi", platform: "darwin" as const, arch: "arm64",
+  };
+  const marker = {
+    ...identity, schema: "mono-agent.managed-runtime.v5", packageName: "@mono-agent/agent-app",
+    closureManifestSha256: "c".repeat(64), executionProofSha256: "d".repeat(64),
+    reuseProofSha256: "e".repeat(64), installedAt: "2025-01-01T00:00:00.000Z",
+  };
+  expect(runtimeMarkerFromJson(marker, identity)).toEqual(marker);
+  expect(runtimeMarkerFromJson({ ...marker, packageName: "@fixture/foreign-app" }, identity)).toBeUndefined();
+});
+
+it("refuses a file replaced between opening and the final fingerprint stat", async () => {
+  const root = await homeFixture();
+  const path = join(root, "entry.js");
+  const bytes = "export const fixture = true;\n";
+  await writeFile(path, bytes);
+  await expect(fingerprintClosureFile(path, "entry.js")).resolves.toMatchObject({ bytes: Buffer.from(bytes) });
+  let replacements = 0;
+  io.beforeRead = async (opened) => {
+    if (opened !== path) return;
+    const replacement = join(root, "replacement.js");
+    await writeFile(replacement, bytes);
+    await rename(replacement, path);
+    replacements += 1;
+  };
+  await expect(fingerprintClosureFile(path, "entry.js"))
+    .rejects.toThrow("Managed runtime file entry.js changed while it was fingerprinted.");
+  expect(replacements).toBe(1);
+  expect(await readFile(path, "utf8")).toBe(bytes);
+});
