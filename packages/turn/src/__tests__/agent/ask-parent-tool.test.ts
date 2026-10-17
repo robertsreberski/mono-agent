@@ -8,17 +8,17 @@ const ctx = createToolContext();
 describe("AskParent", () => {
   it("requires a controller even when all tools are allowed", () => {
     expect(createAskParentTool()).toBeNull();
-    expect(getPiBuiltinTools(["*"], { ctx }).map((tool) => tool.name)).not.toContain("AskParent");
+    expect(getPiBuiltinTools(["*"], { ctx }).map((tool: any) => tool.name)).not.toContain("AskParent");
     const options = { askParentController: { submit: vi.fn() } };
-    expect(getPiBuiltinTools(["AskParent"], { ...options, ctx }).map((tool) => tool.name)).toContain("AskParent");
-    expect(getPiBuiltinTools(["*"], { ...options, ctx, disallowedTools: ["AskParent"] }).map((tool) => tool.name)).not.toContain("AskParent");
+    expect(getPiBuiltinTools(["AskParent"], { ...options, ctx }).map((tool: any) => tool.name)).toContain("AskParent");
+    expect(getPiBuiltinTools(["*"], { ...options, ctx, disallowedTools: ["AskParent"] }).map((tool: any) => tool.name)).not.toContain("AskParent");
   });
   it("awaits durable submission, normalizes options, terminates, and refuses duplicate submissions", async () => {
-    let release;
-    const submit = vi.fn(() => new Promise((resolve) => { release = resolve; }));
+    let release: any;
+    const submit: any = vi.fn(() => new Promise((resolve: any) => { release = resolve; }));
     const tool = createAskParentTool({ submit });
     let finished = false;
-    const result = tool.execute("q", { question: " Which? ", options: [" A ", "B", "A"] }).then((value) => { finished = true; return value; });
+    const result = tool.execute("q", { question: " Which? ", options: [" A ", "B", "A"] }).then((value: any) => { finished = true; return value; });
     await Promise.resolve();
     expect(finished).toBe(false);
     expect(submit).toHaveBeenCalledWith({ question: "Which?", options: ["A", "B"] });
@@ -29,7 +29,7 @@ describe("AskParent", () => {
   it.each([{}, { question: " " }, { question: "x".repeat(2001) }, { question: "q", options: [] },
     { question: "q", options: ["a", " a "] }, { question: "q", options: ["a", ""] },
     { question: "q", options: ["a", "b", "c", "d", "e", "f"] }, { question: "q", options: ["a", "x".repeat(201)] },
-    { question: "q", extra: true }])("rejects invalid execute input %j", async (input) => {
+    { question: "q", extra: true }])("rejects invalid execute input %j", async (input: any) => {
     const submit = vi.fn();
     await expect(createAskParentTool({ submit }).execute("q", input)).rejects.toThrow(/AskParent/);
     expect(submit).not.toHaveBeenCalled();
@@ -53,7 +53,7 @@ it("persistent child exposure stays stable without a current publication control
   const submit = vi.fn();
   const unavailable = createAskParentTool(null, true);
   const available = createAskParentTool({ submit }, true);
-  const definition = ({ name, description, parameters }) => JSON.stringify({ name, description, parameters });
+  const definition = ({ name, description, parameters }: any) => JSON.stringify({ name, description, parameters });
   expect(definition(unavailable)).toBe(definition(available));
   await expect(unavailable.execute("no", { question: "Can I proceed?" })).rejects.toThrow(/unavailable/);
   expect(submit).not.toHaveBeenCalled();

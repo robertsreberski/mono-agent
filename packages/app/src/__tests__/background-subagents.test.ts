@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import type { ProcessJobWakeInput } from "../process-jobs/types.js";
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
@@ -24,10 +26,9 @@ import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
 import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
 import { hasSubagentObligation } from "../subagent-execution-ownership.js";
 import { launchInternalProcessJob } from "../process-jobs-internal.js";
-// @ts-expect-error Private kernel test seam.
-import { createAgentTool, subagentUsageForRun } from "../../../turn/src/tools/delegation/agent-tool.js";
-// @ts-expect-error Private kernel test seam.
-import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
+const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"));
+const { createAgentTool, subagentUsageForRun } = await import(new URL("./delegation/agent-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-tool.js");
+const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
 
 const origin = { conversationId: "slack:C1:1.1#bucket", baseConversationId: "slack:C1:1.1", bucket: "bucket",
   replyToConversationId: "slack:C1:1.1", normalizedReplyTarget: "slack:C1:1.1", runId: "parent", historyBoundary: "parent", channel: "slack" };
@@ -2000,7 +2001,7 @@ describe("detached persistent subagents", () => {
     expect(await f.service.get(receipt.details.jobId)).toEqual(job);
     expect(f.wake).toHaveBeenCalledOnce();
     expect((await f.instances.get("helper"))?.usage).toMatchObject({ input: 7, output: 2, costUsd: 0.1 });
-    expect(subagentUsageForRun(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
+    expect((subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
     const next = tools(f, async () => ({ text: "replied" }));
     await expect(next.send.execute("reply", { id: "helper", message: "Small", close: true })).rejects.toThrow("subagent_recovery_required");
     expect((await f.instances.get("helper"))?.recovery).toMatchObject({ continuity: "unknown" });
@@ -2592,12 +2593,12 @@ it.each([false, true])("keeps detached parent usage deterministic with delayed=%
     r.onEvent({ type: "cost_accumulated", tokens: { input: 12, output: 3 }, cumulativeUsd: 0.25 });
     return result;
   });
-  const before = subagentUsageForRun(options);
+  const before = (subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options);
   const receipt = await agent.execute("usage", { persist: true, background: true, id: "helper", prompt: "work" });
-  expect(subagentUsageForRun(options)).toEqual(before);
+  expect((subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options)).toEqual(before);
   gate.resolve(result);
   const job = await done(f.service, receipt.details.jobId);
-  expect(subagentUsageForRun(options)).toEqual(before);
+  expect((subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options)).toEqual(before);
   expect((await f.instances.get("helper"))?.usage).toMatchObject({ input: 12, output: 3, costUsd: 0.25 });
   expect(job.output.preview).toContain('"usage":{"input":12');
 });
@@ -2634,7 +2635,7 @@ it("retains observed detached spend when the child throws without a result", asy
   expect(job.state).toBe("failed");
   expect(job.output.preview).toContain('"usage":{"input":9');
   expect((await f.instances.get("helper"))?.usage).toMatchObject({ input: 9, output: 4, costUsd: 0.2 });
-  expect(subagentUsageForRun(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
+  expect((subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
 });
 
 

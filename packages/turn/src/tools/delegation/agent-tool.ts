@@ -1,3 +1,4 @@
+import type { RuntimeSubagentInstance } from "../../contracts/runtime.js";
 // The `Agent` built-in: delegate a self-contained task to a subagent that runs
 // independently and reports back.
 //
@@ -102,8 +103,8 @@ State exactly what you want back ("return a bullet list of file:line and a one-l
  * @param {boolean} instancesEnabled
  * @returns {string}
  */
-function toolDescription(subagents, definitions, ceiling, instancesEnabled) {
-  const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
+function toolDescription(subagents: RuntimeSubagentsOptions, definitions: readonly RuntimeSubagentDefinition[], ceiling: readonly string[] | null, instancesEnabled: boolean) {
+  const maxConcurrent = positiveInt(subagents!.maxConcurrent, DEFAULT_MAX_CONCURRENT);
   const parallel = `\n\nSeveral Agent calls in ONE message can overlap (up to ${maxConcurrent} at a time). An invoked stateful, mutating, MCP, or unknown tool in that message is an exclusive barrier: later calls wait until its result settles. For long commands, use background process jobs when available rather than holding the batch behind a foreground command.`;
   const named = definitions.length === 0
     ? ""
@@ -114,7 +115,7 @@ function toolDescription(subagents, definitions, ceiling, instancesEnabled) {
   // splits those across two fields — label into `name`, profile into an
   // invented one — and the closed schema rejects the whole call before any of
   // the handler's precise errors can run.
-  const routeOptions = (subagents.models?.length ?? 0) > 0 ? "`model` or `effort`" : "`effort`";
+  const routeOptions = (subagents!.models?.length ?? 0) > 0 ? "`model` or `effort`" : "`effort`";
   const shapes = ceiling === null
     ? ""
     : `\n\nExactly two ways to call this, and \`name\` carries the agent's identity in both:\n- Use a configured one: set \`name\` to a name from the list above. Optionally set ${routeOptions}.\n- Build one for this task: set \`name\` to a NEW kebab-case name AND \`systemPrompt\` to its full instructions (optionally \`tools\` and ${routeOptions}). Do that when no configured one fits — a dedicated prompt beats stuffing constraints into \`prompt\`.\n\n\`description\` is the short label shown in the activity log, never the agent's name. There is no separate field for choosing a configured agent.`;
@@ -131,14 +132,14 @@ function toolDescription(subagents, definitions, ceiling, instancesEnabled) {
 }
 
 /** @param {*} subagents @param {number} maximum @param {string|undefined} parentRunId */
-function slotsForOptions(subagents, maximum, parentRunId) {
-  const budget = /** @type {*} */ (budgetForRun(subagents, parentRunId));
+function slotsForOptions(subagents: any, maximum: number, parentRunId: string | undefined) {
+  const budget = /** @type {*} */ ((budgetForRun(subagents, parentRunId)) as any);
   if (!budget.slots) budget.slots = createCountingSemaphore(maximum);
   return budget.slots;
 }
 
 /** @param {*} value @returns {number} */
-function numberOrZero(value) {
+function numberOrZero(value: any) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
 }
@@ -149,7 +150,7 @@ function emptyUsage() {
 }
 
 /** @param {ReturnType<typeof emptyUsage>} usage */
-function reportedTokens(usage) {
+function reportedTokens(usage: { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number; }) {
   const { input, output, cacheRead, cacheWrite } = usage;
   const values = [input, output, cacheRead, cacheWrite];
   return values.every((value) => Number.isSafeInteger(value) && value >= 0)
@@ -163,9 +164,9 @@ function reportedTokens(usage) {
  * @param {*} subagents The run-scoped options object, stable across attempts.
  * @param {string|undefined} parentRunId
  */
-function budgetForRun(subagents, parentRunId) {
-  const store = subagents.__budgets instanceof Map ? subagents.__budgets : new Map();
-  if (!(subagents.__budgets instanceof Map)) {
+function budgetForRun(subagents: any, parentRunId: string | undefined) {
+  const store = subagents!.__budgets instanceof Map ? subagents!.__budgets : new Map();
+  if (!(subagents!.__budgets instanceof Map)) {
     Object.defineProperty(subagents, "__budgets", { value: store, enumerable: false, configurable: true });
   }
   const key = parentRunId ?? "unkeyed";
@@ -196,7 +197,7 @@ function budgetForRun(subagents, parentRunId) {
  * @param {string|undefined} parentRunId
  * @returns {number}
  */
-export function subagentInvocationCount(subagents, parentRunId) {
+export function subagentInvocationCount(subagents: any, parentRunId: string | undefined): number {
   const store = subagents?.__budgets;
   if (!(store instanceof Map)) return 0;
   const entry = store.get(parentRunId ?? "unkeyed");
@@ -215,7 +216,7 @@ export function subagentInvocationCount(subagents, parentRunId) {
  * @param {string|undefined} parentRunId
  * @returns {{costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}}
  */
-export function subagentUsageForRun(subagents, parentRunId) {
+export function subagentUsageForRun(subagents: any, parentRunId: string | undefined): { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number } {
   const store = subagents?.__budgets;
   const usage = store instanceof Map ? store.get(parentRunId ?? "unkeyed")?.usage : undefined;
   return {
@@ -228,7 +229,7 @@ export function subagentUsageForRun(subagents, parentRunId) {
 }
 
 /** @param {*} value @param {number} fallback @returns {number} */
-function positiveInt(value, fallback) {
+function positiveInt(value: any, fallback: number) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
@@ -240,20 +241,20 @@ function positiveInt(value, fallback) {
  * @param {{record: import("../../contracts/runtime.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../contracts/runtime.js").RuntimeSubagentRecoveryRequest, route?: import("../../contracts/runtime.js").RuntimeSubagentRoute}} [continuation] Internal AgentManage dispatch; never model supplied.
  * @returns {*|null}
  */
-export function createAgentTool(subagents, context = {}, continuation) {
-  if (!subagents || typeof subagents.run !== "function") return null;
+export function createAgentTool(subagents: RuntimeSubagentsOptions | null | undefined, context: { recoveryAccess?: unknown; instancesEnabled?: boolean; persistentExposure?: boolean; model?: any; effort?: string; cwd?: string; parentRunId?: string; sandboxPolicy?: any; sandboxEngine?: any; skills?: { name: string; description?: string }[]; skillsRoot?: string; toolEnvironment?: any; webSearchConfig?: any; webRequestCoordinator?: any; webFetchConfig?: any; onEvent?: (event: any) => void; persistArtifact?: (artifact: { filename: string; buffer: Buffer; toolName: string; toolUseId: string | null }) => string | null } = {}, continuation?: { record: import("../../contracts/runtime.js").RuntimeSubagentInstance; close?: boolean; acknowledgement?: import("../../contracts/runtime.js").RuntimeSubagentRecoveryRequest; route?: import("../../contracts/runtime.js").RuntimeSubagentRoute }): any | null {
+  if (!subagents || typeof subagents!.run !== "function") return null;
   // Structural recursion lock #1: a subagent's own tool set never contains
   // `Agent`, regardless of what any host-supplied `run` forwards.
-  if (positiveInt(subagents.depth, 0) > 0 || Number(subagents.depth || 0) > 0) return null;
+  if (positiveInt(subagents!.depth, 0) > 0 || Number(subagents!.depth || 0) > 0) return null;
 
-  const instances = context.instancesEnabled === false ? undefined : subagents.instances;
+  const instances = context.instancesEnabled === false ? undefined : subagents!.instances;
   const persistentExposure = context.instancesEnabled !== false && (context.persistentExposure ?? Boolean(instances));
-  const background = instances?.reserve && instances?.releaseReservation ? subagents.backgroundSubagentController : undefined;
-  const definitions = Array.isArray(subagents.definitions) ? subagents.definitions.filter(Boolean).slice().sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) : [];
-  const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
-  const maxPerTurn = positiveInt(subagents.maxPerTurn, DEFAULT_MAX_PER_TURN);
-  const names = definitions.map((definition) => definition.name);
-  const models = [...(subagents.models ?? [])].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const background = instances?.reserve && instances?.releaseReservation ? subagents!.backgroundSubagentController : undefined;
+  const definitions = Array.isArray(subagents!.definitions) ? subagents!.definitions.filter(Boolean).slice().sort((a: any, b: any) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) : [];
+  const maxConcurrent = positiveInt(subagents!.maxConcurrent, DEFAULT_MAX_CONCURRENT);
+  const maxPerTurn = positiveInt(subagents!.maxPerTurn, DEFAULT_MAX_PER_TURN);
+  const names = definitions.map((definition: any) => definition.name);
+  const models = [...(subagents!.models ?? [])].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
   const slots = slotsForOptions(subagents, maxConcurrent, context.parentRunId);
   // Budget state hangs off the shared `subagents` options object, NOT this
@@ -265,7 +266,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
 
   // The ceiling doubles as the authoring switch: null means the closed schema
   // this tool has always had, with `name` restricted to configured profiles.
-  const ceiling = inlineCeiling(subagents.inline)?.slice().sort() ?? null;
+  const ceiling = inlineCeiling(subagents!.inline)?.slice().sort() ?? null;
 
   const parameters = {
     type: "object",
@@ -350,7 +351,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
      * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string, background?: boolean, verification?: {workdir: string, reportPath?: string}}} params
      * @param {AbortSignal} [signal]
      */
-    async execute(toolCallId, params, signal) {
+    async execute(toolCallId: string, params: { prompt: string; name?: string; description?: string; systemPrompt?: string; tools?: ReadonlyArray<string>; effort?: string; model?: string; persist?: boolean; id?: string; background?: boolean; verification?: { workdir: string; reportPath?: string; }; }, signal?: AbortSignal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
 
       if (params.background !== undefined && typeof params.background !== "boolean") throw new Error("Error: background must be a boolean.");
@@ -378,7 +379,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
       const { profile: selectedProfile, droppedTools } = continuation
         ? { profile: continuation.record.definition, droppedTools: [] }
         : authored
-        ? buildInlineProfile(params, ceiling, names)
+        ? buildInlineProfile(params, ceiling!, names)
         : { profile: resolveProfile(definitions, params?.name, ceiling), droppedTools: [] };
       if (selectedProfile === null) {
         const available = [...names, GENERAL_PURPOSE_SUBAGENT].join(", ");
@@ -400,7 +401,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         ...(params.effort === undefined ? {} : { effort: params.effort }),
       };
       /** @type {import("../../contracts/runtime.js").RuntimeSubagentInstance|undefined} */
-      let instance;
+      let instance: RuntimeSubagentInstance | undefined;
       const requested = {
         ...(profile.model === undefined ? {} : { model: `${profile.model.provider}:${profile.model.model}` }),
         ...(profile.effort === undefined ? {} : { effort: profile.effort }),
@@ -430,19 +431,19 @@ export function createAgentTool(subagents, context = {}, continuation) {
       budget.total += 1;
       const callIndex = budget.total;
 
-      const finishInstance = (id, outcome) => reservation === undefined
-        ? instances.finish(id, outcome) : instances.finish(id, outcome, reservation);
+      const finishInstance = (id: any, outcome: any) => reservation === undefined
+        ? instances!.finish(id, outcome) : instances!.finish(id, outcome, reservation!);
       const createInstance = async () => {
         const { mcpServers, ...retainedProfile } = profile;
         const spec = { ...(params.id === undefined ? {} : { id: params.id }),
           name: profile.name, systemPrompt: profile.systemPrompt,
           definition: { ...retainedProfile, mcpServerNames: profile.mcpServerNames ?? Object.keys(mcpServers ?? {}), model: profile.model ?? context.model, effort: profile.effort ?? context.effort } };
-        return params.verification ? await instances.create({ ...spec, verification: params.verification }, context.recoveryAccess) : await instances.create(spec);
+        return params.verification ? await instances!.create({ ...spec, verification: params.verification } as Parameters<NonNullable<typeof instances>["create"]>[0], context.recoveryAccess) : await instances!.create(spec as Parameters<NonNullable<typeof instances>["create"]>[0]);
       };
       if (detached) {
         let retained;
         try { retained = continuation?.record ?? await createInstance(); }
-        catch (error) {
+        catch (error: any) {
           if (error?.code === "subagent_instance_capacity" && Number.isSafeInteger(error.occupancy) && Number.isSafeInteger(error.limit)) {
             throw new Error(`Subagent live instances full: ${error.occupancy}/${error.limit} (subagents.instances.maxPerConversation); close idle instances or raise the configured limit.`);
           }
@@ -452,28 +453,28 @@ export function createAgentTool(subagents, context = {}, continuation) {
           throw new Error("Subagent instance could not be created; check the instance id, recovery state, and configured limits.");
         }
         instance = continuation?.acknowledgement
-          ? await instances.reserve(retained.id, reservation, continuation.acknowledgement, context.recoveryAccess, route)
-          : await instances.reserve(retained.id, reservation, undefined, context.recoveryAccess, route, !continuation);
+          ? await instances!.reserve!(retained.id, reservation!, continuation.acknowledgement, context.recoveryAccess, route)
+          : await instances!.reserve!(retained.id, reservation!, undefined, context.recoveryAccess, route, !continuation);
         try {
-          const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentManage" : "Agent",
-            jobId: reservation, instanceId: retained.id,
-            ...(background.managed ? { managed: { instanceIncarnation: instance.incarnation ?? "", turnToken: instance.activeTurn?.token ?? "" } } : {}),
+          const started = await background!.startInternal({ kind: "internal", tool: continuation ? "AgentManage" : "Agent",
+            jobId: reservation!, instanceId: retained.id,
+            ...(background!.managed ? { managed: { instanceIncarnation: instance.incarnation ?? "", turnToken: instance.activeTurn?.token ?? "" } } : {}),
             // `description` is the model-authored activity label (never the prompt); it names the job card.
             ...(typeof params.description === "string" && params.description.trim() ? { description: params.description } : {}),
             // Request headroom for the child timer and settlement. The host still
             // clamps this job to processJobs.maxRuntimeMs at admission.
-            timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)) + JOB_SETTLEMENT_MARGIN_MS,
+            timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents!.timeoutMs, DEFAULT_TIMEOUT_MS)) + JOB_SETTLEMENT_MARGIN_MS,
             // The identity is host-validated; raw prompts and tool parameters never enter job metadata.
-            cleanup: () => instances.releaseReservation(retained.id, reservation),
+            cleanup: () => instances!.releaseReservation!(retained.id, reservation!),
             run: async (childSignal, _writeOutput, reportProgress, execution) => {
               try {
                 let result;
                 try { result = await runTurn(childSignal, reportProgress, execution); }
-                catch (error) { throw markChildRunFailure(error); }
+                catch (error: any) { throw markChildRunFailure(error); }
                 return { answer: result.answer, status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
                   output: JSON.stringify({ instanceId: retained.id, ...result.details.subagent,
-                    answer: result.content[0].text, artifacts: result.details.tool_payload_saved_paths ?? [] }) };
-              } finally { await instances.releaseReservation(retained.id, reservation); }
+                    answer: result.content[0]!.text, artifacts: result.details.tool_payload_saved_paths ?? [] }) };
+              } finally { await instances!.releaseReservation!(retained.id, reservation!); }
             },
           });
           return { content: [{ type: "text", text: `Background subagent ${started.state === "queued" ? "queued; no child or provider has started" : "running"}. This conversation will wake on completion or AskParent. Do not poll, replay, or report completion yet.\n${JSON.stringify({ jobId: started.jobId, instanceId: retained.id, state: started.state, ...(started.queuePosition === undefined ? {} : { queuePosition: started.queuePosition }), ...(started.queueDeadlineAt === undefined ? {} : { queueDeadlineAt: started.queueDeadlineAt }) })}` }],
@@ -481,8 +482,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
               outcome: { status: "ok", code: "background_started", retryable: false, attempts: 1, durationMs: 0,
                 bytes: 0, truncated: false, exitCode: null, signal: null, timedOut: false, background: true,
                 job_id: started.jobId, state: started.state, started_at: started.startedAt } } };
-        } catch (error) {
-          try { await instances.releaseReservation(retained.id, reservation); }
+        } catch (error: any) {
+          try { await instances!.releaseReservation!(retained.id, reservation!); }
           catch { throw Object.assign(new Error("Subagent ownership is unavailable; the turn remains fenced."), { code: "subagent_owner_unavailable" }); }
           // The child's own run failures (e.g. provider admission refused) are
           // framework-authored and keep their text; only controller/service
@@ -499,7 +500,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
        * @param {(event: *) => void} [reportProgress]
        * @param {{deadlineAt: number, managed?: any}} [execution]
        */
-      async function runTurn(signal, reportProgress, execution) {
+      async function runTurn(signal?: AbortSignal, reportProgress?: (event: any) => void, execution?: { deadlineAt: number; managed?: any; }) {
         if (!detached && slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
           budget.warnedQueued = true;
           context.onEvent?.({
@@ -516,19 +517,19 @@ export function createAgentTool(subagents, context = {}, continuation) {
           releaseSlot();
           throw new Error("tool execution aborted");
         }
-        const configuredTimeoutMs = positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS));
+        const configuredTimeoutMs = positiveInt(profile.timeoutMs, positiveInt(subagents!.timeoutMs, DEFAULT_TIMEOUT_MS));
         let begun = false;
         let timeoutMs;
         try {
-          if (detached) { instance = await instances.begin(instance.id, reservation, continuation?.acknowledgement, context.recoveryAccess, route); begun = true; }
+          if (detached) { instance = await instances!.begin(instance!.id, reservation, continuation?.acknowledgement, context.recoveryAccess, route); begun = true; }
           else if (continuation) {
             instance = continuation.acknowledgement
-              ? await instances.begin(continuation.record.id, undefined, continuation.acknowledgement, context.recoveryAccess, route)
-              : await instances.begin(continuation.record.id, undefined, undefined, context.recoveryAccess, route);
+              ? await instances!.begin(continuation.record.id, undefined, continuation.acknowledgement, context.recoveryAccess, route)
+              : await instances!.begin(continuation.record.id, undefined, undefined, context.recoveryAccess, route);
             begun = true;
           } else if (params.persist) {
             const created = await createInstance();
-            instance = await instances.begin(created.id);
+            instance = await instances!.begin(created.id);
             begun = true;
           }
           // Registry admission may wait for locks, owner proof or expiry I/O. Take
@@ -550,9 +551,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
             throw new Error("Subagent provider admission refused: insufficient job runtime remains for child settlement.");
           }
           timeoutMs = Math.min(configuredTimeoutMs, remainingChildBudget);
-        } catch (error) { releaseSlot(); throw error; }
+        } catch (error: any) { releaseSlot(); throw error; }
         // The timer starts only AFTER a slot and registry intent are held.
-        const maxTurns = positiveInt(profile.maxTurns, positiveInt(subagents.maxTurns, DEFAULT_MAX_TURNS));
+        const maxTurns = positiveInt(profile.maxTurns, positiveInt(subagents!.maxTurns, DEFAULT_MAX_TURNS));
 
         const controller = new AbortController();
         let timedOut = false;
@@ -573,7 +574,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         }, timeoutMs);
 
         /** @type {(() => void)|undefined} */
-        let fireDeadline;
+        let fireDeadline: () => void;
         // A signal only ASKS a runner to stop. A runner that ignores both its
         // abort signal and its deadline would otherwise keep `execute()` pending
         // forever, holding its permit and wedging every queued sibling. Racing an
@@ -589,7 +590,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           callIndex,
           ...(params.description === undefined ? {} : { label: params.description }),
           ...(detached
-            ? { emit: (event) => reportDetachedProgress(event, reportProgress, launch) }
+            ? { emit: (event: any) => reportDetachedProgress(event, reportProgress, launch) }
             : context.onEvent === undefined ? {} : { emit: context.onEvent }),
           // Synchronous spend is summed across router attempts. Detached spend
           // belongs only to its instance and job, even if it completes immediately.
@@ -605,9 +606,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
         collector.started();
         const startedAt = Date.now();
         /** @type {*} */
-        let result;
+        let result: any;
         /** @type {unknown} */
-        let thrown;
+        let thrown: unknown;
         let abandoned = false;
         let recoveryUnavailable = false;
         // One max-turns wrap-up continuation per Agent call, never recursive:
@@ -620,7 +621,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
          * its spend, tool calls and detached-job accounting behave exactly
          * like the main turn's.
          */
-        const invokeChildRun = (childPrompt, childMaxTurns, steerable = true) => subagents.run({
+        const invokeChildRun = (childPrompt: any, childMaxTurns: any, steerable = true) => subagents!.run!({
           ...(detached ? (execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}) : { deadlineAt: childDeadlineAt }),
           ...(instance?.activeTurn?.token ? { turnToken: instance.activeTurn.token } : {}),
           ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses,
@@ -652,7 +653,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           maxTurns: childMaxTurns,
           callId: toolCallId,
           callIndex,
-          depth: positiveInt(subagents.depth, 0) + 1,
+          depth: positiveInt(subagents!.depth, 0) + 1,
           onEvent: collector.observe,
         });
         /**
@@ -665,7 +666,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
          * @param {*} first The main turn's result.
          * @returns {Promise<*|null>} The wrap-up record, merged onto the result.
          */
-        const maybeRunWrapUp = async (first) => {
+        const maybeRunWrapUp = async (first: any) => {
           if (wrapUpAttempted || !isMaxTurnsExhaustion(first)) return null;
           // Wall-clock exhaustion and cancellation own this result, not the
           // turn budget: a wrap-up would either have no time left or defy an
@@ -685,7 +686,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
             });
             const wrapResult = await invokeChildRun(prompt, WRAP_UP_MAX_TURNS, false);
             return attachWrapUpSignals(toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed: maxTurns }), first, wrapResult);
-          } catch (error) {
+          } catch (error: any) {
             return attachWrapUpSignals({
               budget: "maxTurns",
               turnsUsed,
@@ -731,7 +732,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
               ...(value?.failureKind === "session_continuity_lost" ? { failureKind: value.failureKind } : {}),
               ...(actual.question ? { question: actual.question } : {}), usage: detachedUsage(value, collector.usage()) });
             return value;
-          }, async (error) => {
+          }, async (error: any) => {
             await execution.managed.settled({ status: "failed", usage: detachedUsage(undefined, collector.usage()) });
             throw error;
           }) : underlying;
@@ -752,7 +753,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           } else {
             result = settled;
           }
-        } catch (error) {
+        } catch (error: any) {
           thrown = error;
         } finally {
           clearTimeout(timer);
@@ -761,8 +762,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
           releaseSlot();
         }
 
-        if (instance && abandoned && !execution?.managed && instances.fence) {
-          try { await instances.fence(instance.id, { status: timedOut ? "timeout" : "cancelled" }, instance.activeTurn?.token ?? reservation); }
+        if (instance && abandoned && !execution?.managed && instances!.fence) {
+          try { await instances!.fence(instance.id, { status: timedOut ? "timeout" : "cancelled" }, instance.activeTurn?.token ?? reservation!); }
           catch { recoveryUnavailable = true; } // The pre-existing active intent/lock stays held.
         }
         if (instance && abandoned && execution?.managed) {
@@ -784,9 +785,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
               costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } };
           if (execution?.managed) {
             await execution.managed.report(instanceOutcome);
-            instance = await instances.get(instance.id);
+            instance = await instances!.get(instance.id);
           } else instance = await finishInstance(instance.id, instanceOutcome);
-          if (!execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted) instance = context.recoveryAccess === undefined ? await instances.close(instance.id) : await instances.close(instance.id, context.recoveryAccess);
+          if (!execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted) instance = context.recoveryAccess === undefined ? await instances!.close(instance!.id) : await instances!.close(instance!.id, context.recoveryAccess);
         }
         // The parent turn being cancelled is not a subagent outcome — surface it
         // as an aborted tool call the way every other built-in does. Close any
@@ -833,7 +834,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           maxBytes: Math.min(RESULT_MAX_BYTES, remaining),
           ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
           ...(droppedTools.length === 0 ? {} : {
-            notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools.join(", ")}.`,
+            notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools!.join(", ")}.`,
           }),
           persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full, continuation ? "AgentManage" : "Agent"),
         });
@@ -861,7 +862,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
                 wrapUpTurnsUsed: wrapUp.wrapUpTurnsUsed ?? null,
                 wrapUpTurnsAllowed: WRAP_UP_MAX_TURNS,
               } }),
-              ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
+              ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution()!.executed }) } : {}),
             },
             ...(truncated ? { tool_payload_truncated: true } : {}),
             ...(savedPath === null ? {} : { tool_payload_saved_paths: [savedPath] }),
@@ -884,13 +885,13 @@ export function createAgentTool(subagents, context = {}, continuation) {
  * @param {{enabled?: boolean, allowedTools?: ReadonlyArray<string>}|undefined} inline
  * @returns {ReadonlyArray<string>|null}
  */
-function inlineCeiling(inline) {
+function inlineCeiling(inline: { enabled?: boolean; allowedTools?: ReadonlyArray<string>; } | undefined) {
   if (inline?.enabled === false) return null;
   if (inline === undefined || inline === null) return null;
   const configured = Array.isArray(inline.allowedTools) && inline.allowedTools.length > 0
     ? inline.allowedTools
     : DEFAULT_SUBAGENT_TOOLS;
-  return configured.filter((tool) => !SUBAGENT_HARD_DENY.includes(tool));
+  return configured.filter((tool: any) => !SUBAGENT_HARD_DENY.includes(tool));
 }
 
 /**
@@ -905,7 +906,7 @@ function inlineCeiling(inline) {
  * @param {ReadonlyArray<string>} configuredNames
  * @returns {{profile: RuntimeSubagentDefinition, droppedTools: string[]}}
  */
-function buildInlineProfile(params, ceiling, configuredNames) {
+function buildInlineProfile(params: { name?: string; systemPrompt?: string; description?: string; tools?: ReadonlyArray<string>; effort?: string; model?: string; }, ceiling: readonly string[], configuredNames: readonly string[]) {
   const name = typeof params.name === "string" ? params.name.trim() : "";
   if (!INLINE_NAME_RE.test(name)) {
     throw new Error("Error: a subagent you build needs a `name` — lowercase kebab-case, e.g. \"css-refactorer\". It labels the run in the activity log.");
@@ -913,7 +914,7 @@ function buildInlineProfile(params, ceiling, configuredNames) {
   if (configuredNames.includes(name) || name === GENERAL_PURPOSE_SUBAGENT) {
     throw new Error(`Error: "${name}" is already a configured subagent. Drop \`systemPrompt\` to use it, or pick a different name.`);
   }
-  const requested = Array.isArray(params.tools) ? params.tools.map((tool) => String(tool).trim()) : undefined;
+  const requested = Array.isArray(params.tools) ? params.tools.map((tool: any) => String(tool).trim()) : undefined;
   const readOnly = DEFAULT_SUBAGENT_TOOLS.filter((tool) => ceiling.includes(tool));
   const droppedTools = requested === undefined ? [] : requested.filter((tool) => !ceiling.includes(tool));
   // An empty list would reach `normalizeProfile`, whose "no tools named" branch
@@ -943,7 +944,7 @@ function buildInlineProfile(params, ceiling, configuredNames) {
  * @param {ReadonlyArray<string>|null} ceiling Tool ceiling for the runtime-owned general-purpose profile.
  * @returns {RuntimeSubagentDefinition|null}
  */
-function resolveProfile(definitions, name, ceiling) {
+function resolveProfile(definitions: readonly RuntimeSubagentDefinition[], name: string | undefined, ceiling: readonly string[] | null) {
   if (name === undefined || name === null || name === GENERAL_PURPOSE_SUBAGENT) {
     const allowedTools = ceiling === null
       ? DEFAULT_SUBAGENT_TOOLS
@@ -979,9 +980,9 @@ function resolveProfile(definitions, name, ceiling) {
  * @param {RuntimeSubagentDefinition} definition
  * @returns {RuntimeSubagentDefinition}
  */
-function normalizeProfile(definition) {
+function normalizeProfile(definition: RuntimeSubagentDefinition) {
   const allowed = Array.isArray(definition.allowedTools) && definition.allowedTools.length > 0
-    ? definition.allowedTools.filter((tool) => !SUBAGENT_HARD_DENY.includes(tool))
+    ? definition.allowedTools.filter((tool: any) => !SUBAGENT_HARD_DENY.includes(tool))
     : DEFAULT_SUBAGENT_TOOLS;
   const denied = [...new Set([...(definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])];
   return { ...definition, allowedTools: allowed, disallowedTools: denied };
@@ -991,16 +992,16 @@ function normalizeProfile(definition) {
 const WIRE_CONTENT_MAX_CHARS = 2_000;
 const ROUTE_HISTORY_MAX_ENTRIES = 32;
 
-function boundedRouteString(value, max = 256) {
+function boundedRouteString(value: any, max: number = 256) {
   return typeof value === "string" && value.length > 0 ? value.slice(0, max) : undefined;
 }
 
-function boundedRouteIndex(value) {
+function boundedRouteIndex(value: any) {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 }
 
 /** Format a host-supplied model reference the way `requested` does, or undefined when it names nothing. */
-function modelRouteString(ref) {
+function modelRouteString(ref: any) {
   if (typeof ref === "string") return boundedRouteString(ref);
   if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return undefined;
   const provider = typeof ref.provider === "string" ? ref.provider.trim() : "";
@@ -1009,7 +1010,7 @@ function modelRouteString(ref) {
   return boundedRouteString(typeof ref.reference === "string" ? ref.reference : undefined);
 }
 
-function appendRouteEntry(entries, entry, routeState) {
+function appendRouteEntry(entries: any, entry: any, routeState: any) {
   entries.push(entry);
   if (entries.length <= ROUTE_HISTORY_MAX_ENTRIES) return;
   entries.splice(1, entries.length - ROUTE_HISTORY_MAX_ENTRIES);
@@ -1024,7 +1025,7 @@ function appendRouteEntry(entries, entry, routeState) {
  *   Reported as the progress `requested` route so the job card badges while
  *   running; the completed bookend's own attribution still wins.
  */
-function reportDetachedProgress(event, report, launch = {}) {
+function reportDetachedProgress(event: any, report?: (event: any) => void, launch: { model?: string; effort?: string; } = {}) {
   if (!report) return;
   if (event.phase === "agent_started") {
     report({ type: "started", profile: event.subagent.name,
@@ -1053,10 +1054,10 @@ function reportDetachedProgress(event, report, launch = {}) {
     const toolName = event.name.slice(event.name.indexOf("▸") + 1);
     const summary = args && typeof args === "object" && !Array.isArray(args)
       ? toolName === "Exec" && typeof args.executable === "string"
-        ? [args.executable, ...(Array.isArray(args.args) ? args.args.filter((value) => typeof value === "string") : [])]
-          .map((value) => /[^\w@%+=:,./-]/u.test(value) ? `'${value.replaceAll("'", "'\\''")}'` : value).join(" ")
+        ? [args.executable, ...(Array.isArray(args.args) ? args.args.filter((value: any) => typeof value === "string") : [])]
+          .map((value: any) => /[^\w@%+=:,./-]/u.test(value) ? `'${value.replaceAll("'", "'\\''")}'` : value).join(" ")
         : ["file_path", "path", "filePath", "pattern", "command", "query", "url", "description", "name", "executable"]
-          .map((key) => args[key]).find((value) => typeof value === "string" && value.trim()) : undefined;
+          .map((key) => args[key]).find((value: any) => typeof value === "string" && value.trim()) : undefined;
     report({ type: "tool_started", id: event.id, toolName,
       ...(summary === undefined ? {} : { argsSummary: summary }),
       ...((toolName === "Bash" || toolName === "Exec") && typeof args?.workdir === "string" && args.workdir.trim()
@@ -1082,25 +1083,25 @@ function reportDetachedProgress(event, report, launch = {}) {
  * answer body, so forwarding them would splice a subagent's prose into the
  * main agent's reply. Its text reaches the parent through the tool result.
  *
- * @param {{callId: string, profileName: string, callIndex: number, requested?: {model?: string, effort?: string}, launch?: {model?: string, effort?: string}, label?: string, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
+ * @param {{callId: string, profileName: string, callIndex: number, requested?: {model?: string, effort?: string}, launch?: {model?: string, effort?: string}, label?: string | undefined, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
  */
-function createActivityCollector({ callId, profileName, callIndex, requested = {}, launch = {}, label, emit, recordUsage }) {
-  /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number}>} */
-  const open = new Map();
+function createActivityCollector({ callId, profileName, callIndex, requested = {}, launch = {}, label, emit, recordUsage }: { callId: string; profileName: string; callIndex: number; requested?: { model?: string; effort?: string; }; launch?: { model?: string; effort?: string; }; label?: string | undefined; emit?: (event: any) => void; recordUsage?: (usage: { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number; }) => void; }) {
+  /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number | undefined}>} */
+  const open: Map<string, { name: string; args: unknown; startedAt: number; ms?: number | undefined; }> = new Map();
   /** @type {Array<{name: string, args: unknown, ms?: number, isError: boolean}>} */
-  const done = [];
+  const done: { name: string; args: unknown; ms?: number | undefined; isError: boolean; }[] = [];
   /** What the child reported spending, so the parent run can own it. */
   const usage = emptyUsage();
   const subagent = { id: callId, name: profileName, callIndex, ...(label === undefined ? {} : { label }) };
-  let finalAttribution;
+  let finalAttribution: { executed?: { model?: string | undefined; effort?: string | undefined; effectiveEffort?: string | undefined } } | undefined;
   // `requested` is the explicit route only: call-time overrides and profile
   // pins. `launch` completes it with the inherited parent route for display on
   // the started bookend. The two stay separate so the completion-time
   // disposition never verdicts an inherited route as a fallback.
-  const routeState = { requested: { ...requested }, launch: { ...launch }, attempted: undefined, transitions: [], retries: [], truncated: false };
+  const routeState = { requested: { ...requested }, launch: { ...launch }, attempted: undefined as { model?: string; effort?: string; effectiveEffort?: string } | undefined, transitions: [], retries: [], truncated: false };
 
   /** @param {*} event */
-  const publish = (event) => {
+  const publish = (event: any) => {
     if (emit === undefined) return;
     try {
       emit({ type: "subagent_activity", subagent, ...event });
@@ -1136,7 +1137,7 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       });
     },
     /** @param {{status: string, durationMs: number, result?: *}} outcome */
-    finished({ status, durationMs, result }) {
+    finished({ status, durationMs, result }: { status: string; durationMs: number; result?: any; }) {
       // Before the bookend, so the run's own usage report can already include
       // it, and so an abandoned child still hands over whatever it spent.
       recordUsage?.(usage);
@@ -1190,7 +1191,7 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       });
     },
     /** Close any tool left open when a run ends abnormally, exactly once. */
-    drain(reason) {
+    drain(reason: any) {
       for (const [id, entry] of open) {
         done.push({ name: entry.name, args: entry.args, ms: Date.now() - entry.startedAt, isError: true });
         publish({
@@ -1204,7 +1205,7 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       open.clear();
     },
     /** @param {*} event */
-    observe(event) {
+    observe(event: any) {
       const type = event?.type;
       if (type === "provider_execution_config") {
         const model = boundedRouteString(event.model);
@@ -1332,14 +1333,14 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
 }
 
 /** @param {unknown} value */
-function summarizeForWire(value) {
+function summarizeForWire(value: unknown) {
   if (value === undefined || value === null) return undefined;
   const text = typeof value === "string" ? value : safeJson(value);
   return text.length <= WIRE_CONTENT_MAX_CHARS ? text : `${text.slice(0, WIRE_CONTENT_MAX_CHARS)}…`;
 }
 
 /** @param {unknown} value */
-function safeJson(value) {
+function safeJson(value: unknown) {
   try {
     return JSON.stringify(value) ?? String(value);
   } catch {
@@ -1357,7 +1358,7 @@ function safeJson(value) {
  * @param {*} result
  * @returns {boolean}
  */
-function isMaxTurnsExhaustion(result) {
+function isMaxTurnsExhaustion(result: any) {
   if (result === null || typeof result !== "object" || result.cancelled === true) return false;
   if (result.diagnostics !== null && typeof result.diagnostics === "object" && result.diagnostics.max_turns_hit === true) return true;
   return result.failureKind === "usage_limit" && /max turns?/i.test(String(result.error ?? ""));
@@ -1370,7 +1371,7 @@ function isMaxTurnsExhaustion(result) {
  * @param {*} result
  * @returns {number|null}
  */
-function turnCountOf(result) {
+function turnCountOf(result: any) {
   if (result !== null && typeof result === "object") {
     if (Number.isInteger(result.numTurns)) return result.numTurns;
     if (result.diagnostics !== null && typeof result.diagnostics === "object" && Number.isInteger(result.diagnostics.turn_count)) {
@@ -1389,7 +1390,7 @@ function turnCountOf(result) {
  * @param {{turnsUsed: number|null, turnsAllowed: number}} budget
  * @returns {{budget: string, turnsUsed: number|null, turnsAllowed: number, status: string, reason: string, answer: string, wrapUpTurnsUsed: number|null, wrapUpTurnsAllowed: number}}
  */
-function toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed }) {
+function toWrapUpRecord(wrapResult: any, { turnsUsed, turnsAllowed }: { turnsUsed: number | null; turnsAllowed: number; }) {
   const base = {
     budget: "maxTurns",
     turnsUsed,
@@ -1445,10 +1446,10 @@ function toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed }) {
  * @param {{prompt: string, turnsUsed: number|null, turnsAllowed: number, activity: ReadonlyArray<{name: string, args: unknown, isError: boolean}>, cwd?: string, reportPath?: string, persistent: boolean}} input
  * @returns {string}
  */
-function buildWrapUpPrompt({ prompt, turnsUsed, turnsAllowed, activity, cwd, reportPath, persistent }) {
+function buildWrapUpPrompt({ prompt, turnsUsed, turnsAllowed, activity, cwd, reportPath, persistent }: { prompt: string; turnsUsed: number | null; turnsAllowed: number; activity: ReadonlyArray<{ name: string; args: unknown; isError: boolean; }>; cwd?: string; reportPath?: string; persistent: boolean; }) {
   const used = turnsUsed ?? "all";
   const recent = Array.isArray(activity) ? activity.slice(-12) : [];
-  const lines = recent.map((entry) => {
+  const lines = recent.map((entry: any) => {
     const args = summarizeArgs(entry?.name, entry?.args, cwd);
     return `- ${entry?.name ?? "unknown"}${args ? ` ${args}` : ""} → ${entry?.isError ? "error" : "ok"}`;
   });
@@ -1490,7 +1491,7 @@ function buildWrapUpPrompt({ prompt, turnsUsed, turnsAllowed, activity, cwd, rep
  * @param {*} wrapResult The wrap-up run's raw result, or undefined when it never started.
  * @returns {*}
  */
-function attachWrapUpSignals(record, first, wrapResult) {
+function attachWrapUpSignals(record: any, first: any, wrapResult: any) {
   const wrapObject = wrapResult !== null && typeof wrapResult === "object" ? wrapResult : null;
   const continuity = wrapObject?.subagentContinuity !== null && typeof wrapObject?.subagentContinuity === "object"
     ? wrapObject.subagentContinuity
@@ -1512,7 +1513,7 @@ function attachWrapUpSignals(record, first, wrapResult) {
  * @param {*} secondUsage
  * @returns {Record<string, *>}
  */
-function sumRunUsage(firstUsage, secondUsage) {
+function sumRunUsage(firstUsage: any, secondUsage: any) {
   const base = firstUsage !== null && typeof firstUsage === "object" ? { ...firstUsage } : {};
   if (secondUsage === null || typeof secondUsage !== "object") return base;
   for (const [key, value] of Object.entries(secondUsage)) {
@@ -1527,7 +1528,7 @@ function sumRunUsage(firstUsage, secondUsage) {
  * @param {{result: *, thrown: unknown, timedOut: boolean, abandoned?: boolean}} input
  * @returns {{status: string, answer: string, reason?: string, question?: {question: string, options?: string[]}}}
  */
-function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
+function classifyOutcome({ result, thrown, timedOut, abandoned = false }: { result: any; thrown: unknown; timedOut: boolean; abandoned?: boolean; }) {
   if (abandoned) {
     return {
       status: "timeout",
@@ -1550,7 +1551,7 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
     return { status: "failed", answer: typeof result.text === "string" ? result.text : "", reason: `${kind}${String(result.error ?? "")}`.trim() };
   }
   if (result?.subagentQuestion) return { status: "awaiting_reply", question: result.subagentQuestion,
-    answer: `Awaiting parent reply: ${result.subagentQuestion.question}${result.subagentQuestion.options ? `\nOptions: ${result.subagentQuestion.options.map((option) => JSON.stringify(option)).join(", ")}` : ""}` };
+    answer: `Awaiting parent reply: ${result.subagentQuestion.question}${result.subagentQuestion.options ? `\nOptions: ${result.subagentQuestion.options.map((option: any) => JSON.stringify(option)).join(", ")}` : ""}` };
   const answer = typeof result?.text === "string" ? result.text.trim() : "";
   if (answer.length === 0) {
     return { status: "empty", answer: "", reason: "the subagent produced no final answer" };
@@ -1574,7 +1575,7 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
  * @param {{profileName: string, instance?: {id: string, turns: number, status: string}, label?: string, routeLabel?: string, outcome: {status: string, answer: string, reason?: string}, wrapUpNote?: string, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
  * @returns {{text: string, savedPath: string|null, truncated: boolean}}
  */
-function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, wrapUpNote, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
+function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, wrapUpNote, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }: { profileName: string; instance?: { id: string; turns: number; status: string; }; label?: string | undefined; routeLabel?: string; outcome: { status: string; answer: string; reason?: string; }; wrapUpNote?: string; durationMs: number; activity: ReadonlyArray<{ name: string; args: unknown; ms?: number | undefined; isError: boolean; }>; maxBytes?: number; cwd?: string; notice?: string; persist?: (fullText: string) => string | null; }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
   const header = `<subagent: ${profileName}${instance ? ` · instance ${instance.id} · turn ${instance.turns}${instance.status === "closed" ? " · closed" : ""}` : ""}${label ? ` · ${label}` : ""}${routeLabel ? ` · ${routeLabel}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
@@ -1587,7 +1588,7 @@ function formatSubagentResult({ profileName, instance, label, routeLabel, outcom
     // much of it was used, and what the single wrap-up continuation achieved.
     ...(wrapUpNote === undefined ? [] : [`wrap-up: ${truncate(wrapUpNote, 500)}`]),
   ];
-  const body = (/** @type {string} */ answer, /** @type {string[]} */ activityLines) => [
+  const body = (/** @type {string} */ answer: string, /** @type {string[]} */ activityLines: string[]) => [
     ...(answer.length > 0 ? ["", answer] : []),
     ...(activityLines.length > 0 ? ["", "<activity>", ...activityLines, "</activity>"] : []),
   ];
@@ -1622,8 +1623,8 @@ function formatSubagentResult({ profileName, instance, label, routeLabel, outcom
  * @param {string} [cwd]
  * @returns {string[]}
  */
-function renderActivity(activity, cwd) {
-  const line = (/** @type {{name: string, args: unknown, ms?: number, isError: boolean}} */ entry, /** @type {number} */ index) =>
+function renderActivity(activity: readonly { name: string; args: unknown; ms?: number | undefined; isError: boolean; }[], cwd?: string) {
+  const line = (/** @type {{name: string, args: unknown, ms?: number, isError: boolean}} */ entry: { name: string; args: unknown; ms?: number | undefined; isError: boolean }, /** @type {number} */ index: number) =>
     activityLine(entry, index, cwd);
   if (activity.length <= LOG_MAX_LINES) return activity.map(line);
   const head = activity.slice(0, LOG_HEAD_LINES).map(line);
@@ -1640,7 +1641,7 @@ function renderActivity(activity, cwd) {
  * @param {number} index
  * @param {string} [cwd]
  */
-function activityLine(entry, index, cwd) {
+function activityLine(entry: { name: string; args: unknown; ms?: number | undefined; isError: boolean; }, index: number, cwd?: string) {
   const args = summarizeArgs(entry.name, entry.args, cwd);
   const status = entry.isError ? "error" : "ok";
   const ms = entry.ms === undefined ? "" : ` ${formatMs(entry.ms)}`;
@@ -1659,7 +1660,7 @@ function activityLine(entry, index, cwd) {
  * @param {string} toolName
  * @returns {string|null}
  */
-function persistSubagentResult(persistArtifact, toolCallId, fullText, toolName) {
+function persistSubagentResult(persistArtifact: unknown, toolCallId: string, fullText: string, toolName: string) {
   if (typeof persistArtifact !== "function") return null;
   const id = String(toolCallId || "").replace(/[^A-Za-z0-9_.-]+/gu, "_").slice(0, 80) || "call";
   try {
@@ -1676,7 +1677,7 @@ function persistSubagentResult(persistArtifact, toolCallId, fullText, toolName) 
 }
 
 /** @param {number} ms */
-function formatMs(ms) {
+function formatMs(ms: number) {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
 
@@ -1696,12 +1697,12 @@ const ARGV_PREVIEW_MAX_CHARS = 200;
  * @param {string|undefined} cwd
  * @returns {string}
  */
-function relativizePaths(value, cwd) {
+function relativizePaths(value: string, cwd: string | undefined) {
   let result = value;
   for (const [root, replacement] of [[cwd, ""], [safeHomedir(), "~/"]]) {
     if (root === undefined || root === "" || root === "/") continue;
     const normalized = root.endsWith("/") ? root.slice(0, -1) : root;
-    result = result.replaceAll(`${normalized}/`, replacement);
+    result = result.replaceAll(`${normalized}/`, replacement!);
   }
   return result;
 }
@@ -1723,10 +1724,10 @@ function safeHomedir() {
  * @param {string} [cwd] Agent root; paths are shown relative to it.
  * @returns {string}
  */
-function summarizeArgs(name, args, cwd) {
+function summarizeArgs(name: string, args: unknown, cwd?: string) {
   if (args === null || typeof args !== "object") return "";
-  const record = /** @type {Record<string, unknown>} */ (args);
-  const pick = (key) => (typeof record[key] === "string" ? relativizePaths(String(record[key]), cwd) : undefined);
+  const record = /** @type {Record<string, unknown>} */ ((args) as Record<string, unknown>);
+  const pick = (key: any) => (typeof record[key] === "string" ? relativizePaths(String(record[key]), cwd) : undefined);
   switch (name) {
     case "Read":
     case "Write":
@@ -1767,7 +1768,7 @@ function summarizeArgs(name, args, cwd) {
  * @param {string|undefined} cwd
  * @returns {string}
  */
-function execArgv(record, cwd) {
+function execArgv(record: Record<string, unknown>, cwd: string | undefined) {
   const executable = typeof record.executable === "string" ? record.executable : "";
   if (executable === "") return "";
   const parts = [executable];
@@ -1781,13 +1782,13 @@ function execArgv(record, cwd) {
 }
 
 /** @param {string} value */
-function quote(value) {
+function quote(value: string) {
   const trimmed = truncate(value.replace(/\s+/gu, " ").trim(), 60);
   return trimmed.length === 0 ? "" : `"${trimmed}"`;
 }
 
 /** @param {string} value @param {number} max */
-function truncate(value, max) {
+function truncate(value: string, max: number) {
   const text = String(value ?? "");
   if (text.length <= max) return text;
   return `${text.slice(0, max)}… [truncated ${text.length - max} chars]`;
@@ -1798,7 +1799,7 @@ function truncate(value, max) {
  * bloat-guard territory, where the whole payload would be replaced.
  * @param {string} value @param {number} maxBytes
  */
-function capBytes(value, maxBytes) {
+function capBytes(value: string, maxBytes: number) {
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
   const buffer = Buffer.from(value, "utf8").subarray(0, maxBytes - 32);
   // Decode lossily, then drop a trailing replacement char so a multi-byte code
@@ -1808,7 +1809,7 @@ function capBytes(value, maxBytes) {
 }
 
 /** Child accounting is independent of the parent run, including late settlement. */
-function detachedUsage(result, observed = {}) {
+function detachedUsage(result: any, observed: any = {}) {
   const usage = result?.usage ?? {};
   return { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens ?? observed.input),
     output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens ?? observed.output),
@@ -1820,7 +1821,7 @@ function detachedUsage(result, observed = {}) {
 const CHILD_RUN_FAILURE = Symbol("mono-agent.childRunFailure");
 
 /** Tag an error raised by this tool's own child run so start-failure sanitizing leaves it intact. */
-function markChildRunFailure(error) {
+function markChildRunFailure(error: any) {
   try {
     if (typeof error === "object" && error !== null && Object.isExtensible(error)) {
       Object.defineProperty(error, CHILD_RUN_FAILURE, { value: true });
@@ -1829,7 +1830,11 @@ function markChildRunFailure(error) {
   return error;
 }
 
-function isChildRunFailure(error) {
+function isChildRunFailure(error: any) {
   try { return typeof error === "object" && error !== null && Object.getOwnPropertyDescriptor(error, CHILD_RUN_FAILURE)?.value === true; }
   catch { return false; }
 }
+
+export type RuntimeSubagentDefinition = import("../../contracts/runtime.js").RuntimeSubagentDefinition;
+
+export type RuntimeSubagentsOptions = import("../../contracts/runtime.js").RuntimeSubagentsOptions;

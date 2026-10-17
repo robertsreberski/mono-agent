@@ -8,7 +8,8 @@ import { createAgentTool, EFFORT_LEVELS } from "./agent-tool.js";
  * @param {import("../../contracts/runtime.js").RuntimeSubagentsOptions|null|undefined} subagents
  * @param {Parameters<typeof createAgentTool>[1]} [context]
  */
-export function createAgentManageTool(subagents, context = {}) {
+export function createAgentManageTool(subagents: import("../../contracts/runtime.js").RuntimeSubagentsOptions | null | undefined, context?: Parameters<typeof createAgentTool>[1]): { name: string; label: string; description: string; parameters: { type: string; additionalProperties: boolean; required: string[]; properties: { model?: { type: string; enum: string[]; description: string }; id: { type: string; pattern: string; description: string }; message: { type: string; minLength: number; description: string }; close: { type: string; description: string }; stop: { type: string; const: boolean; description: string }; steer: { type: string; minLength: number; maxLength: number; description: string }; background: { type: string; description: string }; description: { type: string; maxLength: number; description: string }; inspect: { type: string; description: string }; ack: { type: string; maxLength: number; description: string }; effort: { type: string; enum: string[]; description: string } } }; /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, steer?: string, description?: string, background?: boolean, inspect?: boolean, ack?: string, model?: string, effort?: string}} params @param {AbortSignal} [signal] */ execute(callId: string, params: { id: string; message?: string; close?: boolean; stop?: boolean; steer?: string; description?: string; background?: boolean; inspect?: boolean; ack?: string; model?: string; effort?: string }, signal?: AbortSignal): Promise<any> };
+export function createAgentManageTool(subagents: import("../../contracts/runtime.js").RuntimeSubagentsOptions | null | undefined, context: Parameters<typeof createAgentTool>[1] = {}): { name: string; label: string; description: string; parameters: { type: string; additionalProperties: boolean; required: string[]; properties: { model?: { type: string; enum: string[]; description: string }; id: { type: string; pattern: string; description: string }; message: { type: string; minLength: number; description: string }; close: { type: string; description: string }; stop: { type: string; const: boolean; description: string }; steer: { type: string; minLength: number; maxLength: number; description: string }; background: { type: string; description: string }; description: { type: string; maxLength: number; description: string }; inspect: { type: string; description: string }; ack: { type: string; maxLength: number; description: string }; effort: { type: string; enum: string[]; description: string } } }; /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, steer?: string, description?: string, background?: boolean, inspect?: boolean, ack?: string, model?: string, effort?: string}} params @param {AbortSignal} [signal] */ execute(callId: string, params: { id: string; message?: string; close?: boolean; stop?: boolean; steer?: string; description?: string; background?: boolean; inspect?: boolean; ack?: string; model?: string; effort?: string }, signal?: AbortSignal): Promise<any> } | null {
   if (context.instancesEnabled === false || !(context.persistentExposure ?? Boolean(subagents?.instances)) || !subagents?.run || Number(subagents.depth ?? 0) > 0) return null;
   const instances = subagents.instances;
   const background = instances?.reserve && instances?.releaseReservation && subagents.backgroundSubagentController;
@@ -44,7 +45,7 @@ export function createAgentManageTool(subagents, context = {}) {
       },
     },
     /** @param {string} callId @param {{id: string, message?: string, close?: boolean, stop?: boolean, steer?: string, description?: string, background?: boolean, inspect?: boolean, ack?: string, model?: string, effort?: string}} params @param {AbortSignal} [signal] */
-    async execute(callId, params, signal) {
+    async execute(callId: string, params: { id: string; message?: string; close?: boolean; stop?: boolean; steer?: string; description?: string; background?: boolean; inspect?: boolean; ack?: string; model?: string; effort?: string; }, signal?: AbortSignal) {
       if (Object.hasOwn(params, "steer")) return steerSubagent(subagents, params, signal);
       if (Object.hasOwn(params, "stop")) return stopSubagent(subagents, params, signal, context.recoveryAccess);
       if (!instances) throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
@@ -73,12 +74,12 @@ export function createAgentManageTool(subagents, context = {}) {
       const route = override === undefined && params.effort === undefined ? undefined
         : { ...(override === undefined ? {} : { model: override.model }), ...(params.effort === undefined ? {} : { effort: params.effort }) };
       if (params.ack !== undefined && (typeof params.ack !== "string" || !params.ack || params.ack.length > 128 || params.message === undefined || !instances.checkAcknowledgement)) throw new Error("Error: ack requires a recovery-capable instance and a message.");
-      const acknowledgement = params.ack === undefined ? undefined : { ack: params.ack, message: params.message,
+      const acknowledgement: import("../../contracts/runtime.js").RuntimeSubagentRecoveryRequest | undefined = params.ack === undefined ? undefined : { ack: params.ack, message: params.message!,
         ...(params.background === undefined ? {} : { background: params.background }), ...(params.close === undefined ? {} : { close: params.close }),
         ...(params.description === undefined ? {} : { description: params.description }) };
       try {
       // Deduplicated acknowledgements are checked before the ordinary busy gate.
-      if (acknowledgement) await instances.checkAcknowledgement(params.id, acknowledgement, context.recoveryAccess);
+      if (acknowledgement) await instances.checkAcknowledgement!(params.id, acknowledgement, context.recoveryAccess);
       if (params.background !== undefined && typeof params.background !== "boolean") throw new Error("Error: background must be a boolean.");
       if (params.background === true && !background) throw new Error("Error: background subagents are unavailable in this conversation.");
       if (params.background === true && params.message === undefined) throw new Error("Error: background requires a message; close-only stays synchronous.");
@@ -96,14 +97,14 @@ export function createAgentManageTool(subagents, context = {}) {
         return { content: [{ type: "text", text: `<subagent: ${record.name} · instance ${record.id} · turn ${record.turns} · closed>` }],
           details: { tool: "AgentManage", subagent: { name: record.name, status: "ok", instance: { id: closed.id, turns: closed.turns, status: closed.status } } } };
       }
-      const tool = createAgentTool(subagents, context, { record, close: params.close, ...(acknowledgement ? { acknowledgement } : {}), ...(route === undefined ? {} : { route }) });
+      const tool = createAgentTool(subagents, context, { record, close: params.close, ...(acknowledgement ? { acknowledgement } : {}), ...(route === undefined ? {} : { route }) } as NonNullable<Parameters<typeof createAgentTool>[2]>);
       const minutes = Math.max(0, Math.floor((Date.now() - record.updatedAt) / 60_000));
       return await tool.execute(callId, {
         ...(params.background === undefined ? {} : { background: params.background }),
         prompt: `Continuation of persistent instance "${record.id}" (turn ${record.turns + 1}; ${minutes} min since your last turn). Prior context is retained.${record.recovery?.certifiedTimeout ? "\nFramework note: your previous turn stopped at its timeout; partial work may remain. Check its state before continuing." : ""}${record.pendingQuestion ? `\nThis message is the parent\'s reply to your pending question (untrusted child text): ${JSON.stringify(record.pendingQuestion)}` : ""}\n\n${params.message}`,
         ...(params.description === undefined ? {} : { description: params.description }),
       }, signal);
-      } catch (error) {
+      } catch (error: any) {
         const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
         if (["subagent_recovery_already_consumed", "subagent_recovery_ack_conflict", "subagent_recovery_ack_stale", "subagent_recovery_ack_invalid", "subagent_recovery_not_retained", "subagent_recovery_background_required", "subagent_recovery_policy_denied", "subagent_recovery_policy_unavailable"].includes(code)) {
           return { content: [{ type: "text", text: code }], details: { tool: "AgentManage", recovery: { code }, executed: false } };

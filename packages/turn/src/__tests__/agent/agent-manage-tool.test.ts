@@ -6,12 +6,12 @@ import { createToolContext } from "../../tools/shared/tool-context.js";
 
 const ctx = createToolContext();
 
-function setup(overrides = {}) {
+function setup(overrides: any = {}) {
   const records = new Map();
-  const instances = {
+  const instances: any = {
     list: vi.fn(async () => [...records.values()]),
-    get: vi.fn(async (id) => records.get(id)),
-    create: vi.fn(async (spec) => {
+    get: vi.fn(async (id: any) => records.get(id)),
+    create: vi.fn(async (spec: any) => {
       const id = spec.id ?? "critic-1";
       if (records.has(id)) throw new Error("Duplicate instance; Live ids: critic-1");
       const record = { ...spec, id, sessionId: "sub-test", sessionsRoot: "/test/sessions", status: "idle", turns: 0, updatedAt: Date.now() - 120_000 };
@@ -19,9 +19,9 @@ function setup(overrides = {}) {
     }),
     // Mirrors the real registry: a route supplied with the turn is applied to
     // the stored definition inside the admission, so later reads see it.
-    begin: vi.fn(async (id, _token, _ack, _access, route) => { const r = records.get(id); if (r.status === "running") throw new Error("busy"); if (route) r.definition = { ...r.definition, ...route }; r.status = "running"; return r; }),
-    finish: vi.fn(async (id, outcome) => { const r = records.get(id); r.status = "idle"; r.turns++; r.lastStatus = outcome.status; return r; }),
-    close: vi.fn(async (id) => { const r = records.get(id); r.status = "closed"; return r; }),
+    begin: vi.fn(async (id: any, _token: any, _ack: any, _access: any, route: any) => { const r = records.get(id); if (r.status === "running") throw new Error("busy"); if (route) r.definition = { ...r.definition, ...route }; r.status = "running"; return r; }),
+    finish: vi.fn(async (id: any, outcome: any) => { const r = records.get(id); r.status = "idle"; r.turns++; r.lastStatus = outcome.status; return r; }),
+    close: vi.fn(async (id: any) => { const r = records.get(id); r.status = "closed"; return r; }),
   };
   const options = { instances, run: vi.fn(async () => ({ text: "answer" })), ...overrides };
   const context = { parentRunId: "parent" };
@@ -61,8 +61,8 @@ describe("persistent Agent and AgentManage", () => {
     expect(options.run.mock.calls[1][0].definition.allowedTools).toEqual(["Bash"]);
   });
   it("keeps stateless concurrency limits independent across parent turns", async () => {
-    let release;
-    const gate = new Promise((done) => { release = done; });
+    let release: any;
+    const gate = new Promise((done: any) => { release = done; });
     const options = { maxConcurrent: 1, run: vi.fn(async () => { await gate; return { text: "done" }; }) };
     const first = createAgentTool(options, { parentRunId: "one" }).execute("a", { prompt: "a" });
     const second = createAgentTool(options, { parentRunId: "two" }).execute("b", { prompt: "b" });
@@ -83,7 +83,7 @@ describe("persistent Agent and AgentManage", () => {
     ["continuity loss", { failureKind: "session_continuity_lost", error: "lost" }],
     ["cancelled", { cancelled: true }],
     ["empty", { text: "" }],
-  ])("retains the live transcript when message+close returns %s", async (_label, outcome) => {
+  ])("retains the live transcript when message+close returns %s", async (_label: any, outcome: any) => {
     const { agent, send, options, instances } = setup();
     await agent.execute("a", { prompt: "first", persist: true });
     options.run.mockResolvedValueOnce(outcome);
@@ -96,8 +96,8 @@ describe("persistent Agent and AgentManage", () => {
     await agent.execute("a", { prompt: "first", persist: true });
     options.run.mockRejectedValueOnce(new Error("failed"));
     await send.execute("b", { id: "critic-1", message: "last", close: true });
-    options.run.mockImplementationOnce(async ({ abortSignal }) => {
-      await new Promise((done) => abortSignal.addEventListener("abort", done, { once: true }));
+    options.run.mockImplementationOnce(async ({ abortSignal }: any) => {
+      await new Promise((done: any) => abortSignal.addEventListener("abort", done, { once: true }));
       return { text: "partial", cancelled: true };
     });
     await send.execute("c", { id: "critic-1", message: "last", close: true });
@@ -143,12 +143,12 @@ describe("persistent Agent and AgentManage", () => {
   });
   it.each([
     [["Agent"], [], false], [["*"], ["AgentManage"], false], [["*"], [], true],
-  ])("gates persistence at the effective pi tool boundary: %j/%j", async (allowed, denied, enabled) => {
+  ] as [any, any, any][])("gates persistence at the effective pi tool boundary: %j/%j", async (allowed: any, denied: any, enabled: any) => {
     const { options } = setup();
     const tools = getPiBuiltinTools(allowed, { ctx, disallowedTools: denied, subagents: options });
-    const agent = tools.find((tool) => tool.name === "Agent");
+    const agent = tools.find((tool: any) => tool.name === "Agent");
     expect(agent.parameters.properties.persist !== undefined).toBe(enabled);
-    expect(tools.some((tool) => tool.name === "AgentManage")).toBe(enabled);
+    expect(tools.some((tool: any) => tool.name === "AgentManage")).toBe(enabled);
     if (!enabled) {
       expect(agent.description).not.toContain("AgentManage");
       await expect(agent.execute("denied", { prompt: "x", persist: true })).rejects.toThrow(/unavailable/);
@@ -163,7 +163,7 @@ describe("persistent Agent and AgentManage", () => {
     for (const mode of ["Continue:", "Close:", "Stop:", "Inspect:", "Ack:"]) expect(send.description).toContain(mode);
   });
   it("registers AgentManage next to Agent only with a registry", () => {
-    const names = (subagents) => getPiBuiltinTools(undefined, { ctx, subagents }).map((tool) => tool.name);
+    const names = (subagents: any) => getPiBuiltinTools(undefined, { ctx, subagents }).map((tool: any) => tool.name);
     expect(names(setup().options)).toContain("AgentManage");
     expect(names({ run: vi.fn() })).not.toContain("AgentManage");
   });
@@ -197,14 +197,14 @@ describe("AgentManage recovery boundary", () => {
     expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
   });
   it.each([{ message: "next" }, { close: false }, { background: false }, { ack: "token" }, { description: "purpose" }])(
-    "rejects mixed inspection semantics %j without execution", async (extra) => {
+    "rejects mixed inspection semantics %j without execution", async (extra: any) => {
       const f = setup(); f.instances.inspect = vi.fn();
       await expect(createAgentManageTool(f.options).execute("inspect", { id: "helper", inspect: true, ...extra })).rejects.toThrow("inspect must be used alone");
       expect(f.instances.inspect).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
     },
   );
   it.each(["subagent_recovery_already_consumed", "subagent_recovery_ack_conflict", "subagent_recovery_ack_stale"])(
-    "returns typed %s before busy lookup and never replays a receipt", async (code) => {
+    "returns typed %s before busy lookup and never replays a receipt", async (code: any) => {
       const f = setup(); f.instances.checkAcknowledgement = vi.fn(async () => { throw Object.assign(new Error(code), { code }); });
       const request = { id: "helper", ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" };
       const result = await createAgentManageTool(f.options).execute("ack", request);
@@ -222,7 +222,7 @@ it("keeps optional continuation definitions stable and refuses unavailable opera
   const unavailable = createAgentManageTool({ run: options.run }, context);
   const current = createAgentManageTool(options, context);
   const capable = createAgentManageTool({ ...options, instances: { ...instances, reserve: vi.fn(), releaseReservation: vi.fn(), inspect: vi.fn(), checkAcknowledgement: vi.fn() }, backgroundSubagentController: {} }, context);
-  const definition = ({ name, description, parameters }) => JSON.stringify({ name, description, parameters });
+  const definition = ({ name, description, parameters }: any) => JSON.stringify({ name, description, parameters });
   expect(definition(current)).toBe(definition(unavailable)); expect(definition(capable)).toBe(definition(current));
   await expect(unavailable.execute("no", { id: "x", message: "work" })).rejects.toThrow(/unavailable/);
   await expect(current.execute("no", { id: "x", message: "work", background: true })).rejects.toThrow(/unavailable/);
@@ -236,7 +236,7 @@ describe("AgentManage stop", () => {
     [{ message: "next" }, "message"], [{ close: false }, "close"], [{ background: false }, "background"],
     [{ inspect: false }, "inspect"], [{ ack: "token" }, "ack"], [{ jobId: "arbitrary" }, "jobId"],
     [{ message: "next", ack: "token" }, "ack, message"],
-  ])("stop rejects unexpected parameters before instance access: %j", async (extra, keys) => {
+  ])("stop rejects unexpected parameters before instance access: %j", async (extra: any, keys: any) => {
     const f = setup();
     const result = await f.send.execute("stop", { id: "helper", stop: true, ...extra });
     const stop = { code: "subagent_stop_unexpected_parameters", instanceId: "helper", jobId: null, stopRequested: false,
@@ -246,12 +246,12 @@ describe("AgentManage stop", () => {
     expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
   });
   it.each([
-    ...[false, undefined, null, "true", 1].map((stop) => [{ stop }, "subagent_stop_not_requested", "stop must be exactly true."]),
-    ...[undefined, null, 1, "", "Helper", "-helper", "has space", "a".repeat(41)].map((id) => [{ id }, "subagent_stop_invalid_id",
+    ...[false, undefined, null, "true", 1].map((stop: any) => [{ stop }, "subagent_stop_not_requested", "stop must be exactly true."]),
+    ...[undefined, null, 1, "", "Helper", "-helper", "has space", "a".repeat(41)].map((id: any) => [{ id }, "subagent_stop_invalid_id",
       "id must be a string matching ^[a-z0-9][a-z0-9-]{0,39}$ (1-40 lowercase letters, digits or hyphens, starting with a letter or digit)."]),
-    ...[null, 1, "a".repeat(81)].map((description) => [{ description }, "subagent_stop_invalid_request",
+    ...[null, 1, "a".repeat(81)].map((description: any) => [{ description }, "subagent_stop_invalid_request",
       "description must be a string of at most 80 characters."]),
-  ])("stop explains invalid declared parameters before instance access: %j", async (extra, code, message) => {
+  ] as [any, any, any][])("stop explains invalid declared parameters before instance access: %j", async (extra: any, code: any, message: any) => {
     const f = setup();
     const params = { id: "helper", stop: true, ...extra };
     const result = await f.send.execute("stop", params);
@@ -260,7 +260,7 @@ describe("AgentManage stop", () => {
       details: { tool: "AgentManage", executed: false, stop } });
     expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
   });
-  it.each([undefined, "stop", "", "a".repeat(80)])("accepts and ignores description on the real stop path: %j", async (description) => {
+  it.each([undefined, "stop", "", "a".repeat(80)])("accepts and ignores description on the real stop path: %j", async (description: any) => {
     const stop = vi.fn();
     const f = setup({ backgroundSubagentController: { stop } });
     const plainMissing = await f.send.execute("plain", { id: "helper", stop: true });
@@ -282,7 +282,7 @@ describe("AgentManage stop", () => {
     expect(result.details).toEqual({ tool: "AgentManage", executed: false, stop: { code: "subagent_stop_unavailable", instanceId: "helper", jobId: null, stopRequested: false } });
     expect(result.isError).toBe(true); expect(f.options.run).not.toHaveBeenCalled();
   });
-  it.each([{}, { description: "stop" }])("resolves only the captured active turn and returns bounded busy evidence: %j", async (extra) => {
+  it.each([{}, { description: "stop" }])("resolves only the captured active turn and returns bounded busy evidence: %j", async (extra: any) => {
     const stop = vi.fn(async () => ({ jobId: "owned-token", stopRequested: true, childStillBusy: true, resumable: false, disposition: "cancelled" }));
     const f = setup({ backgroundSubagentController: { stop } });
     f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "detached", token: "owned-token" } });
@@ -295,7 +295,7 @@ describe("AgentManage stop", () => {
     await expect(f.send.execute("message", { id: "helper", message: "next" })).rejects.toThrow("busy");
     await expect(f.send.execute("close", { id: "helper", close: true })).rejects.toThrow("busy");
   });
-  it.each([false, true])("accepts only the exact settled turn certificate (successor=%s)", async (successor) => {
+  it.each([false, true])("accepts only the exact settled turn certificate (successor=%s)", async (successor: any) => {
     const f = setup();
     f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 0, activeTurn: { kind: "detached", token: "owned-token" } });
     f.options.backgroundSubagentController = { stop: async () => {
@@ -319,12 +319,12 @@ describe("AgentManage stop", () => {
   });
   it("preserves a settled false proof when the final registry read exceeds the deadline", async () => {
     vi.useFakeTimers();
-    let releaseRead;
-    let markReadEntered;
-    let markReadDrained;
-    const readGate = new Promise((resolve) => { releaseRead = resolve; });
-    const readEntered = new Promise((resolve) => { markReadEntered = resolve; });
-    const readDrained = new Promise((resolve) => { markReadDrained = resolve; });
+    let releaseRead: any;
+    let markReadEntered: any;
+    let markReadDrained: any;
+    const readGate = new Promise((resolve: any) => { releaseRead = resolve; });
+    const readEntered = new Promise((resolve: any) => { markReadEntered = resolve; });
+    const readDrained = new Promise((resolve: any) => { markReadDrained = resolve; });
     const f = setup({ backgroundSubagentController: { stop: vi.fn(async () => {
       f.records.set("helper", { id: "helper", incarnation: "epoch", status: "idle", turns: 1, settledTurnToken: "owned-token", lastStatus: "ok" });
       return { jobId: "owned-token", stopRequested: false, childStillBusy: false, resumable: true, disposition: "ok" };
@@ -332,7 +332,7 @@ describe("AgentManage stop", () => {
     f.records.set("helper", { id: "helper", incarnation: "epoch", status: "running", turns: 0, activeTurn: { kind: "detached", token: "owned-token" } });
     const read = f.instances.get;
     let reads = 0;
-    f.instances.get = vi.fn(async (id) => {
+    f.instances.get = vi.fn(async (id: any) => {
       reads++;
       if (reads === 2) {
         markReadEntered();
@@ -357,14 +357,14 @@ describe("AgentManage stop", () => {
 describe("AgentManage steer", () => {
   const runningRecord = { id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "detached", token: "owned-token" } };
   it.each([
-    ...[undefined, "", "   ", 7, "a".repeat(8001)].map((steer) => [{ steer }, "subagent_steer_invalid_request",
+    ...[undefined, "", "   ", 7, "a".repeat(8001)].map((steer: any) => [{ steer }, "subagent_steer_invalid_request",
       "steer must be a non-empty string of at most 8000 characters."]),
     [{ steer: "go", id: "NOPE" }, "subagent_steer_invalid_id",
       "id must be a string matching ^[a-z0-9][a-z0-9-]{0,39}$ (1-40 lowercase letters, digits or hyphens, starting with a letter or digit)."],
     ...[["message", "next"], ["close", true], ["stop", true], ["background", true], ["inspect", true], ["ack", "token"], ["description", "label"]]
-      .map(([key, value]) => [{ steer: "go", [key]: value }, "subagent_steer_unexpected_parameters",
+      .map(([key, value]: any) => [{ steer: "go", [key]: value }, "subagent_steer_unexpected_parameters",
         `steer takes only id and steer (unexpected: ${key}).`]),
-  ])("rejects a malformed or multi-mode steer before instance access: %j", async (extra, code, message) => {
+  ] as [any, any, any][])("rejects a malformed or multi-mode steer before instance access: %j", async (extra: any, code: any, message: any) => {
     const steer = vi.fn();
     const f = setup({ backgroundSubagentController: { steer } });
     const params = { id: "helper", ...extra };
@@ -385,7 +385,7 @@ describe("AgentManage steer", () => {
     [{ id: "helper", status: "idle", turns: 1 }, "subagent_steer_not_running"],
     [{ id: "helper", incarnation: "epoch", status: "running", turns: 1, activeTurn: { kind: "foreground", token: "owned-token" } }, "subagent_steer_foreground_unsupported"],
     [{ id: "helper", incarnation: "epoch", status: "running", turns: 1 }, "subagent_steer_not_running"],
-  ])("refuses an unreachable target: %j", async (record, code) => {
+  ])("refuses an unreachable target: %j", async (record: any, code: any) => {
     const steer = vi.fn();
     const f = setup({ backgroundSubagentController: { steer } });
     if (record) f.records.set("helper", record);
@@ -398,7 +398,7 @@ describe("AgentManage steer", () => {
     ["offered", "pending", false, "not_settled"],
     ["rejected", "not_applied", false, "not_started"],
     ["unsupported", "unsupported", false, "unsupported"],
-  ])("maps delivery %s onto an honest receipt", async (delivery, status, applied, reason) => {
+  ])("maps delivery %s onto an honest receipt", async (delivery: any, status: any, applied: any, reason: any) => {
     const steer = vi.fn(async () => ({ jobId: "owned-token", delivery, ...(reason === undefined ? {} : { reason }) }));
     const f = setup({ backgroundSubagentController: { steer } });
     f.records.set("helper", { ...runningRecord });
@@ -415,7 +415,7 @@ describe("AgentManage steer", () => {
   it.each([
     { jobId: "other-token", delivery: "consumed" },
     { jobId: "owned-token", delivery: "delivered" },
-  ])("never trusts a proof that does not describe this turn: %j", async (proof) => {
+  ])("never trusts a proof that does not describe this turn: %j", async (proof: any) => {
     const f = setup({ backgroundSubagentController: { steer: vi.fn(async () => proof) } });
     f.records.set("helper", { ...runningRecord });
     const result = await f.send.execute("steer", { id: "helper", steer: "go" });
@@ -448,16 +448,16 @@ describe("AgentManage retarget", () => {
     { name: "sol", model: SOL, key: "openai-codex:gpt-5.6-sol" }];
 
   /** setup() plus configured model choices, a reservation-capable registry and a detached controller. */
-  function retarget(overrides = {}, context = {}) {
-    const started = [];
+  function retarget(overrides: any = {}, context: any = {}) {
+    const started: any[] = [];
     const f = setup({ models: MODELS, ...overrides });
-    f.instances.reserve = vi.fn(async (id, token, _ack, _access, route) => {
+    f.instances.reserve = vi.fn(async (id: any, token: any, _ack: any, _access: any, route: any) => {
       const r = f.records.get(id);
       if (route) r.definition = { ...r.definition, ...route };
       r.status = "queued"; r.reservation = { token }; return r;
     });
-    f.instances.releaseReservation = vi.fn(async (id) => { const r = f.records.get(id); r.status = "idle"; delete r.reservation; });
-    f.options.backgroundSubagentController ??= { startInternal: vi.fn(async ({ jobId }) => { started.push(jobId); return { jobId, state: "queued", startedAt: null }; }) };
+    f.instances.releaseReservation = vi.fn(async (id: any) => { const r = f.records.get(id); r.status = "idle"; delete r.reservation; });
+    f.options.backgroundSubagentController ??= { startInternal: vi.fn(async ({ jobId }: any) => { started.push(jobId); return { jobId, state: "queued", startedAt: null }; }) };
     const toolContext = { parentRunId: "parent", ...context };
     return { ...f, started, agent: createAgentTool(f.options, toolContext), send: createAgentManageTool(f.options, toolContext) };
   }
@@ -476,15 +476,15 @@ describe("AgentManage retarget", () => {
   });
 
   it("runs the next foreground continuation on the new route and persists it on the instance", async () => {
-    const events = [];
-    const f = retarget({}, { onEvent: (event) => events.push(event), model: FABLE, effort: "medium" });
+    const events: any[] = [];
+    const f = retarget({}, { onEvent: (event: any) => events.push(event), model: FABLE, effort: "medium" });
     await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });
     const result = await f.send.execute("b", { id: "critic-1", message: "second", model: "sol", effort: "high" });
     expect(f.instances.begin).toHaveBeenLastCalledWith("critic-1", undefined, undefined, undefined, { model: SOL, effort: "high" });
     expect(f.records.get("critic-1").definition).toMatchObject({ model: SOL, effort: "high" });
     expect(f.options.run.mock.calls[1][0].definition).toMatchObject({ model: SOL, effort: "high" });
     expect(result.details.subagent.requested).toEqual({ model: "openai-codex:gpt-5.6-sol", effort: "high" });
-    const startedEvent = events.filter((event) => event.phase === "agent_started").at(-1);
+    const startedEvent = events.filter((event: any) => event.phase === "agent_started").at(-1);
     expect(startedEvent.subagent.attribution.requested).toEqual({ model: "openai-codex:gpt-5.6-sol", effort: "high" });
     // A later continuation inherits the retained route without repeating it.
     const inherited = await f.send.execute("c", { id: "critic-1", message: "third" });
@@ -529,7 +529,7 @@ describe("AgentManage retarget", () => {
   it.each([
     [{ stop: true }, "stop"],
     [{ steer: "go" }, "steer"],
-  ])("refuses a retarget on the %s mode without reading the registry", async (mode, label) => {
+  ])("refuses a retarget on the %s mode without reading the registry", async (mode: any, label: any) => {
     const f = retarget();
     const result = await f.send.execute("x", { id: "critic-1", ...mode, model: "sol" });
     expect(result.isError).toBe(true);
@@ -549,7 +549,7 @@ describe("AgentManage retarget", () => {
     [{ model: "sol" }, "model and effort only apply to a continuation with message"],
     [{ message: "next", model: "muse" }, 'unknown model "muse". Choices: fable, sol.'],
     [{ message: "next", effort: "turbo" }, 'unknown effort "turbo". Choices: none, minimal, low, medium, high, xhigh, max, ultra.'],
-  ])("rejects %j before any turn or registry write", async (params, message) => {
+  ])("rejects %j before any turn or registry write", async (params: any, message: any) => {
     const f = retarget();
     f.instances.inspect = vi.fn(async () => ({ schema: "mono-agent.subagent-recovery.v1", status: "held" }));
     await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });

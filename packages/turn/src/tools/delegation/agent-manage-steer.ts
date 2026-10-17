@@ -6,10 +6,10 @@
  * @param {{id: string, steer?: string}} params
  * @param {AbortSignal} [signal]
  */
-export async function steerSubagent(subagents, params, signal) {
-  let jobId = null;
+export async function steerSubagent(subagents: import("../../contracts/runtime.js").RuntimeSubagentsOptions | null | undefined, params: { id: string; steer?: string }, signal?: AbortSignal): Promise<any> {
+  let jobId: string | null = null;
   /** @param {string} code @param {string} [message] */
-  const error = (code, message) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId,
+  const error = (code: string, message?: string) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId,
     status: "not_applied", applied: false, ...(message === undefined ? {} : { message }) }, true);
   // Bounded independently of the contracts package, which tool files do not
   // import; mirrors AGENT_LIVE_INPUT_MAX_CHARACTERS (agent-contracts).
@@ -42,12 +42,12 @@ export async function steerSubagent(subagents, params, signal) {
       }
       if (expired || signal?.aborted) return error("subagent_steer_unavailable");
       jobId = record.activeTurn.token;
-      const proof = await controller.steer({ instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: jobId }, params.steer);
+      const proof = await controller.steer!({ instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: jobId }, params.steer!);
       if (!proof || proof.jobId !== jobId || !["consumed", "offered", "rejected", "unsupported"].includes(proof.delivery)) return error("subagent_steer_unavailable");
       const status = proof.delivery === "consumed" ? "applied" : proof.delivery === "offered" ? "pending" : proof.delivery === "unsupported" ? "unsupported" : "not_applied";
       return receipt({ instanceId: record.id, jobId, status, applied: status === "applied", delivery: proof.delivery,
         ...(proof.reason === undefined ? {} : { reason: proof.reason }) });
-    } catch (cause) {
+    } catch (cause: any) {
       const code = cause && typeof cause === "object" && "code" in cause ? String(cause.code) : "";
       return error(["subagent_stale_turn", "subagent_steer_unavailable"].includes(code) ? code : "subagent_steer_unavailable");
     }
@@ -55,7 +55,7 @@ export async function steerSubagent(subagents, params, signal) {
   try { return await Promise.race([operation(), timeout]); } finally { clearTimeout(timer); }
 }
 
-function receipt(steer, isError = false) {
+function receipt(steer: any, isError: boolean = false) {
   return { ...(isError ? { isError: true } : {}), content: [{ type: "text", text: JSON.stringify(steer) }],
     details: { tool: "AgentManage", steer, executed: false } };
 }

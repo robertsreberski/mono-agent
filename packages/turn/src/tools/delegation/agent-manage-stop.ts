@@ -6,12 +6,12 @@
  * @param {AbortSignal} [signal]
  * @param {unknown} [recoveryAccess]
  */
-export async function stopSubagent(subagents, params, signal, recoveryAccess) {
-  let jobId = null;
+export async function stopSubagent(subagents: import("../../contracts/runtime.js").RuntimeSubagentsOptions | null | undefined, params: { id: string; stop?: boolean; description?: string }, signal?: AbortSignal, recoveryAccess?: unknown): Promise<any> {
+  let jobId: string | null = null;
   /** @type {boolean|"unknown"} */
-  let stopRequested = false;
+  let stopRequested: boolean | "unknown" = false;
   /** @param {string} code @param {string} [message] */
-  const error = (code, message) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId, stopRequested,
+  const error = (code: string, message?: string) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId, stopRequested,
     ...(message === undefined ? {} : { message }) }, true);
   if (params.stop !== true) return error("subagent_stop_not_requested", "stop must be exactly true.");
   if (typeof params.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(params.id)) {
@@ -35,8 +35,8 @@ export async function stopSubagent(subagents, params, signal, recoveryAccess) {
     try {
       const record = await instances.get(params.id);
       if (!record || !["queued", "running", "idle", "awaiting_reply"].includes(record.status)) return error("subagent_stop_instance_not_found");
-      const blocked = (value) => value.recovery || value.recoveryBlocked || value.activeTurn;
-      const certifiedResumable = async (value) => {
+      const blocked = (value: any) => value.recovery || value.recoveryBlocked || value.activeTurn;
+      const certifiedResumable = async (value: any) => {
         if (value.recovery?.certifiedTimeout !== true || !instances.inspect) return false;
         const inspection = await instances.inspect(value.id, recoveryAccess);
         return inspection !== null && typeof inspection === "object" && "resumable" in inspection && inspection.resumable === true;
@@ -51,7 +51,7 @@ export async function stopSubagent(subagents, params, signal, recoveryAccess) {
       if (expired || signal?.aborted) return error("subagent_stop_unavailable");
       jobId = record.activeTurn.token;
       stopRequested = "unknown";
-      const proof = await controller.stop({ instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: jobId });
+      const proof = await controller.stop!({ instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: jobId });
       if (proof.jobId !== jobId || typeof proof.stopRequested !== "boolean" || typeof proof.childStillBusy !== "boolean"
         || typeof proof.resumable !== "boolean" || !(proof.disposition === null || ["ok", "awaiting_reply", "failed", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(proof.disposition))) return error("subagent_stop_unavailable");
       stopRequested = proof.stopRequested;
@@ -64,17 +64,17 @@ export async function stopSubagent(subagents, params, signal, recoveryAccess) {
       return receipt({ instanceId: current.id, jobId, status: proof.childStillBusy ? "stop_requested" : "stopped",
         instanceStatus: current.status, turns: current.turns, disposition: proof.disposition, stopRequested,
         childStillBusy: proof.childStillBusy, resumable: !proof.childStillBusy });
-    } catch (cause) {
+    } catch (cause: any) {
       const code = cause && typeof cause === "object" && "code" in cause ? String(cause.code) : "";
       if (cause && typeof cause === "object" && "stopRequested" in cause
-        && [true, false, "unknown"].includes(cause.stopRequested)) stopRequested = /** @type {boolean|"unknown"} */ (cause.stopRequested);
+        && [true, false, "unknown"].includes(cause.stopRequested as boolean | "unknown")) stopRequested = /** @type {boolean|"unknown"} */ ((cause.stopRequested) as boolean|"unknown");
       return error(["subagent_stale_turn", "subagent_stop_unavailable"].includes(code) ? code : "subagent_stop_unavailable");
     }
   };
   try { return await Promise.race([operation(), timeout]); } finally { clearTimeout(timer); }
 }
 
-function receipt(stop, isError = false) {
+function receipt(stop: any, isError: boolean = false) {
   return { ...(isError ? { isError: true } : {}), content: [{ type: "text", text: JSON.stringify(stop) }],
     details: { tool: "AgentManage", stop, executed: false } };
 }

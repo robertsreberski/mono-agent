@@ -53,3 +53,7 @@ reusable across invocations.
 See the [core source scan policy](../../../scripts/core-scans/README.md) for
 pinned scan commands, scope, and the exact exception register. The manual proofs
 are not run automatically by those scans or ordinary test commands.
+
+The subagent stop/steer and managed built-seam proofs require a fresh turn and
+app dependency-closure build. They load turn factories, execution and context on
+one emitted graph, including transitive source-path imports.

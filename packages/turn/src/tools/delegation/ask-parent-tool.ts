@@ -2,7 +2,8 @@
 
 /** @param {{submit(question: {question: string, options?: string[]}): Promise<void>}|null} [controller]
  * @param {boolean} [exposed] */
-export function createAskParentTool(controller = null, exposed = Boolean(controller)) {
+export function createAskParentTool(controller?: { submit(question: { question: string; options?: string[] }): Promise<void> } | null, exposed?: boolean): { name: string; label: string; executionMode: string; description: string; parameters: { type: string; additionalProperties: boolean; required: string[]; properties: { question: { type: string; minLength: number; maxLength: number }; options: { type: string; minItems: number; maxItems: number; items: { type: string; minLength: number; maxLength: number } } } }; /** @param {string} _id @param {{question: string, options?: string[]}} params @param {AbortSignal} [signal] */ execute(_id: string, params: { question: string; options?: string[] }, signal?: AbortSignal): Promise<{ content: { type: string; text: string }[]; details: { tool: string; question: { options?: string[]; question: string } }; terminate: boolean }> };
+export function createAskParentTool(controller: { submit(question: { question: string; options?: string[] }): Promise<void> } | null = null, exposed: boolean = Boolean(controller)): { name: string; label: string; executionMode: string; description: string; parameters: { type: string; additionalProperties: boolean; required: string[]; properties: { question: { type: string; minLength: number; maxLength: number }; options: { type: string; minItems: number; maxItems: number; items: { type: string; minLength: number; maxLength: number } } } }; /** @param {string} _id @param {{question: string, options?: string[]}} params @param {AbortSignal} [signal] */ execute(_id: string, params: { question: string; options?: string[] }, signal?: AbortSignal): Promise<{ content: { type: string; text: string }[]; details: { tool: string; question: { options?: string[]; question: string } }; terminate: boolean }> } | null {
   if (!exposed) return null;
   let submitted = false;
   return {
@@ -16,7 +17,7 @@ export function createAskParentTool(controller = null, exposed = Boolean(control
       },
     },
     /** @param {string} _id @param {{question: string, options?: string[]}} params @param {AbortSignal} [signal] */
-    async execute(_id, params, signal) {
+    async execute(_id: string, params: { question: string; options?: string[]; }, signal?: AbortSignal) {
       if (!controller) throw new Error("AskParent is unavailable this turn.");
       if (signal?.aborted) throw new Error("tool execution aborted");
       if (!params || Object.keys(params).some((key) => !["question", "options"].includes(key))
@@ -28,7 +29,7 @@ export function createAskParentTool(controller = null, exposed = Boolean(control
       const question = { question: params.question.trim(), ...(options === undefined ? {} : { options }) };
       if (submitted) throw new Error("AskParent already submitted a question this turn.");
       submitted = true;
-      try { await controller.submit(question); } catch (error) {
+      try { await controller.submit(question); } catch (error: any) {
         submitted = false; // Publication failed: allow another attempt in this turn.
         throw error;
       }
