@@ -13,6 +13,7 @@ syncBuiltinESMExports(); Math.random = () => 0.125;
 let clock = 1700000000000; Date.now = () => clock;
 Object.defineProperty(performance, "now", { value: () => 0 });
 const [source, runtimeSource, root, legacy] = process.argv.slice(2);
+const currentExecution = existsSync(`${runtimeSource}/execution/pi/run.js`);
 const providerAdapter = existsSync(`${runtimeSource}/ai/providers/engine-turn.js`) ? "engine-turn" : "pi-native" /* Archived provider filename only. */;
 const historicPackage = "@mono-agent/harness"; // Archived P2b imports only.
 registerHooks({ resolve(specifier, context, nextResolve) {
@@ -107,7 +108,9 @@ async function captureRepairs(repo) {
     compactedContext: JSON.stringify(buildHarnessSessionContext(await session.getEntries(), { repairs: await session.getRepairEntries() })), bytes: await readFile(session.metadata.path, "utf8") } };
 }
 async function captureRuntime(session) {
-  const pn = (name) => import(pathToFileURL(`${runtimeSource}/ai/providers/${providerAdapter}/${name}.js`));
+  const pn = (name) => import(pathToFileURL(currentExecution
+    ? `${runtimeSource}/execution/pi/${["compaction-driver", "mid-run-compaction"].includes(name) ? "compaction/" : ""}${name}.js`
+    : `${runtimeSource}/ai/providers/${providerAdapter}/${name}.js`));
   const { createPiSessionAdapter } = existsSync(`${source}/session-adapter.js`)
     ? await import(pathToFileURL(`${source}/session-adapter.js`)) : await pn("harness-adapter");
   const { estimateCurrentContextTokens, estimateSessionMessageTokens } = await pn("compaction-driver");
@@ -139,7 +142,9 @@ async function captureMidRun(pn) {
   return { armed, decision, settings, requests, events, warnings, state };
 }
 async function captureRecovery(pn) {
-  const adapter = await import(pathToFileURL(`${runtimeSource}/ai/providers/${providerAdapter}.js`));
+  const adapter = await import(pathToFileURL(currentExecution
+    ? `${runtimeSource}/execution/pi/run.js`
+    : `${runtimeSource}/ai/providers/${providerAdapter}.js`));
   const generateEngineTurnResponse = adapter.generateEngineTurnResponse;
   const { recoverDurableNativeSession, resolveDurableNativeSessionRepo } = existsSync(`${runtimeSource}/engine/sessions.js`)
     ? await import(pathToFileURL(`${runtimeSource}/engine/sessions.js`)) : await pn("session-lifecycle");

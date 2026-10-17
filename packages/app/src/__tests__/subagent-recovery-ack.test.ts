@@ -7,9 +7,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 // @ts-expect-error Private kernel tool boundary.
-import { createAgentManageTool } from "../../../turn/src/agent/tools/agent-manage-tool.js";
+import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
 // @ts-expect-error Real native engine; only provider transport is fake.
-import { generateEngineTurnResponse } from "../../../turn/src/ai/providers/engine-turn.js";
+import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { acquireContinuationStoreLock } from "../continuation-store-fs.js";
 import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";

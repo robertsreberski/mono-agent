@@ -87,8 +87,8 @@ export function effectiveModelForAgent(
  * The ladder one advertisement resolves to, or `undefined` when it said
  * nothing at all and the caller's floor applies.
  *
- * Read the producer's vocabulary (`agent-app/src/model-effort-capabilities.ts`,
- * `agent-runtime/src/host/local-providers.ts`) rather than the field names:
+ * Read the producer's vocabulary (`packages/app/src/model-effort-capabilities.ts`,
+ * `packages/turn/src/host/providers/local-providers.ts`) rather than the field names:
  *
  *   - `reasoning: false` / `reasoningMode: "none"` — takes no grade at all.
  *   - `reasoningMode: "toggle"` — binary thinking; graded levels would lie.

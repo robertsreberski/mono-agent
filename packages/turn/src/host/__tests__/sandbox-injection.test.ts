@@ -11,16 +11,13 @@ const kernelMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("@mono-agent/turn", () => ({
-  createPiOAuthApiKeyResolver: vi.fn(),
-  createRuntime: kernelMocks.createRuntime,
-  createRouterRuntime: kernelMocks.createRouterRuntime,
-}));
+vi.mock("#turn/runtime/create-runtime", () => ({ createRuntime: kernelMocks.createRuntime }));
+vi.mock("#turn/runtime/router", () => ({ createRouterRuntime: kernelMocks.createRouterRuntime }));
 
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution } from "@mono-agent/turn/host/types";
 import type { RuntimeRunOptions, RuntimeToolOptions } from "../types.js";
-import { monoSandboxImpl } from "../sandbox-impl.js";
+import { monoSandboxImpl } from "../sandbox/implementation.js";
 
 const model = {
   provider: "faux",

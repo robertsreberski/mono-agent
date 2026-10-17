@@ -4,7 +4,7 @@ import {
   MODEL_REFERENCE_ECHO_MAX_BYTES,
   MODEL_REFERENCE_REASON_MAX_BYTES,
   parseMonoRuntimeModelReference,
-  RuntimeAdapterError,
+  TurnHostError,
   sanitizeModelReferenceText,
 } from "@mono-agent/turn/host/config";
 
@@ -23,7 +23,7 @@ import { requireJsonString } from "./scalars.js";
  * the innermost, actionable text.
  */
 export function modelReferenceReason(error: unknown): string {
-  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+  const reason = error instanceof TurnHostError && typeof error.details.reason === "string"
     ? error.details.reason
     : error instanceof Error
       ? error.message

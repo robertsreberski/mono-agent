@@ -4,7 +4,7 @@ const executeMock = vi.fn();
 const assertEngineTurnModelRefMock = vi.fn();
 const runtimeCapabilitiesMock = vi.fn();
 
-vi.mock("../../ai/runtime/capabilities.js", async (importOriginal) => {
+vi.mock("../../runtime/capabilities.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
@@ -12,12 +12,12 @@ vi.mock("../../ai/runtime/capabilities.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../ai/providers/engine-turn/model-ref.js", async (importOriginal) => {
+vi.mock("../../execution/pi/model-ref.js", async (importOriginal) => {
   const actual = await importOriginal();
   return { assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
 });
 
-vi.mock("../../ai/providers/engine-turn.js", async (importOriginal) => {
+vi.mock("../../execution/pi/run.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
@@ -25,8 +25,8 @@ vi.mock("../../ai/providers/engine-turn.js", async (importOriginal) => {
   };
 });
 
-const { createRouterRuntime } = await import("../../ai/runtime/router.js");
-const { createRuntime } = await import("../../runtime.js");
+const { createRouterRuntime } = await import("../../runtime/router.js");
+const { createRuntime } = await import("../../runtime/create-runtime.js");
 const { passthroughSandbox } = await import("../../agent/sandbox-seam.js");
 const { createFakeSandbox } = await import("../helpers/fake-sandbox.js");
 
@@ -849,7 +849,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
   });
 
   it("strips primary session state when resume capability is false", async () => {
-    const actual = await vi.importActual("../../ai/runtime/capabilities.js");
+    const actual = await vi.importActual("../../runtime/capabilities.js");
     runtimeCapabilitiesMock.mockReturnValue({ ...actual.runtimeCapabilities(), supports_session_resume: false });
     executeMock.mockResolvedValueOnce({ text: "ok", providerSessionId: "coordinated-id", events: [] });
     const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
@@ -1969,7 +1969,7 @@ it("rejects the old run option before dispatch, including when the replacement i
 });
 
 it("rejects the old option at direct provider entrypoints too", async () => {
-  const { generateEngineTurnResponse, preparePiNativeDispatch } = await vi.importActual("../../ai/providers/engine-turn.js");
+  const { generateEngineTurnResponse, preparePiNativeDispatch } = await vi.importActual("../../execution/pi/run.js");
   const options = { piSessionsRoot: "/fictional/old" };
   await expect(generateEngineTurnResponse("sys", options)).rejects.toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
   expect(() => preparePiNativeDispatch("sys", options)).toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");

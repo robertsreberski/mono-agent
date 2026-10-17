@@ -6,7 +6,7 @@ import {
   createToolContext,
   updateToolContext,
   resolveSandboxPolicy,
-} from "../../agent/tools/shared/tool-context.js";
+} from "../../tools/shared/tool-context.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 import {
   bashToolImpl,
@@ -16,9 +16,9 @@ import {
   readToolImpl,
   webFetchToolImpl,
   webSearchToolImpl,
-} from "../../agent/tools/index.js";
-import { prepareMcpStdioCommand } from "../../agent/tools/pi-bridge.js";
-import { createNodeReplController } from "../../agent/tools/node-repl.js";
+} from "../../tools/index.js";
+import { prepareMcpStdioCommand } from "../../tools/mcp/connection.js";
+import { createNodeReplController } from "../../tools/commands/node-repl.js";
 
 const tempDirs = [];
 

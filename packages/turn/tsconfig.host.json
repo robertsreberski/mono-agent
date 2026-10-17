@@ -6,14 +6,50 @@
     "declarationDir": "types",
     "tsBuildInfoFile": "dist/.host.tsbuildinfo",
     "paths": {
-      "#kernel/types": [
-        "./types/ai/types.d.ts"
+      "#turn/contracts/runtime": [
+        "./types/contracts/runtime.d.ts"
       ],
-      "#kernel/cost": [
-        "./types/ai/cost.d.ts"
+      "#turn/telemetry/cost": [
+        "./types/telemetry/cost.d.ts"
       ],
-      "#kernel/native-journal-types": [
-        "./types/ai/native-journal-types.d.ts"
+      "#turn/contracts/native-storage": [
+        "./types/contracts/native-storage.d.ts"
+      ],
+      "#turn/contracts/events": [
+        "./types/contracts/events.d.ts"
+      ],
+      "#turn/contracts/live-input": [
+        "./types/contracts/live-input.d.ts"
+      ],
+      "#turn/contracts/mcp-apps": [
+        "./types/contracts/mcp-apps.d.ts"
+      ],
+      "#turn/contracts/session": [
+        "./types/contracts/session.d.ts"
+      ],
+      "#turn/contracts/process": [
+        "./types/contracts/process.d.ts"
+      ],
+      "#turn/contracts/policy": [
+        "./types/contracts/policy.d.ts"
+      ],
+      "#turn/runtime/create-runtime": [
+        "./types/runtime/create-runtime.d.ts"
+      ],
+      "#turn/runtime/router": [
+        "./types/runtime/router.d.ts"
+      ],
+      "#turn/runtime/model-reference": [
+        "./types/runtime/model-reference.d.ts"
+      ],
+      "#turn/runtime/bridges": [
+        "./types/runtime/bridges.d.ts"
+      ],
+      "#turn/providers/pi/catalog": [
+        "./types/providers/pi/catalog.d.ts"
+      ],
+      "#turn/providers/pi/context-1m": [
+        "./types/providers/pi/context-1m.d.ts"
       ]
     }
   },

@@ -85,7 +85,7 @@ function summarizeTurn(turn, { maxChars = DEFAULT_TURN_SUMMARY_CHARS } = {}) {
 // summarized into a one-paragraph snippet; only the trailing `verbatimTurns`
 // keep their full assistant text + tool detail.
 /**
- * @param {Array<*>} events
+ * @param {ReadonlyArray<*>} events
  * @param {Object} [options]
  * @param {number} [options.maxTurns]
  * @param {number} [options.verbatimTurns]

@@ -4,15 +4,15 @@
 // workspace dependency by turning "how commands get sandboxed" into data a
 // host hands the kernel, not code the kernel imports. A host constructs a
 // `RuntimeSandbox` implementation and passes it to `createRuntime({sandbox})`
-// (see runtime.js); every internal tool helper that used to import the sandbox
-// implementation directly (bash.js, pi-bridge.js's MCP-stdio launcher,
+// (see runtime/create-runtime.js); every internal tool helper that used to import the sandbox
+// implementation directly (bash.js, tools/mcp/connection.js's MCP-stdio launcher,
 // web-fetch.js, web-search.js,
 // tool-context.js's policy merge) now reads `ctx.sandbox` and calls through
 // this interface instead.
 //
 // `passthroughSandbox` is the zero-dependency default every ToolContext gets
 // when no host supplies one (createToolContext in
-// ./tools/shared/tool-context.js). Its contract covers both no-injected-sandbox
+// ../tools/shared/tool-context.js). Its contract covers both no-injected-sandbox
 // paths equally:
 //   - No policy at all (both sides of a merge undefined, or a resolved policy
 //     that is undefined): every operation is allowed, byte-identical to
@@ -30,15 +30,15 @@
 //     two axes the passthrough itself inspects (`mode`, `network.mode`). It
 //     is deliberately SHALLOW — no readable/writableRoots intersection, no
 //     denyWrite union — the real, byte-identical merge algorithm is owned by
-//     @mono-agent/turn/host in packages/turn/src/host/sandbox.ts
+//     @mono-agent/turn/host in packages/turn/src/host/sandbox/index.ts
 //     (`mergeSandboxPolicies`) and is wired in by every mono-agent host through
-//     runtime-adapter.
+//     host/create-runtime.ts.
 //
 // Real hosts (mono-agent, via @mono-agent/turn/host) inject
 // `{mergePolicies: mergeSandboxPolicies, prepareCommand: prepareSandboxedCommand,
-// networkAllowsUrl: networkPolicyAllowsUrl}` from packages/turn/src/host/sandbox.ts.
+// networkAllowsUrl: networkPolicyAllowsUrl}` from packages/turn/src/host/sandbox/index.ts.
 // Those exports already conform to this interface exactly, so the injection is a direct pass-through (see host integration's
-// sandbox-impl.ts for the thin TS-side adapter that satisfies the seam's
+// host/sandbox/implementation.ts for the thin TS-side adapter that satisfies the seam's
 // type shape).
 
 // @ts-check
@@ -79,7 +79,7 @@
  * the injected `mergePolicies` returns by path-resolver.js, and is opaque
  * pass-through data as far as this module is concerned. Real hosts get the
  * full, richly-typed policy from @mono-agent/turn/host
- * (`packages/turn/src/host/sandbox.ts`), whose `SandboxPolicy` is a
+ * (`packages/turn/src/host/sandbox/index.ts`), whose `SandboxPolicy` is a
  * structural superset of this shape.
  * @property {string} [mode]
  * @property {SandboxNetworkPolicyLike} [network]
@@ -94,7 +94,7 @@
  * @typedef {Object} RuntimeSandboxEngine
  * Optional concrete sandboxing backend a caller can hand to `prepareCommand`
  * (matches @mono-agent/turn/host's `SandboxEngine`). Not used by
- * `passthroughSandbox` (see module doc: adapters live in runtime-adapter, not
+ * `passthroughSandbox` (see module doc: adapters live in host/sandbox, not
  * the kernel) — documented here only because it is part of the
  * `prepareCommand` input shape real implementations accept.
  * @property {() => Promise<boolean>} isAvailable

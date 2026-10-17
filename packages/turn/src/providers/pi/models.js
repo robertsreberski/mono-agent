@@ -1,0 +1,150 @@
+// pi 0.80 moved the static catalog reads off the pi-ai root: `getModel` is now
+// deprecated/compat-only. `getBuiltinModel(provider, id)` from `providers/all`
+// is the non-deprecated replacement — same 2-arg signature, and it returns
+// `undefined` on an unknown provider/model exactly like the old `getModel`.
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
+import { withContext1M } from "./context-1m.js";
+import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
+
+export const EMPTY_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function rootUrl(baseUrl) {
+  return String(baseUrl || "").replace(/\/+$/, "").replace(/\/(api|v1)$/, "");
+}
+
+function openAiCompatBaseUrl(provider) {
+  const baseUrl = String(provider?.base_url || "").replace(/\/+$/, "");
+  if (provider?.provider_type === "ollama") return `${rootUrl(baseUrl)}/v1`;
+  return /\/v\d+$/.test(baseUrl) ? baseUrl : `${baseUrl}/v1`;
+}
+
+function customProviderName(provider, brand) {
+  return `${(brand ?? DEFAULT_RUNTIME_BRAND).providerModelPrefix}-${provider.id}`;
+}
+
+function customProviderKey(provider, isPrivate) {
+  if (provider?.api_key) return provider.api_key;
+  return isPrivate ? "ollama" : "";
+}
+
+function customCompat(capabilities, isPrivate) {
+  return {
+    supportsStore: false,
+    supportsDeveloperRole: !isPrivate,
+    supportsReasoningEffort: capabilities?.reasoning_mode === "effort",
+    maxTokensField: "max_tokens",
+  };
+}
+
+/**
+ * Translate Pi's model-native thinking levels to mono-agent's public effort
+ * spelling. Pi calls the disabled level `off`; mono-agent calls it `none`.
+ * Keeping this derived from the model lets new native levels (such as `max`)
+ * flow through without maintaining a second hard-coded catalog.
+ * @param {any} model
+ * @returns {string[]}
+ */
+export function reasoningLevelsForPiModel(model) {
+  return getSupportedThinkingLevels(model).map((level) => level === "off" ? "none" : level);
+}
+
+// Build the pi-runtime view of a custom provider/model from
+// pre-resolved primitives. The caller (core/ai.js#generateResponse) reads
+// the provider/model rows and computes the capabilities + isPrivate flag
+// before invoking the provider, so this function never reaches into the
+// domain layer.
+function resolveCustomPiModel(resolved, options) {
+  const provider = options.customProvider;
+  if (!provider) {
+    throw new Error(
+      `pi custom provider context missing for ${resolved.provider}: caller must pass options.customProvider`,
+    );
+  }
+  if (!provider.enabled) throw new Error(`provider disabled: ${resolved.provider}`);
+  const modelRow = options.customModel || null;
+  if (modelRow && modelRow.enabled === false) {
+    throw new Error(`model disabled: ${resolved.model}`);
+  }
+  const capabilities = options.modelCapabilities;
+  if (!capabilities || typeof capabilities !== "object") {
+    throw new Error(
+      `pi custom model capabilities missing for ${resolved.model}: caller must pass options.modelCapabilities`,
+    );
+  }
+  const isPrivate = typeof options.isPrivateProvider === "boolean"
+    ? options.isPrivateProvider
+    : false;
+  const providerName = customProviderName(provider, options.toolContext?.runtimeBrand);
+  const pricing = modelRow?.pricing || {};
+  return {
+    model: {
+      id: resolved.model,
+      name: modelRow?.display_name || resolved.model,
+      api: "openai-completions",
+      provider: providerName,
+      baseUrl: openAiCompatBaseUrl(provider),
+      reasoning: !!capabilities.reasoning,
+      input: capabilities.vision === false ? ["text"] : ["text", "image"],
+      cost: {
+        input: Number(pricing.input_per_million) || 0,
+        output: Number(pricing.output_per_million) || 0,
+        cacheRead: Number(pricing.cached_input_per_million) || 0,
+        cacheWrite: Number(pricing.cache_write_per_million) || 0,
+      },
+      contextWindow: Number(capabilities.context_window || capabilities.num_ctx) || 128000,
+      maxTokens: Number(capabilities.max_tokens) || 16384,
+      compat: customCompat(capabilities, isPrivate),
+    },
+    capabilities,
+    apiKeys: new Map([[providerName, customProviderKey(provider, isPrivate)]]),
+  };
+}
+
+// `options.customProvider`, when present, takes UNCONDITIONAL precedence for
+// ANY pi model ref resolved in this run — it is not scoped to the specific
+// model reference passed in. A fallback-router chain that mixes a custom-pi
+// entry with a builtin-pi entry therefore routes ALL pi entries in that chain
+// through the same custom provider once options.customProvider is set for the
+// run (the router does not re-derive customProvider per chain entry).
+export function resolvePiRuntimeModel(resolved, options) {
+  const provider = resolved.provider;
+  const model = resolved.model;
+  if (
+    typeof provider !== "string"
+    || provider.length === 0
+    || typeof model !== "string"
+    || model.length === 0
+  ) {
+    throw new Error("invalid pi model reference: provider and model are required");
+  }
+  if (options.customProvider) return resolveCustomPiModel(resolved, options);
+  const catalogModel = getPiModel(/** @type {*} */ (provider), model);
+  if (!catalogModel) {
+    // Phrasing matters: this must match telemetry/failure.js's NON_RETRYABLE_PROVIDER_RE
+    // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss
+    // as non-retryable and bails cleanly instead of retrying/misclassifying it as
+    // a transient provider_unavailable failure.
+    throw new Error(`pi model not found: ${provider}:${model}`);
+  }
+  return {
+    model: withContext1M(catalogModel, options.context1MModels),
+    capabilities: {
+      tool_use: true,
+      reasoning: !!catalogModel.reasoning,
+      reasoning_mode: catalogModel.reasoning ? "effort" : "none",
+      reasoning_levels: catalogModel.reasoning ? reasoningLevelsForPiModel(catalogModel) : undefined,
+      reasoning_disable_supported: true,
+      vision: Array.isArray(catalogModel.input) ? catalogModel.input.includes("image") : false,
+      json_mode: true,
+    },
+    apiKeys: new Map(),
+  };
+}

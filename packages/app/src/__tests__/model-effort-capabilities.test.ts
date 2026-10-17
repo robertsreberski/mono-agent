@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  getPiBuiltinModel,
-  reasoningLevelsForPiModel,
-} from "@mono-agent/turn";
+import { getPiBuiltinModel, reasoningLevelsForPiModel } from "@mono-agent/turn/ai";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { LocalProviderDefinition } from "@mono-agent/turn/host/types";
 

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearLocalProviderDiscoveryCache,
   discoverLocalProviders,
-} from "../provider-discovery.js";
+} from "../providers/provider-discovery.js";
 
 type FetchInput = Parameters<typeof fetch>[0];
 

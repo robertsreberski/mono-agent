@@ -3,7 +3,7 @@ import {
   UNKNOWN_CAPABILITY,
   buildCapabilitiesUsed,
   toolCompactionAppliedFromWarnings,
-} from "../../ai/runtime/capabilities-used.js";
+} from "../../telemetry/capabilities-used.js";
 
 describe("buildCapabilitiesUsed", () => {
   it("emits sensible defaults: structured_output_enforced false, others null/[]", () => {

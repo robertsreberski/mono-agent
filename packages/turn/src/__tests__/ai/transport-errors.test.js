@@ -6,9 +6,9 @@ import {
   recentTransportErrorCode,
   recordTransportErrorForTests,
   resetTransportErrorProbeForTests,
-} from "../../ai/providers/transport-errors.js";
-import { failureKindForPiError } from "../../ai/providers/engine-turn/result-builder.js";
-import { retryableProviderFailureInfo } from "../../ai/failure.js";
+} from "../../providers/pi/transport-errors.js";
+import { failureKindForPiError } from "../../execution/pi/result-builder.js";
+import { retryableProviderFailureInfo } from "../../telemetry/failure.js";
 
 beforeEach(() => {
   resetTransportErrorProbeForTests();

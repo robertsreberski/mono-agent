@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createMetricsObserver, createObserverHub } from "../../ai/observer.js";
+import { createMetricsObserver, createObserverHub } from "../../telemetry/observer.js";
 
 describe("createObserverHub", () => {
   it("fans an event out to every observer", () => {
@@ -180,11 +180,11 @@ describe("createRuntime + observers integration", () => {
   it("forwards host.observers and options.observers to bridge execute via the hub", async () => {
     const executeMock = vi.fn().mockResolvedValue({ text: "ok" });
     vi.resetModules();
-    vi.doMock("../../ai/providers/engine-turn.js", async (importOriginal) => ({
+    vi.doMock("../../execution/pi/run.js", async (importOriginal) => ({
       ...await importOriginal(),
       engineTurnAdapter: { id: "stub", execute: executeMock },
     }));
-    const { createRuntime } = await import("../../runtime.js");
+    const { createRuntime } = await import("../../runtime/create-runtime.js");
     const hostObs = { recordEvent: vi.fn() };
     const callObs = { recordEvent: vi.fn() };
     const onEvent = vi.fn();
@@ -202,6 +202,6 @@ describe("createRuntime + observers integration", () => {
     expect(hostObs.recordEvent).toHaveBeenCalledTimes(1);
     expect(callObs.recordEvent).toHaveBeenCalledTimes(1);
     expect(onEvent).toHaveBeenCalledTimes(1);
-    vi.doUnmock("../../ai/providers/engine-turn.js");
+    vi.doUnmock("../../execution/pi/run.js");
   });
 });

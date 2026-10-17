@@ -4,11 +4,11 @@
 // falls back to its built-in string and honors an override when present.
 
 import { describe, expect, it } from "vitest";
-import { formatLiveInputGuidance } from "../../ai/live-input-prompt.js";
+import { formatLiveInputGuidance } from "../../runtime/live-input-prompt.js";
 import {
   appendStructuredOutputInstruction,
   structuredOutputFinalizationPrompt,
-} from "../../ai/providers/engine-turn/structured-output.js";
+} from "../../execution/pi/structured-output.js";
 
 describe("appendStructuredOutputInstruction", () => {
   it("returns the prompt unchanged when there is no output schema (no override consulted)", () => {

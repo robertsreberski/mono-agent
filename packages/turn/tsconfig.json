@@ -1,0 +1,4 @@
+{
+  // Default project for tools resolving tsconfig.json, including Knip's built-host source mapping; the later TypeScript conversion replaces turn's split configs.
+  "extends": "./tsconfig.host.json"
+}

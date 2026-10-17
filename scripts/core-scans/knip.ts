@@ -9,7 +9,7 @@ const paths = {
   "@mono-agent/turn/host": turnHost("index"),
   "@mono-agent/turn/host/config": turnHost("config"),
   "@mono-agent/turn/host/types": turnHost("types"),
-  "@mono-agent/turn/host/sandbox": turnHost("sandbox"),
+  "@mono-agent/turn/host/sandbox": turnHost("sandbox/index"),
 };
 
 // Exact names/citations for documented, indirect, fixture-control and deferred surfaces.
@@ -27,7 +27,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/ai/cost.js",
+    "file": "packages/turn/src/telemetry/cost.js",
     "names": [
       "normalizePricing",
       "zeroPricing",
@@ -37,7 +37,7 @@ export const retainedExports = [
       "parseReference"
     ],
     "reason": "documented extension: custom host pricing resolvers",
-    "citation": "packages/turn/src/ai/cost.js:178-183",
+    "citation": "packages/turn/src/telemetry/cost.js:178-183",
     "taggedNames": [
       "zeroPricing",
       "pricingHasRates",
@@ -45,7 +45,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/ai/observer.js",
+    "file": "packages/turn/src/telemetry/observer.js",
     "names": [
       "createMetricsObserver"
     ],
@@ -54,7 +54,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/agent/tools/shared/tool-context.js",
+    "file": "packages/turn/src/tools/shared/tool-context.js",
     "names": [
       "createToolContext",
       "updateToolContext"
@@ -64,7 +64,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/agent/tools/read.js",
+    "file": "packages/turn/src/tools/files/read.js",
     "names": [
       "readToolImpl"
     ],
@@ -73,7 +73,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/runtime/registry.js",
+    "file": "packages/turn/src/runtime/bridges.js",
     "names": [
       "resolveEngineTurnAdapter",
       "listRuntimeBridges"
@@ -83,7 +83,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/runtime/model-refs.js",
+    "file": "packages/turn/src/runtime/model-reference.js",
     "names": [
       "parseRuntimeModelReference"
     ],
@@ -92,7 +92,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/failure.js",
+    "file": "packages/turn/src/telemetry/failure.js",
     "names": [
       "classifyFailure",
       "FAILURE_KINDS"
@@ -102,7 +102,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/cost.js",
+    "file": "packages/turn/src/telemetry/cost.js",
     "names": [
       "resolvePricing",
       "estimateCost"
@@ -195,78 +195,78 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/ai/providers/codex/app-server-client.js",
+    "file": "packages/turn/src/providers/codex/app-server-client.js",
     "names": [
       "createCodexAppServerClient"
     ],
     "reason": "consumed: runtime Codex broker; tested client subpath retained until turn entry regrouping",
-    "citation": "packages/turn/src/agent/tools/codex-subscription-search.js:7",
+    "citation": "packages/turn/src/tools/web/codex-subscription-search.js:7",
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/agent/tools/codex-subscription-search.js",
+    "file": "packages/turn/src/tools/web/codex-subscription-search.js",
     "names": [
       "__resetCodexSubscriptionSearchForTests"
     ],
     "reason": "test isolation control for process-global Codex broker/cache",
-    "citation": "packages/turn/src/agent/tools/codex-subscription-search.js",
+    "citation": "packages/turn/src/tools/web/codex-subscription-search.js",
     "taggedNames": [
       "__resetCodexSubscriptionSearchForTests"
     ]
   },
   {
-    "file": "packages/turn/src/agent/tools/web-search-providers/shared.js",
+    "file": "packages/turn/src/tools/web/search-providers/shared.js",
     "names": [
       "__resetWebSearchThrottleForTests"
     ],
     "reason": "test isolation control for process-global WebSearch throttle",
-    "citation": "packages/turn/src/agent/tools/web-search-providers/shared.js",
+    "citation": "packages/turn/src/tools/web/search-providers/shared.js",
     "taggedNames": [
       "__resetWebSearchThrottleForTests"
     ]
   },
   {
-    "file": "packages/turn/src/host/provider-discovery.ts",
+    "file": "packages/turn/src/host/providers/provider-discovery.ts",
     "names": [
       "clearLocalProviderDiscoveryCache"
     ],
     "reason": "test isolation control for process-global local provider discovery cache",
-    "citation": "packages/turn/src/host/provider-discovery.ts",
+    "citation": "packages/turn/src/host/providers/provider-discovery.ts",
     "taggedNames": [
       "clearLocalProviderDiscoveryCache"
     ]
   },
   {
-    "file": "packages/turn/src/agent/tools/web-controller.js",
+    "file": "packages/turn/src/tools/web/web-controller.js",
     "names": [
       "__resetSharedSearchCacheForTests"
     ],
     "reason": "test isolation control for process-global shared search cache",
-    "citation": "packages/turn/src/agent/tools/web-controller.js",
+    "citation": "packages/turn/src/tools/web/web-controller.js",
     "taggedNames": [
       "__resetSharedSearchCacheForTests"
     ]
   },
   {
-    "file": "packages/turn/src/ai/providers/transport-errors.js",
+    "file": "packages/turn/src/providers/pi/transport-errors.js",
     "names": [
       "resetTransportErrorProbeForTests",
       "recordTransportErrorForTests"
     ],
     "reason": "test isolation control for process-global transport error probe",
-    "citation": "packages/turn/src/ai/providers/transport-errors.js",
+    "citation": "packages/turn/src/providers/pi/transport-errors.js",
     "taggedNames": [
       "resetTransportErrorProbeForTests",
       "recordTransportErrorForTests"
     ]
   },
   {
-    "file": "packages/turn/src/ai/runtime/sessions.js",
+    "file": "packages/turn/src/runtime/session-fanout.js",
     "names": [
       "createSessionRegistry"
     ],
     "reason": "test isolation control for process-global runtime registry fan-out",
-    "citation": "packages/turn/src/ai/runtime/sessions.js",
+    "citation": "packages/turn/src/runtime/session-fanout.js",
     "taggedNames": [
       "createSessionRegistry"
     ]
@@ -292,108 +292,10 @@ export const retainedExports = [
     "taggedNames": [
       "attestManagedBackgroundRuntime"
     ]
-  },
-  {
-    "file": "packages/turn/src/host/sandbox.ts",
-    "names": [
-      "sandboxPolicyToRuntimeOptions",
-      "protectSandboxRoots",
-      "resolveSandboxEffectiveState",
-      "sandboxEffectiveStateWarning",
-      "describeSandboxEffectiveState"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "sandboxPolicyToRuntimeOptions",
-      "protectSandboxRoots",
-      "resolveSandboxEffectiveState",
-      "sandboxEffectiveStateWarning",
-      "describeSandboxEffectiveState"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/runtime-adapter.ts",
-    "names": [
-      "monoRuntimeSupportsSessionResume",
-      "monoRuntimeSupportsLiveInput",
-      "monoRuntimeSupportsMcpApps",
-      "describeMonoRuntimeSupport",
-      "createMonoRuntime"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "monoRuntimeSupportsSessionResume",
-      "monoRuntimeSupportsLiveInput",
-      "monoRuntimeSupportsMcpApps",
-      "describeMonoRuntimeSupport",
-      "createMonoRuntime"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/local-providers.ts",
-    "names": [
-      "discoverLocalProviderModels",
-      "resolveModelEffortLevels",
-      "runtimeOptionsForLocalProvider",
-      "isPiBuiltinProvider",
-      "isAutodiscoverableProviderId"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "discoverLocalProviderModels",
-      "resolveModelEffortLevels",
-      "runtimeOptionsForLocalProvider",
-      "isPiBuiltinProvider",
-      "isAutodiscoverableProviderId"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/model-reference.ts",
-    "names": [
-      "parseMonoRuntimeModelReference",
-      "modelReferenceKey"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "parseMonoRuntimeModelReference",
-      "modelReferenceKey"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/mcp-servers.ts",
-    "names": [
-      "parseMcpServers"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "parseMcpServers"
-    ]
-  },
-  {
-    "file": "packages/turn/src/host/types.ts",
-    "names": [
-      "RuntimeToolLifecycleEvent",
-      "RuntimeToolLifecyclePersistence"
-    ],
-    "reason": "deferred: turn host entry regrouping; live façade/declared host boundary",
-    "citation": "packages/turn/MIGRATION.md",
-    "taggedNames": [
-      "RuntimeToolLifecycleEvent",
-      "RuntimeToolLifecyclePersistence"
-    ]
   }
 ] as const;
 
-export const retainedEntries = [{
-  file: "packages/turn/src/agent/allowlists.js",
-  reason: "deferred: turn entry regrouping",
-  citation: "packages/turn/package.json",
-}] as const;
+export const retainedEntries = [] as const;
 
 export default {
   tags: ["-coreScanRetained"],
@@ -421,8 +323,9 @@ export default {
       paths,
       entry: [
         "src/index.js!",
-        "src/host/{index,config,types,sandbox}.ts!",
-        "src/host/srt-embed-runner.mjs!",
+        "src/host/{index,config,types}.ts!",
+        "src/host/sandbox/index.ts!",
+        "src/host/sandbox/srt-embed-runner.mjs!",
         "src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs",
       ],
       project: ["src/**/*.{js,mjs,ts,mts}!", "!src/**/__tests__/**!"],

@@ -3,7 +3,7 @@
 // agent-runtime's kernel has ZERO workspace-package imports (see
 // ../../agent/sandbox-seam.js and its passthroughSandbox default); production
 // hosts inject @mono-agent/turn/host's implementation from
-// packages/turn/src/host/sandbox.ts (via sandbox-impl.ts).
+// packages/turn/src/host/sandbox/index.ts (via host/sandbox/implementation.ts).
 // This fixture reimplements just enough of host integration's pure policy algebra
 // (monotonic merge, engine-delegated command prep, network-mode allow checks)
 // for agent-runtime's OWN tool-enforcement tests (tools.test.js,

@@ -8,7 +8,7 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@ear
 import { AgentHarnessFailureError, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/conversation";
 import type { AgentRequestBase, AgentResponder, AgentStreamEvent } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createManagedNativeJournalStorage } from "@mono-agent/turn";
+import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type MonoRuntimeLike, type RuntimeNativePreparedDispatch } from "@mono-agent/turn/host/types";
 import { createConfiguredAgentResponder, createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
@@ -573,7 +573,7 @@ it("guarded pending unknown billing is never bypassed by typed capture capacity"
   { canonicalBytes: 32768, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }, budget, "0".repeat(64));
   const lease = await prep.beginModelSwitchStorage(state); if (lease.status !== "owned") throw new Error("Expected owned intent");
   await lease.admit("outgoing"); await lease.release(); await prep.abort();
-  const { NativeEvidenceCapacityError } = await import("@mono-agent/turn");
+  const { NativeEvidenceCapacityError } = await import("@mono-agent/turn/ai");
   vi.spyOn(f.native, "captureEvidence").mockRejectedValueOnce(new NativeEvidenceCapacityError());
   const deletion = vi.spyOn(f.native, "deleteJournals"), calls = f.transport.mock.calls.length;
   await expect(h.respond(f.request(await persistedId(f.root), "faux:A"), { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);

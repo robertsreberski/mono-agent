@@ -18,7 +18,7 @@ export async function productionModules({ privateEvaluation = false } = {}) {
   const [config, app, controllerMemory, grammar, graph, providerAuth, providerFailures, runtimeConfig, runtimeAuth] = await Promise.all([
     import("../../packages/config/dist/index.js"), import("../../packages/app/dist/configured-agent.js"),
     import("../../packages/app/dist/app-controller-memory.js"), import("../../packages/memory/dist/bujo/grammar.js"), import("../../packages/memory/dist/bujo/graph.js"),
-    import("../../packages/turn/src/ai/pi-interop.js"), import("../../packages/turn/src/ai/failure.js"),
+    import("@mono-agent/turn/ai"), import("@mono-agent/turn/ai"),
     import("@mono-agent/turn/host/config"), import("@mono-agent/turn"),
   ]);
   return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions, config, app, controllerMemory, grammar, graph, providerAuth, providerFailures, runtimeConfig, runtimeAuth };

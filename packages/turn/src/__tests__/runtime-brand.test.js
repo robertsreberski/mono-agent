@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const executeMock = vi.fn();
 const assertEngineTurnModelRefMock = vi.fn();
 
-vi.mock("../ai/providers/engine-turn/model-ref.js", async (importOriginal) => {
+vi.mock("../execution/pi/model-ref.js", async (importOriginal) => {
   const actual = await importOriginal();
   return { assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
 });
 
-vi.mock("../ai/providers/engine-turn.js", async (importOriginal) => {
+vi.mock("../execution/pi/run.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
@@ -16,9 +16,9 @@ vi.mock("../ai/providers/engine-turn.js", async (importOriginal) => {
   };
 });
 
-const { createRuntime } = await import("../runtime.js");
+const { createRuntime } = await import("../runtime/create-runtime.js");
 const { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } = await import("../runtime-brand.js");
-const { createToolContext } = await import("../agent/tools/shared/tool-context.js");
+const { createToolContext } = await import("../tools/shared/tool-context.js");
 
 const TEST_MODEL = { provider: "anthropic", model: "x", reference: "anthropic:x" };
 
@@ -107,13 +107,13 @@ describe("brand-aware modules", () => {
   });
 
   it("ripgrep error message picks up the per-instance context brand", async () => {
-    const { ripgrepMissingMessage } = await import("../agent/tools/shared/ripgrep.js");
+    const { ripgrepMissingMessage } = await import("../tools/shared/ripgrep.js");
     const ctx = createToolContext({ runtimeBrand: { doctorCommand: "instance doctor" } });
     expect(ripgrepMissingMessage(ctx)).toContain("`instance doctor`");
   });
 
   it("ripgrep error message uses the immutable default brand when no context is supplied", async () => {
-    const { ripgrepMissingMessage } = await import("../agent/tools/shared/ripgrep.js");
+    const { ripgrepMissingMessage } = await import("../tools/shared/ripgrep.js");
     expect(ripgrepMissingMessage()).toContain(`\`${DEFAULT_RUNTIME_BRAND.doctorCommand}\``);
   });
 

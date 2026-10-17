@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isContextLimitError, normalizePiErrorMessage, parseContextLimitFromError } from "../../ai/providers/pi-errors.js";
+import { isContextLimitError, normalizePiErrorMessage, parseContextLimitFromError } from "../../providers/pi/errors.js";
 
 describe("isContextLimitError", () => {
   const contextLimitMessages = [

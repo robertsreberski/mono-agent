@@ -31,17 +31,17 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { digestTurnInput } from "@mono-agent/turn/engine";
 import { createTurnBinding } from "../../engine/turn-evidence.js";
 import * as sessionAdapter from "../../engine/session-adapter.js";
-import * as harnessAdapter from "../../ai/providers/engine-turn/engine-adapter.js";
+import * as harnessAdapter from "../../execution/pi/driver-adapter.js";
 import { ENGINE_CONTEXT } from "@mono-agent/turn/engine";
-import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
-import { createRouterRuntime } from "../../ai/runtime/router.js";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { createRouterRuntime } from "../../runtime/router.js";
 import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo, retireDurableNativeSession } from "../../engine/session-lifecycle.js";
-import { cleanupSessionOnThrow, commitSession, discardUncommittedSession, resolveSession, rollbackAbortedTurn } from "../../ai/providers/engine-turn/session-lifecycle.js";
+import { cleanupSessionOnThrow, commitSession, discardUncommittedSession, resolveSession, rollbackAbortedTurn } from "../../execution/pi/session-results.js";
 import {
   disposeProviderSession,
   invalidateProviderSession,
   syncProviderSession,
-} from "../../ai/runtime/sessions.js";
+} from "../../runtime/session-fanout.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = /** @type {typeof import("node:fs/promises")} */ (await importOriginal());

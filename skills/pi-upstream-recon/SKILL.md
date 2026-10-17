@@ -101,7 +101,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   New assistant-error retry patterns must not enable response-level retries in
   the runtime: checks, compaction and handoffs keep SSE and `maxRetries: 0`.
 - Pi's standalone OAuth registry remains unavailable at runtime.
-  `packages/turn/src/ai/pi-oauth-compat.js` owns the compatibility
+  `packages/turn/src/providers/pi/oauth-compat.js` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream
   imports.
 - Importing projects should not add their own Pi dependency merely to read

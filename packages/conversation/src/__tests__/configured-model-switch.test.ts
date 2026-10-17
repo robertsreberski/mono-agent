@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "@mono-agent/turn";
+import { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "@mono-agent/turn/ai";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type MonoRuntimeLike } from "@mono-agent/turn/host/types";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";

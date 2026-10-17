@@ -1,5 +1,5 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
-import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, TurnHostError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 
 /** One enabled trigger (cron job / webhook endpoint) carrying override strings. */
 interface TriggerOverrideEntry {
@@ -32,7 +32,7 @@ function echo(value: string): string {
  * wrapped message is what keeps the repair from being clamped away by this second pass.
  */
 function reasonOf(error: unknown): string {
-  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+  const reason = error instanceof TurnHostError && typeof error.details.reason === "string"
     ? error.details.reason
     : error instanceof Error
       ? error.message

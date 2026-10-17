@@ -7,8 +7,8 @@ const native = vi.hoisted(() => ({
 }));
 const inherited = vi.hoisted(() => vi.fn());
 vi.mock("../../engine/native-journal-storage.js", () => ({ createManagedNativeJournalStorage: () => native, NativeEvidenceCapacityError: class extends Error {} }));
-vi.mock("../../ai/providers/engine-turn/handoff-producer.js", () => ({ checkNativeInheritedPrefix: inherited }));
-import { createManagedNativeJournalStorage } from "../../ai/providers/engine-turn/native-journal-storage.js";
+vi.mock("../../execution/pi/handoff-producer.js", () => ({ checkNativeInheritedPrefix: inherited }));
+import { createManagedNativeJournalStorage } from "../../execution/pi/storage-capability.js";
 
 it("keeps one storage factory with readonly copies and exact coordinate normalization", async () => {
   const storage = createManagedNativeJournalStorage({ sessionsRoot: "/fictional/sessions" });

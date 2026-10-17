@@ -6,11 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const resolveOAuthApiKeyMock = vi.fn();
 
-vi.mock("../ai/pi-oauth-compat.js", () => ({
+vi.mock("../providers/pi/oauth-compat.js", () => ({
   resolveOAuthApiKey: (...args) => resolveOAuthApiKeyMock(...args),
 }));
 
-const { createPiOAuthApiKeyResolver } = await import("../pi-auth.js");
+const { createPiOAuthApiKeyResolver } = await import("../providers/pi/auth.js");
 
 const tempDirs = [];
 

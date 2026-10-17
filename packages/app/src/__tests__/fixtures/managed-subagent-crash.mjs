@@ -19,8 +19,8 @@ import { createSubagentInstanceRegistry, subagentConversationRoot } from "../../
 import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { readProcessIncarnation, processIncarnationsEqual } from "../../../dist/process-incarnation.js";
-import { createAgentTool } from "../../../../turn/src/agent/tools/agent-tool.js";
-import { createRuntime } from "../../../../turn/src/runtime.js";
+import { createAgentTool } from "../../../../turn/src/tools/delegation/agent-tool.js";
+import { createRuntime } from "../../../../turn/src/runtime/create-runtime.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
 

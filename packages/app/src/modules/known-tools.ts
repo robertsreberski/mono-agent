@@ -1,7 +1,7 @@
 /**
  * The single source of truth for tool names, shared by the wizard, doctor, and
  * tests. Names are exact and case-sensitive, verified against the runtime's
- * `pi-bridge.js` (built-ins) and `adapter-send-tools.ts` (adapter send tools).
+ * `pi-tools.js` (built-ins) and `adapter-send-tools.ts` (adapter send tools).
  */
 
 import { ALLOW_ALL_TOOLS, RENAMED_TOOL_NAMES, renamedToolMessage, renamedToolName } from "@mono-agent/config";
@@ -16,7 +16,7 @@ export { ALLOW_ALL_TOOLS };
  */
 export { renamedToolMessage, renamedToolName };
 
-/** Mono-agent-managed built-ins gated by `tools.allowedTools` (pi-bridge.js). */
+/** Mono-agent-managed built-ins gated by `tools.allowedTools` (pi-tools.js). */
 export const BUILTIN_TOOL_NAMES = [
   "Read",
   "Write",

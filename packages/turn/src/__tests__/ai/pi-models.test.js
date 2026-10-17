@@ -7,12 +7,12 @@
 // pattern, so it fell through to a misleading provider_unavailable classification
 // instead of failing cleanly as a non-retryable, unambiguous "model not found".
 import { describe, expect, it } from "vitest";
-import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "../../ai/providers/pi-models.js";
-import { retryableProviderFailureInfo } from "../../ai/failure.js";
-import { thinkingLevelForEffort } from "../../ai/providers/engine-turn/turn-runner.js";
+import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "../../providers/pi/models.js";
+import { retryableProviderFailureInfo } from "../../telemetry/failure.js";
+import { thinkingLevelForEffort } from "../../execution/pi/turn-runner.js";
 import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
-import { checkPiProviderAuth, describePiProviderAuth, getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
-import { estimateCost } from "../../ai/cost.js";
+import { checkPiProviderAuth, describePiProviderAuth, getPiBuiltinModel, listPiBuiltinModels } from "../../providers/pi/catalog.js";
+import { estimateCost } from "../../telemetry/cost.js";
 
 // Exercise the real pinned chat catalog, not a mock or a copied row:
 // pricing, dispatch, advertised effort and listing must agree.

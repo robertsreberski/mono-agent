@@ -1,4 +1,4 @@
-import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, RuntimeAdapterError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
+import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, parseMonoRuntimeModelReference, TurnHostError, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 import type { LocalProviderDefinition, RuntimeModelReference } from "@mono-agent/turn/host/types";
 import { describe, expect, it, vi } from "vitest";
 
@@ -555,11 +555,11 @@ describe("per-request override warnings bound the value they echo", () => {
   });
 
   /** The error the parser actually throws for `model`, for asserting against its two layers. */
-  const rejectionOf = (model: string): RuntimeAdapterError => {
+  const rejectionOf = (model: string): TurnHostError => {
     try {
       parseMonoRuntimeModelReference(model);
     } catch (error) {
-      if (error instanceof RuntimeAdapterError) return error;
+      if (error instanceof TurnHostError) return error;
       throw error;
     }
     throw new Error("Expected the model reference to be rejected.");

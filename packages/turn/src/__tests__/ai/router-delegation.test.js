@@ -8,7 +8,7 @@ const disposeSessionMock = vi.fn().mockResolvedValue(true);
 const invalidateSessionMock = vi.fn().mockResolvedValue(true);
 const disposeAllSessionsMock = vi.fn().mockResolvedValue(undefined);
 
-vi.mock("../../runtime.js", () => ({
+vi.mock("../../runtime/create-runtime.js", () => ({
   createRuntime: () => ({
     run: vi.fn(),
     configureTools: configureToolsMock,
@@ -21,7 +21,7 @@ vi.mock("../../runtime.js", () => ({
   }),
 }));
 
-const { createRouterRuntime } = await import("../../ai/runtime/router.js");
+const { createRouterRuntime } = await import("../../runtime/router.js");
 
 describe("createRouterRuntime — inner runtime delegation", () => {
   it("delegates configureTools, syncSession, refreshSession, retireDurableSession, disposeSession, invalidateSession, and disposeAllSessions", async () => {

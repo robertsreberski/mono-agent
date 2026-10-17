@@ -1,5 +1,7 @@
 // @ts-check
 
+import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "../tools/mcp/timeouts.js";
+
 // Pure runtime compaction policy and context-pressure heuristics.
 // The engine owns compaction execution over native session evidence.
 
@@ -41,10 +43,7 @@ const DEFAULT_SEARCH_RESULT_LIMIT = 100;
 const DEFAULT_IMAGE_INLINE_MAX_BYTES = 5_000_000;
 const DEFAULT_TOOL_PAYLOAD_MAX_BYTES = 262144;
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 120000;
-// Hard wall clock for a single MCP tool call. Progress notifications reset the
-// inactivity timeout above but must never extend a call past this cap (45 min) —
-// sized for legitimately long tools (audio transcription, ask-the-user waits).
-const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 2_700_000;
+
 
 /**
  * @param {*} value
@@ -71,7 +70,7 @@ function clampInteger(value, fallback, min, max) {
 }
 
 /**
- * @param {{toolLimits?: import('../ai/types.js').RuntimeToolLimits, compaction?: import('../ai/types.js').RuntimeCompactionPolicy}} [options]
+ * @param {{toolLimits?: import("../contracts/policy.js").RuntimeToolLimits, compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy}} [options]
  * @param {Object} [model]
  * @param {number} [model.contextWindow]
  * @returns {AgentCompactionPolicy}

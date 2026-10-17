@@ -152,9 +152,9 @@ Rules for future packages:
 | Shared request, stream, channel, or host-safety contract | `packages/contracts` |
 | Config schema, validation, or source precedence | `packages/config` |
 | Host/CLI/config composition | `packages/app` |
-| One request, tools, MCP, approvals, or structured output | `packages/conversation` |
-| Provider routing or sandbox facade | `packages/turn/src/host` |
-| Provider implementation or runtime sessions | `packages/turn` |
+| Conversation/history orchestration and host turn policy | `packages/conversation` |
+| Typed runtime construction, metadata or sandbox facade | `packages/turn/src/host` |
+| Per-turn routing/execution, tools/providers or native sessions | `packages/turn` |
 | Transport-specific behavior | The matching `*-adapter` package |
 | Memory persistence, recall, or maintenance | `packages/memory` or an explicitly selected plugin backend |
 | Run artifacts, trace discovery, or exporters | `packages/observability` |

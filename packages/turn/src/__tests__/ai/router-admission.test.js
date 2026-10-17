@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { createRouterRuntime } from "../../ai/runtime/router.js";
+import { createRouterRuntime } from "../../runtime/router.js";
 
 it.each([false, true])("reports cancellation without failover when aborted during detached context loading (throws=%s)", async (throws) => {
   const primary = { provider: "openai-codex", model: "fictional-primary", reference: "openai-codex:fictional-primary" };

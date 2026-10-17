@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createCodexAppServerClient } from "../../ai/providers/codex/app-server-client.js";
+import { createCodexAppServerClient } from "../../providers/codex/app-server-client.js";
 
 describe("Codex app-server client", () => {
   it("settles a spawn failure even when no child close event follows", async () => {

@@ -1,6 +1,6 @@
 // @ts-check
 // Native headers and records use version 2; host canonical history v3 is separate.
-// Internal wire contract, not a runtime-adapter API. Native envelopes remain opaque.
+// Internal wire contract, not a host API. Native envelopes remain opaque.
 /** @typedef {'turn_start'|'turn_end'|'operation_start'|'operation_end'|'message'|'tool_call'|'tool_result'|'compaction'|'interruption'|'rewind'|'model_change'|'input_queued'|'input_consumed'|'owner_binding'|'handle_binding'|'handle_retired'} JournalKind */
 /** @typedef {{provider:string, api:string, model:string, account?:string}} Provenance */
 /** @typedef {{schemaVersion:2, id:string, parentId:string|null, seq:number, timestamp:number, turnId:string, operationId?:string, kind:JournalKind, payload:Record<string, any>}} JournalEntry */

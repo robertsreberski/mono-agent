@@ -5,7 +5,7 @@ import {
   listRuntimeBridges,
   resolveEngineTurnAdapter,
   runtimeCapabilities,
-} from "../../ai/runtime/registry.js";
+} from "../../runtime/bridges.js";
 
 describe("AI runtime bridge registry", () => {
   it("exposes one self-consistent built-in bridge descriptor", () => {
@@ -21,7 +21,7 @@ describe("AI runtime bridge registry", () => {
   });
 
   it("resolves Pi to the engine turn adapter", async () => {
-    const { engineTurnAdapter } = await import("../../ai/providers/engine-turn.js");
+    const { engineTurnAdapter } = await import("../../execution/pi/run.js");
     const model = { provider: "openai", model: "gpt-5.5", reference: "openai:gpt-5.5" };
     const bridge = await resolveEngineTurnAdapter(model);
 
@@ -31,13 +31,13 @@ describe("AI runtime bridge registry", () => {
 
   it("rejects malformed references before loading the adapter", async () => {
     const load = vi.fn(() => { throw new Error("Malformed references must not load the adapter"); });
-    vi.doMock("../../ai/providers/engine-turn.js", load);
+    vi.doMock("../../execution/pi/run.js", load);
     try {
       for (const resolve of [resolveEngineTurnAdapter]) {
         await expect(resolve({ model: "x", reference: "missing:x" })).rejects.toThrow("unsupported model reference: expected <provider>:<model>");
       }
       expect(load).not.toHaveBeenCalled();
-    } finally { vi.doUnmock("../../ai/providers/engine-turn.js"); }
+    } finally { vi.doUnmock("../../execution/pi/run.js"); }
   });
 
   it("exposes Pi-owned capabilities", () => {
@@ -54,15 +54,21 @@ describe("AI runtime bridge registry", () => {
   });
 });
 
-it("exports only canonical adapter names at both public barrels", async () => {
+it("exports canonical adapter names only at the expert AI entry", async () => {
   for (const path of ["../../ai/index.js", "../../index.js"]) {
     const api = await import(path);
     expect(api).not.toHaveProperty("assertEngineTurnModelRef");
     expect(api).not.toHaveProperty("resolveRuntimeBridge");
     expect(api).not.toHaveProperty("generatePiNativeResponse");
     expect(api).not.toHaveProperty("piNativeRuntimeBridge");
-    expect(api.engineTurnAdapter.execute).toBe(api.generateEngineTurnResponse);
-    expect(await api.resolveEngineTurnAdapter({ provider: "faux", model: "fixture", reference: "faux:fixture" })).toBe(api.engineTurnAdapter);
+    if (path === "../../index.js") {
+      expect(api).not.toHaveProperty("engineTurnAdapter");
+      expect(api).not.toHaveProperty("generateEngineTurnResponse");
+      expect(api).not.toHaveProperty("resolveEngineTurnAdapter");
+    } else {
+      expect(api.engineTurnAdapter.execute).toBe(api.generateEngineTurnResponse);
+      expect(await api.resolveEngineTurnAdapter({ provider: "faux", model: "fixture", reference: "faux:fixture" })).toBe(api.engineTurnAdapter);
+    }
   }
 });
 
@@ -79,7 +85,7 @@ it.each([
 });
 
 it("omits retired aliases from freshly emitted declarations", () => {
-  const files = ["ai/runtime/registry.js", "ai/providers/engine-turn.js"].map((file) => fileURLToPath(new URL(`../../${file}`, import.meta.url)));
+  const files = ["runtime/bridges.js", "execution/pi/run.js"].map((file) => fileURLToPath(new URL(`../../${file}`, import.meta.url)));
   const program = ts.createProgram(files, { allowJs: true, declaration: true, emitDeclarationOnly: true, skipLibCheck: true,
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext });
   for (const path of files) {

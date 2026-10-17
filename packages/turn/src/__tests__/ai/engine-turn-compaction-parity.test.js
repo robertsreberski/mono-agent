@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { shouldCompact } from "../../engine/compaction-kit/compaction.js";
 import { resolveAgentCompactionPolicy } from "../../agent/compaction.js";
-import { piCompactionSettings } from "../../ai/providers/engine-turn/compaction-driver.js";
+import { piCompactionSettings } from "../../execution/pi/compaction/compaction-driver.js";
 
 // PARITY PROOF (Phase 5): the proactive compaction trigger was moved off the
 // hand-rolled `est.tokens >= policy.triggerTokens` comparison onto pi's native

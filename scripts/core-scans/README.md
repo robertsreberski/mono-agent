@@ -49,11 +49,14 @@ exceptions below. Existing findings are deliberately not grandfathered in.
   outside discovery, not exceptions. Test directories are non-production inputs,
   so production discovery excludes `src/**/__tests__/` including their helpers.
 - Existing package tsconfigs map normal `dist` exports back to source. Turn's
-  mixed layout has source JS exports and four compiled `dist/host` entries but
-  no `tsconfig.json`. `knip.ts` maps those **four exact package specifiers** to
-  their TS sources in every workspace, and registers the host entries. This
-  avoids a temporary turn tsconfig and works in an unbuilt checkout. Update
-  those mappings alongside any future turn artifact/export-map migration.
+  default `tsconfig.json` extends its existing host project so tools that resolve
+  that conventional filename, including Knip, can map the four built host entries
+  back to their TS owners. Package defaults resolve before fallback path aliases;
+  aliases alone cannot establish that identity in a built checkout. The facade
+  adds no compiler options or build steps; turn's explicit build/typecheck commands
+  keep using the split JS/host projects. The later TypeScript conversion replaces
+  those split configs. Exact host specifier mappings and entries remain explicit
+  in `knip.ts`; no ignore entries compensate for source-mapping gaps.
 - Madge scans production source (`ts,js,mjs,mts`) with `__tests__` excluded.
   Type-only edges are included. It follows reachable source dependencies across
   core packages: repeated cycles with `../../` prefixes are expected. Do not
@@ -72,8 +75,8 @@ below. There are no package-wide, all-types, or public-barrel ignores.
 | Exact path / dependency | Reason and treatment |
 | --- | --- |
 | `packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs` | By-path proof tool; regeneration workflow in [PROJECTION-GOLDENS.md](../../packages/turn/src/engine/__tests__/fixtures/PROJECTION-GOLDENS.md). Non-production entry. |
-| `packages/turn/src/host/srt-embed-runner.mjs` | Worker loaded with `new URL` in `src/host/sandbox.ts`; production entry. |
-| `packages/turn/package.json`: `@vscode/ripgrep` | String-resolved dependency in `src/agent/tools/shared/ripgrep.js` via `createRequire().resolve`; exact dependency exception, not an unused package. |
+| `packages/turn/src/host/sandbox/srt-embed-runner.mjs` | Worker loaded with `new URL` in `src/host/sandbox/index.ts`; production entry. |
+| `packages/turn/package.json`: `@vscode/ripgrep` | String-resolved dependency in `src/tools/shared/ripgrep.js` via `createRequire().resolve`; exact dependency exception, not an unused package. |
 | `packages/conversation/src/tool-history-writer-worker.ts` | Worker loaded with `new URL` in `src/tool-history-store.ts`; production entry. |
 | `packages/conversation/src/__tests__/fixtures/canonical-v5-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; non-production entry, with only declaration exports exempted (they describe JS, not independent runtime values). |
 | `packages/conversation/src/__tests__/fixtures/managed-native-switch-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; same narrow treatment. |
@@ -121,8 +124,10 @@ The exact `retainedExports` and `retainedEntries` registers in
 - two real built-module loaders: config-reference generation and runtime
   attestation;
 - process-global cache/probe isolation controls and the runtime registry test
-  factory, not unused product features;
-- deferred host-entry regrouping and the intentionally empty allowlists entry.
+  factory, not unused product features.
+
+Turn host entries now resolve through their real owners; no deferred host or
+empty-entry exemptions remain.
 
 Only names needing a native Knip exception carry `@coreScanRetained`; the policy
 test enforces exact agreement between annotations and the register. No ignored

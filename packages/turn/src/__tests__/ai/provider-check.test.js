@@ -6,8 +6,8 @@ import {
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 
-import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
-import { classifyProviderCheckFailure, runPiProviderCheck } from "../../ai/provider-check.js";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { classifyProviderCheckFailure, runPiProviderCheck } from "../../providers/pi/provider-check.js";
 
 describe("provider check", () => {
   it("runs one isolated target request with bounded output and the supplied auth context", async () => {

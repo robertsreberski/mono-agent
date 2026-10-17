@@ -1,9 +1,10 @@
+import { createRuntime, createRouterRuntime } from "@mono-agent/turn";
 import { createMonoRuntime } from "@mono-agent/turn/host";
-import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import { parseMonoRuntimeModelReference, TurnHostError } from "@mono-agent/turn/host/config";
 import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
 import { isRuntimeSubagentActivityEvent, PI_TRANSPORTS } from "@mono-agent/turn/host/types";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution, RuntimeRunOptions, RuntimeLiveInputMessage, RuntimeNativePreparationStorage } from "@mono-agent/turn/host/types";
-import { createManagedNativeJournalStorage } from "@mono-agent/turn";
+import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 
 const calls: string[] = [];
 const message: RuntimeLiveInputMessage = { body: "fictional", accepted: () => calls.push("accepted") };
@@ -34,4 +35,50 @@ if (false) {
     processJobs: { start: async () => ({ jobId: "fixture", state: "queued", startedAt: null }) },
   } };
   void bad; void processOwner;
+}
+
+const hostError: Error = new TurnHostError("invalid_runtime_options", "Fictional failure", { field: "fixture" });
+void hostError;
+if (false) {
+  // @ts-expect-error unknown codes are not accepted by the host error contract.
+  new TurnHostError("fictional_invalid_code", "Fictional failure");
+}
+
+if (false) {
+  // @ts-expect-error model remains a nested readonly host projection.
+  run.model.provider = "fictional";
+  // @ts-expect-error model references remain readonly.
+  run.model.reference = "fictional:replacement";
+  const background = null as unknown as import("@mono-agent/turn/host/types").ProcessJobStartRequest;
+  const foreground = null as unknown as import("@mono-agent/turn/host/types").OwnedForegroundProcessRequest;
+  // @ts-expect-error background prepared commands are readonly host capabilities.
+  background.prepared.command = "fictional";
+  // @ts-expect-error foreground prepared cleanup cannot be replaced.
+  foreground.prepared.cleanup = async () => {};
+  const hostResult = null as unknown as import("@mono-agent/turn/host/types").RuntimeResult;
+  // @ts-expect-error structured output must first be narrowed from unknown.
+  hostResult.structuredResult.unchecked;
+  const core = null as unknown as Awaited<ReturnType<ReturnType<typeof createRuntime>["run"]>>;
+  const router = null as unknown as Awaited<ReturnType<ReturnType<typeof createRouterRuntime>["run"]>>;
+  core.events?.push({ type: "fixture" });
+  core.events?.map((event) => event.type.toLowerCase());
+  router.events?.map((event) => event.type.toLowerCase());
+  core.runtimeWarnings?.map((warning) => Object.keys(warning));
+  // @ts-expect-error public core events cannot lose their type discriminator.
+  core.events?.push({});
+}
+
+if (false) {
+  type Dispatch = Awaited<ReturnType<NonNullable<ReturnType<typeof createRuntime>["prepareNativeDispatch"]>>>;
+  const dispatch = null as unknown as Dispatch;
+  dispatch.checkHandoffSummary?.({ prepared: { status: "prepared", checkpoints: [], ledger: [], recent: [], older: [], coverage: [] }, outputReserve: 1 });
+  type Summary = Extract<Awaited<ReturnType<NonNullable<Dispatch["produceHandoffSummary"]>>>, { status: "ready" }>;
+  const summary = null as unknown as Summary;
+  summary.usage.legacyField.nested = true;
+  summary.status = "ready";
+  // @ts-expect-error public summary field arrays remain readonly.
+  summary.summary.intent.push("fictional");
+  const host = null as unknown as import("@mono-agent/turn/host/types").RuntimeHandoffProducerRequest;
+  // @ts-expect-error host checkpoint evidence stays unknown until narrowed.
+  host.prepared.checkpoints[0]!.legacyField.nested = true;
 }

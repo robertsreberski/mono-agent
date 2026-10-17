@@ -7,7 +7,7 @@ import {
   runProactiveCompaction,
   runReactiveCompaction,
   tryCompact,
-} from "../../ai/providers/engine-turn/compaction-driver.js";
+} from "../../execution/pi/compaction/compaction-driver.js";
 import { buildHarnessSessionContext } from "../../engine/session-context.js";
 
 // A session double whose buildContext / getEntries / (message count) are

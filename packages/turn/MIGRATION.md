@@ -60,12 +60,13 @@ directly on agent-runtime. Use these exact imports (symbol names are unchanged):
 
 | Old import and symbols | New import |
 | --- | --- |
-| `@mono-agent/runtime-adapter`: `digestNativeTurnInput`, `formatLiveInputGuidance` | `@mono-agent/turn/ai/live-input-prompt.js` |
-| `@mono-agent/runtime-adapter`: `assertParsedRuntimeModelReference`, `MODEL_REFERENCE_ECHO_MAX_BYTES`, `MODEL_REFERENCE_REASON_MAX_BYTES`, `modelReferenceKey`, `parseMonoRuntimeModelReference`, `RuntimeAdapterError`, `sanitizeModelReferenceText`, `isValidMcpServerName`, `parseMcpServers`, `isAutodiscoverableProviderId`, `isPrivateBaseUrl`, `isPiBuiltinProvider`, `localProviderDefinitionFor`, `resolveModelEffortLevels`, `runtimeOptionsForLocalProvider`, `validateLocalProviderDefinition`, `validateProviderDefinition` | `@mono-agent/turn/host/config` |
+| `@mono-agent/runtime-adapter`: `digestNativeTurnInput`, `formatLiveInputGuidance` | `@mono-agent/turn/ai` |
+| `@mono-agent/runtime-adapter`: `assertParsedRuntimeModelReference`, `MODEL_REFERENCE_ECHO_MAX_BYTES`, `MODEL_REFERENCE_REASON_MAX_BYTES`, `modelReferenceKey`, `parseMonoRuntimeModelReference`, `TurnHostError`, `sanitizeModelReferenceText`, `isValidMcpServerName`, `parseMcpServers`, `isAutodiscoverableProviderId`, `isPrivateBaseUrl`, `isPiBuiltinProvider`, `localProviderDefinitionFor`, `resolveModelEffortLevels`, `runtimeOptionsForLocalProvider`, `validateLocalProviderDefinition`, `validateProviderDefinition` | `@mono-agent/turn/host/config` |
 | `@mono-agent/runtime-adapter`: `createMonoRuntime`, `describeMonoRuntimeSupport`, `monoRuntimeSupportsLiveInput`, `monoRuntimeSupportsMcpApps`, `monoRuntimeSupportsSessionResume`, `discoverLocalProviderModels`, `discoverLocalProviders` | `@mono-agent/turn/host` |
-| `@mono-agent/runtime-adapter`: `createPiOAuthApiKeyResolver`, `CONTEXT_1M_TOKENS`, `supportsPiContext1M`, `listPiBuiltinProviders`, `NativeEvidenceCapacityError`, `createManagedNativeJournalStorage` | `@mono-agent/turn` |
+| `@mono-agent/runtime-adapter`: `createPiOAuthApiKeyResolver` | `@mono-agent/turn` |
+| `@mono-agent/runtime-adapter`: `CONTEXT_1M_TOKENS`, `supportsPiContext1M`, `listPiBuiltinProviders`, `NativeEvidenceCapacityError`, `createManagedNativeJournalStorage` | `@mono-agent/turn/ai` |
 | `@mono-agent/runtime-adapter`: `CreateMonoRuntimeOptions`, `MonoRuntimeAttemptContext`, `MonoRuntimeAttemptResolution`, `MonoRuntimeFallbackChainEntry`, `ProcessJobProcessHandle`, `ProcessJobProcessResult`, `ProcessJobsController`, `ProcessJobStartRequest`, `ProcessJobStartResult`, `PI_TRANSPORTS`, `isRuntimeSubagentActivityEvent`, `PreparedSandboxCommand`, `SandboxCommandSpec`, `SandboxEffectiveState`, `SandboxEngine`, `SandboxFallback`, `SandboxMode`, `SandboxNetworkMode`, `SandboxPolicy`, `DiscoveredLocalModel`, `LocalProviderDefinition`, `LocalProviderModelDefinition`, `LocalProviderRuntimeOptions`, `ModelEffortLevels`, `ProviderDefinition`, `DiscoveredProvider`, `MonoRuntimeApprovalDecision`, `MonoRuntimeApprovalRequest`, `MonoRuntimeBackendCapabilities`, `MonoRuntimeBackendDescriptor`, `MonoRuntimeCompactionRecord`, `MonoRuntimeHostOptions`, `MonoRuntimeLike`, `RuntimeNativeJournalAuthority`, `RuntimeNativeJournalDescriptor`, `RuntimeNativeJournalRef`, `RuntimeNativeEpochContext`, `RuntimeNativeJournalStorage`, `RuntimeNativeJournalDeletion`, `DurableSessionSalvage`, `MonoRuntimeParsedPricingModel`, `MonoRuntimePricing`, `MonoRuntimeSandboxEngine`, `MonoRuntimeSupportDescription`, `RuntimeCompactionPolicy`, `RuntimeEventLike`, `RuntimeLiveInputEvidence`, `RuntimeLiveInputMessage`, `RuntimeLiveInputUncertainty`, `RuntimeMessage`, `RuntimeMcpAppConnection`, `RuntimeMcpAppHost`, `RuntimeMcpAppRegistration`, `RuntimeModelReference`, `PiTransport`, `RuntimePromptOverrides`, `RuntimeDispatchProgress`, `RuntimeResult`, `RuntimeRunOptions`, `RuntimeSessionTurnDescriptor`, `RuntimeNativeSessionAuthority`, `RuntimeNativeSessionProjection`, `RuntimeNativeDispatchSnapshot`, `RuntimeNativeDispatchBinding`, `RuntimeNativePreparedDispatch`, `RuntimeNativeEvidenceView`, `RuntimeNativePreparationStorage`, `RuntimePreparedHandoff`, `RuntimeHandoffBudget`, `RuntimeHandoffSummary`, `RuntimeHandoffProducerRequest`, `RuntimeHandoffProducerResult`, `RuntimeHandoffFit`, `RuntimeHandoffOptions`, `RuntimeSessionTurnReconciliationRequest`, `RuntimeSessionTurnReconciliationResult`, `RuntimeSessionTurnDetachedAttempt`, `RuntimeSubagentActivityEvent`, `RuntimeSubagentActivityPhase`, `RuntimeSubagentIdentity`, `RuntimeSubagentRouteAttribution`, `RuntimeToolLifecycleEvent`, `RuntimeToolLifecyclePersistence`, `RuntimeToolLifecycleSink`, `RuntimeToolLifecycleTerminalState`, `RuntimeToolLimits`, `RuntimeToolOptions`, `OwnedForegroundProcessRequest`, `OwnedForegroundProcesses` | `@mono-agent/turn/host/types` |
-| `@mono-agent/runtime-adapter`: `inspectCodexSubscriptionSearch` | `@mono-agent/turn/agent/tools/index.js` |
+| `@mono-agent/runtime-adapter`: `inspectCodexSubscriptionSearch` | `@mono-agent/turn/tools` |
 | `@mono-agent/runtime-adapter`: `CodedError` | `@mono-agent/contracts` |
 | `@mono-agent/runtime-adapter`: `SANDBOX_FALLBACKS`, `SANDBOX_MODES`, `SANDBOX_NETWORK_MODES`, `SandboxPolicyError`, `SandboxUnavailableError`, `createSandboxPolicy`, `createSrtSandboxEngine`, `describeSandboxEffectiveState`, `failClosedSandboxPolicy`, `mergeSandboxPolicies`, `networkPolicyAllowsUrl`, `prepareSandboxedCommand`, `protectSandboxRoots`, `resolveSandboxEffectiveState`, `sandboxEffectiveStateWarning`, `sandboxPolicyToRuntimeOptions`, `srtSettingsForPolicy`, `MANAGED_SRT_TREE_SHA256` | `@mono-agent/turn/host/sandbox` |
 
@@ -144,23 +145,9 @@ released sections below remain historical snapshots.
 <!-- public-api-js-subpaths:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
 
-The package exposes **16 named deep `.js` subpaths**:
+The package exposes **2 named deep `.js` subpaths**:
 
 ```text
-@mono-agent/turn/agent/allowlists.js
-@mono-agent/turn/agent/compaction.js
-@mono-agent/turn/agent/prompt/skill-index.js
-@mono-agent/turn/agent/tools/index.js
-@mono-agent/turn/agent/tools/shared/ripgrep.js
-@mono-agent/turn/agent/tools/shared/tool-context.js
-@mono-agent/turn/agent/transcript.js
-@mono-agent/turn/ai/cost.js
-@mono-agent/turn/ai/failure.js
-@mono-agent/turn/ai/file-change-stats.js
-@mono-agent/turn/ai/live-input-prompt.js
-@mono-agent/turn/ai/providers/codex/app-server-client.js
-@mono-agent/turn/ai/runtime/model-refs.js
-@mono-agent/turn/ai/runtime/registry.js
 @mono-agent/turn/engine/owned-fs.js
 @mono-agent/turn/engine/sessions.js
 ```
@@ -254,7 +241,7 @@ binaries against the same root.
   subpath, are removed. `createRuntime(host)` and `runtime.configureTools(next)`
   bind and update only that runtime's context. Direct tool callers import
   `createToolContext` / `updateToolContext` from
-  `@mono-agent/turn/agent/tools/shared/tool-context.js` and pass `{ ctx }`
+  `@mono-agent/turn/tools` and pass `{ ctx }`
   on every filesystem, shell, web, or MCP call. Missing execution context fails
   closed. Read brand fields from your context or pass `runtimeBrand` explicitly
   to stateless formatting helpers.
@@ -264,8 +251,8 @@ binaries against the same root.
 
 ```js
 import { createRuntime } from "@mono-agent/turn";
-import { createToolContext } from "@mono-agent/turn/agent/tools/shared/tool-context.js";
-import { readToolImpl } from "@mono-agent/turn/agent/tools/index.js";
+import { createToolContext } from "@mono-agent/turn/tools";
+import { readToolImpl } from "@mono-agent/turn/tools";
 
 const runtime = createRuntime({ workspace: process.cwd() });
 const policies = {
@@ -920,7 +907,7 @@ Beyond `toolLimits` / `compaction`, `RuntimeRunOptions` gained:
   built-in prompt fragments: `structuredOutputInstruction(systemPrompt)`,
   `structuredOutputFinalization()`, `liveInputGuidance(body)`. Run wins over the
   host-level `prompts` default; an absent field keeps the built-in string
-  (byte-identical default). These are also accepted on `AgentRuntimeHostOptions`
+  (byte-identical default). These are also accepted on `TurnHostOptions`
   as the host-level default.
 
 ### 10. Pi 0.80 auth: `Models` credential store (`resolvePiApiKey` semantics preserved)
@@ -962,50 +949,38 @@ so hosts need no action:
 
 - `@earendil-works/pi-ai/oauth` became a type-only entry point. The generic
   registry (`getOAuthApiKey`, `getOAuthProvider`, `getOAuthProviders`) is gone,
-  and the per-provider flows are not importable. `src/ai/pi-oauth-compat.js`
+  and the per-provider flows are not importable. `src/providers/pi/oauth-compat.js`
   rebuilds the same contracts over `provider.auth.oauth`, so `resolvePiApiKey`,
   `resolvePiOAuthApiKey`, and `loginPiOAuth` keep their existing signatures and
   behaviour, including the refresh-on-expiry trigger.
 - `AgentHarnessOptions.env` was removed in favour of a per-turn `toolContext`.
   The runtime passes neither: it uses none of Pi's built-in file/shell tools.
 
-### 11. Exports map: wildcards removed (explicit deep-path map)
+### 11. Exports map: curated entries, no compatibility paths
 
-The package's `./ai/*` and `./agent/*` **wildcard exports were replaced by an
-explicit `exports` map**: 3 barrels (`.`, `./ai`, `./agent`) plus the generated
-deep-path inventory below, with every entry carrying its own `types` condition.
-A deep import that is not on the map **no longer resolves** — a wildcard used to
-silently resolve anything under `src/`, so a moved/renamed/mistyped subpath is
-now a loud failure (guarded by `scripts/verify-deep-imports.mjs`).
+The explicit map now has eleven entries: the high-level root, `./ai`, `./agent`,
+`./tools`, `./host`, `./host/config`, `./host/types`, `./host/sandbox`, `./engine`,
+`./engine/sessions.js`, and `./engine/owned-fs.js`. Each carries a concrete runtime
+and declaration target. The current generated inventory is in [README.md](./README.md#public-api).
 
-<!-- public-api-js-subpaths:start -->
-<!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
+File-shaped AI/agent subpaths no longer resolve. Import pricing/failure/catalog,
+expert execution and native administration from `@mono-agent/turn/ai`; import
+file/command/web tools and their context from `@mono-agent/turn/tools`. The root
+keeps only the high-level factory/model/metrics/policy API. There are no aliases
+or forwarding modules for retired paths.
 
-The package exposes **14 named deep `.js` subpaths**:
+Eight unused values are removed, not moved or aliased:
+`estimateFixedOverheadTokens`, `ripgrepMissingMessage`, `excludedGlobArgs`,
+`normalizeGlobPattern`, `formatSearchLines`, `capLines`, `excludedPathSummary`,
+and `cachedRgPath`. Of the former ripgrep exports, only `resolveRgPath` remains
+public, at `@mono-agent/turn/tools`.
 
-```text
-@mono-agent/agent-runtime/agent/allowlists.js
-@mono-agent/agent-runtime/agent/compaction.js
-@mono-agent/agent-runtime/agent/prompt/skill-index.js
-@mono-agent/agent-runtime/agent/tools/index.js
-@mono-agent/agent-runtime/agent/tools/shared/ripgrep.js
-@mono-agent/agent-runtime/agent/tools/shared/tool-context.js
-@mono-agent/agent-runtime/agent/transcript.js
-@mono-agent/agent-runtime/ai/cost.js
-@mono-agent/agent-runtime/ai/failure.js
-@mono-agent/agent-runtime/ai/file-change-stats.js
-@mono-agent/agent-runtime/ai/live-input-prompt.js
-@mono-agent/agent-runtime/ai/providers/codex/app-server-client.js
-@mono-agent/agent-runtime/ai/runtime/model-refs.js
-@mono-agent/agent-runtime/ai/runtime/registry.js
-```
-<!-- public-api-js-subpaths:end -->
+`TurnHostError` replaces `RuntimeAdapterError` at `@mono-agent/turn/host/config`,
+including its intentional `Error.name` change. Codes, details and messages stay
+unchanged; historical arbitrary diagnostic names are not rewritten.
 
-**Action:** if you deep-import a subpath not in this list, switch to the closest
-supported one, a barrel (`./ai` / `./agent`), or the public runtime registry.
-`pi-sdk.js` is gone and remains intentionally unexported (section 1). Import
-`generatePiNativeResponse` (now `generateEngineTurnResponse`) from `@mono-agent/agent-runtime/ai` instead of adding
-a compatibility subpath.
+`pi-sdk.js` remains intentionally unexported. Use `generateEngineTurnResponse`
+from `@mono-agent/turn/ai`, not a private provider subpath.
 
 ---
 
@@ -1054,7 +1029,7 @@ Worklab's runtime fork:
    intentionally fails closed. With neither a policy nor an implementation,
    passthrough behavior remains unchanged.
 6. **Use supported contracts.** Keep host callbacks within
-   `AgentRuntimeHostOptions`, tool state within the exported tool-runtime
+   `TurnHostOptions`, tool state within the exported tool-runtime
    context, and reads within `RuntimeResult`. Replace deprecated
    `options.settings` with typed `toolLimits` and `compaction` objects.
 7. **Verify the installed package.** Run Worklab's provider and worker tests

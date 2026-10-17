@@ -10,7 +10,7 @@ import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/turn/ho
 import { validateNativeTurnHistory } from "../durable-model-switch-contract.js";
 import type { NativeTurnHistory } from "../durable-model-switch-contract.js";
 import { bucket, modelKey, timestamp, canonicalRecord, conversationKey, evidence } from "./fixtures/canonical-v5-fixture.mjs";
-import { createManagedNativeJournalStorage } from "@mono-agent/turn";
+import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });

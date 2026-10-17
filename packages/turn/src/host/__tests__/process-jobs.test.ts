@@ -11,11 +11,11 @@ import {
 } from "../process-jobs.js";
 import type { RuntimeRunOptions } from "../types.js";
 
-type KernelRuntime = ReturnType<typeof createRuntime>;
-type KernelRunOptions = Parameters<KernelRuntime["run"]>[1];
-type KernelProcessJobsController = NonNullable<KernelRunOptions["processJobs"]>;
-type KernelStartRequest = Parameters<KernelProcessJobsController["start"]>[0];
-type KernelStartResult = Awaited<ReturnType<KernelProcessJobsController["start"]>>;
+type TurnRuntime = ReturnType<typeof createRuntime>;
+type TurnRunOptions = Parameters<TurnRuntime["run"]>[1];
+type TurnProcessJobsController = NonNullable<TurnRunOptions["processJobs"]>;
+type TurnStartRequest = Parameters<TurnProcessJobsController["start"]>[0];
+type TurnStartResult = Awaited<ReturnType<TurnProcessJobsController["start"]>>;
 
 describe("process-jobs kernel bridge", () => {
   it("carries the host's published budget across the kernel seam", () => {
@@ -45,12 +45,12 @@ describe("process-jobs kernel bridge", () => {
   });
 
   it("proves the kernel seam and neutral contract are structurally identical", () => {
-    expectTypeOf<ProcessJobsController>().toExtend<KernelProcessJobsController>();
-    expectTypeOf<KernelProcessJobsController>().toExtend<ProcessJobsController>();
-    expectTypeOf<ProcessJobStartRequest>().toExtend<KernelStartRequest>();
-    expectTypeOf<KernelStartRequest>().toExtend<ProcessJobStartRequest>();
-    expectTypeOf<ProcessJobStartResult>().toExtend<KernelStartResult>();
-    expectTypeOf<KernelStartResult>().toExtend<ProcessJobStartResult>();
+    expectTypeOf<ProcessJobsController>().toExtend<TurnProcessJobsController>();
+    expectTypeOf<TurnProcessJobsController>().toExtend<ProcessJobsController>();
+    expectTypeOf<ProcessJobStartRequest>().toExtend<TurnStartRequest>();
+    expectTypeOf<TurnStartRequest>().toExtend<ProcessJobStartRequest>();
+    expectTypeOf<ProcessJobStartResult>().toExtend<TurnStartResult>();
+    expectTypeOf<TurnStartResult>().toExtend<ProcessJobStartResult>();
     expectTypeOf<ProcessJobStartResult["queuePosition"]>().toEqualTypeOf<number | undefined>();
     expectTypeOf<ProcessJobStartResult["queueDeadlineAt"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<ProcessJobStartResult["state"]>()

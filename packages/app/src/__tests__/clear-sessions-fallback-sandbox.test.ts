@@ -10,7 +10,7 @@ const processRunnerHooks = vi.hoisted(() => ({
   run: undefined as ((command: { readonly command: string; readonly args?: readonly string[] }) => unknown) | undefined,
 }));
 
-vi.mock("../../../turn/src/agent/tools/shared/process-runner.js", async (importOriginal) => {
+vi.mock("../../../turn/src/tools/commands/process-runner.js", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
@@ -27,7 +27,7 @@ vi.mock("../../../turn/src/agent/tools/shared/process-runner.js", async (importO
 // deciding only when the actual session turn builder creates Read/Write/Bash with
 // the fallback attempt's projected sandbox context.
 // @ts-expect-error -- package-private JavaScript deciding sink has no public declaration.
-import { buildTurnTools } from "../../../turn/src/ai/providers/engine-turn/turn-runner.js";
+import { buildTurnTools } from "../../../turn/src/execution/pi/turn-runner.js";
 import { loadAppCoreConfig } from "../app-config.js";
 import { createConfiguredAgentResponder } from "../configured-agent.js";
 import { configuredRuntimeFallbackModels } from "../runtime-routes.js";

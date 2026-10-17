@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
-import { CONTEXT_1M_TOKENS, supportsPiContext1M, withContext1MModels } from "../../ai/context-1m.js";
-import { resolvePiRuntimeModel } from "../../ai/providers/pi-models.js";
+import { CONTEXT_1M_TOKENS, supportsPiContext1M, withContext1MModels } from "../../providers/pi/context-1m.js";
+import { resolvePiRuntimeModel } from "../../providers/pi/models.js";
 import { createModels, fauxProvider, fauxText, fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
-import { disposeProviderSession } from "../../ai/runtime/sessions.js";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { disposeProviderSession } from "../../runtime/session-fanout.js";
 import { shouldCompact } from "../../engine/compaction-kit/compaction.js";
-import { effectiveContextWindow, resolveLiveCompactionPolicy, piCompactionSettings } from "../../ai/providers/engine-turn/compaction-driver.js";
+import { effectiveContextWindow, resolveLiveCompactionPolicy, piCompactionSettings } from "../../execution/pi/compaction/compaction-driver.js";
 
 const reference = "openai-codex:gpt-6.1-sol";
 const resolved = { provider: "openai-codex", model: "gpt-6.1-sol", reference };

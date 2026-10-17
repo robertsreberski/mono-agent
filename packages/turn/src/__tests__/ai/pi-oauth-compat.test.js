@@ -11,7 +11,7 @@ const {
   resetPiProviderIndexForTests,
   resolveOAuthApiKey,
   toAuthInteraction,
-} = await import("../../ai/pi-oauth-compat.js");
+} = await import("../../providers/pi/oauth-compat.js");
 
 /** The stored credential shape mono-agent keeps in auth.json. */
 function credential(overrides = {}) {

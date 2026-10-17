@@ -2,10 +2,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider, normalizeContext } from "@earendil-works/pi-ai";
 import { streamSimple as sdkStreamSimple } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js";
 import { streamSimple as sdkCodexStreamSimple } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js";
-import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
 
 // Keep the real mid-stream retry policy, without its 1 s/2 s/4 s backoff.
-vi.mock("../../ai/providers/engine-turn/request-retry.js", async (importOriginal) => {
+vi.mock("../../execution/pi/request-retry.js", async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, requestRetryPolicy: (params) => ({ ...actual.requestRetryPolicy(params), baseDelayMs: 0 }) };
 });

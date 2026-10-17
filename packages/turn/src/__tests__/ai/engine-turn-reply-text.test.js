@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { finalReplyText, isReplyPresentationTool } from "../../ai/providers/engine-turn/reply-text.js";
+import { finalReplyText, isReplyPresentationTool } from "../../execution/pi/reply-text.js";
 
 const assistant = (text, ...names) => ({
   role: "assistant",

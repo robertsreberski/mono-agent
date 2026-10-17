@@ -5,8 +5,8 @@ import {
   listPiBuiltinModels,
   listPiBuiltinProviders,
   reasoningLevelsForPiModel,
-} from "../../ai/pi-interop.js";
-import { parseRuntimeModelReference } from "../../ai/runtime/model-refs.js";
+} from "../../providers/pi/catalog.js";
+import { parseRuntimeModelReference } from "../../runtime/model-reference.js";
 
 const utf8 = (value) => new TextEncoder().encode(value).length;
 

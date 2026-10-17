@@ -31,62 +31,6 @@
       "types": "./types/agent/index.d.ts",
       "default": "./src/agent/index.js"
     },
-    "./ai/failure.js": {
-      "types": "./types/ai/failure.d.ts",
-      "default": "./src/ai/failure.js"
-    },
-    "./ai/cost.js": {
-      "types": "./types/ai/cost.d.ts",
-      "default": "./src/ai/cost.js"
-    },
-    "./ai/runtime/model-refs.js": {
-      "types": "./types/ai/runtime/model-refs.d.ts",
-      "default": "./src/ai/runtime/model-refs.js"
-    },
-    "./ai/runtime/registry.js": {
-      "types": "./types/ai/runtime/registry.d.ts",
-      "default": "./src/ai/runtime/registry.js"
-    },
-    "./ai/live-input-prompt.js": {
-      "types": "./types/ai/live-input-prompt.d.ts",
-      "default": "./src/ai/live-input-prompt.js"
-    },
-    "./ai/file-change-stats.js": {
-      "types": "./types/ai/file-change-stats.d.ts",
-      "default": "./src/ai/file-change-stats.js"
-    },
-    "./ai/providers/codex/app-server-client.js": {
-      "types": "./types/ai/providers/codex/app-server-client.d.ts",
-      "default": "./src/ai/providers/codex/app-server-client.js"
-    },
-    "./agent/tools/index.js": {
-      "types": "./types/agent/tools/index.d.ts",
-      "default": "./src/agent/tools/index.js"
-    },
-    "./agent/tools/shared/ripgrep.js": {
-      "types": "./types/agent/tools/shared/ripgrep.d.ts",
-      "default": "./src/agent/tools/shared/ripgrep.js"
-    },
-    "./agent/prompt/skill-index.js": {
-      "types": "./types/agent/prompt/skill-index.d.ts",
-      "default": "./src/agent/prompt/skill-index.js"
-    },
-    "./agent/allowlists.js": {
-      "types": "./types/agent/allowlists.d.ts",
-      "default": "./src/agent/allowlists.js"
-    },
-    "./agent/transcript.js": {
-      "types": "./types/agent/transcript.d.ts",
-      "default": "./src/agent/transcript.js"
-    },
-    "./agent/compaction.js": {
-      "types": "./types/agent/compaction.d.ts",
-      "default": "./src/agent/compaction.js"
-    },
-    "./agent/tools/shared/tool-context.js": {
-      "types": "./types/agent/tools/shared/tool-context.d.ts",
-      "default": "./src/agent/tools/shared/tool-context.js"
-    },
     "./host": {
       "types": "./types/host/index.d.ts",
       "default": "./dist/host/index.js"
@@ -100,8 +44,8 @@
       "default": "./dist/host/types.js"
     },
     "./host/sandbox": {
-      "types": "./types/host/sandbox.d.ts",
-      "default": "./dist/host/sandbox.js"
+      "types": "./types/host/sandbox/index.d.ts",
+      "default": "./dist/host/sandbox/index.js"
     },
     "./engine": {
       "types": "./types/engine/index.d.ts",
@@ -114,12 +58,16 @@
     "./engine/owned-fs.js": {
       "types": "./types/engine/owned-fs.d.ts",
       "default": "./src/engine/owned-fs.js"
+    },
+    "./tools": {
+      "types": "./types/tools/index.d.ts",
+      "default": "./src/tools/index.js"
     }
   },
   "main": "./src/index.js",
   "types": "./types/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.types.json && tsc -p tsconfig.host.build.json && node -e \"require('node:fs').copyFileSync('src/host/srt-embed-runner.mjs','dist/host/srt-embed-runner.mjs')\"",
+    "build": "tsc -p tsconfig.types.json && tsc -p tsconfig.host.build.json && node -e \"require('node:fs').copyFileSync('src/host/sandbox/srt-embed-runner.mjs','dist/host/sandbox/srt-embed-runner.mjs')\"",
     "typecheck": "tsc -p tsconfig.types.json --noEmit && tsc -p tsconfig.host.json --noEmit",
     "prepack": "pnpm run build",
     "test": "vitest run"
@@ -136,7 +84,7 @@
     "THIRD_PARTY_NOTICES.md",
     "dist/host/**/*.js",
     "!dist/host/**/__tests__/**",
-    "dist/host/srt-embed-runner.mjs",
+    "dist/host/sandbox/srt-embed-runner.mjs",
     "ENGINE.md"
   ],
   "engines": {
@@ -163,17 +111,65 @@
     "@types/turndown": "5.0.6"
   },
   "imports": {
-    "#kernel/types": {
-      "types": "./types/ai/types.d.ts",
-      "default": "./src/ai/types.js"
+    "#turn/contracts/runtime": {
+      "types": "./types/contracts/runtime.d.ts",
+      "default": "./src/contracts/runtime.js"
     },
-    "#kernel/cost": {
-      "types": "./types/ai/cost.d.ts",
-      "default": "./src/ai/cost.js"
+    "#turn/telemetry/cost": {
+      "types": "./types/telemetry/cost.d.ts",
+      "default": "./src/telemetry/cost.js"
     },
-    "#kernel/native-journal-types": {
-      "types": "./types/ai/native-journal-types.d.ts",
-      "default": "./src/ai/native-journal-types.js"
+    "#turn/contracts/native-storage": {
+      "types": "./types/contracts/native-storage.d.ts",
+      "default": "./src/contracts/native-storage.js"
+    },
+    "#turn/contracts/events": {
+      "types": "./types/contracts/events.d.ts",
+      "default": "./src/contracts/events.js"
+    },
+    "#turn/contracts/live-input": {
+      "types": "./types/contracts/live-input.d.ts",
+      "default": "./src/contracts/live-input.js"
+    },
+    "#turn/contracts/mcp-apps": {
+      "types": "./types/contracts/mcp-apps.d.ts",
+      "default": "./src/contracts/mcp-apps.js"
+    },
+    "#turn/contracts/session": {
+      "types": "./types/contracts/session.d.ts",
+      "default": "./src/contracts/session.js"
+    },
+    "#turn/contracts/process": {
+      "types": "./types/contracts/process.d.ts",
+      "default": "./src/contracts/process.js"
+    },
+    "#turn/contracts/policy": {
+      "types": "./types/contracts/policy.d.ts",
+      "default": "./src/contracts/policy.js"
+    },
+    "#turn/runtime/create-runtime": {
+      "types": "./types/runtime/create-runtime.d.ts",
+      "default": "./src/runtime/create-runtime.js"
+    },
+    "#turn/runtime/router": {
+      "types": "./types/runtime/router.d.ts",
+      "default": "./src/runtime/router.js"
+    },
+    "#turn/runtime/model-reference": {
+      "types": "./types/runtime/model-reference.d.ts",
+      "default": "./src/runtime/model-reference.js"
+    },
+    "#turn/runtime/bridges": {
+      "types": "./types/runtime/bridges.d.ts",
+      "default": "./src/runtime/bridges.js"
+    },
+    "#turn/providers/pi/catalog": {
+      "types": "./types/providers/pi/catalog.d.ts",
+      "default": "./src/providers/pi/catalog.js"
+    },
+    "#turn/providers/pi/context-1m": {
+      "types": "./types/providers/pi/context-1m.d.ts",
+      "default": "./src/providers/pi/context-1m.js"
     }
   }
 }

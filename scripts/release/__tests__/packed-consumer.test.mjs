@@ -125,11 +125,11 @@ describe("packed consumer verification", () => {
 
   test("ships four concrete host entrypoints without a forwarding package", () => {
     const runtime = JSON.parse(fs.readFileSync(new URL("../../../packages/turn/package.json", import.meta.url), "utf8"));
-    for (const [subpath, file] of [["host", "index"], ["host/config", "config"], ["host/types", "types"], ["host/sandbox", "sandbox"]]) {
+    for (const [subpath, file] of [["host", "index"], ["host/config", "config"], ["host/types", "types"], ["host/sandbox", "sandbox/index"]]) {
       expect(runtime.exports[`./${subpath}`]).toEqual({ types: `./types/host/${file}.d.ts`, default: `./dist/host/${file}.js` });
       expect(Object.keys(runtime.exports[`./${subpath}`])).toEqual(["types", "default"]);
     }
-    expect(runtime.files).toContain("dist/host/srt-embed-runner.mjs");
+    expect(runtime.files).toContain("dist/host/sandbox/srt-embed-runner.mjs");
     expect(runtime.dependencies).not.toHaveProperty("@mono-agent/runtime-adapter");
     expect(fs.existsSync(new URL("../../../packages/runtime-adapter", import.meta.url))).toBe(false);
   });
@@ -180,13 +180,11 @@ describe("packed consumer verification", () => {
     expect(fs.existsSync(new URL("../../../packages/engine", import.meta.url))).toBe(false);
 
     const packedImports = publicExportSpecifiers(runtime.name, runtime);
-    expect(packedImports).toEqual(expect.arrayContaining([
-      "@mono-agent/turn",
-      "@mono-agent/turn/ai",
-      // The Codex app-server client survives the runtime-bridge removal: it
-      // backs `tools.web.search.backend: "codex"` and must stay published.
-      "@mono-agent/turn/ai/providers/codex/app-server-client.js",
-    ]));
+    expect(packedImports.sort()).toEqual([
+      "@mono-agent/turn", "@mono-agent/turn/ai", "@mono-agent/turn/agent", "@mono-agent/turn/tools",
+      "@mono-agent/turn/host", "@mono-agent/turn/host/config", "@mono-agent/turn/host/types", "@mono-agent/turn/host/sandbox",
+      "@mono-agent/turn/engine", "@mono-agent/turn/engine/sessions.js", "@mono-agent/turn/engine/owned-fs.js",
+    ].sort());
 
     const ai = await import(publicRuntimeExportUrl(runtimeManifestUrl, runtime, "./ai"));
     for (const exportName of [
@@ -218,11 +216,9 @@ describe("packed consumer verification", () => {
     const codexClient = await import(publicRuntimeExportUrl(
       runtimeManifestUrl,
       runtime,
-      "./ai/providers/codex/app-server-client.js",
+      "./ai",
     ));
-    // The Codex runtime bridge is gone, but this client still backs
-    // `tools.web.search.backend: "codex"`, so the packed subpath must import.
-    expect(Object.keys(codexClient).length).toBeGreaterThan(0);
+    expect(codexClient.createCodexAppServerClient).toBeTypeOf("function");
   });
 
   test("derives the complete declared internal dependency closure", () => {

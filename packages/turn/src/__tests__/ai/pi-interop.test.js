@@ -23,7 +23,7 @@ vi.mock("@earendil-works/pi-ai/providers/all", () => ({
   getBuiltinProviders: piMocks.getBuiltinProviders,
 }));
 
-vi.mock("../../ai/pi-oauth-compat.js", () => ({
+vi.mock("../../providers/pi/oauth-compat.js", () => ({
   resolveOAuthApiKey: piMocks.resolveOAuthApiKey,
   getPiOAuthAuth: piMocks.getPiOAuthAuth,
   // The callbacks -> AuthInteraction bridge is covered by its own unit tests;
@@ -41,7 +41,7 @@ import {
   loginPiOAuth,
   reasoningLevelsForPiModel,
   resolvePiOAuthApiKey,
-} from "../../ai/pi-interop.js";
+} from "../../providers/pi/catalog.js";
 
 const rawModel = {
   id: "model-1",

@@ -4,7 +4,7 @@ import {
   classifyPiToolResult,
   createToolLifecycleEventGate,
   toolLifecycleMetadata,
-} from "../../ai/tool-lifecycle.js";
+} from "../../runtime/tool-lifecycle.js";
 
 function crossPackageChannelUserCancelReason(channel) {
   return Object.assign(new Error(`Cancelled by ${channel} user.`), {

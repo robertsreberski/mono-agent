@@ -1,4 +1,4 @@
-import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdirSync,
@@ -16,7 +16,7 @@ const authorizationSeam = vi.hoisted(() => ({
   swap: undefined,
 }));
 
-vi.mock("../../agent/tools/shared/path-resolver.js", async (importOriginal) => {
+vi.mock("../../tools/shared/path-resolver.js", async (importOriginal) => {
   const actual = await importOriginal();
   const afterAllowedCheck = (allowed) => {
     if (!allowed || authorizationSeam.remainingChecks <= 0) return allowed;
@@ -52,7 +52,7 @@ import {
   readToolImpl,
   resolveRgPath,
   writeToolImpl,
-} from "../../agent/tools/index.js";
+} from "../../tools/index.js";
 import { createFakeSandbox, testSandboxPolicy } from "../helpers/fake-sandbox.js";
 
 const tempDirs = [];

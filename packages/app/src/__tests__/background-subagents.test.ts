@@ -3,7 +3,7 @@ import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget,
 import { createLiveInputMailbox } from "@mono-agent/conversation";
 import { formatHostCapabilities } from "@mono-agent/conversation";
 // @ts-expect-error Real direct kernel execution seam.
-import { execToolRun } from "../../../turn/src/agent/tools/exec.js";
+import { execToolRun } from "../../../turn/src/tools/commands/exec.js";
 import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/contracts";
 import { fileURLToPath } from "node:url";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
@@ -11,7 +11,7 @@ import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
 import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
-import { generateEngineTurnResponse } from "../../../turn/src/ai/providers/engine-turn.js";
+import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -24,9 +24,9 @@ import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION
 import { hasSubagentObligation } from "../subagent-execution-ownership.js";
 import { launchInternalProcessJob } from "../process-jobs-internal.js";
 // @ts-expect-error Private kernel test seam.
-import { createAgentTool, subagentUsageForRun } from "../../../turn/src/agent/tools/agent-tool.js";
+import { createAgentTool, subagentUsageForRun } from "../../../turn/src/tools/delegation/agent-tool.js";
 // @ts-expect-error Private kernel test seam.
-import { createAgentManageTool } from "../../../turn/src/agent/tools/agent-manage-tool.js";
+import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
 
 const origin = { conversationId: "slack:C1:1.1#bucket", baseConversationId: "slack:C1:1.1", bucket: "bucket",
   replyToConversationId: "slack:C1:1.1", normalizedReplyTarget: "slack:C1:1.1", runId: "parent", historyBoundary: "parent", channel: "slack" };

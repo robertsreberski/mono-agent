@@ -4,17 +4,17 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
-import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "../../agent/tools/shared/constants.js";
+import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "../../tools/shared/constants.js";
 import {
   __resetSharedSearchCacheForTests,
   createWebToolController,
-} from "../../agent/tools/web-controller.js";
-import { extractHtmlLinks } from "../../agent/tools/web-document-extractor.js";
-import { performWebFetch, formatWebFetchDocument } from "../../agent/tools/web-fetch.js";
+} from "../../tools/web/web-controller.js";
+import { extractHtmlLinks } from "../../tools/web/web-document-extractor.js";
+import { performWebFetch, formatWebFetchDocument } from "../../tools/web/web-fetch.js";
 import {
   __resetWebSearchThrottleForTests,
   performWebSearch,
-} from "../../agent/tools/web-search.js";
+} from "../../tools/web/web-search.js";
 import {
   applyFocusFilter,
   buildWebNextAction,
@@ -25,7 +25,7 @@ import {
   refreshCachedSearchEnvelope,
   webFailureEnvelope,
   webStatusForCode,
-} from "../../agent/tools/web-actionable.js";
+} from "../../tools/web/web-actionable.js";
 
 const tempDirs = [];
 

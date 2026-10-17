@@ -8,9 +8,9 @@ import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../conversation/src/index.ts';
 import { resolveJsonMonoAgentConfig } from '../../../../config/src/index.ts';
-import { generateEngineTurnResponse } from '../../ai/providers/engine-turn.js';
-import { disposeProviderSession } from '../../ai/runtime/sessions.js';
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { generateEngineTurnResponse } from '../../execution/pi/run.js';
+import { disposeProviderSession } from '../../runtime/session-fanout.js';
+import { createToolContext } from "../../tools/shared/tool-context.js";
 
 // Direct tool construction in this file binds one explicit context.
 const ctx = createToolContext();
@@ -163,7 +163,7 @@ it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered nati
 
 
 it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays byte-identical across admission changes within each profile', async (api) => {
-  const { getPiBuiltinTools } = await import('../../agent/tools/pi-bridge.js');
+  const { getPiBuiltinTools } = await import("../../tools/pi-tools.js");
   const { composeHostTurnEnvelope, formatHostCapabilities } = await import('../../../../conversation/src/context/turn-envelope.ts');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const model = { ...fauxProvider({ provider: 'wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
@@ -253,7 +253,8 @@ it.each([
 });
 
 it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MCP and builtin %s definitions stable on real request-scoped endpoints', async (api) => {
-  const { getPiBuiltinTools, initPiMcpTools, closePiMcpClients } = await import('../../agent/tools/pi-bridge.js');
+  const { getPiBuiltinTools } = await import("../../tools/pi-tools.js");
+  const { initPiMcpTools, closePiMcpClients } = await import("../../tools/mcp/tools.js");
   const { createSetConversationTitleRuntimeExtension } = await import('../../../../app/src/conversation-title.ts');
   const { createConsoleProjectsRuntimeExtension } = await import('../../../../app/src/console-projects.ts');
   const { createMemoryRememberRuntimeExtension } = await import('../../../../app/src/memory-remember.ts');

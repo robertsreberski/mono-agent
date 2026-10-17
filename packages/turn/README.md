@@ -416,11 +416,15 @@ The package validates each model reference and lazily loads the sole Pi bridge:
 
 | Source area | Responsibility |
 | --- | --- |
-| `src/runtime.js` | Host binding, per-instance tool context, bridge dispatch, and observer flushing |
-| `src/ai/runtime/` | Model-reference parsing, the direct Pi resolver, capabilities, sessions, and fallback routing |
-| `src/ai/providers/` | Pi provider integrations |
-| `src/agent/tools/` | Managed tools, MCP adaptation, output limits, and the injectable sandbox seam |
-| `src/agent/` | Approvals, allowlists, transcript snapshots, and compaction policy helpers |
+| `src/contracts/` | Erased shared model/event/policy/process/session/native-storage contracts |
+| `src/runtime/` | Host binding, routing, model references, capability metadata, live-input policy and session fanout |
+| `src/telemetry/` | Pricing, failure classification, observers, file-change statistics and capability accounting |
+| `src/providers/` | Pi authentication/catalog/wire adaptation and the Codex web-search client |
+| `src/execution/pi/` | Pi turn orchestration, tools/events/results, preparation and compaction coordination |
+| `src/tools/` | File, command, web, delegation and MCP domains plus shared context/path/output mechanics |
+| `src/host/` | Typed projections, metadata-only config, runtime construction and concrete sandbox/provider owners |
+| `src/agent/` | Approval gates, transcript snapshots, compaction policy, result-size guards and the injectable sandbox seam |
+| `src/engine/` | Native execution, session authority, claims, journal storage, recovery and projection |
 
 The detailed lifecycle, provider-session differences, and host boundary are in
 the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/turn/ARCHITECTURE.md).
@@ -509,6 +513,14 @@ failures. Stable definitions do not guarantee a provider cache hit.
 
 ## Public API
 
+The eleven supported entries are the high-level root, expert `./ai`, agent
+policy/transcript `./agent`, direct `./tools`, the four `./host` entries
+(`./host`, `./host/config`, `./host/types`, `./host/sandbox`), and the three
+engine entries (`./engine`, `./engine/sessions.js`, `./engine/owned-fs.js`).
+File-shaped AI/agent entries are retired without aliases. The root no longer
+loads expert provider execution; configuration imports use metadata-only leaves.
+
+
 ### Start here
 
 | API | Use it for |
@@ -540,151 +552,37 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/turn`**
 
 ```text
-CONTEXT_1M_TOKENS
 DEFAULT_RUNTIME_BRAND
-NativeEvidenceCapacityError
-PiBuiltinModelSnapshot
-PiBuiltinProviderSnapshot
-PiOAuthCredentialsSnapshot
-PiOAuthLoginCallbacks
-PiProviderAuthCheck
-PiProviderAuthDescription
-PiProviderAuthInteraction
-PiProviderAuthPrompt
-PiReasoningLevel
-ProviderCheckCode
-ProviderCheckOutcome
-RuntimeBridge
-RuntimeBridgeDescriptor
-RuntimeBridgeId
-RuntimeModelRef
-checkPiProviderAuth
-classifyProviderCheckFailure
-createManagedNativeJournalStorage
 createMetricsObserver
 createPiOAuthApiKeyResolver
 createRouterRuntime
 createRuntime
-describePiProviderAuth
-detachDurableNativeSession
-engineTurnAdapter
-generateEngineTurnResponse
-getPiBuiltinModel
 isLikelyContextTermination
-isPiOAuthLoginEnabled
-listPiBuiltinModels
-listPiBuiltinProviders
-listRuntimeBridges
-loginPiOAuth
-loginPiProviderAuth
 parseRuntimeModelReference
-produceNativeHandoffSummary
-reasoningLevelsForPiModel
 resolveAgentCompactionPolicy
-resolveEngineTurnAdapter
-resolvePiOAuthApiKey
 resolveRuntimeBrand
-runPiProviderCheck
-runtimeCapabilities
-supportsPiContext1M
 ```
 
 **`@mono-agent/turn/agent`**
 
 ```text
-isLikelyContextTermination
-resolveAgentCompactionPolicy
-```
-
-**`@mono-agent/turn/agent/allowlists.js`**
-
-```text
-(no named exports)
-```
-
-**`@mono-agent/turn/agent/compaction.js`**
-
-```text
 AgentCompactionPolicy
-estimateFixedOverheadTokens
-isLikelyContextTermination
-resolveAgentCompactionPolicy
-```
-
-**`@mono-agent/turn/agent/prompt/skill-index.js`**
-
-```text
-formatSkillBodyWithPathNote
-```
-
-**`@mono-agent/turn/agent/tools/index.js`**
-
-```text
-bashToolImpl
-bashToolRun
-editToolImpl
-execToolImpl
-execToolRun
-globToolImpl
-grepToolImpl
-inspectCodexSubscriptionSearch
-inspectLocalWeb
-inspectParallelWeb
-isPathAllowed
-isWorkdirAllowed
-normalizeBackgroundBashTimeoutMs
-normalizeBackgroundTimeoutMs
-normalizeBashTimeoutMs
-normalizeProcessTimeoutMs
-performWebFetch
-performWebSearch
-readToolImpl
-resolveRgPath
-webFetchToolImpl
-webSearchToolImpl
-writeToolImpl
-```
-
-**`@mono-agent/turn/agent/tools/shared/ripgrep.js`**
-
-```text
-cachedRgPath
-capLines
-excludedGlobArgs
-excludedPathSummary
-formatSearchLines
-normalizeGlobPattern
-resolveRgPath
-ripgrepMissingMessage
-```
-
-**`@mono-agent/turn/agent/tools/shared/tool-context.js`**
-
-```text
-RuntimeBrand
-RuntimeSandbox
-RuntimeSandboxEngine
-SandboxPolicy
-ToolContext
-ToolContextOptions
-createToolContext
-requestToolProcessEnvironment
-requireToolContext
-resolveSandboxPolicy
-updateToolContext
-```
-
-**`@mono-agent/turn/agent/transcript.js`**
-
-```text
 buildTranscriptTailSnapshot
+formatSkillBodyWithPathNote
+isLikelyContextTermination
 renderResumeSnapshot
+resolveAgentCompactionPolicy
 ```
 
 **`@mono-agent/turn/ai`**
 
 ```text
 CONTEXT_1M_TOKENS
+FAILURE_KINDS
+FailureKind
+NativeEvidenceCapacityError
+NormalizedPricing
+ParsedModelReference
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
@@ -694,100 +592,56 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+PricingInputRow
 ProviderCheckCode
 ProviderCheckOutcome
+RetryableProviderFailureInfo
 RuntimeBridge
 RuntimeBridgeDescriptor
 RuntimeBridgeId
 RuntimeModelRef
 checkPiProviderAuth
+classifyFailure
 classifyProviderCheckFailure
+createCodexAppServerClient
+createManagedNativeJournalStorage
 createMetricsObserver
+createStderrTail
 describePiProviderAuth
+detachDurableNativeSession
+digestNativeTurnInput
 engineTurnAdapter
+estimateCost
+fileChangeSummary
+formatLiveInputGuidance
 generateEngineTurnResponse
 getPiBuiltinModel
+isContextLimitFailureText
 isPiOAuthLoginEnabled
+isPrivateHost
+isProviderAuthFailureText
 listPiBuiltinModels
 listPiBuiltinProviders
 listRuntimeBridges
 loginPiOAuth
 loginPiProviderAuth
+normalizePricing
+parseReference
 parseRuntimeModelReference
+pricingHasRates
+produceNativeHandoffSummary
+readFileChangeSnapshot
 reasoningLevelsForPiModel
 resolveEngineTurnAdapter
 resolvePiOAuthApiKey
+resolvePricing
+retryableProviderFailureInfo
 runPiProviderCheck
 runtimeCapabilities
+statsForCompletedChange
 supportsPiContext1M
-```
-
-**`@mono-agent/turn/ai/cost.js`**
-
-```text
-NormalizedPricing
-ParsedModelReference
-PricingInputRow
-estimateCost
-isPrivateHost
-normalizePricing
-parseReference
-pricingHasRates
-resolvePricing
 unknownPricing
 zeroPricing
-```
-
-**`@mono-agent/turn/ai/failure.js`**
-
-```text
-FAILURE_KINDS
-FailureKind
-RetryableProviderFailureInfo
-classifyFailure
-createStderrTail
-isContextLimitFailureText
-isProviderAuthFailureText
-retryableProviderFailureInfo
-```
-
-**`@mono-agent/turn/ai/file-change-stats.js`**
-
-```text
-fileChangeSummary
-readFileChangeSnapshot
-statsForCompletedChange
-```
-
-**`@mono-agent/turn/ai/live-input-prompt.js`**
-
-```text
-digestNativeTurnInput
-formatLiveInputGuidance
-```
-
-**`@mono-agent/turn/ai/providers/codex/app-server-client.js`**
-
-```text
-createCodexAppServerClient
-```
-
-**`@mono-agent/turn/ai/runtime/model-refs.js`**
-
-```text
-RuntimeModelRef
-parseRuntimeModelReference
-```
-
-**`@mono-agent/turn/ai/runtime/registry.js`**
-
-```text
-RuntimeBridge
-RuntimeBridgeDescriptor
-RuntimeBridgeId
-listRuntimeBridges
-resolveEngineTurnAdapter
-runtimeCapabilities
 ```
 
 **`@mono-agent/turn/engine`**
@@ -871,7 +725,7 @@ monoRuntimeSupportsSessionResume
 ```text
 MODEL_REFERENCE_ECHO_MAX_BYTES
 MODEL_REFERENCE_REASON_MAX_BYTES
-RuntimeAdapterError
+TurnHostError
 assertParsedRuntimeModelReference
 isAutodiscoverableProviderId
 isPiBuiltinProvider
@@ -1018,6 +872,45 @@ SandboxPolicy
 isRuntimeSubagentActivityEvent
 ```
 
+**`@mono-agent/turn/tools`**
+
+```text
+RuntimeBrand
+RuntimeSandbox
+RuntimeSandboxEngine
+SandboxPolicy
+ToolContext
+ToolContextOptions
+bashToolImpl
+bashToolRun
+createToolContext
+editToolImpl
+execToolImpl
+execToolRun
+globToolImpl
+grepToolImpl
+inspectCodexSubscriptionSearch
+inspectLocalWeb
+inspectParallelWeb
+isPathAllowed
+isWorkdirAllowed
+normalizeBackgroundBashTimeoutMs
+normalizeBackgroundTimeoutMs
+normalizeBashTimeoutMs
+normalizeProcessTimeoutMs
+performWebFetch
+performWebSearch
+readToolImpl
+requestToolProcessEnvironment
+requireToolContext
+resolveRgPath
+resolveSandboxPolicy
+updateToolContext
+webFetchToolImpl
+webSearchToolImpl
+writeToolImpl
+```
+
 <!-- public-api-inventory:end -->
 
 ### When to reach for this vs. other JS agent runtimes
@@ -1060,8 +953,8 @@ supply their owning context explicitly. Missing context fails before execution.
 The removed process-global `runtime-context.js` entrypoint has no fallback.
 
 ```js
-import { createToolContext } from "@mono-agent/turn/agent/tools/shared/tool-context.js";
-import { readToolImpl } from "@mono-agent/turn/agent/tools/index.js";
+import { createToolContext } from "@mono-agent/turn/tools";
+import { readToolImpl } from "@mono-agent/turn/tools";
 
 const ctx = createToolContext({ workspace: process.cwd() });
 const text = await readToolImpl({ file_path: "README.md" }, { ctx });
@@ -1674,12 +1567,12 @@ subpaths resolve, each carrying generated `.d.ts` types. `node
 scripts/verify-deep-imports.mjs` asserts every mapped subpath still loads.
 
 ```js
-import { resolveEngineTurnAdapter, listRuntimeBridges } from "@mono-agent/turn/ai/runtime/registry.js";
-import { parseRuntimeModelReference } from "@mono-agent/turn/ai/runtime/model-refs.js";
-import { classifyFailure, FAILURE_KINDS } from "@mono-agent/turn/ai/failure.js";
-import { resolvePricing, estimateCost } from "@mono-agent/turn/ai/cost.js";
-import { resolveAgentCompactionPolicy, isLikelyContextTermination } from "@mono-agent/turn/agent/compaction.js";
-import { createToolContext, updateToolContext } from "@mono-agent/turn/agent/tools/shared/tool-context.js";
+import { resolveEngineTurnAdapter, listRuntimeBridges } from "@mono-agent/turn/ai";
+import { parseRuntimeModelReference } from "@mono-agent/turn/ai";
+import { classifyFailure, FAILURE_KINDS } from "@mono-agent/turn/ai";
+import { resolvePricing, estimateCost } from "@mono-agent/turn/ai";
+import { resolveAgentCompactionPolicy, isLikelyContextTermination } from "@mono-agent/turn/agent";
+import { createToolContext, updateToolContext } from "@mono-agent/turn/tools";
 // see package.json "exports" for the full mapped set
 ```
 

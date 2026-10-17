@@ -1,11 +1,11 @@
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { MemorySessionRepo } from "../../engine/session-store.js";
 import { describe, expect, it, vi } from "vitest";
-import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
+import { createHarnessAdapter } from "../../execution/pi/driver-adapter.js";
 import { createPiSessionAdapter } from "../../engine/session-adapter.js";
 import { ENGINE_CONTEXT } from "@mono-agent/turn/engine";
-import { shouldRetryStructuredOutputFinalization } from "../../ai/providers/engine-turn/structured-output.js";
-import { createToolExecutionGate, isSharedTool } from "../../ai/providers/engine-turn/tool-execution-gate.js";
+import { shouldRetryStructuredOutputFinalization } from "../../execution/pi/structured-output.js";
+import { createToolExecutionGate, isSharedTool } from "../../execution/pi/tool-execution-gate.js";
 
 function deferred() {
   let resolve;

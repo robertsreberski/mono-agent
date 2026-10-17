@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { NativeEvidenceCapacityError } from "@mono-agent/turn";
+import { NativeEvidenceCapacityError } from "@mono-agent/turn/ai";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/turn/host/types";
 import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";

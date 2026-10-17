@@ -33,10 +33,10 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createRuntime } from "../../runtime.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { createRuntime } from "../../runtime/create-runtime.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
-import { cachedRgPath } from "../../agent/tools/shared/ripgrep.js";
+import { cachedRgPath } from "../../tools/shared/ripgrep.js";
 
 // A fresh faux provider + Models per run (each runtime resolves its own model).
 function makeFaux() {

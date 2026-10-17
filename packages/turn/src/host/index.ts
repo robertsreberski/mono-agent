@@ -1,4 +1,4 @@
-export { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsMcpApps, monoRuntimeSupportsSessionResume } from "./runtime-adapter.js";
+export { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsMcpApps, monoRuntimeSupportsSessionResume } from "./create-runtime.js";
 
-export { discoverLocalProviderModels } from "./local-providers.js";
-export { discoverLocalProviders } from "./provider-discovery.js";
+export { discoverLocalProviderModels } from "./providers/local-providers.js";
+export { discoverLocalProviders } from "./providers/provider-discovery.js";

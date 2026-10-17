@@ -83,11 +83,8 @@ describe("core scan policy", () => {
       expect(evidence.trim()).not.toBe("");
       if ("names" in entry) for (const name of entry.names) expect(readFileSync(resolve(root, entry.file), "utf8")).toContain(name);
     }
-    expect(retainedEntries).toContainEqual({
-      file: "packages/turn/src/agent/allowlists.js",
-      reason: "deferred: turn entry regrouping",
-      citation: "packages/turn/package.json",
-    });
+    expect(retainedEntries).toEqual([]);
+    expect(retainedExports.filter((entry) => entry.reason.startsWith("deferred: turn"))).toEqual([]);
   });
 
   test("summarizes findings without counting consumers", () => {

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { performWebSearch, __resetWebSearchThrottleForTests } from "../../agent/tools/web-search.js";
-import { registerSearchProvider, webSearchProviders } from "../../agent/tools/web-search-providers/registry.js";
-import { claimWebSearchRequest } from "../../agent/tools/web-search-state.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { performWebSearch, __resetWebSearchThrottleForTests } from "../../tools/web/web-search.js";
+import { registerSearchProvider, webSearchProviders } from "../../tools/web/search-providers/registry.js";
+import { claimWebSearchRequest } from "../../tools/web/web-search-state.js";
+import { createToolContext } from "../../tools/shared/tool-context.js";
 
 const ctx = createToolContext();
 

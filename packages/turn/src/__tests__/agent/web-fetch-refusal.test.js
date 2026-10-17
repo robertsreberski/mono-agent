@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { performWebFetch } from "../../agent/tools/web-fetch.js";
+import { performWebFetch } from "../../tools/web/web-fetch.js";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 
 const url = "https://example.com/limited";

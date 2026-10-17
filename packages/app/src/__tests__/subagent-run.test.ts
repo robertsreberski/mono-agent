@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
 // @ts-expect-error Private runtime seam.
-import { createAgentManageTool } from "../../../turn/src/agent/tools/agent-manage-tool.js";
+import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
@@ -13,7 +13,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { resolveJsonMonoAgentConfig } from "../../../config/dist/config.js";
 // Exercise the private tool-to-app seam without adding a public runtime export.
 // @ts-expect-error -- package-private JavaScript has no public declaration.
-import { createAgentTool } from "../../../turn/src/agent/tools/agent-tool.js";
+import { createAgentTool } from "../../../turn/src/tools/delegation/agent-tool.js";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 
 const harnessMock = vi.fn((options: Record<string, unknown>) => ({

@@ -1,3 +1,5 @@
+/** MCP Apps capability extension identity shared by clients and hosts. */
+export const MCP_APPS_EXTENSION_ID = "io.modelcontextprotocol/ui";
 
 
 /** Spec MIME type used for MCP App resources. */

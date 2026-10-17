@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { statsForCompletedChange } from "../../ai/file-change-stats.js";
+import { statsForCompletedChange } from "../../telemetry/file-change-stats.js";
 
 function snapshot(content) {
   return { exists: true, content, line_count: content.split("\n").length };

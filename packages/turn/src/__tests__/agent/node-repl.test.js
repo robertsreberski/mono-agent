@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
-import { createNodeReplController } from "../../agent/tools/node-repl.js";
+import { createNodeReplController } from "../../tools/commands/node-repl.js";
 
 const tempDirs = [];
 

@@ -1,4 +1,4 @@
-import { managedSrtInstallRoot } from "../sandbox-managed.js";
+import { managedSrtInstallRoot } from "../sandbox/managed.js";
 import { execFile } from "node:child_process";
 import { existsSync, rmSync, symlinkSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -15,13 +15,13 @@ import {
   grepToolImpl,
   readToolImpl,
   writeToolImpl,
-} from "@mono-agent/turn/agent/tools/index.js";
+} from "@mono-agent/turn/tools";
 import {
   createToolContext,
-} from "@mono-agent/turn/agent/tools/shared/tool-context.js";
+} from "@mono-agent/turn/tools";
 
 import { SandboxUnavailableError, createSandboxPolicy, createSrtSandboxEngine, describeSandboxEffectiveState, failClosedSandboxPolicy, mergeSandboxPolicies, networkPolicyAllowsUrl, prepareSandboxedCommand, protectSandboxRoots, resolveSandboxEffectiveState, sandboxEffectiveStateWarning, sandboxPolicyToRuntimeOptions, srtSettingsForPolicy } from "@mono-agent/turn/host/sandbox";
-import { monoSandboxImpl } from "../sandbox-impl.js";
+import { monoSandboxImpl } from "../sandbox/implementation.js";
 
 const tempDirs: string[] = [];
 

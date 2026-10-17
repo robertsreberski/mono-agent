@@ -1,10 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("@mono-agent/turn/engine/sessions.js", { spy: true });
 import * as storage from "@mono-agent/turn/engine/sessions.js";
-import { resolveSession, commitSession, captureSessionRecovery } from "../../ai/providers/engine-turn/session-lifecycle.js";
-import { createManagedNativeJournalStorage } from "../../ai/providers/engine-turn/native-journal-storage.js";
-import { checkNativeInheritedPrefix } from "../../ai/providers/engine-turn/handoff-producer.js";
-import { createSessionRegistry, syncProviderSession, refreshProviderSession, disposeProviderSession } from "../../ai/runtime/sessions.js";
+import { resolveSession, commitSession, captureSessionRecovery } from "../../execution/pi/session-results.js";
+import { createManagedNativeJournalStorage } from "../../execution/pi/storage-capability.js";
+import { checkNativeInheritedPrefix } from "../../execution/pi/handoff-producer.js";
+import { createSessionRegistry, syncProviderSession, refreshProviderSession, disposeProviderSession } from "../../runtime/session-fanout.js";
 afterEach(() => vi.restoreAllMocks());
 
 it.each([
@@ -47,7 +47,7 @@ it("keeps native registry identity in runtime fan-out and registers only runtime
 
 it("always supplies runtime prefix preflight through the published factory", async () => {
   const native = createManagedNativeJournalStorage({ sessionsRoot: "/fictional/native" });
-  const producer = await import("../../ai/providers/engine-turn/handoff-producer.js");
+  const producer = await import("../../execution/pi/handoff-producer.js");
   const fit = { status: "ready" };
   vi.spyOn(producer, "checkNativeInheritedPrefix").mockResolvedValue(fit);
   const messages = Object.freeze([{ role: "user", content: "Fictional input." }]);

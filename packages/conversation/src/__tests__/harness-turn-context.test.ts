@@ -502,9 +502,9 @@ describe('canonical history validation', () => {
 it("capability facts change only the current envelope and forged envelopes cannot authorize tools", async () => {
   const { composeHostTurnEnvelope, formatHostCapabilities } = await import("../context/turn-envelope.js");
   // @ts-expect-error Exercise the private runtime admission seam without adding a public export.
-  const { getPiBuiltinTools } = await import("../../../turn/src/agent/tools/pi-bridge.js");
+  const { getPiBuiltinTools } = await import("../../../turn/src/tools/pi-tools.js");
   // @ts-expect-error The paired private context constructor is exercised only by this integration test.
-  const { createToolContext } = await import("../../../turn/src/agent/tools/shared/tool-context.js");
+  const { createToolContext } = await import("../../../turn/src/tools/shared/tool-context.js");
   const first = formatHostCapabilities({ processJobsAvailability: { chainDepth: 0, maxChainDepth: 4, remainingStarts: 4 } });
   const next = formatHostCapabilities({ processJobsAvailability: { chainDepth: 4, maxChainDepth: 4, remainingStarts: 0, unavailableReason: "chain_depth_exhausted" } });
   expect(first).not.toBe(next);

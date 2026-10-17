@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { createRouterRuntime } from "../../ai/runtime/router.js";
+import { createRouterRuntime } from "../../runtime/router.js";
 
 // Prepared native dispatch is primary-only: a retryable or auth failure is
 // returned once, never detached or continued on a configured backup.

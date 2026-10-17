@@ -56,8 +56,8 @@ import {
   fauxText,
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
-import { disposeProviderSession } from "../../ai/runtime/sessions.js";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { disposeProviderSession } from "../../runtime/session-fanout.js";
 
 let faux = null;
 let fauxModels = null;

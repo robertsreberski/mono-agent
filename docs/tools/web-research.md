@@ -773,7 +773,7 @@ not an anti-bot or authenticated browsing feature.
 Providers are source-level modules, not dynamically loaded config plugins:
 
 1. Add one module under
-   `packages/turn/src/agent/tools/web-search-providers/` implementing
+   `packages/turn/src/tools/web/search-providers/` implementing
    the JSDoc `SearchProvider` contract in `registry.js`.
 2. Register it once in that registry. Declare its `name`, `configure`,
    `eligibility`/requirements, `admission` kind/key/process policy,

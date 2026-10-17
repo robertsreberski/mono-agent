@@ -5,7 +5,7 @@ import {
   FAILURE_KINDS,
   isContextLimitFailureText,
   retryableProviderFailureInfo,
-} from "../../ai/failure.js";
+} from "../../telemetry/failure.js";
 
 describe("classifyFailure", () => {
   it("returns null for clean exit", () => {
