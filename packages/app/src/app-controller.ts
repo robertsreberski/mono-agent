@@ -39,7 +39,7 @@ import type { NotifyDestination } from "./notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
 import { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
-import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
+import type { ManagedRuntimeLaunchVerification } from "./service/managed-runtime/types.js";
 import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
 import * as lifecycleOperations from "./app-controller-lifecycle.js";
 import * as traceabilityOperations from "./app-controller-traceability.js";

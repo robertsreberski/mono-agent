@@ -1,4 +1,4 @@
-import type { ManagedRuntimeProgress } from "./background-runtime.js";
+import type { ManagedRuntimeProgress } from "./service/managed-runtime/types.js";
 
 const PHASE_LABELS = {
   reuse: "checking finalized runtime reuse",

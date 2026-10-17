@@ -15,7 +15,7 @@ vi.mock("../systemd.js", () => ({
   inspectSystemd: mocks.inspect, readSystemdDefinition: mocks.read, startSystemd: mocks.start,
   stopSystemd: mocks.stop, systemdLogs: vi.fn(async () => 0), withSystemdLock: mocks.lock,
 }));
-vi.mock("../background.js", () => ({ canonicalBackgroundConfigPath: async (_cwd: string, path: string) => path,
+vi.mock("../service/background/target.js", () => ({ canonicalBackgroundConfigPath: async (_cwd: string, path: string) => path,
   resolveInstanceTarget: mocks.target }));
 vi.mock("../background-snapshot.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../background-snapshot.js")>();

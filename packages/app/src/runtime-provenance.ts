@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { verifyManagedRuntimeClosureForProvenance } from "./background-runtime.js";
-import type { ManagedRuntimeProvenanceVerificationDeps } from "./background-runtime.js";
+import type { ManagedRuntimeProvenanceVerificationDeps } from "./service/managed-runtime/types.js";
 import { appPackageVersion } from "./package-version.js";
 
 const PACKAGE_NAME = "@mono-agent/app";

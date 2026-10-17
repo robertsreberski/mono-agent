@@ -12,6 +12,20 @@ describe("app foundation dependency direction", () => {
     expect(await source("service/web/health.ts")).not.toContain("web-command.js");
   });
 
+  it("keeps service leaves independent of lifecycle and CLI dispatch owners", async () => {
+    for (const file of [
+      "service/background/target.ts", "service/background/deps.ts", "service/background/status.ts",
+      "service/background/presentation.ts", "service/launchd/plist-files.ts", "service/web/service.ts",
+      "service/web/status.ts", "service/web/inspection.ts", "service/web/tailscale.ts",
+      "service/web/presentation.ts", "service/web/record.ts",
+    ]) {
+      expect(await source(file), file).not.toMatch(/from ["'][^"']*\/(?:background|web-command)\.js["']/u);
+    }
+    const dispatcher = await source("web-command.ts");
+    expect(dispatcher).not.toMatch(/export (?:type )?\{|function webPaths/u);
+    expect(await source("service/web/health.ts")).not.toMatch(/service\.js|status\.js|tailscale\.js/u);
+  });
+
   it("keeps durable source readers independent of first-run orchestration", async () => {
     expect(await source("background-snapshot.ts")).not.toContain("first-run-readiness.js");
     const inputs = await source("service/background/source-inputs.ts");

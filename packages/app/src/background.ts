@@ -1,77 +1,32 @@
 import { formatManagedRuntimeProgress } from "./managed-runtime-progress.js";
-import { resolveApprovedBackgroundSnapshot, invalidateApprovedBackgroundSnapshots, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import {
-  clearMaintenanceDeferral, allowUnattendedMaintenanceStop, describeMaintenanceActivity,
-  readLaunchdMaintenanceActivityStatus, MaintenanceDeferred, logPermissionRepairNeeded,
+  MaintenanceDeferred, logPermissionRepairNeeded,
   type MaintenanceActivityRequest, type MaintenanceReason,
 } from "./launchd-maintenance-activity.js";
-import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
-import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, type Stats } from "node:fs";
-import { type FileHandle, lstat, open, realpath, rename, rm } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-import process from "node:process";
+import { dirname, resolve } from "node:path";
 
-import { listRecordedRuns, listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
-import {
-  resolveAppTraceGlobalDiscovery,
-  resolveAppTraceRegistryDir,
-  resolveAppTraceStaleAfterMs,
-  resolveGlobalTraceRegistryDir,
-} from "./app-config.js";
-import { formatChannelFactValue } from "./channel-fact-format.js";
-import { formatHumanChannelSections } from "./channel-status-display.js";
-import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
   bootstrap,
   buildLaunchdMaintenancePlistXml,
   buildPlistXml,
-  defaultPathEnv,
-  deriveLaunchdLabel,
   deriveLaunchdMaintenanceLabel,
   isLoaded,
   launchdManagedWorkerInfo,
   launchdMaintenanceEntrypointPathForCli,
   launchdServiceInfo,
-  launchdPathsFor,
   launchdMaintenanceCalendarMinute,
-  MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
-  makeLaunchctlRunner,
 } from "./launchd.js";
 import type {
   LaunchctlResult,
-  LaunchctlRunner,
   LaunchdManagedWorkerDefinition,
-  LaunchdPaths,
 } from "./launchd.js";
-import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
-import {
-  beginLaunchdLogMaintenanceIntent,
-  clearLaunchdLogMaintenanceIntent,
-  inspectLaunchdLogs,
-  markLaunchdLogMaintenanceRestoring,
-  markLaunchdLogMaintenanceStopped,
-  markLaunchdLogMaintenanceStopping,
-  readLaunchdLogMaintenanceIntent,
-  rotateStoppedLaunchdLogs,
-} from "./launchd-logs.js";
-import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
-import {
-  ensureManagedBackgroundRuntime,
-  inspectManagedRuntimeSourceIdentity,
-  MANAGED_BACKGROUND_WORKER_ENV,
-  verifyManagedRuntimeLaunch,
-} from "./background-runtime.js";
+import type { LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
 import type {
-  ManagedBackgroundRuntime,
-  ManagedBackgroundRuntimeInput,
-  ManagedRuntimeAdditionalPackage,
   ManagedRuntimeLaunchVerification,
   ManagedRuntimeSourceIdentity,
-} from "./background-runtime.js";
+} from "./service/managed-runtime/types.js";
 import {
   backgroundSnapshotFromMetadata,
   captureBackgroundSnapshot,
@@ -79,26 +34,16 @@ import {
   sameBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
-import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
-import { removeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
-import { clearLaunchdSnapshotRefusal, readLaunchdSnapshotRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "./launchd-snapshot-refusal.js";
+import { clearLaunchdSnapshotRefusal } from "./launchd-snapshot-refusal.js";
 import { acquireManagedRuntimePublicationBarrier } from "./managed-runtime-publication.js";
 import type { OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
-import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
-import {
-  acquireFilesystemLifecycleLock,
-  acquireSharedLaunchdLogLock,
-} from "./launchd-lifecycle-lock.js";
-import type {
-  BackgroundLifecycleTarget,
-  BackgroundLockAcquireOptions,
-} from "./launchd-lifecycle-lock.js";
+import { acquireSharedLaunchdLogLock } from "./launchd-lifecycle-lock.js";
+import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import {
   assertLaunchdMaintenanceLifecycleLease,
   withLaunchdMaintenanceControllerLock,
 } from "./launchd-maintenance-gate.js";
 import type { LaunchdMaintenanceLifecycleLease } from "./launchd-maintenance-gate.js";
-import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import {
   lifecycleFailure,
   maintenanceErrorMessage,
@@ -111,331 +56,34 @@ import {
   maintainLaunchdLogsWithLifecycleLockOperation,
   reportMaintenanceFailure
 } from "./background-log-maintenance.js";
+import { managedLaunchdLogMaintenanceEnvironment } from "./service/background/target.js";
+import { findInstances, isReady, startedAtMs } from "./service/background/status.js";
+import {
+  formatLifecycleDuration,
+  printInstanceInfo,
+  reportLaunchFailure,
+  reportLifecycleException,
+  reportOwnershipConflict,
+  reportReadinessCleanup,
+  reportReadinessException,
+  reportSnapshotDrift,
+  reportTimeout,
+  runtimeVerificationLabel,
+} from "./service/background/presentation.js";
+import type {
+  BackgroundDeps,
+  BackgroundLaunchResult,
+  BackgroundReadyInternalOptions,
+  InstanceTarget,
+  LaunchdControllerOptions,
+  LaunchOutcome,
+  LogOptions,
+  ReadyPollOptions,
+} from "./service/background/types.js";
 import * as ui from "./ui.js";
-
-export { acquireFilesystemLifecycleLock } from "./launchd-lifecycle-lock.js";
-export type { BackgroundLockAcquireOptions } from "./launchd-lifecycle-lock.js";
-
-export { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
-
-export { acquireBackgroundWorkerLease } from "./background-worker-lease.js";
-
-/**
- * Background-service orchestration for the mono-agent CLI. The interactive
- * control commands never talk to the worker directly: they derive a stable
- * launchd label + the trace-source registry location from the resolved config
- * path, drive `launchctl`, and read the worker's published manifest to learn
- * when it is up and what to print.
- */
-
-export interface BackgroundCliArgs {
-  readonly configPath?: string;
-  readonly envFile?: string;
-}
-
-export interface InstanceTarget {
-  readonly cwd: string;
-  readonly configPath: string;
-  readonly label: string;
-  readonly registryDir: string;
-  /**
-   * Machine-wide registry that holds the worker's best-effort manifest mirror
-   * when `registryDir` differs from it. A relative `traceability.registryDir`
-   * is resolved against the caller's cwd, so a control command run outside the
-   * agent folder finds the worker only through this mirror. Read by
-   * `status` only; lifecycle commands never act on mirror entries.
-   */
-  readonly mirrorRegistryDir?: string;
-  readonly staleAfterMs: number;
-  readonly paths: LaunchdPaths;
-  readonly nodePath: string;
-  readonly cliPath: string;
-  /** Mutable controller CLI retained only as inert runtime-installation input. */
-  readonly controllerCliPath?: string;
-  readonly envFile?: string;
-  /**
-   * Transient effective config environment reconstructed by the controller.
-   * It may contain secrets: never serialize, log, or materialize it in launchd.
-   */
-  readonly configurationEnvironment: Readonly<Record<string, string | undefined>>;
-  readonly environment: Readonly<Record<string, string>>;
-  /** Exact wizard/approval snapshot this launch is allowed to claim ready. */
-  readonly expectedSnapshot?: BackgroundSnapshot;
-  /** Opaque proof that the selected managed runtime was finalized and verified. */
-  readonly managedRuntimeLaunchProof?: string;
-}
-
-export interface ResolveInstanceTargetInput {
-  readonly args: BackgroundCliArgs;
-  readonly env: Record<string, string | undefined>;
-  readonly cwd: string;
-  /** Absolute path to the running cli.js, baked into the plist. */
-  readonly cliPath: string;
-}
-
-/** Exact non-secret environment materialised into a managed LaunchAgent. */
-export function managedBackgroundEnvironment(
-  env: Readonly<Record<string, string | undefined>>,
-): Readonly<Record<string, string>> {
-  return {
-    ...selectBackgroundOperationalEnvironment(env),
-    PATH: defaultPathEnv({ ...env }),
-    // This is a lifecycle marker, not a config override. It tells cli.ts to
-    // discard launchd's ambient environment before loading the chosen dotenv.
-    [MANAGED_BACKGROUND_WORKER_ENV]: "1",
-  };
-}
-
-/** Exact non-secret environment for the scheduled recovery/rotation controller. */
-export function managedLaunchdLogMaintenanceEnvironment(
-  env: Readonly<Record<string, string | undefined>>,
-): Readonly<Record<string, string>> {
-  return {
-    ...selectBackgroundOperationalEnvironment(env),
-    // This unattended helper needs only pinned system tools. Do not persist a
-    // caller-controlled PATH that could shadow launchctl on a later run.
-    PATH: "/usr/bin:/bin",
-    [MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV]: "1",
-  };
-}
-
-/**
- * Resolve everything the control commands need from CLI args. The registry dir
- * and config path are resolved exactly as the worker will resolve them, so the
- * detached launcher can find the worker's manifest without any IPC.
- */
-export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): Promise<InstanceTarget> {
-  const lexicalCwd = resolve(input.cwd);
-  const [cwd, configPath] = await Promise.all([
-    realpath(lexicalCwd),
-    canonicalBackgroundConfigPath(lexicalCwd, input.args.configPath),
-  ]);
-  const configInput = { env: input.env, cwd, configPath };
-  const [registryDir, staleAfterMs, globalDiscovery] = await Promise.all([
-    resolveAppTraceRegistryDir(configInput),
-    resolveAppTraceStaleAfterMs(configInput),
-    resolveAppTraceGlobalDiscovery(configInput),
-  ]);
-  const globalRegistryDir = resolveGlobalTraceRegistryDir(input.env);
-  const label = deriveLaunchdLabel(configPath);
-  return {
-    cwd,
-    configPath,
-    label,
-    registryDir,
-    ...(globalDiscovery && resolve(registryDir) !== globalRegistryDir ? { mirrorRegistryDir: globalRegistryDir } : {}),
-    staleAfterMs,
-    paths: launchdPathsFor(label),
-    nodePath: process.execPath,
-    cliPath: input.cliPath,
-    controllerCliPath: input.cliPath,
-    // Bake an explicit --env-file (resolved absolute) into the plist so the
-    // launchd worker loads the same env file the launcher did.
-    ...(input.args.envFile === undefined ? {} : { envFile: resolve(cwd, input.args.envFile) }),
-    configurationEnvironment: { ...input.env },
-    environment: managedBackgroundEnvironment(input.env),
-  };
-}
-
-/**
- * Collapse symlinked parent aliases without following the config's final path
- * component. The final component is separately required to be a regular,
- * non-symlink file before start; keeping it unresolved preserves that check.
- * Missing parents remain addressable so stop/status/logs can still operate on
- * a previously installed label after an agent folder is damaged or removed.
- */
-export async function canonicalBackgroundConfigPath(
-  cwd: string,
-  configuredPath?: string,
-): Promise<string> {
-  const lexical = resolve(cwd, configuredPath ?? "mono-agent.config.json");
-  try {
-    const candidate = join(await realpath(dirname(lexical)), basename(lexical));
-    try {
-      const details = await lstat(candidate);
-      // Preserve the final-component symlink so the start-time regular-file
-      // check can reject it. For a real file, realpath also canonicalises the
-      // stored filename casing on the default case-insensitive macOS volume.
-      return details.isSymbolicLink() ? candidate : await realpath(candidate);
-    } catch (error) {
-      if (isErrno(error, "ENOENT") || isErrno(error, "ENOTDIR")) return candidate;
-      throw error;
-    }
-  } catch (error) {
-    if (isErrno(error, "ENOENT") || isErrno(error, "ENOTDIR")) return lexical;
-    throw error;
-  }
-}
-
-export interface BackgroundDeps {
-  readonly maintenanceNotNeeded?: () => Promise<void>;
-  readonly maintenanceCompleted?: () => Promise<void>;
-  readonly clearMaintenanceDeferral?: (target: BackgroundLifecycleTarget) => Promise<void>;
-  readonly unattendedLogStop?: (request: MaintenanceActivityRequest) => Promise<boolean>;
-  readonly allowUnattendedStop?: (target: BackgroundLifecycleTarget, request: MaintenanceActivityRequest) => Promise<boolean>;
-  readonly runner: LaunchctlRunner;
-  readonly getuid: () => number;
-  readonly currentPid: () => number;
-  readonly now: () => number;
-  readonly sleep: (ms: number) => Promise<void>;
-  readonly listRecordedRuns: typeof listRecordedRuns;
-  readonly listTraceSources: typeof listTraceSources;
-  readonly writeFile: (path: string, data: string) => Promise<void>;
-  readonly mkdir: (path: string) => Promise<void>;
-  readonly rm: (path: string) => Promise<void>;
-  readonly inspectLaunchdLogs: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-  ) => Promise<LaunchdLogInspection>;
-  readonly rotateStoppedLaunchdLogs: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-  ) => Promise<void>;
-  readonly readLaunchdLogMaintenanceIntent: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-  ) => Promise<LaunchdLogMaintenanceIntent | undefined>;
-  readonly beginLaunchdLogMaintenanceIntent: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-    intent: LaunchdLogMaintenanceIntent,
-  ) => Promise<void>;
-  readonly markLaunchdLogMaintenanceStopped: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-    expected: LaunchdLogMaintenanceIntent,
-  ) => Promise<LaunchdLogMaintenanceIntent>;
-  readonly markLaunchdLogMaintenanceRestoring: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-    expected: LaunchdLogMaintenanceIntent,
-  ) => Promise<LaunchdLogMaintenanceIntent>;
-  readonly markLaunchdLogMaintenanceStopping: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-    expected: LaunchdLogMaintenanceIntent,
-  ) => Promise<LaunchdLogMaintenanceIntent>;
-  readonly clearLaunchdLogMaintenanceIntent: (
-    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
-    expected?: LaunchdLogMaintenanceIntent,
-  ) => Promise<void>;
-  readonly removeLaunchdLogMonitorStatus?: (target: BackgroundLifecycleTarget) => Promise<void>;
-  /** Read and fingerprint the exact owner-private plist without mutating it. */
-  readonly verifyLaunchdPlist: (path: string) => Promise<string>;
-  /** True when a pid is still alive (or alive but owned by another user). */
-  readonly isAlive: (pid: number) => boolean;
-  /** Install/verify an immutable CLI outside npm/npx's disposable cache. */
-  readonly ensureManagedRuntime: (input: ManagedBackgroundRuntimeInput) => Promise<ManagedBackgroundRuntime>;
-  /** Inspect mutable source as inert bytes; never execute it. */
-  readonly inspectManagedRuntimeSourceIdentity: (cliPath: string) => Promise<ManagedRuntimeSourceIdentity>;
-  /** Verify the exact private closure and proof persisted in the loaded worker. */
-  readonly verifyManagedRuntimeLaunch: (
-    input: { readonly currentCliPath: string; readonly launchProof: string },
-  ) => Promise<ManagedRuntimeLaunchVerification>;
-  /** Resolve config-selected plugin-tier packages before the disposable source can disappear. */
-  readonly resolveManagedRuntimePackages?: (
-    target: InstanceTarget,
-  ) => Promise<readonly ManagedRuntimeAdditionalPackage[]>;
-  /** Fail closed when another lifecycle command owns this config label. */
-  readonly acquireLifecycleLock: (
-    target: BackgroundLifecycleTarget,
-    options?: BackgroundLockAcquireOptions,
-  ) => Promise<(() => Promise<void>) | undefined>;
-  /** Hold KeepAlive respawns until the replacement runtime and plist are committed. */
-  readonly acquireRuntimePublicationBarrier?: (target: BackgroundLifecycleTarget) => Promise<OwnerPrivateLock | undefined>;
-  readonly resolveApprovedSnapshot?: (binding: ApprovedBackgroundSnapshotBinding) => BackgroundSnapshot;
-  readonly invalidateApprovedSnapshots?: (target: BackgroundLifecycleTarget) => Promise<void>;
-  readonly captureSnapshot?: (target: InstanceTarget) => Promise<BackgroundSnapshot>;
-  readonly stdout: (text: string) => void;
-  readonly stderr: (text: string) => void;
-  /** Run `tail` with inherited stdio; resolves with its exit code. */
-  readonly spawnTail: (args: readonly string[]) => Promise<number>;
-}
-
-export function defaultBackgroundDeps(): BackgroundDeps {
-  const deps: BackgroundDeps = {
-    clearMaintenanceDeferral,
-    allowUnattendedStop: async (target, request) => allowUnattendedMaintenanceStop(target, deps, request),
-    runner: makeLaunchctlRunner(),
-    getuid: () => process.getuid?.() ?? 0,
-    currentPid: () => process.pid,
-    now: () => Date.now(),
-    sleep: (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
-    listRecordedRuns,
-    listTraceSources,
-    writeFile: writeOwnerPrivateLaunchdFile,
-    mkdir: ensureOwnerPrivateLaunchdDirectory,
-    rm: (path) => rm(path, { force: true }),
-    inspectLaunchdLogs: async (paths) => await inspectLaunchdLogs(paths),
-    rotateStoppedLaunchdLogs: async (paths) => {
-      await rotateStoppedLaunchdLogs(paths);
-    },
-    readLaunchdLogMaintenanceIntent: async (paths) => await readLaunchdLogMaintenanceIntent(paths),
-    beginLaunchdLogMaintenanceIntent: async (paths, intent) => {
-      await beginLaunchdLogMaintenanceIntent(paths, intent);
-    },
-    markLaunchdLogMaintenanceStopped: async (paths, expected) =>
-      await markLaunchdLogMaintenanceStopped(paths, expected),
-    markLaunchdLogMaintenanceRestoring: async (paths, expected) =>
-      await markLaunchdLogMaintenanceRestoring(paths, expected),
-    markLaunchdLogMaintenanceStopping: async (paths, expected) =>
-      await markLaunchdLogMaintenanceStopping(paths, expected),
-    clearLaunchdLogMaintenanceIntent: async (paths, expected) => {
-      await clearLaunchdLogMaintenanceIntent(paths, expected);
-    },
-    removeLaunchdLogMonitorStatus,
-    verifyLaunchdPlist: inspectOwnerPrivateLaunchdPlist,
-    isAlive: (pid) => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch (error) {
-        // EPERM means the process exists but is owned by someone else.
-        return isErrno(error, "EPERM");
-      }
-    },
-    ensureManagedRuntime: (input) => ensureManagedBackgroundRuntime(input),
-    inspectManagedRuntimeSourceIdentity,
-    verifyManagedRuntimeLaunch,
-    resolveManagedRuntimePackages: (target) => resolveConfiguredManagedRuntimePackages({
-      cwd: target.cwd,
-      configPath: target.configPath,
-      env: target.configurationEnvironment,
-    }),
-    acquireLifecycleLock: acquireFilesystemLifecycleLock,
-    resolveApprovedSnapshot: resolveApprovedBackgroundSnapshot,
-    invalidateApprovedSnapshots: (target) => invalidateApprovedBackgroundSnapshots({ label: target.label, managedRoot: dirname(target.paths.logDir) }),
-    acquireRuntimePublicationBarrier: (target) => acquireManagedRuntimePublicationBarrier({
-      label: target.label,
-      managedRoot: dirname(target.paths.logDir),
-    }),
-    stdout: (text) => void process.stdout.write(text),
-    stderr: (text) => void process.stderr.write(text),
-    spawnTail: (args) =>
-      new Promise<number>((resolvePromise) => {
-        const child = spawn("tail", [...args], { stdio: "inherit" });
-        child.on("error", () => resolvePromise(127));
-        child.on("close", (code) => resolvePromise(code ?? 0));
-      }),
-  };
-  return deps;
-}
-
-export interface ReadyPollOptions extends PollOptions {
-  /** Only accept a worker that started at or after this time (restart safety). */
-  readonly sinceMs: number;
-}
 
 const DEFAULT_CONTROL_POLL: PollOptions = { timeoutMs: 18_000, intervalMs: 400 };
 const DEFAULT_READINESS_POLL: PollOptions = { timeoutMs: 60_000, intervalMs: 400 };
-
-export type BackgroundLaunchAction = "started" | "restarted";
-
-export type BackgroundLaunchResult =
-  | {
-      readonly ok: true;
-      readonly action: BackgroundLaunchAction;
-      /** The fresh, authoritative worker trace that proved startup complete. */
-      readonly source: TraceSourceListItem;
-    }
-  | {
-      readonly ok: false;
-      readonly action: "start" | "restart";
-      readonly reason: "runtime" | "snapshot" | "preparation" | "ownership" | "deferred-busy" | "shared-contention" | "launchctl" | "readiness" | "timeout";
-    };
 
 export async function startBackground(
   target: InstanceTarget,
@@ -452,15 +100,6 @@ export async function restartBackground(
   poll?: PollOptions,
 ): Promise<number> {
   return (await ensureBackgroundReady(target, deps, poll)).ok ? 0 : 1;
-}
-
-export interface LaunchdControllerOptions {
-  /** False only when the originally installed controller checkout disappeared. */
-  readonly sourceAvailable: boolean;
-  readonly controlPoll?: PollOptions;
-  readonly readinessPoll?: PollOptions;
-  /** Full structural validation, invoked only after fast proof identifies recovery work. */
-  readonly recoveryPreflight?: () => Promise<number>;
 }
 
 /**
@@ -748,16 +387,6 @@ export function unattendedLogDeps(target: BackgroundLifecycleTarget, deps: Backg
   };
 }
 
-interface BackgroundReadyInternalOptions {
-  readonly unattendedMaintenance?: MaintenanceActivityRequest;
-  /** Recovery helpers cannot boot out and wait for their own launchd process. */
-  readonly preserveMaintenanceService?: boolean;
-  /** Scheduled recovery keeps both definitions so the calendar schedule can retry. */
-  readonly preserveDefinitionsOnFailure?: boolean;
-  /** Helpers defer immediately; interactive lifecycle commands wait visibly. */
-  readonly sharedLockMode?: "automatic" | "interactive";
-}
-
 async function ensureBackgroundReadyWithPublicationBarrier(
   target: InstanceTarget,
   deps: BackgroundDeps,
@@ -1001,20 +630,6 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
   return { ok: true, action: completedAction, source: ready };
 }
 
-function runtimeVerificationLabel(mode: ManagedBackgroundRuntime["verificationMode"]): string {
-  switch (mode) {
-    case "fast-reuse": return "warm reuse";
-    case "full-reuse": return "full verification";
-    case "installed": return "installed";
-    case "repaired": return "repaired";
-  }
-}
-
-function formatLifecycleDuration(milliseconds: number): string {
-  const safe = Math.max(0, milliseconds);
-  return safe < 1_000 ? `${Math.round(safe)} ms` : `${(safe / 1_000).toFixed(1)} s`;
-}
-
 async function prepareLaunchdDirectories(target: InstanceTarget, deps: BackgroundDeps): Promise<void> {
   // launchd will not create the log file's parent directory, so make both dirs
   // before writing the plist that references them.
@@ -1068,153 +683,6 @@ async function writePlists(target: InstanceTarget, deps: BackgroundDeps): Promis
   await deps.writeFile(target.paths.plistPath, mainXml);
   await deps.writeFile(maintenance.plistPath, maintenanceXml);
 }
-
-export async function writeOwnerPrivateLaunchdFile(path: string, data: string): Promise<void> {
-  let existing: Stats | undefined;
-  try {
-    existing = await lstat(path);
-    assertOwnerRegularFile(existing, path, "LaunchAgent plist");
-  } catch (error) {
-    if (!isErrno(error, "ENOENT")) throw error;
-  }
-
-  const temporaryPath = join(
-    dirname(path),
-    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
-  );
-  let handle: FileHandle | undefined = await open(
-    temporaryPath,
-    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
-    0o600,
-  );
-  try {
-    await handle.writeFile(data, "utf8");
-    await handle.chmod(0o600);
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-
-    const temporary = await lstat(temporaryPath);
-    assertOwnerRegularFile(temporary, temporaryPath, "temporary LaunchAgent plist");
-    if ((temporary.mode & 0o777) !== 0o600) {
-      throw new Error(`Temporary LaunchAgent plist ${temporaryPath} must be owner-readable and owner-writable only.`);
-    }
-
-    let current: Stats | undefined;
-    try {
-      current = await lstat(path);
-    } catch (error) {
-      if (!isErrno(error, "ENOENT")) throw error;
-    }
-    if (
-      (existing === undefined) !== (current === undefined)
-      || (existing !== undefined && current !== undefined && !sameFilesystemIdentity(existing, current))
-    ) {
-      throw new Error(`LaunchAgent plist ${path} changed before the new definition was committed.`);
-    }
-
-    await rename(temporaryPath, path);
-    const committed = await lstat(path);
-    assertOwnerRegularFile(committed, path, "LaunchAgent plist");
-    if (!sameFilesystemIdentity(temporary, committed)) {
-      throw new Error(`LaunchAgent plist ${path} changed while the new definition was committed.`);
-    }
-  } finally {
-    await handle?.close().catch(() => undefined);
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
-}
-
-export async function inspectOwnerPrivateLaunchdPlist(path: string): Promise<string> {
-  return (await readOwnerPrivateLaunchdPlist(path)).identity;
-}
-
-export async function readOwnerPrivateLaunchdPlist(
-  path: string,
-): Promise<{ readonly identity: string; readonly contents: string }> {
-  const handle = await open(
-    path,
-    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
-  );
-  try {
-    const before = await handle.stat();
-    assertOwnerRegularFile(before, path, "LaunchAgent plist");
-    if ((before.mode & 0o777) !== 0o600) {
-      throw new Error(`LaunchAgent plist ${path} must be owner-only.`);
-    }
-    if (!Number.isSafeInteger(before.size) || before.size < 1 || before.size > 1024 * 1024) {
-      throw new Error(`LaunchAgent plist ${path} has an unsafe size.`);
-    }
-    const contents = await readExactFileHandle(handle, before.size, "LaunchAgent plist");
-    const after = await handle.stat();
-    assertOwnerRegularFile(after, path, "LaunchAgent plist");
-    if ((after.mode & 0o777) !== 0o600
-      || !sameFileSnapshot(before, after)
-      || contents.length !== before.size) {
-      throw new Error(`LaunchAgent plist ${path} changed while it was read.`);
-    }
-    const current = await lstat(path);
-    assertOwnerRegularFile(current, path, "LaunchAgent plist");
-    if ((current.mode & 0o777) !== 0o600 || !sameFileSnapshot(after, current)) {
-      throw new Error(`LaunchAgent plist ${path} changed while it was inspected.`);
-    }
-    const identity = [
-      String(after.dev),
-      String(after.ino),
-      String(after.size),
-      createHash("sha256").update(contents).digest("hex"),
-    ].join(":");
-    return { identity, contents: contents.toString("utf8") };
-  } finally {
-    await handle.close();
-  }
-}
-
-async function readExactFileHandle(handle: FileHandle, size: number, description: string): Promise<Buffer> {
-  if (!Number.isSafeInteger(size) || size < 0) throw new Error(`${description} has an unsafe size.`);
-  const contents = Buffer.alloc(size);
-  let offset = 0;
-  while (offset < size) {
-    const result = await handle.read(contents, offset, size - offset, offset);
-    if (result.bytesRead === 0) throw new Error(`${description} ended while its bounded contents were read.`);
-    offset += result.bytesRead;
-  }
-  return contents;
-}
-
-function assertOwnerRegularFile(details: Stats, path: string, description: string): void {
-  if (!details.isFile() || details.isSymbolicLink()) {
-    throw new Error(`${description} ${path} must be a regular non-symbolic-link file.`);
-  }
-  if (details.nlink !== 1) {
-    throw new Error(`${description} ${path} must have exactly one filesystem link.`);
-  }
-  assertCurrentUserOwns(details, path, description);
-}
-
-function assertCurrentUserOwns(details: Stats, path: string, description: string): void {
-  if (typeof process.getuid === "function" && details.uid !== process.getuid()) {
-    throw new Error(`${description} ${path} is not owned by the current user.`);
-  }
-}
-
-function sameFilesystemIdentity(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function sameFileSnapshot(left: Stats, right: Stats): boolean {
-  return sameFilesystemIdentity(left, right)
-    && left.uid === right.uid
-    && left.nlink === right.nlink
-    && left.mode === right.mode
-    && left.size === right.size
-    && left.mtimeMs === right.mtimeMs
-    && left.ctimeMs === right.ctimeMs;
-}
-
-type LaunchOutcome =
-  | { readonly ok: true; readonly restarted: boolean }
-  | { readonly ok: false; readonly restarted: boolean; readonly failure: LaunchctlResult };
 
 /**
  * Idempotent: bootstrap when not loaded. A loaded job is always fully removed
@@ -1578,178 +1046,6 @@ async function stopBackgroundWithSharedLogLock(
   return 0;
 }
 
-export interface StatusBackgroundOptions {
-  readonly json?: boolean;
-}
-
-export async function statusBackground(
-  target: InstanceTarget,
-  deps: BackgroundDeps,
-  options: StatusBackgroundOptions = {},
-): Promise<number> {
-  const [classified, service] = await Promise.all([
-    classifyStatusSources(target, deps),
-    launchdServiceInfo(deps.runner, target.label, deps.getuid()),
-  ]);
-  const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
-  // Status is diagnostic: unsafe or unreadable refusal state is reported, never fatal.
-  const snapshotRefused = await readLaunchdSnapshotRefusal(target.label, target.paths).catch((error: unknown) => {
-    deps.stderr(ui.errorLine(`Could not read the managed snapshot refusal status: ${error instanceof Error ? error.message : String(error)}`));
-    return false;
-  });
-  const recorded = service.pid === undefined
-    ? matchingSources[0]
-    : matchingSources.find((source) => source.pid === service.pid) ?? matchingSources[0];
-  const active = service.loaded
-    && service.pid !== undefined
-    && deps.isAlive(service.pid)
-    && recorded?.pid === service.pid
-    && recorded.health === "running";
-  const current = recorded === undefined || active ? recorded : inactiveStatusSource(recorded);
-  // Only surface other instances that are live or crashed — cleanly stopped
-  // manifests linger in the registry and would just be noise.
-  const others = classified
-    .filter((entry) => !entry.matches && entry.source.health !== "stopped")
-    .map((entry) => entry.source);
-
-  const maintenanceActivity = await readLaunchdMaintenanceActivityStatus(target.label, target.paths).catch(() => "unavailable" as const);
-  const logMonitor = await readLaunchdLogMonitorStatus(target.label, target.paths).catch(() => "unavailable" as const);
-  if (options.json === true) {
-    const instance = current === undefined ? null : await assembleInstanceStatus(current, target, deps);
-    deps.stdout(`${JSON.stringify({
-      ok: active,
-      instance,
-      maintenanceActivity: maintenanceActivity ?? null,
-      logMonitor: logMonitor ?? null,
-      ...(snapshotRefused ? { startupFailure: { reason: "snapshot-refused", message: SNAPSHOT_REFUSAL_MESSAGE } } : {}),
-      others: others.map(assembleOtherInstanceStatus),
-    })}\n`);
-    return active ? 0 : 1;
-  }
-
-  if (current === undefined) {
-    deps.stdout(ui.style.dim(`No running mono-agent instance for ${target.configPath}.`) + "\n");
-    deps.stdout(ui.hint(`Start it with: mono-agent start${commandFlags(target)}`));
-  } else {
-    writeInstanceDetail(current, target, deps);
-    await writeRunsHealthDetail(current, deps);
-  }
-
-  if (maintenanceActivity !== undefined) deps.stdout((maintenanceActivity === "unavailable" ? "Maintenance: owner-private status is unavailable or unsafe." : describeMaintenanceActivity(maintenanceActivity)) + "\n");
-  if (logMonitor !== undefined) deps.stdout(logMonitor === "unavailable" ? "Log monitor: owner-private status is unavailable or unsafe.\n" : `Log monitor: ${logMonitor.lastOutcome}; wakes=${logMonitor.wakeCount}\n`);
-  if (snapshotRefused) deps.stdout(ui.errorLine(SNAPSHOT_REFUSAL_MESSAGE));
-
-  if (others.length > 0) {
-    deps.stdout("\n" + ui.rule("Other mono-agent instances"));
-    for (const source of others) {
-      deps.stdout(`${formatOtherInstance(source)}\n`);
-    }
-  }
-
-  return active ? 0 : 1;
-}
-
-function inactiveStatusSource(source: TraceSourceListItem): TraceSourceListItem {
-  const {
-    transports: _staleTransports,
-    pid: _stalePid,
-    ...withoutLiveProcessFacts
-  } = source;
-  const metadata = source.metadata;
-  const channels = metadata?.channels;
-  const stoppedChannels = isPlainRecord(channels)
-    ? Object.fromEntries(Object.entries(channels).map(([id, value]) => {
-        if (!isPlainRecord(value) || value.kind !== "running") return [id, value];
-        return [id, { kind: "stopped", reason: "instance is not running" }];
-      }))
-    : undefined;
-  return {
-    ...withoutLiveProcessFacts,
-    health: "stopped",
-    status: "stopped",
-    ...(metadata === undefined
-      ? {}
-      : {
-          metadata: {
-            ...metadata,
-            ...(stoppedChannels === undefined ? {} : { channels: stoppedChannels }),
-          },
-        }),
-  } as TraceSourceListItem;
-}
-
-/**
- * The machine-readable instance record for `status --json`. It mirrors the
- * fields the human `writeInstanceDetail`/`writeRunsHealthDetail` render, reading
- * only the already-computed trace-source manifest (content-free, safe to publish)
- * and the same runs-health probe the human path performs — no extra probes.
- */
-async function assembleInstanceStatus(
-  source: TraceSourceListItem,
-  target: InstanceTarget,
-  deps: BackgroundDeps,
-): Promise<Record<string, unknown>> {
-  const metadata = source.metadata ?? {};
-  const processJobs = metadata.processJobs;
-  const sandbox = metadata.sandbox;
-  const session = metadata.session;
-  const channels = metadata.channels;
-  return {
-    sourceId: source.sourceId,
-    label: source.label,
-    launchdLabel: target.label,
-    pid: source.pid ?? null,
-    health: source.health,
-    status: source.status,
-    configPath: target.configPath,
-    startedAt: source.startedAt,
-    updatedAt: source.updatedAt,
-    ...(source.artifactDir === undefined ? {} : { artifactDir: source.artifactDir }),
-    ...(source.transports === undefined ? {} : { transports: source.transports }),
-    logs: { stdout: target.paths.stdoutPath, stderr: target.paths.stderrPath },
-    ...(isPlainRecord(processJobs) ? { processJobs } : {}),
-    ...(isPlainRecord(sandbox) ? { sandbox } : {}),
-    ...(isPlainRecord(session) ? { session } : {}),
-    ...(isPlainRecord(channels) ? { channels } : {}),
-    ...(source.memoryHealth === undefined ? {} : { memoryHealth: source.memoryHealth }),
-    runsHealth: await assembleRunsHealthStatus(source, deps),
-  };
-}
-
-async function assembleRunsHealthStatus(
-  source: TraceSourceListItem,
-  deps: BackgroundDeps,
-): Promise<{ readonly totalRuns: number; readonly warnings: readonly string[] } | null> {
-  if (source.artifactDir === undefined || source.artifactDir.trim().length === 0) {
-    return null;
-  }
-  const { totalRuns, warnings } = await deps.listRecordedRuns({
-    artifactDir: source.artifactDir,
-    maxRuns: RUNS_HEALTH_MAX_RUNS,
-    scope: "agent",
-  });
-  return { totalRuns, warnings };
-}
-
-function assembleOtherInstanceStatus(source: TraceSourceListItem): Record<string, unknown> {
-  return {
-    sourceId: source.sourceId,
-    label: source.label,
-    health: source.health,
-    pid: source.pid ?? null,
-    ...(source.configPath === undefined ? {} : { configPath: source.configPath }),
-  };
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-export interface LogOptions {
-  readonly follow: boolean;
-  readonly lines: number;
-}
-
 export async function tailLogs(target: InstanceTarget, deps: BackgroundDeps, options: LogOptions): Promise<number> {
   const args = [
     "-n",
@@ -1815,54 +1111,6 @@ function snapshotMetadataMatches(
   return actual !== undefined && sameBackgroundSnapshot(actual, expected);
 }
 
-function reportSnapshotDrift(target: InstanceTarget, deps: BackgroundDeps): void {
-  deps.stderr(ui.errorLine("The committed config, dotenv, Identity, Soul, MCP config, or durable environment changed before background readiness."));
-  deps.stderr(ui.style.dim("No readiness claim was made for a different snapshot.") + "\n");
-  reportLaunchRecovery(target, deps);
-}
-
-export function printInstanceInfo(
-  source: TraceSourceListItem,
-  target: InstanceTarget,
-  deps: BackgroundDeps,
-  verb: string,
-): void {
-  const flag = commandFlags(target);
-  deps.stdout(`${ui.badge("ok")}${ui.style.bold(`mono-agent ${verb} in the background.`)}\n\n`);
-  writeInstanceDetail(source, target, deps);
-  deps.stdout("\n" + ui.hint(`Stop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow`));
-}
-
-/**
- * Status only (read-only): every source in the target's registry, classified
- * against its config, plus every entry for the same config in the global
- * mirror. Duplicates are kept; status picks the one whose pid is the launchd
- * service pid. Lifecycle commands keep using {@link findInstances}.
- */
-async function classifyStatusSources(
-  target: InstanceTarget,
-  deps: BackgroundDeps,
-): Promise<readonly { readonly source: TraceSourceListItem; readonly matches: boolean }[]> {
-  const classify = async (registryDir: string) => await Promise.all(
-    (await deps.listTraceSources({ registryDir, staleAfterMs: target.staleAfterMs })).sources.map(async (source) => ({
-      source,
-      matches: await matchesConfig(source, target.configPath),
-    })),
-  );
-  const local = await classify(target.registryDir);
-  if (target.mirrorRegistryDir === undefined) return local;
-  return [...local, ...(await classify(target.mirrorRegistryDir)).filter((entry) => entry.matches)];
-}
-
-async function findInstances(target: InstanceTarget, deps: BackgroundDeps): Promise<readonly TraceSourceListItem[]> {
-  const result = await deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs });
-  const matches = await Promise.all(result.sources.map(async (source) => ({
-    source,
-    matches: await matchesConfig(source, target.configPath),
-  })));
-  return matches.filter((entry) => entry.matches).map((entry) => entry.source);
-}
-
 async function maybeUnlinkDeadManifest(
   target: InstanceTarget,
   deps: BackgroundDeps,
@@ -1874,50 +1122,6 @@ async function maybeUnlinkDeadManifest(
     return;
   }
   await deps.rm(resolve(target.registryDir, `${existing.sourceId}.json`));
-}
-
-function reportLaunchFailure(
-  target: InstanceTarget,
-  deps: BackgroundDeps,
-  verb: string,
-  result: LaunchctlResult | undefined,
-): void {
-  deps.stderr(ui.errorLine(`Failed to ${verb} ${target.label} via launchctl${result === undefined ? "" : ` (exit ${result.code})`}.`));
-  const detail = (result?.stderr || result?.stdout || "").trim();
-  if (detail.length > 0) {
-    deps.stderr(ui.style.dim(detail) + "\n");
-  }
-  reportLaunchRecovery(target, deps);
-}
-
-function reportOwnershipConflict(target: InstanceTarget, deps: BackgroundDeps, detail: string): void {
-  deps.stderr(ui.errorLine(`Refusing to launch a second worker for ${target.configPath}.`));
-  deps.stderr(ui.style.dim(`${detail}.\n`));
-  deps.stderr(ui.hint("No LaunchAgent changes were made. Stop the unmanaged process or reconcile launchd ownership, then retry."));
-  reportLaunchRecovery(target, deps);
-}
-
-function reportLifecycleException(
-  target: InstanceTarget,
-  deps: BackgroundDeps,
-  operation: string,
-  error: unknown,
-): void {
-  deps.stderr(ui.errorLine(`Failed to ${operation}: ${error instanceof Error ? error.message : String(error)}`));
-  deps.stderr(ui.style.dim("The committed agent files were preserved.") + "\n");
-  reportLaunchRecovery(target, deps);
-}
-
-function reportReadinessException(deps: BackgroundDeps, error: unknown): void {
-  deps.stderr(ui.errorLine(
-    `Failed to read the worker readiness trace: ${error instanceof Error ? error.message : String(error)}`,
-  ));
-  deps.stderr(ui.style.dim("The committed agent files were preserved.") + "\n");
-}
-
-function reportTimeout(deps: BackgroundDeps): void {
-  deps.stderr(ui.errorLine("mono-agent did not report ready within the timeout."));
-  deps.stderr(ui.style.dim("The committed agent files were preserved.") + "\n");
 }
 
 async function cleanUpUnreadyBackground(
@@ -1956,328 +1160,4 @@ async function cleanUpUnreadyBackground(
     ));
     return false;
   }
-}
-
-function reportReadinessCleanup(
-  target: InstanceTarget,
-  deps: BackgroundDeps,
-  stopped: boolean,
-  options: BackgroundReadyInternalOptions = {},
-): void {
-  deps.stderr(stopped
-    ? options.preserveDefinitionsOnFailure === true
-      ? ui.style.dim("The unready main LaunchAgent was stopped; both definitions and the scheduled recovery controller remain for retry.") + "\n"
-      : ui.style.dim("The unready LaunchAgent and scheduled maintenance were stopped and their definitions removed before returning control.") + "\n"
-    : ui.style.yellow("The unready LaunchAgent could not be proven stopped; a worker or maintenance helper may still be running.") + "\n");
-  reportLaunchRecovery(target, deps);
-}
-
-function reportLaunchRecovery(target: InstanceTarget, deps: BackgroundDeps): void {
-  const flags = commandFlags(target);
-  deps.stderr(ui.style.dim("Retry or inspect with:") + "\n");
-  deps.stderr(
-    `  ${ui.style.gray("logs:  ")} ${target.paths.stderrPath}\n` +
-      `          ${target.paths.stdoutPath}\n` +
-      `  ${ui.style.gray("retry: ")} mono-agent start${flags}\n` +
-      `  ${ui.style.gray("status:")} mono-agent status${flags}\n` +
-      `  ${ui.style.gray("follow:")} mono-agent logs${flags} --follow\n`,
-  );
-}
-
-function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget, deps: BackgroundDeps): void {
-  deps.stdout(ui.rule("instance"));
-  deps.stdout(
-    ui.keyValue(
-      [
-        ["pid", String(source.pid ?? "unknown")],
-        ["health", `${ui.healthBadge(source.health)}${source.health}`],
-        ["config", target.configPath],
-        ["label", target.label],
-        ["started", source.startedAt],
-        ["logs", target.paths.stdoutPath],
-        ["", target.paths.stderrPath],
-      ],
-      2,
-    ),
-  );
-  const processJobsProtectionLines = describeProcessJobsProtectionMetadata(source);
-  if (processJobsProtectionLines.length > 0) {
-    deps.stdout(ui.rule("process jobs protection"));
-    for (const line of processJobsProtectionLines) {
-      deps.stdout(`  ${line}\n`);
-    }
-  }
-  const sandboxLines = describeSandboxMetadata(source);
-  if (sandboxLines.length > 0) {
-    deps.stdout(ui.rule("sandbox"));
-    for (const line of sandboxLines) {
-      deps.stdout(`  ${line}\n`);
-    }
-  }
-  const sessionLines = describeSessionMetadata(source, deps.now());
-  if (sessionLines.length > 0) {
-    deps.stdout(ui.rule("session"));
-    for (const line of sessionLines) {
-      deps.stdout(`  ${line}\n`);
-    }
-  }
-  const channelSections = formatChannels(source);
-  for (const section of channelSections) {
-    deps.stdout(ui.rule(section.title));
-    for (const line of section.lines) {
-      deps.stdout(`${line}\n`);
-    }
-  }
-}
-
-async function writeRunsHealthDetail(source: TraceSourceListItem, deps: BackgroundDeps): Promise<void> {
-  if (source.artifactDir === undefined || source.artifactDir.trim().length === 0) {
-    return;
-  }
-  const { totalRuns, runs, warnings } = await deps.listRecordedRuns({
-    artifactDir: source.artifactDir,
-    maxRuns: RUNS_HEALTH_MAX_RUNS,
-    scope: "agent",
-  });
-  const selectedSkills = selectedSkillsFromMetadata(source.metadata);
-  const runOwnerAlive = source.pid === undefined ? undefined : deps.isAlive(source.pid);
-  const display = buildRunsHealthDisplay({
-    artifactDir: source.artifactDir,
-    totalRuns,
-    runs,
-    warnings,
-    includeSelectedSkills: true,
-    nowMs: deps.now(),
-    maxRuns: RUNS_HEALTH_MAX_RUNS,
-    ...(selectedSkills === undefined ? {} : { selectedSkills }),
-    ...(runOwnerAlive === undefined ? {} : { runOwnerAlive }),
-  });
-  deps.stdout(ui.rule("runs health"));
-  for (const detail of display.details) {
-    deps.stdout(`  ${detail}\n`);
-  }
-}
-
-function selectedSkillsFromMetadata(metadata: Record<string, unknown> | undefined): readonly string[] | undefined {
-  const context = metadata?.context;
-  if (context === null || typeof context !== "object") {
-    return undefined;
-  }
-  const selectedSkills = (context as Record<string, unknown>).selectedSkills;
-  if (!Array.isArray(selectedSkills)) {
-    return undefined;
-  }
-  return selectedSkills.flatMap((skill) => typeof skill === "string" ? [skill] : []);
-}
-
-function formatOtherInstance(source: TraceSourceListItem): string {
-  const pid = source.pid === undefined ? "?" : String(source.pid);
-  const config = source.configPath ?? "(unknown config)";
-  return `  ${ui.healthBadge(source.health)}${source.health.padEnd(8)} pid ${pid.padEnd(7)} ${source.sourceId}  ${config}`;
-}
-
-async function matchesConfig(source: TraceSourceListItem, configPath: string): Promise<boolean> {
-  if (source.configPath === undefined) return false;
-  return await canonicalBackgroundConfigPath(process.cwd(), source.configPath) === configPath;
-}
-
-function isReady(source: TraceSourceListItem): boolean {
-  if (source.health !== "running" || !hasCompletedManagedStartup(source)) return false;
-  if (source.memoryHealth?.status === "unhealthy") return false;
-  const channels = channelRecords(source);
-  if (channels.some((channel) => channel.kind === "failed")) return false;
-  return true;
-}
-
-function channelRecords(source: TraceSourceListItem): readonly Record<string, unknown>[] {
-  const channels = source.metadata?.channels;
-  if (channels === null || typeof channels !== "object") return [];
-  return Object.values(channels as Record<string, unknown>)
-    .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object");
-}
-
-function startedAtMs(source: TraceSourceListItem): number {
-  const parsed = Date.parse(source.startedAt);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function describeSandboxMetadata(source: TraceSourceListItem): string[] {
-  const sandbox = source.metadata?.sandbox;
-  if (sandbox === null || typeof sandbox !== "object") {
-    return [];
-  }
-  const record = sandbox as Record<string, unknown>;
-  const effective = stringField(record, "effective") ?? "unknown";
-  const engine = stringField(record, "engine") ?? "none";
-  const engineAvailability = record.engineAvailable === true
-    ? "present"
-    : record.engineAvailable === false
-      ? "absent"
-      : "not checked";
-  const fallback = stringField(record, "fallback");
-  const fallbackActive = record.fallbackActive === true ? "yes" : "no";
-  const summary = [
-    `effective: ${effective}`,
-    `engine: ${engine} (${engineAvailability})`,
-    ...(fallback === undefined ? [] : [`fallback: ${fallback}`]),
-    `fallback active: ${fallbackActive}`,
-  ].join("; ");
-  return [
-    summary,
-    ...stringFieldAsList(record, "detail"),
-    ...stringFieldAsList(record, "warning").map((warning) => ui.style.yellow(warning)),
-  ];
-}
-
-function describeProcessJobsProtectionMetadata(source: TraceSourceListItem): string[] {
-  const processJobs = source.metadata?.processJobs;
-  if (!isPlainRecord(processJobs) || !isPlainRecord(processJobs.protection)) return [];
-  const protection = processJobs.protection;
-  const mode = stringField(protection, "protection");
-  if (mode === undefined) return [];
-  return [
-    `protection: ${mode}; retained roots: ${protection.retainedRoots === true ? "yes" : "no"}`,
-    ...stringFieldAsList(protection, "warning").map((warning) => ui.style.yellow(warning)),
-  ];
-}
-
-function describeSessionMetadata(source: TraceSourceListItem, nowMs: number): string[] {
-  const session = source.metadata?.session;
-  if (session === null || typeof session !== "object") {
-    return [];
-  }
-  const record = session as Record<string, unknown>;
-  const bucket = stringField(record, "currentBucketId");
-  if (bucket === undefined) {
-    return [];
-  }
-  const current = sessionSnapshotRecord(record, bucket);
-  const hasSnapshot = Array.isArray(record.snapshot);
-  const state = current === undefined
-    ? hasSnapshot ? "cold" : stringField(record, "state") ?? stringField(record, "status") ?? "cold"
-    : "warm";
-  const event = stringField(record, "event");
-  const providerSessionId = current?.providerSessionId ?? stringField(record, "providerSessionId");
-  const nextRolloverAt = stringField(record, "nextRolloverAt");
-  const reason = stringField(record, "reason");
-  const createdAt = current?.createdAt ?? numberField(record, "createdAt");
-  const summary = [
-    `bucket: ${bucket}`,
-    `state: ${state}`,
-    `age: ${formatSessionAge(createdAt, nowMs)}`,
-    ...(event === undefined ? [] : [`event: ${event}`]),
-    ...(providerSessionId === undefined ? [] : [`provider: ${providerSessionId}`]),
-    ...(nextRolloverAt === undefined ? [] : [`next rollover: ${nextRolloverAt}`]),
-    ...(reason === undefined ? [] : [`reason: ${reason}`]),
-  ];
-  return [summary.join("; ")];
-}
-
-function sessionSnapshotRecord(
-  record: Record<string, unknown>,
-  bucket: string,
-): { providerSessionId: string; createdAt: number } | undefined {
-  const snapshot = record.snapshot;
-  if (!Array.isArray(snapshot)) {
-    return undefined;
-  }
-  for (const item of snapshot) {
-    if (item === null || typeof item !== "object") {
-      continue;
-    }
-    const entry = item as Record<string, unknown>;
-    if (stringField(entry, "conversationId") !== bucket) {
-      continue;
-    }
-    const providerSessionId = stringField(entry, "providerSessionId");
-    const createdAt = numberField(entry, "createdAt");
-    if (providerSessionId !== undefined && createdAt !== undefined) {
-      return { providerSessionId, createdAt };
-    }
-  }
-  return undefined;
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function numberField(record: Record<string, unknown>, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function formatSessionAge(createdAt: number | undefined, nowMs: number): string {
-  if (createdAt === undefined) {
-    return "unknown";
-  }
-  const elapsedSeconds = Math.max(0, Math.floor((nowMs - createdAt) / 1000));
-  if (elapsedSeconds < 60) {
-    return `${elapsedSeconds}s`;
-  }
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-  if (elapsedMinutes < 60) {
-    return `${elapsedMinutes}m`;
-  }
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-  if (elapsedHours < 48) {
-    return `${elapsedHours}h`;
-  }
-  return `${Math.floor(elapsedHours / 24)}d`;
-}
-
-function stringFieldAsList(record: Record<string, unknown>, key: string): string[] {
-  const value = stringField(record, key);
-  return value === undefined ? [] : [value];
-}
-
-/** ` --config <path>` when a non-default config is in play, else empty. */
-function configFlag(target: InstanceTarget): string {
-  const defaultPath = resolve(target.cwd, "mono-agent.config.json");
-  return target.configPath === defaultPath ? "" : ` --config ${shellCommandArgument(target.configPath)}`;
-}
-
-function commandFlags(target: InstanceTarget): string {
-  return `${configFlag(target)}${target.envFile === undefined ? "" : ` --env-file ${shellCommandArgument(target.envFile)}`}`;
-}
-
-function shellCommandArgument(value: string): string {
-  return /^[a-zA-Z0-9_./:@%+=,-]+$/u.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-function formatChannels(source: TraceSourceListItem): ReturnType<typeof formatHumanChannelSections> {
-  const channels = source.metadata?.channels;
-  if (channels === null || typeof channels !== "object") {
-    return [];
-  }
-  return formatHumanChannelSections(Object.entries(channels as Record<string, unknown>).map(([id, value]) => {
-    const { kind, text } = describeChannel(value);
-    return { id, kind, text };
-  }));
-}
-
-export function describeChannel(value: unknown): { kind: string; text: string } {
-  if (value === null || typeof value !== "object") {
-    return { kind: "unknown", text: formatChannelFactValue(value) };
-  }
-  const record = value as Record<string, unknown>;
-  const kind = typeof record.kind === "string" ? record.kind : "unknown";
-  if (kind === "running") {
-    // Route every fact through the shared recursive formatter so a nested object
-    // (e.g. the webhook `invokeUrls` map) never renders as `[object Object]` —
-    // the E4 bug that persisted on this backgrounded-start summary path after the
-    // `status`-line render was fixed.
-    const facts = Object.entries(record)
-      .filter(([key]) => key !== "kind")
-      .map(([key, fact]) => `${key}=${formatChannelFactValue(fact)}`)
-      .join(" ");
-    return { kind, text: facts.length === 0 ? "running" : `running (${facts})` };
-  }
-  const reason = typeof record.reason === "string" ? record.reason : "";
-  return { kind, text: reason.length === 0 ? kind : `${kind}: ${reason}` };
-}
-
-function isErrno(error: unknown, code: string): boolean {
-  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === code;
 }

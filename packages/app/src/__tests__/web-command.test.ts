@@ -1,14 +1,19 @@
-import type { ManagedBackgroundRuntimeInput } from "../background-runtime.js";
+import type { ManagedBackgroundRuntimeInput } from "../service/managed-runtime/types.js";
 import { createHash } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { chooseTailscaleHttpsPort, DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, ensureTailscaleServe, LEGACY_DEFAULT_WEB_HOST, removeOwnedTailscaleServe, runWebCommand, tailscaleProxyTarget, webPaths, WEB_LAUNCHD_LABEL } from "../web-command.js";
+import { runWebCommand } from "../web-command.js";
+import { chooseTailscaleHttpsPort, ensureTailscaleServe, removeOwnedTailscaleServe, tailscaleProxyTarget } from "../service/web/tailscale.js";
+import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, LEGACY_DEFAULT_WEB_HOST } from "../web-service-definition.js";
+import { managedWebPaths } from "../web-maintenance-paths.js";
+import { WEB_LAUNCHD_LABEL } from "../launchd.js";
 import { webHealthcheck } from "../service/web/health.js";
-import type { CommandRunner, RunWebCommandDeps } from "../web-command.js";
+import type { CommandRunner, RunWebCommandDeps } from "../service/web/types.js";
 import {
   buildWebMaintenancePlistXml,
   buildWebPlistXml,
@@ -138,7 +143,7 @@ describe("runWebCommand", () => {
     [false, "maintenance recovery required"],
   ])("distinguishes live helper maintenance from abandoned recovery (live=%s)", async (helperLive, expected) => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "main plist\n", { mode: 0o600 });
@@ -177,7 +182,7 @@ describe("runWebCommand", () => {
     "advertises and executes stop-then-start recovery for %s authority",
     async (scenario) => {
       const home = await testHome();
-      const paths = webPaths(home);
+      const paths = managedWebPaths(home);
       await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
       await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
       await writeFile(paths.launchd.plistPath, "pre-crash main plist\n", { mode: 0o600 });
@@ -328,7 +333,7 @@ describe("runWebCommand", () => {
 
   it("tails only the two active web logs and follows replacements by name", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     const spawnTail = vi.fn(async (_args: readonly string[]) => 0);
 
     await expect(runWebCommand(
@@ -458,7 +463,7 @@ describe("runWebCommand", () => {
 
   it("installs a missing healthy-worker helper in place without changing the worker PID", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "existing worker plist\n", { mode: 0o600 });
@@ -517,7 +522,7 @@ describe("runWebCommand", () => {
 
   it("preserves a healthy worker when its loaded helper is stale and requires explicit restart", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "existing worker plist\n", { mode: 0o600 });
@@ -546,7 +551,7 @@ describe("runWebCommand", () => {
 
   it("keeps a pre-helper worker serving when managed-runtime preparation fails before restart", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     const priorPlist = "pre-helper worker plist\n";
@@ -585,7 +590,7 @@ describe("runWebCommand", () => {
 
   it("reports routine due maintenance without failing an idempotent healthy start", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.stdoutPath, Buffer.alloc(LAUNCHD_LOG_MAX_BYTES + 1), { mode: 0o600 });
@@ -785,7 +790,7 @@ describe("runWebCommand", () => {
 
   it("stops the helper before the worker and removes both definitions only after death proof", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "worker\n", { mode: 0o600 });
@@ -824,7 +829,7 @@ describe("runWebCommand", () => {
 
   it("reports when stop cannot restore the helper after worker death proof fails", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "worker\n", { mode: 0o600 });
@@ -886,7 +891,7 @@ describe("runWebCommand", () => {
 
   it("reboots the prior helper if restart cannot prove the worker stopped", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "worker plist\n", { mode: 0o600 });
@@ -1015,7 +1020,7 @@ describe("runWebCommand", () => {
 
   it("restores Tailscale ownership if a reset implementation tries to erase lifecycle metadata", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     const ownership = "{\"schema\":\"test-owned-route\"}\n";
     await writeFile(paths.tailscalePath, ownership, { mode: 0o600 });
@@ -1038,7 +1043,7 @@ describe("runWebCommand", () => {
 
   it("restores and reboots the previous worker when a restart replacement never becomes healthy", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { mode: 0o700 });
@@ -1109,7 +1114,7 @@ describe("runWebCommand", () => {
 
   it("refuses a malformed service record without overwriting it or launching", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await writeFile(paths.recordPath, "{broken\n", { mode: 0o600 });
     const ensureManagedRuntime = vi.fn();
@@ -1140,7 +1145,7 @@ describe("runWebCommand", () => {
 
   it("publishes the helper from the fresh composite main identity before either bootstrap", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
 
@@ -1178,7 +1183,7 @@ describe("runWebCommand", () => {
 
   it("prints preparation progress for both fresh web start and missing-helper repair", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
     let output = "";
@@ -1194,6 +1199,7 @@ describe("runWebCommand", () => {
           expectedManagedRuntimeLaunch: "cHJvb2Y", expectedWebPlistIdentity: await compositeIdentity(paths.launchd.plistPath) },
       }),
       ensureManagedRuntime: async (input: ManagedBackgroundRuntimeInput) => {
+        expect(input.currentCliPath).toBe(fileURLToPath(new URL("../cli.js", import.meta.url)));
         input.onProgress?.({ phase: "waiting", elapsedMs: 360_000, completed: 0, ownerPid: 1234 });
         input.onProgress?.({ phase: "copy", elapsedMs: 362_000, completed: 8, total: 12 });
         return { cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" };
@@ -1213,7 +1219,7 @@ describe("runWebCommand", () => {
 
   it("regenerates the helper after a byte-identical main rewrite with a new inode identity", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
     const deps = {
@@ -1249,7 +1255,7 @@ describe("runWebCommand", () => {
 
   it("converges an abandoned restoring intent with zero additional rotation", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "prior main plist\n", { mode: 0o600 });
@@ -1302,7 +1308,7 @@ describe("runWebCommand", () => {
 
   it("fails closed on an abandoned stopping intent without unloading either service", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "prior main plist\n", { mode: 0o600 });
@@ -1331,7 +1337,7 @@ describe("runWebCommand", () => {
 
   it("never bootstraps a partial pair when helper regeneration fails", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     const launchd = pairedLaunchctlFixture();
     const writer = async (path: string, contents: string): Promise<void> => {
@@ -1364,7 +1370,7 @@ describe("runWebCommand", () => {
 
   it("removes a partial first-start publication when the plist write fails", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let writes = 0;
     const writePrivateFile = async (path: string, contents: string) => {
@@ -1400,7 +1406,7 @@ describe("runWebCommand", () => {
 
   it("pins the node's exact Tailscale DNS hostname into the worker before claiming Serve", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const launchctl = async (args: readonly string[]) => {
@@ -1461,7 +1467,7 @@ describe("runWebCommand", () => {
 
   it("preserves the recorded theme when restart does not override it", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "old plist\n", { mode: 0o600 });
@@ -1517,7 +1523,7 @@ describe("runWebCommand", () => {
 
   it("preserves the recorded console name by default and clears it with --name -", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "old plist\n", { mode: 0o600 });
@@ -1587,7 +1593,7 @@ describe("runWebCommand", () => {
 
   it("retains an exact owned Tailscale hostname when LocalAPI status is transiently unavailable", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
@@ -1648,7 +1654,7 @@ describe("runWebCommand", () => {
 
   it("boots out a partially loaded first start and removes its artifacts after bootstrap failure", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const calls: string[][] = [];
@@ -1695,7 +1701,7 @@ describe("runWebCommand", () => {
 
   it("stops a crash-looping first start and removes its artifacts after readiness timeout", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
     let loaded = false;
     const calls: string[][] = [];
@@ -1744,7 +1750,7 @@ describe("runWebCommand", () => {
 
   it("rolls worker, service record, plist, and Tailnet route back to 5050 when a 5051 migration claim fails", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
@@ -1897,7 +1903,7 @@ describe("Tailscale Serve ownership", () => {
     expect(tailscaleProxyTarget("2001:db8::42", 5050)).toBeUndefined();
 
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     const runner = vi.fn<CommandRunner>();
     const result = await ensureTailscaleServe(paths, "192.0.2.42", 5050, {}, { homeDir: home, tailscale: runner });
@@ -1907,7 +1913,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("claims 8443 without overwriting an existing 443 handler", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     let serveStatusReads = 0;
     const calls: readonly string[][] = [];
@@ -1948,7 +1954,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("removes only an exact owned route and refuses a changed handler", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
       homeDir: home,
@@ -1975,7 +1981,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("refuses post-claim ownership when a sibling handler appears in the immediate status", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     let statusReads = 0;
     const runner = vi.fn<CommandRunner>(async (args) => {
@@ -2012,7 +2018,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("fails closed on a malformed ownership record without touching Tailscale", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.tailscalePath, "{not-json\n", { mode: 0o600 });
     const runner = vi.fn<CommandRunner>();
@@ -2026,7 +2032,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("clears an ownership record only after confirming its exact route is absent twice", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
       homeDir: home,
@@ -2044,7 +2050,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("refuses to turn off a port when a sibling handler was added after ownership", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
       homeDir: home,
@@ -2077,7 +2083,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("removes the exact prior owned route before migrating to a changed app port", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
       homeDir: home,
@@ -2123,7 +2129,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("restores the prior exact route and ownership when a changed-port claim fails", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
       homeDir: home,
@@ -2173,7 +2179,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("rolls back the exact new handler when durable ownership publication fails", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     const runner = vi.fn(scriptedClaimRunner());
     const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
@@ -2188,7 +2194,7 @@ describe("Tailscale Serve ownership", () => {
 
   it("re-verifies and rolls back an exact new handler after the first verification read fails", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     let statusReads = 0;
     const runner: CommandRunner = vi.fn(async (args) => {
@@ -2272,7 +2278,7 @@ function absentRouteRunner(): CommandRunner {
 describe("web console exposure contract", () => {
   it("binds loopback on a pristine start and never runs the Tailscale CLI", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     const tailscale = vi.fn(absentRouteRunner());
     const { captured, deps } = await managedStartHarness(home, { tailscale });
 
@@ -2294,7 +2300,7 @@ describe("web console exposure contract", () => {
 
   it("recovers a stopped install's published bind from its LaunchAgent definition", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, buildWebPlistXml({
@@ -2325,7 +2331,7 @@ describe("web console exposure contract", () => {
 
   it("refuses to start over an unvalidated existing definition without mutating it", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
@@ -2341,7 +2347,7 @@ describe("web console exposure contract", () => {
 
   it("keeps the healthy worker and exits nonzero when an explicit share cannot resolve the DNS name", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: unavailableTailscaleRunner() });
 
     expect(await runWebCommand({ positionals: ["start"], shareTailnet: true, env: {} }, deps)).toBe(1);
@@ -2357,7 +2363,7 @@ describe("web console exposure contract", () => {
 
   it("keeps the healthy worker and exits nonzero when the ownership record is invalid", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await writeFile(paths.tailscalePath, "{\"schema\":\"not-ours\"}\n", { mode: 0o600 });
     const { fixture, captured, deps } = await managedStartHarness(home, { tailscale: absentRouteRunner() });
@@ -2371,7 +2377,7 @@ describe("web console exposure contract", () => {
 
   it("keeps the healthy worker and exits nonzero when the explicit share claim fails", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     const calls: string[][] = [];
     const runner: CommandRunner = async (args) => {
       calls.push([...args]);
@@ -2400,7 +2406,7 @@ describe("web console exposure contract", () => {
 
   it("keeps the healthy worker and exits nonzero when ownership cannot be recorded", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     const runner = vi.fn(scriptedClaimRunner());
     const { fixture, captured, deps } = await managedStartHarness(home, {
       tailscale: runner,
@@ -2421,7 +2427,7 @@ describe("web console exposure contract", () => {
 
   it("does not create a route for a proven-absent ownership record without --share-tailnet", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await writeFile(paths.tailscalePath, `${JSON.stringify(EXACT_ABSENT_OWNERSHIP, undefined, 2)}\n`, { mode: 0o600 });
     const calls: string[][] = [];
@@ -2530,7 +2536,7 @@ describe("web console exposure contract", () => {
     ];
     for (const argv of cases) {
       const home = await testHome();
-      const paths = webPaths(home);
+      const paths = managedWebPaths(home);
       await prepareState({ stateDir: paths.stateDir });
       await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
       const plist = buildWebPlistXml({
@@ -2567,7 +2573,7 @@ describe("web console exposure contract", () => {
 
   it("keeps a loaded maintenance helper untouched when the main definition is invalid", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
@@ -2600,7 +2606,7 @@ describe("web console exposure contract", () => {
 
   it("reports a stopped install's recovered listener instead of the fresh default", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, buildWebPlistXml({
@@ -2650,7 +2656,7 @@ describe("web console exposure contract", () => {
 
   it("keeps an unreadable status definition unknown without probing it", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await writeFile(paths.launchd.plistPath, "not a plist\n", { mode: 0o600 });
@@ -2680,7 +2686,7 @@ describe("web console exposure contract", () => {
 
   it("distinguishes unverifiable, changed, and missing owned routes in status", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await writeFile(paths.tailscalePath, `${JSON.stringify(EXACT_ABSENT_OWNERSHIP, undefined, 2)}\n`, { mode: 0o600 });
 
@@ -2819,7 +2825,7 @@ describe("migration-aware Tailscale failure finalization (R1/R2)", () => {
     readonly rollbackOffFails: boolean;
   }) {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: scriptedClaimRunner() });
@@ -3012,7 +3018,7 @@ describe("migration-aware Tailscale failure finalization (R1/R2)", () => {
 
   it("does not restore a prior route while a Web-only handler occupies its port", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: scriptedClaimRunner() });
     const priorOwnership = await readFile(paths.tailscalePath, "utf8");
@@ -3067,7 +3073,7 @@ describe("migration-aware Tailscale failure finalization (R1/R2)", () => {
 
   it("reports both facts when the prior route is restored but the replacement may remain on another port", async () => {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await prepareState({ stateDir: paths.stateDir });
     await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: scriptedClaimRunner() });
     const exact = (port: number, target: string): string => JSON.stringify({
@@ -3140,7 +3146,7 @@ describe("migration-aware Tailscale failure finalization (R1/R2)", () => {
     readonly offExit: number;
   }) {
     const home = await testHome();
-    const paths = webPaths(home);
+    const paths = managedWebPaths(home);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     let readIndex = 0;
     const calls: string[][] = [];

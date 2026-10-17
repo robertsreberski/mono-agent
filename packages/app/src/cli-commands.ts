@@ -5,9 +5,9 @@ import { basename, resolve } from "node:path";
 import process from "node:process";
 import {
   MANAGED_BACKGROUND_WORKER_ENV,
+  SYSTEMD_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
-} from "./background-runtime.js";
-import { SYSTEMD_BACKGROUND_WORKER_ENV } from "./background-environment.js";
+} from "./background-environment.js";
 import { readCliDotenvFile } from "./service/background/source-inputs.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
@@ -50,12 +50,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 2;
     }
     if (argv[0] === "memory" && argv.includes("adopt-replay")) {
-      const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
+      const { writeReplayAdoptionCliFailure } = await import("./cli/commands/memory/replay-failure.js");
       writeReplayAdoptionCliFailure(argv.includes("--json"), "replay_adoption_usage");
       return 2;
     }
     if (argv[0] === "memory" && argv.includes("forget")) {
-      const { writeMemoryForgetFailure } = await import("./memory-command.js");
+      const { writeMemoryForgetFailure } = await import("./cli/commands/memory/forget-failure.js");
       const operationIndex = argv.indexOf("forget") + 1;
       writeMemoryForgetFailure(argv.includes("--json"), argv[operationIndex] ?? "unknown", "forget_usage");
       return 2;
@@ -138,14 +138,14 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   if (args.command === "memory"
     && args.positionals[0] === "adopt-replay"
     && hasUnsupportedReplayAdoptionFlag(argv)) {
-    const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
+    const { writeReplayAdoptionCliFailure } = await import("./cli/commands/memory/replay-failure.js");
     writeReplayAdoptionCliFailure(args.json === true, "replay_adoption_usage");
     return 2;
   }
   if (args.command === "memory"
     && args.positionals[0] === "forget"
     && hasUnsupportedMemoryForgetFlag(argv)) {
-    const { writeMemoryForgetFailure } = await import("./memory-command.js");
+    const { writeMemoryForgetFailure } = await import("./cli/commands/memory/forget-failure.js");
     writeMemoryForgetFailure(args.json === true, args.positionals[1] ?? "unknown", "forget_usage");
     return 2;
   }

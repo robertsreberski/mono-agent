@@ -130,3 +130,22 @@ export function fingerprintSystemdBackgroundOperationalEnvironment(
     ...SYSTEMD_BACKGROUND_OPERATIONAL_ENV_NAMES,
   ]);
 }
+
+/**
+ * launchd can retain a user's historical environment independently of the
+ * plist. Strip it before dotenv loading so the worker observes only the
+ * reviewed operational allowlist plus the selected dotenv file.
+ */
+export function sanitizeManagedBackgroundWorkerEnvironment(
+  env: Record<string, string | undefined>,
+): void {
+  if (env[MANAGED_BACKGROUND_WORKER_ENV] !== "1") return;
+  for (const name of Object.keys(env)) {
+    if (name !== MANAGED_BACKGROUND_WORKER_ENV && !isBackgroundOperationalEnvName(name)) {
+      delete env[name];
+    }
+  }
+  // The marker has served its only purpose and must not enter config loading as
+  // an apparent MONO_AGENT_* override.
+  delete env[MANAGED_BACKGROUND_WORKER_ENV];
+}

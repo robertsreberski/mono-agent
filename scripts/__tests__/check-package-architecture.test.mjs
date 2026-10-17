@@ -2,8 +2,10 @@ import { findContextBuilderBypasses } from "../../packages/turn/src/engine/__tes
 import { retiredHostImports } from "../lib/retired-host-boundary.mjs";
 import { activeStaleReferenceLines, engineRuntimeImports } from "../lib/engine-boundary.mjs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { runInNewContext } from "node:vm";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -217,5 +219,59 @@ describe("staged projection source guard", () => {
       "packages/turn/src/engine/stray.ts": bypass,
     });
     expect(await findContextBuilderBypasses(root)).toEqual(["packages/turn/src/engine/stray.ts", "packages/turn/src/engine/unowned.d.ts"]);
+  });
+});
+
+describe("extracted log responsibility guard", () => {
+  const script = readFileSync(new URL("../check-package-architecture.mjs", import.meta.url), "utf8");
+  const guard = script.slice(
+    script.indexOf("const extractedResponsibilityDeclarations ="),
+    script.indexOf("errors.push(...findAdapterNeutralityErrors"),
+  );
+  const rules = [
+    ["web", "startManagedWebLogMonitor", "managed-web-logs.ts"],
+    ["web", "inspectLegacyManagedWebLogArtifacts", "managed-web-logs.ts"],
+    ["web", "maintainLegacyManagedWebLogArtifacts", "managed-web-logs.ts"],
+    ["web", "runWebLogMaintenanceCommand", "web-log-maintenance.ts"],
+    ["web", "writeWebLogMaintenanceStatus", "web-log-maintenance-status.ts"],
+    ["background", "maintainLaunchdLogsWithSharedLockOperation", "background-log-maintenance.ts"],
+    ["background", "maintainLaunchdLogsOperation", "background-log-maintenance.ts"],
+  ];
+
+  function inspect(root) {
+    const errors = [];
+    runInNewContext(guard, { root, errors, join, readdirSync, readFileSync });
+    return errors;
+  }
+
+  it("accepts the clean repository including the real top-level log owners", () => {
+    expect(inspect(process.cwd())).toEqual([]);
+  });
+
+  it.each(rules)("rejects %s lifecycle copies of %s", async (family, declaration, owner) => {
+    const root = await mkdtemp(join(tmpdir(), "mono-agent-log-architecture-"));
+    temporaryRoots.push(root);
+    const files = [
+      "packages/app/src/web-command.ts",
+      "packages/app/src/background.ts",
+      "packages/channel-slack/src/adapter.ts",
+      "packages/memory/src/bujo/rebuild.ts",
+      "packages/app/src/service/web/service.ts",
+      "packages/app/src/service/web/status.ts",
+      "packages/app/src/service/background/status.ts",
+      "packages/app/src/service/background/target.ts",
+    ];
+    for (const file of files) {
+      await mkdir(dirname(join(root, file)), { recursive: true });
+      await writeFile(join(root, file), "");
+    }
+    const targets = files.filter((file) => file.includes(`/service/${family}/`));
+    for (const file of targets) {
+      await writeFile(join(root, file), `function ${declaration}() {}\n`);
+      expect(inspect(root)).toEqual([
+        `${file} must keep function ${declaration} in ${owner}.`,
+      ]);
+      await writeFile(join(root, file), "");
+    }
   });
 });

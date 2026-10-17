@@ -267,9 +267,22 @@ const extractedResponsibilityDeclarations = [
   },
 ];
 for (const rule of extractedResponsibilityDeclarations) {
-  const text = readFileSync(join(root, rule.file), "utf8");
-  if (text.includes(rule.declaration)) {
-    errors.push(`${rule.file} must keep ${rule.declaration} in ${rule.owner}.`);
+  const files = [rule.file];
+  const serviceDirectory = rule.file === join("packages", "app", "src", "web-command.ts")
+    ? join("packages", "app", "src", "service", "web")
+    : rule.file === join("packages", "app", "src", "background.ts")
+      ? join("packages", "app", "src", "service", "background")
+      : undefined;
+  if (serviceDirectory) {
+    files.push(...readdirSync(join(root, serviceDirectory), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+      .map((entry) => join(serviceDirectory, entry.name)));
+  }
+  for (const file of files) {
+    const text = readFileSync(join(root, file), "utf8");
+    if (text.includes(rule.declaration)) {
+      errors.push(`${file} must keep ${rule.declaration} in ${rule.owner}.`);
+    }
   }
 }
 

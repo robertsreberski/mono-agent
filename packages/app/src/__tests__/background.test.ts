@@ -16,10 +16,14 @@ import { describe, expect, it, vi } from "vitest";
 import { listTraceSources, registerTraceSource } from "@mono-agent/observability";
 import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
-import { canonicalBackgroundConfigPath, acquireFilesystemLifecycleLock, ensureBackgroundReady, defaultBackgroundDeps, forceRestartBackground, maintainLaunchdController, unattendedLogDeps, managedLaunchdLogMaintenanceEnvironment, resolveInstanceTarget, restartBackground, startBackground, statusBackground, stopBackground, tailLogs } from "../background.js";
+import { ensureBackgroundReady, forceRestartBackground, maintainLaunchdController, unattendedLogDeps, restartBackground, startBackground, stopBackground, tailLogs } from "../background.js";
+import { canonicalBackgroundConfigPath, managedLaunchdLogMaintenanceEnvironment, resolveInstanceTarget } from "../service/background/target.js";
+import { defaultBackgroundDeps } from "../service/background/deps.js";
+import { statusBackground } from "../service/background/status.js";
+import { acquireFilesystemLifecycleLock } from "../launchd-lifecycle-lock.js";
 import { acquireSharedLaunchdLogLock, sharedLaunchdLogLockTarget } from "../launchd-lifecycle-lock.js";
 import { withLaunchdMaintenanceControllerLock } from "../launchd-maintenance-gate.js";
-import type { BackgroundDeps, InstanceTarget } from "../background.js";
+import type { BackgroundDeps, InstanceTarget } from "../service/background/types.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import { invalidateApprovedBackgroundSnapshots, resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
 import { encodeBackgroundSnapshot } from "../background-snapshot.js";

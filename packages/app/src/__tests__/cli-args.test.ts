@@ -29,7 +29,7 @@ function helpTopicText(topic: string): string {
   return result.text;
 }
 import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../background-environment.js";
-import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
+import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-environment.js";
 import { encodeBackgroundSnapshot } from "../background-snapshot.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,

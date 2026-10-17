@@ -8,8 +8,8 @@ import {
   classifyImportApplyFailure,
   classifyImportPrepareFailure,
   classifyMemoryBundleExportFailure,
-  isFtsFallbackEligible,
-} from "../memory-command.js";
+} from "../cli/commands/memory/bundle.js";
+import { isFtsFallbackEligible } from "../cli/commands/memory/read.js";
 import type { MemoryRecallSettings } from "../memory-recall-settings.js";
 
 const semanticSettings: MemoryRecallSettings = {

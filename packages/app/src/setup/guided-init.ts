@@ -5,13 +5,10 @@ import { fileURLToPath } from "node:url";
 
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
-import {
-  defaultBackgroundDeps,
-  ensureBackgroundReady,
-  managedBackgroundEnvironment,
-  resolveInstanceTarget,
-} from "../background.js";
-import type { BackgroundLaunchResult } from "../background.js";
+import { ensureBackgroundReady } from "../background.js";
+import { defaultBackgroundDeps } from "../service/background/deps.js";
+import { managedBackgroundEnvironment, resolveInstanceTarget } from "../service/background/target.js";
+import type { BackgroundLaunchResult } from "../service/background/types.js";
 import { captureDurableBackgroundInputs } from "../background-snapshot.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import type { ParsedCliArgs } from "../cli-args.js";
