@@ -2,10 +2,10 @@
 import { createHash } from "node:crypto";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 
-export const evidenceDigest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const fail = (reason) => { throw new TypeError(`Invalid native evidence view: ${reason}`); };
+export const evidenceDigest = (value: any) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const fail = (reason: string) => { throw new TypeError(`Invalid native evidence view: ${reason}`); };
 const views = new WeakSet(), scanned = new WeakSet();
-const freeze = (value) => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
+const freeze = (value: any) => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 
 /**
  * Two passes over one frozen journal. Pass 1 validates, digests and indexes
@@ -16,18 +16,18 @@ const freeze = (value) => { if (value && typeof value === "object") { Object.val
  * interrupted since the last completed turn.
  * @param {{descriptor:any, header:any}} source @param {{ownerKey:string, historyBucket:string}} owner @param {number} maxBytes
  */
-function segmentScanner({ descriptor, header }, owner, maxBytes) {
+function segmentScanner({ descriptor, header }: { descriptor: any; header: any; }, owner: { ownerKey: string; historyBucket: string; }, maxBytes: number) {
   validateJournalHeader(header);
   if (header.hostAuthority !== undefined && (header.hostAuthority.ownerKey !== owner.ownerKey
     || header.hostAuthority.historyBucket !== owner.historyBucket)) fail("upgraded header owner");
   if (!descriptor || descriptor.ownerKey !== owner.ownerKey || descriptor.historyBucket !== owner.historyBucket
     || descriptor.journalId !== header.journalId || descriptor.handleId !== header.id) fail("identity/source");
-  const validator = new JournalValidator(), digest = createHash("sha256").update("["), preserved = new Map(), records = [];
-  let count = 0, bytes = 0, from = 1, settled = false, calls = [], visible = new Set(), open = new Set();
-  const chain = [], cited = new Set(), causes = new Set(), returned = new Set();
+  const validator = new JournalValidator(), digest = createHash("sha256").update("["), preserved = new Map(), records: any[] = [];
+  let count = 0, bytes = 0, from = 1, settled = false, calls: any[] = [], visible = new Set(), open = new Set();
+  const chain: string[] = [], cited = new Set(), causes = new Set(), returned = new Set();
   return {
     /** @param {any} record */
-    validate(record) {
+    validate(record: any) {
       digest.update(`${count++ ? "," : ""}${JSON.stringify(record)}`); validator.apply(record);
       const binding = record.payload.binding;
       if (binding && (binding.ownerKey !== owner.ownerKey || binding.historyBucket !== owner.historyBucket || binding.handleId !== header.id)) fail("binding");
@@ -39,10 +39,10 @@ function segmentScanner({ descriptor, header }, owner, maxBytes) {
       for (let id = validator.tip; id !== null;) { const info = validator.contextInfo.get(id); if (!info) fail("ancestry"); chain.push(id); id = info.parentId; }
       chain.reverse(); visible = new Set(chain);
       const checkpoint = chain.filter((id) => validator.contextInfo.get(id).kind === "compaction").at(-1);
-      if (checkpoint !== undefined) from = validator.contextInfo.get(preserved.get(checkpoint).find((id) => visible.has(id)) ?? checkpoint).seq;
+      if (checkpoint !== undefined) from = validator.contextInfo.get(preserved.get(checkpoint).find((id: string) => visible.has(id)) ?? checkpoint).seq;
       // A completed model turn (a prompt operation), not an administrative write, resolves earlier work.
       const turns = [...validator.turns.values()], last = turns.map((turn) => turn.end?.payload.status === "completed"
-        && turn.operations.some((id) => validator.operations.get(id).start.payload.type === "prompt")).lastIndexOf(true);
+        && turn.operations.some((id: string) => validator.operations.get(id).start.payload.type === "prompt")).lastIndexOf(true);
       settled = last >= 0; open = new Set(turns.slice(last + 1).filter((turn) => turn.end?.payload.status !== "completed").map((turn) => turn.start.turnId));
       calls = [...validator.calls.values()].filter((call) => (!call.result && call.admission === "started") || call.outcome === "unknown"
         || (call.result && !call.placed) || (open.has(call.turnId) && !(visible.has(call.messageId) && call.placed && call.outcome === "success")))
@@ -51,7 +51,7 @@ function segmentScanner({ descriptor, header }, owner, maxBytes) {
       for (const id of open) causes.add(id);
     },
     /** @param {any} record @param {number} [size] */
-    retain(record, size = 0) {
+    retain(record: any, size: number = 0) {
       const p = record.payload;
       if (!(record.seq >= from || cited.has(record.id) || (record.kind === "interruption" && causes.has(record.turnId))
         || (record.kind === "tool_result" && p.phase === "returned" && returned.has(`${record.operationId}\0${p.callId}`)))) return;
@@ -77,7 +77,7 @@ function segmentScanner({ descriptor, header }, owner, maxBytes) {
  * @param {{descriptor:any, header:any}} source @param {{ownerKey:string, historyBucket:string}} owner
  * @param {(visit:(record:any, bytes:number) => void) => Promise<void>} each @param {number} [maxBytes]
  */
-export async function scanEvidenceSegment(source, owner, each, maxBytes = Infinity) {
+export async function scanEvidenceSegment(source: { descriptor: any; header: any; }, owner: { ownerKey: string; historyBucket: string; }, each: (visit: (record: any, bytes: number) => void) => Promise<void>, maxBytes: number = Infinity) {
   const scanner = segmentScanner(structuredClone(source), owner, maxBytes);
   await each((record) => scanner.validate(record)); scanner.select();
   await each((record, bytes) => scanner.retain(record, bytes));
@@ -91,7 +91,7 @@ export async function scanEvidenceSegment(source, owner, each, maxBytes = Infini
  * inherits. Nothing is opened for writing.
  * @param {{ownerKey:string, historyBucket:string, segments:any[], gaps?:any[], prior?:any}} input
  */
-export function createEvidenceView(input) {
+export function createEvidenceView(input: { ownerKey: string; historyBucket: string; segments: any[]; gaps?: any[]; prior?: any; }) {
   if (!input?.ownerKey || !input.historyBucket || !Array.isArray(input.segments) || input.segments.length > 1) fail("owner/segments");
   const gaps = structuredClone(input.gaps ?? []);
   if (!Array.isArray(gaps) || gaps.some((g) => typeof g.reference !== "string" || !g.reference || typeof g.reason !== "string" || !g.reason
@@ -99,7 +99,7 @@ export function createEvidenceView(input) {
   if (!input.segments.length && !gaps.length) fail("owner/segments");
   const prior = input.prior === undefined || input.prior === null ? null : structuredClone(input.prior);
   if (prior && (typeof prior !== "object" || !Array.isArray(prior.coverage) || !Array.isArray(prior.ledger))) fail("prior handoff");
-  const priorCoverage = prior ? evidenceDigest({ version: 1, sources: prior.coverage.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) }) : null;
+  const priorCoverage = prior ? evidenceDigest({ version: 1, sources: prior.coverage.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }: any) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) }) : null;
   const segments = input.segments.map((source) => {
     if (scanned.has(source)) {
       if (source.ownerKey !== input.ownerKey || source.historyBucket !== input.historyBucket) fail("identity/source");
@@ -121,4 +121,4 @@ export function createEvidenceView(input) {
 }
 
 /** @param {any} view */
-export function assertEvidenceView(view) { if (!views.has(view)) fail("unvalidated view"); }
+export function assertEvidenceView(view: any) { if (!views.has(view)) fail("unvalidated view"); }

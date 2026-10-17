@@ -2,12 +2,18 @@
 // One pure selection plan for durable stores and frozen evidence views. Outcome
 // materialization stays with the caller (queued I/O versus already-read bytes).
 /** @param {{tip:string|null, visible:Set<string>, interruptions:Iterable<any>, validator:any, timestamp:(id:string)=>number}} input */
-export function planRepairEntries({ tip, visible, interruptions, validator, timestamp }) {
+export function planRepairEntries({ tip, visible, interruptions, validator, timestamp }: { tip: string | null; visible: Set<string>; interruptions: Iterable<any>; validator: any; timestamp: (id: string) => number; }): {
+  repairs: any[];
+  additions: {
+    account: any;
+    call: any;
+  }[];
+} {
   const repairs = [...interruptions].filter((repair) => repair.tipId === null ? tip === null : visible.has(repair.tipId))
-    .map((repair) => ({ ...structuredClone(repair), calls: (repair.calls ?? []).filter((call) =>
+    .map((repair) => ({ ...structuredClone(repair), calls: (repair.calls ?? []).filter((call: any) =>
       !["error", "aborted", "deferred"].includes(validator.contextInfo.get(call.messageId)?.stopReason))
-      .map((call) => ({ ...structuredClone(call), timestamp: repair.timestamp })) }));
-  const covered = new Set(repairs.flatMap((repair) => repair.calls.map((call) => `${call.operationId}\0${call.callId}`)));
+      .map((call: any) => ({ ...structuredClone(call), timestamp: repair.timestamp })) }));
+  const covered = new Set(repairs.flatMap((repair) => repair.calls.map((call: any) => `${call.operationId}\0${call.callId}`)));
   const byOperation = new Map();
   for (const repair of repairs) for (const id of repair.operationIds) byOperation.set(id, repair);
   const additions = [];

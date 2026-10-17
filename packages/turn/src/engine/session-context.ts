@@ -1,10 +1,10 @@
 import { projectInterruptions } from "./interruption.js";
 import { createBranchSummaryMessage } from "./compaction-kit/messages.js";
 
-const isContextMessage = (message) => message?.role !== "assistant"
+const isContextMessage = (message: any) => message?.role !== "assistant"
   || !["error", "aborted", "deferred"].includes(message.stopReason);
 
-export function buildHarnessSessionContext(pathEntries, { includeFailed = false, repairs = [] } = {}) {
+export function buildHarnessSessionContext(pathEntries: any, { includeFailed = false, repairs = [] }: { includeFailed?: boolean; repairs?: any[] } = {}) {
   let start = 0;
   for (let index = pathEntries.length - 1; index >= 0; index -= 1) {
     if (pathEntries[index]?.type === "compaction") { start = index; break; }
@@ -25,7 +25,7 @@ export function buildHarnessSessionContext(pathEntries, { includeFailed = false,
     if (entry.type === "message" && visible.has(entry.message)) previousVisibleId = entry.id;
     anchors.set(entry.id, previousVisibleId);
   }
-  const projectedRepairs = repairs.flatMap((repair) => {
+  const projectedRepairs = repairs.flatMap((repair: any) => {
     const anchor = anchors.get(repair.tipId);
     return anchors.has(repair.tipId) || (repair.tipId === null && start === 0) ? [{ ...repair, tipId: anchor ?? null }] : [];
   });

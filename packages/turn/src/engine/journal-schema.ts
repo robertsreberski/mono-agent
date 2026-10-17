@@ -1,22 +1,24 @@
+import type { JournalEntry, JournalHeader, Provenance } from "./journal-types.js";
 // @ts-check
 import { createHash } from "node:crypto";
 import { JOURNAL_FORMAT, JOURNAL_KINDS, JOURNAL_VERSION } from "./journal-types.js";
 import { validateHostJournalAuthority } from "./header-authority.js";
-const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const id = (v) => typeof v === "string" && v.length > 0 && v.length <= 512;
-const time = (v) => Number.isSafeInteger(v) && v >= 0;
-const ids = (v) => Array.isArray(v) && v.every(id) && new Set(v).size === v.length;
-const status = (v) => ["completed", "failed", "aborted", "interrupted"].includes(v);
+const object = (v: any) => v !== null && typeof v === "object" && !Array.isArray(v);
+const id = (v: any) => typeof v === "string" && v.length > 0 && v.length <= 512;
+const time = (v: any) => Number.isSafeInteger(v) && v >= 0;
+const ids = (v: any) => Array.isArray(v) && v.every(id) && new Set(v).size === v.length;
+const status = (v: any) => ["completed", "failed", "aborted", "interrupted"].includes(v);
 const fail = () => { throw Object.assign(new Error("Invalid session journal"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
-const requireValue = (v) => { if (!v) fail(); };
+const requireValue = (v: any) => { if (!v) fail(); };
 
 /** Digest only the actual native input content, never controllers or timestamps. */
-export function digestTurnInput(content) {
+export function digestTurnInput(content: any) {
   return createHash("sha256").update(JSON.stringify(typeof content === "string" ? [{ type: "text", text: content }] : content)).digest("hex");
 }
 
 /** @param {any} header */
-export function validateJournalHeader(header) {
+export function validateJournalHeader(header: any): void;
+export function validateJournalHeader(header: JournalHeader) {
   requireValue(object(header) && header.format === JOURNAL_FORMAT && header.version === JOURNAL_VERSION
     && id(header.journalId) && /^[A-Za-z0-9_-]+$/.test(header.journalId)
     && header.ownershipSchemaVersion === 1 && header.ownership?.kind === "unbound"
@@ -31,16 +33,16 @@ export function validateJournalHeader(header) {
       && ["import", "clean_break"].includes(info.mode) && time(info.messageCount)
       && /^[a-f0-9]{64}$/.test(info.contextHash) && source?.id === header.id
       && typeof source.path === "string" && source.path.split(/[\\/]/).length === 2
-      && source.path.split(/[\\/]/).every((part) => part && part !== "." && part !== "..")
-      && !["journals", "locks", "aliases"].includes(source.path.split(/[\\/]/)[0])
+      && source.path.split(/[\\/]/).every((part: any) => part && part !== "." && part !== "..")
+      && !["journals", "locks", "aliases"].includes(source.path.split(/[\\/]/)[0]!)
       && source.path.endsWith(".jsonl") && object(identity)
-      && ["dev", "ino", "size"].every((key) => time(identity[key]))
+      && ["dev", "ino", "size"].every((key) => time(identity[key as "dev" | "ino" | "size"]))
       && Number.isFinite(identity.mtimeMs) && /^[a-f0-9]{64}$/.test(identity.sha256));
   }
 }
 
 /** Validate the protected descriptor independently of recovery opt-in. */
-export function validateSessionTurn(descriptor, handleId) {
+export function validateSessionTurn(descriptor: any, handleId: any) {
   if (!object(descriptor) || !["host", "instance"].includes(descriptor.kind)
     || !id(descriptor.ownerKey) || !id(descriptor.turnId) || !id(descriptor.handleId)
     || descriptor.handleId !== handleId || !(descriptor.baseRevision === null || time(descriptor.baseRevision))
@@ -58,12 +60,12 @@ export function validateSessionTurn(descriptor, handleId) {
   }
 }
 
-const digest = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-const keys = (value, allowed) => object(value) && Object.keys(value).every((key) => allowed.includes(key));
-const model = (value) => keys(value, ["provider", "id", "api"]) && id(value.provider) && id(value.id) && id(value.api);
+const digest = (value: any) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const keys = (value: any, allowed: string[]) => object(value) && Object.keys(value).every((key) => allowed.includes(key));
+const model = (value: any) => keys(value, ["provider", "id", "api"]) && id(value.provider) && id(value.id) && id(value.api);
 
 /** Versioned minimal final result. Unknown/private fields cannot enter seals. */
-function validateTurnSeal(seal, terminalStatus) {
+function validateTurnSeal(seal: any, terminalStatus: "completed" | "failed" | "aborted" | "interrupted") {
   requireValue(keys(seal, ["version", "outcome", "result"]) && seal.version === 1
     && seal.outcome === ({ completed: "completed", failed: "failed", aborted: "cancelled", interrupted: "interrupted" })[terminalStatus]);
   const result = seal.result;
@@ -79,9 +81,25 @@ function validateTurnSeal(seal, terminalStatus) {
 
 /** Incremental reference/lifecycle validator. Never transforms native payloads. */
 export class JournalValidator {
+  declare seq: number;
+  /** Immutable accepted artifact/coverage identity, not a second content copy. */
+  declare projectionBinding: any;
+  declare parentId: string | null;
+  declare ids: Set<any>;
+  declare contextIds: Set<any>;
+  declare contextInfo: Map<any, any>;
+  declare tip: string | null;
+  declare turns: Map<any, any>;
+  declare openTurns: Set<any>;
+  declare openOperations: Set<any>;
+  declare operations: Map<any, any>;
+  declare calls: Map<any, any>;
+  declare inputs: Map<any, any>;
+  declare handles: Set<any>;
+  declare handleBindings: Map<any, any>;
+  declare owner: any;
   constructor() {
     this.seq = 0;
-    /** Immutable accepted artifact/coverage identity, not a second content copy. */
     this.projectionBinding = null;
     /** @type {string|null} */ this.parentId = null;
     this.ids = new Set();
@@ -99,7 +117,8 @@ export class JournalValidator {
     /** @type {any} */ this.owner = { kind: "unbound" };
   }
   /** @param {import('./journal-types.js').JournalEntry} record */
-  validate(record) {
+  validate(record: JournalEntry): void;
+  validate(record: JournalEntry & { payload: { provenance?: Provenance } }) {
     requireValue(object(record) && record.schemaVersion === JOURNAL_VERSION
       && id(record.id) && !this.ids.has(record.id) && record.parentId === this.parentId
       && record.seq === this.seq + 1 && time(record.timestamp) && id(record.turnId)
@@ -113,9 +132,9 @@ export class JournalValidator {
           && keys(projection.artifact, ["id", "hash"]) && digest(projection.artifact.id) && digest(projection.artifact.hash)
           && keys(projection.coverage, ["version", "sources"]) && projection.coverage.version === 1
           && Array.isArray(projection.coverage.sources)
-          && projection.coverage.sources.every((s) => keys(s, ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"])
+          && projection.coverage.sources.every((s: any) => keys(s, ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"])
             && id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
-          && new Set(projection.coverage.sources.map((s) => s.journalId)).size === projection.coverage.sources.length
+          && new Set(projection.coverage.sources.map((s: any) => s.journalId)).size === projection.coverage.sources.length
           && this.projectionBinding === null);
       }
       requireValue(!turn && this.openTurns.size === 0
@@ -163,7 +182,7 @@ export class JournalValidator {
         if (p.status === "completed" && purpose === "execution") requireValue(turn.inputs.has(turn.start.payload.binding.reconciliation.initialInputId)
           && p.finalOperationId !== null && this.operations.get(p.finalOperationId).start.payload.type === "prompt"
           && this.operations.get(p.finalOperationId).end.payload.status === "completed");
-        if (purpose === "compaction") requireValue(turn.inputs.size === 0 && turn.operations.every((id) => this.operations.get(id).start.payload.type === "compaction"));
+        if (purpose === "compaction") requireValue(turn.inputs.size === 0 && turn.operations.every((id: string) => this.operations.get(id).start.payload.type === "compaction"));
       }
     } else {
       if (record.operationId !== undefined) requireValue(op && !op.end && op.turnId === record.turnId);
@@ -171,7 +190,7 @@ export class JournalValidator {
         requireValue(p.contextParentId === this.tip);
         if (record.kind === "message") {
           requireValue(object(p.message) && id(p.message.role) && object(p.provenance)
-            && id(p.provenance.provider) && id(p.provenance.api) && id(p.provenance.model)
+            && id(p.provenance!.provider) && id(p.provenance!.api) && id(p.provenance!.model)
             && object(p.input) && typeof p.input.complete === "boolean"
             && (p.input.id === null || id(p.input.id)));
           if (turn.start.payload.binding && p.input.id !== null) requireValue(p.input.complete && digest(p.input.requestDigest)
@@ -181,15 +200,15 @@ export class JournalValidator {
           // Every released/current-format writer records an exact checkpoint
           // envelope with positively validated ordered coverage.
           requireValue(object(p.compaction) && typeof p.compaction.summary === "string"
-            && ids(p.preservedMessageIds) && p.preservedMessageIds.every((i, index) => this.contextInfo.get(i)?.kind === "message"
+            && ids(p.preservedMessageIds) && p.preservedMessageIds.every((i: string, index: number) => this.contextInfo.get(i)?.kind === "message"
               && (index === 0 || this.contextInfo.get(p.preservedMessageIds[index - 1]).seq < this.contextInfo.get(i).seq))
             && Array.isArray(p.derivedMessages) && Number.isSafeInteger(p.coverageVersion) && p.coverageVersion > 0);
           const checkpoint = p.compaction.checkpoint;
           if (checkpoint?.inheritedCoverage !== undefined) {
             const inherited = checkpoint.inheritedCoverage;
             requireValue(inherited?.version === 1 && Array.isArray(inherited.sources)
-              && inherited.sources.every((s) => id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
-              && new Set(inherited.sources.map((s) => s.journalId)).size === inherited.sources.length);
+              && inherited.sources.every((s: any) => id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
+              && new Set(inherited.sources.map((s: any) => s.journalId)).size === inherited.sources.length);
           }
           requireValue(object(checkpoint) && checkpoint.version === 1
             && checkpoint.projectionVersion === 1 && checkpoint.summaryMessage?.role === "compactionSummary"
@@ -224,7 +243,7 @@ export class JournalValidator {
             : ["error", "cancelled", "skipped"].includes(p.outcome) ? (returned ? envelope.isError : message?.isError) === true : p.outcome === "unknown"));
       } else if (record.kind === "interruption") {
         requireValue(typeof p.cause === "string" && ids(p.operationIds)
-          && p.operationIds.every((i) => this.operations.get(i)?.turnId === record.turnId)
+          && p.operationIds.every((i: string) => this.operations.get(i)?.turnId === record.turnId)
           && (p.tipId === undefined || p.tipId === this.tip)
           && (p.calls === undefined || Array.isArray(p.calls) && p.calls.every((call) => {
             const known = this.calls.get(`${call.operationId}\0${call.callId}`);
@@ -265,7 +284,7 @@ export class JournalValidator {
     }
   }
   /** @param {import('./journal-types.js').JournalEntry} record */
-  apply(record) {
+  apply(record: JournalEntry) {
     this.validate(record);
     const p = record.payload;
     if (record.kind === "turn_start") {
@@ -298,7 +317,7 @@ export class JournalValidator {
       this.contextInfo.set(record.id, { kind: record.kind, seq: record.seq, parentId: p.contextParentId,
         operationId: record.operationId, role: message?.role, stopReason: message?.stopReason, inputId: p.input?.id,
         requestDigest: p.input?.requestDigest, placement: p.input?.placement, inputComplete: p.input?.complete, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
-        calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part) => part?.type === "toolCall").map((call) => [call.id, call.name])) });
+        calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part: any) => part?.type === "toolCall").map((call: any) => [call.id, call.name])) });
     }
     if (record.kind === "rewind") this.tip = p.tipId;
     const callKey = `${record.operationId ?? record.turnId}\0${p.callId}`;

@@ -6,7 +6,7 @@ import { buildContextEntries, sessionEntryToContextMessages } from "./context.js
 import { CompactionError, err, ok } from "./result.js";
 import { addUsage } from "./usage.js";
 import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, serializeConversation, } from "./utils.js";
-function safeJsonStringify(value) {
+function safeJsonStringify(value: any) {
     try {
         return JSON.stringify(value) ?? "undefined";
     }
@@ -14,7 +14,7 @@ function safeJsonStringify(value) {
         return "[unserializable]";
     }
 }
-function extractFileOperations(messages, entries, prevCompactionIndex) {
+function extractFileOperations(messages: any, entries: any, prevCompactionIndex: any) {
     const fileOps = createFileOps();
     if (prevCompactionIndex >= 0) {
         const prevCompaction = entries[prevCompactionIndex];
@@ -40,7 +40,7 @@ function extractFileOperations(messages, entries, prevCompactionIndex) {
     }
     return fileOps;
 }
-function getMessageFromEntry(entry) {
+function getMessageFromEntry(entry: any) {
     if (entry.type === "message") {
         return entry.message;
     }
@@ -52,13 +52,13 @@ function getMessageFromEntry(entry) {
     }
     return undefined;
 }
-function getMessageFromEntryForCompaction(entry) {
+function getMessageFromEntryForCompaction(entry: any) {
     if (entry.type === "compaction") {
         return undefined;
     }
     return getMessageFromEntry(entry);
 }
-function createSummaryRequestOptions(options, context) {
+function createSummaryRequestOptions(options: any, context: any) {
     return {
         ...options,
         signal: context.abortSignal,
@@ -67,17 +67,17 @@ function createSummaryRequestOptions(options, context) {
         sessionId: options.sessionId ?? uuidv7(),
     };
 }
-async function completeSimpleWithRetries(models, model, aiContext, options, retry, callbacks, context) {
+async function completeSimpleWithRetries(models: any, model: any, aiContext: any, options: any, retry: any, callbacks: any, context: any) {
     // Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
     const requestOptions = createSummaryRequestOptions(options, context);
     return retryAssistantCall(() => models.completeSimple(model, aiContext, requestOptions), retry, requestOptions.signal, callbacks);
 }
 
 /** Calculate total context tokens from provider usage. */
-export function calculateContextTokens(usage) {
+export function calculateContextTokens(usage: any) {
     return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
-function getAssistantUsage(msg) {
+function getAssistantUsage(msg: any) {
     if (msg.role === "assistant" && "usage" in msg) {
         const assistantMsg = msg;
         if (assistantMsg.stopReason !== "aborted" &&
@@ -90,7 +90,7 @@ function getAssistantUsage(msg) {
     return undefined;
 }
 /** Return usage from the last valid assistant message in session entries. */
-export function getLastAssistantUsage(entries) {
+export function getLastAssistantUsage(entries: any) {
     for (let i = entries.length - 1; i >= 0; i--) {
         const entry = entries[i];
         if (entry.type === "message") {
@@ -101,7 +101,7 @@ export function getLastAssistantUsage(entries) {
     }
     return undefined;
 }
-function getLastAssistantUsageInfo(messages) {
+function getLastAssistantUsageInfo(messages: any) {
     for (let i = messages.length - 1; i >= 0; i--) {
         const usage = getAssistantUsage(messages[i]);
         if (usage)
@@ -110,7 +110,8 @@ function getLastAssistantUsageInfo(messages) {
     return undefined;
 }
 /** Estimate context tokens for messages using provider usage when available. */
-export function estimateContextTokens(messages) {
+export function estimateContextTokens(messages: any): { tokens: any; usageTokens: any; trailingTokens: number; lastUsageIndex: number };
+export function estimateContextTokens(messages: any): { tokens: any; usageTokens: any; trailingTokens: number; lastUsageIndex: number | null } {
     const usageInfo = getLastAssistantUsageInfo(messages);
     if (!usageInfo) {
         let estimated = 0;
@@ -137,13 +138,13 @@ export function estimateContextTokens(messages) {
     };
 }
 /** Return whether context usage exceeds the configured compaction threshold. */
-export function shouldCompact(contextTokens, contextWindow, settings) {
+export function shouldCompact(contextTokens: any, contextWindow: any, settings: any) {
     if (!settings.enabled)
         return false;
     return contextTokens > contextWindow - settings.reserveTokens;
 }
 const ESTIMATED_IMAGE_CHARS = 4800;
-function estimateTextAndImageContentChars(content) {
+function estimateTextAndImageContentChars(content: any) {
     if (typeof content === "string") {
         return content.length;
     }
@@ -159,7 +160,7 @@ function estimateTextAndImageContentChars(content) {
     return chars;
 }
 /** Estimate token count for one message using a conservative character heuristic. */
-export function estimateTokens(message) {
+export function estimateTokens(message: any) {
     let chars = 0;
     switch (message.role) {
         case "user": {
@@ -198,7 +199,7 @@ export function estimateTokens(message) {
     }
     return 0;
 }
-function findValidCutPoints(entries, startIndex, endIndex) {
+function findValidCutPoints(entries: any, startIndex: any, endIndex: any) {
     const cutPoints = [];
     for (let i = startIndex; i < endIndex; i++) {
         const entry = entries[i];
@@ -230,7 +231,7 @@ function findValidCutPoints(entries, startIndex, endIndex) {
     return cutPoints;
 }
 /** Find the user-visible message that starts the turn containing an entry. */
-function findTurnStartIndex(entries, entryIndex, startIndex) {
+function findTurnStartIndex(entries: any, entryIndex: any, startIndex: any) {
     for (let i = entryIndex; i >= startIndex; i--) {
         const entry = entries[i];
         if (entry.type === "branch_summary") {
@@ -246,7 +247,7 @@ function findTurnStartIndex(entries, entryIndex, startIndex) {
     return -1;
 }
 /** Find the compaction cut point that keeps approximately the requested recent-token budget. */
-function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
+function findCutPoint(entries: any, startIndex: any, endIndex: any, keepRecentTokens: any) {
     const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
     if (cutPoints.length === 0) {
         return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
@@ -363,7 +364,7 @@ Use this EXACT format:
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
 /** Generate one summary through a caller-owned one-request boundary. */
-export async function generateSummaryWithRequest(currentMessages, options, request, context) {
+export async function generateSummaryWithRequest(currentMessages: any, options: any, request: any, context: any) {
     const { model, reserveTokens, customInstructions, previousSummary, thinkingLevel } = options;
     const maxTokens = Math.min(Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
     let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
@@ -399,7 +400,7 @@ export async function generateSummaryWithRequest(currentMessages, options, reque
 }
 /** Prepare session entries for compaction, or return undefined when compaction is not applicable. */
 /** @returns {{ok:boolean, value?:any, error?:any}} */
-export function prepareCompaction(pathEntries, settings, { nonRetainablePrefixLength = 0 } = {}) {
+export function prepareCompaction(pathEntries: any, settings: any, { nonRetainablePrefixLength = 0 }: { nonRetainablePrefixLength?: number } = {}): { ok: boolean; value?: any; error?: any; } {
     if (!Number.isSafeInteger(nonRetainablePrefixLength) || nonRetainablePrefixLength < 0
         || nonRetainablePrefixLength > pathEntries.length) return err(new CompactionError("invalid_cut", "Invalid non-retainable compaction prefix"));
     if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction" && nonRetainablePrefixLength === 0) {
@@ -417,7 +418,7 @@ export function prepareCompaction(pathEntries, settings, { nonRetainablePrefixLe
     if (prevCompactionIndex >= 0) {
         const prevCompaction = pathEntries[prevCompactionIndex];
         previousSummary = prevCompaction.summary;
-        const virtualRetainedEntries = prevCompaction.retainedTail.map((message, index) => ({
+        const virtualRetainedEntries = prevCompaction.retainedTail.map((message: any, index: number) => ({
             type: "message",
             id: `${prevCompaction.id}:retained:${index}`,
             parentId: index === 0 ? prevCompaction.id : `${prevCompaction.id}:retained:${index - 1}`,
@@ -490,11 +491,45 @@ Summarize the prefix to provide context for the retained suffix:
 Be concise. Focus on what's needed to understand the kept suffix.`;
 export { serializeConversation } from "./utils.js";
 /** Generate compaction summary data from prepared session history. */
-export function compact(preparation, models, model, customInstructions, thinkingLevel, retry, callbacks, context) {
-    return compactWithRequest(preparation, { model, customInstructions, thinkingLevel }, (aiContext, options, requestContext) => completeSimpleWithRetries(models, model, aiContext, options, retry, callbacks, requestContext), context);
+export function compact(preparation: any, models: any, model: any, customInstructions: any, thinkingLevel: any, retry: any, callbacks: any, context: any): Promise<{
+  ok: false;
+  error: CompactionError;
+  value?: never;
+} | {
+  ok: true;
+  value: {
+    summary: string;
+    tokensBefore: any;
+    usage: any;
+    retainedTail: any;
+    details: {
+      readFiles: any[];
+      modifiedFiles: any[];
+    };
+  };
+  error?: never;
+}> {
+    return compactWithRequest(preparation, { model, customInstructions, thinkingLevel }, (aiContext: any, options: any, requestContext: any) => completeSimpleWithRetries(models, model, aiContext, options, retry, callbacks, requestContext), context);
 }
 /** Generate compaction data through a caller-owned boundary for each provider request. */
-export async function compactWithRequest(preparation, options, request, context) {
+export async function compactWithRequest(preparation: any, options: any, request: any, context: any): Promise<{
+  ok: false;
+  error: CompactionError;
+  value?: never;
+} | {
+  ok: true;
+  value: {
+    summary: string;
+    tokensBefore: any;
+    usage: any;
+    retainedTail: any;
+    details: {
+      readFiles: any[];
+      modifiedFiles: any[];
+    };
+  };
+  error?: never;
+}> {
     const { model, customInstructions, thinkingLevel } = options;
     const { messagesToSummarize, turnPrefixMessages, retainedTail, isSplitTurn, tokensBefore, previousSummary, fileOps, settings, } = preparation;
     let summary;
@@ -528,7 +563,7 @@ export async function compactWithRequest(preparation, options, request, context)
     const details = { readFiles, modifiedFiles };
     return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details });
 }
-async function generateTurnPrefixSummary(messages, model, reserveTokens, thinkingLevel, request, context) {
+async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any) {
     const maxTokens = Math.min(Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
     const llmMessages = convertToLlm(messages);
     const conversationText = serializeConversation(llmMessages);

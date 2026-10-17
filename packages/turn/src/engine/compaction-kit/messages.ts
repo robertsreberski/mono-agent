@@ -11,7 +11,7 @@ const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this 
 <summary>
 `;
 const BRANCH_SUMMARY_SUFFIX = `</summary>`;
-function bashExecutionToText(msg) {
+function bashExecutionToText(msg: any) {
     let text = `Ran \`${msg.command}\`\n`;
     if (msg.output) {
         text += `\`\`\`\n${msg.output}\n\`\`\``;
@@ -30,7 +30,7 @@ function bashExecutionToText(msg) {
     }
     return text;
 }
-export function createBranchSummaryMessage(summary, fromId, timestamp) {
+export function createBranchSummaryMessage(summary: any, fromId: any, timestamp: any) {
     return {
         role: "branchSummary",
         summary,
@@ -38,7 +38,7 @@ export function createBranchSummaryMessage(summary, fromId, timestamp) {
         timestamp: typeof timestamp === "number" ? timestamp : new Date(timestamp).getTime(),
     };
 }
-export function createCompactionSummaryMessage(summary, tokensBefore, timestamp) {
+export function createCompactionSummaryMessage(summary: any, tokensBefore: any, timestamp: any) {
     return {
         role: "compactionSummary",
         summary,
@@ -47,9 +47,9 @@ export function createCompactionSummaryMessage(summary, tokensBefore, timestamp)
     };
 }
 
-export function convertToLlm(messages) {
+export function convertToLlm(messages: any) {
     return messages
-        .map((m) => {
+        .map((m: any) => {
         switch (m.role) {
             case "bashExecution":
                 if (m.excludeFromContext) {
@@ -91,5 +91,5 @@ export function convertToLlm(messages) {
                 return undefined;
         }
     })
-        .filter((m) => m !== undefined);
+        .filter((m: any) => m !== undefined);
 }

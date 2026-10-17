@@ -294,6 +294,7 @@ export function createRunDriver(store, options) {
       const index = reverseIndex < 0 ? -1 : normalized.messages.length - reverseIndex - 1;
       dispatchRequest = { systemPrompt: options.systemPrompt, tools: adaptRequestTools(tools, options.model.api).map(toToolDeclaration),
         messages: normalized.messages.filter((message, at) => at !== index && message.role !== "system"), currentInput };
+      /** @type {{status:string, reason?:any}} */
       const fit = checkHandoffDispatch(dispatchRequest, dispatchBudget);
       if (fit.status !== "ready") throw budgetFailure(fit.reason);
     }

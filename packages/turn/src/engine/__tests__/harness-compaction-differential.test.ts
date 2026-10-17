@@ -11,13 +11,13 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
   it("preserves summary input, retained tail, tokensBefore and billed usage", async () => {
     const prepared = prepareCompaction(baseline.pathEntries, baseline.settings);
     expect(prepared.ok).toBe(true);
-    const requests = [];
-    const models = { completeSimple: async (_model, context, options) => {
-      requests.push({ context: { ...context, messages: context.messages.map(({ timestamp, ...m }) => m) },
+    const requests: any[] = [];
+    const models = { completeSimple: async (_model: any, context: any, options: any) => {
+      requests.push({ context: { ...context, messages: context.messages.map(({ timestamp, ...m }: any) => m) },
         options: { maxTokens: options.maxTokens, cacheRetention: options.cacheRetention } });
-      return { ...baseline.pathEntries[1].message, content: [{ type: "text", text: "Fictional deterministic summary." }] };
+      return { ...baseline.pathEntries[1]!.message, content: [{ type: "text", text: "Fictional deterministic summary." }] };
     } };
-    const result = await compact(prepared.value, models,
+    const result = await compact(prepared.value!, models,
       { id: "fixture-model", provider: "faux", maxTokens: 4096, reasoning: false },
       "Keep queue details.", "off", undefined, undefined, ENGINE_CONTEXT);
     expect(requests).toEqual(baseline.requests);
@@ -36,19 +36,19 @@ it.each(["none", "read", "modified", "both"])("retains prior prose and one file-
     { type: "compaction", id: "checkpoint", seq: 1, summary: "Keep the fictional constraint." + fileOpsText, details: { readFiles, modifiedFiles }, retainedTail: [user], timestamp: 1 },
     { type: "message", id: "reply", message: reply },
   ], { keepRecentTokens: 100, reserveTokens: 4000 });
-  expect(prepared.value.isSplitTurn).toBe(true);
-  expect(prepared.value.messagesToSummarize).toEqual([]);
-  expect(prepared.value.turnPrefixMessages).toEqual([user]);
+  expect(prepared.value!.isSplitTurn).toBe(true);
+  expect(prepared.value!.messagesToSummarize).toEqual([]);
+  expect(prepared.value!.turnPrefixMessages).toEqual([user]);
   let requests = 0;
-  const result = await compactWithRequest(prepared.value,
+  const result = await compactWithRequest(prepared.value!,
     { model: { maxTokens: 4096, reasoning: false } }, async () => {
       requests++;
       return { stopReason: "stop", content: [{ type: "text", text: "Prefix summary" }], usage: {} };
     }, ENGINE_CONTEXT);
   expect(requests).toBe(1);
-  expect(result.value.summary).toContain("Keep the fictional constraint.");
-  expect(result.value.summary).toContain("Prefix summary");
-  expect(result.value.summary).not.toContain("No prior history.");
-  expect(result.value.summary).toBe("Keep the fictional constraint.\n\n---\n\n**Turn Context (split turn):**\n\nPrefix summary" + fileOpsText);
-  expect(result.value.details).toEqual({ readFiles, modifiedFiles });
+  expect(result.value!.summary).toContain("Keep the fictional constraint.");
+  expect(result.value!.summary).toContain("Prefix summary");
+  expect(result.value!.summary).not.toContain("No prior history.");
+  expect(result.value!.summary).toBe("Keep the fictional constraint.\n\n---\n\n**Turn Context (split turn):**\n\nPrefix summary" + fileOpsText);
+  expect(result.value!.details).toEqual({ readFiles, modifiedFiles });
 });

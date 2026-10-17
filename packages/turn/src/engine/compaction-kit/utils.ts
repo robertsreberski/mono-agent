@@ -10,7 +10,7 @@ export function createFileOps() {
     };
 }
 /** Add file operations from assistant tool calls to an accumulator. */
-export function extractFileOpsFromMessage(message, fileOps) {
+export function extractFileOpsFromMessage(message: any, fileOps: any) {
     if (message.role !== "assistant")
         return;
     if (!("content" in message) || !Array.isArray(message.content))
@@ -42,14 +42,14 @@ export function extractFileOpsFromMessage(message, fileOps) {
     }
 }
 /** Compute sorted read-only and modified file lists from accumulated operations. */
-export function computeFileLists(fileOps) {
+export function computeFileLists(fileOps: any) {
     const modified = new Set([...fileOps.edited, ...fileOps.written]);
     const readOnly = [...fileOps.read].filter((f) => !modified.has(f)).sort();
     const modifiedFiles = [...modified].sort();
     return { readFiles: readOnly, modifiedFiles };
 }
 /** Format file lists as summary metadata tags. */
-export function formatFileOperations(readFiles, modifiedFiles) {
+export function formatFileOperations(readFiles: any, modifiedFiles: any) {
     const sections = [];
     if (readFiles.length > 0) {
         sections.push(`<read-files>\n${readFiles.join("\n")}\n</read-files>`);
@@ -62,7 +62,7 @@ export function formatFileOperations(readFiles, modifiedFiles) {
     return `\n\n${sections.join("\n\n")}`;
 }
 const TOOL_RESULT_MAX_CHARS = 2000;
-function safeJsonStringify(value) {
+function safeJsonStringify(value: any) {
     try {
         return JSON.stringify(value) ?? "undefined";
     }
@@ -70,14 +70,14 @@ function safeJsonStringify(value) {
         return "[unserializable]";
     }
 }
-function truncateForSummary(text, maxChars) {
+function truncateForSummary(text: any, maxChars: any) {
     if (text.length <= maxChars)
         return text;
     const truncatedChars = text.length - maxChars;
     return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
 }
 /** Serialize LLM messages to plain text for summarization prompts. */
-export function serializeConversation(messages) {
+export function serializeConversation(messages: any) {
     const parts = [];
     for (const msg of messages) {
         if (msg.role === "user") {
@@ -103,7 +103,7 @@ export function serializeConversation(messages) {
             if (thinkingParts.length > 0) {
                 parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
             }
-            if (msg.content.some((block) => block.type === "text")) {
+            if (msg.content.some((block: any) => block.type === "text")) {
                 parts.push(`[Assistant]: ${contentText(msg.content)}`);
             }
             if (toolCalls.length > 0) {

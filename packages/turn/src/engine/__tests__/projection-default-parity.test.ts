@@ -24,7 +24,7 @@ it.each([3, 4])("matches frozen harness bytes for default context/checkpoints/v%
     expect(capture.runtime.midRun.requests).toHaveLength(2); // existing split-turn native compaction
     expect(capture.runtime.recovery.recovered).toBe(true);
     expect(Object.keys(capture)).toEqual(Object.keys(golden.capture));
-    for (const key of Object.keys(golden.capture)) expect(capture[key], key).toEqual(golden.capture[key]);
+    for (const key of Object.keys(golden.capture)) expect(capture[key]!, key).toEqual(golden.capture[key]!);
     expect(capture.bytes).not.toContain('"schemaVersion":3');
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }, 60000);

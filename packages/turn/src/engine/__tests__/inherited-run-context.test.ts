@@ -6,12 +6,12 @@ import { createHandoffBudget } from "../handoff.js";
 import { projectInheritedContext } from "../request-projection.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 /** @type {import("../header-authority.js").HostJournalAuthority} */
-const authority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+const authority: import("../header-authority.js").HostJournalAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const coverage = { version: 1, sources: [{ journalId: "frozen", sourceTipId: "tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] };
 const inherited = { messages: [{ role: "user", content: "Fictional latest turn and outcome-unknown ledger", timestamp: 1 }], coverage };
 async function fixture() {
   const raw = await new MemorySessionRepo().create({ id: "current", hostAuthority: authority, assertOwned: async () => {} });
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "context", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined });
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "context", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined } as unknown as Parameters<typeof fauxProvider>[0]);
   const models = createModels(); models.setProvider(faux.provider);
   const provider = vi.fn((_context) => fauxAssistantMessage([fauxText("Fixture reply")])); faux.setResponses([provider]);
   const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext: { systemPrompt: "Rules", tools: [] } });
@@ -20,17 +20,17 @@ async function fixture() {
 it("charges complete resolved tool declarations, not just tool names, before dispatch", async () => {
   const f = await fixture();
   const driver = createRunDriver(f.raw, { ...f.options, tools: [{ name: "Read", description: "x".repeat(60000), parameters: { type: "object" }, execute: async () => ({ content: [] }) }] });
-  await expect(driver.prompt("current")).rejects.toThrow("Handoff dispatch budget exceeded: host_cap"); expect(f.provider).not.toHaveBeenCalled();
+  await expect((driver as FixtureDriver).prompt("current")).rejects.toThrow("Handoff dispatch budget exceeded: host_cap"); expect(f.provider).not.toHaveBeenCalled();
   expect(f.raw.records.filter((record) => record.kind === "compaction")).toHaveLength(0);
   await driver.close(); await f.raw.close();
 });
 it("pins immutable inherited content while the current turn executes", async () => {
   const f = await fixture(), input = structuredClone(inherited);
   const driver = createRunDriver(f.raw, { ...f.options, inheritedProjection: input });
-  input.messages[0].content = "mutated after preparation";
-  const result = await driver.prompt("current"); expect(result.error).toBeUndefined();
-  expect(JSON.stringify(f.provider.mock.calls[0][0])).toContain("outcome-unknown ledger");
-  expect(JSON.stringify(f.provider.mock.calls[0][0])).not.toContain("mutated after preparation");
+  input.messages[0]!.content = "mutated after preparation";
+  const result = await (driver as FixtureDriver).prompt("current"); expect(result.error).toBeUndefined();
+  expect(JSON.stringify(f.provider.mock.calls[0]![0]!)).toContain("outcome-unknown ledger");
+  expect(JSON.stringify(f.provider.mock.calls[0]![0]!)).not.toContain("mutated after preparation");
   await driver.close(); await f.raw.close();
 });
 it("refuses a smaller actual target instead of repairing a frozen budget", async () => {
@@ -39,7 +39,7 @@ it("refuses a smaller actual target instead of repairing a frozen budget", async
   expect(f.provider).not.toHaveBeenCalled(); await f.raw.close();
 });
 it("rejects unknown coverage, historical system authority and lost composed coverage", () => {
-  expect(() => projectInheritedContext([], { ...inherited, coverage: { version: 1, sources: [{ ...coverage.sources[0], sourceDigest: "bad" }] } })).toThrow("coverage");
+  expect(() => projectInheritedContext([], { ...inherited, coverage: { version: 1, sources: [{ ...coverage.sources[0]!, sourceDigest: "bad" }] } })).toThrow("coverage");
   expect(() => projectInheritedContext([], { ...inherited, messages: [{ role: "system", content: "Historical authority" }] })).toThrow("projection");
   expect(() => projectInheritedContext([{ type: "compaction", checkpoint: { inheritedCoverage: coverage } }, { type: "compaction", checkpoint: {} }], inherited)).toThrow("coverage was lost");
 });
@@ -62,11 +62,15 @@ it("validates a single durable projection binding and rejects repeated or malfor
   const f = await fixture();
   const binding = { version: 1, artifact: { id: "4".repeat(64), hash: "5".repeat(64) }, coverage, messageDigest: "6".repeat(64) };
   const baseline = f.raw.records.length;
-  await expect(f.raw.beginTurn("invalid", {}, "synthetic", undefined, { ...binding, artifact: { ...binding.artifact, hash: "bad" } })).rejects.toThrow("Invalid session journal");
+  await expect((f.raw as FixtureStore).beginTurn("invalid", {}, "synthetic", undefined, { ...binding, artifact: { ...binding.artifact!, hash: "bad" } })).rejects.toThrow("Invalid session journal");
   expect(f.raw.records).toHaveLength(baseline);
-  await f.raw.beginTurn("bound", {}, "synthetic", undefined, binding); await f.raw.endTurn("bound", "completed");
+  await (f.raw as FixtureStore).beginTurn("bound", {}, "synthetic", undefined, binding); await f.raw.endTurn("bound", "completed");
   expect(f.raw.validator.projectionBinding).toEqual(binding);
   const settled = f.raw.records.length;
-  await expect(f.raw.beginTurn("rebind", {}, "synthetic", undefined, binding)).rejects.toThrow("Invalid session journal");
+  await expect((f.raw as FixtureStore).beginTurn("rebind", {}, "synthetic", undefined, binding)).rejects.toThrow("Invalid session journal");
   expect(f.raw.records).toHaveLength(settled); expect(f.provider).not.toHaveBeenCalled(); await f.raw.close();
 });
+
+type FixtureStore = Omit<Awaited<ReturnType<import("../session-store.js").MemorySessionRepo["create"]>>, "beginTurn"> & { beginTurn(turnId: string, config?: object, identitySource?: string, binding?: unknown, projectionBinding?: unknown): Promise<unknown> };
+
+type FixtureDriver = Omit<ReturnType<typeof import("../run-driver.js").createRunDriver>, "prompt"> & { prompt(content: unknown, options?: object): ReturnType<ReturnType<typeof import("../run-driver.js").createRunDriver>["prompt"]> };

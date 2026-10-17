@@ -5,9 +5,9 @@ const APIS = new Set(["openai-completions", "google-generative-ai", "google-vert
 const maps = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
 const lists = new Set(["anyOf", "oneOf", "allOf", "prefixItems"]);
 const singles = new Set(["items", "contains", "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "not", "if", "then", "else", "propertyNames", "additionalItems"]);
-const kind = (value) => value === null ? "null" : Array.isArray(value) ? "array"
+const kind = (value: unknown) => value === null ? "null" : Array.isArray(value) ? "array"
   : typeof value === "number" ? Number.isInteger(value) ? "integer" : "number" : typeof value;
-function infer(schema) {
+function infer(schema: any) {
   const values = Object.hasOwn(schema, "const") ? [schema.const] : schema.enum;
   if (Array.isArray(values) && values.length) {
     const types = new Set(values.map(kind));
@@ -20,7 +20,7 @@ function infer(schema) {
   if ((schema.properties || schema.required) && !schema.items && !schema.prefixItems) return "object";
   if ((schema.items || schema.prefixItems) && !schema.properties && !schema.required) return "array";
 }
-function adapt(schema) {
+function adapt(schema: any) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
   const copy = { ...schema };
   for (const [key, value] of Object.entries(schema)) {
@@ -37,19 +37,19 @@ function adapt(schema) {
 }
 
 /** Memoized provider-only declarations; never pass these to the agent loop validator. */
-export function adaptRequestTools(tools, api) {
+export function adaptRequestTools(tools: any, api: any) {
   if (!APIS.has(api)) return tools;
   let byApi = memo.get(tools);
   if (!byApi) { byApi = new Map(); memo.set(tools, byApi); }
-  if (!byApi.has(api)) byApi.set(api, tools.map((tool) => tool.parameters ? { ...tool, parameters: adapt(structuredClone(tool.parameters)) } : tool));
+  if (!byApi.has(api)) byApi.set(api, tools.map((tool: any) => tool.parameters ? { ...tool, parameters: adapt(structuredClone(tool.parameters)) } : tool));
   return byApi.get(api);
 }
 
 /** Swap only the provider-facing leading transcript declaration, after Pi has
  * retained the original executable tools for validation and execution. */
-export function adaptProviderContext(context, tools, api) {
+export function adaptProviderContext(context: any, tools: any, api: any) {
   const adapted = adaptRequestTools(tools, api);
   if (adapted === tools || tools.length === 0) return context;
-  return { ...context, messages: context.messages.map((message, index) => index === 0 && message.role === "system"
+  return { ...context, messages: context.messages.map((message: any, index: number) => index === 0 && message.role === "system"
     ? { ...message, toolsAdded: adapted.map(toToolDeclaration) } : message) };
 }

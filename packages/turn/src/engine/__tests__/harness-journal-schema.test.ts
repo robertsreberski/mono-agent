@@ -8,9 +8,9 @@ const header = { format: "mono-harness", version: 2, journalId: "journal-fiction
   id: "epoch-one", createdAt: 1, cwd: "/fictional" };
 function fixture() {
   const validator = new JournalValidator();
-  const records = [];
-  function append(kind, payload, operationId) {
-    const record = { schemaVersion: 2, id: `record-${records.length}`, parentId: validator.parentId,
+  const records: import("../journal-types.js").JournalEntry[] = [];
+  function append(kind: any, payload: any, operationId?: any) {
+    const record: import("../journal-types.js").JournalEntry = { schemaVersion: 2, id: `record-${records.length}`, parentId: validator.parentId,
       seq: validator.seq + 1, timestamp: 1, turnId: "turn-fictional", kind, payload,
       ...(operationId ? { operationId } : {}) };
     validator.apply(record); records.push(record); return record;
@@ -63,7 +63,7 @@ describe("mono-agent harness journal v2", () => {
     expect([...new Set(records.map((r) => r.kind))].sort()).toEqual([...JOURNAL_KINDS].sort());
     expect(message.payload.message).toEqual(native);
     expect(validator.tip).toBe(result.id);
-    expect(records.at(-1).parentId).not.toBe(result.id); // evidence order is not context ancestry
+    expect(records.at(-1)!.parentId).not.toBe(result.id); // evidence order is not context ancestry
   });
   it("rejects malformed envelopes and unsupported kinds without advancing state", () => {
     const { validator } = fixture();
@@ -71,14 +71,14 @@ describe("mono-agent harness journal v2", () => {
       timestamp: 1, turnId: "turn-fictional", kind: "owner_binding", payload: { kind: "unbound" } };
     for (const change of [{ schemaVersion: 1 }, { seq: 3 }, { parentId: null }, { id: "record-0" },
       { timestamp: -1 }, { kind: "unknown" }, { payload: null }, { turnId: "missing" }]) {
-      expect(() => validator.apply({ ...valid, ...change })).toThrow("Invalid");
+      expect(() => validator.apply({ ...valid, ...change } as unknown as import("../journal-types.js").JournalEntry)).toThrow("Invalid");
       expect(validator.seq).toBe(1);
     }
   });
   it("rejects foreign/missing references, duplicate operation/input identities and premature turn seals", () => {
     const { append } = fixture();
     append("operation_start", { type: "prompt", cause: "prompt", config: {}, baselineTipId: null }, "operation-one");
-    const invalid = [
+    const invalid: [any, any, any?][] = [
       ["operation_end", { status: "completed", tipId: null }, "missing"],
       ["operation_start", { type: "prompt", cause: "prompt", config: {}, baselineTipId: null }, "operation-one"],
       ["turn_end", { status: "completed", tipId: null, finalOperationId: "operation-one", consumedInputIds: [] }],
@@ -91,7 +91,7 @@ describe("mono-agent harness journal v2", () => {
   });
   it("keeps unique prompt/compaction/re-prompt operations within one logical turn", async () => {
     const repo = new MemorySessionRepo(); const store = await repo.create({ id: "fixture-handle" });
-    await store.beginTurn("host-run", {}, "host");
+    await (store as FixtureStore).beginTurn("host-run", {}, "host");
     await store.openOperation("overflow", {}, "prompt");
     const messageId = await store.appendMessage({ role: "user", content: "Fictional request." }, "user-envelope", { id: "logical-input", complete: true });
     await store.write("input_consumed", { inputId: "logical-input", messageId }, { operationId: "overflow" });
@@ -113,17 +113,17 @@ it("rejects malformed payloads for every declared kind", () => {
     const index = records.findIndex((record) => record.kind === kind);
     const validator = new JournalValidator();
     for (const record of records.slice(0, index)) validator.apply(record);
-    expect(() => validator.apply({ ...records[index], payload: {} }), kind).toThrow("Invalid");
+    expect(() => validator.apply({ ...records[index]!, payload: {} }), kind).toThrow("Invalid");
   }
 });
 
 it("does not accept a synthetic success over observed failed native tool evidence", () => {
   const { records } = allKindsFixture(); const validator = new JournalValidator();
   const changed = structuredClone(records);
-  changed.find((record) => record.kind === "message" && record.payload.message.role === "toolResult").payload.message.isError = true;
+  changed.find((record) => record.kind === "message" && record.payload.message.role === "toolResult")!.payload.message.isError = true;
   const result = changed.findIndex((record) => record.kind === "tool_result");
   for (const record of changed.slice(0, result)) validator.apply(record);
-  expect(() => validator.apply(changed[result])).toThrow("Invalid");
+  expect(() => validator.apply(changed[result]!)).toThrow("Invalid");
 });
 
 it("rejects concurrent nested compactions and closing their prompt before the child", () => {
@@ -138,7 +138,7 @@ it("rejects concurrent nested compactions and closing their prompt before the ch
 
 it("keeps call identities operation-scoped while rejecting duplicate results", async () => {
   const store = await new MemorySessionRepo().create();
-  await store.beginTurn("synthetic:scoped-calls");
+  await (store as FixtureStore).beginTurn("synthetic:scoped-calls");
   for (const operationId of ["one", "two"]) {
     await store.openOperation(operationId, {});
     const messageId = await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "same-provider-id", name: "Read", arguments: {} }] });
@@ -177,3 +177,5 @@ it("rejects current-format compactions without a checkpoint without advancing th
     contextParentId: null, preservedMessageIds: [], derivedMessages: [], coverageVersion: 1 })).toThrow("Invalid");
   expect(validator.seq).toBe(seq); expect(validator.tip).toBe(tip);
 });
+
+type FixtureStore = Omit<Awaited<ReturnType<import("../session-store.js").MemorySessionRepo["create"]>>, "beginTurn"> & { beginTurn(turnId: string, config?: object, identitySource?: string, binding?: unknown, projectionBinding?: unknown): Promise<unknown> };

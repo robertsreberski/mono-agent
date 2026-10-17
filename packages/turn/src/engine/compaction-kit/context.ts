@@ -1,7 +1,7 @@
 // Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
 // Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
-export function buildContextEntries(pathEntries) {
+export function buildContextEntries(pathEntries: any) {
     let compaction;
     let compactionIndex = -1;
     for (let index = pathEntries.length - 1; index >= 0; index--) {
@@ -14,11 +14,12 @@ export function buildContextEntries(pathEntries) {
     }
     return compaction === undefined ? [...pathEntries] : [compaction, ...pathEntries.slice(compactionIndex + 1)];
 }
-function isContextMessage(message) {
+function isContextMessage(message: any) {
     return (message.role !== "assistant" ||
         (message.stopReason !== "error" && message.stopReason !== "aborted" && message.stopReason !== "deferred"));
 }
-export function sessionEntryToContextMessages(entry) {
+export function sessionEntryToContextMessages(entry: any): any[];
+export function sessionEntryToContextMessages(entry: any): any[] | undefined {
     switch (entry.type) {
         case "message":
             return isContextMessage(entry.message) ? [entry.message] : [];

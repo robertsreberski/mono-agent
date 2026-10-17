@@ -1,7 +1,7 @@
 // Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
 // Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
 
-export function addUsage(left, right) {
+export function addUsage(left: any, right: any) {
     return {
         input: left.input + right.input,
         output: left.output + right.output,

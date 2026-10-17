@@ -1,3 +1,4 @@
+import { findContextBuilderBypasses } from "../../packages/turn/src/engine/__tests__/projection-source-check.js";
 import { retiredHostImports } from "../lib/retired-host-boundary.mjs";
 import { activeStaleReferenceLines, engineRuntimeImports } from "../lib/engine-boundary.mjs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -162,5 +163,59 @@ describe.each(["@mono-agent/agent-app","@mono-agent/agent-harness","@mono-agent/
   it("permits migration prose and negative package-resolution assertions", () => {
     expect(retiredHostImports("MIGRATION.md", `import { x } from "${old}"`)).toEqual([]);
     expect(retiredHostImports("fixture.ts", `// import x from "${old}"\nassertRemovedImport("${old}");`)).toEqual([]);
+  });
+});
+
+
+describe("staged projection source guard", () => {
+  async function sourceRoot(files) {
+    const root = await mkdtemp(join(tmpdir(), "mono-projection-source-"));
+    temporaryRoots.push(root);
+    for (const [path, text] of Object.entries(files)) {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await writeFile(join(root, path), text);
+    }
+    return root;
+  }
+  const bypass = 'import { buildHarnessSessionContext } from "@mono-agent/turn/engine";';
+
+  it("still catches forbidden projection references in authored TS, including engine siblings", async () => {
+    const paths = ["packages/turn/src/engine/session-context-extra.ts", "packages/other/src/request-projection.ts", "apps/chat/src/bypass.ts"];
+    const root = await sourceRoot(Object.fromEntries(paths.map((path) => [path, bypass])));
+    expect(await findContextBuilderBypasses(root)).toEqual(paths.sort());
+  });
+
+  it.each(["js", "ts"])("recognizes only the exact permitted owners authored as %s", async (extension) => {
+    const root = await sourceRoot({
+      [`packages/turn/src/engine/session-context.${extension}`]: "export function buildHarnessSessionContext() {}",
+      [`packages/turn/src/engine/request-projection.${extension}`]: bypass,
+      [`packages/turn/src/engine/index.${extension}`]: 'export { buildHarnessSessionContext } from "./session-context.js";',
+      [`packages/turn/src/execution/pi/driver-adapter.${extension}`]: 'export { buildHarnessSessionContext } from "../../engine/session-context.js";',
+    });
+    expect(await findContextBuilderBypasses(root)).toEqual([]);
+    await writeFile(join(root, `packages/turn/src/engine/index.${extension}`), 'export { buildHarnessSessionContext } from "./session-context.js";\n' + bypass);
+    expect(await findContextBuilderBypasses(root)).toEqual([`packages/turn/src/engine/index.${extension}`]);
+  });
+
+  it("skips only inventoried JS products with an authored TS twin, not orphan or unowned JS", async () => {
+    const root = await sourceRoot({
+      "packages/turn/.gitignore": "/src/engine/product.js\n/src/engine/orphan.js\n",
+      "packages/turn/src/engine/product.js": bypass,
+      "packages/turn/src/engine/product.ts": "export {};",
+      "packages/turn/src/engine/orphan.js": bypass,
+      "packages/turn/src/engine/unowned.js": bypass,
+      "packages/turn/src/engine/unowned.ts": "export {};",
+    });
+    expect(await findContextBuilderBypasses(root)).toEqual(["packages/turn/src/engine/orphan.js", "packages/turn/src/engine/unowned.js"]);
+  });
+
+  it("skips inventoried declaration overlays but scans unowned declarations and stray sources", async () => {
+    const root = await sourceRoot({
+      "packages/turn/.gitignore": "/src/engine/overlay.d.ts\n",
+      "packages/turn/src/engine/overlay.d.ts": "export declare function buildHarnessSessionContext(): void;",
+      "packages/turn/src/engine/unowned.d.ts": "export declare function buildHarnessSessionContext(): void;",
+      "packages/turn/src/engine/stray.ts": bypass,
+    });
+    expect(await findContextBuilderBypasses(root)).toEqual(["packages/turn/src/engine/stray.ts", "packages/turn/src/engine/unowned.d.ts"]);
   });
 });

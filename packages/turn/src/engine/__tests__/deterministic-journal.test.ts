@@ -8,10 +8,10 @@ import { managedJournalId } from "../managed-journal.js";
 import { JournalReader } from "../journal-reader.js";
 
 vi.mock("node:fs/promises", async (original) => {
-  const fs = /** @type {typeof import("node:fs/promises")} */ (await original());
+  const fs = /** @type {typeof import("node:fs/promises")} */ ((await original()) as typeof import("node:fs/promises"));
   return { ...fs, readdir: vi.fn(fs.readdir) };
 });
-const roots = [];
+const roots: string[] = [];
 afterEach(async () => { vi.clearAllMocks(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 it("creates and cold-opens an unguarded journal by deterministic id without native catalogue directory reads", async () => {
@@ -46,7 +46,7 @@ it("imports legacy sources without walking the native catalogue", async () => {
   const { sessions } = await listLegacySessions(root);
   expect(sessions).toHaveLength(1);
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
-  const imported = await repo.importLegacy(sessions[0]); await imported.close();
+  const imported = await repo.importLegacy(sessions[0]!); await imported.close();
   expect(vi.mocked(readdir).mock.calls.filter(([path]) => path === repo.directory)).toEqual([]);
 });
 
