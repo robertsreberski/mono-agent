@@ -1,0 +1,553 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`pins bounded export/import refusals on a stopped non-BuJo store (json=false) 1`] = `
+[
+  {
+    "code": 1,
+    "stderr": "✗ [export_requires_bujo] Memory export requires a configured built-in BuJo store with embeddings.
+",
+    "stdout": "",
+  },
+  {
+    "code": 1,
+    "stderr": "✗ [import_requires_bujo] Memory import requires a configured built-in BuJo store with embeddings.
+",
+    "stdout": "",
+  },
+  {
+    "code": 1,
+    "stderr": "✗ [import_requires_bujo] Memory import requires a configured built-in BuJo store with embeddings.
+",
+    "stdout": "",
+  },
+  {
+    "code": 1,
+    "stderr": "✗ [import_requires_bujo] Memory import requires a configured built-in BuJo store with embeddings.
+",
+    "stdout": "",
+  },
+]
+`;
+
+exports[`pins bounded export/import refusals on a stopped non-BuJo store (json=true) 1`] = `
+[
+  {
+    "code": 1,
+    "stderr": "",
+    "stdout": "{
+  "schemaVersion": 1,
+  "operation": "memory-export",
+  "status": "failed",
+  "code": "export_requires_bujo",
+  "message": "Memory export requires a configured built-in BuJo store with embeddings."
+}
+",
+  },
+  {
+    "code": 1,
+    "stderr": "",
+    "stdout": "{
+  "schemaVersion": 1,
+  "operation": "memory-import-prepare",
+  "status": "failed",
+  "code": "import_requires_bujo",
+  "message": "Memory import requires a configured built-in BuJo store with embeddings."
+}
+",
+  },
+  {
+    "code": 1,
+    "stderr": "",
+    "stdout": "{
+  "schemaVersion": 1,
+  "operation": "memory-import-apply",
+  "status": "failed",
+  "code": "import_requires_bujo",
+  "message": "Memory import requires a configured built-in BuJo store with embeddings."
+}
+",
+  },
+  {
+    "code": 1,
+    "stderr": "",
+    "stdout": "{
+  "schemaVersion": 1,
+  "operation": "memory-import-restore",
+  "status": "failed",
+  "code": "import_requires_bujo",
+  "message": "Memory import requires a configured built-in BuJo store with embeddings."
+}
+",
+  },
+]
+`;
+
+exports[`pins complete human/JSON read transcripts without initializing an empty stopped store 1`] = `
+[
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "stats",
+    ],
+    "stderr": "",
+    "stdout": "mono-agent memory — stats
+
+  backend             bujo
+  configured tier     bujo
+  effective tier      bujo
+  write mode          append-host-summary
+  recall tool         enabled
+  root                <root>/memory
+  database            missing
+  memories            0 total, 0 live
+  entities            0
+  size                0 B (0 files)
+  daily logs          0 B
+  database files      0 B
+  last capture        unknown
+  last access         unknown
+  last consolidation  unknown
+[WARN] No SQLite index found at <root>/memory/memory.db; search/top need an indexed store.
+",
+  },
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "show",
+      "2026-04-03",
+    ],
+    "stderr": "",
+    "stdout": "mono-agent memory — 2026-04-03
+
+No daily log found for 2026-04-03.
+",
+  },
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "search",
+      "fictional",
+      "query",
+    ],
+    "stderr": "",
+    "stdout": "mono-agent memory — search: fictional query
+
+[WARN] No SQLite index found at <root>/memory/memory.db; run mono-agent memory rebuild or wait for capture.
+No memories matched.
+",
+  },
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "top",
+    ],
+    "stderr": "",
+    "stdout": "mono-agent memory — top
+
+[WARN] No SQLite index found at <root>/memory/memory.db; run mono-agent memory rebuild or wait for capture.
+No memories indexed.
+",
+  },
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "profile",
+      "show",
+    ],
+    "stderr": "",
+    "stdout": "No active supported profile entries.
+",
+  },
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "labels",
+    ],
+    "stderr": "",
+    "stdout": "No indexed labels.
+",
+  },
+  {
+    "code": 0,
+    "duplicates": true,
+    "json": false,
+    "positionals": [
+      "entities",
+    ],
+    "stderr": "",
+    "stdout": "No entity name is shared by more than one id.
+",
+  },
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "lessons",
+    ],
+    "propose": true,
+    "stderr": "",
+    "stdout": "No indexed labels.
+",
+  },
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "audit",
+    ],
+    "stderr": "",
+    "stdout": "mono-agent memory — metadata audit
+
+  backend                bujo
+  memories               0 total, 0 live
+  bytes                  0 B
+  duplicate ratio        0.00%
+  vector coverage        100.00%
+  top 1% access share    0.00%
+  vector backlog         0
+  completed turn intake  not live/available
+  runtime telemetry      unavailable
+  metadata query         unknown
+  embedding calls        unknown
+  memory LLM calls       unknown
+  recorded cost          unknown
+[WARN] No SQLite index found at <root>/memory/memory.db.
+[WARN] Search latency and model cost require benchmark/run telemetry and are not inferred from memory content.
+[WARN] Runtime queue/call telemetry is not available until the configured store starts.
+",
+  },
+  {
+    "code": 1,
+    "json": false,
+    "positionals": [
+      "audit",
+    ],
+    "stderr": "",
+    "stdout": "mono-agent memory — strict health
+
+  schema           1
+  backend          bujo
+  mode             bujo
+  status           unhealthy
+  checked          2026-04-03T10:00:00.000Z
+  issues           manifest_missing, database_missing, runtime_missing
+  pending          0
+  due              0
+  dead             0
+  outbox           0
+  temporary        0
+  memories         0
+  vectors          0
+  missing vectors  0
+",
+    "strict": true,
+  },
+  {
+    "code": 0,
+    "json": false,
+    "positionals": [
+      "inspect",
+    ],
+    "stderr": "",
+    "stdout": "mono-agent memory — intake inspection
+
+  matched        0
+  pending        0
+  due            0
+  dead           0
+  resolved       0
+  transitioning  0
+  temporary      0
+",
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "stats",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "configured": true,
+  "backend": "bujo",
+  "mode": "bujo",
+  "effectiveTier": "bujo",
+  "writeMode": "append-host-summary",
+  "recallToolEnabled": true,
+  "root": "<root>/memory",
+  "counts": {
+    "total": 0,
+    "live": 0,
+    "byStatus": {},
+    "byType": {},
+    "entities": 0
+  },
+  "size": {
+    "rootBytes": 0,
+    "dailyBytes": 0,
+    "databaseBytes": 0,
+    "fileCount": 0
+  },
+  "topEntities": [],
+  "topMemories": [],
+  "notes": [
+    "No SQLite index found at <root>/memory/memory.db; search/top need an indexed store."
+  ]
+}
+",
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "show",
+      "2026-04-03",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "configured": true,
+  "backend": "bujo",
+  "date": "2026-04-03",
+  "found": false,
+  "checked": [
+    "<root>/memory/daily/2026-04-03.md",
+    "<root>/memory/2026-04-03.md"
+  ]
+}
+",
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "search",
+      "fictional",
+      "query",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "configured": true,
+  "backend": "bujo",
+  "query": "fictional query",
+  "hits": [],
+  "notes": [
+    "No SQLite index found at <root>/memory/memory.db; run mono-agent memory rebuild or wait for capture."
+  ]
+}
+",
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "top",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "configured": true,
+  "backend": "bujo",
+  "hits": [],
+  "notes": [
+    "No SQLite index found at <root>/memory/memory.db; run mono-agent memory rebuild or wait for capture."
+  ]
+}
+",
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "profile",
+      "show",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "content": "",
+  "sources": [],
+  "truncated": false
+}
+",
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "labels",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "labels": [],
+  "truncated": false
+}
+",
+  },
+  {
+    "code": 0,
+    "duplicates": true,
+    "json": true,
+    "positionals": [
+      "entities",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "operation": "entities",
+  "duplicates": [],
+  "summary": {
+    "names": 0,
+    "crossType": 0,
+    "ids": 0
+  },
+  "truncated": false
+}
+",
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "lessons",
+    ],
+    "propose": true,
+    "stderr": "",
+    "stdout": "{
+  "proposals": [],
+  "truncated": false
+}
+",
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "audit",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "configured": true,
+  "backend": "bujo",
+  "mode": "bujo",
+  "metadataOnly": true,
+  "counts": {
+    "total": 0,
+    "live": 0,
+    "entities": 0,
+    "entityRelations": 0
+  },
+  "bytes": {
+    "rootBytes": 0,
+    "dailyBytes": 0,
+    "databaseBytes": 0,
+    "fileCount": 0
+  },
+  "duplicates": {
+    "groups": 0,
+    "redundantRecords": 0,
+    "ratio": 0
+  },
+  "vectorCoverage": {
+    "indexed": 0,
+    "liveIndexed": 0,
+    "liveCoverage": 1
+  },
+  "accessConcentration": {
+    "totalCount": 0,
+    "accessedMemories": 0,
+    "topOnePercentShare": 0
+  },
+  "backlog": {
+    "known": true,
+    "completedTurnIntake": null,
+    "vectorIndex": 0
+  },
+  "runtime": {
+    "available": false,
+    "stale": true,
+    "reason": "missing"
+  },
+  "latency": {
+    "known": false,
+    "metadataQueryMs": null,
+    "searchP50Ms": null,
+    "searchP95Ms": null,
+    "indexingMs": null
+  },
+  "cost": {
+    "known": false,
+    "totalUsd": null,
+    "embeddingCalls": null,
+    "embeddingTexts": null,
+    "llmCalls": null,
+    "llmInputChars": null,
+    "tokens": null
+  },
+  "notes": [
+    "No SQLite index found at <root>/memory/memory.db.",
+    "Search latency and model cost require benchmark/run telemetry and are not inferred from memory content.",
+    "Runtime queue/call telemetry is not available until the configured store starts."
+  ]
+}
+",
+  },
+  {
+    "code": 1,
+    "json": true,
+    "positionals": [
+      "audit",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "schemaVersion": 1,
+  "backend": "bujo",
+  "mode": "bujo",
+  "status": "unhealthy",
+  "checkedAt": "2026-04-03T10:00:00.000Z",
+  "issues": [
+    "manifest_missing",
+    "database_missing",
+    "runtime_missing"
+  ],
+  "counts": {
+    "pending": 0,
+    "due": 0,
+    "dead": 0,
+    "outbox": 0,
+    "temporary": 0,
+    "memories": 0,
+    "vectors": 0,
+    "missingVectors": 0
+  }
+}
+",
+    "strict": true,
+  },
+  {
+    "code": 0,
+    "json": true,
+    "positionals": [
+      "inspect",
+    ],
+    "stderr": "",
+    "stdout": "{
+  "schemaVersion": 1,
+  "operation": "inspect",
+  "matched": 0,
+  "temporary": 0,
+  "snapshot": {
+    "pending": 0,
+    "dead": 0,
+    "resolved": 0,
+    "due": 0,
+    "transitioning": 0
+  },
+  "items": []
+}
+",
+  },
+]
+`;

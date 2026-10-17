@@ -50,12 +50,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 2;
     }
     if (argv[0] === "memory" && argv.includes("adopt-replay")) {
-      const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
+      const { writeReplayAdoptionCliFailure } = await import("./cli/commands/memory/replay-failure.js");
       writeReplayAdoptionCliFailure(argv.includes("--json"), "replay_adoption_usage");
       return 2;
     }
     if (argv[0] === "memory" && argv.includes("forget")) {
-      const { writeMemoryForgetFailure } = await import("./memory-command.js");
+      const { writeMemoryForgetFailure } = await import("./cli/commands/memory/forget-failure.js");
       const operationIndex = argv.indexOf("forget") + 1;
       writeMemoryForgetFailure(argv.includes("--json"), argv[operationIndex] ?? "unknown", "forget_usage");
       return 2;
@@ -138,14 +138,14 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   if (args.command === "memory"
     && args.positionals[0] === "adopt-replay"
     && hasUnsupportedReplayAdoptionFlag(argv)) {
-    const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
+    const { writeReplayAdoptionCliFailure } = await import("./cli/commands/memory/replay-failure.js");
     writeReplayAdoptionCliFailure(args.json === true, "replay_adoption_usage");
     return 2;
   }
   if (args.command === "memory"
     && args.positionals[0] === "forget"
     && hasUnsupportedMemoryForgetFlag(argv)) {
-    const { writeMemoryForgetFailure } = await import("./memory-command.js");
+    const { writeMemoryForgetFailure } = await import("./cli/commands/memory/forget-failure.js");
     writeMemoryForgetFailure(args.json === true, args.positionals[1] ?? "unknown", "forget_usage");
     return 2;
   }
