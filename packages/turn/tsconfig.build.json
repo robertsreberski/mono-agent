@@ -21,34 +21,34 @@
     "noEmitOnError": true,
     "paths": {
       "#turn/runtime/retry-defaults": [
-        "./src/runtime/retry-defaults.js"
+        "./src/runtime/retry-defaults.ts"
       ],
       "#turn/contracts/runtime": [
-        "./src/contracts/runtime.js"
+        "./src/contracts/runtime.ts"
       ],
       "#turn/telemetry/cost": [
-        "./src/telemetry/cost.js"
+        "./src/telemetry/cost.ts"
       ],
       "#turn/contracts/native-storage": [
-        "./src/contracts/native-storage.js"
+        "./src/contracts/native-storage.ts"
       ],
       "#turn/contracts/events": [
-        "./src/contracts/events.js"
+        "./src/contracts/events.ts"
       ],
       "#turn/contracts/live-input": [
-        "./src/contracts/live-input.js"
+        "./src/contracts/live-input.ts"
       ],
       "#turn/contracts/mcp-apps": [
-        "./src/contracts/mcp-apps.js"
+        "./src/contracts/mcp-apps.ts"
       ],
       "#turn/contracts/session": [
-        "./src/contracts/session.js"
+        "./src/contracts/session.ts"
       ],
       "#turn/contracts/process": [
-        "./src/contracts/process.js"
+        "./src/contracts/process.ts"
       ],
       "#turn/contracts/policy": [
-        "./src/contracts/policy.js"
+        "./src/contracts/policy.ts"
       ],
       "#turn/runtime/create-runtime": [
         "./src/runtime/create-runtime.js"
@@ -57,10 +57,10 @@
         "./src/runtime/router.js"
       ],
       "#turn/runtime/model-reference": [
-        "./src/runtime/model-reference.js"
+        "./src/runtime/model-reference.ts"
       ],
       "#turn/runtime/bridges": [
-        "./src/runtime/bridges.js"
+        "./src/runtime/bridges.ts"
       ],
       "#turn/providers/pi/catalog": [
         "./src/providers/pi/catalog.js"

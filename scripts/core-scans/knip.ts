@@ -1,7 +1,7 @@
 // Scan source declarations after `pnpm run build`: cross-package consumers resolve
 // through built manifest entry points. No temporary package tsconfigs required.
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -37,7 +37,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/telemetry/cost.js",
+    "file": "packages/turn/src/telemetry/cost.ts",
     "names": [
       "normalizePricing",
       "zeroPricing",
@@ -47,7 +47,7 @@ export const retainedExports = [
       "parseReference"
     ],
     "reason": "documented extension: custom host pricing resolvers",
-    "citation": "packages/turn/src/telemetry/cost.js:178-183",
+    "citation": "packages/turn/src/telemetry/cost.ts:189-192",
     "taggedNames": [
       "zeroPricing",
       "pricingHasRates",
@@ -55,7 +55,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/telemetry/observer.js",
+    "file": "packages/turn/src/telemetry/observer.ts",
     "names": [
       "createMetricsObserver"
     ],
@@ -83,7 +83,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/runtime/bridges.js",
+    "file": "packages/turn/src/runtime/bridges.ts",
     "names": [
       "resolveEngineTurnAdapter",
       "listRuntimeBridges"
@@ -93,7 +93,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/runtime/model-reference.js",
+    "file": "packages/turn/src/runtime/model-reference.ts",
     "names": [
       "parseRuntimeModelReference"
     ],
@@ -102,7 +102,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/telemetry/failure.js",
+    "file": "packages/turn/src/telemetry/failure.ts",
     "names": [
       "classifyFailure",
       "FAILURE_KINDS"
@@ -112,7 +112,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/telemetry/cost.js",
+    "file": "packages/turn/src/telemetry/cost.ts",
     "names": [
       "resolvePricing",
       "estimateCost"
@@ -122,7 +122,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/agent/compaction.js",
+    "file": "packages/turn/src/agent/compaction.ts",
     "names": [
       "resolveAgentCompactionPolicy",
       "isLikelyContextTermination"
@@ -271,12 +271,12 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/runtime/session-fanout.js",
+    "file": "packages/turn/src/runtime/session-fanout.ts",
     "names": [
       "createSessionRegistry"
     ],
     "reason": "test isolation control for process-global runtime registry fan-out",
-    "citation": "packages/turn/src/runtime/session-fanout.js",
+    "citation": "packages/turn/src/runtime/session-fanout.ts",
     "taggedNames": [
       "createSessionRegistry"
     ]
@@ -332,9 +332,8 @@ export default {
     "packages/turn": {
       paths,
       entry: [
-        "src/index.js!",
-        "src/host/{index,config,types}.ts!",
-        "src/host/sandbox/index.ts!",
+        ...Object.values(turnManifest.exports).flatMap((target) => sourceTarget(target.default))
+          .map((path) => `${relative(resolve(root, "packages/turn"), path)}!`),
         "src/host/sandbox/srt-embed-runner.mjs!",
         "src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs",
       ],

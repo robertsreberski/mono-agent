@@ -42,6 +42,24 @@ describe("core scan policy", () => {
     expect(() => scanArguments("unknown")).toThrow(/Usage/);
   });
 
+  test("registers all retained turn entries at their single authored source owner", () => {
+    const directory = resolve(root, "packages/turn");
+    const manifest = JSON.parse(readFileSync(resolve(directory, "package.json"), "utf8"));
+    expect(Object.keys(manifest.exports)).toHaveLength(11);
+    const entries = config.workspaces["packages/turn"].entry;
+    const products = new Set(ownedPaths().map((path) => `${path}!`));
+    const expected = [
+      "src/index.ts!", "src/ai/index.ts!", "src/agent/index.ts!",
+      "src/host/index.ts!", "src/host/config.ts!", "src/host/types.ts!", "src/host/sandbox/index.ts!",
+      "src/engine/index.js!", "src/engine/sessions.js!", "src/engine/owned-fs.js!", "src/tools/index.js!",
+    ];
+    expect(expected).toHaveLength(11);
+    for (const entry of expected) {
+      expect(entries).toContain(entry);
+      expect(products.has(entry)).toBe(false);
+    }
+  });
+
   test("limits exceptions to exact fixture paths and the string-loaded dependency", () => {
     expect(Object.keys(config.ignoreIssues)).toEqual([
       "packages/conversation/src/__tests__/fixtures/canonical-v5-fixture.d.mts",
