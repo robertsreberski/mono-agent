@@ -1,6 +1,6 @@
 import type { HistoryMessage } from "../../context/index.js";
 import type { NativeTurnHistory } from "../model-switch/contract.js";
-import type { DurableTurnReceipt,PendingTurnPointer } from "../pending-turn/contract.js";
+import type { DurableTurnReceipt, PendingTurnPointer } from "../pending-turn/contract.js";
 import type { TurnHistoryV3 } from "../pending-turn/canonical-record.js";
 
 export const LEGACY_STORE_VERSION = 1;
