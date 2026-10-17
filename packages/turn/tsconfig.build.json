@@ -1,0 +1,81 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022"
+    ],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": true,
+    "declaration": true,
+    "emitDeclarationOnly": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "noEmitOnError": true,
+    "paths": {
+      "#turn/runtime/retry-defaults": [
+        "./src/runtime/retry-defaults.js"
+      ],
+      "#turn/contracts/runtime": [
+        "./src/contracts/runtime.js"
+      ],
+      "#turn/telemetry/cost": [
+        "./src/telemetry/cost.js"
+      ],
+      "#turn/contracts/native-storage": [
+        "./src/contracts/native-storage.js"
+      ],
+      "#turn/contracts/events": [
+        "./src/contracts/events.js"
+      ],
+      "#turn/contracts/live-input": [
+        "./src/contracts/live-input.js"
+      ],
+      "#turn/contracts/mcp-apps": [
+        "./src/contracts/mcp-apps.js"
+      ],
+      "#turn/contracts/session": [
+        "./src/contracts/session.js"
+      ],
+      "#turn/contracts/process": [
+        "./src/contracts/process.js"
+      ],
+      "#turn/contracts/policy": [
+        "./src/contracts/policy.js"
+      ],
+      "#turn/runtime/create-runtime": [
+        "./src/runtime/create-runtime.js"
+      ],
+      "#turn/runtime/router": [
+        "./src/runtime/router.js"
+      ],
+      "#turn/runtime/model-reference": [
+        "./src/runtime/model-reference.js"
+      ],
+      "#turn/runtime/bridges": [
+        "./src/runtime/bridges.js"
+      ],
+      "#turn/providers/pi/catalog": [
+        "./src/providers/pi/catalog.js"
+      ],
+      "#turn/providers/pi/context-1m": [
+        "./src/providers/pi/context-1m.js"
+      ]
+    },
+    "verbatimModuleSyntax": true
+  },
+  "include": [
+    "src/**/*.js",
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/__tests__/**"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "noEmitOnError": true,
+    "rootDir": "src",
+    "outDir": "../../.worklab-tmp/turn-test-fixtures"
+  },
+  "include": [
+    "src/**/__tests__/fixtures/**/*.mjs"
+  ]
+}

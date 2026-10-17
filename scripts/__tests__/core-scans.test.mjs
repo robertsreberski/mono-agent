@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import config, { retainedEntries, retainedExports } from "../core-scans/knip.ts";
 import ts from "typescript";
+import { ownedPaths } from "../../packages/turn/scripts/staged-build.mjs";
 import { missingPackageEntryPoints, packages, root, run, scanArguments, summarize } from "../core-scans/run.mjs";
 
 const directories = [];
@@ -17,7 +18,7 @@ function runWith(kind, result, overrides = {}) {
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   const execute = vi.fn(() => ({ status: 0, stdout: "[]", stderr: "", ...result }));
-  return { code: run(kind, { execute, directory, checkBuild: () => [], ...overrides }), execute, directory };
+  return { code: run(kind, { execute, directory, checkBuild: () => [], sourceView: (action) => action(), ...overrides }), execute, directory };
 }
 
 describe("core scan policy", () => {
@@ -62,8 +63,9 @@ describe("core scan policy", () => {
     expect(config.tags).toEqual(["-coreScanRetained"]);
     const expected = new Set(retainedExports.flatMap((entry) => entry.taggedNames.map((name) => `${entry.file}:${name}`)));
     const actual = new Set();
+    const generated = new Set(ownedPaths().map((path) => `packages/turn/${path}`));
     for (const file of globSync("packages/{contracts,config,turn,conversation,app}/src/**/*.{js,ts}", { cwd: root })) {
-      if (file.includes("/__tests__/")) continue;
+      if (file.includes("/__tests__/") || generated.has(file)) continue;
       const source = readFileSync(resolve(root, file), "utf8");
       if (!source.includes("@coreScanRetained")) continue;
       const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -85,6 +87,27 @@ describe("core scan policy", () => {
     }
     expect(retainedEntries).toEqual([]);
     expect(retainedExports.filter((entry) => entry.reason.startsWith("deferred: turn"))).toEqual([]);
+  });
+
+  test("checks built entries before entering the authored-only source view", () => {
+    const events = [];
+    const { code } = runWith("dead-code", { stdout: '{"files":[],"issues":[]}' }, {
+      checkBuild: () => { events.push("preflight"); return []; },
+      sourceView: (action) => { events.push("hide"); try { return action(); } finally { events.push("restore"); } },
+    });
+    expect(code).toBe(0);
+    expect(events).toEqual(["preflight", "hide", "restore", "hide", "restore", "hide", "restore"]);
+  });
+
+  test("reports source-view failures without keeping stale scan successes", () => {
+    const { code, execute, directory } = runWith("dead-code", {}, {
+      sourceView: () => { throw new Error("stale staged output"); },
+    });
+    expect(code).toBe(2);
+    expect(execute).not.toHaveBeenCalled();
+    for (const { name } of scanArguments("dead-code")) {
+      expect(JSON.parse(readFileSync(resolve(directory, `${name}.json`), "utf8"))).toEqual({ error: "stale staged output" });
+    }
   });
 
   test("summarizes findings without counting consumers", () => {

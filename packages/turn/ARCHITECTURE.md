@@ -19,8 +19,16 @@ agent turn:
 Typed hosts use `@mono-agent/turn/host`; low-level consumers can still
 inject their own sandbox through `createRuntime()` / `createRouterRuntime()`.
 The package depends on contracts for host contracts/errors and owns its isolated
-`src/engine` for native execution/storage. `src/host/` compiles from TypeScript to `dist/host`,
-while existing JavaScript ships from `src` with generated declarations in `types`.
+`src/engine` for native execution/storage. One staged production compiler graph
+emits JavaScript and declarations into `dist`. Host runtime entries remain under
+`dist/host`; the other runtime entries still ship from `src` with declarations in
+`types` until the final artifact transition. Converted implementations and their
+declarations at those legacy paths are copies of that same compiler output,
+never authored forwarding modules. Strict source/test checks emit nothing; a
+separate check-only strict declaration emit must match every authored TS
+declaration in the production output. Its quarantined output is never shipped.
+Private source declaration overlays are owned, temporary inputs to those checks
+and are removed in `finally`, including recovery after interrupted runs.
 The host entrypoints split construction, config validation, contracts and sandbox
 support without adding a forwarding package. Config remains a separate package.
 
@@ -347,3 +355,46 @@ run, how state changes, and how results are persisted. The runtime decides how
 to talk to models through Pi provider dependencies; how tools are
 exposed; how provider failures are normalized; and how enough telemetry is
 returned for a host to make reliable orchestration decisions.
+
+## Staged conversion procedure
+
+For each remaining JS-to-TS conversion:
+
+1. Start from a completed build/typecheck (recover interrupted views before
+   changing inventory). Rename the authored implementation, retaining its `.js`
+   import specifiers.
+   Preserve exported type-alias versus interface spelling and explicit optional,
+   readonly, unknown and union contracts. Never add runtime initializers to make
+   a type check pass. `verbatimModuleSyntax` preserves import side effects.
+2. Inventory the exact generated legacy `src/<module>.js` and `.js.map` paths in
+   this package's `.gitignore`; do not ignore an entire source tree. Remove the
+   now-unused adjacent `.d.ts` overlay entry. Update any private `paths` target
+   in **both** `tsconfig.json` and `tsconfig.build.json` to the authored `.ts`
+   (a test forbids fallback to old types or generated JS).
+3. Annotate exported TS contracts when inference differs under strict mode.
+   The build compares a strict declaration-only check against the production
+   declarations, including host TS, and refuses to ship weaker inferred output.
+4. Retarget source-path consumers in the same conversion, preserving a single
+   module graph for factories, context state and registries. Do not import a
+   sibling package's TS through its `rootDir`; prefer public entries or an
+   emitted runtime URL with emitted declaration types.
+5. Build before dependent typechecks and parity. Production output is staged,
+   strict-checked and only then published. A journal rolls back an interrupted
+   publication; failed compilers preserve the last good dist/types/products.
+   Strict checks and frozen parity require a fresh source digest. Architecture
+   scans intentionally permit edited sources and inspect the authored view.
+6. Source-view journals hidden products before deletion and restores them even
+   after an interrupted process on the next entry. Signals unwind cleanup; lock
+   ownership includes process start time. A lost cache can adopt only listed,
+   git-untracked products whose bytes match retained compiler output. Modified
+   or unowned files are refused, never automatically removed.
+7. Stage named files while the generated products are hidden with `source-view`.
+   In particular, stage the old JS deletion, not the materialized compiler copy.
+   Run the declaration comparator and applicable source/packed identity tests.
+
+Test-only fixture output lives under root `.worklab-tmp/turn-test-fixtures`,
+not any installed-dependency or workspace-package tree. Those trees participate
+in runtime build attestation, including package-local caches. Fixture bare-import
+specifiers resolve with turn's ESM import conditions and become file URLs; no
+node_modules symlink is created. Emitting fixtures must leave the runtime
+dependency digest unchanged, so tests cannot poison the next root build.

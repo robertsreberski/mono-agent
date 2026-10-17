@@ -1,16 +1,26 @@
 // Scan source declarations after `pnpm run build`: cross-package consumers resolve
 // through built manifest entry points. No temporary package tsconfigs required.
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const turnHost = (file: string) => [resolve(root, `packages/turn/src/host/${file}.ts`)];
-const paths = {
-  "@mono-agent/turn/host": turnHost("index"),
-  "@mono-agent/turn/host/config": turnHost("config"),
-  "@mono-agent/turn/host/types": turnHost("types"),
-  "@mono-agent/turn/host/sandbox": turnHost("sandbox/index"),
+const turnManifest = JSON.parse(readFileSync(resolve(root, "packages/turn/package.json"), "utf8")) as {
+  name: string;
+  exports: Record<string, { default: string }>;
+  imports: Record<string, { default: string }>;
 };
+const sourceTarget = (target: string) => {
+  const source = resolve(root, "packages/turn", target.replace(/^\.\/dist\//u, "./src/"));
+  const typed = source.replace(/\.js$/u, ".ts");
+  return [existsSync(typed) ? typed : source];
+};
+const paths = Object.fromEntries([
+  ...Object.entries(turnManifest.exports).map(([key, target]) => [
+    key === "." ? turnManifest.name : `${turnManifest.name}/${key.slice(2)}`, sourceTarget(target.default),
+  ]),
+  ...Object.entries(turnManifest.imports).map(([key, target]) => [key, sourceTarget(target.default)]),
+]);
 
 // Exact names/citations for documented, indirect, fixture-control and deferred surfaces.
 // taggedNames is enforced by the focused policy test; no file-wide export ignores.
