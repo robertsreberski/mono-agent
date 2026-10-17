@@ -25,12 +25,12 @@ import type { ValidationReport } from "../doctor-types.js";
 import { effectiveFirstRunEnvironment, evaluateFirstRunConfigurationReadiness, evaluateFirstRunReadiness, hasSensitivePersistedEnvironmentValue, piAuthPathBackgroundConflict, resolveEffectivePiAuthPath, selectedSecretEnvironmentConflicts, selectedSecretValues, unexpectedPersistedMonoAgentOverrides, validateWizardPlanInStaging, withExactProcessEnvironment } from "../first-run-readiness.js";
 import { readCliConfigSnapshot, readCliDotenvSnapshot } from "../service/background/source-inputs.js";
 import type { CliConfigSnapshot, CliDotenvSnapshot, CliEnvironment } from "../service/background/source-inputs.js";
+import { initMonoAgentFolder } from "../init.js";
 import {
-  initMonoAgentFolder,
   secretEnvConcurrentModificationCause,
   verifySecretEnvPersistenceGuard,
-} from "../init.js";
-import type { InitMonoAgentFolderResult } from "../init.js";
+} from "./secret-env.js";
+import type { InitMonoAgentFolderResult } from "./scaffold-types.js";
 import {
   detectProviderCredentialStates,
   isProviderSetupPiApiKeyAction,
