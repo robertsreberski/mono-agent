@@ -172,3 +172,8 @@ export interface RecorderCompositionDeps {
   readonly observabilityContext?: ConfiguredConversationHarnessOptions["observabilityContext"];
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
 }
+
+type MemorySearchModule = typeof import("@mono-agent/memory/search");
+export type ConfiguredEmbeddingProvider = ReturnType<
+  MemorySearchModule["createCircuitBreakerEmbeddingProvider"]
+>;

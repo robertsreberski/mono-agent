@@ -18,9 +18,9 @@ import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import {
   createConfiguredAgentResponderForApp,
-  createConfiguredAgentRuntimeForApp,
   DEFAULT_HISTORY_MAX_MESSAGES,
 } from "./configured-agent.js";
+import { createConfiguredAgentRuntimeForApp } from "./composition/configured-runtime.js";
 import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent-options.js";
 import type { createConfiguredMemory } from "./composition/configured-memory.js";
 import {

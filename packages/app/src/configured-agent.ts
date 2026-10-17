@@ -24,18 +24,12 @@ import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, setToolActivityPathR
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import type { AgentResponder } from "@mono-agent/contracts";
 import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
-import type { MonoAgentConfig } from "@mono-agent/config";
-import { createMonoRuntime, monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
+import { monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
-import { createSrtSandboxEngine, mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
 import { modelReferenceKey, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/turn/host/config";
 import type {
-  MonoRuntimeFallbackChainEntry,
-  MonoRuntimeLike,
   RuntimeModelReference,
-  RuntimeRunOptions,
 } from "@mono-agent/turn/host/types";
-import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import { createToolOutputArtifactsRuntimeExtension } from "./tool-output-artifacts.js";
@@ -43,7 +37,6 @@ import {
   acquireAgentRootOwnership,
   assertAgentRootLeaseOutsideWorkspace,
   releaseAgentRootOwnershipWhenIdle,
-  type AgentRootOwnership,
 } from "./durable-state/agent-root-coordinator.js";
 import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import {
@@ -79,9 +72,6 @@ import {
   createProcessJobsRuntimeExtension,
   processJobsAvailableForRequest,
   backgroundSubagentsAvailableForRequest,
-  processJobsSandboxPolicy,
-  PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR,
-  PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR,
 } from "./process-jobs-runtime.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
@@ -90,345 +80,25 @@ import {
   registerProcessJobsRoot,
 } from "./process-jobs-root-registry.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
+
 import type {
   ConfiguredAgentInternalHooks,
   ConfiguredAgentResponderOptions,
-  ConfiguredAgentRuntimeOptions,
   ConfiguredConversationHarnessOptions,
   ConversationHarnessSessionOptionsWithEvents,
 } from "./composition/configured-agent-options.js";
 import { composeRunRecorder, recorderCompositionDeps } from "./composition/run-recording.js";
 import { lazyConfiguredToolHistory } from "./composition/configured-tool-history.js";
-import { configuredSandboxEngine, configRuntimeFlags, mergeStaticRuntimeOptions, runtimeHostOptionsForConfig } from "./composition/configured-runtime-options.js";
+import {
+  configuredSandboxEngine,
+  configRuntimeFlags,
+  mergeStaticRuntimeOptions,
+} from "./composition/configured-runtime-options.js";
 import { configuredMemoryForHarness, createConfiguredMemoryInternal } from "./composition/configured-memory.js";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension, createConfiguredSubagentRegistry, bindConfiguredManagedSubagents } from "./composition/configured-subagents.js";
-
-
-export function createConfiguredAgentRuntime(config: MonoAgentConfig): MonoRuntimeLike;
-export function createConfiguredAgentRuntime(options: ConfiguredAgentRuntimeOptions): MonoRuntimeLike;
-export function createConfiguredAgentRuntime(
-  input: MonoAgentConfig | ConfiguredAgentRuntimeOptions,
-): MonoRuntimeLike {
-  const config = isRuntimeOptions(input) ? input.config : input;
-  const options = isRuntimeOptions(input) ? input : undefined;
-  return wrapOwnedConfiguredRuntime(
-    createConfiguredAgentRuntimeBase(config, options),
-    config,
-    options?.cwd,
-    options?.sandboxEngine,
-  );
-}
-
-/** @internal App/harness seam; callers are already inside the shared root/request choke point. */
-export function createConfiguredAgentRuntimeForApp(
-  input: MonoAgentConfig | ConfiguredAgentRuntimeOptions,
-  internal: { readonly suppressSandboxEngine?: boolean } = {},
-): MonoRuntimeLike {
-  const config = isRuntimeOptions(input) ? input.config : input;
-  const options = isRuntimeOptions(input) ? input : undefined;
-  return createConfiguredAgentRuntimeBase(config, options, internal.suppressSandboxEngine === true);
-}
-
-function createConfiguredAgentRuntimeBase(
-  config: MonoAgentConfig,
-  options: ConfiguredAgentRuntimeOptions | undefined,
-  suppressSandboxEngine = false,
-): MonoRuntimeLike {
-  assertNoRetiredMonoAgentConfig(config);
-  const fallback = fallbackChainForConfig(config, options);
-  const sandboxEngine = suppressSandboxEngine || config.sandbox?.mode !== "native"
-    ? undefined
-    : configuredSandboxEngine(options?.sandboxEngine);
-  const runtimeOptions: Parameters<typeof createMonoRuntime>[0] = {
-    ...runtimeHostOptionsForConfig(config),
-    ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
-    ...fallback,
-    ...(fallback.fallbackChain === undefined
-      ? {}
-      : {
-          ...(config.runtime.retry === undefined
-            ? {}
-            : {
-                retry: {
-                  backoffMs: config.runtime.retry.backoffMs,
-                  maxBackoffMs: config.runtime.retry.maxBackoffMs,
-                },
-              }),
-          // Resolve custom/local Pi options from the ACTUAL route selected by
-          // the fallback router. Secrets stay inside this private return value
-          // and are never copied into route metadata or events.
-          // This resolver changes endpoint options only, never the native owner.
-          sessionTurnReconciliation: "v1",
-          resolveAttempt: ({ model }) => ({
-            options: runtimeOptionsForLocalProvider(model, config.providers?.local),
-          }),
-        }),
-  };
-  return createMonoRuntime(runtimeOptions);
-}
-
-
-// Explicit ownership boundary: new runtime/prepared methods require disposition.
-const ownedRuntimeKeys = {
-  run: true, prepareNativeDispatch: true,
-  configureTools: true, syncSession: true, sessionTurnReconciliation: true,
-  reconcileSessionTurn: true, recoverSession: true, refreshSession: true,
-  // Deliberately omitted: switch dispatch does not need default-path salvage.
-  salvageDurableSession: false, retireDurableSession: true, disposeSession: true,
-  invalidateSession: true, disposeAllSessions: true,
-} satisfies Record<keyof MonoRuntimeLike, boolean>;
-const ownedPreparedKeys = {
-  snapshot: true, assertReady: true, checkHandoffSummary: true,
-  produceHandoffSummary: true, run: true, close: true,
-} satisfies Record<keyof import("@mono-agent/turn/host/types").RuntimeNativePreparedDispatch, true>;
-void ownedRuntimeKeys; void ownedPreparedKeys;
-
-/** @internal Package-private ownership wrapper test seam; absent from root exports. */
-export function wrapOwnedConfiguredRuntime(
-  runtime: MonoRuntimeLike,
-  config: MonoAgentConfig,
-  agentRoot: string | undefined,
-  configuredSandboxEngine: SandboxEngine | undefined,
-): MonoRuntimeLike {
-  let security: Promise<{ readonly ownership: AgentRootOwnership }> | undefined;
-  let disposed = false;
-  const loadSecurity = async () => {
-    const ownership = await acquireAgentRootOwnership(agentRoot);
-    try {
-      assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
-      return { ownership };
-    } catch (error) {
-      await releaseAgentRootOwnershipWhenIdle(ownership).catch(() => undefined);
-      throw error;
-    }
-  };
-  const secured = () => (security ??= loadSecurity());
-  const releaseOwnership = async (): Promise<void> => {
-    const current = security;
-    security = undefined;
-    if (current === undefined) return;
-    const { ownership } = await current.catch(() => ({ ownership: undefined }));
-    if (ownership !== undefined) {
-      await releaseAgentRootOwnershipWhenIdle(ownership);
-    }
-  };
-  const withReconciliationLease = async <T>(action: () => Promise<T>): Promise<T> => {
-    if (disposed) throw new Error("Configured runtime has been disposed.");
-    const { ownership } = await secured();
-    const registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
-    ownership.coordinator.synchronizeGeneration(registry.generation);
-    const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
-    if (disposed) throw new Error("Configured runtime has been disposed.");
-    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
-    try { await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace); return await action(); }
-    finally { lease.releaseAfterSettlement(); }
-  };
-  // A prepared lease owns the same protection generation as ordinary run(),
-  // but its lifetime ends at dispatch/close, not when preparation returns.
-  const secureOptions = async (runOptions: RuntimeRunOptions) => {
-    if (disposed) throw new Error("Configured runtime has been disposed.");
-    const { ownership } = await secured();
-    const registry = await loadProcessJobsRootRegistryProtection(
-      ownership.agentRoot,
-      config.runtime.workspace,
-    );
-    ownership.coordinator.synchronizeGeneration(registry.generation);
-    const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
-    if (disposed) throw new Error("Configured runtime has been disposed.");
-    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
-    try {
-      const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-      const protectedRoots = processJobsProtectionPolicyRoots(attested);
-      let effectiveOptions = runOptions;
-      if (protectedRoots.length > 0) {
-        const verdict = configuredRoutesOnlyPiNative(config, runOptions.model);
-        if (!verdict.ok) {
-          throw new Error(
-            `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} Rejected the configured runtime chain: ${verdict.reason}.`,
-          );
-        }
-        const sandboxEngine = runOptions.sandboxEngine
-          ?? configuredSandboxEngine
-          ?? createSrtSandboxEngine();
-        if (!await sandboxEngine.isAvailable().catch(() => false)) {
-          throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-        }
-        const sandboxPolicy = mergeSandboxPolicies(
-          runOptions.sandboxPolicy,
-          processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
-        );
-        if (sandboxPolicy === undefined) {
-          throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-        }
-        effectiveOptions = {
-          ...runOptions,
-          sandboxPolicy,
-          sandboxEngine,
-        };
-      }
-      return { effectiveOptions, release: () => lease.releaseAfterSettlement() };
-    } catch (error) {
-      lease.releaseAfterSettlement();
-      throw error;
-    }
-  };
-  return {
-    async run(systemPrompt, runOptions) {
-      const secured = await secureOptions(runOptions);
-      try { return await runtime.run(systemPrompt, secured.effectiveOptions); }
-      finally { secured.release(); }
-    },
-    ...(runtime.prepareNativeDispatch === undefined ? {} : {
-      async prepareNativeDispatch(systemPrompt: string, runOptions: RuntimeRunOptions) {
-        const secured = await secureOptions(runOptions);
-        let nativeLease: import("@mono-agent/turn/host/types").RuntimeNativePreparedDispatch | undefined;
-        try {
-          const prepared = await runtime.prepareNativeDispatch!(systemPrompt, secured.effectiveOptions);
-          nativeLease = prepared;
-          let released = false, started = false, closed = false;
-          const release = () => { if (!released) { released = true; secured.release(); } };
-          return {
-            snapshot: prepared.snapshot,
-            ...(prepared.assertReady === undefined ? {} : { assertReady: prepared.assertReady.bind(prepared) }),
-            ...(prepared.checkHandoffSummary === undefined ? {} : { checkHandoffSummary: prepared.checkHandoffSummary.bind(prepared) }),
-            ...(prepared.produceHandoffSummary === undefined ? {} : { produceHandoffSummary: prepared.produceHandoffSummary.bind(prepared) }),
-            async run(binding) {
-              if (started || closed) throw new Error("Prepared dispatch has already been consumed.");
-              started = true;
-              try { return await prepared.run(binding); }
-              finally { release(); }
-            },
-            async close() {
-              closed = true;
-              try { await prepared.close(); }
-              finally { release(); }
-            },
-          } satisfies import("@mono-agent/turn/host/types").RuntimeNativePreparedDispatch;
-        } catch (error) {
-          try { await nativeLease?.close(); } catch { /* Preserve preparation failure. */ }
-          finally { secured.release(); }
-          throw error;
-        }
-      },
-    }),
-    ...(runtime.configureTools === undefined
-      ? {}
-      : { configureTools: runtime.configureTools.bind(runtime) }),
-    ...(runtime.sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation: runtime.sessionTurnReconciliation }),
-    ...(runtime.reconcileSessionTurn === undefined ? {} : { reconcileSessionTurn: (request) => withReconciliationLease(() => runtime.reconcileSessionTurn!(request)) }),
-    ...(runtime.recoverSession === undefined ? {} : { recoverSession: (receipt, context) => withReconciliationLease(() => runtime.recoverSession!(receipt, context)) }),
-    ...(runtime.syncSession === undefined ? {} : { syncSession: runtime.syncSession.bind(runtime) }),
-    ...(runtime.refreshSession === undefined ? {} : { refreshSession: runtime.refreshSession.bind(runtime) }),
-    ...(runtime.retireDurableSession === undefined
-      ? {}
-      : { retireDurableSession: runtime.retireDurableSession.bind(runtime) }),
-    ...(runtime.disposeSession === undefined ? {} : { disposeSession: runtime.disposeSession.bind(runtime) }),
-    ...(runtime.invalidateSession === undefined
-      ? {}
-      : { invalidateSession: runtime.invalidateSession.bind(runtime) }),
-    async disposeAllSessions(): Promise<void> {
-      if (disposed) return;
-      disposed = true;
-      try {
-        await runtime.disposeAllSessions?.();
-      } finally {
-        await releaseOwnership();
-      }
-    },
-  };
-}
-
-
-
-/**
- * When backup models are configured, runs go through the agent-runtime fallback
- * router with the effective primary model first.
- */
-function fallbackChainForConfig(
-  config: MonoAgentConfig,
-  options: ConfiguredAgentRuntimeOptions | undefined,
-): { fallbackChain?: readonly MonoRuntimeFallbackChainEntry[] } {
-  const canonicalFallbacks = config.runtime.fallbacks;
-  // The loader always materializes `retry`, but this package is published and
-  // `createConfiguredAgentRuntime` accepts a caller-built MonoAgentConfig — an
-  // older hand-built object must degrade to single-shot, not crash.
-  const primaryAttempts = config.runtime.retry?.primaryAttempts ?? 1;
-  if ((canonicalFallbacks?.length ?? 0) === 0) {
-    // Without a chain `createMonoRuntime` takes the plain `createRuntime` path
-    // and the router never runs — so same-model retries would silently do
-    // nothing for every agent with no configured backups. Build a retry-only
-    // single-entry chain instead whenever the primary asks for more than one
-    // attempt. Both retry-only and multi-entry chains keep sessions on the
-    // primary's first attempt; the router makes later attempts stateless.
-    if (primaryAttempts <= 1) {
-      return {};
-    }
-    return {
-      fallbackChain: [{
-        model: options?.model ?? config.runtime.model,
-        attempts: primaryAttempts,
-      }],
-    };
-  }
-  const primaryModel = options?.model ?? config.runtime.model;
-  // Drop any fallback equal to the primary so a per-trigger override that happens
-  // to match a configured backup is not retried against itself before advancing.
-  const primaryKey = modelReferenceKey(primaryModel);
-  const fallbackEntries: readonly MonoRuntimeFallbackChainEntry[] = (canonicalFallbacks ?? [])
-    .filter((entry) => modelReferenceKey(entry.model) !== primaryKey)
-    .map((entry) => ({
-      model: entry.model,
-      // Canonical omission means provider default.
-      effort: entry.effort ?? null,
-      // Omitted per-route attempts stay single-shot: only the primary
-      // retries unless a backup opts in explicitly.
-      ...(entry.attempts === undefined ? {} : { attempts: entry.attempts }),
-    }));
-  return {
-    fallbackChain: [
-      {
-        model: primaryModel,
-        ...(primaryAttempts > 1 ? { attempts: primaryAttempts } : {}),
-      },
-      ...fallbackEntries,
-    ],
-  };
-}
-
-/**
- * Whether every configured route reachable behind `primary` is Pi-native.
- *
- * Returns a VERDICT, not a bare boolean: this fails closed on an unresolvable
- * chain, and a caller that turns `false` into a thrown
- * PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR would otherwise emit the same opaque
- * sentence for "could not resolve" as for "genuinely non-Pi" — the ambiguity
- * that made mono-agent#664 undiagnosable from outside.
- */
-type ConfiguredRoutesPiNativeVerdict =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: string };
-
-function configuredRoutesOnlyPiNative(
-  config: MonoAgentConfig,
-  primary: RuntimeModelReference,
-): ConfiguredRoutesPiNativeVerdict {
-  let routes: readonly RuntimeModelReference[];
-  try {
-    const fallback = fallbackChainForConfig(config, { config, model: primary });
-    routes = fallback.fallbackChain?.map((entry) => entry.model) ?? [primary];
-  } catch (error) {
-    return {
-      ok: false,
-      reason: `the configured route chain could not be resolved (${
-        error instanceof Error ? error.message : String(error)})`,
-    };
-  }
-  if (routes.length === 0) {
-    return { ok: false, reason: "the configured route chain is empty" };
-  }
-  return { ok: true };
-}
-
+import { createConfiguredAgentRuntimeForApp } from "./composition/configured-runtime.js";
+import { configuredRoutesOnlyPiNative } from "./composition/configured-runtime-routes.js";
+import { harnessWithAgentRootOwnership } from "./composition/runtime-ownership.js";
 
 export async function createConfiguredConversationHarness(options: ConfiguredConversationHarnessOptions): Promise<ConversationHarness> {
   return await createConfiguredConversationHarnessInternal(options);
@@ -883,60 +553,6 @@ async function createConfiguredConversationHarnessInternal(
   }
 }
 
-// Deliberately inventory the explicit forwarding boundary. Adding even an
-// optional harness capability must force a review of this wrapper.
-const ownedHarnessKeys = {
-  compactConversation: true,
-  liveInputOwnership: true,
-  run: true,
-  offerLiveInput: true,
-  submit: true,
-  cancel: true,
-  resetConversation: true,
-  appendVerbatimTurn: true,
-  importContext: true,
-  dispose: true,
-} satisfies Record<keyof ConversationHarness, true>;
-void ownedHarnessKeys;
-
-function harnessWithAgentRootOwnership(
-  harness: ConversationHarness,
-  ownership: AgentRootOwnership,
-): ConversationHarness {
-  let disposePromise: Promise<void> | undefined;
-  return {
-    ...(harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: harness.liveInputOwnership }),
-    ...(harness.compactConversation === undefined
-      ? {}
-      : { compactConversation: harness.compactConversation.bind(harness) }),
-    run: harness.run.bind(harness),
-    ...(harness.submit === undefined ? {} : { submit: harness.submit.bind(harness) }),
-    ...(harness.offerLiveInput === undefined
-      ? {}
-      : { offerLiveInput: harness.offerLiveInput.bind(harness) }),
-    ...(harness.cancel === undefined ? {} : { cancel: harness.cancel.bind(harness) }),
-    ...(harness.resetConversation === undefined
-      ? {}
-      : { resetConversation: harness.resetConversation.bind(harness) }),
-    ...(harness.appendVerbatimTurn === undefined
-      ? {}
-      : { appendVerbatimTurn: harness.appendVerbatimTurn.bind(harness) }),
-    ...(harness.importContext === undefined
-      ? {}
-      : { importContext: harness.importContext.bind(harness) }),
-    dispose: () => {
-      disposePromise ??= Promise.resolve()
-        .then(async () => await harness.dispose?.())
-        .finally(async () => {
-          await releaseAgentRootOwnershipWhenIdle(ownership);
-        });
-      return disposePromise;
-    },
-  };
-}
-
-
-
 export async function createConfiguredAgentResponder(options: ConfiguredAgentResponderOptions): Promise<AgentResponder> {
   return await createConfiguredAgentResponderInternal(options);
 }
@@ -976,12 +592,4 @@ function supportsSessionResume(): boolean {
   } catch {
     return false;
   }
-}
-
-
-
-
-
-function isRuntimeOptions(value: MonoAgentConfig | ConfiguredAgentRuntimeOptions): value is ConfiguredAgentRuntimeOptions {
-  return "config" in value;
 }

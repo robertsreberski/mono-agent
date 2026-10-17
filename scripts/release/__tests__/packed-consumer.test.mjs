@@ -15,6 +15,7 @@ import {
   declaredInternalPackageClosure,
   declaredInternalPackageNames,
   parsePackedConsumerArgs,
+  verifyPackedHostTypes,
 } from "../verify-packed-consumer.mjs";
 import {
   parsePackedSmokeArgs,
@@ -43,6 +44,25 @@ describe("packed consumer verification", () => {
     expect(() => assertMinimumNodeRuntime("24.15.0")).not.toThrow();
     expect(() => assertMinimumNodeRuntime("24.14.0")).toThrow(/must run on Node\.js 24\.15\.0/u);
     expect(() => assertMinimumNodeRuntime("24.0.0")).toThrow(/current Node\.js is 24\.0\.0/u);
+  });
+
+  test.each([false, true])("checks app declarations only in an app-reachable installed consumer (app=%s)", (includeApp) => {
+    const consumerDir = fs.mkdtempSync(path.join(os.tmpdir(), "packed-app-declarations-"));
+    temporaryDirectories.push(consumerDir);
+    fs.mkdirSync(path.join(consumerDir, "host-type-output"));
+    fs.writeFileSync(path.join(consumerDir, "host-type-output/host-types-only.js"), "export {};\n");
+    if (includeApp) {
+      const installedApp = path.join(consumerDir, "node_modules/@mono-agent/app");
+      fs.mkdirSync(installedApp, { recursive: true });
+      fs.writeFileSync(path.join(installedApp, "package.json"), "{}\n");
+    }
+    let compilerArgs;
+    verifyPackedHostTypes(consumerDir, (_command, args) => {
+      compilerArgs = args;
+      return { status: 0 };
+    });
+    expect(compilerArgs).toEqual(expect.arrayContaining(["host-contract.ts", "host-types-only.ts", "engine-contract.ts"]));
+    expect(compilerArgs.includes("app-contract.ts")).toBe(includeApp);
   });
 
   test("builds a deterministic all-tarball consumer manifest", () => {

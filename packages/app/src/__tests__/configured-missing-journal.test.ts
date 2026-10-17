@@ -10,7 +10,8 @@ import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@ear
 import type { AgentRequestBase, AgentResponder } from "@mono-agent/contracts";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type MonoRuntimeLike } from "@mono-agent/turn/host/types";
-import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
+import { createConfiguredAgentResponderForApp } from "../configured-agent.js";
+import { wrapOwnedConfiguredRuntime } from "../composition/runtime-ownership.js";
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
 import { loadAppCoreConfig } from "../app-config.js";
 

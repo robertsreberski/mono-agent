@@ -6,19 +6,15 @@ import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
 import { isProviderAuthFailureText } from "@mono-agent/turn/ai";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { modelReferenceKey, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/turn/host/config";
-import { createSrtSandboxEngine, mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import { completionOnlyRuntime } from "../configured-runtime-capabilities.js";
-import { acquireAgentRootOwnership, assertAgentRootLeaseOutsideWorkspace, releaseAgentRootOwnershipWhenIdle, type AgentRootOwnership } from "../durable-state/agent-root-coordinator.js";
 import { textFromMemoryRuntimeResult } from "../memory-llm-result.js";
 import { isSharedRecallStore, MemoryRetrievalService } from "../memory-retrieval.js";
 import type { ProcessJobsProtectionPosture } from "../process-jobs-protection.js";
-import { loadProcessJobsRootRegistryProtection, attestProcessJobsRootRegistrySnapshot, processJobsProtectionPolicyRoots } from "../process-jobs-root-registry.js";
-import { processJobsSandboxPolicy, PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR } from "../process-jobs-runtime.js";
 import type { ConfiguredConversationHarnessOptions, RecorderCompositionDeps, StaticRuntimeOptions } from "./configured-agent-options.js";
 import { configRuntimeFlags, mergeStaticRuntimeOptions, runtimeHostOptionsForConfig } from "./configured-runtime-options.js";
 import { composeRunRecorder, recorderCompositionDeps } from "./run-recording.js";
+import { wrapPerRunOwnedConfiguredRuntime, wrapOwnedDirectMemoryLlm, wrapOwnedDirectEmbeddingProvider } from "./runtime-ownership.js";
 
 /**
  * The SQLite/BuJo stack (better-sqlite3, sqlite-vec) loads lazily only when
@@ -26,9 +22,6 @@ import { composeRunRecorder, recorderCompositionDeps } from "./run-recording.js"
  */
 type MemoryBujoModule = typeof import("@mono-agent/memory/bujo");
 type MemorySearchModule = typeof import("@mono-agent/memory/search");
-type ConfiguredEmbeddingProvider = ReturnType<
-  MemorySearchModule["createCircuitBreakerEmbeddingProvider"]
->;
 
 let memoryBujoModule: MemoryBujoModule | undefined;
 let memorySearchModule: MemorySearchModule | undefined;
@@ -338,151 +331,6 @@ function configuredMemoryLlm(
       ? { recording: { deps: recording, baseConversationId: MEMORY_CONVERSATION_ID } }
       : {}),
   });
-}
-
-/**
- * Memory completion is a model-running surface even when no channel harness is
- * present. Acquire the canonical-root owner and protection generation for the
- * exact duration of the provider call; release follows actual runtime
- * settlement, never its abort signal.
- */
-function wrapPerRunOwnedConfiguredRuntime(
-  runtime: MonoRuntimeLike,
-  config: MonoAgentConfig,
-  agentRoot: string | undefined,
-  protectionPosture: ProcessJobsProtectionPosture | undefined,
-): MonoRuntimeLike {
-  // Memory completion has no storage-settlement caller. Do not advertise
-  // inherited recovery methods that would bypass this per-run ownership lease.
-  const completionRuntime = completionOnlyRuntime(runtime);
-  return {
-    ...completionRuntime,
-    async run(systemPrompt, runOptions) {
-      const ownership = await acquireAgentRootOwnership(agentRoot);
-      let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;
-      try {
-        assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
-        const loaded = await loadProcessJobsRootRegistryProtection(
-          ownership.agentRoot,
-          config.runtime.workspace,
-        );
-        ownership.coordinator.synchronizeGeneration(loaded.generation);
-        const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
-        requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
-        const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        const protectedRoots = processJobsProtectionPolicyRoots(attested);
-        let effectiveOptions = runOptions;
-        if (protectedRoots.length > 0) {
-          if (protectionPosture?.suppressSyntheticSandbox !== true) {
-            const sandboxEngine = runOptions.sandboxEngine ?? createSrtSandboxEngine();
-            if (!await sandboxEngine.isAvailable().catch(() => false)) {
-              throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-            }
-            const sandboxPolicy = mergeSandboxPolicies(
-              runOptions.sandboxPolicy,
-              processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
-            );
-            if (sandboxPolicy === undefined) {
-              throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-            }
-            effectiveOptions = {
-              ...runOptions,
-              sandboxPolicy,
-              sandboxEngine,
-            };
-          }
-        }
-        return await runtime.run(systemPrompt, effectiveOptions);
-      } finally {
-        requestLease?.releaseAfterSettlement();
-        await releaseAgentRootOwnershipWhenIdle(ownership);
-      }
-    },
-  };
-}
-
-/**
- * The direct (non-agent-host) memory LLM executes outside the channel harness.
- * Hold the same canonical-root owner and generation lease through the true
- * complete() settlement so an out-of-harness provider call cannot outlive the
- * protection generation it started under.
- *
- * A retained process-job root does NOT reject this provider. SRT confines the
- * MODEL'S TOOL LOOP; the host process is already unconfined and already reads
- * the private state dir. `LlmComplete` is a single `complete(prompt) => string`
- * over HTTP with no tools and no filesystem access, so there is nothing here
- * for confinement to protect — while rejecting it made `processJobs.enabled`
- * mutually exclusive with the bujo/journal memory tiers (mono-agent#664). The
- * lease, not the sandbox, is this seam's control.
- */
-function wrapOwnedDirectMemoryLlm(
-  llm: LlmComplete,
-  config: MonoAgentConfig,
-  agentRoot: string | undefined,
-): LlmComplete {
-  return {
-    ...llm,
-    async complete(prompt, options) {
-      const ownership = await acquireAgentRootOwnership(agentRoot);
-      let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;
-      try {
-        assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
-        const loaded = await loadProcessJobsRootRegistryProtection(
-          ownership.agentRoot,
-          config.runtime.workspace,
-        );
-        ownership.coordinator.synchronizeGeneration(loaded.generation);
-        const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
-        requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
-        await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        return await llm.complete(prompt, options);
-      } finally {
-        requestLease?.releaseAfterSettlement();
-        await releaseAgentRootOwnershipWhenIdle(ownership);
-      }
-    },
-  };
-}
-
-/**
- * Configured embedding providers execute outside the channel harness. Hold the
- * same canonical-root owner and generation lease through the true embed()
- * settlement so an out-of-harness provider call cannot outlive the protection
- * generation it started under.
- *
- * A retained process-job root does NOT reject this provider — see the sibling
- * `wrapOwnedDirectMemoryLlm` doc for the reasoning. `embed(texts) =>
- * number[][]` is one method with no model-steerable surface, and the bujo and
- * journal tiers REQUIRE it, so rejecting it disabled memory outright under the
- * safe posture (mono-agent#664).
- */
-function wrapOwnedDirectEmbeddingProvider(
-  provider: ConfiguredEmbeddingProvider,
-  config: MonoAgentConfig,
-  agentRoot: string | undefined,
-): ConfiguredEmbeddingProvider {
-  return {
-    ...provider,
-    async embed(texts) {
-      const ownership = await acquireAgentRootOwnership(agentRoot);
-      let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;
-      try {
-        assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
-        const loaded = await loadProcessJobsRootRegistryProtection(
-          ownership.agentRoot,
-          config.runtime.workspace,
-        );
-        ownership.coordinator.synchronizeGeneration(loaded.generation);
-        const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
-        requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
-        await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        return await provider.embed(texts);
-      } finally {
-        requestLease?.releaseAfterSettlement();
-        await releaseAgentRootOwnershipWhenIdle(ownership);
-      }
-    },
-  };
 }
 
 const MEMORY_LLM_SYSTEM_PROMPT = [

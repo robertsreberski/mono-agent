@@ -3,8 +3,8 @@ export type { MonoAgentAppConfigInput } from "./app-config.js";
 export {
   createConfiguredConversationHarness,
   createConfiguredAgentResponder,
-  createConfiguredAgentRuntime,
 } from "./configured-agent.js";
+export { createConfiguredAgentRuntime } from "./composition/configured-runtime.js";
 export { createConfiguredMemory } from "./composition/configured-memory.js";
 export type { ConfiguredConversationHarnessOptions, ConfiguredAgentResponderOptions } from "./composition/configured-agent-options.js";
 export {
