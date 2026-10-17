@@ -10,7 +10,7 @@ import { validateMonoAgentFolder } from "./doctor.js";
 import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
 import { initializeFirstRunManagedMemory } from "./first-run-managed-memory.js";
 import type { SecretPersistenceOutcome } from "./setup/types.js";
-import { piAuthPathForSetup } from "./provider-setup.js";
+import { piAuthPathForSetup } from "./providers/oauth-command.js";
 import type { WizardPlan } from "./setup/wizard-types.js";
 
 let exactProcessEnvironmentTail: Promise<void> = Promise.resolve();

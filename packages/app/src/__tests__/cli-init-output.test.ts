@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { identityRoleDisplayLine, initChangeDisplayRows, secretChecklistDisplayRows } from "../cli-init-command.js";
+import { identityRoleDisplayLine, initChangeDisplayRows, secretChecklistDisplayRows } from "../setup/render.js";
 import { initMonoAgentFolder } from "../init.js";
 import { defaultAnswers } from "../wizard/answers.js";
 

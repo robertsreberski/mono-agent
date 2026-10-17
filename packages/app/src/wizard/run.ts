@@ -25,8 +25,8 @@ import {
   isProviderSetupPiApiKeyAction,
   planProviderSetup,
   providerSetupActionCommandLine,
-  type ProviderCredentialState,
-} from "../provider-setup.js";
+} from "../providers/setup-plan.js";
+import type { ProviderCredentialState } from "../providers/setup-types.js";
 import { alwaysOnTools, composeWizardPlan, defaultAnswers, effectiveFallbacks, humanizeAgentName, recommendedToolSelection, referencedSetupModelRefs } from "./answers.js";
 import { type WizardAnswers, type WizardPlan } from "../setup/wizard-types.js";
 import { findPreset, presetAnswers } from "./presets.js";

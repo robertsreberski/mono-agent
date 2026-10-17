@@ -2,6 +2,7 @@ import { access, chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -121,11 +122,18 @@ vi.mock("../provider-setup.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../provider-setup.js")>();
   return {
     ...actual,
+    executeProviderSetupPlan: mocks.executeProviderSetupPlan,
+  };
+});
+
+vi.mock("../providers/credential-state.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/credential-state.js")>();
+  return {
+    ...actual,
     detectProviderCredentialStates: (...args: unknown[]) =>
       mocks.detectProviderCredentialStatesOverride?.(...args) ?? actual.detectProviderCredentialStates(
         args[0] as Parameters<typeof actual.detectProviderCredentialStates>[0],
       ),
-    executeProviderSetupPlan: mocks.executeProviderSetupPlan,
   };
 });
 
@@ -156,7 +164,7 @@ vi.mock("../init.js", async (importOriginal) => {
 });
 
 import { runCli } from "../cli.js";
-import { BROWSER_CONSOLE_HOST, BROWSER_CONSOLE_PORT } from "../cli-init-command.js";
+import { BROWSER_CONSOLE_HOST, BROWSER_CONSOLE_PORT } from "../setup/render.js";
 import { DEFAULT_MODEL } from "../modules/index.js";
 import { DEFAULT_WEB_PORT } from "../web-command.js";
 import { defaultAnswers } from "../wizard/answers.js";
@@ -273,6 +281,55 @@ afterEach(async () => {
 });
 
 describe("guided init state transitions", () => {
+  it("validates staging before commit, then validates committed files before the root CLI handoff", async () => {
+    const events: string[] = [];
+    const configPath = join(process.cwd(), "mono-agent.config.json");
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+    mocks.validateMonoAgentFolder.mockImplementation(async (options) => {
+      if (options.cwd === process.cwd()) {
+        await expect(access(configPath)).resolves.toBeUndefined();
+        events.push("committed validation");
+      } else {
+        await expect(access(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+        events.push("staged validation");
+      }
+      return readyReport();
+    });
+    mocks.runAllRouteReadinessProbe.mockImplementation(async () => {
+      await expect(access(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+      events.push("route readiness");
+      return { ok: true };
+    });
+    mocks.beforeCommit = async () => {
+      await expect(access(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+      events.push("commit");
+    };
+    mocks.ensureBackgroundReady.mockImplementation(async () => {
+      events.push("background handoff");
+      return { ok: true, action: "started", source: { sourceId: "fixture-ready" } };
+    });
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(events).toEqual([
+      "staged validation",
+      "route readiness",
+      "staged validation",
+      "commit",
+      "committed validation",
+      "background handoff",
+    ]);
+    expect(mocks.resolveInstanceTarget).toHaveBeenCalledWith(expect.objectContaining({
+      cliPath: fileURLToPath(new URL("../cli.js", import.meta.url)),
+    }));
+  });
+
   it("keeps an absent default dotenv implicit and ends guided init with the browser handoff", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",

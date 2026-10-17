@@ -20,11 +20,11 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  initMonoAgentFolder,
   mergeSecretEnvFile,
   SecretEnvConcurrentModificationError,
   secretEnvConcurrentModificationCause,
-} from "../init.js";
+} from "../setup/secret-env.js";
+import { initMonoAgentFolder } from "../init.js";
 import { acquireOwnerPrivateLock } from "../durable-state/owner-private-lock.js";
 import {
   PROJECT_SKILL_MANIFEST_PATH,
