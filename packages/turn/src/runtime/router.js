@@ -1,4 +1,4 @@
-import { assertNoRetiredRunOptions } from "./retired-options.js";
+import { assertNoRetiredRunOptions, RetiredRunOptionError } from "./retired-options.js";
 import { DEFAULT_RUNTIME_RETRY_BACKOFF_MS, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS } from "./retry-defaults.js";
 import { isDispatchProgress } from "../execution/pi/dispatch-progress.js";
 import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../execution/pi/prepared-dispatch.js";
@@ -321,6 +321,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             }
           } catch (error) {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+            if (error instanceof RetiredRunOptionError) throw error;
             const failure = attemptResolutionFailureResult(error);
             lastResult = failure;
             if (i === 0 && retryIndex === 0) markPendingDetach(entry.model, i, retryIndex, failure);

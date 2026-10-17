@@ -2053,13 +2053,22 @@ it.each([undefined, null, "one-at-a-time", "all"])("rejects retired scheduling %
   expect(executeMock).not.toHaveBeenCalled();
 });
 
-it("refuses resolver-supplied retired scheduling and releases its resources", async () => {
+it("refuses resolver-supplied retired scheduling terminally and releases its resources", async () => {
   const run = vi.fn();
+  const backupRun = vi.fn();
   const cleanup = vi.fn();
-  const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7")],
-    resolveAttempt: () => ({ options: { piToolParallelismMode: "all" }, runtime: { run }, cleanup }) });
-  await router.run("sys", {});
+  const events = [];
+  const resolveAttempt = vi.fn(({ attemptIndex }) => attemptIndex === 0
+    ? { options: { piToolParallelismMode: "all" }, runtime: { run, configureTools() {} }, cleanup }
+    : { runtime: { run: backupRun, configureTools() {} } });
+  const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7"), modelRef("openai", "gpt-4o")], resolveAttempt });
+  await expect(router.run("sys", { onEvent: (event) => events.push(event) })).rejects.toMatchObject({
+    name: "RetiredRunOptionError", message: expect.stringContaining("piToolParallelismMode was renamed to piToolExecutionMode"),
+  });
+  expect(resolveAttempt).toHaveBeenCalledOnce();
   expect(run).not.toHaveBeenCalled();
+  expect(backupRun).not.toHaveBeenCalled();
   expect(executeMock).not.toHaveBeenCalled();
   expect(cleanup).toHaveBeenCalledOnce();
+  expect(events).not.toEqual(expect.arrayContaining([expect.objectContaining({ failureKind: "provider_unavailable" })]));
 });
