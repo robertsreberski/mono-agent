@@ -1,8 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_TREE_SHA256, managedSrtCacheRoot, managedSrtInstallRoot, type ManagedSrtMarker } from "@mono-agent/turn/host/sandbox";
 
+vi.mock("node:os", async (original) => {
+  const actual = await original<typeof import("node:os")>();
+  return { ...actual, homedir: vi.fn(() => { throw new Error("HOME unavailable"); }) };
+});
+
 describe("managed SRT identity", () => {
+  it("does not ask for a home directory when absolute XDG is available", () => {
+    vi.mocked(homedir).mockClear();
+    expect(managedSrtCacheRoot({ env: { XDG_CACHE_HOME: "/fictional/cache" } })).toBe("/fictional/cache");
+    expect(homedir).not.toHaveBeenCalled();
+  });
+
   it("keeps platform, explicit and absolute-XDG cache identities", () => {
     for (const platform of ["darwin", "linux"] as const) {
       const homeDir = "/fictional/home";

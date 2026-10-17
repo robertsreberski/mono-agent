@@ -1442,7 +1442,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export { MANAGED_SRT_PACKAGE, MANAGED_SRT_VERSION, MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_TREE_SHA256, MANAGED_SRT_MARKER, MANAGED_SRT_TREE_EXCLUSIONS, managedSrtCacheRoot, managedSrtInstallRoot } from "./managed-identity.js";
+export { MANAGED_SRT_PACKAGE, MANAGED_SRT_VERSION, MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_TREE_SHA256, MANAGED_SRT_MARKER, managedSrtCacheRoot, managedSrtInstallRoot } from "./managed-identity.js";
 export type { ManagedSrtMarker } from "./managed-identity.js";
 
 export { assertManagedSrtDirectory, assertManagedSrtRegularFile, hashManagedSrtFile, hashPrivateManagedSrtTree } from "./managed-verifier.js";

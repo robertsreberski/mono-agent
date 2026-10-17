@@ -34,15 +34,12 @@ export function managedSrtCacheRoot(input: {
 } = {}): string {
   const platform = input.platform ?? process.platform;
   const env = input.env ?? process.env;
-  const homeDir = input.homeDir ?? homedir();
   const xdg = env.XDG_CACHE_HOME?.trim();
   if (xdg !== undefined && xdg.length > 0 && isAbsolute(xdg)) {
     return resolve(xdg);
   }
+  const homeDir = input.homeDir ?? homedir();
   return platform === "darwin"
     ? resolve(homeDir, "Library", "Caches")
     : resolve(homeDir, ".cache");
 }
-
-/** Entries deliberately excluded from the pinned dependency-tree digest. */
-export const MANAGED_SRT_TREE_EXCLUSIONS: readonly string[] = [MANAGED_SRT_MARKER, "node_modules/.package-lock.json"];

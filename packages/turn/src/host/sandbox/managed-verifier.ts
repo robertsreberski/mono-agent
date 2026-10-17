@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, lstat, opendir, readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
-import { MANAGED_SRT_TREE_EXCLUSIONS } from "./managed-identity.js";
+import { MANAGED_SRT_MARKER } from "./managed-identity.js";
+
+const MANAGED_SRT_TREE_EXCLUSIONS: readonly string[] = Object.freeze([MANAGED_SRT_MARKER, "node_modules/.package-lock.json"]);
 
 // Read-only mechanics. Callers retain expected-digest policy and validation order.
 export class ManagedSrtCorruptError extends Error {
@@ -43,12 +45,15 @@ export async function assertManagedSrtDirectory(path: string, label: string, ins
 
 export async function assertManagedSrtRegularFile(
   path: string,
-  requirePrivate: boolean,
-  label: string,
-  installRoot = path,
-  requireExecutable = false,
-  policy: "runtime" | "installer" = "runtime",
+  options: {
+    readonly requirePrivate: boolean;
+    readonly label?: string;
+    readonly installRoot?: string;
+    readonly requireExecutable?: boolean;
+    readonly policy?: "runtime" | "installer";
+  },
 ): Promise<void> {
+  const { requirePrivate, label = path, installRoot = path, requireExecutable = false, policy = "runtime" } = options;
   let stat;
   try {
     stat = await lstat(path);
@@ -157,4 +162,3 @@ function corrupt(installRoot: string, reason: string): ManagedSrtCorruptError {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-

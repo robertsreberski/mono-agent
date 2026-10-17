@@ -733,7 +733,7 @@ async function verifyManagedInstall(installRoot: string, options: SandboxManager
     const cliPath = managedCliPath(installRoot);
     const packageJsonPath = managedPackageJsonPath(installRoot);
     for (const path of [markerPath, lockPath, cliPath, packageJsonPath]) {
-      await assertManagedSrtRegularFile(path, true, "", installRoot, false, "installer");
+      await assertManagedSrtRegularFile(path, { requirePrivate: true, policy: "installer" });
     }
     const marker = JSON.parse(await readFile(markerPath, "utf8")) as ManagedSrtMarker<string>;
     if (
@@ -1504,7 +1504,6 @@ function managedCliPath(installRoot: string): string {
 function managedPackageJsonPath(installRoot: string): string {
   return resolve(installRoot, "node_modules", "@anthropic-ai", "sandbox-runtime", "package.json");
 }
-
 
 function sha256(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");

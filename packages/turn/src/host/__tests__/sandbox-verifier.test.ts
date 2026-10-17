@@ -29,9 +29,9 @@ describe("managed SRT read-only profiles", () => {
   it("preserves the foreign-owner marker policy difference", async () => {
     stats.override = { uid: (process.getuid?.() ?? 0) + 10, mode: 0o600, nlink: 1,
       isSymbolicLink: () => false, isFile: () => true };
-    await expect(assertManagedSrtRegularFile("/fictional/marker", true, "managed marker", "/fictional/root", false, "installer")).resolves.toBeUndefined();
+    await expect(assertManagedSrtRegularFile("/fictional/marker", { requirePrivate: true, policy: "installer" })).resolves.toBeUndefined();
     if (process.getuid !== undefined) {
-      await expect(assertManagedSrtRegularFile("/fictional/marker", true, "managed marker", "/fictional/root"))
+      await expect(assertManagedSrtRegularFile("/fictional/marker", { requirePrivate: true, label: "managed marker", installRoot: "/fictional/root" }))
         .rejects.toMatchObject({ name: "ManagedSrtCorruptError", installRoot: "/fictional/root",
           message: "Managed SRT install at /fictional/root is unsafe or corrupt: managed marker has an unexpected owner" });
     }
@@ -64,7 +64,7 @@ describe("managed SRT read-only profiles", () => {
   it("accepts a root-owned managed file for a non-root runtime caller", async () => {
     vi.spyOn(process, "getuid").mockReturnValue(1234);
     stats.override = { uid: 0, mode: 0o600, nlink: 1, isSymbolicLink: () => false, isFile: () => true };
-    await expect(assertManagedSrtRegularFile("/fictional/marker", true, "managed marker", "/fictional/root"))
+    await expect(assertManagedSrtRegularFile("/fictional/marker", { requirePrivate: true, label: "managed marker", installRoot: "/fictional/root" }))
       .resolves.toBeUndefined();
   });
 
@@ -73,9 +73,9 @@ describe("managed SRT read-only profiles", () => {
     const file = join(root, "marker");
     await writeFile(file, "fixture", { mode: 0o600 });
     await chmod(file, 0o644);
-    await expect(assertManagedSrtRegularFile(file, true, "managed marker", root, false, "installer"))
+    await expect(assertManagedSrtRegularFile(file, { requirePrivate: true, policy: "installer" }))
       .rejects.toThrow(`${file} must be a private single-link regular file`);
-    await expect(assertManagedSrtRegularFile(file, true, "managed marker", root))
+    await expect(assertManagedSrtRegularFile(file, { requirePrivate: true, label: "managed marker", installRoot: root }))
       .rejects.toThrow("managed marker grants access to group or other users");
     await chmod(root, 0o755);
     await expect(assertManagedSrtDirectory(root, "", root, "installer"))

@@ -99,10 +99,10 @@ export async function verifyManagedSrtInstall(installRoot: string): Promise<stri
   const cliPath = resolve(installRoot, "node_modules", "@anthropic-ai", "sandbox-runtime", "dist", "cli.js");
   const packageJsonPath = resolve(installRoot, "node_modules", "@anthropic-ai", "sandbox-runtime", "package.json");
 
-  await assertManagedSrtRegularFile(markerPath, true, "managed marker", installRoot);
-  await assertManagedSrtRegularFile(lockPath, true, "managed lockfile", installRoot);
-  await assertManagedSrtRegularFile(cliPath, true, "SRT CLI", installRoot);
-  await assertManagedSrtRegularFile(packageJsonPath, true, "SRT package manifest", installRoot);
+  await assertManagedSrtRegularFile(markerPath, { requirePrivate: true, label: "managed marker", installRoot });
+  await assertManagedSrtRegularFile(lockPath, { requirePrivate: true, label: "managed lockfile", installRoot });
+  await assertManagedSrtRegularFile(cliPath, { requirePrivate: true, label: "SRT CLI", installRoot });
+  await assertManagedSrtRegularFile(packageJsonPath, { requirePrivate: true, label: "SRT package manifest", installRoot });
 
   let marker: ManagedSrtMarker;
   try {
@@ -219,7 +219,7 @@ export async function resolveTrustedFile(
     throw corrupt(installRoot, `${label} cannot be resolved canonically (${errorMessage(error)})`);
   }
   assertAbsolutePath(canonicalPath, label);
-  await assertManagedSrtRegularFile(canonicalPath, requirePrivate, label, installRoot, requireExecutable);
+  await assertManagedSrtRegularFile(canonicalPath, { requirePrivate, label, installRoot, requireExecutable });
   const fileStat = await lstat(canonicalPath);
   return {
     path: canonicalPath,
