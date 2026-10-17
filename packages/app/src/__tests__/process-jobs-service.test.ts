@@ -12,39 +12,39 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { parseProcessJobProjection,processJobPublicError,type ProcessJobProjection } from "@mono-agent/contracts";
-import type { ProcessJobProcessHandle,ProcessJobProcessResult,ProcessJobStartRequest } from "@mono-agent/turn/host/types";
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { parseProcessJobProjection, processJobPublicError, type ProcessJobProjection } from "@mono-agent/contracts";
+import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobStartRequest } from "@mono-agent/turn/host/types";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ChannelId,RunningChannel } from "../channels/types.js";
+import type { ChannelId, RunningChannel } from "../channels/types.js";
 import type { ProcessJobsSettings } from "../process-jobs-config.js";
-import { PROCESS_JOBS_CAPS,PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
+import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
 import {
-openProcessJobsService,
-type ProcessJobWakeInput,
-type ProcessJobsHealth,
-type ProcessJobsServiceHandle,
+  openProcessJobsService,
+  type ProcessJobWakeInput,
+  type ProcessJobsHealth,
+  type ProcessJobsServiceHandle,
 } from "../process-jobs-service.js";
 import {
-isTerminalProcessJobState,
-openProcessJobStore,
-PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
-PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
-PROCESS_JOB_HEALTH_FILE,
-PROCESS_JOB_MANIFEST_FILE,
-PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL,
-PROCESS_JOB_QUARANTINE_DIRECTORY,
-PROCESS_JOB_STORE_MAX_RECORD_ENTRIES,
-PROCESS_JOB_TRANSACTION_FILE,
-projectProcessJob,
-type DurableProcessJobRecord,
-type ProcessJobOriginRecord,
-type ProcessJobStore,
-type ProcessJobStoreWorkCounter,
+  isTerminalProcessJobState,
+  openProcessJobStore,
+  PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
+  PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
+  PROCESS_JOB_HEALTH_FILE,
+  PROCESS_JOB_MANIFEST_FILE,
+  PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL,
+  PROCESS_JOB_QUARANTINE_DIRECTORY,
+  PROCESS_JOB_STORE_MAX_RECORD_ENTRIES,
+  PROCESS_JOB_TRANSACTION_FILE,
+  projectProcessJob,
+  type DurableProcessJobRecord,
+  type ProcessJobOriginRecord,
+  type ProcessJobStore,
+  type ProcessJobStoreWorkCounter,
 } from "../process-jobs-store.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { routeProactiveNotification } from "../proactive-notify.js";
-import { bindProcessJobWakeContextToResponder,registerProcessJobSteeringTarget,runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 
 const INCARNATION: ProcessIncarnation = {
   schema: "mono-agent.process-incarnation.v1",

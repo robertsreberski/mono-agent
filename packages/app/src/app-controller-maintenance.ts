@@ -1,14 +1,14 @@
 import { inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
-import type { MonoRuntimeLike,SandboxEngine } from "@mono-agent/turn/host/types";
+import type { MonoRuntimeLike, SandboxEngine } from "@mono-agent/turn/host/types";
 import {
-DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
-DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
+  DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
+  DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
 } from "@mono-agent/memory/bujo";
 import { deliverWebNotification } from "@mono-agent/web";
 
-import { loadAppCoreConfig,resolveAppArtifactDir } from "./app-config.js";
+import { loadAppCoreConfig, resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { createConfiguredAgentRuntimeForApp } from "./configured-agent.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
@@ -21,7 +21,7 @@ import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js"
 import { resolveNotifyDestinations } from "./notify-destinations.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
-import type { ChannelDriver,ChannelId,MonoAgentAppLogger,RunningChannel } from "./channels/types.js";
+import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 

@@ -1,6 +1,6 @@
-import { authorizeSubagentVerificationMetadata,authorizeSubagentObservationPath,observeSubagentVerification,registerSubagentVerification,sameSubagentVerificationTargetIdentity } from "./subagent-verification-observer.js";
+import { authorizeSubagentVerificationMetadata, authorizeSubagentObservationPath, observeSubagentVerification, registerSubagentVerification, sameSubagentVerificationTargetIdentity } from "./subagent-verification-observer.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
-import type { SubagentRecoveryFacts,SubagentRecoverySubject } from "./subagents/types.js";
+import type { SubagentRecoveryFacts, SubagentRecoverySubject } from "./subagents/types.js";
 import type { SubagentVerificationDeclaration } from "./subagent-verification-observer.js";
 
 /** Composition-private current-policy boundary. Never opens a root supplied by a job. */

@@ -1,39 +1,39 @@
 import { fileURLToPath } from "node:url";
 
 import {
-acquireFilesystemLifecycleLock,
-defaultBackgroundDeps,
-inspectOwnerPrivateLaunchdPlist,
-readOwnerPrivateLaunchdPlist,
+  acquireFilesystemLifecycleLock,
+  defaultBackgroundDeps,
+  inspectOwnerPrivateLaunchdPlist,
+  readOwnerPrivateLaunchdPlist,
 } from "./background.js";
 import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import {
-maintainLaunchdLogsWithSharedLockOperation,
+  maintainLaunchdLogsWithSharedLockOperation,
 } from "./background-log-maintenance.js";
 import type { LaunchdLogMaintenanceDeps } from "./service/background/log-maintenance-types.js";
 import {
-buildWebMaintenancePlistXml,
-launchdWebMaintenanceInfo,
-WEB_LAUNCHD_LABEL,
-WEB_MAINTENANCE_LAUNCHD_LABEL,
-webMaintenanceCalendarMinute,
+  buildWebMaintenancePlistXml,
+  launchdWebMaintenanceInfo,
+  WEB_LAUNCHD_LABEL,
+  WEB_MAINTENANCE_LAUNCHD_LABEL,
+  webMaintenanceCalendarMinute,
 } from "./launchd.js";
 import type { LaunchctlRunner } from "./launchd.js";
 import type { LaunchdWebMaintenanceInfo } from "./launchd.js";
 import {
-inspectLegacyManagedWebLogArtifacts,
-maintainLegacyManagedWebLogArtifacts,
+  inspectLegacyManagedWebLogArtifacts,
+  maintainLegacyManagedWebLogArtifacts,
 } from "./managed-web-logs.js";
 import { managedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";
 import { verifyManagedRuntimeMaintenanceEntrypoint } from "./managed-runtime-maintenance-entry.js";
 import { managedWebPaths } from "./web-maintenance-paths.js";
 import type { WebLogMaintenanceCommandArgs } from "./web-log-maintenance-command.js";
 import {
-writeWebLogMaintenanceStatus,
+  writeWebLogMaintenanceStatus,
 } from "./web-log-maintenance-status.js";
 import type {
-WebLogMaintenancePhase,
-WebLogMaintenanceStatus,
+  WebLogMaintenancePhase,
+  WebLogMaintenanceStatus,
 } from "./web-log-maintenance-status.js";
 
 const MAINTENANCE_POLL = { timeoutMs: 15_000, intervalMs: 200 } as const;

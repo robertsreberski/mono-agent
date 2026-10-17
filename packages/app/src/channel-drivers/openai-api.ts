@@ -1,6 +1,6 @@
 import type { OpenAIApiChannelOverrides } from "../channels/types.js";
 import type {
-OpenAIApiAdapterConfig
+  OpenAIApiAdapterConfig
 } from "@mono-agent/channel-openai-api";
 
 import { buildChannelConfigView } from "../channel-config-view.js";

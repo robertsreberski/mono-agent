@@ -1,12 +1,12 @@
 import type { ProcessJobProjection } from "@mono-agent/contracts";
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
-assertUniqueProcessJobChannelSchemes,
-routeProcessJobSurfaceUpdate,
-routeProcessJobWake,
+  assertUniqueProcessJobChannelSchemes,
+  routeProcessJobSurfaceUpdate,
+  routeProcessJobWake,
 } from "../process-job-channel-routing.js";
-import type { ChannelDriver,RunningChannel } from "../channels/types.js";
+import type { ChannelDriver, RunningChannel } from "../channels/types.js";
 
 describe("process-job channel routing", () => {
   it("routes one future plugin scheme through its explicit running capability", async () => {

@@ -1,14 +1,14 @@
-import { mkdtemp,rm,writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach,beforeEach,describe,expect,it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { startMonoAgentApp } from "../app.js";
 import { collectChannelConfigViews } from "../channel-config-view.js";
 import {
-ChannelPluginConfigError,
-configuredChannelPluginPackageNames,
+  ChannelPluginConfigError,
+  configuredChannelPluginPackageNames,
 } from "../channel-plugins.js";
 import { resolveChannelDrivers } from "../channels.js";
 import type { ChannelDriver } from "../channels/types.js";

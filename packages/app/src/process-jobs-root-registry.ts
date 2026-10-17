@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync,realpathSync,type BigIntStats,type Dirent } from "node:fs";
-import { chmod,link,lstat,mkdir,opendir,realpath,rmdir,unlink } from "node:fs/promises";
-import { dirname,isAbsolute,join,relative,resolve,sep } from "node:path";
+import { lstatSync, realpathSync, type BigIntStats, type Dirent } from "node:fs";
+import { chmod, link, lstat, mkdir, opendir, realpath, rmdir, unlink } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
 import {
-type AgentRootCoordinator,
-type AgentRootProtectionGeneration,
+  type AgentRootCoordinator,
+  type AgentRootProtectionGeneration,
 } from "./durable-state/agent-root-coordinator.js";
 import { clearSessionsRegistryRoot } from "./conversation-state-roots.js";
-import { acquireOwnerPrivateLock,type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
-import { readVerifiedFile,secureFileReplace } from "./durable-state/secure-file-replace.js";
+import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
+import { readVerifiedFile, secureFileReplace } from "./durable-state/secure-file-replace.js";
 import { syncDirectory } from "./durable-state/private-files.js";
 
 const PROCESS_JOBS_ROOT_REGISTRY_SCHEMA = "mono-agent.process-jobs-roots.v1";

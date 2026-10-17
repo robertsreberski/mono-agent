@@ -1,16 +1,16 @@
-import { mkdtemp,rm,writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryLoadOptions } from "@mono-agent/contracts";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createInMemoryHistoryStore } from "@mono-agent/conversation";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
-import { describe,expect,it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createConfiguredConversationHarness } from "../configured-agent.js";
-import { ensureSharedMemoryRetrieval,type MemoryControllerPort } from "../app-controller-memory.js";
+import { ensureSharedMemoryRetrieval, type MemoryControllerPort } from "../app-controller-memory.js";
 import { formatMemoryProfile } from "../memory-guidance.js";
 import { type LabelRecallStore } from "../memory/recall-contract.js";
-import { MemoryRetrievalService,type SharedRecallStore } from "../memory-retrieval.js";
+import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 
 type LabelHit = ReturnType<NonNullable<LabelRecallStore["labelsForEntity"]>>[number];
 const fact = (id: string, text: string, overrides: Partial<LabelHit> = {}): LabelHit => ({

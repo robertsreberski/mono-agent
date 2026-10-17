@@ -1,10 +1,10 @@
-import { mkdir,mkdtemp,readFile,rm,writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname,join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 
 const mocks = vi.hoisted(() => ({
@@ -33,9 +33,9 @@ vi.mock("../peer-acp-client.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../peer-acp-client.js")>(), runPeerAcpTurn: mocks.run,
 }));
 
-import { createPeerAgentRuntimeExtension,withoutLocalPaths } from "../peer-agent.js";
-import { PeerSessionGoneError,type PeerAcpTurn } from "../peer-acp-client.js";
-import { makePeerHandoff,stampPeerOperatorHandoff } from "../peer-provenance.js";
+import { createPeerAgentRuntimeExtension, withoutLocalPaths } from "../peer-agent.js";
+import { PeerSessionGoneError, type PeerAcpTurn } from "../peer-acp-client.js";
+import { makePeerHandoff, stampPeerOperatorHandoff } from "../peer-provenance.js";
 import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 

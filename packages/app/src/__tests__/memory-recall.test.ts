@@ -1,24 +1,24 @@
-import { mkdtemp,rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
-appendGraphBatch,
-createBujoMemoryStore,
-resolveActiveMemoryDbPath,
-safeRebuildMemoryIndex,
+  appendGraphBatch,
+  createBujoMemoryStore,
+  resolveActiveMemoryDbPath,
+  safeRebuildMemoryIndex,
 } from "@mono-agent/memory/bujo";
 import type { BujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import { openMemoryDb } from "@mono-agent/memory/store";
-import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MEMORY_RECALL_MCP_SERVER_NAME,createMemoryEmbeddingProvider,createMemoryRecallServer,createRecallStore } from "../memory-recall.js";
+import { MEMORY_RECALL_MCP_SERVER_NAME, createMemoryEmbeddingProvider, createMemoryRecallServer, createRecallStore } from "../memory-recall.js";
 import { resolveMemoryRecallSettings } from "../memory-recall-settings.js";
-import type { MemoryRecallBujoSettings,MemoryRecallSettings } from "../memory-recall-settings.js";
+import type { MemoryRecallBujoSettings, MemoryRecallSettings } from "../memory-recall-settings.js";
 import { readLabelSections } from "../memory-label-sections.js";
 
 let dir: string;

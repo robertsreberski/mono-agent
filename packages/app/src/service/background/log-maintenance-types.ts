@@ -1,6 +1,6 @@
 import type { MaintenanceActivityRequest } from "../../launchd-maintenance-activity.js";
-import type { LaunchctlRunner,LaunchdPaths } from "../../launchd.js";
-import type { LaunchdLogInspection,LaunchdLogMaintenanceIntent } from "../../launchd-logs.js";
+import type { LaunchctlRunner, LaunchdPaths } from "../../launchd.js";
+import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "../../launchd-logs.js";
 export interface AdditionalLaunchdLogInspection {
   readonly needsMaintenance: boolean;
   readonly canMaintain: boolean;

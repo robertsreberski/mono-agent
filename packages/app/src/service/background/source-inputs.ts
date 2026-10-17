@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat,open } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import { parseEnv } from "node:util";
 export type CliEnvironment = Readonly<Record<string, string | undefined>>;
 

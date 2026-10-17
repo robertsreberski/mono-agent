@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { describe,expect,it } from "vitest";
-import { hasPendingSubagentPublication,hasSubagentObligation,hasUnresolvedSubagentOwnership,isSubagentExecutionOwnership,isSubagentOwnedCommand } from "../subagent-execution-ownership.js";
-import { type SubagentExecutionOwnership,type SubagentOwnedCommand } from "../subagents/types.js";
+import { describe, expect, it } from "vitest";
+import { hasPendingSubagentPublication, hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, isSubagentOwnedCommand } from "../subagent-execution-ownership.js";
+import { type SubagentExecutionOwnership, type SubagentOwnedCommand } from "../subagents/types.js";
 
 const incarnation = { schema: "mono-agent.process-incarnation.v1" as const, bootSessionId: "boot", processStartId: "birth" };
 const ownership = (): SubagentExecutionOwnership => ({ schemaVersion: 1, instanceIncarnation: randomUUID(), turnToken: randomUUID(),

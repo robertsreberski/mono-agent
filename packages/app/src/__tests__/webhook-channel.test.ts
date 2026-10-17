@@ -1,12 +1,12 @@
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/contracts";
 import type {
-WebhookAdapterConfig,
-WebhookAdapterOptions,
-WebhookAdapterStartResult,
-WebhookInvocationRequest,
-WebhookInvocationStatus,
+  WebhookAdapterConfig,
+  WebhookAdapterOptions,
+  WebhookAdapterStartResult,
+  WebhookInvocationRequest,
+  WebhookInvocationStatus,
 } from "@mono-agent/trigger-webhook";
 
 import type { ChannelStartInput } from "../channels/types.js";

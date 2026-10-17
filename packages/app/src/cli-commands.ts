@@ -1,37 +1,37 @@
 #!/usr/bin/env node
 import { resolveValidateContext } from "./cli/validate-context.js";
 // Internal command implementation; `cli.ts` remains the stable public/bin facade.
-import { basename,resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import process from "node:process";
 import {
-MANAGED_BACKGROUND_WORKER_ENV,
-sanitizeManagedBackgroundWorkerEnvironment,
+  MANAGED_BACKGROUND_WORKER_ENV,
+  sanitizeManagedBackgroundWorkerEnvironment,
 } from "./background-runtime.js";
 import { SYSTEMD_BACKGROUND_WORKER_ENV } from "./background-environment.js";
 import { readCliDotenvFile } from "./service/background/source-inputs.js";
-import { loadCliEnvFile,parseCliArgs } from "./cli-args.js";
+import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 
-import { monoAgentVersion,renderHelp,renderHelpTopic,renderMemorySubcommandHelp } from "./cli-help.js";
+import { monoAgentVersion, renderHelp, renderHelpTopic, renderMemorySubcommandHelp } from "./cli-help.js";
 
 import { runInstallSkill } from "./cli-install-skill-command.js";
-import { runConfig,runPresets,runValidate } from "./cli-validate-config-command.js";
+import { runConfig, runPresets, runValidate } from "./cli-validate-config-command.js";
 
-import { runAuth,runInit } from "./cli-init-command.js";
+import { runAuth, runInit } from "./cli-init-command.js";
 
 import {
-runBackgroundCommand,
-runLaunchdLogMaintenanceCommand,
-runStart,
+  runBackgroundCommand,
+  runLaunchdLogMaintenanceCommand,
+  runStart,
 } from "./cli-background-command.js";
 
 import { runRunsCommand } from "./cli-runs-command.js";
-import { isRunInspectionInvocation,writeRunInspectionUsageFailure } from "./run-inspection.js";
+import { isRunInspectionInvocation, writeRunInspectionUsageFailure } from "./run-inspection.js";
 import {
-INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
-INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
-MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
-MANAGED_WEB_LOG_MAINTENANCE_ENV,
+  INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+  MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+  MANAGED_WEB_LOG_MAINTENANCE_ENV,
 } from "./launchd.js";
 import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "./managed-launchd-maintenance-environment.js";
 import { sanitizeManagedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";

@@ -1,39 +1,39 @@
-import { createHash,randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
-close as closeFd,
-constants,
-fstat,
-openSync,
-read as readFd,
-type Dirent,
-type Stats,
+  close as closeFd,
+  constants,
+  fstat,
+  openSync,
+  read as readFd,
+  type Dirent,
+  type Stats,
 } from "node:fs";
 import {
-lstat,
-open as openFile,
-mkdir,
-readFile,
-readdir,
-realpath,
-rename,
-rm,
-stat,
-writeFile,
+  lstat,
+  open as openFile,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
 } from "node:fs/promises";
-import { basename,extname,isAbsolute,join,relative,resolve,sep } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-CodedError,
-DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
-type AgentReplyArtifactOpenRequest,
-type ChannelLogger,
-type AgentReplyArtifactStream,
-type AgentReplyAttachmentPart,
-type AgentReplyPart,
-type AgentReplyPartFailure,
-type AgentResponder,
+  CodedError,
+  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+  type AgentReplyArtifactOpenRequest,
+  type ChannelLogger,
+  type AgentReplyArtifactStream,
+  type AgentReplyAttachmentPart,
+  type AgentReplyPart,
+  type AgentReplyPartFailure,
+  type AgentResponder,
 } from "@mono-agent/contracts";
 import { createLoopbackMcpEndpoint } from "./mcp/loopback-transport.js";
 import type { ToolPolicyInput } from "@mono-agent/conversation";
@@ -42,9 +42,9 @@ import * as z from "zod/v4";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import {
-createReplyPartBudget,
-mergeReplyParts,
-type ReplyPartBudget,
+  createReplyPartBudget,
+  mergeReplyParts,
+  type ReplyPartBudget,
 } from "./reply-part-budget.js";
 
 const PRIVATE_CAPABILITY_URL = Symbol.for("@mono-agent/private-capability-url");

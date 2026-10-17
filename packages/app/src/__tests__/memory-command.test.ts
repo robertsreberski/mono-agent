@@ -2,13 +2,13 @@ import * as bujoMemory from "@mono-agent/memory/bujo";
 import type { MemoryBundleExportErrorCode } from "@mono-agent/memory/bujo";
 import { MemorySearchError } from "@mono-agent/memory/search";
 import type { MemorySearchErrorCode } from "@mono-agent/memory/search";
-import { describe,expect,it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
-classifyImportApplyFailure,
-classifyImportPrepareFailure,
-classifyMemoryBundleExportFailure,
-isFtsFallbackEligible,
+  classifyImportApplyFailure,
+  classifyImportPrepareFailure,
+  classifyMemoryBundleExportFailure,
+  isFtsFallbackEligible,
 } from "../memory-command.js";
 import type { MemoryRecallSettings } from "../memory-recall-settings.js";
 

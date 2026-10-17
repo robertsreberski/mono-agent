@@ -1,30 +1,30 @@
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
-import type { AgentResponder,NotifyDeliveryContext } from "@mono-agent/contracts";
+import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/contracts";
 
 import {
-isAppCoreConfigError,
-loadAppCoreConfig,
-resolveAppArtifactDir,
+  isAppCoreConfigError,
+  loadAppCoreConfig,
+  resolveAppArtifactDir,
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type { ChannelDriver,ChannelId,ChannelStartInput,MonoAgentAppLogger,RunningChannel,ChannelStatus } from "./channels/types.js";
+import type { ChannelDriver, ChannelId, ChannelStartInput, MonoAgentAppLogger, RunningChannel, ChannelStatus } from "./channels/types.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { reasonOf } from "./app-controller-utils.js";
-import type { ConfigApplyResult,TraceabilityStatus } from "./app-controller-types.js";
+import type { ConfigApplyResult, TraceabilityStatus } from "./app-controller-types.js";
 import { notifyDestination as notifyDestinationForChannel } from "./app-controller-maintenance.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { NotifyDeliveryResult } from "./channels/types.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
-import { createProviderAuthObservationTracker,type ProviderAuthObservationTracker } from "./provider-auth-observations.js";
+import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { createProviderAuthOperator } from "./provider-auth-operator.js";
 import { startAppOwnedTuiChannel } from "./channel-drivers/tui.js";
 import {
-unsafeProcessJobsProtectionStatus,
-type ProcessJobsProtectionPosture,
+  unsafeProcessJobsProtectionStatus,
+  type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
 
 export interface ChannelsControllerPort {

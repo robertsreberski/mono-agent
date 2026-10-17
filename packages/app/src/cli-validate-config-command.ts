@@ -1,32 +1,32 @@
 import { resolveValidateContext } from "./cli/validate-context.js";
-import { basename,resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import process from "node:process";
 
 import {
-buildMonoAgentConfigView,
-findJsonSecretConfigWarnings,
-findRemovedConfigWarnings,
-readMonoAgentConfigJson,
-redactMonoAgentConfig,
+  buildMonoAgentConfigView,
+  findJsonSecretConfigWarnings,
+  findRemovedConfigWarnings,
+  readMonoAgentConfigJson,
+  redactMonoAgentConfig,
 } from "@mono-agent/config";
 import type { ConfigViewSection } from "@mono-agent/config";
 
 import {
-isAppCoreConfigError,
-loadAppCoreConfig,
+  isAppCoreConfigError,
+  loadAppCoreConfig,
 } from "./app-config.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 import { validateMonoAgentFolder } from "./doctor.js";
-import type { ValidationReport,ValidationSection,ValidationStatus } from "./doctor-types.js";
+import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 import type { ModuleValidateExpectation } from "./modules/index.js";
 import { composeWizardPlan } from "./wizard/answers.js";
 import {
-findPreset,
-PRESET_CATALOG,
-presetAnswers,
-presetIds,
+  findPreset,
+  PRESET_CATALOG,
+  presetAnswers,
+  presetIds,
 } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
 import * as ui from "./ui.js";

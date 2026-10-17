@@ -1,18 +1,18 @@
-import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
-import { mkdtemp,readFile,rm,symlink,writeFile } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 
 import { ensureStartable } from "../service/start-preflight.js";
-import { prepareSupervisedRestartInputs,verifySupervisedRestartInputs } from "../cli-background-command.js";
-import { captureBackgroundSnapshot,encodeBackgroundSnapshot } from "../background-snapshot.js";
+import { prepareSupervisedRestartInputs, verifySupervisedRestartInputs } from "../cli-background-command.js";
+import { captureBackgroundSnapshot, encodeBackgroundSnapshot } from "../background-snapshot.js";
 import { createSupervisedRestartAuthority } from "../supervised-restart-authority.js";
 import { createSupervisedRestartLatch } from "../supervised-restart-latch.js";
 import { systemdUnitName } from "../systemd.js";
 import { resolveApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
 import { acquireFilesystemLifecycleLock } from "../launchd-lifecycle-lock.js";
-import { launchdPathsFor,deriveLaunchdLabel } from "../launchd.js";
+import { launchdPathsFor, deriveLaunchdLabel } from "../launchd.js";
 import { workerApprovalBinding } from "../cli-background-command.js";
 import { materializeBackgroundRuntimeInputs } from "../background-snapshot.js";
 import type { ParsedCliArgs } from "../cli-args.js";

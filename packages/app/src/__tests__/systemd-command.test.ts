@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-import { beforeEach,describe,expect,it,vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../background-environment.js";
 import { decodeBackgroundSnapshot } from "../background-snapshot.js";
 import { parseCliArgs } from "../cli-args.js";
@@ -29,7 +29,7 @@ vi.mock("../service/start-preflight.js", () => ({ ensureStartable: mocks.preflig
 vi.mock("../service/web/health.js", () => ({ webHealthcheck: mocks.health }));
 vi.mock("@mono-agent/observability", () => ({ listTraceSources: mocks.traces }));
 
-import { runSystemdAgentCommand,runSystemdWebCommand } from "../systemd-command.js";
+import { runSystemdAgentCommand, runSystemdWebCommand } from "../systemd-command.js";
 
 const service = { loadState: "loaded", activeState: "active", subState: "running", pid: 42, startedAt: "today", enabled: true };
 const args = (action: string) => parseCliArgs([action, "--config", "/agent/config.json"]);

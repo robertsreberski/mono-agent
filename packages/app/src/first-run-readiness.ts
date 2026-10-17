@@ -1,9 +1,9 @@
 import { type CliEnvironment } from "./service/background/source-inputs.js";
 import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import { constants as fsConstants } from "node:fs";
-import { lstat,mkdir,mkdtemp,open,opendir,realpath,rm,stat,writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, opendir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname,isAbsolute,join,relative,resolve,sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { ValidationReport } from "./doctor-types.js";
 import { validateMonoAgentFolder } from "./doctor.js";

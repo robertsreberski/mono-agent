@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createServer,type IncomingMessage,type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { JSONRPCRequestSchema } from "@modelcontextprotocol/sdk/types.js";

@@ -1,5 +1,5 @@
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
-import { bindProcessJobWakeContextToResponder,registerProcessJobSteeringTarget,runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 import { createLiveInputMailbox } from "@mono-agent/conversation";
 import { formatHostCapabilities } from "@mono-agent/conversation";
 // @ts-expect-error Real direct kernel execution seam.
@@ -13,15 +13,15 @@ import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
 import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
 import { randomUUID } from "node:crypto";
-import { mkdir,mkdtemp,readFile,readdir,rename,rm,stat,writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
 import { writeJsonAtomic } from "../durable-state/private-files.js";
-import { createSubagentInstanceRegistry,subagentConversationRoot } from "../subagent-instances.js";
-import { openProcessJobsService,type ProcessJobsServiceHandle,type ProcessJobWakeInput } from "../process-jobs-service.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
+import { openProcessJobsService, type ProcessJobsServiceHandle, type ProcessJobWakeInput } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
-import { isTerminalProcessJobState,openProcessJobStore,PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
+import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
 import { hasSubagentObligation } from "../subagent-execution-ownership.js";
 import { launchInternalProcessJob } from "../process-jobs-internal.js";
 // @ts-expect-error Private kernel test seam.

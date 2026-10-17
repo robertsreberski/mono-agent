@@ -1,6 +1,6 @@
 import {
-PROVIDER_USAGE_IDS,PROVIDER_USAGE_SCHEMA,
-type ProviderUsageId,type ProviderUsageOperator,
+  PROVIDER_USAGE_IDS, PROVIDER_USAGE_SCHEMA,
+  type ProviderUsageId, type ProviderUsageOperator,
 } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentAppConfigInput } from "./app-config.js";

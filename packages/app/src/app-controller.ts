@@ -6,30 +6,30 @@ import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
-AgentResponder,
-NotifyDeliveryContext,
-ProcessJobProjection,
+  AgentResponder,
+  NotifyDeliveryContext,
+  ProcessJobProjection,
 } from "@mono-agent/contracts";
-import type { TraceSourceHandle,TraceSourceMemoryHealth } from "@mono-agent/observability";
+import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
-import type { MonoRuntimeLike,RuntimeModelReference } from "@mono-agent/turn/host/types";
+import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/turn/host/types";
 import { createSrtSandboxEngine } from "@mono-agent/turn/host/sandbox";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
-import type { AppTraceDefaults,PrivateBackgroundRuntimePaths } from "./app-config.js";
+import type { AppTraceDefaults, PrivateBackgroundRuntimePaths } from "./app-config.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
 import { resolveChannelDrivers } from "./channels.js";
-import type { ChannelDriver,ChannelId,ChannelStatus,MonoAgentAppLogger,RunningChannel } from "./channels/types.js";
+import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
 import type { NotifyDeliveryResult } from "./channels/types.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type {
-ContinuationHealthSnapshot,
-ContinuationHistoryRecordResult,
-ContinuationNativeDeliveryResult,
-ContinuationStatusSnapshot,
-ContinuationSynthesisInput,
+  ContinuationHealthSnapshot,
+  ContinuationHistoryRecordResult,
+  ContinuationNativeDeliveryResult,
+  ContinuationStatusSnapshot,
+  ContinuationSynthesisInput,
 } from "./continuations.js";
 import type { RunningRituals } from "./memory-rituals.js";
 import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js";
@@ -40,7 +40,7 @@ import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
 import { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
-import { reasonOf,sandboxStatusFromState } from "./app-controller-utils.js";
+import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
 import * as lifecycleOperations from "./app-controller-lifecycle.js";
 import * as traceabilityOperations from "./app-controller-traceability.js";
 import * as memory_healthOperations from "./app-controller-memory-health.js";
@@ -53,25 +53,25 @@ import * as processJobsOperations from "./app-controller-process-jobs.js";
 import { assertUniqueProcessJobChannelSchemes } from "./process-job-channel-routing.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
-acquireAgentRootOwnership,
-releaseAgentRootOwnershipWhenIdle,
-type AgentRootOwnership,
+  acquireAgentRootOwnership,
+  releaseAgentRootOwnershipWhenIdle,
+  type AgentRootOwnership,
 } from "./durable-state/agent-root-coordinator.js";
 import type {
-ProcessJobsRootRegistrationProof,
-ProcessJobsRootRegistrySnapshot,
+  ProcessJobsRootRegistrationProof,
+  ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
 import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import type {
-ProcessJobsProtectionPosture,
-ProcessJobsProtectionStatus,
+  ProcessJobsProtectionPosture,
+  ProcessJobsProtectionStatus,
 } from "./process-jobs-protection.js";
 import { unsafeProcessJobsProtectionStatus } from "./process-jobs-protection.js";
 import type {
-ConfigApplyResult,
-SandboxStatus,
-SessionTraceMetadata,
-TraceabilityStatus,
+  ConfigApplyResult,
+  SandboxStatus,
+  SessionTraceMetadata,
+  TraceabilityStatus,
 } from "./app-controller-types.js";
 import { createProviderAuthObservationTracker } from "./provider-auth-observations.js";
 

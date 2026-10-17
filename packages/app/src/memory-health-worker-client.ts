@@ -2,10 +2,10 @@ import { MEMORY_HEALTH_ISSUE_CODES } from "@mono-agent/memory/health-metadata";
 import { Worker } from "node:worker_threads";
 
 import type {
-BujoMemoryHealthOptions,
-BujoMemoryHealthReport,
-MemoryHealthIssueCode,
-MemoryHealthStatus,
+  BujoMemoryHealthOptions,
+  BujoMemoryHealthReport,
+  MemoryHealthIssueCode,
+  MemoryHealthStatus,
 } from "@mono-agent/memory/bujo";
 
 const DEFAULT_MEMORY_HEALTH_REQUEST_TIMEOUT_MS = 15_000;

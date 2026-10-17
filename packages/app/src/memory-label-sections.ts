@@ -1,7 +1,7 @@
-import type { LabelSectionRequest,LabelContext,LabelSections,FactSheetEntry,GuidanceEntry } from "./memory/recall-contract.js";
+import type { LabelSectionRequest, LabelContext, LabelSections, FactSheetEntry, GuidanceEntry } from "./memory/recall-contract.js";
 import type { MemoryDb } from "@mono-agent/memory/store";
 import { recallLineStatus } from "@mono-agent/memory/bujo";
-import { factKeyLabel,factValueText,guidanceScoreFloor,GUIDANCE_MAX_RANK,memoryGuidanceScopes,resolveMemoryEntities,safeLine } from "./memory-guidance.js";
+import { factKeyLabel, factValueText, guidanceScoreFloor, GUIDANCE_MAX_RANK, memoryGuidanceScopes, resolveMemoryEntities, safeLine } from "./memory-guidance.js";
 import { type LabelRecallStore } from "./memory/recall-contract.js";
 import type { MemoryRecallHit } from "./memory/recall-contract.js";
 

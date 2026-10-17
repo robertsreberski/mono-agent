@@ -1,19 +1,19 @@
-import { spawn,type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { chmod,mkdir,mkdtemp,readFile,realpath,rm,writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
-import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-baselineOwnerRecord,
-baselineOwnerRecordBytes,
-baselineProcessJobIncarnationsAccepted,
-baselineSubagentIncarnationAccepted,
-baselineWebLeaseAccepted,
+  baselineOwnerRecord,
+  baselineOwnerRecordBytes,
+  baselineProcessJobIncarnationsAccepted,
+  baselineSubagentIncarnationAccepted,
+  baselineWebLeaseAccepted,
 } from "./fixtures/baseline-a3cb9a611-incarnation-readers.js";
 
 // Records written by new binaries must stay readable by old ones (sidecar), and
@@ -28,9 +28,9 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (original) => {
   };
 });
 
-import { acquireOwnerPrivateLock,type LegacyLockHolder } from "../durable-state/owner-private-lock.js";
+import { acquireOwnerPrivateLock, type LegacyLockHolder } from "../durable-state/owner-private-lock.js";
 import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
-import { openProcessJobStore,type DurableProcessJobRecord } from "../process-jobs-store.js";
+import { openProcessJobStore, type DurableProcessJobRecord } from "../process-jobs-store.js";
 import { isSubagentExecutionOwnership } from "../subagent-execution-ownership.js";
 import { type SubagentExecutionOwnership } from "../subagents/types.js";
 

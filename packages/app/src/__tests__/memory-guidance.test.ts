@@ -1,9 +1,9 @@
-import { describe,expect,it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { MemoryDb } from "@mono-agent/memory/store";
 import { POSSIBLY_RELEVANT_HEADING } from "@mono-agent/memory/bujo";
-import { ageAt,formatMemoryBackground as formatBlock } from "../memory-guidance.js";
+import { ageAt, formatMemoryBackground as formatBlock } from "../memory-guidance.js";
 import { type LabelRecallStore } from "../memory/recall-contract.js";
-import { MemoryRetrievalService,type SharedRecallStore } from "../memory-retrieval.js";
+import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 import { readLabelSections } from "../memory-label-sections.js";
 type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 const formatMemoryBackground = (...args: Parameters<typeof formatBlock>) => formatBlock(...args)?.content || undefined;

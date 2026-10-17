@@ -1,26 +1,26 @@
 import type { ManagedBackgroundRuntimeInput } from "../background-runtime.js";
 import { createHash } from "node:crypto";
-import { lstat,mkdtemp,mkdir,readFile,readdir,realpath,rm,stat,writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { chooseTailscaleHttpsPort,DEFAULT_WEB_HOST,DEFAULT_WEB_PORT,ensureTailscaleServe,LEGACY_DEFAULT_WEB_HOST,removeOwnedTailscaleServe,runWebCommand,tailscaleProxyTarget,webPaths,WEB_LAUNCHD_LABEL } from "../web-command.js";
+import { chooseTailscaleHttpsPort, DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, ensureTailscaleServe, LEGACY_DEFAULT_WEB_HOST, removeOwnedTailscaleServe, runWebCommand, tailscaleProxyTarget, webPaths, WEB_LAUNCHD_LABEL } from "../web-command.js";
 import { webHealthcheck } from "../service/web/health.js";
-import type { CommandRunner,RunWebCommandDeps } from "../web-command.js";
+import type { CommandRunner, RunWebCommandDeps } from "../web-command.js";
 import {
-buildWebMaintenancePlistXml,
-buildWebPlistXml,
-WEB_MAINTENANCE_LAUNCHD_LABEL,
-webMaintenanceCalendarMinute,
+  buildWebMaintenancePlistXml,
+  buildWebPlistXml,
+  WEB_MAINTENANCE_LAUNCHD_LABEL,
+  webMaintenanceCalendarMinute,
 } from "../launchd.js";
 import {
-beginLaunchdLogMaintenanceIntent,
-LAUNCHD_LOG_MAX_BYTES,
-markLaunchdLogMaintenanceRestoring,
-markLaunchdLogMaintenanceStopped,
-readLaunchdLogMaintenanceIntent,
+  beginLaunchdLogMaintenanceIntent,
+  LAUNCHD_LOG_MAX_BYTES,
+  markLaunchdLogMaintenanceRestoring,
+  markLaunchdLogMaintenanceStopped,
+  readLaunchdLogMaintenanceIntent,
 } from "../launchd-logs.js";
 import { managedWebLogMaintenanceEnvironment } from "../managed-web-maintenance-environment.js";
 

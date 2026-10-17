@@ -1,10 +1,10 @@
-import { createHash,createHmac,timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { setTimeout as pause } from "node:timers/promises";
-import { dirname,join,resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
-import { ensureOwnerOnlyDirectory,readBoundedOwnerOnlyFile,writeJsonAtomic } from "./durable-state/private-files.js";
+import { ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./durable-state/private-files.js";
 import { loadOrCreateContinuationSecret } from "./continuation-secret.js";
 
 /** Private, source-bound peer handoff. Attribution is never owner approval or tool authority. */

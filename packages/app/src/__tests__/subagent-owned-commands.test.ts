@@ -1,8 +1,8 @@
-import { emptySubagentCommandReceipts,isSubagentCommandReceipts } from "../subagent-command-receipts.js";
+import { emptySubagentCommandReceipts, isSubagentCommandReceipts } from "../subagent-command-receipts.js";
 import { type SubagentCommandReceipts } from "../subagents/types.js";
 import { randomUUID } from "node:crypto";
-import { describe,expect,it,vi } from "vitest";
-import type { OwnedForegroundProcessRequest,ProcessJobProcessResult } from "@mono-agent/turn/host/types";
+import { describe, expect, it, vi } from "vitest";
+import type { OwnedForegroundProcessRequest, ProcessJobProcessResult } from "@mono-agent/turn/host/types";
 import { createSubagentOwnedCommands } from "../subagent-owned-commands.js";
 import { isSubagentExecutionOwnership } from "../subagent-execution-ownership.js";
 import { type SubagentExecutionOwnership } from "../subagents/types.js";

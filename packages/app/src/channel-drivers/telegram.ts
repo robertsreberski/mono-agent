@@ -1,29 +1,29 @@
 import type { TelegramChannelOverrides } from "../channels/types.js";
-import type { AgentResponder,ChannelInteractionSink,NotifyDeliveryResult } from "@mono-agent/contracts";
+import type { AgentResponder, ChannelInteractionSink, NotifyDeliveryResult } from "@mono-agent/contracts";
 import { describeRunFailureKind } from "@mono-agent/observability";
 import type {
-TelegramAdapterConfig,
-TelegramAdapterErrorTextInput,
-TelegramAdapterStartOptions,
-TelegramAdapterStartResult,
-TelegramChatId,
-TelegramDestination,
-TelegramTranscriptionConfig,
-TelegramRuntimeControls,
+  TelegramAdapterConfig,
+  TelegramAdapterErrorTextInput,
+  TelegramAdapterStartOptions,
+  TelegramAdapterStartResult,
+  TelegramChatId,
+  TelegramDestination,
+  TelegramTranscriptionConfig,
+  TelegramRuntimeControls,
 } from "@mono-agent/channel-telegram";
 
 import { buildChannelRuntimeControls } from "../channel-runtime-controls.js";
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver,ChannelStartInput } from "../channels/types.js";
-import { telegramTargetFromConversation,type TelegramDestinationTarget } from "../telegram-destination.js";
+import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
+import { telegramTargetFromConversation, type TelegramDestinationTarget } from "../telegram-destination.js";
 import {
-bindTelegramProjectTurn,
-createTelegramProjectsService,
-type TelegramProjectsService,
+  bindTelegramProjectTurn,
+  createTelegramProjectsService,
+  type TelegramProjectsService,
 } from "../telegram-projects.js";
-import { openTelegramTopicDirectory,telegramBotIdFromToken } from "../telegram-topic-directory.js";
+import { openTelegramTopicDirectory, telegramBotIdFromToken } from "../telegram-topic-directory.js";
 import type { TelegramProjectsBridgePort } from "../interaction-bridge.js";
 import { unconfiguredChannelView } from "./shared.js";
 

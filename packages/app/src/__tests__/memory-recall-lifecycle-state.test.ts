@@ -1,4 +1,4 @@
-import { mkdtemp,rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,10 +7,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { MARKER_FOR } from "@mono-agent/memory/bujo";
 import { openMemoryDb } from "@mono-agent/memory/store";
 import type { MemoryRecord } from "@mono-agent/memory/store";
-import { afterEach,beforeEach,describe,expect,it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createMemoryRecallServer } from "../memory-recall.js";
-import type { MemoryRecallHit,RecallCapableStore } from "../memory/recall-contract.js";
+import type { MemoryRecallHit, RecallCapableStore } from "../memory/recall-contract.js";
 
 /**
  * `composeRecallBlock` renders every automatic hit with a marker encoding type

@@ -1,9 +1,9 @@
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-createManagedLaunchdLogWakeState,
-requestLaunchdLogMaintenanceIfNeeded,
-startManagedLaunchdLogMonitor,
+  createManagedLaunchdLogWakeState,
+  requestLaunchdLogMaintenanceIfNeeded,
+  startManagedLaunchdLogMonitor,
 } from "../background-log-maintenance.js";
 import type { BackgroundLifecycleTarget } from "../launchd-lifecycle-lock.js";
 import { LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS } from "../launchd-logs.js";

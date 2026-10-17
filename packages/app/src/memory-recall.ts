@@ -1,19 +1,19 @@
-import type { MemoryRecallHit,MemoryRecallOutcome,RecallCapableStore } from "./memory/recall-contract.js";
+import type { MemoryRecallHit, MemoryRecallOutcome, RecallCapableStore } from "./memory/recall-contract.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
-CircuitBreakerEmbeddingOptions,
-EmbeddingProvider,
-EmbeddingProviderConfig,
+  CircuitBreakerEmbeddingOptions,
+  EmbeddingProvider,
+  EmbeddingProviderConfig,
 } from "@mono-agent/memory/search";
-import { AUTO_RECALL_MIN_SCORE,recallLineStatus } from "@mono-agent/memory/bujo";
+import { AUTO_RECALL_MIN_SCORE, recallLineStatus } from "@mono-agent/memory/bujo";
 import { normalizeOptionalString } from "@mono-agent/contracts";
 import * as z from "zod/v4";
 import { readLabelSections } from "./memory-label-sections.js";
-import { type LabelKind,type LabelSectionRequest,type LabelSections } from "./memory/recall-contract.js";
+import { type LabelKind, type LabelSectionRequest, type LabelSections } from "./memory/recall-contract.js";
 
 import type {
-MemoryRecallEmbeddings,
-MemoryRecallSettings,
+  MemoryRecallEmbeddings,
+  MemoryRecallSettings,
 } from "./memory-recall-settings.js";
 
 

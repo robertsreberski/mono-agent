@@ -1,10 +1,10 @@
 import { toolActionInEvent } from "./setup/readiness-events.js";
-import { isMainThread,parentPort,workerData } from "node:worker_threads";
+import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
 import { PI_TRANSPORTS } from "@mono-agent/turn/host/types";
-import type { CreateMonoRuntimeOptions,MonoRuntimeLike,PiTransport,RuntimeModelReference,RuntimeResult,RuntimeRunOptions } from "@mono-agent/turn/host/types";
+import type { CreateMonoRuntimeOptions, MonoRuntimeLike, PiTransport, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
 import { redactSecrets } from "./redact-secrets.js";
 

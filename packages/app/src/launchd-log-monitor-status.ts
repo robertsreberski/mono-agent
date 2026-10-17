@@ -22,7 +22,7 @@ export interface ManagedLaunchdLogMonitorStatus {
 
 import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import type { LaunchdPaths } from "./launchd.js";
-import { readPrivateLaunchdState,writePrivateLaunchdState,removePrivateLaunchdState } from "./private-launchd-state.js";
+import { readPrivateLaunchdState, writePrivateLaunchdState, removePrivateLaunchdState } from "./private-launchd-state.js";
 
 const OUTCOMES = new Set<ManagedLaunchdLogMonitorStatus["lastOutcome"]>([
   "idle",

@@ -1,15 +1,15 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
-calibrateRecallHits,
-createMemoryRecallServer,
-recallEvidenceNote,
-recallHitCurrentness,
-RECALL_TAIL_MARGIN,
+  calibrateRecallHits,
+  createMemoryRecallServer,
+  recallEvidenceNote,
+  recallHitCurrentness,
+  RECALL_TAIL_MARGIN,
 } from "../memory-recall.js";
-import type { MemoryRecallHit,RecallCapableStore } from "../memory/recall-contract.js";
+import type { MemoryRecallHit, RecallCapableStore } from "../memory/recall-contract.js";
 import type { LabelSections } from "../memory/recall-contract.js";
 
 interface ToolResult {

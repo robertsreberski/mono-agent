@@ -1,6 +1,6 @@
 import { chmod } from "node:fs/promises";
 import { join } from "node:path";
-import { ensureOwnerOnlyDirectory,assertOwnerOnlyRegularFile,pathExists } from "./private-files.js";
+import { ensureOwnerOnlyDirectory, assertOwnerOnlyRegularFile, pathExists } from "./private-files.js";
 
 const OWNER_DATABASE_FILE = "continuations-owner.sqlite";
 export interface SqliteLease {

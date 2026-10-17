@@ -1,21 +1,21 @@
-import type { AdditionalLaunchdLogInspection,LaunchdLogMaintenanceDeps } from "./service/background/log-maintenance-types.js";
-import type { ManagedLaunchdLogMonitorOutcome,ManagedLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
-import { logEmergencySize,logPermissionRepairNeeded,maintenanceCeilingReached,type MaintenanceActivityRequest } from "./launchd-maintenance-activity.js";
+import type { AdditionalLaunchdLogInspection, LaunchdLogMaintenanceDeps } from "./service/background/log-maintenance-types.js";
+import type { ManagedLaunchdLogMonitorOutcome, ManagedLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
+import { logEmergencySize, logPermissionRepairNeeded, maintenanceCeilingReached, type MaintenanceActivityRequest } from "./launchd-maintenance-activity.js";
 import {
-bootstrap,
-deriveLaunchdMaintenanceLabel,
-kickstart,
-launchdServiceInfo,
+  bootstrap,
+  deriveLaunchdMaintenanceLabel,
+  kickstart,
+  launchdServiceInfo,
 } from "./launchd.js";
-import type { LaunchctlRunner,LaunchdPaths } from "./launchd.js";
-import type { LaunchdLogInspection,LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
+import type { LaunchctlRunner, LaunchdPaths } from "./launchd.js";
+import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
 import { LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS } from "./launchd-logs.js";
 import {
-lifecycleFailure,
-maintenanceErrorMessage,
-pollUntil,
-uniquePids,
-unloadLaunchdService,
+  lifecycleFailure,
+  maintenanceErrorMessage,
+  pollUntil,
+  uniquePids,
+  unloadLaunchdService,
 } from "./background-lifecycle-utils.js";
 import type { PollOptions } from "./background-lifecycle-utils.js";
 import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";

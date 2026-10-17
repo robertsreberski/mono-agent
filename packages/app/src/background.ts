@@ -1,115 +1,115 @@
 import { formatManagedRuntimeProgress } from "./managed-runtime-progress.js";
-import { resolveApprovedBackgroundSnapshot,invalidateApprovedBackgroundSnapshots,type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
+import { resolveApprovedBackgroundSnapshot, invalidateApprovedBackgroundSnapshots, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import {
-clearMaintenanceDeferral,allowUnattendedMaintenanceStop,describeMaintenanceActivity,
-readLaunchdMaintenanceActivityStatus,MaintenanceDeferred,logPermissionRepairNeeded,
-type MaintenanceActivityRequest,type MaintenanceReason,
+  clearMaintenanceDeferral, allowUnattendedMaintenanceStop, describeMaintenanceActivity,
+  readLaunchdMaintenanceActivityStatus, MaintenanceDeferred, logPermissionRepairNeeded,
+  type MaintenanceActivityRequest, type MaintenanceReason,
 } from "./launchd-maintenance-activity.js";
 import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { spawn } from "node:child_process";
-import { createHash,randomUUID } from "node:crypto";
-import { constants as fsConstants,type Stats } from "node:fs";
-import { type FileHandle,lstat,open,realpath,rename,rm } from "node:fs/promises";
-import { basename,dirname,join,resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { type FileHandle, lstat, open, realpath, rename, rm } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
 
-import { listRecordedRuns,listTraceSources } from "@mono-agent/observability";
+import { listRecordedRuns, listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
 import {
-resolveAppTraceGlobalDiscovery,
-resolveAppTraceRegistryDir,
-resolveAppTraceStaleAfterMs,
-resolveGlobalTraceRegistryDir,
+  resolveAppTraceGlobalDiscovery,
+  resolveAppTraceRegistryDir,
+  resolveAppTraceStaleAfterMs,
+  resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
 import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
-bootstrap,
-buildLaunchdMaintenancePlistXml,
-buildPlistXml,
-defaultPathEnv,
-deriveLaunchdLabel,
-deriveLaunchdMaintenanceLabel,
-isLoaded,
-launchdManagedWorkerInfo,
-launchdMaintenanceEntrypointPathForCli,
-launchdServiceInfo,
-launchdPathsFor,
-launchdMaintenanceCalendarMinute,
-MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
-makeLaunchctlRunner,
+  bootstrap,
+  buildLaunchdMaintenancePlistXml,
+  buildPlistXml,
+  defaultPathEnv,
+  deriveLaunchdLabel,
+  deriveLaunchdMaintenanceLabel,
+  isLoaded,
+  launchdManagedWorkerInfo,
+  launchdMaintenanceEntrypointPathForCli,
+  launchdServiceInfo,
+  launchdPathsFor,
+  launchdMaintenanceCalendarMinute,
+  MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+  makeLaunchctlRunner,
 } from "./launchd.js";
 import type {
-LaunchctlResult,
-LaunchctlRunner,
-LaunchdManagedWorkerDefinition,
-LaunchdPaths,
+  LaunchctlResult,
+  LaunchctlRunner,
+  LaunchdManagedWorkerDefinition,
+  LaunchdPaths,
 } from "./launchd.js";
 import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
 import {
-beginLaunchdLogMaintenanceIntent,
-clearLaunchdLogMaintenanceIntent,
-inspectLaunchdLogs,
-markLaunchdLogMaintenanceRestoring,
-markLaunchdLogMaintenanceStopped,
-markLaunchdLogMaintenanceStopping,
-readLaunchdLogMaintenanceIntent,
-rotateStoppedLaunchdLogs,
+  beginLaunchdLogMaintenanceIntent,
+  clearLaunchdLogMaintenanceIntent,
+  inspectLaunchdLogs,
+  markLaunchdLogMaintenanceRestoring,
+  markLaunchdLogMaintenanceStopped,
+  markLaunchdLogMaintenanceStopping,
+  readLaunchdLogMaintenanceIntent,
+  rotateStoppedLaunchdLogs,
 } from "./launchd-logs.js";
-import type { LaunchdLogInspection,LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
+import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
 import {
-ensureManagedBackgroundRuntime,
-inspectManagedRuntimeSourceIdentity,
-MANAGED_BACKGROUND_WORKER_ENV,
-verifyManagedRuntimeLaunch,
+  ensureManagedBackgroundRuntime,
+  inspectManagedRuntimeSourceIdentity,
+  MANAGED_BACKGROUND_WORKER_ENV,
+  verifyManagedRuntimeLaunch,
 } from "./background-runtime.js";
 import type {
-ManagedBackgroundRuntime,
-ManagedBackgroundRuntimeInput,
-ManagedRuntimeAdditionalPackage,
-ManagedRuntimeLaunchVerification,
-ManagedRuntimeSourceIdentity,
+  ManagedBackgroundRuntime,
+  ManagedBackgroundRuntimeInput,
+  ManagedRuntimeAdditionalPackage,
+  ManagedRuntimeLaunchVerification,
+  ManagedRuntimeSourceIdentity,
 } from "./background-runtime.js";
 import {
-backgroundSnapshotFromMetadata,
-captureBackgroundSnapshot,
-encodeBackgroundSnapshot,
-sameBackgroundSnapshot,
+  backgroundSnapshotFromMetadata,
+  captureBackgroundSnapshot,
+  encodeBackgroundSnapshot,
+  sameBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
 import { removeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
-import { clearLaunchdSnapshotRefusal,readLaunchdSnapshotRefusal,SNAPSHOT_REFUSAL_MESSAGE } from "./launchd-snapshot-refusal.js";
+import { clearLaunchdSnapshotRefusal, readLaunchdSnapshotRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "./launchd-snapshot-refusal.js";
 import { acquireManagedRuntimePublicationBarrier } from "./managed-runtime-publication.js";
 import type { OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
 import {
-acquireFilesystemLifecycleLock,
-acquireSharedLaunchdLogLock,
+  acquireFilesystemLifecycleLock,
+  acquireSharedLaunchdLogLock,
 } from "./launchd-lifecycle-lock.js";
 import type {
-BackgroundLifecycleTarget,
-BackgroundLockAcquireOptions,
+  BackgroundLifecycleTarget,
+  BackgroundLockAcquireOptions,
 } from "./launchd-lifecycle-lock.js";
 import {
-assertLaunchdMaintenanceLifecycleLease,
-withLaunchdMaintenanceControllerLock,
+  assertLaunchdMaintenanceLifecycleLease,
+  withLaunchdMaintenanceControllerLock,
 } from "./launchd-maintenance-gate.js";
 import type { LaunchdMaintenanceLifecycleLease } from "./launchd-maintenance-gate.js";
-import { buildRunsHealthDisplay,RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
+import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import {
-lifecycleFailure,
-maintenanceErrorMessage,
-pollUntil,
-uniquePids,
-unloadLaunchdService,
+  lifecycleFailure,
+  maintenanceErrorMessage,
+  pollUntil,
+  uniquePids,
+  unloadLaunchdService,
 } from "./background-lifecycle-utils.js";
 import type { PollOptions } from "./background-lifecycle-utils.js";
 import {
-maintainLaunchdLogsWithLifecycleLockOperation,
-reportMaintenanceFailure
+  maintainLaunchdLogsWithLifecycleLockOperation,
+  reportMaintenanceFailure
 } from "./background-log-maintenance.js";
 import * as ui from "./ui.js";
 

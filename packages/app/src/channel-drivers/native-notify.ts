@@ -1,10 +1,10 @@
 import { classifyNotifySuppression } from "@mono-agent/contracts";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
-import type { CronJobConfig,CronJobResult } from "@mono-agent/trigger-cron";
+import type { CronJobConfig, CronJobResult } from "@mono-agent/trigger-cron";
 import type {
-WebhookEndpointConfig,
-WebhookInvocationRequest,
-WebhookInvocationStatus,
+  WebhookEndpointConfig,
+  WebhookInvocationRequest,
+  WebhookInvocationStatus,
 } from "@mono-agent/trigger-webhook";
 
 import type { MonoAgentAppLogger } from "../channels/types.js";

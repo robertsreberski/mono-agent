@@ -1,31 +1,31 @@
 import type { CronChannelOverrides } from "../channels/types.js";
 import type {
-CronAdapterConfig,CronFiringIdentity,
-CronJobConfig,
-CronJobResult,
-CronPreflightRecord
+  CronAdapterConfig, CronFiringIdentity,
+  CronJobConfig,
+  CronJobResult,
+  CronPreflightRecord
 } from "@mono-agent/trigger-cron";
-import type { ChannelConfigViewSection,NotifyDeliveryContext } from "@mono-agent/contracts";
+import type { ChannelConfigViewSection, NotifyDeliveryContext } from "@mono-agent/contracts";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver,MonoAgentAppLogger } from "../channels/types.js";
+import type { ChannelDriver, MonoAgentAppLogger } from "../channels/types.js";
 import { runCronPreflight } from "../cron-preflight.js";
 import type { NotifyDeliveryResult } from "../channels/types.js";
 import {
-inspectCronControlStore,
-openCronControlStore,
-type CronControlInspection,
-type CronControlStore,
+  inspectCronControlStore,
+  openCronControlStore,
+  type CronControlInspection,
+  type CronControlStore,
 } from "../cron-control-store.js";
 import {
-createCronOperatorDegradationController,
-createCronOperatorService,
-CronOperatorRegistry,
+  createCronOperatorDegradationController,
+  createCronOperatorService,
+  CronOperatorRegistry,
 } from "../cron-operator-service.js";
 import { findTriggerOverrideIssues } from "../trigger-overrides.js";
-import { deliverNativeCronNotification,inferUniqueNotifyDestination } from "./native-notify.js";
+import { deliverNativeCronNotification, inferUniqueNotifyDestination } from "./native-notify.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type CronAdapterModule = typeof import("@mono-agent/trigger-cron");

@@ -1,8 +1,8 @@
-import { mkdtemp,rm,writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
 import type { ProcessJobStore } from "../process-jobs-store.js";

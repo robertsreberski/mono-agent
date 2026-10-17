@@ -1,7 +1,7 @@
 import type { LabelRecallStore } from "./memory/recall-contract.js";
 import type { MemoryLoadOptions } from "@mono-agent/contracts";
 import { createHash } from "node:crypto";
-import { automaticIntentEligible,recallLineStatus } from "@mono-agent/memory/bujo";
+import { automaticIntentEligible, recallLineStatus } from "@mono-agent/memory/bujo";
 import type { MemoryDb } from "@mono-agent/memory/store";
 import type { MemoryRecallHit } from "./memory/recall-contract.js";
 

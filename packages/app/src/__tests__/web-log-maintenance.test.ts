@@ -1,13 +1,13 @@
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { LaunchdLogMaintenanceDeps } from "../service/background/log-maintenance-types.js";
 import {
-buildWebMaintenancePlistXml,
-WEB_LAUNCHD_LABEL,
-WEB_MAINTENANCE_LAUNCHD_LABEL,
-webMaintenanceCalendarMinute,
+  buildWebMaintenancePlistXml,
+  WEB_LAUNCHD_LABEL,
+  WEB_MAINTENANCE_LAUNCHD_LABEL,
+  webMaintenanceCalendarMinute,
 } from "../launchd.js";
-import type { LaunchdLogInspection,LaunchdLogMaintenanceIntent } from "../launchd-logs.js";
+import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "../launchd-logs.js";
 import { managedWebLogMaintenanceEnvironment } from "../managed-web-maintenance-environment.js";
 import { runWebLogMaintenanceCommand } from "../web-log-maintenance.js";
 import type { WebLogMaintenanceStatus } from "../web-log-maintenance-status.js";

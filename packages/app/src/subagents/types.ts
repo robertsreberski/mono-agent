@@ -1,9 +1,9 @@
-import type { RuntimeModelReference,OwnedForegroundProcesses } from "@mono-agent/turn/host/types";
+import type { RuntimeModelReference, OwnedForegroundProcesses } from "@mono-agent/turn/host/types";
 import type { LiveInputMailbox } from "@mono-agent/conversation";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import type { SubagentSalvage } from "../subagent-salvage.js";
-import type { SubagentVerificationTarget,SubagentVerificationDeclaration,SubagentVerificationObservation } from "../subagent-verification-observer.js";
-import type { SubagentTurnIntent,SubagentRecoveryFence,SubagentOwnerIdentity,SubagentContinuity,SubagentFailureReason } from "../subagent-registry-ownership.js";
+import type { SubagentVerificationTarget, SubagentVerificationDeclaration, SubagentVerificationObservation } from "../subagent-verification-observer.js";
+import type { SubagentTurnIntent, SubagentRecoveryFence, SubagentOwnerIdentity, SubagentContinuity, SubagentFailureReason } from "../subagent-registry-ownership.js";
 import type { SubagentRecoveryAcknowledgement } from "../subagent-recovery-binding.js";
 interface InstanceDefinition {
   readonly name: string;

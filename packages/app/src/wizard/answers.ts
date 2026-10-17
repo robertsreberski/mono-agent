@@ -1,12 +1,12 @@
-import type { WizardFallback,WizardAnswers,ComposeContext,SecretChecklistItem,WizardPlan } from "../setup/wizard-types.js";
+import type { WizardFallback, WizardAnswers, ComposeContext, SecretChecklistItem, WizardPlan } from "../setup/wizard-types.js";
 import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import {
-MAX_AGENT_NAME_LENGTH,
-type MonoAgentConfigJson,
+  MAX_AGENT_NAME_LENGTH,
+  type MonoAgentConfigJson,
 } from "@mono-agent/config";
 
 import { monoAgentConfigWithSchema } from "../config-reference.js";
-import { ADAPTER_SEND_TOOL_NAMES,APP_TOOL_NAMES,ALLOW_ALL_TOOLS,baseConfig,BUILTIN_TOOL_NAMES,type CapabilityModule,DEFAULT_MODEL,DEFAULT_SAFE_TOOLS,findModule,type ModuleValidateExpectation,resolveModuleInputs } from "../modules/index.js";
+import { ADAPTER_SEND_TOOL_NAMES, APP_TOOL_NAMES, ALLOW_ALL_TOOLS, baseConfig, BUILTIN_TOOL_NAMES, type CapabilityModule, DEFAULT_MODEL, DEFAULT_SAFE_TOOLS, findModule, type ModuleValidateExpectation, resolveModuleInputs } from "../modules/index.js";
 import { type GeneratedFile } from "../setup/types.js";
 import { CHILD_ONLY_TOOL_NAMES } from "../modules/known-tools.js";
 import { managedProjectSkillFiles } from "../project-skills.js";

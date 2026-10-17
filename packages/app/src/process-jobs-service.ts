@@ -1,75 +1,75 @@
-import { MAX_WAKE_CERTIFICATES,validWakeToken,type WakeRecovery } from "./process-jobs-wake-fence.js";
-import type { SubagentStopIdentity,SubagentSteerProof,SubagentStopProof } from "./process-jobs-internal.js";
-import { createLiveInputMailbox,type LiveInputMailbox } from "@mono-agent/conversation";
-import type { SubagentVerificationTarget,SubagentVerificationObservation } from "./subagent-verification-observer.js";
+import { MAX_WAKE_CERTIFICATES, validWakeToken, type WakeRecovery } from "./process-jobs-wake-fence.js";
+import type { SubagentStopIdentity, SubagentSteerProof, SubagentStopProof } from "./process-jobs-internal.js";
+import { createLiveInputMailbox, type LiveInputMailbox } from "@mono-agent/conversation";
+import type { SubagentVerificationTarget, SubagentVerificationObservation } from "./subagent-verification-observer.js";
 import type { SubagentCommandReceipts } from "./subagents/types.js";
 import { boundSubagentCommandReceipts } from "./process-jobs-store.js";
-import { emptySubagentCommandReceipts,retainSubagentCommandReceipt,subagentCommandReceipt } from "./subagent-command-receipts.js";
+import { emptySubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt } from "./subagent-command-receipts.js";
 import { createSubagentOwnedCommands } from "./subagent-owned-commands.js";
-import type { ManagedSubagentExecution,ManagedSubagentRegistry,SubagentDisposition,SubagentRegistryPublication } from "./subagents/types.js";
+import type { ManagedSubagentExecution, ManagedSubagentRegistry, SubagentDisposition, SubagentRegistryPublication } from "./subagents/types.js";
 import type { InstanceOutcome } from "./subagents/types.js";
 import type { SubagentSalvage } from "./subagent-salvage.js";
-import { isSubagentUuid,sameSubagentOwner,type SubagentOwnerIdentity,type SubagentOwnerResolution } from "./subagent-registry-ownership.js";
+import { isSubagentUuid, sameSubagentOwner, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "./subagent-registry-ownership.js";
 import { reconcileSubagentExecutionOwnership } from "./subagent-ownership-recovery.js";
 import type { SubagentKnownOwner } from "./subagent-registry-ownership.js";
-import { hasPendingSubagentPublication,hasPendingSubagentReleaseReceipt,hasSubagentObligation,hasUnresolvedSubagentOwnership } from "./subagent-execution-ownership.js";
-import { subagentProgressUsage,SubagentJobProgress,type SubagentProgressEvent } from "./process-job-subagent-progress.js";
-import { launchInternalProcessJob,type InternalProcessJobRequest,type InternalProcessJobsController,type InternalProcessJobResult } from "./process-jobs-internal.js";
+import { hasPendingSubagentPublication, hasPendingSubagentReleaseReceipt, hasSubagentObligation, hasUnresolvedSubagentOwnership } from "./subagent-execution-ownership.js";
+import { subagentProgressUsage, SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
+import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join,resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { isDeepStrictEqual } from "node:util";
 
 import {
-processJobPublicError,
-type AgentLiveInputOffer,
-type ProcessJobErrorCode,
-type ProcessJobProjection,
-type ProcessJobState,
+  processJobPublicError,
+  type AgentLiveInputOffer,
+  type ProcessJobErrorCode,
+  type ProcessJobProjection,
+  type ProcessJobState,
 } from "@mono-agent/contracts";
-import type { ProcessJobProcessHandle,ProcessJobProcessResult,ProcessJobsController,ProcessJobStartRequest,ProcessJobStartResult } from "@mono-agent/turn/host/types";
+import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "@mono-agent/turn/host/types";
 
 import type { NotifyDeliveryResult } from "./channels/types.js";
-import { PROCESS_JOBS_CAPS,type ProcessJobsSettings } from "./process-jobs-config.js";
+import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
 import { ProcessJobOutputTail } from "./process-job-output-tail.js";
-import { consumeSilentProcessJobWake,offerClaimedProcessJobLiveInput,recordProcessJobWakeAdmission,revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
-import { acquireOwnerPrivateLock,legacyLockHolderMessage,type LegacyLockHolder,type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
+import { consumeSilentProcessJobWake, offerClaimedProcessJobLiveInput, recordProcessJobWakeAdmission, revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
+import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import {
-attestProcessJobsRootRegistration,
-type ProcessJobsRootRegistrationProof,
+  attestProcessJobsRootRegistration,
+  type ProcessJobsRootRegistrationProof,
 } from "./process-jobs-root-registry.js";
 import {
-processDescriptionSecrets,
-processOutputSecrets,
-redactProcessOutput as redactOutput,
+  processDescriptionSecrets,
+  processOutputSecrets,
+  redactProcessOutput as redactOutput,
 } from "./process-output-redaction.js";
 import { redactSecrets } from "./redact-secrets.js";
 import { cleanupPersistedSandboxSettings } from "./sandbox-settings-cleanup.js";
 import {
-currentProcessIncarnation,
-isSameProcessIncarnation,
-readProcessIncarnation,
-type ProcessIncarnation,
+  currentProcessIncarnation,
+  isSameProcessIncarnation,
+  readProcessIncarnation,
+  type ProcessIncarnation,
 } from "@mono-agent/conversation/process-incarnation";
 import {
-isTerminalProcessJobState,
-isProcessJobOriginRecord,
-clearProcessJobHealthIncident,
-loadOrCreateProcessJobSecret,
-openProcessJobStore,
-prepareProcessJobStateDirectory,
-PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX,
-PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
-PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
-PROCESS_JOB_ENV_KEYS_CAPS,
-projectProcessJob,
-processJobOperatorToken,
-recordProcessJobHealthIncident,
-type DurableProcessJobRecord,
-type ProcessJobOriginRecord,
-type ProcessJobStore,
-type ProcessJobStoreMutationDraft,
+  isTerminalProcessJobState,
+  isProcessJobOriginRecord,
+  clearProcessJobHealthIncident,
+  loadOrCreateProcessJobSecret,
+  openProcessJobStore,
+  prepareProcessJobStateDirectory,
+  PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX,
+  PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
+  PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
+  PROCESS_JOB_ENV_KEYS_CAPS,
+  projectProcessJob,
+  processJobOperatorToken,
+  recordProcessJobHealthIncident,
+  type DurableProcessJobRecord,
+  type ProcessJobOriginRecord,
+  type ProcessJobStore,
+  type ProcessJobStoreMutationDraft,
 } from "./process-jobs-store.js";
 
 const PROCESS_JOB_OWNER_SCHEMA = "mono-agent.process-jobs-owner.v1";

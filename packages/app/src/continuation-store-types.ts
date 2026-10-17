@@ -1,14 +1,14 @@
 import {
-AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES,
-AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES,
-AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES,
-type AgentContinuationOriginContext,
+  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES,
+  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES,
+  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES,
+  type AgentContinuationOriginContext,
 } from "@mono-agent/contracts";
 
 import type {
-ContinuationDeliveryReceipt,
-ContinuationMode,
-ContinuationState,
+  ContinuationDeliveryReceipt,
+  ContinuationMode,
+  ContinuationState,
 } from "./continuations.js";
 
 export const CONTINUATION_STORE_SCHEMA_VERSION = 1;

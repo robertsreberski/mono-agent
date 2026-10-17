@@ -5,75 +5,75 @@ import { WorkerActivityTracker } from "./durable-state/worker-activity.js";
 import { publishWorkerActivity } from "./durable-state/activity-snapshot.js";
 import { readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { stat } from "node:fs/promises";
-import { dirname,resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { listRecordedRuns } from "@mono-agent/observability";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
-import { createSupervisedRestartLatch,type SupervisedRestartLatch } from "./supervised-restart-latch.js";
+import { createSupervisedRestartLatch, type SupervisedRestartLatch } from "./supervised-restart-latch.js";
 import type { PreparedSupervisedRestartInputs } from "./supervised-restart.js";
 import { acquireFilesystemLifecycleLock } from "./launchd-lifecycle-lock.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
-import { resolveApprovedBackgroundSnapshot,stageApprovedBackgroundSnapshot,type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
+import { resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import { createSupervisedRestartAuthority } from "./supervised-restart-authority.js";
 import { sandboxEffectiveStateWarning } from "@mono-agent/turn/host/sandbox";
 
 import { startMonoAgentApp } from "./app.js";
-import type { MonoAgentApp,SandboxStatus } from "./app.js";
+import type { MonoAgentApp, SandboxStatus } from "./app.js";
 import { startVerifiedManagedMonoAgentApp } from "./app-controller.js";
 import {
-acquireBackgroundWorkerLease,
-canonicalBackgroundConfigPath,
-defaultBackgroundDeps,
-forceRestartBackground,
-maintainLaunchdController,
-managedBackgroundEnvironment,
-resolveInstanceTarget,
-restartBackground,
-startBackground,
-statusBackground,
-stopBackground,
-tailLogs,
+  acquireBackgroundWorkerLease,
+  canonicalBackgroundConfigPath,
+  defaultBackgroundDeps,
+  forceRestartBackground,
+  maintainLaunchdController,
+  managedBackgroundEnvironment,
+  resolveInstanceTarget,
+  restartBackground,
+  startBackground,
+  statusBackground,
+  stopBackground,
+  tailLogs,
 } from "./background.js";
-import type { BackgroundDeps,InstanceTarget } from "./background.js";
+import type { BackgroundDeps, InstanceTarget } from "./background.js";
 import type { LaunchdMaintenanceCommandArgs } from "./launchd-maintenance-command.js";
 import {
-assertLaunchdMaintenanceLifecycleLease,
-withLaunchdMaintenanceControllerLock,
+  assertLaunchdMaintenanceLifecycleLease,
+  withLaunchdMaintenanceControllerLock,
 } from "./launchd-maintenance-gate.js";
 import type { LaunchdMaintenanceLifecycleLease } from "./launchd-maintenance-gate.js";
 import {
-captureBackgroundSnapshot,
-captureDurableBackgroundInputs,
-assertBackgroundInputVersionsUnchanged,
-decodeBackgroundSnapshot,
-loadDurableBackgroundEnvironment,
-materializeBackgroundRuntimeInputs,
-sameBackgroundSnapshot,
+  captureBackgroundSnapshot,
+  captureDurableBackgroundInputs,
+  assertBackgroundInputVersionsUnchanged,
+  decodeBackgroundSnapshot,
+  loadDurableBackgroundEnvironment,
+  materializeBackgroundRuntimeInputs,
+  sameBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
-import { legacyLockHolderMessage,type LegacyLockHolder } from "./durable-state/owner-private-lock.js";
+import { legacyLockHolderMessage, type LegacyLockHolder } from "./durable-state/owner-private-lock.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { startManagedLaunchdLogMonitor } from "./background-log-maintenance.js";
 import type {
-ManagedLaunchdLogMonitor,
-ManagedLaunchdLogMonitorDependencies,
+  ManagedLaunchdLogMonitor,
+  ManagedLaunchdLogMonitorDependencies,
 } from "./background-log-maintenance.js";
 import { writeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
-import { clearLaunchdSnapshotRefusal,writeLaunchdSnapshotRefusal } from "./launchd-snapshot-refusal.js";
-import { selectBackgroundOperationalEnvironment,selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
+import { clearLaunchdSnapshotRefusal, writeLaunchdSnapshotRefusal } from "./launchd-snapshot-refusal.js";
+import { selectBackgroundOperationalEnvironment, selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
 import type { ChannelStatus } from "./channels/types.js";
 import { loadCliEnvFile } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
-import type { ValidationSection,ValidationStatus } from "./doctor-types.js";
+import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
 import { readCliConfigSnapshot } from "./service/background/source-inputs.js";
-import { buildRunsHealthDisplay,RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
-import { purgeConversationState,type PurgeConversationStateResult } from "./sessions.js";
-import { deriveLaunchdLabel,launchdManagedWorkerInfo,launchdPathsFor,makeLaunchctlRunner } from "./launchd.js";
+import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
+import { purgeConversationState, type PurgeConversationStateResult } from "./sessions.js";
+import { deriveLaunchdLabel, launchdManagedWorkerInfo, launchdPathsFor, makeLaunchctlRunner } from "./launchd.js";
 import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";
 

@@ -1,7 +1,7 @@
 import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { basename,dirname,resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -9,59 +9,59 @@ import { readMonoAgentConfigJson } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 import {
-canonicalBackgroundConfigPath,
-defaultBackgroundDeps,
-ensureBackgroundReady,
-managedBackgroundEnvironment,
-resolveInstanceTarget,
+  canonicalBackgroundConfigPath,
+  defaultBackgroundDeps,
+  ensureBackgroundReady,
+  managedBackgroundEnvironment,
+  resolveInstanceTarget,
 } from "./background.js";
 import type { BackgroundLaunchResult } from "./background.js";
 import { captureDurableBackgroundInputs } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ParsedCliArgs } from "./cli-args.js";
-import { attachScopedKeypress,isAbortLike } from "./cli-cancellation.js";
+import { attachScopedKeypress, isAbortLike } from "./cli-cancellation.js";
 import {
-formatSection,
-renderPlanCompleteness,
-riskColor,
+  formatSection,
+  renderPlanCompleteness,
+  riskColor,
 } from "./cli-validate-config-command.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport } from "./doctor-types.js";
-import { effectiveFirstRunEnvironment,evaluateFirstRunConfigurationReadiness,evaluateFirstRunReadiness,hasSensitivePersistedEnvironmentValue,piAuthPathBackgroundConflict,resolveEffectivePiAuthPath,selectedSecretEnvironmentConflicts,selectedSecretValues,unexpectedPersistedMonoAgentOverrides,validateWizardPlanInStaging,withExactProcessEnvironment } from "./first-run-readiness.js";
-import { readCliConfigSnapshot,readCliDotenvSnapshot } from "./service/background/source-inputs.js";
-import type { CliConfigSnapshot,CliDotenvSnapshot,CliEnvironment } from "./service/background/source-inputs.js";
+import { effectiveFirstRunEnvironment, evaluateFirstRunConfigurationReadiness, evaluateFirstRunReadiness, hasSensitivePersistedEnvironmentValue, piAuthPathBackgroundConflict, resolveEffectivePiAuthPath, selectedSecretEnvironmentConflicts, selectedSecretValues, unexpectedPersistedMonoAgentOverrides, validateWizardPlanInStaging, withExactProcessEnvironment } from "./first-run-readiness.js";
+import { readCliConfigSnapshot, readCliDotenvSnapshot } from "./service/background/source-inputs.js";
+import type { CliConfigSnapshot, CliDotenvSnapshot, CliEnvironment } from "./service/background/source-inputs.js";
 import {
-initMonoAgentFolder,
-secretEnvConcurrentModificationCause,
-verifySecretEnvPersistenceGuard,
+  initMonoAgentFolder,
+  secretEnvConcurrentModificationCause,
+  verifySecretEnvPersistenceGuard,
 } from "./init.js";
 import type { InitMonoAgentFolderResult } from "./init.js";
-import { deriveLaunchdLabel,launchdPathsFor } from "./launchd.js";
+import { deriveLaunchdLabel, launchdPathsFor } from "./launchd.js";
 import {
-detectProviderCredentialStates,
-executeProviderSetupPlan,
-isProviderSetupPiApiKeyAction,
-planProviderSetup,
-providerSetupActionCommandLine,
+  detectProviderCredentialStates,
+  executeProviderSetupPlan,
+  isProviderSetupPiApiKeyAction,
+  planProviderSetup,
+  providerSetupActionCommandLine,
 } from "./provider-setup.js";
 import type {
-ProviderCredentialState,
-ProviderSetupPlan,
-ProviderSetupResult,
+  ProviderCredentialState,
+  ProviderSetupPlan,
+  ProviderSetupResult,
 } from "./provider-setup.js";
 import { inspectPiAuthStore } from "./pi-auth-store-inspection.js";
-import { readinessProbeTimeoutMs,runAllRouteReadinessProbe } from "./readiness-probe.js";
+import { readinessProbeTimeoutMs, runAllRouteReadinessProbe } from "./readiness-probe.js";
 import type {
-ReadinessProbeResult,
-ReadinessRouteResult,
+  ReadinessProbeResult,
+  ReadinessRouteResult,
 } from "./readiness-probe.js";
 import { setupManagedSrt } from "./sandbox-manager.js";
-import { composeWizardPlan,referencedSetupModelRefs } from "./wizard/answers.js";
-import type { SecretChecklistItem,WizardAnswers,WizardPlan } from "./setup/wizard-types.js";
-import { answersFromCli,isWithChannel } from "./wizard/from-flags.js";
+import { composeWizardPlan, referencedSetupModelRefs } from "./wizard/answers.js";
+import type { SecretChecklistItem, WizardAnswers, WizardPlan } from "./setup/wizard-types.js";
+import { answersFromCli, isWithChannel } from "./wizard/from-flags.js";
 import type { WithChannel } from "./wizard/from-flags.js";
-import { findPreset,presetIds } from "./wizard/presets.js";
-import { runInitWizard,runSetupRepairWizard } from "./wizard/run.js";
+import { findPreset, presetIds } from "./wizard/presets.js";
+import { runInitWizard, runSetupRepairWizard } from "./wizard/run.js";
 import * as p from "@clack/prompts";
 import * as ui from "./ui.js";
 

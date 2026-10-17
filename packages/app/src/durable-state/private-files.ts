@@ -1,7 +1,7 @@
-import { createHash,randomUUID } from "node:crypto";
-import { constants as fsConstants,type Stats } from "node:fs";
-import { chmod,lstat,mkdir,open,rename,rm } from "node:fs/promises";
-import { dirname,join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 export async function ensureOwnerOnlyDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const info = await lstat(path);
