@@ -23,7 +23,7 @@ import type { NotifyDestination } from "../delivery/notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
 import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "../channels/types.js";
 import type { SeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
-import type { ProcessJobsProtectionPosture } from "../process-jobs-protection.js";
+import type { ProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 

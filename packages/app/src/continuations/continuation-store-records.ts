@@ -3,7 +3,7 @@ import { readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { canonicalContinuationJson, continuationDigest } from "./continuations.js";
-import { assertOwnerOnlyRegularFile, pathExists, readBoundedOwnerOnlyFile, syncDirectory, writeJsonAtomic } from "./durable-state/private-files.js";
+import { assertOwnerOnlyRegularFile, pathExists, readBoundedOwnerOnlyFile, syncDirectory, writeJsonAtomic } from "../durable-state/private-files.js";
 import {
   assertRecordFitsV3,
   isObject,

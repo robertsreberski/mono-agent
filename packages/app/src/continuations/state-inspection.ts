@@ -1,11 +1,11 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { applyOriginContextGroupCommit } from "../continuation-origin-store.js";
+import { applyOriginContextGroupCommit } from "./continuation-origin-store.js";
 import { readBoundedOwnerOnlyFile } from "../durable-state/private-files.js";
-import { loadLegacyStore, mergeMigrationRecords } from "../continuation-store-records.js";
+import { loadLegacyStore, mergeMigrationRecords } from "./continuation-store-records.js";
 import {
   CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
-} from "../continuation-store.js";
+} from "./continuation-store.js";
 import {
   applyRetention,
   isDurableGeneration,
@@ -16,7 +16,7 @@ import {
   normalizeLegacyContinuationRecords,
   requiredDate,
   resolveRetention,
-} from "../continuation-store-policy.js";
+} from "./continuation-store-policy.js";
 import {
   MAX_LEGACY_STORE_BYTES,
   MAX_MANIFEST_BYTES,
@@ -25,8 +25,8 @@ import {
   type ContinuationRecordTransaction,
   type ContinuationRetentionOptions,
   type DurableContinuationRecord,
-} from "../continuation-store-types.js";
-import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from "../continuations.js";
+} from "./continuation-store-types.js";
+import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from "./continuations.js";
 import { continuationFsCode, continuationReason, isDoctorObject } from "../diagnostics/inspection-values.js";
 
 const CONTINUATION_V2_ROLLBACK_GUARD = "UPGRADED-TO-RECORDS-V3";

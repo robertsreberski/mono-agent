@@ -36,8 +36,8 @@ vi.mock("../peer-acp-client.js", async (importOriginal) => ({
 import { createPeerAgentRuntimeExtension, withoutLocalPaths } from "../peer-agent.js";
 import { PeerSessionGoneError, type PeerAcpTurn } from "../peer-acp-client.js";
 import { makePeerHandoff, stampPeerOperatorHandoff } from "../peer-provenance.js";
-import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import type { InternalProcessJobRequest } from "../process-jobs/process-jobs-internal.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 
 const roots: string[] = [];
 afterEach(async () => {

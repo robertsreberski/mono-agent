@@ -12,7 +12,7 @@ import { writePrivateLaunchdState } from "../private-launchd-state.js";
 import { currentProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import type { BackgroundLifecycleTarget } from "../launchd-lifecycle-lock.js";
 import type { AgentResponder } from "@mono-agent/contracts";
-import { bindProcessJobWakeContextToResponder, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { bindProcessJobWakeContextToResponder, runWithProcessJobWakeContext } from "../process-jobs/process-jobs-context.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();

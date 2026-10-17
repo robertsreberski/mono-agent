@@ -12,9 +12,9 @@ import { ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeTextAtomic } f
 import { PeerSessionGoneError, runPeerAcpTurn } from "./peer-acp-client.js";
 import { PeerQuestionRelay, type PeerQuestion, type PeerTurnEvent } from "./peer-question-relay.js";
 import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
-import { processJobWakeContextForRequest } from "./process-jobs-context.js";
-import { processJobOriginForRequest } from "./process-jobs-runtime.js";
-import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import { processJobWakeContextForRequest } from "./process-jobs/process-jobs-context.js";
+import { processJobOriginForRequest } from "./process-jobs/process-jobs-runtime.js";
+import type { ProcessJobsServiceHandle } from "./process-jobs/process-jobs-service.js";
 import type { ChannelId } from "./channels/types.js";
 import { createRequestScopedMcpRuntimeExtension } from "./mcp/request-scoped-mcp.js";
 import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";

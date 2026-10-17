@@ -10,7 +10,7 @@ import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunO
 
 import { textFromMemoryRuntimeResult } from "../memory-llm-result.js";
 import { isSharedRecallStore, MemoryRetrievalService } from "../memory-retrieval.js";
-import type { ProcessJobsProtectionPosture } from "../process-jobs-protection.js";
+import type { ProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
 import type { ConfiguredConversationHarnessOptions, RecorderCompositionDeps, StaticRuntimeOptions } from "./configured-agent-options.js";
 import { configRuntimeFlags, mergeStaticRuntimeOptions, runtimeHostOptionsForConfig } from "./configured-runtime-options.js";
 import { composeRunRecorder, recorderCompositionDeps } from "./run-recording.js";

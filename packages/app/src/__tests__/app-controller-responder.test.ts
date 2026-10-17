@@ -34,8 +34,8 @@ import {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
   type ProcessJobsRootRegistrySnapshot,
-} from "../process-jobs-root-registry.js";
-import { resolveProcessJobsProtectionPosture } from "../process-jobs-protection.js";
+} from "../process-jobs/process-jobs-root-registry.js";
+import { resolveProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
 
 const processIdentity = vi.hoisted(() => ({
   current: {

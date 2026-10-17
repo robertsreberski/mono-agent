@@ -2,15 +2,15 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { describeSandboxEffectiveState, resolveSandboxEffectiveState } from "@mono-agent/turn/host/sandbox";
 import { type SandboxEffectiveState, type SandboxEngine, type SandboxPolicy } from "@mono-agent/turn/host/types";
 
-import { loadProcessJobsSettings } from "./process-jobs-config.js";
+import { loadProcessJobsSettings } from "./process-jobs/process-jobs-config.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
   failedProcessJobsRootRegistryProtection,
   loadProcessJobsRootRegistryProtection,
   processJobsProtectionPolicyRoots,
-} from "./process-jobs-root-registry.js";
-import { resolveProcessJobsProtectionPosture, type ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
-import { processJobsSandboxPolicy } from "./process-jobs-runtime.js";
+} from "./process-jobs/process-jobs-root-registry.js";
+import { resolveProcessJobsProtectionPosture, type ProcessJobsProtectionPosture } from "./process-jobs/process-jobs-protection.js";
+import { processJobsSandboxPolicy } from "./process-jobs/process-jobs-runtime.js";
 
 /** Ordinary policy selection is NOT authority to bypass freshly retained roots. */
 export function effectiveSandboxBoundary(input: {

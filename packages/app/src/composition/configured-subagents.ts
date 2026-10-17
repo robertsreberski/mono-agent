@@ -9,11 +9,11 @@ import type { MonoRuntimeLike, OwnedForegroundProcesses, RuntimeModelReference, 
 
 import { configuredToolPolicyInput as toolPolicyInput } from "../host/computer-use.js";
 import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "../modules/known-tools.js";
-import { attestProcessJobsRootRegistrySnapshot, loadProcessJobsRootRegistryProtection, processJobsProtectionPolicyRoots, type ProcessJobsRootRegistrySnapshot } from "../process-jobs-root-registry.js";
+import { attestProcessJobsRootRegistrySnapshot, loadProcessJobsRootRegistryProtection, processJobsProtectionPolicyRoots, type ProcessJobsRootRegistrySnapshot } from "../process-jobs/process-jobs-root-registry.js";
 import { clearSessionsSandboxPolicy, type ClearSessionsRuntimeBoundaryOptions } from "./runtime-option-extensions.js";
 import { isReadSkillDenied } from "../skill-registry.js";
-import { createSubagentInstanceRegistry, persistentSubagentsEnabled, subagentInstancesRoot } from "../subagent-instances.js";
-import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
+import { createSubagentInstanceRegistry, persistentSubagentsEnabled, subagentInstancesRoot } from "../subagents/subagent-instances.js";
+import { createSubagentRecoveryAccess } from "../subagents/subagent-recovery-access.js";
 import type { InstanceRegistryHandle } from "../subagents/types.js";
 import { createHostWebRequestCoordinator } from "../host/web-request-coordinator.js";
 import type { ConfiguredAgentInternalHooks, ConfiguredConversationHarnessOptions, StaticRuntimeOptions } from "./configured-agent-options.js";
@@ -421,7 +421,7 @@ export function createConfiguredSubagentRegistry(input: {
         ...subagentRecoveryAccess,
         ...(processJobs?.service?.bindManagedSubagents ? {
           ownerForReservation: (jobId: string) => ({ jobId, storeRoot: processJobs!.service!.settings.stateDir }),
-          resolveOwner: (identity: import("../subagent-registry-ownership.js").SubagentOwnerIdentity) => processJobs!.service!.resolveSubagentOwner!(identity),
+          resolveOwner: (identity: import("../subagents/subagent-registry-ownership.js").SubagentOwnerIdentity) => processJobs!.service!.resolveSubagentOwner!(identity),
         } : {}),
         checkOwnerIndex: async (conversationId, known) => {
           // Only existing registered history is authoritative. Never scan/open an old root here.

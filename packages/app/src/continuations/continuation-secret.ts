@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { lstat, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ensureOwnerOnlyDirectory } from "./durable-state/private-files.js";
+import { ensureOwnerOnlyDirectory } from "../durable-state/private-files.js";
 import { isMissing, isObject } from "./continuation-store-policy.js";
 export async function loadOrCreateContinuationSecret(stateDir: string): Promise<Buffer> {
   await ensureOwnerOnlyDirectory(stateDir);

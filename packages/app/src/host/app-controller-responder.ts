@@ -64,26 +64,26 @@ import {
   runtimeRouteSupportsMcpApps,
 } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger } from "../channels/types.js";
-import { loadContinuationSettings } from "../continuation-config.js";
+import { loadContinuationSettings } from "../continuations/continuation-config.js";
 import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
-import type { ContinuationServiceHandle } from "../continuation-service.js";
+import type { ContinuationServiceHandle } from "../continuations/continuation-service.js";
 import type { MemoryRetrievalService } from "../memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
 import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
 
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 import type { AgentRootOwnership } from "../durable-state/agent-root-coordinator.js";
 import {
   failedProcessJobsRootRegistryProtection,
   processJobsProtectionPolicyRoots,
   type ProcessJobsRootRegistrySnapshot,
-} from "../process-jobs-root-registry.js";
+} from "../process-jobs/process-jobs-root-registry.js";
 import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
-} from "../process-jobs-protection.js";
+} from "../process-jobs/process-jobs-protection.js";
 import type { ProviderAuthObservationTracker } from "../provider-auth-observations.js";
-import { bindProcessJobWakeContextToResponder } from "../process-jobs-context.js";
+import { bindProcessJobWakeContextToResponder } from "../process-jobs/process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 

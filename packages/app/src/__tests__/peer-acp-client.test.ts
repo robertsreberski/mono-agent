@@ -9,12 +9,12 @@ const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { isPeerProcessJobQuestion } from "@mono-agent/contracts";
-import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import type { InternalProcessJobRequest } from "../process-jobs/process-jobs-internal.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createConversationResponder } from "@mono-agent/conversation";
-import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
+import { createProcessJobsRuntimeExtension } from "../process-jobs/process-jobs-runtime.js";
 
 const discovery = vi.hoisted(() => ({ enabled: false, root: "", artifactDir: "", callerArtifactDir: "" }));
 vi.mock("@mono-agent/web", async (importOriginal) => {

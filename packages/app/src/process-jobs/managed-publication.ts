@@ -1,8 +1,8 @@
-import type { DurableProcessJobRecord } from "../process-jobs-store.js";
-import { isTerminalProcessJobState } from "../process-jobs-store.js";
-import { hasPendingSubagentPublication, hasUnresolvedSubagentOwnership } from "../subagent-execution-ownership.js";
+import type { DurableProcessJobRecord } from "./process-jobs-store.js";
+import { isTerminalProcessJobState } from "./process-jobs-store.js";
+import { hasPendingSubagentPublication, hasUnresolvedSubagentOwnership } from "../subagents/subagent-execution-ownership.js";
 import type { SubagentRegistryPublication } from "../subagents/types.js";
-import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";
+import type { SubagentOwnerIdentity } from "../subagents/subagent-registry-ownership.js";
 
 export interface ManagedPublicationOperations {
   assertWritable(): void;

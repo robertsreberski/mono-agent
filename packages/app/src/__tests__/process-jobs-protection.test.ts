@@ -9,8 +9,8 @@ import {
   processJobsProtectionStatus,
   resolveProcessJobsProtectionPosture,
   unsafeProcessJobsProtectionStatus,
-} from "../process-jobs-protection.js";
-import type { ProcessJobsRootRegistrySnapshot } from "../process-jobs-root-registry.js";
+} from "../process-jobs/process-jobs-protection.js";
+import type { ProcessJobsRootRegistrySnapshot } from "../process-jobs/process-jobs-root-registry.js";
 
 const PI = { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" } as const;
 const CLAUDE = { provider: "anthropic", model: "claude-opus-4-8", reference: "anthropic:claude-opus-4-8" } as const;

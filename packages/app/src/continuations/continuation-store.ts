@@ -22,7 +22,7 @@ import {
   removeOriginContextGroupCommits,
   sweepOriginContextBlobs,
 } from "./continuation-origin-store.js";
-import { pathExists, ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, syncDirectory, writeJsonAtomic, writeTextAtomic } from "./durable-state/private-files.js";
+import { pathExists, ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, syncDirectory, writeJsonAtomic, writeTextAtomic } from "../durable-state/private-files.js";
 import {
   applyRetention,
   cloneRecord,

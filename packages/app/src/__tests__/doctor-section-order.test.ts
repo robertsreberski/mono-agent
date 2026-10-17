@@ -56,11 +56,11 @@ vi.mock("../doctor/tools.js", () => ({ toolsSection: async () => state.section("
 vi.mock("../host/computer-use.js", () => ({ computerUseSection: async () => state.section("computer-use") }));
 vi.mock("../doctor-session-history.js", () => ({ sessionToolHistorySection: async () => state.section("session-history") }));
 vi.mock("../doctor/web-tools.js", () => ({ webToolsSection: vi.fn(async () => state.section("web-tools")) }));
-vi.mock("../continuation-config.js", () => ({
+vi.mock("../continuations/continuation-config.js", () => ({
   loadContinuationSettings: async () => { state.calls.push("continuations"); throw new Error("Continuation access denied."); },
 }));
-vi.mock("../process-jobs-config.js", async (original) => ({
-  ...await original<typeof import("../process-jobs-config.js")>(),
+vi.mock("../process-jobs/process-jobs-config.js", async (original) => ({
+  ...await original<typeof import("../process-jobs/process-jobs-config.js")>(),
   loadProcessJobsSettings: async () => { state.calls.push("process-jobs"); throw new Error("Job access denied."); },
 }));
 vi.mock("../doctor/sandbox.js", () => ({ sandboxSection: async () => state.section("sandbox") }));

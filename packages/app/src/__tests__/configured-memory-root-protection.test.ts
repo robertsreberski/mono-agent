@@ -46,7 +46,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
 
 const { createConfiguredMemory } = await import("../index.js");
 const { createConfiguredMemoryForApp } = await import("../composition/configured-memory.js");
-const { resolveProcessJobsProtectionPosture } = await import("../process-jobs-protection.js");
+const { resolveProcessJobsProtectionPosture } = await import("../process-jobs/process-jobs-protection.js");
 const {
   acquireAgentRootOwnership,
   agentRootLeasePath,
@@ -54,7 +54,7 @@ const {
 const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
-} = await import("../process-jobs-root-registry.js");
+} = await import("../process-jobs/process-jobs-root-registry.js");
 
 const temporaryDirectories: string[] = [];
 const ownerships: Array<{

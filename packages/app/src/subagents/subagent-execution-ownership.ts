@@ -1,6 +1,6 @@
-import type { SubagentExecutionOwnership, SubagentOwnedCommand } from "./subagents/types.js";
-import type { InstanceUsage } from "./subagents/types.js";
-import type { SubagentDisposition } from "./subagents/types.js";
+import type { SubagentExecutionOwnership, SubagentOwnedCommand } from "./types.js";
+import type { InstanceUsage } from "./types.js";
+import type { SubagentDisposition } from "./types.js";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { processIncarnationFromJson, type ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 

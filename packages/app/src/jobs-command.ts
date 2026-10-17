@@ -11,7 +11,7 @@ import { listTraceSources, mergeTraceSources, type TraceSourceListItem } from "@
 
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./composition/app-config.js";
 import { readBoundedOwnerOnlyFile } from "./durable-state/private-files.js";
-import { PROCESS_JOB_SECRET_FILE } from "./process-jobs-store.js";
+import { PROCESS_JOB_SECRET_FILE } from "./process-jobs/process-jobs-store.js";
 
 const MAX_PROCESS_JOBS_RESPONSE_BYTES = 16 * 1024 * 1024;
 

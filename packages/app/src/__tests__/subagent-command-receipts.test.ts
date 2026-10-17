@@ -1,7 +1,7 @@
-import { boundSubagentCommandReceipts, type DurableProcessJobRecord } from "../process-jobs-store.js";
+import { boundSubagentCommandReceipts, type DurableProcessJobRecord } from "../process-jobs/process-jobs-store.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { emptySubagentCommandReceipts, isSubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt, SUBAGENT_COMMAND_RECEIPTS_MAX_BYTES } from "../subagent-command-receipts.js";
+import { emptySubagentCommandReceipts, isSubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt, SUBAGENT_COMMAND_RECEIPTS_MAX_BYTES } from "../subagents/subagent-command-receipts.js";
 import type { SubagentOwnedCommand } from "../subagents/types.js";
 const command = (): SubagentOwnedCommand => ({ id: randomUUID(), callKey: "1:opaque", tool: "Exec", cwd: "/workspace", state: "released",
   pid: null, pgid: null, incarnation: null, sandboxSettingsPath: null, deadlineAt: 5000, budgetMs: 3000 });

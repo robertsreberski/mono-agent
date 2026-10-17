@@ -8,10 +8,10 @@ import {
   openContinuationStore,
   type ContinuationOriginContextReference,
   type DurableContinuationRecord,
-} from "../continuation-store.js";
-import { loadLegacyStore } from "../continuation-store-records.js";
-import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
-import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
+} from "../continuations/continuation-store.js";
+import { loadLegacyStore } from "../continuations/continuation-store-records.js";
+import { MAX_RECORD_BYTES } from "../continuations/continuation-store-types.js";
+import { canonicalContinuationJson, continuationDigest } from "../continuations/continuations.js";
 
 const fixtures: string[] = [];
 const fixedNow = (): Date => new Date("2026-07-16T12:00:00.000Z");

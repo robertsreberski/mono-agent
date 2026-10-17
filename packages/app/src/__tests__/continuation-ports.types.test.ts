@@ -1,6 +1,6 @@
 import { expectTypeOf, it } from "vitest";
 import type { ContinuationHttpOperations, ContinuationOperatorOperations } from "../continuations/operation-ports.js";
-import type { ContinuationServiceHandle } from "../continuation-service-types.js";
+import type { ContinuationServiceHandle } from "../continuations/continuation-service-types.js";
 
 it("keeps lifecycle, raw secrets and mutable stores out of adapter ports", () => {
   expectTypeOf<Extract<keyof ContinuationHttpOperations, "store" | "secret" | "claimBindings" | "stop" | "lifecycleAbort">>().toEqualTypeOf<never>();

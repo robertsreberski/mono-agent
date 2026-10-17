@@ -36,11 +36,11 @@ import type {
 } from "./app-controller-types.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "../channels/types.js";
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 import {
   unsafeProcessJobsProtectionStatus,
   type ProcessJobsProtectionPosture,
-} from "../process-jobs-protection.js";
+} from "../process-jobs/process-jobs-protection.js";
 
 interface TraceabilityControllerPort {
   readonly env: Record<string, string | undefined>;

@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import * as continuationStore from "../continuation-store.js";
-import { MAX_MANIFEST_BYTES, type DurableContinuationRecord } from "../continuation-store-types.js";
-import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
+import * as continuationStore from "../continuations/continuation-store.js";
+import { MAX_MANIFEST_BYTES, type DurableContinuationRecord } from "../continuations/continuation-store-types.js";
+import { canonicalContinuationJson, continuationDigest } from "../continuations/continuations.js";
 import { inspectContinuationState } from "../continuations/state-inspection.js";
 import * as ownerLock from "../durable-state/owner-private-lock.js";
 import * as privateFiles from "../durable-state/private-files.js";
 import * as sqliteLease from "../durable-state/sqlite-lease.js";
-import * as processJobStore from "../process-jobs-store.js";
+import * as processJobStore from "../process-jobs/process-jobs-store.js";
 import { inspectProcessJobState } from "../process-jobs/state-inspection.js";
 
 vi.mock("node:fs/promises", async (original) => {

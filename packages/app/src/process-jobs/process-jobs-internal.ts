@@ -1,5 +1,5 @@
 import type { PeerProcessJobQuestion } from "@mono-agent/contracts";
-import type { ManagedSubagentAdmission, ManagedSubagentExecution } from "./subagents/types.js";
+import type { ManagedSubagentAdmission, ManagedSubagentExecution } from "../subagents/types.js";
 import type { SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import type { ProcessJobProcessResult, ProcessJobStartResult } from "@mono-agent/turn/host/types";
 

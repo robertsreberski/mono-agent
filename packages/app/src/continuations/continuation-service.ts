@@ -3,8 +3,8 @@ import { createServer, type Server } from "node:http";
 import { resolve } from "node:path";
 
 import { createContinuationHttpRoutes } from "./continuation-http-routes.js";
-import { createContinuationOperatorOperations } from "./continuations/operator-operations.js";
-import { createContinuationProtocolOperations } from "./continuations/protocol-operations.js";
+import { createContinuationOperatorOperations } from "./operator-operations.js";
+import { createContinuationProtocolOperations } from "./protocol-operations.js";
 import { createContinuationDispatchOperations } from "./continuation-dispatch-worker.js";
 import { createContinuationOriginOperations } from "./continuation-service-origin.js";
 import {
@@ -12,7 +12,7 @@ import {
   ContinuationProtocolError,
   ContinuationServiceStoppingError,
 } from "./continuation-service-errors.js";
-import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
+import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
 import { loadOrCreateContinuationSecret } from "./continuation-secret.js";
 import { openContinuationStore, type ContinuationStore } from "./continuation-store.js";
 import {

@@ -5,7 +5,7 @@ import {
   assertUniqueProcessJobChannelSchemes,
   routeProcessJobSurfaceUpdate,
   routeProcessJobWake,
-} from "../process-job-channel-routing.js";
+} from "../process-jobs/process-job-channel-routing.js";
 import type { ChannelDriver, RunningChannel } from "../channels/types.js";
 
 describe("process-job channel routing", () => {

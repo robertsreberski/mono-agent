@@ -71,8 +71,8 @@ const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
   processJobsRootRegistryPaths,
-} = await import("../process-jobs-root-registry.js");
-const { resolveProcessJobsProtectionPosture } = await import("../process-jobs-protection.js");
+} = await import("../process-jobs/process-jobs-root-registry.js");
+const { resolveProcessJobsProtectionPosture } = await import("../process-jobs/process-jobs-protection.js");
 
 const tempDirs: string[] = [];
 beforeAll(async () => {

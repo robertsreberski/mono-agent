@@ -9,14 +9,14 @@ import {
 } from "../delivery/send-tools/adapter-send-tools.js";
 import { loadInteractionSettings, startInteractionBridge } from "../mcp/interaction-bridge.js";
 import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
-import { loadContinuationSettings } from "../continuation-config.js";
-import { ContinuationSynthesisUnavailableError, startContinuationService } from "../continuation-service.js";
-import type { ContinuationServiceHandle } from "../continuation-service.js";
+import { loadContinuationSettings } from "../continuations/continuation-config.js";
+import { ContinuationSynthesisUnavailableError, startContinuationService } from "../continuations/continuation-service.js";
+import type { ContinuationServiceHandle } from "../continuations/continuation-service.js";
 import type {
   ContinuationHistoryRecordResult,
   ContinuationNativeDeliveryResult,
   ContinuationSynthesisInput,
-} from "../continuations.js";
+} from "../continuations/continuations.js";
 import { channelIdForConversation } from "../delivery/proactive-notify.js";
 import {
   continuationSynthesisPrompt,

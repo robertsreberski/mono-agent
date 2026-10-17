@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
 import type { ProcessJobProcessResult } from "@mono-agent/turn/host/types";
 
-import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
-import type { DurableProcessJobRecord } from "../process-jobs-store.js";
+import { PROCESS_JOBS_DEFAULTS } from "../process-jobs/process-jobs-config.js";
+import type { DurableProcessJobRecord } from "../process-jobs/process-jobs-store.js";
 import { ProcessJobServiceError } from "../process-jobs/errors.js";
 import { boundedNewestRecords, conversationSlotAvailable, enforceAdmission, terminalFromResult } from "../process-jobs/policy.js";
 

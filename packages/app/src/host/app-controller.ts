@@ -23,14 +23,14 @@ import { resolveChannelDrivers } from "../channels/channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "../channels/types.js";
 import type { NotifyDeliveryResult } from "../channels/types.js";
 import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
-import type { ContinuationServiceHandle } from "../continuation-service.js";
+import type { ContinuationServiceHandle } from "../continuations/continuation-service.js";
 import type {
   ContinuationHealthSnapshot,
   ContinuationHistoryRecordResult,
   ContinuationNativeDeliveryResult,
   ContinuationStatusSnapshot,
   ContinuationSynthesisInput,
-} from "../continuations.js";
+} from "../continuations/continuations.js";
 import type { RunningRituals } from "../memory-rituals.js";
 import type { RunningArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
 import type { MemoryRetrievalService } from "../memory-retrieval.js";
@@ -50,8 +50,8 @@ import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
 import * as processJobsOperations from "./app-controller-process-jobs.js";
-import { assertUniqueProcessJobChannelSchemes } from "../process-job-channel-routing.js";
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import { assertUniqueProcessJobChannelSchemes } from "../process-jobs/process-job-channel-routing.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 import {
   acquireAgentRootOwnership,
   releaseAgentRootOwnershipWhenIdle,
@@ -60,13 +60,13 @@ import {
 import type {
   ProcessJobsRootRegistrationProof,
   ProcessJobsRootRegistrySnapshot,
-} from "../process-jobs-root-registry.js";
-import type { ProcessJobsSettings } from "../process-jobs-config.js";
+} from "../process-jobs/process-jobs-root-registry.js";
+import type { ProcessJobsSettings } from "../process-jobs/process-jobs-config.js";
 import type {
   ProcessJobsProtectionPosture,
   ProcessJobsProtectionStatus,
-} from "../process-jobs-protection.js";
-import { unsafeProcessJobsProtectionStatus } from "../process-jobs-protection.js";
+} from "../process-jobs/process-jobs-protection.js";
+import { unsafeProcessJobsProtectionStatus } from "../process-jobs/process-jobs-protection.js";
 import type {
   ConfigApplyResult,
   SandboxStatus,

@@ -10,12 +10,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../packages/app/dist/durable-state/agent-root-coordinator.js";
-import { registerProcessJobsRoot } from "../packages/app/dist/process-jobs-root-registry.js";
-import { PROCESS_JOBS_DEFAULTS } from "../packages/app/dist/process-jobs-config.js";
-import { openProcessJobsService } from "../packages/app/dist/process-jobs-service.js";
-import { resolveProcessJobsProtectionPosture } from "../packages/app/dist/process-jobs-protection.js";
-import { createProcessJobsRuntimeExtension } from "../packages/app/dist/process-jobs-runtime.js";
-import { bindProcessJobWakeContextToResponder, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../packages/app/dist/process-jobs-context.js";
+import { registerProcessJobsRoot } from "../packages/app/dist/process-jobs/process-jobs-root-registry.js";
+import { PROCESS_JOBS_DEFAULTS } from "../packages/app/dist/process-jobs/process-jobs-config.js";
+import { openProcessJobsService } from "../packages/app/dist/process-jobs/process-jobs-service.js";
+import { resolveProcessJobsProtectionPosture } from "../packages/app/dist/process-jobs/process-jobs-protection.js";
+import { createProcessJobsRuntimeExtension } from "../packages/app/dist/process-jobs/process-jobs-runtime.js";
+import { bindProcessJobWakeContextToResponder, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../packages/app/dist/process-jobs/process-jobs-context.js";
 // App/service admission uses freshly built dist; tools use their public entry.
 import { execToolRun } from "@mono-agent/turn/tools";
 

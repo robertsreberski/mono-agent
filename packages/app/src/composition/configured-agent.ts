@@ -4,7 +4,7 @@ import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configur
 import { implicitModelRuntimeOptions } from "./request-model-override.js";
 import { effectiveSandboxBoundary } from "../effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "../host/computer-use.js";
-import { isLiveSubagentInstance } from "../subagent-instances.js";
+import { isLiveSubagentInstance } from "../subagents/subagent-instances.js";
 import {
   createConversationHarness,
   createSessionRuntimeResolver,
@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
 import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, setToolActivityPathRoots } from "@mono-agent/contracts";
-import { processJobWakeContextForRequest } from "../process-jobs-context.js";
+import { processJobWakeContextForRequest } from "../process-jobs/process-jobs-context.js";
 import type { AgentResponder } from "@mono-agent/contracts";
 import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import { monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
@@ -67,18 +67,18 @@ import {
 } from "./runtime-routes.js";
 import {
   resolveProcessJobsProtectionPosture,
-} from "../process-jobs-protection.js";
+} from "../process-jobs/process-jobs-protection.js";
 import {
   createProcessJobsRuntimeExtension,
   processJobsAvailableForRequest,
   backgroundSubagentsAvailableForRequest,
-} from "../process-jobs-runtime.js";
+} from "../process-jobs/process-jobs-runtime.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
   loadProcessJobsRootRegistryProtection,
   processJobsProtectionPolicyRoots,
   registerProcessJobsRoot,
-} from "../process-jobs-root-registry.js";
+} from "../process-jobs/process-jobs-root-registry.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "../project-skills.js";
 
 import type {

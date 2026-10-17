@@ -16,7 +16,7 @@ import type { SandboxEffectiveState } from "@mono-agent/turn/host/types";
 
 import type { SandboxStatus } from "./app-controller-types.js";
 import type { ContinuationChannelSynthesisResult, RunningChannel } from "../channels/types.js";
-import type { ContinuationHistoryRecordResult } from "../continuations.js";
+import type { ContinuationHistoryRecordResult } from "../continuations/continuations.js";
 import { configuredRuntimeModels } from "../composition/runtime-routes.js";
 
 export interface ContinuationRunningChannel extends RunningChannel {

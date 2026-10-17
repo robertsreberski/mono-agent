@@ -15,10 +15,10 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 const { resolveJsonMonoAgentConfig } = await import("@mono-agent/config");
 const { createMonoRuntime, monoRuntimeSupportsLiveInput } = await import("@mono-agent/turn/host");
 const { buildSubagentsOptions } = await import("../dist/composition/configured-subagents.js");
-const { createSubagentInstanceRegistry } = await import("../dist/subagent-instances.js");
-const { openProcessJobsService } = await import("../dist/process-jobs-service.js");
-const { openProcessJobStore } = await import("../dist/process-jobs-store.js");
-const { PROCESS_JOBS_DEFAULTS } = await import("../dist/process-jobs-config.js");
+const { createSubagentInstanceRegistry } = await import("../dist/subagents/subagent-instances.js");
+const { openProcessJobsService } = await import("../dist/process-jobs/process-jobs-service.js");
+const { openProcessJobStore } = await import("../dist/process-jobs/process-jobs-store.js");
+const { PROCESS_JOBS_DEFAULTS } = await import("../dist/process-jobs/process-jobs-config.js");
 const { createAgentTool } = await import("../../turn/dist/tools/delegation/agent-tool.js");
 const { createAgentManageTool } = await import("../../turn/dist/tools/delegation/agent-manage-tool.js");
 const { generateEngineTurnResponse } = await import("../../turn/dist/execution/pi/run.js");

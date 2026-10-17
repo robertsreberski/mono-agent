@@ -1,5 +1,5 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
-import type { SubagentQuestion, InstanceUsage, SubagentInstance, SubagentRecoverySubject, SubagentRecoveryFacts, SubagentRecoveryInspection, InstanceRoute, InstanceRegistryHandle } from "./subagents/types.js";
+import type { SubagentQuestion, InstanceUsage, SubagentInstance, SubagentRecoverySubject, SubagentRecoveryFacts, SubagentRecoveryInspection, InstanceRoute, InstanceRegistryHandle } from "./types.js";
 import { isSubagentVerificationTarget, type SubagentVerificationTarget, type SubagentVerificationDeclaration } from "./subagent-verification-observer.js";
 import { newSubagentRecoveryBinding, isSubagentRecoveryBinding, issueRecoveryAcknowledgement, checkRecoveryAcknowledgement, consumeRecoveryAcknowledgement, rebindConsumedAcknowledgement, recoveryToken, type SubagentRecoveryBinding, type SubagentRecoveryAcknowledgement } from "./subagent-recovery-binding.js";
 import type { SubagentSalvage } from "./subagent-salvage.js";
@@ -12,8 +12,8 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { type RuntimeModelReference } from "@mono-agent/turn/host/types";
 
-import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
-import { ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./durable-state/private-files.js";
+import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
+import { ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "../durable-state/private-files.js";
 
 import { isSubagentUuid, isSubagentTurnIntent, isSubagentRecoveryFence, isSubagentOwnerLink, sameSubagentOwner, SubagentRecoveryError, type SubagentRecoveryFence, type SubagentOwnerLink, type SubagentOwnerIdentity, type SubagentOwnerResolution, type SubagentKnownOwner } from "./subagent-registry-ownership.js";
 interface PreProviderState {

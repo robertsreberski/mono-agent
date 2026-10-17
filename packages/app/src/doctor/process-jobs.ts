@@ -1,15 +1,15 @@
-import { persistentSubagentsEnabled } from "../subagent-instances.js";
+import { persistentSubagentsEnabled } from "../subagents/subagent-instances.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { loadProcessJobsSettings } from "../process-jobs-config.js";
+import { loadProcessJobsSettings } from "../process-jobs/process-jobs-config.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
   failedProcessJobsRootRegistryProtection,
   loadProcessJobsRootRegistryProtection,
-} from "../process-jobs-root-registry.js";
+} from "../process-jobs/process-jobs-root-registry.js";
 import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
-} from "../process-jobs-protection.js";
+} from "../process-jobs/process-jobs-protection.js";
 import type { ValidationSection } from "../doctor-types.js";
 import type { ValidateMonoAgentFolderOptions } from "./options.js";
 import { displayText } from "./format.js";

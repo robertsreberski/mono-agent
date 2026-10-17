@@ -26,7 +26,7 @@ import {
   TERMINAL_CONTINUATION_STATES,
   type ContinuationNativeDeliveryResult,
 } from "./continuations.js";
-import type { ContinuationDispatchDependencies } from "./continuations/operation-ports.js";
+import type { ContinuationDispatchDependencies } from "./operation-ports.js";
 
 export function createContinuationDispatchOperations(dependencies: ContinuationDispatchDependencies) {
   async function recover(startup = false): Promise<void> {

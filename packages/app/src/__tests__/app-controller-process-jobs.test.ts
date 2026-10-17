@@ -24,7 +24,7 @@ import { type ChannelStartInput } from "../channels/types.js";
 import type {
   OpenProcessJobsServiceOptions,
   ProcessJobsServiceHandle,
-} from "../process-jobs-service.js";
+} from "../process-jobs/process-jobs-service.js";
 
 const processJobsService = vi.hoisted(() => ({
   open: vi.fn(),
@@ -45,8 +45,8 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
   isProcessIncarnationLive: () => true,
 }));
 
-vi.mock("../process-jobs-service.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-jobs-service.js")>(),
+vi.mock("../process-jobs/process-jobs-service.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-jobs/process-jobs-service.js")>(),
   openProcessJobsService: processJobsService.open,
 }));
 

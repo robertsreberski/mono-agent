@@ -1,8 +1,8 @@
-import type { SubagentCommandReceipt, SubagentCommandReceipts } from "./subagents/types.js";
+import type { SubagentCommandReceipt, SubagentCommandReceipts } from "./types.js";
 import { isAbsolute, resolve } from "node:path";
 import type { ProcessJobProcessResult } from "@mono-agent/turn/host/types";
 import { isSubagentUuid } from "./subagent-registry-ownership.js";
-import type { SubagentOwnedCommand } from "./subagents/types.js";
+import type { SubagentOwnedCommand } from "./types.js";
 
 const SUBAGENT_COMMAND_RECEIPTS_MAX_COUNT = 32;
 export const SUBAGENT_COMMAND_RECEIPTS_MAX_BYTES = 12 * 1024;

@@ -26,7 +26,7 @@ import {
   loadProcessJobsRootRegistryProtection,
   processJobsRootRegistryPaths,
   registerProcessJobsRoot,
-} from "../process-jobs-root-registry.js";
+} from "../process-jobs/process-jobs-root-registry.js";
 import {
   assertClearSessionsRecoveryResolved,
   clearSessionsRegistryRoot,

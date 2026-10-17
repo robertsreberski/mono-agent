@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
-import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
-import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagents/subagent-instances.js";
+import { createSubagentRecoveryAccess } from "../subagents/subagent-recovery-access.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });

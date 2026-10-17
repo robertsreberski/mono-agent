@@ -1,5 +1,5 @@
 import { assertComputerUseServerNameAvailable, COMPUTER_USE_SERVER_NAME } from "../host/computer-use.js";
-import { persistentSubagentsEnabled, subagentInstancesRoot } from "../subagent-instances.js";
+import { persistentSubagentsEnabled, subagentInstancesRoot } from "../subagents/subagent-instances.js";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { isIP } from "node:net";

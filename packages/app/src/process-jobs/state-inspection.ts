@@ -5,14 +5,14 @@ import {
   hasSubagentObligation,
   hasUnresolvedSubagentOwnership,
   isSubagentExecutionOwnership,
-} from "../subagent-execution-ownership.js";
+} from "../subagents/subagent-execution-ownership.js";
 import {
   MAX_PROCESS_JOB_HEALTH_BYTES,
   PROCESS_JOB_HEALTH_FILE,
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   PROCESS_JOB_RECORDS_DIRECTORY,
   PROCESS_JOB_SECRET_FILE,
-} from "../process-jobs-store.js";
+} from "./process-jobs-store.js";
 import { continuationFsCode, continuationReason, isDoctorObject } from "../diagnostics/inspection-values.js";
 
 export async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{

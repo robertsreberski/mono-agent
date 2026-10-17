@@ -1,5 +1,5 @@
-import { persistentSubagentsEnabled } from "./subagent-instances.js";
-import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
+import { persistentSubagentsEnabled } from "../subagents/subagent-instances.js";
+import { verifyPeerOperatorHandoff } from "../peer-provenance.js";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
@@ -7,8 +7,8 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { failClosedSandboxPolicy, mergeSandboxPolicies, protectSandboxRoots } from "@mono-agent/turn/host/sandbox";
 import { type RuntimeModelReference, type SandboxEngine, type SandboxPolicy } from "@mono-agent/turn/host/types";
 
-import type { ChannelId } from "./channels/types.js";
-import type { AgentRootOwnership, AgentRootRequestLease } from "./durable-state/agent-root-coordinator.js";
+import type { ChannelId } from "../channels/types.js";
+import type { AgentRootOwnership, AgentRootRequestLease } from "../durable-state/agent-root-coordinator.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
   processJobsProtectionPolicyRoots,
@@ -25,7 +25,7 @@ import {
   isProcessJobOriginRecord,
   type ProcessJobOriginRecord,
 } from "./process-jobs-store.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
 interface ProcessJobsRuntimeExtensionOptions {
   readonly next?: RuntimeOptionsExtension;

@@ -2,9 +2,9 @@ import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { loadAppCoreConfig } from "./composition/app-config.js";
-import { loadContinuationSettings } from "./continuation-config.js";
-import { continuationOperatorToken } from "./continuation-service.js";
-import type { ContinuationHealthSnapshot, ContinuationStatusSnapshot } from "./continuations.js";
+import { loadContinuationSettings } from "./continuations/continuation-config.js";
+import { continuationOperatorToken } from "./continuations/continuation-service.js";
+import type { ContinuationHealthSnapshot, ContinuationStatusSnapshot } from "./continuations/continuations.js";
 
 interface RunContinuationCommandOptions {
   readonly cwd: string;

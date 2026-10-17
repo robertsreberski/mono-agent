@@ -35,8 +35,8 @@ import {
   defaultChannelDrivers,
 } from "../channels/channels.js";
 import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
-import { startContinuationService } from "../continuation-service.js";
-import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations.js";
+import { startContinuationService } from "../continuations/continuation-service.js";
+import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations/continuations.js";
 
 const builtMemoryHealthWorkerUrl = new URL("../../dist/memory-health-worker.js", import.meta.url);
 const malformedMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-malformed.mjs", import.meta.url);

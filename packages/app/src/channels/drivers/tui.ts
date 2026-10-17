@@ -1,5 +1,5 @@
 import type { TuiChannelOverrides } from "../types.js";
-import { currentProcessJobWakeRecovery } from "../../process-jobs-context.js";
+import { currentProcessJobWakeRecovery } from "../../process-jobs/process-jobs-context.js";
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";

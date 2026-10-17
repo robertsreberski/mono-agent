@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 
 import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
 import { ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./durable-state/private-files.js";
-import { loadOrCreateContinuationSecret } from "./continuation-secret.js";
+import { loadOrCreateContinuationSecret } from "./continuations/continuation-secret.js";
 
 /** Private, source-bound peer handoff. Attribution is never owner approval or tool authority. */
 interface PeerHandoff {

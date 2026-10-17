@@ -15,17 +15,17 @@ import { reasonOf } from "./app-controller-utils.js";
 import type { ConfigApplyResult, TraceabilityStatus } from "./app-controller-types.js";
 import { notifyDestination as notifyDestinationForChannel } from "./app-controller-maintenance.js";
 import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
-import type { ContinuationServiceHandle } from "../continuation-service.js";
+import type { ContinuationServiceHandle } from "../continuations/continuation-service.js";
 import type { NotifyDeliveryResult } from "../channels/types.js";
 import type { NotifyDestination } from "../delivery/notify-destinations.js";
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "../provider-auth-observations.js";
 import { createProviderAuthOperator } from "../provider-auth-operator.js";
 import { startAppOwnedTuiChannel } from "../channels/drivers/tui.js";
 import {
   unsafeProcessJobsProtectionStatus,
   type ProcessJobsProtectionPosture,
-} from "../process-jobs-protection.js";
+} from "../process-jobs/process-jobs-protection.js";
 
 export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;

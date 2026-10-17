@@ -28,12 +28,12 @@ import {
   loadProcessJobsSettings,
   readProcessJobsConfigSnapshot,
   resolveProcessJobsRegistryWorkspace,
-} from "../process-jobs-config.js";
+} from "../process-jobs/process-jobs-config.js";
 import {
   assertProcessJobsRegistryDisjointFromPaths,
   freezeProcessJobsRootRegistry,
   type ProcessJobsRootRegistryFreeze,
-} from "../process-jobs-root-registry.js";
+} from "../process-jobs/process-jobs-root-registry.js";
 
 export interface PurgeSessionsResult {
   /** The resolved sessions root, or undefined when sessions are in-memory only. */

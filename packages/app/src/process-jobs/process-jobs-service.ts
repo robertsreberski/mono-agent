@@ -1,24 +1,24 @@
-import { publishManagedJob } from "./process-jobs/managed-publication.js";
-import { deliverProcessJobWake, MAX_WAKE_ATTEMPTS, type WakeAttempt, type WakeDecision } from "./process-jobs/wake-delivery.js";
-import { ProcessJobServiceError } from "./process-jobs/errors.js";
-import { MAX_IN_MEMORY_RECORDS, conversationSlotAvailable, enforceAdmission, pendingWakeCap, boundedNewestRecords, terminalFromResult, assertAvailable, processJobCapacity } from "./process-jobs/policy.js";
-import { processJobSummary, boundOutput, outputPreview, boundedSafeDiagnostic } from "./process-jobs/presentation.js";
-import { isInternal, type ServiceStartRequest, type ProcessJobWakeInput } from "./process-jobs/types.js";
+import { publishManagedJob } from "./managed-publication.js";
+import { deliverProcessJobWake, MAX_WAKE_ATTEMPTS, type WakeAttempt, type WakeDecision } from "./wake-delivery.js";
+import { ProcessJobServiceError } from "./errors.js";
+import { MAX_IN_MEMORY_RECORDS, conversationSlotAvailable, enforceAdmission, pendingWakeCap, boundedNewestRecords, terminalFromResult, assertAvailable, processJobCapacity } from "./policy.js";
+import { processJobSummary, boundOutput, outputPreview, boundedSafeDiagnostic } from "./presentation.js";
+import { isInternal, type ServiceStartRequest, type ProcessJobWakeInput } from "./types.js";
 import { MAX_WAKE_CERTIFICATES, validWakeToken } from "./process-jobs-wake-fence.js";
 import type { SubagentStopIdentity, SubagentSteerProof, SubagentStopProof } from "./process-jobs-internal.js";
 import { createLiveInputMailbox, type LiveInputMailbox } from "@mono-agent/conversation";
-import type { SubagentVerificationTarget, SubagentVerificationObservation } from "./subagent-verification-observer.js";
-import type { SubagentCommandReceipts } from "./subagents/types.js";
+import type { SubagentVerificationTarget, SubagentVerificationObservation } from "../subagents/subagent-verification-observer.js";
+import type { SubagentCommandReceipts } from "../subagents/types.js";
 import { boundSubagentCommandReceipts } from "./process-jobs-store.js";
-import { emptySubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt } from "./subagent-command-receipts.js";
-import { createSubagentOwnedCommands } from "./subagent-owned-commands.js";
-import type { ManagedSubagentExecution, ManagedSubagentRegistry, SubagentDisposition, SubagentRegistryPublication } from "./subagents/types.js";
-import type { InstanceOutcome } from "./subagents/types.js";
-import type { SubagentSalvage } from "./subagent-salvage.js";
-import { isSubagentUuid, sameSubagentOwner, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "./subagent-registry-ownership.js";
-import { reconcileSubagentExecutionOwnership } from "./subagent-ownership-recovery.js";
-import type { SubagentKnownOwner } from "./subagent-registry-ownership.js";
-import { hasPendingSubagentPublication, hasPendingSubagentReleaseReceipt, hasSubagentObligation, hasUnresolvedSubagentOwnership } from "./subagent-execution-ownership.js";
+import { emptySubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt } from "../subagents/subagent-command-receipts.js";
+import { createSubagentOwnedCommands } from "../subagents/subagent-owned-commands.js";
+import type { ManagedSubagentExecution, ManagedSubagentRegistry, SubagentDisposition, SubagentRegistryPublication } from "../subagents/types.js";
+import type { InstanceOutcome } from "../subagents/types.js";
+import type { SubagentSalvage } from "../subagents/subagent-salvage.js";
+import { isSubagentUuid, sameSubagentOwner, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "../subagents/subagent-registry-ownership.js";
+import { reconcileSubagentExecutionOwnership } from "../subagents/subagent-ownership-recovery.js";
+import type { SubagentKnownOwner } from "../subagents/subagent-registry-ownership.js";
+import { hasPendingSubagentPublication, hasPendingSubagentReleaseReceipt, hasSubagentObligation, hasUnresolvedSubagentOwnership } from "../subagents/subagent-execution-ownership.js";
 import { subagentProgressUsage, SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
@@ -34,11 +34,11 @@ import {
 } from "@mono-agent/contracts";
 import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "@mono-agent/turn/host/types";
 
-import type { NotifyDeliveryResult } from "./channels/types.js";
+import type { NotifyDeliveryResult } from "../channels/types.js";
 import { type ProcessJobsSettings } from "./process-jobs-config.js";
 import { ProcessJobOutputTail } from "./process-job-output-tail.js";
 import { offerClaimedProcessJobLiveInput, recordProcessJobWakeAdmission, revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
-import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
+import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "../durable-state/owner-private-lock.js";
 import {
   attestProcessJobsRootRegistration,
   type ProcessJobsRootRegistrationProof,
@@ -48,7 +48,7 @@ import {
   processOutputSecrets,
   redactProcessOutput as redactOutput,
 } from "./process-output-redaction.js";
-import { cleanupPersistedSandboxSettings } from "./sandbox-settings-cleanup.js";
+import { cleanupPersistedSandboxSettings } from "../sandbox-settings-cleanup.js";
 import {
   currentProcessIncarnation,
   isSameProcessIncarnation,

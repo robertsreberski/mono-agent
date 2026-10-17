@@ -1,6 +1,6 @@
 import { lstat, open, realpath } from "node:fs/promises";
 import { beforeEach, expect, it, vi } from "vitest";
-import { resolveSubagentObservationGit } from "../subagent-observation-git.js";
+import { resolveSubagentObservationGit } from "../subagents/subagent-observation-git.js";
 vi.mock("node:fs/promises", () => ({ lstat: vi.fn(), open: vi.fn(), realpath: vi.fn() }));
 const mac = "/Library/Developer/CommandLineTools/usr/bin/git";
 let magic: string;

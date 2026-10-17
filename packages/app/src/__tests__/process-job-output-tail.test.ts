@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ProcessJobOutputTail } from "../process-job-output-tail.js";
-import { StreamingProcessOutputRedactor } from "../process-output-redaction.js";
+import { ProcessJobOutputTail } from "../process-jobs/process-job-output-tail.js";
+import { StreamingProcessOutputRedactor } from "../process-jobs/process-output-redaction.js";
 
 afterEach(() => {
   vi.useRealTimers();

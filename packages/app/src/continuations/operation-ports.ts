@@ -1,8 +1,8 @@
 import type { IncomingMessage } from "node:http";
-import type { ContinuationStore, DurableContinuationRecord, ContinuationOriginContextReference } from "../continuation-store.js";
-import type { ClaimBinding, ContinuationServiceHandle, ContinuationServiceLogger, ContinuationServiceOptions, ResolvedOriginContext } from "../continuation-service-types.js";
-import type { ContinuationLimits, NamedContinuationRoute } from "../continuations.js";
-import type { operatorContinuationPage } from "../continuation-service-helpers.js";
+import type { ContinuationStore, DurableContinuationRecord, ContinuationOriginContextReference } from "./continuation-store.js";
+import type { ClaimBinding, ContinuationServiceHandle, ContinuationServiceLogger, ContinuationServiceOptions, ResolvedOriginContext } from "./continuation-service-types.js";
+import type { ContinuationLimits, NamedContinuationRoute } from "./continuations.js";
+import type { operatorContinuationPage } from "./continuation-service-helpers.js";
 
 export type ContinuationOperatorOperations = Pick<ContinuationServiceHandle, "retry" | "cancel" | "resolveUnknown" | "health">;
 

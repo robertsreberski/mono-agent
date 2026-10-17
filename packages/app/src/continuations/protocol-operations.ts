@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import type { DurableContinuationRecord } from "../continuation-store.js";
-import { ContinuationProtocolError } from "../continuation-service-errors.js";
+import type { DurableContinuationRecord } from "./continuation-store.js";
+import { ContinuationProtocolError } from "./continuation-service-errors.js";
 import {
   asObject,
   authorizeRecordToken,
@@ -10,15 +10,15 @@ import {
   requireRecord,
   requiredStringField,
   type ParsedClaim,
-} from "../continuation-service-helpers.js";
+} from "./continuation-service-helpers.js";
 import {
   type ClaimBinding,
-} from "../continuation-service-types.js";
+} from "./continuation-service-types.js";
 import {
   TERMINAL_CONTINUATION_STATES,
   canonicalContinuationJson,
   continuationDigest,
-} from "../continuations.js";
+} from "./continuations.js";
 import type { ContinuationProtocolDependencies } from "./operation-ports.js";
 
 export function createContinuationProtocolOperations(dependencies: ContinuationProtocolDependencies) {

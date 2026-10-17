@@ -17,7 +17,7 @@ import {
   createProcessJobsRuntimeExtension,
   processJobOriginForRequest,
   processJobsAvailableForRequest,
-} from "../process-jobs-runtime.js";
+} from "../process-jobs/process-jobs-runtime.js";
 import {
   bindProcessJobWakeContextToResponder,
   offerClaimedProcessJobLiveInput,
@@ -26,14 +26,14 @@ import {
   processJobWakeContextForRequest,
   registerProcessJobSteeringTarget,
   runWithProcessJobWakeContext,
-} from "../process-jobs-context.js";
+} from "../process-jobs/process-jobs-context.js";
 import {
   publishProcessJobsHealth,
   stopProcessJobsService,
 } from "../host/app-controller-process-jobs.js";
 import { traceMetadata } from "../host/app-controller-traceability.js";
 import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../durable-state/agent-root-coordinator.js";
-import { loadProcessJobsRootRegistryProtection, registerProcessJobsRoot, PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR } from "../process-jobs-root-registry.js";
+import { loadProcessJobsRootRegistryProtection, registerProcessJobsRoot, PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR } from "../process-jobs/process-jobs-root-registry.js";
 
 
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");

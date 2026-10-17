@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
-import type { ProcessJobStore } from "../process-jobs-store.js";
+import type { ProcessJobStore } from "../process-jobs/process-jobs-store.js";
 
 const processJobsHooks = vi.hoisted(() => ({
   decorateNextOpen: false,
@@ -14,8 +14,8 @@ const processJobsHooks = vi.hoisted(() => ({
   lockReleases: 0,
 }));
 
-vi.mock("../process-jobs-service.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../process-jobs-service.js")>();
+vi.mock("../process-jobs/process-jobs-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../process-jobs/process-jobs-service.js")>();
   return {
     ...actual,
     openProcessJobsService: async (

@@ -10,9 +10,9 @@ import { afterEach, describe, expect, it } from "vitest";
 // Package-private integration seam: this verifies the exact Pi runner used by
 // Exec/Bash without making that runner a new public @mono-agent export.
 const { startPreparedProcess } = await import(new URL("./commands/process-runner.js", pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"))).href) as typeof import("../../../turn/dist/tools/commands/process-runner.js");
-import { PROCESS_JOBS_DEFAULTS, type ProcessJobsSettings } from "../process-jobs-config.js";
-import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
-import type { ProcessJobOriginRecord } from "../process-jobs-store.js";
+import { PROCESS_JOBS_DEFAULTS, type ProcessJobsSettings } from "../process-jobs/process-jobs-config.js";
+import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
+import type { ProcessJobOriginRecord } from "../process-jobs/process-jobs-store.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const INCARNATION: ProcessIncarnation = {

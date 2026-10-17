@@ -7,8 +7,8 @@ import {
   PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR,
   createProcessJobsRuntimeExtension,
   processJobsSandboxPolicy,
-} from "../process-jobs-runtime.js";
-import { PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR } from "../process-jobs-root-registry.js";
+} from "../process-jobs/process-jobs-runtime.js";
+import { PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR } from "../process-jobs/process-jobs-root-registry.js";
 
 const PI_MODEL = { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" } as const;
 const CLAUDE_MODEL = { provider: "anthropic", model: "claude-opus-4-8", reference: "anthropic:claude-opus-4-8" } as const;

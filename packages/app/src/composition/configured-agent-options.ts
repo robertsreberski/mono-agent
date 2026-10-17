@@ -5,10 +5,10 @@ import type { RunSummary } from "@mono-agent/observability";
 import type { MonoRuntimeLike, RuntimeModelReference, SandboxEngine } from "@mono-agent/turn/host/types";
 
 import type { ChannelId } from "../channels/types.js";
-import type { ProcessJobsSettings } from "../process-jobs-config.js";
-import type { ProcessJobsProtectionPosture } from "../process-jobs-protection.js";
-import type { ProcessJobsRootRegistrySnapshot } from "../process-jobs-root-registry.js";
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import type { ProcessJobsSettings } from "../process-jobs/process-jobs-config.js";
+import type { ProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
+import type { ProcessJobsRootRegistrySnapshot } from "../process-jobs/process-jobs-root-registry.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 
 export type StaticRuntimeOptions = NonNullable<ConversationHarnessOptions["runtimeOptions"]>;
 

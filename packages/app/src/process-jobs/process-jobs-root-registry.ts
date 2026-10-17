@@ -7,11 +7,11 @@ import process from "node:process";
 import {
   type AgentRootCoordinator,
   type AgentRootProtectionGeneration,
-} from "./durable-state/agent-root-coordinator.js";
-import { clearSessionsRegistryRoot } from "./conversation-admin/conversation-state-roots.js";
-import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
-import { readVerifiedFile, secureFileReplace } from "./durable-state/secure-file-replace.js";
-import { syncDirectory } from "./durable-state/private-files.js";
+} from "../durable-state/agent-root-coordinator.js";
+import { clearSessionsRegistryRoot } from "../conversation-admin/conversation-state-roots.js";
+import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "../durable-state/owner-private-lock.js";
+import { readVerifiedFile, secureFileReplace } from "../durable-state/secure-file-replace.js";
+import { syncDirectory } from "../durable-state/private-files.js";
 
 const PROCESS_JOBS_ROOT_REGISTRY_SCHEMA = "mono-agent.process-jobs-roots.v1";
 export const PROCESS_JOBS_ROOT_REGISTRY_DIRECTORY = "process-jobs-roots-v1";

@@ -6,9 +6,9 @@ import type { MonoRuntimeLike, RuntimeRunOptions, SandboxEngine } from "@mono-ag
 
 import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { acquireAgentRootOwnership, assertAgentRootLeaseOutsideWorkspace, releaseAgentRootOwnershipWhenIdle, type AgentRootOwnership } from "../durable-state/agent-root-coordinator.js";
-import { attestProcessJobsRootRegistrySnapshot, loadProcessJobsRootRegistryProtection, processJobsProtectionPolicyRoots } from "../process-jobs-root-registry.js";
-import { processJobsSandboxPolicy, PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR, PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR } from "../process-jobs-runtime.js";
-import type { ProcessJobsProtectionPosture } from "../process-jobs-protection.js";
+import { attestProcessJobsRootRegistrySnapshot, loadProcessJobsRootRegistryProtection, processJobsProtectionPolicyRoots } from "../process-jobs/process-jobs-root-registry.js";
+import { processJobsSandboxPolicy, PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR, PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR } from "../process-jobs/process-jobs-runtime.js";
+import type { ProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
 import type { ConfiguredEmbeddingProvider } from "./configured-agent-options.js";
 import { configuredRoutesOnlyPiNative } from "./configured-runtime-routes.js";
 

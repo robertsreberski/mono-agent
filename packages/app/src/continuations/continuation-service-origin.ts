@@ -18,7 +18,7 @@ import {
   TERMINAL_CONTINUATION_STATES,
   continuationDigest,
 } from "./continuations.js";
-import type { ContinuationOriginDependencies } from "./continuations/operation-ports.js";
+import type { ContinuationOriginDependencies } from "./operation-ports.js";
 
 export function createContinuationOriginOperations(dependencies: ContinuationOriginDependencies) {
   async function requiresOriginContext(binding: ClaimBinding): Promise<boolean> {

@@ -10,8 +10,8 @@ import {
   ContinuationSynthesisUnavailableError,
   startContinuationService,
   type ContinuationServiceHandle,
-} from "../continuation-service.js";
-import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
+} from "../continuations/continuation-service.js";
+import { canonicalContinuationJson, continuationDigest } from "../continuations/continuations.js";
 
 const services: ContinuationServiceHandle[] = [];
 

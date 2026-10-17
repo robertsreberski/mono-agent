@@ -13,7 +13,7 @@ import {
 import {
   MAX_CLAIM_BODY_BYTES,
 } from "./continuation-service-types.js";
-import type { ContinuationHttpOperations } from "./continuations/operation-ports.js";
+import type { ContinuationHttpOperations } from "./operation-ports.js";
 
 export function createContinuationHttpRoutes(operations: ContinuationHttpOperations) {
   async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {

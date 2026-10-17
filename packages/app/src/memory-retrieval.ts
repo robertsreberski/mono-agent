@@ -20,7 +20,7 @@ import {
 
 import { formatMemoryBackground, formatMemoryProfile } from "./memory-guidance.js";
 import { type LabelRecallStore } from "./memory/recall-contract.js";
-import { isHostProcessJobWakeRecall } from "./process-jobs-context.js";
+import { isHostProcessJobWakeRecall } from "./process-jobs/process-jobs-context.js";
 import { readLabelSections } from "./memory-label-sections.js";
 import { type LabelContext, type LabelSectionRequest } from "./memory/recall-contract.js";
 import { createMemoryRecallServer, MEMORY_RECALL_MCP_SERVER_NAME } from "./memory-recall.js";
