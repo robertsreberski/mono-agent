@@ -1,30 +1,30 @@
-import { ContinuationDispatchWorker } from "./continuation-dispatch-worker.js";
 import {
   ContinuationOperationTimeoutError,
   ContinuationProtocolError,
   ContinuationServiceStoppingError,
-} from "./continuation-service-errors.js";
+} from "../continuation-service-errors.js";
 import {
   boundedHistoryErrorCode,
   clearLease,
   errorRecord,
   requireRecord,
   statusOfRequired,
-} from "./continuation-service-helpers.js";
+} from "../continuation-service-helpers.js";
 import {
   CONTINUATION_STATES,
   TERMINAL_CONTINUATION_STATES,
   type ContinuationHealthSnapshot,
   type ContinuationHistoryRecordResult,
   type ContinuationStatusSnapshot,
-} from "./continuations.js";
+} from "../continuations.js";
+import type { ContinuationOperatorDependencies } from "./operation-ports.js";
 
-export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker {
-  protected async retry(
+export function createContinuationOperatorOperations(dependencies: ContinuationOperatorDependencies) {
+  async function retry(
     id: string,
     options?: { readonly allowUnknown?: boolean },
   ): Promise<ContinuationStatusSnapshot> {
-    const record = await this.store.mutate((records) => {
+    const record = await dependencies.store.mutate((records) => {
       const current = requireRecord(records, id);
       if (current.state === "delivery_unknown" && options?.allowUnknown !== true) {
         throw new ContinuationProtocolError(409, "delivery_unknown", "Resolve the ambiguous delivery before retrying.");
@@ -40,19 +40,19 @@ export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker
         );
       }
       current.state = "ready_to_deliver";
-      current.nextAttemptAt = this.now().toISOString();
+      current.nextAttemptAt = dependencies.now().toISOString();
       delete current.deliveryStartedAt;
       delete current.lastError;
-      current.updatedAt = this.now().toISOString();
+      current.updatedAt = dependencies.now().toISOString();
       clearLease(current);
       return structuredClone(current);
     });
-    if (this.autoProcess) void this.processDue().catch(() => undefined);
+    dependencies.scheduleProcess();
     return statusOfRequired(record);
   }
 
-  protected async cancel(id: string): Promise<ContinuationStatusSnapshot> {
-    const record = await this.store.mutate((records) => {
+  async function cancel(id: string): Promise<ContinuationStatusSnapshot> {
+    const record = await dependencies.store.mutate((records) => {
       const current = requireRecord(records, id);
       if (TERMINAL_CONTINUATION_STATES.has(current.state)) {
         if (current.state === "cancelled") return structuredClone(current);
@@ -66,7 +66,7 @@ export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker
         );
       }
       current.state = "cancelled";
-      current.updatedAt = this.now().toISOString();
+      current.updatedAt = dependencies.now().toISOString();
       current.lastError = errorRecord("cancelled_by_operator", "Continuation cancelled by the operator.", current.updatedAt);
       clearLease(current);
       return structuredClone(current);
@@ -74,18 +74,18 @@ export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker
     return statusOfRequired(record);
   }
 
-  protected async resolveUnknown(
+  async function resolveUnknown(
     id: string,
     outcome: { readonly kind: "delivered"; readonly deliveryId?: string }
       | { readonly kind: "not_delivered" }
       | { readonly kind: "dead_lettered" },
   ): Promise<ContinuationStatusSnapshot> {
-    if (this.resolvingUnknown.has(id)) {
+    if (dependencies.isResolvingUnknown(id)) {
       throw new ContinuationProtocolError(409, "resolution_in_progress", "This ambiguous delivery is already being resolved.");
     }
-    this.resolvingUnknown.add(id);
+    dependencies.beginResolvingUnknown(id);
     try {
-      const current = await this.store.get(id);
+      const current = await dependencies.store.get(id);
       if (current === undefined) throw new ContinuationProtocolError(404, "not_found", "Continuation not found.");
       if (current.state !== "delivery_unknown") {
         throw new ContinuationProtocolError(409, "not_delivery_unknown", "Only delivery_unknown continuations can be resolved.");
@@ -93,16 +93,16 @@ export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker
 
       let history: ContinuationHistoryRecordResult | undefined;
       if (outcome.kind === "delivered") {
-        if (this.options.recordHistory === undefined
+        if (dependencies.recordHistory === undefined
           || current.replyToConversationId === undefined
           || current.synthesizedText === undefined) {
           history = { recorded: false, code: "history_record_unavailable_after_ambiguous_delivery" };
         } else {
           try {
-            history = await this.runBoundedOperation(
+            history = await dependencies.runBoundedOperation(
               "delivery",
-              this.limits.deliveryTimeoutMs,
-              async () => await this.options.recordHistory?.({
+              dependencies.limits.deliveryTimeoutMs,
+              async () => await dependencies.recordHistory?.({
                 continuationId: current.continuationId,
                 conversationId: current.replyToConversationId as string,
                 text: current.synthesizedText as string,
@@ -121,12 +121,12 @@ export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker
         }
       }
 
-      const record = await this.store.mutate((records) => {
+      const record = await dependencies.store.mutate((records) => {
         const mutable = requireRecord(records, id);
         if (mutable.state !== "delivery_unknown") {
           throw new ContinuationProtocolError(409, "not_delivery_unknown", "Only delivery_unknown continuations can be resolved.");
         }
-        const at = this.now().toISOString();
+        const at = dependencies.now().toISOString();
         mutable.updatedAt = at;
         delete mutable.deliveryStartedAt;
         if (outcome.kind === "delivered") {
@@ -160,22 +160,22 @@ export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker
         }
         return structuredClone(mutable);
       });
-      if (outcome.kind === "not_delivered" && this.autoProcess) void this.processDue().catch(() => undefined);
+      if (outcome.kind === "not_delivered") dependencies.scheduleProcess();
       return statusOfRequired(record);
     } finally {
-      this.resolvingUnknown.delete(id);
+      dependencies.finishResolvingUnknown(id);
     }
   }
 
-  protected async health(): Promise<ContinuationHealthSnapshot> {
-    const [records, storage] = await Promise.all([this.store.list(), this.store.stats()]);
+  async function health(): Promise<ContinuationHealthSnapshot> {
+    const [records, storage] = await Promise.all([dependencies.store.list(), dependencies.store.stats()]);
     const counts = Object.fromEntries(CONTINUATION_STATES.map((state) => [state, 0])) as Record<
       (typeof CONTINUATION_STATES)[number],
       number
     >;
     let oldestPendingAt: string | undefined;
     let due = 0;
-    const now = this.now().getTime();
+    const now = dependencies.now().getTime();
     for (const record of records) {
       counts[record.state] += 1;
       if (!TERMINAL_CONTINUATION_STATES.has(record.state)) {
@@ -194,7 +194,7 @@ export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker
         : "healthy";
     return {
       status,
-      checkedAt: this.now().toISOString(),
+      checkedAt: dependencies.now().toISOString(),
       counts,
       pending,
       due,
@@ -202,4 +202,5 @@ export abstract class ContinuationOperatorApi extends ContinuationDispatchWorker
       ...(oldestPendingAt === undefined ? {} : { oldestPendingAt }),
     };
   }
+  return { retry, cancel, resolveUnknown, health };
 }

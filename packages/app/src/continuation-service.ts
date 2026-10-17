@@ -1,8 +1,13 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 
-import { ContinuationHttpRoutes } from "./continuation-http-routes.js";
+import { createContinuationHttpRoutes } from "./continuation-http-routes.js";
+import { createContinuationOperatorOperations } from "./continuations/operator-operations.js";
+import { createContinuationProtocolOperations } from "./continuations/protocol-operations.js";
+import { ContinuationDispatchWorker } from "./continuation-dispatch-worker.js";
+import { ContinuationProtocolError } from "./continuation-service-errors.js";
+import { operatorContinuationPage, requireBearer } from "./continuation-service-helpers.js";
 import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
 import { loadOrCreateContinuationSecret } from "./continuation-secret.js";
 import { openContinuationStore } from "./continuation-store.js";
@@ -32,6 +37,7 @@ import {
   CONTINUATION_MODE_ENV,
   CONTINUATION_MODE_HEADER,
   continuationDigest,
+  continuationTokenMatches,
   normalizeContinuationReplyTarget,
   type ContinuationClaimCapability,
   type IssueContinuationCapabilityInput,
@@ -68,11 +74,58 @@ export async function startContinuationService(
   }
 }
 
-class ContinuationService extends ContinuationHttpRoutes {
+class ContinuationService extends ContinuationDispatchWorker {
+  private readonly protocol = createContinuationProtocolOperations({
+    store: this.store, now: this.now, maxDeadlineMs: this.maxDeadlineMs, limits: this.limits, namedRoutes: this.namedRoutes,
+    baseUrl: () => this.baseUrl,
+    deriveResultToken: (id, taskHash) => createHmac("sha256", this.secret).update(`continuation-result\0${id}\0${taskHash}`).digest("base64url"),
+    scheduleProcess: () => this.scheduleProcess(),
+  });
+  private readonly operator = createContinuationOperatorOperations({
+    store: this.store, now: this.now, limits: this.limits, recordHistory: this.options.recordHistory,
+    scheduleProcess: () => this.scheduleProcess(),
+    isResolvingUnknown: (id) => this.resolvingUnknown.has(id),
+    beginResolvingUnknown: (id) => { this.resolvingUnknown.add(id); },
+    finishResolvingUnknown: (id) => { this.resolvingUnknown.delete(id); },
+    runBoundedOperation: async (phase, timeoutMs, operation) => await this.runBoundedOperation(phase, timeoutMs, operation),
+  });
+
+  private scheduleProcess(): void {
+    if (this.autoProcess) void this.processDue().catch(() => undefined);
+  }
+
   async start(host: string, port: number): Promise<ContinuationServiceHandle> {
+    const routes = createContinuationHttpRoutes({
+      ...this.operator,
+      maxResultBytes: this.maxResultBytes, logger: this.logger,
+      isStopped: () => this.stopped, baseUrl: () => this.baseUrl,
+      authorizeRunClaim: (token) => {
+        const binding = this.claimBindings.get(token);
+        if (binding === undefined) throw new ContinuationProtocolError(401, "invalid_claim_capability", "Invalid or expired claim capability.");
+        return async (body, write) => {
+          const finishClaim = this.beginClaim(binding);
+          try { write(await this.protocol.claim(binding, body)); } finally { finishClaim(); }
+        };
+      },
+      authorizeDetached: (serviceName, token) => {
+        const expected = this.detachedServiceTokenHashes.get(serviceName);
+        if (expected === undefined || !continuationTokenMatches(token, expected)) {
+          throw new ContinuationProtocolError(401, "invalid_service_capability", "Invalid detached-service capability.");
+        }
+      },
+      authorizeOperator: (request) => {
+        if (!continuationTokenMatches(requireBearer(request), continuationDigest(this.operatorToken))) {
+          throw new ContinuationProtocolError(401, "invalid_operator_capability", "Invalid operator capability.");
+        }
+      },
+      claimDetached: async (name, body) => await this.protocol.claimDetached(name, body),
+      acceptResult: async (id, token, body) => await this.protocol.acceptResult(id, token, body),
+      authorizedRecord: async (id, token) => await this.protocol.authorizedRecord(id, token),
+      list: async (url) => operatorContinuationPage(await this.store.list(), url, this.limits.operatorPageSize),
+    });
     const server = createServer((request, response) => {
-      const operation = this.handleRequest(request, response).catch((error: unknown) => {
-        this.handleRequestError(response, error);
+      const operation = routes.handleRequest(request, response).catch((error: unknown) => {
+        routes.handleRequestError(response, error);
       });
       this.activeHttpRequests.add(operation);
       void operation.finally(() => { this.activeHttpRequests.delete(operation); });
@@ -110,12 +163,12 @@ class ContinuationService extends ContinuationHttpRoutes {
       issueRunClaimCapability: (input) => this.issueRunClaimCapability(input),
       status: async (id) => await this.runHandleOperation(async () => statusOf(await this.store.get(id))),
       list: async () => await this.runHandleOperation(async () => (await this.store.list()).map(statusOfRequired)),
-      health: async () => await this.runHandleOperation(async () => await this.health()),
+      health: async () => await this.runHandleOperation(async () => await this.operator.health()),
       processDue: async (limit) => await this.runHandleOperation(async () => await this.processDue(limit)),
-      retry: async (id, retryOptions) => await this.runHandleOperation(async () => await this.retry(id, retryOptions)),
-      cancel: async (id) => await this.runHandleOperation(async () => await this.cancel(id)),
+      retry: async (id, retryOptions) => await this.runHandleOperation(async () => await this.operator.retry(id, retryOptions)),
+      cancel: async (id) => await this.runHandleOperation(async () => await this.operator.cancel(id)),
       resolveUnknown: async (id, outcome) => await this.runHandleOperation(
-        async () => await this.resolveUnknown(id, outcome),
+        async () => await this.operator.resolveUnknown(id, outcome),
       ),
       capturedText: async (id) => await this.runHandleOperation(async () => {
         const record = await this.store.get(id);
