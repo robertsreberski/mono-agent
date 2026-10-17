@@ -30,10 +30,10 @@ const DEFAULT_CORRELATION_WINDOW_MS = 5_000;
 const MAX_CAUSE_DEPTH = 5;
 
 /** @type {{code: string, at: number, origin: string|null}[]} */
-const recorded = [];
+const recorded: { code: string; at: number; origin: string | null }[] = [];
 let installed = false;
 
-function codeFromError(error) {
+function codeFromError(error: any): string | null {
   if (!error || typeof error !== "object") return null;
   const code = error.code ?? error.errno;
   if (typeof code === "string" && code.trim()) return code.trim();
@@ -49,9 +49,9 @@ function codeFromError(error) {
  * @param {unknown} error
  * @returns {string|null}
  */
-export function describeErrorCause(error) {
+export function describeErrorCause(error: unknown): string | null {
   /** @type {any} */
-  let current = error;
+  let current: any = error;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && current; depth += 1) {
     // Skip the outermost error: its code (if any) is what the caller already
     // has. We want the reason underneath it.
@@ -68,16 +68,16 @@ export function describeErrorCause(error) {
  * Subscribe to undici's request-error channel. Idempotent and safe to call on
  * every run; a Node build without the channel simply records nothing.
  */
-export function installTransportErrorProbe() {
+export function installTransportErrorProbe(): void {
   if (installed) return;
   installed = true;
   try {
-    diagnosticsChannel.subscribe("undici:request:error", (/** @type {any} */ message) => {
+    diagnosticsChannel.subscribe("undici:request:error", (/** @type {any} */ message: any) => {
       const error = message?.error;
       const code = codeFromError(error) || describeErrorCause(error);
       if (!code) return;
       /** @type {string|null} */
-      let origin = null;
+      let origin: string | null = null;
       try {
         const raw = message?.request?.origin;
         origin = typeof raw === "string" ? raw : (raw?.origin ?? null);
@@ -100,7 +100,13 @@ export function installTransportErrorProbe() {
  * @param {{withinMs?: number, now?: number}} [opts]
  * @returns {{code: string, ambiguous: boolean}|null}
  */
-export function recentTransportErrorCode(opts = {}) {
+export function recentTransportErrorCode(opts: {
+    withinMs?: number;
+    now?: number;
+} = {}): {
+    code: string;
+    ambiguous: boolean;
+} | null {
   const withinMs = Number.isFinite(Number(opts.withinMs))
     ? Number(opts.withinMs)
     : DEFAULT_CORRELATION_WINDOW_MS;
@@ -108,7 +114,7 @@ export function recentTransportErrorCode(opts = {}) {
   const fresh = recorded.filter((entry) => now - entry.at <= withinMs);
   if (fresh.length === 0) return null;
   const distinct = new Set(fresh.map((entry) => entry.code));
-  return { code: fresh[fresh.length - 1].code, ambiguous: distinct.size > 1 };
+  return { code: fresh[fresh.length - 1]!.code, ambiguous: distinct.size > 1 };
 }
 
 /**
@@ -120,7 +126,11 @@ export function recentTransportErrorCode(opts = {}) {
  * @param {unknown} [error] the original Error, when it survived
  * @returns {{message: string|null, causeCode: string|null, causeSource: "cause_chain"|"transport_probe"|null}}
  */
-export function annotateProviderErrorMessage(message, error) {
+export function annotateProviderErrorMessage(message: string | null, error?: unknown): {
+    message: string | null;
+    causeCode: string | null;
+    causeSource: "cause_chain" | "transport_probe" | null;
+} {
   const text = String(message || "").trim();
   if (!text) return { message: message ?? null, causeCode: null, causeSource: null };
   if (!OPAQUE_ERROR_RE.test(text)) return { message: text, causeCode: null, causeSource: null };
@@ -144,13 +154,13 @@ export function annotateProviderErrorMessage(message, error) {
 /** Test seam: drop recorded transport errors.
  * @coreScanRetained
  */
-export function resetTransportErrorProbeForTests() {
+export function resetTransportErrorProbeForTests(): void {
   recorded.length = 0;
 }
 
 /** Test seam: record a transport error without a real socket.
  * @coreScanRetained
  */
-export function recordTransportErrorForTests(code, at = Date.now()) {
+export function recordTransportErrorForTests(code: any, at: number = Date.now()): void {
   recorded.push({ code, at, origin: null });
 }

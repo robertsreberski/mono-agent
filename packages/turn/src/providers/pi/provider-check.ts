@@ -5,6 +5,10 @@ import { homedir } from "node:os";
 
 import { generateEngineTurnResponse } from "../../execution/pi/run.js";
 
+export type ProviderCheckOutcome = "passed" | "auth_failed" | "network_failed" | "quota_limited" | "model_not_entitled" | "inconclusive";
+
+export type ProviderCheckCode = "passed" | "credential_rejected" | "provider_unavailable" | "quota_limited" | "model_not_entitled" | "forbidden" | "inconclusive" | "cancelled";
+
 const SYSTEM_PROMPT = "Provider connectivity check. Reply OK.";
 const USER_PROMPT = "OK";
 
@@ -26,7 +30,22 @@ const USER_PROMPT = "OK";
  * }} input
  * @returns {Promise<{state: ProviderCheckOutcome, code: ProviderCheckCode, message: string}>}
  */
-export async function runPiProviderCheck(input) {
+export async function runPiProviderCheck(input: {
+    model: {
+        provider: string;
+        model: string;
+        reference?: string;
+    };
+    resolvePiApiKey?: Function;
+    runtimeOptions?: Record<string, unknown>;
+    environment?: Readonly<Record<string, string | undefined>>;
+    abortSignal?: AbortSignal;
+    execute?: typeof generateEngineTurnResponse;
+}): Promise<{
+    state: ProviderCheckOutcome;
+    code: ProviderCheckCode;
+    message: string;
+}> {
   const execute = input.execute ?? generateEngineTurnResponse;
   const runtimeOptions = providerConstructionOptions(input.runtimeOptions);
   let result;
@@ -48,8 +67,8 @@ export async function runPiProviderCheck(input) {
       compaction: { enabled: false },
       providerCheckMaxTokens: 4,
       providerCheckAuthContext: {
-        async env(name) { return input.environment?.[name]; },
-        async fileExists(path) {
+        async env(name: string) { return input.environment?.[name]; },
+        async fileExists(path: string) {
           try {
             await access(path.startsWith("~") ? homedir() + path.slice(1) : path);
             return true;
@@ -86,7 +105,11 @@ export async function runPiProviderCheck(input) {
  * @param {string|undefined} failureKind
  * @returns {{state: ProviderCheckOutcome, code: ProviderCheckCode, message: string}}
  */
-export function classifyProviderCheckFailure(text, failureKind) {
+export function classifyProviderCheckFailure(text: string, failureKind: string | undefined): {
+    state: ProviderCheckOutcome;
+    code: ProviderCheckCode;
+    message: string;
+} {
   const value = String(text || "");
   if (failureKind === "provider_auth"
     || /(invalid api key|incorrect api key|no api key|missing api key|authentication failed|authorization failed|unauthorized|invalid[_ ]grant|token[_ ]revoked|revoked (?:oauth )?token|invalidated (?:oauth )?token|\b401\b)/i.test(value)) {
@@ -116,7 +139,7 @@ export function classifyProviderCheckFailure(text, failureKind) {
  * @param {Record<string, unknown>|undefined} options
  * @returns {Record<string, unknown>}
  */
-function providerConstructionOptions(options) {
+function providerConstructionOptions(options: Record<string, unknown> | undefined): Record<string, unknown> {
   if (options === undefined) return {};
   const allowed = [
     "customProvider",

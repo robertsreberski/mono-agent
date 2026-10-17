@@ -6,6 +6,33 @@ import { basename, dirname, join, resolve } from "node:path";
 
 import { resolveOAuthApiKey } from "./oauth-compat.js";
 
+export type PiApiKeyCredential = {
+  type: "api_key";
+  key?: string;
+  env?: {
+    [x: string]: any;
+  };
+};
+
+export type PiOAuthCredential = {
+  type: "oauth";
+  access?: string;
+  refresh?: string;
+  expires: number;
+  [key: string]: any;
+};
+
+export type PiCredential = PiApiKeyCredential | PiOAuthCredential;
+
+export type PiApiKeyResolver = ((provider: string, options?: {
+  rejectedAccessToken?: string;
+  signal?: AbortSignal;
+}) => Promise<string | undefined>) & {
+  readCredential?: (provider: string) => Promise<PiCredential | undefined>;
+  modifyCredential?: (provider: string, fn: (current: PiCredential | undefined) => Promise<PiCredential | undefined>) => Promise<PiCredential | undefined>;
+  deleteCredential?: (provider: string) => Promise<void>;
+};
+
 /**
  * @typedef {{type: "api_key", key?: string, env?: Object<string, *>}} PiApiKeyCredential
  * @typedef {{type: "oauth", access?: string, refresh?: string, expires: number, [key: string]: *}} PiOAuthCredential
@@ -17,20 +44,22 @@ import { resolveOAuthApiKey } from "./oauth-compat.js";
  * }} PiApiKeyResolver
  */
 
-const authFileChains = new Map();
+const authFileChains = new Map<string, Promise<unknown>>();
 
 /**
  * @param {Object} [options]
  * @param {string} [options.path] Path to the pi auth.json credentials file.
  * @returns {PiApiKeyResolver}
  */
-export function createPiOAuthApiKeyResolver(options = {}) {
+export function createPiOAuthApiKeyResolver(options: {
+    path?: string;
+} = {}): PiApiKeyResolver {
   const configuredAuthPath = typeof options.path === "string" && options.path.trim().length > 0
     ? options.path
     : undefined;
   const authPath = configuredAuthPath ? canonicalizeAuthPath(configuredAuthPath) : undefined;
 
-  async function resolvePiOAuthApiKey(provider, options = {}) {
+  async function resolvePiOAuthApiKey(provider: string, options: { rejectedAccessToken?: string; signal?: AbortSignal } = {}) {
     if (!authPath || typeof provider !== "string" || provider.trim().length === 0) {
       return undefined;
     }
@@ -64,14 +93,14 @@ export function createPiOAuthApiKeyResolver(options = {}) {
       }
       auth[provider] = {
         type: "oauth",
-        ...result.newCredentials,
+        ...result.newCredentials as Omit<typeof result.newCredentials, "type">,
       };
       await writeAuthFile(authPath, auth);
       return result.apiKey;
     });
   }
 
-  resolvePiOAuthApiKey.readCredential = async function readCredential(provider) {
+  resolvePiOAuthApiKey.readCredential = async function readCredential(provider: string) {
     if (!authPath || typeof provider !== "string" || provider.trim().length === 0) {
       return undefined;
     }
@@ -79,7 +108,7 @@ export function createPiOAuthApiKeyResolver(options = {}) {
     return cloneCredential(auth?.[provider]);
   };
 
-  resolvePiOAuthApiKey.modifyCredential = async function modifyCredential(provider, fn) {
+  resolvePiOAuthApiKey.modifyCredential = async function modifyCredential(provider: string, fn: (current: PiCredential | undefined) => Promise<PiCredential | undefined>) {
     if (!authPath || typeof provider !== "string" || provider.trim().length === 0) {
       return undefined;
     }
@@ -99,7 +128,7 @@ export function createPiOAuthApiKeyResolver(options = {}) {
     });
   };
 
-  resolvePiOAuthApiKey.deleteCredential = async function deleteCredential(provider) {
+  resolvePiOAuthApiKey.deleteCredential = async function deleteCredential(provider: string) {
     if (!authPath || typeof provider !== "string" || provider.trim().length === 0) {
       return;
     }
@@ -119,7 +148,7 @@ export function createPiOAuthApiKeyResolver(options = {}) {
  * @param {() => Promise<*>} task
  * @returns {Promise<*>}
  */
-function enqueueAuthFile(path, task) {
+function enqueueAuthFile<T>(path: string, task: () => Promise<T>): Promise<T> {
   const previous = authFileChains.get(path) ?? Promise.resolve();
   const next = (async () => {
     await previous.catch(() => {});
@@ -133,12 +162,12 @@ function enqueueAuthFile(path, task) {
  * @param {string} path
  * @returns {string}
  */
-function canonicalizeAuthPath(path) {
+function canonicalizeAuthPath(path: string): string {
   const resolved = resolve(path);
   try {
     return realpathSync.native(resolved);
   } catch (error) {
-    if (!isMissingPathError(error)) {
+    if (!isMissingPathError(error as NodeJS.ErrnoException)) {
       return resolved;
     }
   }
@@ -154,7 +183,7 @@ function canonicalizeAuthPath(path) {
  * @param {*} error
  * @returns {boolean}
  */
-function isMissingPathError(error) {
+function isMissingPathError(error: NodeJS.ErrnoException): boolean {
   return error && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
 
@@ -162,7 +191,7 @@ function isMissingPathError(error) {
  * @param {Object<string, *>} auth
  * @returns {Object<string, *>}
  */
-function cloneAuth(auth) {
+function cloneAuth(auth: Record<string, any>): Record<string, any> {
   return Object.fromEntries(
     Object.entries(auth).map(([provider, credentials]) => [
       provider,
@@ -175,7 +204,7 @@ function cloneAuth(auth) {
  * @param {*} credential
  * @returns {*}
  */
-function cloneCredential(credential) {
+function cloneCredential(credential: any): any {
   return credential && typeof credential === "object" && !Array.isArray(credential)
     ? { ...credential }
     : credential;
@@ -185,12 +214,12 @@ function cloneCredential(credential) {
  * @param {string} path
  * @returns {Promise<Object<string, *>|undefined>}
  */
-async function readAuthFile(path) {
+async function readAuthFile(path: string): Promise<Record<string, any> | undefined> {
   let raw;
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
-    if (error && error.code === "ENOENT") {
+    if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
     }
     throw error;
@@ -216,7 +245,7 @@ let atomicWriteSequence = 0;
  * @param {Object<string, *>} auth
  * @returns {Promise<void>}
  */
-async function writeAuthFile(path, auth) {
+async function writeAuthFile(path: string, auth: Record<string, any>): Promise<void> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   atomicWriteSequence += 1;

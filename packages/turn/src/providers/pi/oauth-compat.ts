@@ -21,6 +21,18 @@
 
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
+export type OAuthAuth = import("@earendil-works/pi-ai").OAuthAuth;
+
+export type OAuthCredential = import("@earendil-works/pi-ai").OAuthCredential;
+
+export type ProviderAuthInteraction = import("@earendil-works/pi-ai").ProviderAuthInteraction;
+
+export type AuthPrompt = import("@earendil-works/pi-ai").AuthPrompt;
+
+export type AuthEvent = import("@earendil-works/pi-ai").AuthEvent;
+
+export type OAuthLoginCallbacks = import("@earendil-works/pi-ai/oauth").OAuthLoginCallbacks;
+
 /**
  * @typedef {import("@earendil-works/pi-ai").OAuthAuth} OAuthAuth
  * @typedef {import("@earendil-works/pi-ai").OAuthCredential} OAuthCredential
@@ -31,7 +43,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
  */
 
 /** @type {Map<string, import("@earendil-works/pi-ai").Provider>|undefined} */
-let providerIndexCache;
+let providerIndexCache: Map<string, import("@earendil-works/pi-ai").Provider> | undefined;
 
 /**
  * `builtinProviders()` freshly constructs every provider (~41 objects) on each
@@ -40,7 +52,7 @@ let providerIndexCache;
  *
  * @returns {Map<string, import("@earendil-works/pi-ai").Provider>}
  */
-function providerIndex() {
+function providerIndex(): Map<string, import("@earendil-works/pi-ai").Provider> {
   if (providerIndexCache === undefined) {
     providerIndexCache = new Map(builtinProviders().map((provider) => [provider.id, provider]));
   }
@@ -48,7 +60,7 @@ function providerIndex() {
 }
 
 /** @internal Exported only so tests can force a rebuild of the memoized index. */
-export function resetPiProviderIndexForTests() {
+export function resetPiProviderIndexForTests(): void {
   providerIndexCache = undefined;
 }
 
@@ -59,7 +71,7 @@ export function resetPiProviderIndexForTests() {
  * @param {string} providerId
  * @returns {OAuthAuth|undefined}
  */
-export function getPiOAuthAuth(providerId) {
+export function getPiOAuthAuth(providerId: string): OAuthAuth | undefined {
   if (typeof providerId !== "string" || providerId.length === 0) return undefined;
   return providerIndex().get(providerId)?.auth?.oauth;
 }
@@ -83,7 +95,10 @@ export function getPiOAuthAuth(providerId) {
  * @param {AbortSignal} [signal]
  * @returns {Promise<{newCredentials: OAuthCredential, apiKey: string|undefined}|null>}
  */
-export async function resolveOAuthApiKey(providerId, credentials, signal) {
+export async function resolveOAuthApiKey(providerId: string, credentials: Record<string, any> | undefined, signal?: AbortSignal): Promise<{
+    newCredentials: OAuthCredential;
+    apiKey: string | undefined;
+} | null> {
   const oauth = getPiOAuthAuth(providerId);
   if (oauth === undefined) {
     throw new Error(`Unknown OAuth provider: ${providerId}`);
@@ -128,7 +143,7 @@ export async function resolveOAuthApiKey(providerId, credentials, signal) {
  * @param {OAuthLoginCallbacks} callbacks
  * @returns {ProviderAuthInteraction}
  */
-export function toAuthInteraction(callbacks) {
+export function toAuthInteraction(callbacks: OAuthLoginCallbacks): ProviderAuthInteraction {
   if (callbacks === null || typeof callbacks !== "object") {
     throw new TypeError("toAuthInteraction requires an OAuthLoginCallbacks object");
   }

@@ -1,6 +1,6 @@
 import { EMPTY_USAGE } from "./models.js";
 
-function messageContent(value) {
+function messageContent(value: any): any {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
     return value.map((part) => {
@@ -13,7 +13,7 @@ function messageContent(value) {
   return String(value ?? "");
 }
 
-export function toAgentMessages(messages, model) {
+export function toAgentMessages(messages: any, model: any): any[] {
   const source = Array.isArray(messages) && messages.length
     ? messages
     : [{ role: "user", content: "" }];
@@ -37,7 +37,7 @@ export function toAgentMessages(messages, model) {
   });
 }
 
-export function textFromContent(content) {
+export function textFromContent(content: any): string {
   if (!Array.isArray(content)) return "";
   return content
     .filter((block) => block?.type === "text" && typeof block.text === "string")
@@ -45,7 +45,7 @@ export function textFromContent(content) {
     .join("");
 }
 
-export function thinkingFromContent(content) {
+export function thinkingFromContent(content: any): string {
   if (!Array.isArray(content)) return "";
   return content
     .filter((block) => block?.type === "thinking" && typeof block.thinking === "string")
@@ -53,7 +53,7 @@ export function thinkingFromContent(content) {
     .join("");
 }
 
-export function toolResultContent(result) {
+export function toolResultContent(result: any): string {
   const content = result?.content;
   if (!Array.isArray(content)) return "";
   return content.map((block) => block?.type === "text" ? block.text || "" : JSON.stringify(block)).filter(Boolean).join("\n");

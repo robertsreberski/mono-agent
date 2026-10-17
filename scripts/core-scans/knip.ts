@@ -205,7 +205,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/providers/codex/app-server-client.js",
+    "file": "packages/turn/src/providers/codex/app-server-client.ts",
     "names": [
       "createCodexAppServerClient"
     ],
@@ -258,13 +258,13 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/providers/pi/transport-errors.js",
+    "file": "packages/turn/src/providers/pi/transport-errors.ts",
     "names": [
       "resetTransportErrorProbeForTests",
       "recordTransportErrorForTests"
     ],
     "reason": "test isolation control for process-global transport error probe",
-    "citation": "packages/turn/src/providers/pi/transport-errors.js",
+    "citation": "packages/turn/src/providers/pi/transport-errors.ts",
     "taggedNames": [
       "resetTransportErrorProbeForTests",
       "recordTransportErrorForTests"

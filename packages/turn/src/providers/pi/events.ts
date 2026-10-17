@@ -1,10 +1,10 @@
 import { normalizePiBuiltinToolParams } from "../../tools/pi-tools.js";
 
-export function streamContentKey(streamEvent, fallback) {
+export function streamContentKey(streamEvent: any, fallback: any): any {
   return streamEvent?.contentIndex ?? fallback;
 }
 
-export function jsonSerializable(value, fallback = null) {
+export function jsonSerializable(value: any, fallback: any = null): any {
   try {
     JSON.stringify(value);
     return value;
@@ -13,7 +13,7 @@ export function jsonSerializable(value, fallback = null) {
   }
 }
 
-function compactJsonPreview(value, { limit = 4000 } = {}) {
+function compactJsonPreview(value: any, { limit = 4000 } = {}) {
   let raw;
   try {
     raw = JSON.stringify(value || {});
@@ -32,7 +32,18 @@ function compactJsonPreview(value, { limit = 4000 } = {}) {
   };
 }
 
-export function compactToolRawResult(result, resultContent) {
+export function compactToolRawResult(result: any, resultContent: any): {
+    details_truncated?: boolean;
+    content: {
+        omitted: boolean;
+        reason: string;
+        original_length: number;
+    };
+    details: any;
+    truncated?: boolean;
+    original_length?: number;
+    preview?: any;
+} {
   const raw = compactJsonPreview(result);
   const details = compactJsonPreview(result?.details || {});
   return {
@@ -56,11 +67,14 @@ export function compactToolRawResult(result, resultContent) {
  * @param {any} args
  * @param {{cwd?: any, toolLimits?: any}} [options]
  */
-export function eventToolArgs(toolName, args, { cwd, toolLimits } = {}) {
+export function eventToolArgs(toolName: any, args: any, { cwd, toolLimits }: {
+    cwd?: any;
+    toolLimits?: any;
+} = {}): any {
   return normalizePiBuiltinToolParams(toolName, args || {}, { cwd, toolLimits });
 }
 
-export function emitCaptured(events, onEvent, event) {
+export function emitCaptured(events: any, onEvent: any, event: any): void {
   if (!event) return;
   events.push(event);
   onEvent?.(event);

@@ -7,22 +7,22 @@
 
 import { isContextLimitFailureText } from "../../telemetry/failure.js";
 
-function tryParseJson(text) {
+function tryParseJson(text: string): any {
   try { return JSON.parse(text); } catch { return null; }
 }
 
-export function normalizePiErrorMessage(message) {
+export function normalizePiErrorMessage(message: any): any {
   const text = String(message || "").trim();
   if (!text) return null;
   const codexMatch = /^Codex error:\s*(\{[\s\S]*\})$/i.exec(text);
-  const parsed = tryParseJson(codexMatch ? codexMatch[1] : text);
+  const parsed = tryParseJson(codexMatch ? codexMatch[1]! : text);
   const nested = parsed?.error || parsed;
   if (typeof nested?.message === "string" && nested.message.trim()) return nested.message.trim();
   if (typeof nested?.error?.message === "string" && nested.error.message.trim()) return nested.error.message.trim();
   return text;
 }
 
-export function isContextLimitError(message) {
+export function isContextLimitError(message: any): boolean {
   return isContextLimitFailureText(message);
 }
 
@@ -32,7 +32,8 @@ export function isContextLimitError(message) {
 // 32768 tokens"). We use the discovered value to lower the proactive compaction
 // trigger on the running model so a wrong/default contextWindow self-corrects.
 // Returns the smallest plausible token count found, or null.
-export function parseContextLimitFromError(message) {
+export function parseContextLimitFromError(message: any): number;
+export function parseContextLimitFromError(message: any): number | null {
   const text = String(message || "");
   if (!text) return null;
   // Capture a number that sits next to context/window/token wording, tolerating

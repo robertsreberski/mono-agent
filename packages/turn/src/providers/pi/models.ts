@@ -16,26 +16,26 @@ export const EMPTY_USAGE = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-function rootUrl(baseUrl) {
+function rootUrl(baseUrl: any): string {
   return String(baseUrl || "").replace(/\/+$/, "").replace(/\/(api|v1)$/, "");
 }
 
-function openAiCompatBaseUrl(provider) {
+function openAiCompatBaseUrl(provider: any): string {
   const baseUrl = String(provider?.base_url || "").replace(/\/+$/, "");
   if (provider?.provider_type === "ollama") return `${rootUrl(baseUrl)}/v1`;
   return /\/v\d+$/.test(baseUrl) ? baseUrl : `${baseUrl}/v1`;
 }
 
-function customProviderName(provider, brand) {
+function customProviderName(provider: any, brand: import("../../runtime-brand.js").RuntimeBrand | undefined): string {
   return `${(brand ?? DEFAULT_RUNTIME_BRAND).providerModelPrefix}-${provider.id}`;
 }
 
-function customProviderKey(provider, isPrivate) {
+function customProviderKey(provider: any, isPrivate: boolean): any {
   if (provider?.api_key) return provider.api_key;
   return isPrivate ? "ollama" : "";
 }
 
-function customCompat(capabilities, isPrivate) {
+function customCompat(capabilities: any, isPrivate: boolean) {
   return {
     supportsStore: false,
     supportsDeveloperRole: !isPrivate,
@@ -52,7 +52,7 @@ function customCompat(capabilities, isPrivate) {
  * @param {any} model
  * @returns {string[]}
  */
-export function reasoningLevelsForPiModel(model) {
+export function reasoningLevelsForPiModel(model: any): string[] {
   return getSupportedThinkingLevels(model).map((level) => level === "off" ? "none" : level);
 }
 
@@ -61,7 +61,7 @@ export function reasoningLevelsForPiModel(model) {
 // the provider/model rows and computes the capabilities + isPrivate flag
 // before invoking the provider, so this function never reaches into the
 // domain layer.
-function resolveCustomPiModel(resolved, options) {
+function resolveCustomPiModel(resolved: any, options: any) {
   const provider = options.customProvider;
   if (!provider) {
     throw new Error(
@@ -114,7 +114,45 @@ function resolveCustomPiModel(resolved, options) {
 // entry with a builtin-pi entry therefore routes ALL pi entries in that chain
 // through the same custom provider once options.customProvider is set for the
 // run (the router does not re-derive customProvider per chain entry).
-export function resolvePiRuntimeModel(resolved, options) {
+export function resolvePiRuntimeModel(resolved: any, options: any): {
+    model: {
+        id: any;
+        name: any;
+        api: string;
+        provider: string;
+        baseUrl: string;
+        reasoning: boolean;
+        input: string[];
+        cost: {
+            input: number;
+            output: number;
+            cacheRead: number;
+            cacheWrite: number;
+        };
+        contextWindow: number;
+        maxTokens: number;
+        compat: {
+            supportsStore: boolean;
+            supportsDeveloperRole: boolean;
+            supportsReasoningEffort: boolean;
+            maxTokensField: string;
+        };
+    };
+    capabilities: any;
+    apiKeys: Map<string, any>;
+} | {
+    model: any;
+    capabilities: {
+        tool_use: boolean;
+        reasoning: boolean;
+        reasoning_mode: string;
+        reasoning_levels: string[];
+        reasoning_disable_supported: boolean;
+        vision: boolean;
+        json_mode: boolean;
+    };
+    apiKeys: Map<any, any>;
+} {
   const provider = resolved.provider;
   const model = resolved.model;
   if (
@@ -126,7 +164,7 @@ export function resolvePiRuntimeModel(resolved, options) {
     throw new Error("invalid pi model reference: provider and model are required");
   }
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
-  const catalogModel = getPiModel(/** @type {*} */ (provider), model);
+  const catalogModel = getPiModel(/** @type {*} */ (provider) as any, model);
   if (!catalogModel) {
     // Phrasing matters: this must match telemetry/failure.js's NON_RETRYABLE_PROVIDER_RE
     // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss

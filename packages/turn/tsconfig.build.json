@@ -63,10 +63,10 @@
         "./src/runtime/bridges.ts"
       ],
       "#turn/providers/pi/catalog": [
-        "./src/providers/pi/catalog.js"
+        "./src/providers/pi/catalog.ts"
       ],
       "#turn/providers/pi/context-1m": [
-        "./src/providers/pi/context-1m.js"
+        "./src/providers/pi/context-1m.ts"
       ]
     },
     "verbatimModuleSyntax": true

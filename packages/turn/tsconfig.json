@@ -47,10 +47,10 @@
         "./src/runtime/bridges.ts"
       ],
       "#turn/providers/pi/catalog": [
-        "./src/providers/pi/catalog.d.ts"
+        "./src/providers/pi/catalog.ts"
       ],
       "#turn/providers/pi/context-1m": [
-        "./src/providers/pi/context-1m.d.ts"
+        "./src/providers/pi/context-1m.ts"
       ]
     },
     "rootDir": "src",

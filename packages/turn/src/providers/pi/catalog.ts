@@ -12,6 +12,117 @@ import {
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./models.js";
 
+export type PiBuiltinModelSnapshot = {
+  id: string;
+  name: string;
+  api: string;
+  provider: string;
+  baseUrl: string;
+  reasoning: boolean;
+  input: Array<"text" | "image">;
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    tiers?: Array<{
+      inputTokensAbove: number;
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+    }>;
+  };
+  contextWindow: number;
+  maxTokens: number;
+  thinkingLevelMap?: {
+    [x: string]: string | null;
+  };
+  compat?: {
+    [x: string]: any;
+  };
+  headers?: {
+    [x: string]: string;
+  };
+  [key: string]: any;
+};
+
+export type PiReasoningLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export type PiBuiltinProviderSnapshot = {
+  id: string;
+  label: string;
+};
+
+export type PiOAuthCredentialsSnapshot = {
+  refresh: string;
+  access: string;
+  expires: number;
+  [key: string]: any;
+};
+
+export type PiOAuthLoginCallbacks = {
+  onAuth: (info: {
+    url: string;
+    instructions?: string;
+  }) => void;
+  onDeviceCode: (info: {
+    userCode: string;
+    verificationUri: string;
+    intervalSeconds?: number;
+    expiresInSeconds?: number;
+  }) => void;
+  onPrompt: (prompt: {
+    message: string;
+    placeholder?: string;
+    allowEmpty?: boolean;
+  }) => Promise<string>;
+  onProgress?: (message: string) => void;
+  onManualCodeInput?: () => Promise<string>;
+  onSelect: (prompt: {
+    message: string;
+    options: Array<{
+      id: string;
+      label: string;
+    }>;
+  }) => Promise<string | undefined>;
+  signal?: AbortSignal;
+};
+
+export type PiProviderAuthDescription = {
+  providerId: string;
+  label: string;
+  methods: Array<{
+    type: "oauth" | "api_key";
+    label: string;
+    interactive: boolean;
+  }>;
+};
+
+export type PiProviderAuthCheck = {
+  source: "stored" | "environment" | "ambient";
+  type: "oauth" | "api_key";
+};
+
+export type PiProviderAuthPrompt = {
+  type: "text" | "secret" | "select" | "manual_code";
+  message: string;
+  placeholder?: string;
+  allowEmpty?: boolean;
+  options?: ReadonlyArray<{
+    id: string;
+    label: string;
+    description?: string;
+  }>;
+  signal?: AbortSignal;
+};
+
+export type PiProviderAuthInteraction = {
+  signal?: AbortSignal;
+  prompt: (prompt: PiProviderAuthPrompt) => Promise<string>;
+  notify: (event: any) => void;
+};
+
 /**
  * @typedef {{
  *   id: string,
@@ -115,7 +226,7 @@ import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./models.js
  * @param {T} value
  * @returns {T}
  */
-function cloneInteropValue(value) {
+function cloneInteropValue<T>(value: T): T {
   return structuredClone(value);
 }
 
@@ -126,9 +237,9 @@ function cloneInteropValue(value) {
  * @param {string} providerId
  * @returns {PiBuiltinModelSnapshot[]}
  */
-export function listPiBuiltinModels(providerId) {
+export function listPiBuiltinModels(providerId: string): PiBuiltinModelSnapshot[] {
   return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(
-    getBuiltinModels(/** @type {any} */ (providerId)),
+    getBuiltinModels(/** @type {any} */ (providerId) as any),
   ));
 }
 
@@ -139,18 +250,18 @@ export function listPiBuiltinModels(providerId) {
  * @param {string} modelId
  * @returns {PiBuiltinModelSnapshot|undefined}
  */
-export function getPiBuiltinModel(providerId, modelId) {
+export function getPiBuiltinModel(providerId: string, modelId: string): PiBuiltinModelSnapshot | undefined {
   const model = getBuiltinModel(
-    /** @type {any} */ (providerId),
-    /** @type {any} */ (modelId),
+    /** @type {any} */ (providerId) as any,
+    /** @type {any} */ (modelId) as any,
   );
   return model === undefined
     ? undefined
-    : /** @type {PiBuiltinModelSnapshot} */ (cloneInteropValue(model));
+    : /** @type {PiBuiltinModelSnapshot} */ (cloneInteropValue(model)) as PiBuiltinModelSnapshot;
 }
 
-let builtinProviderLabels;
-function builtinProviderLabelMap() {
+let builtinProviderLabels: Map<string, string> | undefined;
+function builtinProviderLabelMap(): Map<string, string> {
   // `getBuiltinProviders()` is the authoritative static catalog set (41 ids in
   // pi-ai 0.87.0), but it returns bare ids — the human display label lives on
   // the constructed `Provider.name`, which only `builtinProviders()` exposes.
@@ -174,7 +285,7 @@ function builtinProviderLabelMap() {
  *
  * @returns {PiBuiltinProviderSnapshot[]}
  */
-export function listPiBuiltinProviders() {
+export function listPiBuiltinProviders(): PiBuiltinProviderSnapshot[] {
   const labels = builtinProviderLabelMap();
   return getBuiltinProviders().map((id) => ({
     id,
@@ -189,7 +300,7 @@ export function listPiBuiltinProviders() {
  * @param {string} providerId
  * @returns {boolean}
  */
-export function isPiOAuthLoginEnabled(providerId) {
+export function isPiOAuthLoginEnabled(providerId: string): boolean {
   return true;
 }
 
@@ -200,7 +311,7 @@ export function isPiOAuthLoginEnabled(providerId) {
  * @param {string} providerId
  * @returns {PiProviderAuthDescription|undefined}
  */
-export function describePiProviderAuth(providerId) {
+export function describePiProviderAuth(providerId: string): PiProviderAuthDescription | undefined {
   let provider;
   try {
     provider = builtinProviders().find((candidate) => candidate.id === providerId);
@@ -208,7 +319,7 @@ export function describePiProviderAuth(providerId) {
     return undefined;
   }
   if (provider === undefined) return undefined;
-  const methods = [];
+  const methods: PiProviderAuthDescription["methods"] = [];
   if (isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined) {
     methods.push({
       type: /** @type {const} */ ("oauth"),
@@ -237,7 +348,7 @@ export function describePiProviderAuth(providerId) {
  * @param {AbortSignal} [signal]
  * @returns {Promise<PiProviderAuthCheck|undefined>}
  */
-export async function checkPiProviderAuth(providerId, credential, environment = {}, signal) {
+export async function checkPiProviderAuth(providerId: string, credential: any, environment: Readonly<Record<string, string | undefined>> = {}, signal?: AbortSignal): Promise<PiProviderAuthCheck | undefined> {
   const credentials = memoryCredentialStore(credential === undefined ? {} : { [providerId]: credential });
   const models = builtinModels({
     credentials,
@@ -265,7 +376,7 @@ export async function checkPiProviderAuth(providerId, credential, environment = 
     ? "stored"
     : typeof result.source === "string"
       && typeof environment[result.source] === "string"
-      && environment[result.source].trim().length > 0
+      && environment[result.source]!.trim().length > 0
       ? "environment"
       : "ambient";
   return cloneInteropValue({ source, type: result.type });
@@ -282,7 +393,9 @@ export async function checkPiProviderAuth(providerId, credential, environment = 
  * @param {{getDeviceId?: () => string}} [options]
  * @returns {Promise<*>}
  */
-export async function loginPiProviderAuth(providerId, type, interaction, options) {
+export async function loginPiProviderAuth(providerId: string, type: "oauth" | "api_key", interaction: PiProviderAuthInteraction, options?: {
+    getDeviceId?: () => string;
+}): Promise<any> {
   if (type !== "oauth" && type !== "api_key") {
     throw new TypeError("Pi provider auth type must be oauth or api_key");
   }
@@ -294,15 +407,15 @@ export async function loginPiProviderAuth(providerId, type, interaction, options
   }
   const models = builtinModels({ credentials: memoryCredentialStore({}) });
   const credential = await models.login(providerId, type, {
-    signal: interaction.signal,
+    signal: interaction.signal!,
     prompt: async (prompt) => await interaction.prompt(prompt),
     notify: (event) => interaction.notify(cloneInteropValue(event)),
-  }, providerId === "openai" && type === "oauth" ? { getDeviceId: options.getDeviceId } : undefined);
+  }, providerId === "openai" && type === "oauth" ? { getDeviceId: options!.getDeviceId! } : undefined);
   return cloneInteropValue(credential);
 }
 
 /** @param {Record<string, *>} initial */
-function memoryCredentialStore(initial) {
+function memoryCredentialStore(initial: Record<string, any>): import("@earendil-works/pi-ai").CredentialStore {
   const held = new Map(Object.entries(initial));
   return {
     async read(providerId) { return held.get(providerId); },
@@ -327,8 +440,8 @@ function memoryCredentialStore(initial) {
  * @param {PiBuiltinModelSnapshot} model
  * @returns {PiReasoningLevel[]}
  */
-export function reasoningLevelsForPiModel(model) {
-  return /** @type {PiReasoningLevel[]} */ (resolveReasoningLevels(model));
+export function reasoningLevelsForPiModel(model: PiBuiltinModelSnapshot): PiReasoningLevel[] {
+  return /** @type {PiReasoningLevel[]} */ (resolveReasoningLevels(model)) as PiReasoningLevel[];
 }
 
 /**
@@ -339,15 +452,20 @@ export function reasoningLevelsForPiModel(model) {
  * @param {Object<string, PiOAuthCredentialsSnapshot>} credentials
  * @returns {Promise<{apiKey: string, newCredentials: PiOAuthCredentialsSnapshot}|null>}
  */
-export async function resolvePiOAuthApiKey(providerId, credentials) {
+export async function resolvePiOAuthApiKey(providerId: string, credentials: {
+    [x: string]: PiOAuthCredentialsSnapshot;
+}): Promise<{
+    apiKey: string;
+    newCredentials: PiOAuthCredentialsSnapshot;
+} | null> {
   const result = await resolveOAuthApiKey(
     providerId,
     /** @type {any} */ (cloneInteropValue(credentials)),
   );
   if (!result) return null;
   return {
-    apiKey: result.apiKey,
-    newCredentials: cloneInteropValue(result.newCredentials),
+    apiKey: result.apiKey!,
+    newCredentials: cloneInteropValue(result.newCredentials) as PiOAuthCredentialsSnapshot,
   };
 }
 
@@ -360,7 +478,9 @@ export async function resolvePiOAuthApiKey(providerId, credentials) {
  * @param {{getDeviceId?: () => string}} [options]
  * @returns {Promise<PiOAuthCredentialsSnapshot>}
  */
-export async function loginPiOAuth(providerId, callbacks, options) {
+export async function loginPiOAuth(providerId: string, callbacks: PiOAuthLoginCallbacks, options?: {
+    getDeviceId?: () => string;
+}): Promise<PiOAuthCredentialsSnapshot> {
   if (providerId === "openai" && typeof options?.getDeviceId !== "function") {
     throw new TypeError("OpenAI ChatGPT login requires a stable installation device ID callback");
   }
@@ -369,13 +489,13 @@ export async function loginPiOAuth(providerId, callbacks, options) {
     throw new Error(`Pi OAuth provider is unavailable: ${providerId}`);
   }
   for (const callbackName of ["onAuth", "onDeviceCode", "onPrompt", "onSelect"]) {
-    if (typeof callbacks?.[callbackName] !== "function") {
+    if (typeof callbacks?.[callbackName as keyof PiOAuthLoginCallbacks] !== "function") {
       throw new TypeError(`loginPiOAuth requires callbacks.${callbackName}()`);
     }
   }
   const credentials = await oauth.login(
     toAuthInteraction(/** @type {any} */ ({ ...callbacks })),
-    providerId === "openai" ? { getDeviceId: options.getDeviceId } : undefined,
+    providerId === "openai" ? { getDeviceId: options!.getDeviceId! } : undefined,
   );
   return cloneInteropValue(credentials);
 }
