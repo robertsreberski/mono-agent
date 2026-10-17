@@ -1,0 +1,2906 @@
+import { createToolContext } from "../../tools/shared/tool-context.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
+
+import { passthroughSandbox } from "../../agent/sandbox-seam.js";
+import { renderWithAgentBrowser } from "../../tools/web/web-browser-render.js";
+import {
+  __resetSharedSearchCacheForTests,
+  createWebToolController,
+} from "../../tools/web/web-controller.js";
+import { markdownToText } from "../../tools/web/web-document-extractor.js";
+import { performWebFetch } from "../../tools/web/web-fetch.js";
+import {
+  __resetWebSearchThrottleForTests,
+  canonicalizeSearchUrl,
+  mergeRankedResults,
+  parseStartpageResults,
+  performWebSearch,
+} from "../../tools/web/web-search.js";
+import { claimWebSearchRequest, countWebSearchDispatch, createWebSearchRunState, refundWebSearchRequests, webSearchBudgetSnapshot } from "../../tools/web/web-search-state.js";
+import {
+  boundWebSearchEntries,
+  boundWebSearchSnippet,
+  sliceUtf8,
+  WEB_SEARCH_BODY_MAX_BYTES,
+  WEB_SEARCH_SNIPPET_MAX_CHARS,
+  WEB_SEARCH_SNIPPET_TRUNCATION_MARKER,
+} from "../../tools/web/web-search-output.js";
+import { applyToolBloatGuard, MAX_TOOL_RESULT_BYTES } from "../../agent/tool-bloat.js";
+
+const tempDirs: any[] = [];
+
+function tempWorkspace() {
+  const dir = mkdtempSync(resolve("/tmp", "agent-runtime-web-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function runtimeContext(workspace: any = tempWorkspace(), sandbox: any = passthroughSandbox): any {
+  return { workspace, sandbox };
+}
+
+// The throttle, the backend cooldowns and the search cache are module state so
+// that they bind every subagent in the process. Tests must therefore reset them,
+// and drop the inter-request spacing so the suite does not pay for it.
+beforeEach(() => {
+  __resetWebSearchThrottleForTests({ minSpacingMs: 0 });
+  __resetSharedSearchCacheForTests();
+});
+
+describe("WebSearch answer budget settlement", () => {
+  const ollamaConfig = { backend: "ollama", ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-key" } };
+
+  it("refunds invalid Ollama results before quota-skipped Codex and a keyless answer, leaving room for a later call", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 2 });
+    const fetchImpl: any = vi.fn(async (url: any) => String(url).includes("ollama.com")
+      ? new Response('{"results":null}')
+      : new Response('<div class="result"><a class="result__a" href="https://example.com/evidence">Mono Agent evidence</a></div>'));
+    const codexSearch = vi.fn(async () => ({ ok: false, backend: "codex", code: "quota_unavailable", quotaSkipped: true }));
+    const options: any = { searchState: state, searchConfig: { ...ollamaConfig, backend: ["ollama", "codex", "keyless"] }, fetchImpl, codexSearch, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext };
+    const first = await performWebSearch({ query: "mono agent evidence" }, options);
+    expect(first).toMatchObject({ error: false, outcome: {
+      requestsUsed: 1, requestsThisCall: 1, requestsRemaining: 1, dispatchesUsed: 2,
+      providerAttempts: [
+        { backend: "ollama", code: "invalid_response", requests: 0 },
+        { backend: "codex", code: "quota_unavailable", requests: 0 },
+      ],
+    } });
+    const later = await performWebSearch({ query: "mono agent later evidence" }, options);
+    expect(later).toMatchObject({ error: false, outcome: { requestsUsed: 2, requestsThisCall: 1, dispatchesUsed: 4 } });
+  });
+
+  it.each([
+    ["HTTP 5xx", "ollama", () => new Response("failure", { status: 503 }), 1],
+    ["HTTP 429", "ollama", () => new Response("limited", { status: 429 }), 1],
+    ["transport", "ollama", () => { throw new TypeError("fetch failed"); }, 1],
+    ["invalid JSON", "ollama", () => new Response("not json"), 1],
+    ["invalid_response", "ollama", () => new Response('{"results":null}'), 1],
+    ["endpoint_not_supported", "local", () => new Response("missing", { status: 404 }), 2],
+    ["sandbox denial", "denied", () => { throw new Error("must not fetch"); }, 0],
+    ["challenge/captcha", "keyless", () => new Response("captcha challenge-form"), 2],
+    ["SearXNG HTTP 5xx", "searxng", () => new Response("failure", { status: 503 }), 1],
+    ["SearXNG invalid JSON", "searxng", () => new Response("not json"), 1],
+    ["keyless transport", "keyless", () => { throw new TypeError("fetch failed"); }, 2],
+  ])("does not charge %s", async (_label: any, kind: any, response: any, dispatches: any) => {
+    const state = createWebSearchRunState({});
+    const searchConfig = kind === "local" ? { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } }
+      : kind === "keyless" ? { backend: "keyless" }
+        : kind === "searxng" ? { backend: "searxng", endpoint: "http://127.0.0.1:8088" } : ollamaConfig;
+    const fetchImpl: any = vi.fn(async () => response());
+    const sandbox: any = kind === "denied" ? { ...passthroughSandbox, networkAllowsUrl: () => false } : passthroughSandbox;
+    const result = await performWebSearch({ query: "mono agent" }, { searchConfig, searchState: state, fetchImpl, ctx: runtimeContext(undefined, sandbox) as unknown as import("../../tools/shared/tool-context.js").ToolContext });
+    expect(result).toMatchObject({ error: true, outcome: { requestsUsed: 0, requestsThisCall: 0, dispatchesUsed: dispatches } });
+    expect(fetchImpl).toHaveBeenCalledTimes(dispatches);
+  });
+
+  it.each([{ results: [] }, { results: [{ title: "Mono Agent", url: "https://example.com", content: "Mono Agent evidence" }] }])("charges an answered Ollama search, including an empty 200 (%j)", async ({ results }: any) => {
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: ollamaConfig, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext, fetchImpl: async () => new Response(JSON.stringify({ results })),
+    });
+    expect(result.outcome).toMatchObject({ requestsUsed: 1, requestsThisCall: 1, dispatchesUsed: 1 });
+  });
+
+  it("charges one answer and two dispatches for Ollama's compatibility probe", async () => {
+    const fetchImpl: any = vi.fn(async (url: any) => String(url).includes("experimental")
+      ? new Response("missing", { status: 404 }) : new Response('{"results":[]}'));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", maxRequestsPerRun: 1, ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(result).toMatchObject({ error: false, outcome: { requestsUsed: 1, requestsThisCall: 1, dispatchesUsed: 2 } });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds failure-only runs and stops auto/alternate loops with historical provider failures", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 });
+    const fetchImpl: any = vi.fn(async () => new Response('{"results":null}'));
+    const options: any = { searchState: state, searchConfig: ollamaConfig, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext };
+    for (let i = 0; i < 4; i++) await performWebSearch({ query: "private-query" }, options);
+    const codexSearch = vi.fn();
+    const exhausted = await performWebSearch({ query: "private-query", alternate_queries: ["variant-1", "variant-2"] }, {
+      ...options as any, searchConfig: { ...ollamaConfig, backend: ["ollama", "codex", "keyless"] }, codexSearch,
+    });
+    expect(exhausted).toMatchObject({ error: true, outcome: {
+      code: "search_budget_exhausted", requestsUsed: 0, requestsThisCall: 0, requestsRemaining: 1,
+      dispatchesUsed: 4, maxDispatches: 4, dispatchesRemaining: 0,
+      attempts: 1, attemptedBackends: ["ollama"], retryInRun: false, nextAction: "use_available_evidence",
+      providerAttempts: [{ backend: "ollama", code: "search_budget_exhausted", requests: 0 }],
+    } });
+    expect(exhausted.text).toContain("spent its dispatches on failing providers");
+    expect(exhausted.text).toContain("ollama invalid_response");
+    expect(exhausted.text).toContain("ollama next dispatch refused");
+    expect(exhausted.text).not.toMatch(/private-query|variant-|sentinel-key|https?:/u);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(codexSearch).not.toHaveBeenCalled();
+  });
+
+  it("keeps exhaustion diagnostics bounded, deduplicated, and free of provider-controlled text", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 });
+    const options: any = { searchState: state, searchConfig: { backend: "codex" }, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext };
+    for (let i = 0; i < 20; i++) {
+      await performWebSearch({ query: "private-query" }, { ...options as any, codexSearch: async () => ({
+        ok: false, backend: "https://user:secret@example.com/" + "x".repeat(5000),
+        code: "credential-body-" + i, message: "raw-secret-body", quotaSkipped: true,
+      }) });
+    }
+    await performWebSearch({ query: "private-query" }, { ...options as any, codexSearch: async (_query: any, opts: any) => {
+      opts.claimRequest();
+      return { ok: true, backend: "codex", results: [] };
+    } });
+    const exhausted = await performWebSearch({ query: "private-query" }, { ...options as any, codexSearch: async (_query: any, opts: any) => { opts.claimRequest(); } });
+    expect(exhausted.outcome.code).toBe("search_budget_exhausted");
+    expect(exhausted.text).toContain("unknown unavailable");
+    expect(exhausted.text.match(/unknown unavailable/gu)).toHaveLength(1);
+    expect(exhausted.text).not.toMatch(/secret|https?:|credential|private-query|raw-/u);
+    expect(exhausted.text.length).toBeLessThan(1300);
+  });
+
+  it("includes known cooldown timing and past failures when answered searches exhaust the run", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 });
+    const fetchImpl: any = vi.fn(async (url: any) => String(url).includes("ollama.com")
+      ? new Response("private-body", { status: 429, headers: { "retry-after": "204" } })
+      : new Response('{"results":[]}'));
+    const options: any = { searchState: state, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext, searchConfig: {
+      ...ollamaConfig, backend: ["ollama", "searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088",
+    } };
+    // Empty SearXNG answers stay charged; the following Codex reservation refuses.
+    const result = await performWebSearch({ query: "private-query" }, { ...options as any, codexSearch: async (_query: any, opts: any) => { opts.claimRequest(); } });
+    expect(result.outcome.code).toBe("search_budget_exhausted");
+    expect(result.text).toMatch(/ollama rate_limited \(retry in 20[34]s\)/u);
+    expect(result.text).toContain("codex next dispatch refused");
+    expect(result.text).not.toMatch(/private-|sentinel|https?:/u);
+    expect(result.outcome).toMatchObject({ requestsUsed: 1, dispatchesUsed: 2 });
+  });
+
+  it("refuses a second Ollama probe at the dispatch ceiling and refunds its single reservation", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 1 });
+    state.dispatchesUsed = 3;
+    const fetchImpl: any = vi.fn(async () => new Response("missing", { status: 404 }));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchState: state, searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(result.outcome).toMatchObject({ code: "search_budget_exhausted", requestsUsed: 0, requestsThisCall: 0, dispatchesUsed: 4 });
+    expect(result.text).toContain("spent its dispatches on failing providers");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("preserves legacy state, clamps refunds, and never refunds dispatches", () => {
+    const state = { schema: "mono-agent.web-search-run.v1", maxRequests: 1, requestsUsed: 0, deferredProviders: new Map() };
+    expect(createWebSearchRunState({}, state)).toBe(state);
+    expect(webSearchBudgetSnapshot(state)).toMatchObject({ dispatchesUsed: 0, maxDispatches: 4, dispatchesRemaining: 4 });
+    const claims = { requests: 0 };
+    claimWebSearchRequest(state, "ollama", claims);
+    refundWebSearchRequests(state, 99, claims);
+    expect(claims.requests).toBe(0);
+    expect(webSearchBudgetSnapshot(state)).toMatchObject({ requestsUsed: 0, dispatchesUsed: 1 });
+    for (let i = 0; i < 3; i++) countWebSearchDispatch(state, "ollama");
+    expect(() => claimWebSearchRequest(state, "ollama", claims)).toThrow(expect.objectContaining({ code: "search_budget_exhausted", reason: "dispatch_ceiling" }));
+    expect(claims.requests).toBe(0);
+    expect(() => refundWebSearchRequests({}, 1, claims)).toThrow("Invalid WebSearch run state.");
+  });
+
+  it.each(["answer", "dispatch"])("cannot oversubscribe the %s ceiling across concurrent calls", async (kind: any) => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 2 });
+    if (kind === "dispatch") state.dispatchesUsed = 7;
+    let release;
+    const gate = new Promise((resolvePromise: any) => { release = resolvePromise; });
+    const fetchImpl: any = vi.fn(async () => { await gate; return new Response("failure", { status: 503 }); });
+    const calls = Array.from({ length: 3 }, (_: any, i: any) => performWebSearch({ query: "concurrent" }, {
+      searchState: state, searchConfig: { backend: "searxng", endpoint: `http://127.0.0.1:${8088 + i}` }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    }));
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(kind === "dispatch" ? 1 : 2));
+    expect(state.requestsUsed).toBe(kind === "dispatch" ? 1 : 2);
+    expect(state.dispatchesUsed).toBe(kind === "dispatch" ? 8 : 2);
+    release!();
+    const results = await Promise.all(calls);
+    expect(results.filter((result: any) => result.outcome.code === "search_budget_exhausted")).toHaveLength(kind === "dispatch" ? 2 : 1);
+    expect(state.requestsUsed).toBe(0);
+    expect(state.dispatchesUsed).toBe(kind === "dispatch" ? 8 : 2);
+    expect(results.every((result: any) => result.outcome.requestsThisCall === 0)).toBe(true);
+  });
+});
+
+describe("WebSearch output bounds", () => {
+  it("keeps the exact snippet boundary and marks the first truncated character within it", () => {
+    const exact = boundWebSearchSnippet("x".repeat(WEB_SEARCH_SNIPPET_MAX_CHARS));
+    const overflow = boundWebSearchSnippet("x".repeat(WEB_SEARCH_SNIPPET_MAX_CHARS + 1));
+
+    expect(exact).toEqual({ text: "x".repeat(WEB_SEARCH_SNIPPET_MAX_CHARS), truncated: false });
+    expect([...overflow.text]).toHaveLength(WEB_SEARCH_SNIPPET_MAX_CHARS);
+    expect(overflow.text.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+    expect(overflow.truncated).toBe(true);
+  });
+
+  it("normalizes lone surrogates and keeps astral code points intact at character and byte bounds", () => {
+    const malformed = `ab\ud800🙂\udfffcd`;
+    const bounded = boundWebSearchSnippet(malformed);
+
+    expect(bounded.text).toBe("ab�🙂�cd");
+    expect(bounded.text).not.toMatch(/[\ud800-\udfff]/u);
+    expect(sliceUtf8(`x\ud800🙂y`, 8)).toBe("x�🙂");
+    expect(sliceUtf8(`x\ud800🙂y`, 8)).not.toMatch(/[\ud800-\udfff]/u);
+  });
+
+  it("omits a pathological trailing result as a whole instead of cutting its URL", () => {
+    const bounded = boundWebSearchEntries([
+      { title: "usable", url: "https://example.com/usable", snippet: "evidence" },
+      { title: "too large", url: `https://example.com/${"x".repeat(600)}`, snippet: "evidence" },
+    ], { maxBytes: 160 });
+
+    expect(bounded.resultCount).toBe(1);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.omittedCount).toBe(1);
+    expect(bounded.entries).toHaveLength(1);
+    expect(bounded.entries[0]).toMatchObject({
+      title: "usable",
+      url: "https://example.com/usable",
+      snippet: "evidence",
+    });
+    expect(JSON.stringify(bounded.entries)).not.toContain("too large");
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(160);
+  });
+
+  it("truncates a single oversized snippet to the JSON budget without cutting its URL", () => {
+    const url = "https://example.com/single-oversized";
+    const bounded = boundWebSearchEntries([
+      { title: "single", url, snippet: `lead ${"🙂".repeat(500)} tail` },
+    ], { maxBytes: 512 });
+
+    expect(bounded.resultCount).toBe(1);
+    expect(bounded.omittedCount).toBe(0);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.entries).toHaveLength(1);
+    expect(bounded!.entries[0]!.url).toBe(url);
+    expect(bounded!.entries[0]!.snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+    expect(bounded!.entries[0]!.snippet).not.toMatch(/[\ud800-\udfff]/u);
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(512);
+  });
+
+  it("budgets JSON escapes and multibyte sequences truthfully while preserving order", () => {
+    const bounded = boundWebSearchEntries([
+      { title: 'first "quoted" \\ title', url: "https://example.com/first", snippet: 'lead "quote" \\ and 🙂 emoji' },
+      { title: "second", url: "https://example.com/second", snippet: `second ${"x".repeat(400)}` },
+      { title: "third", url: "https://example.com/third", snippet: "third evidence" },
+    ], { maxBytes: 420 });
+
+    expect(bounded.entries.length).toBeGreaterThan(0);
+    expect(bounded!.entries[0]!.url).toBe("https://example.com/first");
+    expect(bounded!.entries[0]!.title).toBe('first "quoted" \\ title');
+    expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(420);
+    if (bounded.omittedCount > 0 || bounded.entries.some((entry: any) => entry.snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER))) {
+      expect(bounded.truncated).toBe(true);
+    }
+    for (const entry of bounded.entries) {
+      expect(entry.snippet).not.toMatch(/[\ud800-\udfff]/u);
+    }
+  });
+
+  it("keeps the truncation marker for highly escapable content at a tight JSON budget", () => {
+    for (const snippet of [`"`.repeat(1000), `\\`.repeat(1000), `🙂`.repeat(1000)]) {
+      const bounded = boundWebSearchEntries([
+        { title: "x", url: "https://example.com", snippet },
+      ], { maxBytes: 512 });
+
+      expect(bounded.resultCount).toBe(1);
+      expect(bounded.omittedCount).toBe(0);
+      expect(bounded.truncated).toBe(true);
+      expect(bounded.entries).toHaveLength(1);
+      expect(bounded!.entries[0]!.url).toBe("https://example.com");
+      expect(bounded!.entries[0]!.snippet.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+      expect(bounded!.entries[0]!.snippet.length).toBeGreaterThan(0);
+      expect(Buffer.byteLength(JSON.stringify(bounded.entries), "utf8")).toBeLessThanOrEqual(512);
+      expect(bounded!.entries[0]!.snippet).not.toMatch(/[\ud800-\udfff]/u);
+    }
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  __resetWebSearchThrottleForTests();
+  __resetSharedSearchCacheForTests();
+  while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
+});
+
+describe("WebSearch", () => {
+  it("rejects stateful SearXNG endpoint components before making a request", async () => {
+    const fetchImpl: any = vi.fn();
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088?format=html#unsafe" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "invalid_search_config" },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("queries strict loopback SearXNG, skips unneeded alternates, filters domains, and canonicalizes URLs", async () => {
+    const calls: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any, init: any) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({
+        results: [
+          {
+            title: "Agent tools primary",
+            url: "https://Example.com/article/?utm_source=test#section",
+            content: "Useful result",
+          },
+          {
+            title: "Duplicate",
+            url: "https://example.com/article",
+            content: "",
+          },
+          {
+            title: "Excluded",
+            url: "https://docs.example.com/private",
+            content: "filtered",
+          },
+        ],
+      }), { headers: { "content-type": "application/json" } });
+    });
+
+    const result = await performWebSearch({
+      query: "agent tools",
+      alternate_queries: ["runtime tools"],
+      domains: ["example.com"],
+      exclude_domains: ["docs.example.com"],
+      language: "nl-NL",
+      time_range: "month",
+      limit: 5,
+    }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result.error).toBe(false);
+    expect(result.outcome).toMatchObject({
+      status: "ok",
+      backend: "searxng",
+      attempts: 1,
+      resultCount: 1,
+    });
+    expect(result.text).toContain("https://example.com/article");
+    expect(result.text).not.toContain("utm_source");
+    expect(result.text).not.toContain("docs.example.com");
+    expect(calls).toHaveLength(1);
+    for (const call of calls) {
+      expect(call.url).toBe("http://127.0.0.1:8088/search");
+      expect(call.init.method).toBe("POST");
+      const body = new URLSearchParams(call.init.body);
+      expect(body.get("q")).toContain("site:example.com");
+      expect(body.get("language")).toBe("nl-NL");
+      expect(body.get("time_range")).toBe("month");
+    }
+  });
+
+  it.each(["USA", "ZZ", "1A", ""])('rejects invalid country %j before network or budget', async (country: any) => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 4 });
+    const fetchImpl: any = vi.fn();
+    const result = await performWebSearch({ query: "mono agent", country }, {
+      searchState: state, searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(result).toMatchObject({ error: true, outcome: { code: "invalid_country", requestsUsed: 0, dispatchesUsed: 0 } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["searxng", { backend: "searxng", endpoint: "http://127.0.0.1:8088" }],
+    ["ollama", { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } }],
+    ["codex", { backend: "codex" }],
+    ["startpage", { backend: "startpage" }],
+    ["duckduckgo", { backend: "duckduckgo" }],
+  ])("skips strict %s before dispatch when country targeting is unsupported", async (_backend: any, searchConfig: any) => {
+    const fetchImpl: any = vi.fn();
+    const codexSearch = vi.fn();
+    const result = await performWebSearch({ query: "mono agent", country: "AD" }, {
+      searchConfig, fetchImpl, codexSearch, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(result).toMatchObject({ error: true, outcome: {
+      code: "unsupported_country_filter", requestsUsed: 0, dispatchesUsed: 0,
+      providerAttempts: [{ code: "unsupported_country_filter", requests: 0 }],
+    } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(codexSearch).not.toHaveBeenCalled();
+  });
+
+  it("reports deterministic country refusal before cooldown without bypassing cooldown for capable requests", async () => {
+    const state = createWebSearchRunState({});
+    const fetchImpl: any = vi.fn(async () => new Response("limited", { status: 429, headers: { "retry-after": "120" } }));
+    const options: any = { searchState: state, searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext };
+
+    const limited = await performWebSearch({ query: "mono agent" }, options);
+    expect(limited).toMatchObject({ error: true, outcome: {
+      code: "rate_limited", requestsUsed: 0, dispatchesUsed: 1,
+    } });
+
+    const unsupported = await performWebSearch({ query: "mono agent", country: "AD" }, options);
+    expect(unsupported).toMatchObject({ error: true, outcome: {
+      code: "unsupported_country_filter", requestsUsed: 0, dispatchesUsed: 1,
+      filterSupport: { country: "unsupported" } as any,
+      providerAttempts: [{ backend: "duckduckgo", code: "unsupported_country_filter", requests: 0 }],
+    } });
+
+    const capable = await performWebSearch({ query: "mono agent", country: "PL" }, options);
+    expect(capable).toMatchObject({ error: true, outcome: {
+      code: "rate_limited", requestsUsed: 0, dispatchesUsed: 1,
+      filterSupport: { country: "not_applied" } as any,
+    } });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("advances past an unsupported provider and sends exact country and date parameters to DDG", async () => {
+    const calls: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any, init: any) => {
+      calls.push({ url: new URL(url), init });
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/mono-agent">Mono Agent evidence</a></div>');
+    });
+    const result = await performWebSearch({
+      query: "mono agent", alternate_queries: ["unused alternate"], country: "gb", language: "pl", time_range: "month",
+    }, { searchConfig: { backend: ["startpage", "duckduckgo"] }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext });
+    expect(result).toMatchObject({ error: false, outcome: {
+      backend: "duckduckgo", requestsUsed: 1, dispatchesUsed: 1,
+      filterSupport: { language: "advisory", country: "provider", timeRange: "provider" } as any,
+      providerAttempts: [{ backend: "startpage", code: "unsupported_country_filter", requests: 0 }],
+    } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url.searchParams.get("kl")).toBe("uk-en");
+    expect(calls[0]!.url.searchParams.get("df")).toBe("m");
+    expect(calls[0].init.headers["Accept-Language"]).toBe("pl");
+    expect(JSON.parse(result.text).coverage.requestedFilters).toMatchObject({ country: "GB", language: "pl", timeRange: "month" });
+  });
+
+  it("sends domain constraints as site: operators to DuckDuckGo and reports operator support", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response('<div class="result"><a class="result__a" href="https://example.com/mono-agent">Mono Agent evidence</a></div>'));
+    const result = await performWebSearch({ query: "mono agent", domains: ["example.com"] }, {
+      searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(new URL(fetchImpl!.mock.calls[0][0]).searchParams.get("q")).toBe("mono agent (site:example.com)");
+    expect(result).toMatchObject({ error: false, outcome: {
+      backend: "duckduckgo", filterSupport: { domains: "operator" } as any,
+    } });
+    expect(JSON.parse(result.text).coverage.requestedFilters).toMatchObject({ domains: ["example.com"] });
+  });
+
+  it("canonicalizes country for cache identity while separating PL, GB, and global calls", async () => {
+    const seenRegions: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      seenRegions.push(new URL(url).searchParams.get("kl"));
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/mono-agent">Mono Agent evidence</a></div>');
+    });
+    const controller = createWebToolController({ searchConfig: { backend: "duckduckgo" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext });
+    try {
+      const lower = await controller.search({ query: "mono agent", country: "pl" });
+      const upper = await controller.search({ query: "mono agent", country: "PL" });
+      const gb = await controller.search({ query: "mono agent", country: "GB" });
+      const global = await controller.search({ query: "mono agent" });
+      expect(lower.outcome.cacheHit).toBe(false);
+      expect(upper.outcome.cacheHit).toBe(true);
+      expect(gb.outcome.cacheHit).toBe(false);
+      expect(global.outcome.cacheHit).toBe(false);
+      expect(seenRegions).toEqual(["pl-pl", "uk-en", "wt-wt"]);
+    } finally { await controller.close(); }
+  });
+
+  it("queries strict local Ollama without credentials and uses only its same-origin compatibility route", async () => {
+    const calls: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any, init: any) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/api/experimental/web_search")) return new Response("missing", { status: 404 });
+      return new Response(JSON.stringify({ results: [{
+        title: "Mono Agent documentation",
+        url: "https://example.com/mono-agent",
+        content: "Mono Agent framework documentation",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const result = await performWebSearch({ query: "mono agent", alternate_queries: ["unused"] }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({ error: false, outcome: { backend: "ollama", attempts: 1 } });
+    expect(calls.map((call: any) => call.url)).toEqual([
+      "http://127.0.0.1:11434/api/experimental/web_search",
+      "http://127.0.0.1:11434/api/web_search",
+    ]);
+    expect(calls.every((call: any) => call.init.headers.Authorization === undefined)).toBe(true);
+    expect(JSON.parse(calls[0].init.body)).toEqual({ query: "mono agent", max_results: 5 });
+  });
+
+  it("keeps the observed 414365-byte Ollama WebSearch result usable instead of triggering the tool-bloat guard", async () => {
+    const rawContent = "bounded output evidence ".repeat(2_700);
+    const rawResults = Array.from({ length: 7 }, (_: any, index: any) => ({
+      title: `Bounded output evidence source ${index + 1}`,
+      url: `https://example.com/source-${index + 1}`,
+      content: rawContent,
+    }));
+    expect(Buffer.byteLength(rawResults.map((entry: any) => entry.content).join(""), "utf8")).toBeGreaterThan(414_365);
+    const fetchImpl: any = vi.fn(async () => new Response(JSON.stringify({ results: rawResults }), {
+      headers: { "content-type": "application/json" },
+    }));
+
+    const result = await performWebSearch({ query: "bounded output evidence", limit: 7 }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const guarded = await applyToolBloatGuard("WebSearch", Promise.resolve({
+      content: [{ type: "text", text: result.text }],
+    }));
+
+    expect(JSON.parse(fetchImpl!.mock.calls[0][1].body)).toEqual({ query: "bounded output evidence", max_results: 7 });
+    expect(result.outcome).toMatchObject({ resultCount: 7, truncated: true, status: "partial", code: "ok" });
+    expect(result.outcome.bytes).toBe(Buffer.byteLength(result.text, "utf8"));
+    expect(result.outcome.bytes).toBeLessThan(MAX_TOOL_RESULT_BYTES);
+    const payload = JSON.parse(result.text);
+    expect(payload).toMatchObject({ tool: "WebSearch", status: "partial", code: "ok" });
+    expect(payload.results).toHaveLength(7);
+    expect(payload.results[0]!.title).toBe("Bounded output evidence source 1");
+    expect(payload.results[6]!.url).toBe("https://example.com/source-7");
+    expect(payload.coverage.resultCount).toBe(7);
+    expect(payload.untrusted_fields).toEqual(["results"]);
+    expect(payload.next_actions[0]).toMatchObject({
+      tool: "WebFetch", args: { url: "https://example.com/source-1" },
+    });
+    expect(result.text).toContain(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER);
+    expect(guarded!.details?.tool_payload_truncated).toBeUndefined();
+    expect(guarded!.content![0].text).toBe(result.text);
+  });
+
+  it("bounds the complete multi-byte WebSearch text while preserving every host frame and rendered outcome", async () => {
+    const longUrlTail = "x".repeat(2_000);
+    const rawResults = Array.from({ length: 10 }, (_: any, index: any) => ({
+      title: `Worst case evidence source ${index + 1} ${"t".repeat(700)}`,
+      url: `https://example.com/source-${index + 1}?q=${longUrlTail}`,
+      content: `worst case evidence ${"🙂".repeat(8_000)}`,
+    }));
+    const result = await performWebSearch({
+      query: "worst case evidence",
+      limit: 10,
+      language: "n".repeat(500),
+      time_range: "month",
+    }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ results: rawResults }), {
+        headers: { "content-type": "application/json" },
+      })),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const payload = JSON.parse(result.text);
+    const body = JSON.stringify(payload.results);
+
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(WEB_SEARCH_BODY_MAX_BYTES);
+    expect(Buffer.byteLength(result.text, "utf8")).toBeLessThan(MAX_TOOL_RESULT_BYTES);
+    expect(payload).toMatchObject({ tool: "WebSearch" });
+    expect(payload.coverage.requestedFilters).toMatchObject({
+      language: "n".repeat(100),
+      timeRange: "month",
+      note: expect.stringContaining("verify dates in sources"),
+    });
+    expect(result.outcome).toMatchObject({ truncated: true });
+    expect(result.outcome.bytes).toBe(Buffer.byteLength(result.text, "utf8"));
+    expect(payload.coverage.resultCount).toBe(result.outcome.resultCount);
+    expect(payload.results.length).toBeGreaterThan(0);
+    for (const entry of payload.results) {
+      expect(typeof entry.title).toBe("string");
+      expect(typeof entry.url).toBe("string");
+      expect(typeof entry.snippet).toBe("string");
+    }
+    expect(payload.untrusted_fields).toEqual(["results"]);
+  });
+
+  it("host-binds Ollama bearer auth and includes explicitly configured Ollama first in auto", async () => {
+    const fetchImpl: any = vi.fn(async (url: any, init: any) => {
+      expect(String(url)).toBe("https://ollama.com/api/web_search");
+      expect(init.headers.Authorization).toBe("Bearer sentinel-hosted-key");
+      return new Response(JSON.stringify({ results: [] }), { headers: { "content-type": "application/json" } });
+    });
+    const hosted = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" } },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(hosted).toMatchObject({ error: false, outcome: { backend: "ollama", code: "no_results" } });
+
+    const ollamaFetch = vi.fn(async (url: any, init: any) => {
+      expect(String(url)).toBe("https://ollama.com/api/web_search");
+      expect(init.headers.Authorization).toBe("Bearer sentinel-hosted-key");
+      return new Response(JSON.stringify({ results: [{
+        title: "Configured Ollama result",
+        url: "https://example.com/configured-ollama",
+        content: "Mono Agent evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const automatic = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: {
+        backend: ["ollama", "codex", "keyless"],
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+      },
+      codexSearch: vi.fn(async () => {
+        throw new Error("Codex must not run after Ollama succeeds");
+      }),
+      fetchImpl: ollamaFetch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(automatic).toMatchObject({
+      error: false,
+      outcome: {
+        backend: "ollama",
+        attemptedBackends: ["ollama"],
+        requestsThisCall: 1,
+      },
+    });
+    expect(ollamaFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the existing auto chain and does not probe Ollama when it is absent", async () => {
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      expect(String(url)).toBe("http://127.0.0.1:8088/search");
+      return new Response(JSON.stringify({ results: [{
+        title: "SearXNG result",
+        url: "https://example.com/searxng",
+        content: "Mono Agent evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: ["searxng", "codex", "keyless"], searxng: { endpoint: "http://127.0.0.1:8088" } },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { backend: "searxng", attemptedBackends: ["searxng"] },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("advances through the ordered auto chain after a long Ollama cooldown without sleeping", async () => {
+    const calls: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      calls.push(String(url));
+      if (String(url).includes("ollama.com")) {
+        return new Response("limited", { status: 429, headers: { "retry-after": "2760" } });
+      }
+      return new Response(JSON.stringify({ results: [{
+        title: "SearXNG fallback evidence",
+        url: "https://example.com/searxng-fallback",
+        content: "Mono Agent resilient search evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const codexSearch = vi.fn();
+    const result = await performWebSearch({ query: "mono agent resilient search" }, {
+      searchConfig: {
+        backend: ["ollama", "searxng", "codex", "keyless"],
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        searxng: { endpoint: "http://127.0.0.1:8088" },
+      },
+      fetchImpl,
+      codexSearch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: {
+        backend: "searxng",
+        attemptedBackends: ["ollama", "searxng"],
+        fallbackUsed: true,
+        rateLimited: true,
+        requestsThisCall: 1,
+        providerAttempts: [{
+          backend: "ollama",
+          code: "rate_limited",
+          disposition: "deferred_for_run",
+          requests: 0,
+          retryAfterMs: 2_760_000,
+        }],
+      },
+    });
+    expect(result.outcome.providerAttempts[0].retryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    const chainPayload = JSON.parse(result.text);
+    expect(chainPayload.coverage.cooldownBackends).toContain("ollama");
+    expect(chainPayload.coverage.failureSummary).toContain("ollama:rate_limited");
+    expect(chainPayload.next_actions[0]).toMatchObject({ tool: "WebFetch" });
+    expect(calls).toEqual([
+      "https://ollama.com/api/web_search",
+      "http://127.0.0.1:8088/search",
+    ]);
+    expect(codexSearch).not.toHaveBeenCalled();
+  });
+
+  it("uses the complete auto order and charges only the answered search", async () => {
+    const order: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      const value = String(url);
+      if (value.includes("ollama.com")) {
+        order.push("ollama");
+        return new Response("unavailable", { status: 503 });
+      }
+      if (value.startsWith("http://127.0.0.1")) {
+        order.push("searxng");
+        return new Response("unavailable", { status: 503 });
+      }
+      order.push("keyless");
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/resilient">Mono Agent resilient search</a></div>');
+    });
+    const codexSearch = vi.fn(async (_query: any, options: any) => {
+      options.claimRequest();
+      order.push("codex");
+      return { ok: false, backend: "codex", message: "Codex unavailable.", retryable: true };
+    });
+
+    const result = await performWebSearch({ query: "mono agent resilient search" }, {
+      searchConfig: {
+        backend: ["ollama", "searxng", "codex", "keyless"],
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        searxng: { endpoint: "http://127.0.0.1:8088" },
+      },
+      fetchImpl,
+      codexSearch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(order).toEqual(["ollama", "searxng", "codex", "keyless"]);
+    expect(result).toMatchObject({
+      error: false,
+      outcome: {
+        backend: "duckduckgo",
+        attemptedBackends: ["ollama", "searxng", "codex", "keyless"],
+        requestsThisCall: 1,
+        requestsUsed: 1,
+        requestsRemaining: 3,
+        dispatchesUsed: 4,
+        fallbackUsed: true,
+      },
+    });
+  });
+
+  it("defers a rate-limited provider for the remainder of a run while continuing with the next provider", async () => {
+    const state = createWebSearchRunState({ maxRequestsPerRun: 4 });
+    const calls: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      calls.push(String(url));
+      if (String(url).includes("ollama.com")) {
+        return new Response("limited", { status: 429, headers: { "retry-after": "3600" } });
+      }
+      return new Response(JSON.stringify({ results: [{
+        title: "SearXNG evidence",
+        url: `https://example.com/${calls.length}`,
+        content: "Mono Agent evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const searchConfig = {
+      backend: ["ollama", "searxng", "codex", "keyless"],
+      maxRequestsPerRun: 4,
+      ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+      searxng: { endpoint: "http://127.0.0.1:8088" },
+    };
+
+    const first = await performWebSearch({ query: "mono agent first" }, {
+      searchConfig, searchState: state, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const second = await performWebSearch({ query: "mono agent second" }, {
+      searchConfig, searchState: state, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(first.outcome.requestsUsed).toBe(1);
+    expect(second).toMatchObject({
+      error: false,
+      outcome: {
+        backend: "searxng",
+        attemptedBackends: ["ollama", "searxng"],
+        requestsThisCall: 1,
+        requestsUsed: 2,
+        requestsRemaining: 2,
+      },
+    });
+    expect(calls.filter((url: any) => url.includes("ollama.com"))).toHaveLength(1);
+    expect(second.outcome.providerAttempts).toContainEqual(expect.objectContaining({
+      backend: "ollama", disposition: "deferred_for_run", requests: 0,
+    }));
+  });
+
+  it.each([
+    ["120", 120_000, true],
+    ["http-date:+120s", 120_000, true],
+    ["1.5", 300_000, true],
+    ["-1", 300_000, true],
+    ["not-a-date", 300_000, true],
+  ])("parses Retry-After %s without inventing malformed retry times", async (retryAfter: any, expected: any, hasAbsolute: any) => {
+    // HTTP dates resolve to whole seconds, so a header built at collection time
+    // drifts as setup/scheduling elapse before parsing (CI saw 118485ms vs the
+    // 118500ms floor). Build the date header at test start under a
+    // second-aligned frozen clock so the 120s expectation is exact.
+    let headerValue = retryAfter;
+    let nowSpy;
+    if (retryAfter === "http-date:+120s") {
+      const frozenNow = Math.ceil(Date.now() / 1000) * 1000;
+      nowSpy = vi.spyOn(Date, "now").mockReturnValue(frozenNow);
+      headerValue = new Date(frozenNow + 120_000).toUTCString();
+    }
+    try {
+      const result = await performWebSearch({ query: "mono agent" }, {
+        searchConfig: {
+          backend: "ollama",
+          ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        },
+        fetchImpl: vi.fn(async () => new Response("limited", {
+          status: 429,
+          headers: { "retry-after": headerValue },
+        })),
+        ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      });
+
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: "rate_limited", retryInRun: false },
+      });
+      if (expected === undefined) {
+        expect(result.outcome.retryAfterMs).toBeUndefined();
+        expect(result.outcome.retryAt).toBeUndefined();
+      } else {
+        expect(result.outcome.retryAfterMs).toBeGreaterThanOrEqual(expected - 1_500);
+        expect(result.outcome.retryAfterMs).toBeLessThanOrEqual(expected + 1_500);
+        expect(Boolean(result.outcome.retryAt)).toBe(hasAbsolute);
+      }
+      expect(result.text).toContain("Do not sleep or retry WebSearch");
+    } finally {
+      nowSpy?.mockRestore();
+    }
+  });
+
+  it("enforces the hard request budget across WebSearch calls in one logical run", async () => {
+    const searchConfig = {
+      backend: "searxng",
+      maxRequestsPerRun: 2,
+      searxng: { endpoint: "http://127.0.0.1:8088" },
+    };
+    const state = createWebSearchRunState(searchConfig);
+    const fetchImpl: any = vi.fn(async () => new Response(JSON.stringify({ results: [{
+      title: "Mono Agent evidence",
+      url: "https://example.com/evidence",
+      content: "Mono Agent evidence",
+    }] }), { headers: { "content-type": "application/json" } }));
+    const options: any = { searchConfig, searchState: state, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext };
+
+    const first = await performWebSearch({ query: "mono agent one" }, { ctx, ...options as any });
+    const second = await performWebSearch({ query: "mono agent two" }, { ctx, ...options as any });
+    const exhausted = await performWebSearch({ query: "mono agent three" }, { ctx, ...options as any });
+
+    expect(first.outcome).toMatchObject({ requestsThisCall: 1, requestsUsed: 1, requestsRemaining: 1 });
+    expect(second.outcome).toMatchObject({ requestsThisCall: 1, requestsUsed: 2, requestsRemaining: 0 });
+    expect(exhausted).toMatchObject({
+      error: true,
+      outcome: {
+        code: "search_budget_exhausted",
+        requestsThisCall: 0,
+        requestsUsed: 2,
+        requestsRemaining: 0,
+        retryInRun: false,
+        nextAction: "use_available_evidence",
+      },
+    });
+    expect(exhausted.text).toContain("Do not retry WebSearch in this run");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["zero maximum", { maxRequests: 0, requestsUsed: 0 }],
+    ["maximum above the hard cap", { maxRequests: 21, requestsUsed: 0 }],
+    ["negative usage", { maxRequests: 4, requestsUsed: -1 }],
+    ["usage above the maximum", { maxRequests: 4, requestsUsed: 5 }],
+    ["negative dispatches", { maxRequests: 4, requestsUsed: 0, dispatchesUsed: -1 }],
+    ["dispatches above the ceiling", { maxRequests: 4, requestsUsed: 0, dispatchesUsed: 17 }],
+  ])("replaces injected WebSearch state with %s", (_label: any, values: any) => {
+    const injected = {
+      schema: "mono-agent.web-search-run.v1",
+      ...values,
+      deferredProviders: new Map(),
+    };
+    const state = createWebSearchRunState({ maxRequestsPerRun: 3 }, injected);
+
+    expect(state).not.toBe(injected);
+    expect(state).toMatchObject({ maxRequests: 3, requestsUsed: 0 });
+  });
+
+  it("tracks provider claims per call when concurrent searches share one run budget", async () => {
+    let release;
+    const gate = new Promise((resolvePromise: any) => { release = resolvePromise; });
+    const state = createWebSearchRunState({ maxRequestsPerRun: 2 });
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      await gate;
+      if (String(url).includes(":8088")) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify({ results: [{
+        title: "Concurrent second result",
+        url: "https://example.com/concurrent-second",
+        content: "Concurrent second evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+
+    const first = performWebSearch({ query: "concurrent first" }, {
+      searchConfig: { backend: "searxng", maxRequestsPerRun: 2, endpoint: "http://127.0.0.1:8088" },
+      searchState: state,
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const second = performWebSearch({ query: "concurrent second" }, {
+      searchConfig: { backend: "searxng", maxRequestsPerRun: 2, endpoint: "http://127.0.0.1:8089" },
+      searchState: state,
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    release!();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult).toMatchObject({
+      error: true,
+      outcome: {
+        requestsThisCall: 0,
+        requestsUsed: 1,
+        requestsRemaining: 1,
+        providerAttempts: [{ backend: "searxng", requests: 0 }],
+      },
+    });
+    expect(secondResult).toMatchObject({
+      error: false,
+      outcome: { requestsThisCall: 1, requestsUsed: 1, requestsRemaining: 1 },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects Ollama credential leaks and reports unsupported local routes honestly", async () => {
+    const credentialFetch = vi.fn();
+    const invalid = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434", apiKey: "sentinel-hosted-key" } },
+      fetchImpl: credentialFetch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(invalid.outcome.code).toBe("invalid_search_config");
+    expect(JSON.stringify(invalid)).not.toContain("sentinel-hosted-key");
+    expect(credentialFetch).not.toHaveBeenCalled();
+
+    const envNameFetch = vi.fn();
+    const invalidEnvName = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "http://127.0.0.1:11434", apiKeyEnv: "OLLAMA_API_KEY" },
+      },
+      fetchImpl: envNameFetch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(invalidEnvName).toMatchObject({
+      error: true,
+      outcome: { code: "invalid_search_config", attempts: 0 },
+    });
+    expect(envNameFetch).not.toHaveBeenCalled();
+
+    const unsupported = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl: vi.fn(async () => new Response("missing", { status: 404 })),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(unsupported).toMatchObject({ error: true, outcome: { code: "endpoint_not_supported", attempts: 1 } });
+  });
+
+  it.each([
+    [401, "auth_failed"],
+    [403, "auth_failed"],
+    [408, "timeout"],
+    [429, "rate_limited"],
+    [503, "provider_unavailable"],
+  ])("does not route-fallback after local Ollama HTTP %i", async (status: any, code: any) => {
+    const fetchImpl: any = vi.fn(async () => new Response("failure", {
+      status,
+      headers: status === 429 ? { "retry-after": "1" } : {},
+    }));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({ error: true, outcome: { code, attempts: 1 } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl!.mock.calls[0][0])).toBe("http://127.0.0.1:11434/api/experimental/web_search");
+  });
+
+  it("reports hosted auth setup and malformed Ollama results without leaking or falling back", async () => {
+    const missingFetch = vi.fn();
+    const missing = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "https://ollama.com" } },
+      fetchImpl: missingFetch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(missing).toMatchObject({ error: true, outcome: { code: "auth_missing", attempts: 0 } });
+    expect(missingFetch).not.toHaveBeenCalled();
+
+    for (const responseBody of ["not json", JSON.stringify({ results: [{ url: "javascript:bad" }] })]) {
+      const fetchImpl: any = vi.fn(async () => new Response(responseBody));
+      const invalid = await performWebSearch({ query: "mono agent" }, {
+        searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+        fetchImpl,
+        ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      });
+      expect(invalid).toMatchObject({ error: true, outcome: { code: "invalid_response", attempts: 1 } });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each([
+    [Object.assign(new Error("request timed out"), { name: "TimeoutError" }), "timeout", true],
+    [Object.assign(new Error("request aborted"), { name: "AbortError" }), "aborted", false],
+    [Object.assign(new Error("overall deadline"), { code: "deadline_exceeded" }), "deadline_exceeded", true],
+  ])("preserves strict Ollama transport classification for %s", async (transportError: any, code: any, retryable: any) => {
+    const fetchImpl: any = vi.fn(async () => { throw transportError; });
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: {
+        code,
+        attempts: 1,
+        retryable,
+        attemptedBackends: ["ollama"],
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves strict Ollama response bounds without a compatibility or provider fallback", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response("x".repeat(2 * 1024 * 1024 + 1)));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: {
+        code: "response_too_large",
+        attempts: 1,
+        retryable: false,
+        attemptedBackends: ["ollama"],
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects unsafe custom Ollama origins before network access", async () => {
+    for (const ollama of [
+      { baseUrl: "http://search.example.com" },
+      { baseUrl: "https://search.example.com" },
+      { baseUrl: "https://user:secret@search.example.com" },
+      { baseUrl: "https://search.example.com/api" },
+      { baseUrl: "https://search.example.com?key=value" },
+    ]) {
+      const fetchImpl: any = vi.fn();
+      const result = await performWebSearch({ query: "mono agent" }, {
+        searchConfig: { backend: "ollama", ollama },
+        fetchImpl,
+        ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      });
+      expect(result).toMatchObject({ error: true, outcome: { code: "invalid_search_config" } });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps strict SearXNG failures strict while auto falls back to keyless HTML search", async () => {
+    const strictFetch = vi.fn(async () => new Response("down", { status: 503 }));
+    const strict = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl: strictFetch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(strict).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "backend_unavailable", attempts: 1 },
+    });
+    expect(strictFetch).toHaveBeenCalledTimes(1);
+
+    const autoFetch = vi.fn(async (url: any) => {
+      if (String(url).startsWith("http://127.0.0.1")) {
+        throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+      }
+      return new Response(`
+        <div class="result">
+          <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fguide%3Futm_campaign%3Dx">Mono agent guide</a>
+          <div class="result__snippet">A useful mono-agent guide.</div>
+        </div>
+      `);
+    });
+    const automatic = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" },
+      codexSearch: vi.fn(async () => ({
+        ok: false, backend: "codex", message: "Codex subscription search unavailable.", retryable: false,
+      })),
+      fetchImpl: autoFetch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(automatic).toMatchObject({
+      error: false,
+      outcome: { status: "ok", backend: "duckduckgo" },
+    });
+    expect(automatic.text).toContain("https://example.com/guide");
+    expect(autoFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects irrelevant local results before using one exact Codex subscription search", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response(JSON.stringify({
+      results: [{
+        title: "Los Angeles traffic",
+        url: "https://unrelated.example/traffic",
+        content: "Tour de France and Telegram headlines",
+      }],
+    }), { headers: { "content-type": "application/json" } }));
+    const codexSearch = vi.fn(async (query: any) => ({
+      ok: true,
+      backend: "codex",
+      actualQuery: query,
+      results: [{
+        title: "Claude Opus 5",
+        url: "https://www.anthropic.com/news/claude-opus-5",
+        snippet: "Anthropic announces Claude Opus 5.",
+        backend: "codex",
+      }],
+    }));
+
+    const exactQuery = 'site:anthropic.com "Claude Opus 5"';
+    const result = await performWebSearch({ query: exactQuery }, {
+      searchConfig: {
+        backend: ["searxng", "codex", "keyless"],
+        endpoint: "http://127.0.0.1:8088",
+        codex: { model: "gpt-5.6-luna" },
+      },
+      fetchImpl,
+      codexSearch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: {
+        backend: "codex",
+        attemptedBackends: ["searxng", "codex"],
+        actualQueries: [exactQuery],
+        failureMetadata: [{ backend: "searxng", code: "no_relevant_results" }],
+      },
+    });
+    expect(codexSearch).toHaveBeenCalledOnce();
+    expect(codexSearch).toHaveBeenCalledWith(exactQuery, expect.objectContaining({
+      model: "gpt-5.6-luna",
+    }));
+    expect(result.text).toContain("https://www.anthropic.com/news/claude-opus-5");
+    expect(JSON.parse(result.text).coverage.actualQueries).toContain(exactQuery);
+    expect(result.text).not.toContain("Los Angeles");
+  });
+
+  it("reports the domain-expanded query actually dispatched to Codex", async () => {
+    const codexSearch = vi.fn(async (query: any, options: any) => {
+      options.claimRequest();
+      return {
+        ok: true,
+        backend: "codex",
+        actualQuery: query,
+        results: [{
+          title: "Claude Opus 5",
+          url: "https://www.anthropic.com/news/claude-opus-5",
+          snippet: "Anthropic announces Claude Opus 5.",
+          backend: "codex",
+        }],
+      };
+    });
+    const result = await performWebSearch({
+      query: '"Claude Opus 5"',
+      domains: ["anthropic.com"],
+    }, {
+      searchConfig: { backend: "codex" },
+      codexSearch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const actualQuery = '"Claude Opus 5" (site:anthropic.com)';
+
+    expect(codexSearch).toHaveBeenCalledWith(actualQuery, expect.any(Object));
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { actualQueries: [actualQuery], requestsThisCall: 1 },
+    });
+    expect(JSON.parse(result.text).coverage.actualQueries).toEqual([actualQuery]);
+  });
+
+  it("keeps strict Codex mode strict and never calls local or keyless HTTP backends", async () => {
+    const fetchImpl: any = vi.fn();
+    const codexSearch = vi.fn(async () => ({
+      ok: false,
+      backend: "codex",
+      message: "Codex must be signed in with ChatGPT subscription access.",
+      retryable: false,
+    }));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "codex", codex: { model: "gpt-5.6-luna" } },
+      fetchImpl,
+      codexSearch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { backend: "codex", attemptedBackends: ["codex"] },
+    });
+    expect(codexSearch).toHaveBeenCalledOnce();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("reports an all-engines-unresponsive SearXNG answer as a failure, not an empty result set", async () => {
+    // A SearXNG whose engines are all captcha'd or suspended still answers
+    // `HTTP 200 {"results": []}`. Reading only `results` turned a completely
+    // dead instance into a confident "No results." on every single query.
+    const fetchImpl: any = vi.fn(async () => new Response(JSON.stringify({
+      results: [],
+      unresponsive_engines: [["duckduckgo", "CAPTCHA"], ["brave", "too many requests"]],
+    }), { headers: { "content-type": "application/json" } }));
+
+    const result = await performWebSearch({ query: "best time to visit japan" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true, retryable: true },
+    });
+    expect(JSON.parse(result.text)).toMatchObject({ tool: "WebSearch", status: "blocked", code: "rate_limited" });
+    expect(result.text).not.toContain("No results.");
+    // Naming each engine and its reason is the whole point: it turns "search is
+    // broken" into "these engines are blocked" without reading any logs.
+    expect(result.text).toContain("duckduckgo: CAPTCHA");
+    expect(result.text).toContain("brave: too many requests");
+  });
+
+  it("treats a SearXNG response without a results array as a failure", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response(JSON.stringify({ detail: "not found" }), {
+      headers: { "content-type": "application/json" },
+    }));
+
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({ error: true, outcome: { status: "error" } });
+    expect(result.text).toContain("SearXNG returned no results array.");
+  });
+
+  it("keeps a genuinely empty SearXNG answer an empty answer when its engines responded", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response(JSON.stringify({
+      results: [],
+      unresponsive_engines: [],
+    }), { headers: { "content-type": "application/json" } }));
+
+    const result = await performWebSearch({ query: "zzzz no such thing zzzz" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { status: "ok", code: "no_results", resultCount: 0 },
+    });
+    const emptyPayload = JSON.parse(result.text);
+    expect(emptyPayload).toMatchObject({ tool: "WebSearch", status: "ok", code: "no_results" });
+    expect(emptyPayload.summary).toMatch(/^No results from /u);
+    expect(emptyPayload).not.toHaveProperty("results");
+    expect(emptyPayload).not.toHaveProperty("next_actions");
+  });
+
+  it("lets keyless results rescue an empty SearXNG answer in auto mode", async () => {
+    // `auto` used to return the moment SearXNG answered `ok`, however empty, so
+    // the keyless chain below it could never rescue the query.
+    const fetchImpl: any = vi.fn(async (url: any) => (String(url).startsWith("http://127.0.0.1")
+      ? new Response(JSON.stringify({ results: [] }), { headers: { "content-type": "application/json" } })
+      : new Response('<div class="result"><a class="result__a" href="https://example.com/guide">Mono agent guide</a></div>')));
+
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" },
+      codexSearch: vi.fn(async () => ({
+        ok: false, backend: "codex", message: "Codex subscription search unavailable.", retryable: false,
+      })),
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { status: "ok", backend: "duckduckgo", resultCount: 1 },
+    });
+    expect(result.text).toContain("https://example.com/guide");
+  });
+
+  it("treats an empty successful keyless search as a result, not a transport failure", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response("<html><body>No matches</body></html>"));
+    const result = await performWebSearch({ query: "no such result" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { status: "ok", code: "no_results", resultCount: 0 },
+    });
+    expect(JSON.parse(result.text).summary).toMatch(/^No results from /u);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to Startpage over a form POST when DuckDuckGo is rate-limited", async () => {
+    const calls: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any, init: any) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes("duckduckgo")) {
+        // What DuckDuckGo actually serves once it decides you are a bot: a 202,
+        // which is `response.ok`, carrying an interstitial instead of results.
+        return new Response("<html><body>anomaly detected</body></html>", { status: 202 });
+      }
+      return new Response(`
+        <div class="result">
+          <a class="result-link" href="https://example.com/japan">Japan Guide</a>
+          <p class="result-description">Month by month.</p>
+        </div>
+      `);
+    });
+
+    const result = await performWebSearch({ query: "best time to visit japan" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({ error: false, outcome: { status: "ok", backend: "startpage" } });
+    expect(result.text).toContain("https://example.com/japan");
+
+    const startpageCall = calls.find((call: any) => call.url.includes("startpage"));
+    expect(startpageCall.url).toBe("https://www.startpage.com/sp/search");
+    expect(startpageCall.init.method).toBe("POST");
+    expect(new URLSearchParams(startpageCall.init.body).get("query")).toBe("best time to visit japan");
+    // Startpage bot-gates a POST that arrives without a browser User-Agent, so
+    // the backend's Content-Type must not displace the shared headers.
+    expect(startpageCall.init.headers["User-Agent"]).toContain("Mozilla/5.0");
+    expect(startpageCall.init.headers["Content-Type"]).toContain("x-www-form-urlencoded");
+    // The degradation is still reported even though the query succeeded.
+    expect(result.outcome.rateLimited).toBe(true);
+  });
+
+  it("maps time_range onto the Startpage with_date form field", async () => {
+    const calls: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any, init: any) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes("duckduckgo")) return new Response("", { status: 503 });
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">Second result</a></div>');
+    });
+
+    await performWebSearch({ query: "tokyo news", time_range: "day" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    const startpageCall = calls.find((call: any) => call.url.includes("startpage"));
+    expect(new URLSearchParams(startpageCall.init.body).get("with_date")).toBe("d");
+  });
+
+  it("reports a challenge page as an error instead of an empty result set", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response(
+      "<html><body>unusual traffic from your network</body></html>",
+      { status: 202 },
+    ));
+
+    const result = await performWebSearch({ query: "kyoto" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true, retryable: true },
+    });
+    // The old behaviour turned a ban into a confident "No results." answer.
+    expect(result.text).not.toContain("No results.");
+    expect(result.text).toContain("DuckDuckGo rate-limited");
+    expect(result.text).toContain("Startpage rate-limited");
+  });
+
+  it("detects a proof-of-work interstitial that carries none of the classic block wording", async () => {
+    // Startpage now fronts its results with Anubis, which answers HTTP 200 and
+    // says only "Verifying your request..." — no captcha, no anomaly, no
+    // "are you a robot". It parsed to zero rows and passed as an empty success.
+    const anubis = `<html><head>
+      <script id="anubis_version" type="application/json">"v1.25.0"</script>
+      <script id="anubis_challenge" type="application/json">{"rules":{"difficulty":4}}</script>
+      </head><body><div class="sp-message">Verifying your request...</div></body></html>`;
+    const fetchImpl: any = vi.fn(async () => new Response(anubis, { status: 200 }));
+
+    const result = await performWebSearch({ query: "kyoto" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "blocked", code: "rate_limited", rateLimited: true },
+    });
+    expect(result.text).not.toContain("No results.");
+    expect(result.outcome.cooldownBackends).toContain("startpage");
+  });
+
+  it("puts a backend into cooldown on a 403 block, not just a 202 challenge", async () => {
+    // DuckDuckGo escalates from a 202 challenge to an outright 403. Treating
+    // that as an ordinary HTTP error would leave it in the rotation and get it
+    // re-hit on every subsequent search.
+    const fetchImpl: any = vi.fn(async (url: any) => (String(url).includes("duckduckgo")
+      ? new Response("", { status: 403 })
+      : new Response('<div class="result"><a class="result-link" href="https://example.com/a">A</a></div>')));
+
+    const first = await performWebSearch({ query: "first" }, {
+      searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(first.outcome.cooldownBackends).toContain("duckduckgo");
+
+    const callsAfterFirst = fetchImpl.mock.calls.length;
+    await performWebSearch({ query: "second" }, {
+      searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const secondRoundUrls = fetchImpl.mock.calls.slice(callsAfterFirst).map(([url]: any) => String(url));
+    expect(secondRoundUrls.some((url: any) => url.includes("duckduckgo"))).toBe(false);
+  });
+
+  it("stops queued query variants once a sibling has been blocked", async () => {
+    // All four variants clear the cooldown check together, then queue behind the
+    // concurrency bound. The first block must stop the ones still waiting.
+    __resetWebSearchThrottleForTests({ minSpacingMs: 0, maxConcurrency: 1 });
+    const duckCalls: any[] = [];
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      if (String(url).includes("duckduckgo")) {
+        duckCalls.push(String(url));
+        return new Response("<html>anomaly</html>", { status: 202 });
+      }
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">Second result</a></div>');
+    });
+
+    await performWebSearch({
+      query: "one",
+      alternate_queries: ["two", "three", "four"],
+    }, { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext });
+
+    // Only the variant that discovered the block should have reached the wire.
+    expect(duckCalls).toHaveLength(1);
+  });
+
+  it("classifies a captcha redirect as rate limiting instead of a transport fault", async () => {
+    const fetchImpl: any = vi.fn(async (url: any, init: any) => {
+      expect(init.redirect).toBe("manual");
+      return new Response("", {
+        status: 303,
+        headers: { location: "https://www.startpage.com/sp/captcha-block?bc=NL" },
+      });
+    });
+
+    const result = await performWebSearch({ query: "kyoto" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result.outcome).toMatchObject({ code: "rate_limited", rateLimited: true });
+    expect(result.text).toContain("captcha redirect");
+    // Following the hop only fetches the block page, so it must not happen.
+    expect(fetchImpl.mock.calls.every(([callUrl]: any) => !String(callUrl).includes("captcha-block"))).toBe(true);
+  });
+
+  it("names every failed backend and preserves the underlying fetch cause", async () => {
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      if (String(url).includes("duckduckgo")) {
+        return new Response("", { status: 503 });
+      }
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: new Error("unexpected redirect"),
+      });
+    });
+
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result.outcome).toMatchObject({ status: "error", code: "backend_unavailable" });
+    expect(result.text).toContain("DuckDuckGo HTTP 503");
+    // Previously only the last failure survived, and `cause` was dropped — so
+    // this read as "startpage request failed: fetch failed" and nothing else.
+    expect(result.text).toContain("Startpage request failed: fetch failed (unexpected redirect)");
+  });
+
+  it("skips a rate-limited backend on later searches instead of re-hitting it", async () => {
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      if (String(url).includes("duckduckgo")) {
+        return new Response("<html>anomaly</html>", { status: 202 });
+      }
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">Second result</a></div>');
+    });
+
+    await performWebSearch({ query: "first" }, {
+      searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const callsAfterFirst = fetchImpl.mock.calls.length;
+
+    const second = await performWebSearch({ query: "second" }, {
+      searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    const secondRoundUrls = fetchImpl.mock.calls.slice(callsAfterFirst).map(([url]: any) => String(url));
+    expect(secondRoundUrls.some((url: any) => url.includes("duckduckgo"))).toBe(false);
+    expect(second).toMatchObject({ error: false, outcome: { backend: "startpage" } });
+    expect(second.outcome.cooldownBackends).toContain("duckduckgo");
+  });
+
+  it("bounds concurrent keyless requests across the whole process", async () => {
+    __resetWebSearchThrottleForTests({ minSpacingMs: 0, maxConcurrency: 2 });
+    let inFlight = 0;
+    let peak = 0;
+    let admitAll;
+    // Every request parks here, so the bound is observed by construction rather
+    // than by racing a timer — under CPU contention a sleep-based version can
+    // let requests finish before their siblings start and read as "bounded".
+    const gate = new Promise((resolvePromise: any) => { admitAll = resolvePromise; });
+    const fetchImpl: any = vi.fn(async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await gate;
+      inFlight -= 1;
+      // DuckDuckGo markup, so every query is answered by the first backend and
+      // the call count reflects the fan-out alone.
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/a">one two three four</a></div>');
+    });
+
+    const search = Promise.all(["one", "two", "three", "four"].map((query: any) => performWebSearch({ query },
+      { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext })));
+
+    // Two run, two stay queued: proves the fan-out is concurrent AND capped.
+    await vi.waitFor(() => { expect(inFlight).toBe(2); });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    admitAll!();
+    await search;
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(peak).toBe(2);
+  });
+
+  it("strips inline stylesheets out of Startpage titles", () => {
+    const results = parseStartpageResults(`
+      <div class="result">
+        <a class="result-link" href="https://example.com/japan"><style>.css-i3irj7{line-height:18px;}</style>Best time to visit Japan</a>
+        <p class="result-description">A guide.</p>
+      </div>
+    `);
+    expect(results).toHaveLength(1);
+    expect(results![0]!.title).toBe("Best time to visit Japan");
+  });
+
+  it("uses deterministic reciprocal-rank fusion and canonical URL identity", () => {
+    const first = [
+      { title: "A", url: "https://example.com/a?utm_source=x", snippet: "", backend: "one" },
+      { title: "B", url: "https://example.com/b", snippet: "b", backend: "one" },
+    ];
+    const second = [
+      { title: "A2", url: "https://EXAMPLE.com/a#fragment", snippet: "a", backend: "two" },
+    ];
+    expect(mergeRankedResults([first, second], 2).map((entry: any) => entry.url)).toEqual([
+      "https://example.com/a",
+      "https://example.com/b",
+    ]);
+    expect(canonicalizeSearchUrl(
+      "https://html.duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fx%3Futm_medium%3Demail",
+    )).toBe("https://example.com/x");
+  });
+
+  it("returns a structured abort without attempting later fallbacks", async () => {
+    const controller = new AbortController();
+    const fetchImpl: any = vi.fn(async () => {
+      controller.abort();
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    });
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      signal: controller.signal,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "aborted", attempts: 1, retryable: false },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("WebFetch", () => {
+  it("preserves semantic Markdown, resolves safe links, and rejects unsafe link targets", async () => {
+    const fixture = readFileSync(new URL("../fixtures/web/semantic.html", import.meta.url));
+    const result = await performWebFetch({ url: "https://example.com/articles/page" }, {
+      fetchImpl: async () => new Response(fixture, { headers: { "content-type": "text/html" } }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(result.error).toBe(false);
+    expect(result.text).toContain("[primary source](https://example.com/source)");
+    expect(result.text).toContain("First fact");
+    expect(result.text).toContain("answer | 42");
+    expect(result.text).not.toContain("javascript:");
+    expect(result.outcome).toMatchObject({ contentKind: "html", charset: "utf-8", extractionStage: "defuddle" });
+  });
+
+  it("uses deterministic charset precedence and fails malformed declared documents honestly", async () => {
+    const bomBytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("BOM café")]);
+    const bom = await performWebFetch({ url: "https://example.com/bom", format: "text" }, {
+      fetchImpl: async () => new Response(bomBytes, { headers: { "content-type": "text/plain; charset=windows-1252" } }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(bom.text).toContain("BOM café");
+    expect(bom.outcome).toMatchObject({ charset: "utf-8", charsetSource: "bom", hadDecodingReplacement: false });
+
+    const windows = await performWebFetch({ url: "https://example.com/cp1252", format: "text" }, {
+      fetchImpl: async () => new Response(Uint8Array.from([0x93, 0x71, 0x75, 0x6f, 0x74, 0x65, 0x94]), {
+        headers: { "content-type": "text/plain; charset=windows-1252" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(windows.text).toContain("“quote”");
+    expect(windows.outcome).toMatchObject({ charset: "windows-1252", charsetSource: "header" });
+
+    const malformed = await performWebFetch({ url: "https://example.com/data.json" }, {
+      fetchImpl: async () => new Response(readFileSync(new URL("../fixtures/web/malformed.json", import.meta.url)), {
+        headers: { "content-type": "application/json" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(malformed).toMatchObject({ error: true, outcome: { code: "invalid_json", contentKind: "json" } });
+
+    const unsupported = await performWebFetch({ url: "https://example.com/text", format: "text" }, {
+      fetchImpl: async () => new Response("evidence", { headers: { "content-type": "text/plain; charset=x-unknown-charset" } }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(unsupported).toMatchObject({ error: true, outcome: { code: "unsupported_charset" } });
+  });
+
+  it("sniffs only generic structured content and validates XML before tolerant parsing", async () => {
+    const genericJson = await performWebFetch({ url: "https://example.com/generic", format: "text" }, {
+      fetchImpl: async () => new Response('{"answer":42}', { headers: { "content-type": "application/octet-stream" } }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(genericJson).toMatchObject({ error: false, outcome: { contentKind: "json", extractionStage: "json" } });
+    expect(JSON.parse(genericJson.text).content).toContain('"answer": 42');
+
+    const plainJson = await performWebFetch({ url: "https://example.com/plain", format: "text" }, {
+      fetchImpl: async () => new Response('{"answer":42}', { headers: { "content-type": "text/plain" } }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(plainJson).toMatchObject({ error: false, outcome: { contentKind: "text", extractionStage: "text" } });
+
+    const malformedXml = await performWebFetch({ url: "https://example.com/feed", format: "text" }, {
+      fetchImpl: async () => new Response(readFileSync(new URL("../fixtures/web/malformed.xml", import.meta.url)), {
+        headers: { "content-type": "application/xml" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(malformedXml).toMatchObject({ error: true, outcome: { code: "invalid_xml", contentKind: "xml" } });
+  });
+
+  it("honors in-document charsets, records replacement decoding, and bounds structured parsers", async () => {
+    const metaHtml = Buffer.concat([
+      Buffer.from('<html><head><meta charset="windows-1252"></head><body><article><p>'),
+      Uint8Array.from([0x93]),
+      Buffer.from("quoted evidence"),
+      Uint8Array.from([0x94]),
+      Buffer.from("</p></article></body></html>"),
+    ]);
+    const meta = await performWebFetch({ url: "https://example.com/meta", format: "text" }, {
+      fetchImpl: async () => new Response(metaHtml, { headers: { "content-type": "text/html" } }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(meta.text).toContain("“quoted evidence”");
+    expect(meta.outcome).toMatchObject({ charset: "windows-1252", charsetSource: "html_meta" });
+
+    const replacement = await performWebFetch({ url: "https://example.com/bad-utf8", format: "text" }, {
+      fetchImpl: async () => new Response(Uint8Array.from([0x65, 0x76, 0x69, 0x64, 0x65, 0x6e, 0x63, 0x65, 0xc3, 0x28]), {
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(replacement).toMatchObject({ error: false, outcome: { hadDecodingReplacement: true } });
+
+    const oversized = await performWebFetch({ url: "https://example.com/large.html" }, {
+      fetchImpl: async () => new Response(`<html><body>${"x".repeat(8 * 1024 * 1024)}</body></html>`, {
+        headers: { "content-type": "text/html" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(oversized).toMatchObject({ error: true, outcome: { code: "parser_input_too_large", contentKind: "html" } });
+  });
+
+  it("reports every failed HTML extraction stage instead of returning blank success", async () => {
+    const empty = await performWebFetch({ url: "https://example.com/empty" }, {
+      fetchImpl: async () => new Response("<html><head><title></title></head><body><script>noop()</script></body></html>", {
+        headers: { "content-type": "text/html" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(empty).toMatchObject({
+      error: true,
+      outcome: { code: "unusable_content", parserFailures: ["defuddle", "readability", "body"] },
+    });
+  });
+
+  it("extracts HTML as Markdown and returns useful JSON, RSS, and PDF text", async () => {
+    const html = await performWebFetch({ url: "https://example.com/article" }, {
+      fetchImpl: async () => new Response(
+        "<html><head><title>Research</title></head><body><article><h1>Finding</h1><p>Readable evidence.</p></article></body></html>",
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(html.text).toContain("# Research");
+    expect(html.text).toContain("## Finding");
+    expect(html.text).not.toContain("<article>");
+
+    const json = await performWebFetch({ url: "https://example.com/data.json" }, {
+      fetchImpl: async () => new Response('{"answer":42}', {
+        headers: { "content-type": "application/json" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(JSON.parse(json.text).content).toContain('  "answer": 42');
+
+    const rss = await performWebFetch({ url: "https://example.com/feed", format: "text" }, {
+      fetchImpl: async () => new Response(
+        "<rss><channel><item><title>Update</title><link>https://example.com/u</link><description>News</description></item></channel></rss>",
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(JSON.parse(rss.text).content).toBe("Update\nhttps://example.com/u\nNews");
+
+    const pdf = await performWebFetch({ url: "https://example.com/file.pdf", format: "text" }, {
+      fetchImpl: async () => new Response(minimalPdf("Hello PDF"), {
+        headers: { "content-type": "application/pdf" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(pdf.text).toContain("Hello PDF");
+    expect(pdf.outcome.contentKind).toBe("pdf");
+
+    const rawPdf = await performWebFetch({
+      url: "https://example.com/file.pdf",
+      format: "raw",
+      render: "never",
+    }, {
+      fetchImpl: async () => new Response(minimalPdf("Raw PDF marker"), {
+        headers: { "content-type": "application/pdf" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(rawPdf.text).toContain("%PDF-");
+    expect(rawPdf.text).toContain("Raw PDF marker");
+  });
+
+  it.each([
+    "text/markdown",
+    "text/x-markdown",
+    "text/md",
+    "text/vnd.daringfireball.markdown",
+    "application/markdown",
+    "application/x-markdown",
+  ])("preserves %s as Markdown/raw and removes decoration for text", async (contentType: any) => {
+    const source = [
+      "# Heading",
+      "",
+      "**Bold** and [linked text](https://example.com/source).",
+      "#include <stdio.h>",
+      "+15551234567",
+      "-42",
+      "snake_case and 2*3 stay literal.",
+      "",
+      "```c",
+      "#include <stdio.h>",
+      "const marker = \"*_`~\";",
+      "-42",
+      "   ```",
+      "",
+      "> ```c",
+      "> #include <quoted.h>",
+      "> const quoted = \"*_`~\";",
+      "> ```",
+      "",
+      "- ```c",
+      "  #include <listed.h>",
+      "  const listed = \"*_`~\";",
+      "  ```",
+      "",
+    ].join("\n");
+    const retrieve = (format: any) => performWebFetch({
+      url: "https://example.com/readme",
+      format,
+      render: "never",
+    }, {
+      documentOnly: true,
+      fetchImpl: async () => new Response(source, { headers: { "content-type": contentType } }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    const markdown = await retrieve("markdown");
+    const raw = await retrieve("raw");
+    const text = await retrieve("text");
+    expect(markdown.document.body).toBe(source);
+    expect(raw.document.body).toBe(source);
+    expect(text.document.body).toBe([
+      "Heading",
+      "",
+      "Bold and linked text.",
+      "#include <stdio.h>",
+      "+15551234567",
+      "-42",
+      "snake_case and 2*3 stay literal.",
+      "",
+      "#include <stdio.h>",
+      "const marker = \"*_`~\";",
+      "-42",
+      "",
+      "#include <quoted.h>",
+      "const quoted = \"*_`~\";",
+      "",
+      "#include <listed.h>",
+      "const listed = \"*_`~\";",
+    ].join("\n"));
+    expect(text.outcome).toMatchObject({ contentKind: "markdown", extractionStage: "markdown" });
+  });
+
+  it.each([
+    {
+      name: "top-level",
+      opening: "   ```js",
+      body: "   inside",
+      validCloser: "   ```",
+      invalidCloser: "      ```",
+      following: "after",
+      invalidMarker: "   ```",
+    },
+    {
+      name: "block-quoted",
+      opening: ">    ```js",
+      body: ">    inside",
+      validCloser: ">    ```",
+      invalidCloser: ">       ```",
+      following: "> after",
+      invalidMarker: "   ```",
+    },
+    {
+      name: "list-nested",
+      opening: "- ```js",
+      body: "  inside",
+      validCloser: "     ```",
+      invalidCloser: "      ```",
+      following: "after",
+      invalidMarker: "    ```",
+    },
+  ])("allows three-space but not over-indented $name fence closers", ({
+    opening,
+    body,
+    validCloser,
+    invalidCloser,
+    following,
+    invalidMarker,
+  }: any) => {
+    expect(markdownToText([opening, body, validCloser, following].join("\n"))).toBe("inside\nafter");
+    expect(markdownToText([opening, body, invalidCloser, following].join("\n")))
+      .toBe(["inside", invalidMarker, "after"].join("\n"));
+  });
+
+  it("rejects bounded static access/auth interstitials without false-positive evidence", async () => {
+    for (const status of [200, 403]) {
+      const cloudflare = await performWebFetch({ url: "https://example.com/protected" }, {
+        fetchImpl: async () => new Response(`
+          <html><head><title>Just a moment...</title></head><body>
+          <h1>Performing security verification</h1>
+          <p>Enable JavaScript and cookies to continue</p>
+          </body></html>
+        `, { status, headers: { "content-type": "text/html" } }),
+        ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      });
+      expect(cloudflare).toMatchObject({
+        error: true,
+        outcome: { code: "access_challenge", backend: "http", statusCode: status },
+      });
+      expect(cloudflare.text).not.toContain("Performing security verification");
+    }
+
+    const authentication = await performWebFetch({ url: "https://example.com/private" }, {
+      fetchImpl: async () => new Response("Sign in to continue to your account.", {
+        headers: { "content-type": "text/plain" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(authentication).toMatchObject({ error: true, outcome: { code: "authentication_required" } });
+
+    const structuredInterstitials = [
+      {
+        contentType: "application/json",
+        body: JSON.stringify({ message: "Authentication required. Sign in to continue." }),
+        code: "authentication_required",
+      },
+      {
+        contentType: "application/xml",
+        body: "<feed><title>Just a moment...</title><summary>Performing security verification. Enable JavaScript and cookies to continue.</summary></feed>",
+        code: "access_challenge",
+      },
+      {
+        contentType: "application/pdf",
+        body: minimalPdf("Performing security verification. Enable JavaScript and cookies to continue.", { hex: true }),
+        code: "access_challenge",
+      },
+    ];
+    for (const testCase of structuredInterstitials) {
+      const result = await performWebFetch({ url: "https://example.com/protected", format: "text" }, {
+        fetchImpl: async () => new Response(testCase.body, { headers: { "content-type": testCase.contentType } }),
+        ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      });
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: testCase.code, backend: "http" },
+      });
+      expect(result.text).not.toContain("Performing security verification");
+      expect(result.text).not.toContain("Sign in to continue");
+    }
+
+    const ordinary = await performWebFetch({
+      url: "https://example.com/article?next=/login#redirect=/challenge",
+    }, {
+      fetchImpl: async () => new Response(`
+        <html><body><article><h1>Access vocabulary</h1>
+        <p>This article compares CAPTCHA tools, Cloudflare products, login pages,
+        and incidental access denied wording without presenting a security gate.</p>
+        </article></body></html>
+      `, { headers: { "content-type": "text/html" } }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(ordinary).toMatchObject({ error: false, outcome: { code: "ok" } });
+    expect(ordinary.text).toContain("Access vocabulary");
+
+    const pathInterstitial = await performWebFetch({ url: "https://example.com/login" }, {
+      fetchImpl: async () => new Response("Ordinary response body.", {
+        headers: { "content-type": "text/plain" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(pathInterstitial).toMatchObject({
+      error: true,
+      outcome: { code: "authentication_required" },
+    });
+  });
+
+  it("rejects unsafe request headers and revalidates every redirect through the sandbox", async () => {
+    const noFetch = vi.fn();
+    const rejected = await performWebFetch({
+      url: "https://example.com",
+      headers: { Authorization: "Bearer secret" },
+    }, { fetchImpl: noFetch, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext });
+    expect(rejected).toMatchObject({ error: true, outcome: { code: "header_rejected" } });
+    expect(noFetch).not.toHaveBeenCalled();
+
+    const checked: any[] = [];
+    const sandbox: any = {
+      mergePolicies: (_configured: any, request: any) => request,
+      prepareCommand: async ({ command }: any) => command,
+      networkAllowsUrl: (_policy: any, url: any) => {
+        checked.push(url);
+        return !String(url).includes("blocked.example");
+      },
+    };
+    const fetchImpl: any = vi.fn(async () => new Response("", {
+      status: 302,
+      headers: { location: "https://blocked.example/private" },
+    }));
+    const redirected = await performWebFetch({ url: "https://example.com/start" }, {
+      fetchImpl,
+      ctx: runtimeContext(tempWorkspace(), sandbox) as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(redirected).toMatchObject({
+      error: true,
+      outcome: { code: "redirect_network_denied" },
+    });
+    expect(checked).toEqual([
+      "https://example.com/start",
+      "https://blocked.example/private",
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects binary responses and marks HTTP error previews as untrusted", async () => {
+    const binary = await performWebFetch({ url: "https://example.com/image.png" }, {
+      fetchImpl: async () => new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1]), {
+        headers: { "content-type": "image/png" },
+      }),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(binary).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "unsupported_content_type", statusCode: 200 },
+    });
+
+    const failed = await performWebFetch({ url: "https://example.com/failure" }, {
+      fetchImpl: async () => new Response("untrusted failure instructions", { status: 404 }),
+      retryDelaysMs: [],
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(failed).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "http_404", statusCode: 404 },
+    });
+    const failedPayload = JSON.parse(failed.text);
+    expect(failedPayload).toMatchObject({
+      tool: "WebFetch",
+      status: "error",
+      code: "http_404",
+      content: "untrusted failure instructions",
+      untrusted_fields: ["content"],
+    });
+    expect(failedPayload.summary).toContain("HTTP 404");
+  });
+
+  it("retries transient body-stream failures without losing the eventual response", async () => {
+    let calls = 0;
+    const fetchImpl: any = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        const stream = new ReadableStream({
+          start(controller: any) {
+            controller.error(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }));
+          },
+        });
+        return new Response(stream);
+      }
+      return new Response("recovered stream");
+    });
+    const result = await performWebFetch({ url: "https://example.com" }, {
+      fetchImpl,
+      retryDelaysMs: [0],
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(result.text).toContain("recovered stream");
+    expect(result.outcome.attempts).toBe(2);
+  });
+
+  it("returns a structured abort if cancellation arrives during retry backoff", async () => {
+    const controller = new AbortController();
+    const fetchImpl: any = vi.fn(async () => {
+      setTimeout(() => controller.abort(), 10);
+      throw Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" });
+    });
+    const result = await performWebFetch({ url: "https://example.com" }, {
+      fetchImpl,
+      retryDelaysMs: [1_000],
+      signal: controller.signal,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "aborted", attempts: 1, retryable: false },
+    });
+  });
+
+  it("renders only eligible successful HTML and keeps static content if auto rendering fails", async () => {
+    const sparseSpa = `
+      <html><body><div id="root">Loading</div>
+      <script src="/one.js"></script><script src="/two.js"></script>
+      <script>window.__NEXT_DATA__={}</script></body></html>
+    `;
+    const renderer = vi.fn(async () => "# Rendered\n\nClient-side content");
+    const rendered = await performWebFetch({ url: "https://example.com/app", render: "auto" }, {
+      fetchImpl: async () => new Response(sparseSpa, { headers: { "content-type": "text/html" } }),
+      fetchConfig: { render: "auto" },
+      browserRenderer: renderer as any,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(rendered.text).toContain("Client-side content");
+    expect(rendered.outcome).toMatchObject({ backend: "agent-browser", rendered: true });
+    expect(renderer).toHaveBeenCalledTimes(1);
+
+    const failedRenderer = vi.fn(async () => { throw new Error("browser unavailable"); });
+    const staticFallback = await performWebFetch({ url: "https://example.com/app", render: "auto" }, {
+      fetchImpl: async () => new Response(sparseSpa, { headers: { "content-type": "text/html" } }),
+      fetchConfig: { render: "auto" },
+      browserRenderer: failedRenderer as any,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(staticFallback).toMatchObject({
+      error: true,
+      outcome: { renderFailed: true, code: "unusable_content" },
+    });
+
+    const explicitRenderer = vi.fn(async () => ({ text: "# Rendered first", finalUrl: "https://example.com/app" }));
+    const browserFirst = await performWebFetch({ url: "https://example.com/app", render: "always" }, {
+      fetchImpl: vi.fn(async () => new Response("server failure", { status: 500 })),
+      fetchConfig: { render: "auto" },
+      retryDelaysMs: [],
+      browserRenderer: explicitRenderer as any,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(browserFirst).toMatchObject({ error: false, outcome: { backend: "agent-browser", renderReason: "explicit" } });
+    expect(browserFirst.text).toContain("Rendered first");
+    expect(explicitRenderer).toHaveBeenCalledOnce();
+
+    const disabledRenderer = vi.fn(async () => "# should not run");
+    const staticallyEnforced = await performWebFetch(
+      { url: "https://example.com/app", render: "always" },
+      {
+        fetchImpl: async () => new Response(sparseSpa, { headers: { "content-type": "text/html" } }),
+        fetchConfig: { render: "never" },
+        browserRenderer: disabledRenderer as any,
+        ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      },
+    );
+    expect(staticallyEnforced).toMatchObject({
+      error: true,
+      outcome: { backend: "http", rendered: false },
+    });
+    expect(disabledRenderer).not.toHaveBeenCalled();
+  });
+
+  it("preserves terminal browser access failures during automatic rendering", async () => {
+    const sparseSpa = `
+      <html><body><div id="root">Loading</div>
+      <script src="/one.js"></script><script src="/two.js"></script>
+      <script>window.__NEXT_DATA__={}</script></body></html>
+    `;
+    const cases = [
+      {
+        code: "access_challenge",
+        renderer: async () => "# Just a moment...\n\nPerforming security verification\n\nEnable JavaScript and cookies to continue",
+      },
+      {
+        code: "authentication_required",
+        renderer: async () => "Authentication required. Sign in to continue.",
+      },
+      {
+        code: "network_denied",
+        renderer: async () => { throw Object.assign(new Error("network blocked"), { code: "network_denied" }); },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = await performWebFetch({ url: "https://example.com/app", render: "auto" }, {
+        fetchImpl: async () => new Response(sparseSpa, { headers: { "content-type": "text/html" } }),
+        fetchConfig: { render: "auto" },
+        browserRenderer: testCase.renderer as any,
+        ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      });
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: testCase.code, backend: "agent-browser" },
+      });
+    }
+  });
+});
+
+describe("run-scoped web controller and browser isolation", () => {
+  it("deduplicates concurrent requests, caches successes, and drops all state on close", async () => {
+    let release;
+    const gate = new Promise((resolvePromise: any) => { release = resolvePromise; });
+    const fetchImpl: any = vi.fn(async () => {
+      await gate;
+      return new Response("cached response");
+    });
+    const controller = createWebToolController({
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const first = controller.fetch({ url: "https://example.com", format: "text" });
+    const duplicate = controller.fetch({ format: "text", url: "https://example.com" });
+    release!();
+    const [firstResult, duplicateResult] = await Promise.all([first, duplicate]);
+    const cached = await controller.fetch({ url: "https://example.com", format: "text" });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(firstResult.outcome.cacheHit).toBe(false);
+    expect(duplicateResult.outcome.cacheHit).toBe(true);
+    expect(cached.outcome.cacheHit).toBe(true);
+    await controller.close();
+    await expect(controller.fetch({ url: "https://example.com" }))
+      .resolves.toMatchObject({ error: true, outcome: { code: "controller_closed" } });
+  });
+
+  it("shares cached searches across controllers so sibling runs skip the network", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response(
+      '<div class="result"><a class="result__a" href="https://example.com/a">Shared result</a></div>',
+    ));
+    const options: any = { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext };
+
+    const first = createWebToolController({ ctx, ...options as any });
+    const firstResult = await first.search({ query: "shared" });
+    const callsAfterFirst = fetchImpl.mock.calls.length;
+    // A run ending must not throw away results the next turn will ask for again.
+    await first.close();
+
+    const second = createWebToolController({ ctx, ...options as any });
+    const secondResult = await second.search({ query: "shared" });
+
+    expect(firstResult.outcome.cacheHit).toBe(false);
+    expect(secondResult.outcome.cacheHit).toBe(true);
+    expect(fetchImpl.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("rebuilds fresh-run metadata for a cached Ollama rate-limit fallback", async () => {
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      if (String(url).includes("ollama.com")) {
+        return new Response("limited", { status: 429, headers: { "retry-after": "2760" } });
+      }
+      return new Response(JSON.stringify({ results: [{
+        title: "Cached SearXNG fallback evidence",
+        url: "https://example.com/cached-fallback",
+        content: "Mono Agent cached fallback evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const options: any = {
+      searchConfig: {
+        backend: ["ollama", "searxng", "codex", "keyless"],
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        searxng: { endpoint: "http://127.0.0.1:8088" },
+      },
+      fetchImpl,
+      codexSearch: vi.fn(),
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    };
+    const producer = createWebToolController({ ctx, ...options as any });
+    const produced = await producer.search({ query: "cached fallback truth" });
+    await producer.close();
+    const callsAfterProducer = fetchImpl.mock.calls.length;
+
+    const consumer = createWebToolController({ ctx, ...options as any });
+    const cached = await consumer.search({ query: "cached fallback truth" });
+
+    expect(produced.outcome).toMatchObject({
+      cacheHit: false,
+      attemptedBackends: ["ollama", "searxng"],
+      fallbackUsed: true,
+      rateLimited: true,
+      requestsUsed: 1,
+    });
+    expect(cached.outcome).toMatchObject({
+      cacheHit: true,
+      backend: "searxng",
+      requestsThisCall: 0,
+      requestsUsed: 0,
+      requestsRemaining: 4,
+      attempts: 0,
+      durationMs: 0,
+      queueWaitMs: 0,
+      backendDurationMs: 0,
+      cooldownSkipCount: 0,
+      quotaSkipCount: 0,
+      attemptedBackends: [],
+      actualQueries: [],
+      providerAttempts: [],
+      failureMetadata: [],
+      providerFailureCount: 0,
+      rateLimited: false,
+      cooldownBackends: [],
+      fallbackUsed: false,
+      retryInRun: true,
+      nextAction: "fetch_existing_sources",
+    });
+    expect(cached.outcome).not.toHaveProperty("retryAfterMs");
+    expect(cached.outcome).not.toHaveProperty("retryAt");
+    expect(cached.outcome.bytes).toBe(Buffer.byteLength(cached.text, "utf8"));
+    const cachedPayload = JSON.parse(cached.text);
+    expect(cachedPayload.coverage).toMatchObject({
+      backend: "searxng",
+      attemptedBackends: [],
+      failureSummary: [],
+      cacheHit: true,
+    });
+    expect(cached.text).not.toContain("ollama");
+    expect(fetchImpl.mock.calls.length).toBe(callsAfterProducer);
+    await consumer.close();
+  });
+
+  it("does not make a fresh cache consumer inherit the producer's exhausted budget", async () => {
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      const value = String(url);
+      if (value.includes("ollama.com") || value.startsWith("http://127.0.0.1")) {
+        return new Response(JSON.stringify({ results: [] }));
+      }
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/full-budget">Full-budget evidence</a></div>');
+    });
+    const codexSearch = vi.fn(async (_query: any, options: any) => {
+      options.claimRequest();
+      return { ok: true, backend: "codex", results: [] };
+    });
+    const options: any = {
+      searchConfig: {
+        backend: ["ollama", "searxng", "codex", "keyless"],
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        searxng: { endpoint: "http://127.0.0.1:8088" },
+      },
+      fetchImpl,
+      codexSearch,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    };
+    const producer = createWebToolController({ ctx, ...options as any });
+    const produced = await producer.search({ query: "producer full budget cache" });
+    await producer.close();
+    const callsAfterProducer = fetchImpl.mock.calls.length;
+
+    const consumer = createWebToolController({ ctx, ...options as any });
+    const cached = await consumer.search({ query: "producer full budget cache" });
+
+    expect(produced.outcome).toMatchObject({ requestsUsed: 4, requestsRemaining: 0, retryInRun: false });
+    expect(cached.outcome).toMatchObject({
+      cacheHit: true,
+      requestsThisCall: 0,
+      requestsUsed: 0,
+      requestsRemaining: 4,
+      attempts: 0,
+      retryInRun: true,
+      nextAction: "fetch_existing_sources",
+      attemptedBackends: [],
+      actualQueries: [],
+      providerAttempts: [],
+      failureMetadata: [],
+      providerFailureCount: 0,
+      fallbackUsed: false,
+    });
+    expect(JSON.parse(cached.text).coverage).toMatchObject({
+      requestsUsed: 0,
+      requestsRemaining: 4,
+      retryInRun: true,
+      attemptedBackends: [],
+    });
+    expect(cached.outcome.bytes).toBe(Buffer.byteLength(cached.text, "utf8"));
+    expect(fetchImpl.mock.calls.length).toBe(callsAfterProducer);
+    await consumer.close();
+  });
+
+  it("charges one provider request for an in-flight search and zero for followers and cache hits", async () => {
+    let release;
+    const gate = new Promise((resolvePromise: any) => { release = resolvePromise; });
+    const fetchImpl: any = vi.fn(async () => {
+      await gate;
+      return new Response(JSON.stringify({ results: [{
+        title: "Coalesced search evidence",
+        url: "https://example.com/coalesced",
+        content: "Mono Agent coalescing evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const controller = createWebToolController({
+      searchConfig: {
+        backend: "searxng",
+        maxRequestsPerRun: 1,
+        searxng: { endpoint: "http://127.0.0.1:8088" },
+      },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    const first = controller.search({ query: "coalesced budget evidence" });
+    const follower = controller.search({ query: "coalesced budget evidence" });
+    release!();
+    const [firstResult, followerResult] = await Promise.all([first, follower]);
+    const cached = await controller.search({ query: "coalesced budget evidence" });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(firstResult.outcome).toMatchObject({
+      cacheHit: false, requestsThisCall: 1, requestsUsed: 1, requestsRemaining: 0,
+    });
+    expect(followerResult.outcome).toMatchObject({
+      cacheHit: true, requestsThisCall: 0, requestsUsed: 1, requestsRemaining: 0,
+    });
+    expect(cached.outcome).toMatchObject({
+      cacheHit: true, requestsThisCall: 0, requestsUsed: 1, requestsRemaining: 0,
+    });
+    await controller.close();
+  });
+
+  it("preserves failure diagnostics for an in-flight search follower", async () => {
+    let release;
+    const gate = new Promise((resolvePromise: any) => { release = resolvePromise; });
+    const fetchImpl: any = vi.fn(async () => {
+      await gate;
+      return new Response("limited", { status: 429, headers: { "retry-after": "120" } });
+    });
+    const controller = createWebToolController({
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+      },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    const first = controller.search({ query: "coalesced rate limit evidence" });
+    const follower = controller.search({ query: "coalesced rate limit evidence" });
+    release!();
+    const [firstResult, followerResult] = await Promise.all([first, follower]);
+
+    expect(firstResult).toMatchObject({ error: true, outcome: { cacheHit: false, code: "rate_limited" } });
+    expect(followerResult).toMatchObject({
+      error: true,
+      outcome: {
+        cacheHit: true,
+        code: "rate_limited",
+        attempts: 0,
+        requestsThisCall: 0,
+        rateLimited: true,
+        attemptedBackends: ["ollama"],
+        failureMetadata: [{ backend: "ollama", code: "rate_limited" }],
+        providerAttempts: [{ backend: "ollama", code: "rate_limited", requests: 0 }],
+        retryInRun: false,
+        nextAction: "use_available_evidence",
+      },
+    });
+    expect(followerResult.outcome.retryAfterMs).toBeGreaterThanOrEqual(119_000);
+    expect(followerResult.outcome.retryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    expect(followerResult.text).toContain("Do not sleep or retry WebSearch");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await controller.close();
+  });
+
+  it("keys the shared search cache by backend config so controllers cannot cross-read", async () => {
+    const fetchImpl: any = vi.fn(async (url: any) => {
+      if (String(url).startsWith("http://127.0.0.1")) {
+        return new Response(JSON.stringify({ results: [{ title: "S", url: "https://example.com/s" }] }));
+      }
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>');
+    });
+    const ctx: any = runtimeContext();
+
+    const keyless = createWebToolController({ searchConfig: { backend: "keyless" }, fetchImpl, ctx });
+    await keyless.search({ query: "same" });
+    const callsAfterKeyless = fetchImpl.mock.calls.length;
+
+    const searxng = createWebToolController({
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx,
+    });
+    const searxngResult = await searxng.search({ query: "same" });
+
+    expect(searxngResult.outcome.cacheHit).toBe(false);
+    expect(searxngResult.outcome.backend).toBe("searxng");
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsAfterKeyless);
+  });
+
+  it("lets malformed Ollama credentials reach structured validation before cache hashing", async () => {
+    const fetchImpl: any = vi.fn();
+    const controller = createWebToolController({
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKey: { malformed: true } },
+      },
+      fetchImpl,
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    await expect(controller.search({ query: "mono agent" })).resolves.toMatchObject({
+      error: true,
+      outcome: { code: "auth_missing", attempts: 0 },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not serve cached searches to a run whose context denies network", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response(
+      '<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>',
+    ));
+    const searchConfig = { backend: "keyless" };
+    const workspace = tempWorkspace();
+    // The effective policy is the CONTEXT policy merged with the request
+    // policy, so two controllers can share a request policy (here: none) and
+    // still run under different network rules.
+    const allowed = createWebToolController({
+      searchConfig,
+      fetchImpl,
+      ctx: { workspace, sandbox: passthroughSandbox as any } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    await allowed.search({ query: "policy" });
+
+    const denied = createWebToolController({
+      searchConfig,
+      fetchImpl,
+      ctx: {
+        workspace,
+        sandbox: passthroughSandbox as any,
+        sandboxPolicy: { mode: "strict", network: { mode: "none", allowlist: [] } },
+      } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const deniedResult = await denied.search({ query: "policy" });
+
+    expect(deniedResult.outcome.cacheHit).toBe(false);
+    expect(deniedResult).toMatchObject({ error: true, outcome: { code: "network_denied" } });
+  });
+
+  it("cannot cache a network-allowed result under a denied-policy key", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response(
+      '<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>',
+    ));
+    const ctx: any = {
+      workspace: tempWorkspace(),
+      sandbox: passthroughSandbox as any,
+      sandboxPolicy: { mode: "strict", network: { mode: "none", allowlist: [] } },
+    };
+    const controller = createWebToolController({
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx,
+    });
+
+    const pending = controller.search({ query: "drift" });
+    // updateToolContext mutates the context in place by design, and execution is
+    // deferred by a microtask. Relaxing the policy inside that window must not
+    // let the search run under the looser policy while the cache key still
+    // describes the stricter one.
+    ctx.sandboxPolicy = undefined;
+    const result = await pending;
+
+    expect(result).toMatchObject({ error: true, outcome: { code: "network_denied" } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("uses a fresh locked agent-browser session and removes its temporary config", async () => {
+    const workspace = tempWorkspace();
+    const preparedCommands: any[] = [];
+    const cleanups: any[] = [];
+    const sandbox: any = {
+      mergePolicies: (_configured: any, request: any) => request,
+      networkAllowsUrl: () => true,
+      async prepareCommand({ command }: any) {
+        preparedCommands.push(command);
+        const cleanup = vi.fn(async () => {});
+        cleanups.push(cleanup);
+        const output = command.args.includes("read")
+          ? JSON.stringify({ text: "# Rendered\n\nSafe page" })
+          : command.args.includes("title") ? JSON.stringify({ text: "Rendered page" })
+            : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
+        return {
+          command: process.execPath,
+          args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
+          cwd: workspace,
+          cleanup,
+        };
+      },
+    };
+
+    const text = await renderWithAgentBrowser("https://example.com/page", {
+      namespace: "test-web",
+      ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(text.text).toContain("Safe page");
+    expect(text.finalUrl).toBe("https://example.com/page");
+    expect(text.title).toBe("Rendered page");
+    expect(preparedCommands).toHaveLength(6);
+    const sessions = new Set();
+    for (const command of preparedCommands) {
+      expect(command.command).toBe("agent-browser");
+      expect(command.args).toContain("--content-boundaries");
+      expect(command.args).toContain("--allowed-domains");
+      expect(command.args).toContain("example.com,*.example.com");
+      expect(command.args).toContain("--config");
+      expect(command.args.slice(command.args.indexOf("--namespace"), command.args.indexOf("--namespace") + 2))
+        .toEqual(["--namespace", "test-web"]);
+      expect(command.env).toMatchObject({
+        AGENT_BROWSER_AUTO_CONNECT: "false",
+        AGENT_BROWSER_AUTOSAVE_INTERVAL_MS: "0",
+        AGENT_BROWSER_ARGS: undefined,
+        AGENT_BROWSER_CDP: undefined,
+        AGENT_BROWSER_EXTENSIONS: undefined,
+        AGENT_BROWSER_PLUGINS: undefined,
+        AGENT_BROWSER_PROFILE: undefined,
+        AGENT_BROWSER_PROVIDER: undefined,
+        AGENT_BROWSER_RESTORE: undefined,
+        AGENT_BROWSER_RESTORE_SAVE: "never",
+        AGENT_BROWSER_SESSION: undefined,
+        AGENT_BROWSER_SESSION_NAME: undefined,
+        AGENT_BROWSER_SOCKET_DIR: undefined,
+        AGENT_BROWSER_STATE: undefined,
+      });
+      sessions.add(command.args[command.args.indexOf("--session") + 1]);
+    }
+    expect(sessions.size).toBe(1);
+    expect(preparedCommands.at(-1).args.at(-1)).toBe("close");
+    expect(cleanups.every((cleanup: any) => cleanup.mock.calls.length === 1)).toBe(true);
+    expect(readdirSync(workspace).filter((name: any) => name.startsWith(".mono-agent-web-"))).toEqual([]);
+  });
+
+  it("removes inherited browser routing and security overrides from the effective child environment", async () => {
+    const blockedKeys = [
+      "ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+      "all_proxy", "http_proxy", "https_proxy", "no_proxy",
+      "AGENT_BROWSER_PROXY", "AGENT_BROWSER_PROXY_BYPASS",
+      "AGENT_BROWSER_IGNORE_HTTPS_ERRORS", "AGENT_BROWSER_ALLOW_FILE_ACCESS",
+      "AGENT_BROWSER_ARGS", "AGENT_BROWSER_CDP", "AGENT_BROWSER_PROFILE",
+      "AGENT_BROWSER_PROVIDER", "AGENT_BROWSER_STATE", "AGENT_BROWSER_RESTORE",
+      "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
+    ];
+    for (const key of blockedKeys) vi.stubEnv(key, `sentinel-${key.toLowerCase()}`);
+    const workspace = tempWorkspace();
+    const sandbox: any = {
+      mergePolicies: (_configured: any, request: any) => request,
+      networkAllowsUrl: () => true,
+      async prepareCommand({ command }: any) {
+        const output = command.args.includes("read")
+          ? "process.stdout.write(JSON.stringify({text:JSON.stringify(process.env)}))"
+          : command.args.includes("get")
+            ? "process.stdout.write(JSON.stringify({text:'https://example.com/page'}))"
+            : "";
+        return {
+          command: process.execPath,
+          args: ["--eval", output],
+          cwd: workspace,
+          env: command.env,
+          cleanup: async () => {},
+        };
+      },
+    };
+
+    const rendered = await renderWithAgentBrowser("https://example.com/page", {
+      namespace: "effective-env",
+      ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    const effectiveEnv = JSON.parse(rendered.text);
+    for (const key of blockedKeys) expect(effectiveEnv[key]).toBeUndefined();
+    expect(effectiveEnv).toMatchObject({
+      AGENT_BROWSER_AUTO_CONNECT: "false",
+      AGENT_BROWSER_AUTOSAVE_INTERVAL_MS: "0",
+      AGENT_BROWSER_RESTORE_SAVE: "never",
+      NO_COLOR: "1",
+    });
+    expect(effectiveEnv.AGENT_BROWSER_CONFIG).toMatch(/\.mono-agent-web-/u);
+    expect(effectiveEnv.PATH).toBe(process.env.PATH);
+  });
+
+  it("rejects a representative rendered Cloudflare interstitial and accepts incidental words", async () => {
+    const workspace = tempWorkspace();
+    const render = async (body: any) => {
+      const sandbox: any = {
+        mergePolicies: (_configured: any, request: any) => request,
+        networkAllowsUrl: () => true,
+        async prepareCommand({ command }: any) {
+          const output = command.args.includes("read")
+            ? JSON.stringify({ text: body })
+            : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
+          return {
+            command: process.execPath,
+            args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
+            cwd: workspace,
+            env: command.env,
+            cleanup: async () => {},
+          };
+        },
+      };
+      return renderWithAgentBrowser("https://example.com/page", {
+        namespace: "challenge-test",
+        ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      });
+    };
+
+    await expect(render("# Just a moment...\n\nPerforming security verification\n\nEnable JavaScript and cookies to continue"))
+      .rejects.toMatchObject({ code: "access_challenge" });
+    await expect(render("Authentication required. Sign in to continue."))
+      .rejects.toMatchObject({ code: "authentication_required" });
+    await expect(render("# Browser security article\n\nCAPTCHA and access denied are incidental terms in this ordinary article."))
+      .resolves.toMatchObject({ text: expect.stringContaining("ordinary article") });
+  });
+
+  it("bounds browser namespace and session ids for macOS Unix socket paths", async () => {
+    const workspace = tempWorkspace();
+    const preparedCommands: any[] = [];
+    const sandbox: any = {
+      mergePolicies: (_configured: any, request: any) => request,
+      networkAllowsUrl: () => true,
+      async prepareCommand({ command }: any) {
+        preparedCommands.push(command);
+        const output = command.args.includes("read")
+          ? JSON.stringify({ text: "Rendered from a bounded browser session" })
+          : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
+        return {
+          command: process.execPath,
+          args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
+          cwd: workspace,
+          cleanup: async () => {},
+        };
+      },
+    };
+
+    await renderWithAgentBrowser("https://example.com/page", {
+      namespace: `mono-agent-web-${"a".repeat(36)}`,
+      ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+
+    const command = preparedCommands[0];
+    const browserNamespace = command.args[command.args.indexOf("--namespace") + 1];
+    const session = command.args[command.args.indexOf("--session") + 1];
+    expect(browserNamespace).toMatch(/^mw-[a-f0-9]{10}$/u);
+    expect(session).toMatch(/^s-[a-f0-9]{12}$/u);
+    expect(browserNamespace.length + session.length).toBeLessThanOrEqual(27);
+  });
+});
+
+function minimalPdf(text: any, { hex = false }: any = {}) {
+  const escaped = String(text).replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+  const encoded = hex ? `<${Buffer.from(String(text), "utf8").toString("hex")}>` : `(${escaped})`;
+  const stream = `BT /F1 12 Tf 72 720 Td ${encoded} Tj ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object: any, index: any) => {
+    offsets.push(Buffer.byteLength(body));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(body);
+  body += `xref\n0 ${objects.length + 1}\n`;
+  body += "0000000000 65535 f \n";
+  body += offsets.slice(1).map((offset: any) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(body, "binary");
+}
+
+describe("web research regressions", () => {
+  it("tries Startpage when DuckDuckGo returns irrelevant results and forwards recency", async () => {
+    const calls: any[] = [];
+    const result = await performWebSearch({ query: "python documentation", time_range: "day" }, {
+      searchConfig: { backend: "keyless" }, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      fetchImpl: async (url: any) => {
+        calls.push(String(url));
+        return new Response(String(url).includes("duckduckgo")
+          ? '<div class="result"><a class="result__a" href="https://example.com/shop">Fashion shop</a></div>'
+          : '<div class="result"><a class="result-link" href="https://docs.python.org/">Python documentation</a><p>Official guide</p></div>');
+      },
+    });
+    expect(calls[0]).toContain("df=d");
+    expect(calls).toHaveLength(2);
+    expect(result).toMatchObject({ error: false, outcome: { backend: "startpage" } });
+  });
+  it("passes Codex preferences separately without modifying the query", async () => {
+    const codexSearch = vi.fn(async () => ({ ok: true, backend: "codex", results: [] }));
+    await performWebSearch({ query: '"python docs"', language: "pl", time_range: "day" }, {
+      searchConfig: { backend: "codex" }, codexSearch, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+    });
+    expect(codexSearch).toHaveBeenCalledWith('"python docs"', expect.objectContaining({ language: "pl", timeRange: "day" }));
+  });
+  it("does not send traffic or fall back when the shared coordinator fails", async () => {
+    const fetchImpl: any = vi.fn(); const codexSearch = vi.fn();
+    const result = await performWebSearch({ query: "python docs" }, {
+      searchConfig: { backend: ["searxng", "codex", "keyless"], endpoint: "http://127.0.0.1:8088" }, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext, fetchImpl, codexSearch,
+      coordinator: { acquire: async () => { throw Object.assign(new Error("unavailable"), { code: "coordination_unavailable" }); } },
+    });
+    expect(result.outcome.code).toBe("coordination_unavailable");
+    expect(fetchImpl).not.toHaveBeenCalled(); expect(codexSearch).not.toHaveBeenCalled();
+  });
+  it.each(["answer", "dispatch"])("releases host admission without recording a provider failure when the %s budget is exhausted", async (kind: any) => {
+    const completed: any[] = [];
+    const coordinator = {
+      scope: "host:test",
+      acquire: vi.fn(async () => ({
+        waitMs: 0,
+        complete: async (outcome: any) => { completed.push(outcome); },
+      })),
+    };
+    const searchConfig = {
+      backend: "searxng",
+      maxRequestsPerRun: 1,
+      searxng: { endpoint: "http://127.0.0.1:8088" },
+    };
+    const searchState = createWebSearchRunState(searchConfig);
+    const fetchImpl: any = vi.fn(async () => new Response(JSON.stringify({ results: [] }), {
+      headers: { "content-type": "application/json" },
+    }));
+    const options: any = { searchConfig, searchState, coordinator, fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext };
+
+    if (kind === "dispatch") searchState.dispatchesUsed = 4;
+    else await performWebSearch({ query: "first" }, { ctx, ...options as any });
+    const exhausted = await performWebSearch({ query: "second" }, { ctx, ...options as any });
+
+    expect(exhausted.outcome.code).toBe("search_budget_exhausted");
+    expect(fetchImpl).toHaveBeenCalledTimes(kind === "dispatch" ? 0 : 1);
+    expect(completed).toEqual(kind === "dispatch" ? [{ status: "cancelled" }] : [{ status: "ok" }, { status: "cancelled" }]);
+  });
+  it("reads later page slices from one extraction and validates cached range inputs", async () => {
+    const fetchImpl: any = vi.fn(async () => new Response(Array.from({ length: 40 }, (_: any, i: any) => `Evidence line ${i + 1}`).join("\n"), { headers: { "content-type": "text/plain" } }));
+    const controller = createWebToolController({ fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext });
+    try {
+      const first = await controller.fetch({ url: "https://example.com/long", start_line: 1, max_lines: 10 });
+      const second = await controller.fetch({ url: "https://example.com/long", start_line: first.outcome.nextLine, max_lines: 10 });
+      expect(first.outcome.nextLine).toBe(11);
+      expect(second.outcome).toMatchObject({ startLine: 11, endLine: 20, cacheHit: true });
+      expect(second.text).toContain("Evidence line 20");
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect((await controller.fetch({ url: "https://example.com/long", start_line: -1 })).error).toBe(true);
+    } finally { await controller.close(); }
+  });
+  it("preserves cancellation during auto rendering", async () => {
+    const abort = new AbortController();
+    const result = await performWebFetch({ url: "https://example.com/app" }, {
+      ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext, signal: abort.signal, fetchConfig: { render: "auto" },
+      fetchImpl: async () => new Response('<div id="app">Loading</div><script></script><script></script>', { headers: { "content-type": "text/html" } }),
+      browserRenderer: async () => { abort.abort(); throw new Error("aborted"); },
+    });
+    expect(result).toMatchObject({ error: true, outcome: { code: "aborted" } });
+  });
+});
+
+ it("does not skip a partially shown long line or refetch an invalid range", async () => {
+   const fetchImpl: any = vi.fn(async () => new Response("a".repeat(1000) + "\nlast", { headers: { "content-type": "text/plain" } }));
+   const controller = createWebToolController({ fetchImpl, ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext });
+   const invalid = await controller.fetch({ url: "https://example.com/long", start_line: 0 });
+   expect(invalid.outcome.code).toBe("invalid_range");
+   expect(fetchImpl).not.toHaveBeenCalled();
+   const first = await controller.fetch({ url: "https://example.com/long", start_line: 1, max_lines: 1, max_output_chars: 300 });
+   expect(first.outcome.nextLine).toBe(1);
+   expect(first.text).toContain("Increase max_output_chars");
+   const complete = await controller.fetch({ url: "https://example.com/long", start_line: 1, max_lines: 1, max_output_chars: 2000 });
+   expect(complete.outcome.nextLine).toBe(2);
+   expect(fetchImpl).toHaveBeenCalledTimes(1);
+   await controller.close();
+ });
+
+ it("does not spend alternate queries on a failed SearXNG transport", async () => {
+   const fetchImpl: any = vi.fn(async () => new Response("unavailable", { status: 503 }));
+   const result = await performWebSearch({ query: "Python", alternate_queries: ["Python tutorial", "Python docs"] }, {
+     ctx: runtimeContext() as unknown as import("../../tools/shared/tool-context.js").ToolContext, fetchImpl, searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+   });
+   expect(result.error).toBe(true);
+   expect(fetchImpl).toHaveBeenCalledTimes(1);
+ });
+
+// Each test file binds its direct tool calls to an explicit context.
+const ctx: any = createToolContext();

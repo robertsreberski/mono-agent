@@ -36,6 +36,21 @@ it("keeps the converted model contract and readonly/unknown host projection stri
     type IsAny<T> = 0 extends (1 & T) ? true : false;
     const responseAny: IsAny<Awaited<ReturnType<typeof import("@mono-agent/turn/ai").generateEngineTurnResponse>>> = true;
     const nativeConfigAny: IsAny<ReturnType<typeof import("@mono-agent/turn/ai").runtimeCapabilities>["native_runtime_config"]> = true;
+    type McpOptions = NonNullable<Parameters<typeof import("../../tools/mcp/tools.js").initPiMcpTools>[2]>;
+    const mcpOptions = null as unknown as McpOptions;
+    // @ts-expect-error lifecycle timeout exemptions remain readonly.
+    mcpOptions.mcpCallNoTotalTimeoutTools?.push("fixture:lifecycle");
+    // @ts-expect-error rich-output callbacks receive no payload argument.
+    const invalidMcpCallback: McpOptions = { onRichOutput: (payload: string) => { void payload; } };
+    const mcpRegistration = null as unknown as import("../../contracts/mcp-apps.js").RuntimeMcpAppRegistration;
+    // @ts-expect-error app-visible tool registration is immutable.
+    mcpRegistration.appVisibleTools.push("fixture");
+    // @ts-expect-error retained connection identity cannot be replaced.
+    mcpRegistration.connection.connectionId = "fictional";
+    const mcpHost = null as unknown as import("../../contracts/mcp-apps.js").RuntimeMcpAppHost;
+    // @ts-expect-error host registration callbacks must return the retention receipt.
+    mcpHost.register = async () => undefined;
+    void invalidMcpCallback;
     void [missing, bridge, output, count, explicitUndefined, protectedOptions, resumed, responseAny, nativeConfigAny];
   }
   expect(true).toBe(true);

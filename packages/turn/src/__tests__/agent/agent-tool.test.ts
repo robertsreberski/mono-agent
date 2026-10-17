@@ -1,0 +1,1570 @@
+import { describe, expect, it, vi } from "vitest";
+import { homedir } from "node:os";
+
+const {
+  createAgentTool,
+  DEFAULT_SUBAGENT_TOOLS,
+  subagentInvocationCount,
+  subagentUsageForRun,
+} = await import("../../tools/delegation/agent-tool.js");
+
+const PROFILE = {
+  name: "researcher",
+  description: "Reads code and answers factual questions.",
+  systemPrompt: "You are a researcher.",
+  allowedTools: ["Read", "Grep"],
+};
+
+/** Minimal run stub returning a successful child result. */
+function okRun(text: any = "the answer") {
+  return vi.fn(async () => ({ text, events: [], failureKind: null }));
+}
+
+function subagentOptions(overrides: any = {}) {
+  return { definitions: [PROFILE], run: okRun(), ...overrides };
+}
+
+describe("Agent tool registration", () => {
+  it("is unavailable without a run callback", () => {
+    expect(createAgentTool(null)).toBeNull();
+    expect(createAgentTool({ definitions: [PROFILE] })).toBeNull();
+  });
+
+  it("is unavailable at depth >= 1 so a subagent can never spawn subagents", () => {
+    expect(createAgentTool(subagentOptions({ depth: 1 }))).toBeNull();
+    expect(createAgentTool(subagentOptions({ depth: 3 }))).toBeNull();
+    expect(createAgentTool(subagentOptions({ depth: 0 }))).not.toBeNull();
+  });
+
+  it("leaves Agent shareable for the harness's per-invocation gate", () => {
+    // Other offered tools do not make Agent exclusive. Invoked exclusive calls
+    // remain FIFO barriers in the mono-agent harness adapter.
+    expect(createAgentTool(subagentOptions()).executionMode).toBeUndefined();
+  });
+
+  it("offers configured profile names plus general-purpose, and omits the enum when none exist", () => {
+    const withNames = createAgentTool(subagentOptions());
+    expect(withNames.parameters.properties.name.enum).toEqual(["researcher", "general-purpose"]);
+    expect(withNames.description).toContain("researcher: Reads code");
+
+    const adHocOnly = createAgentTool({ definitions: [], run: okRun() });
+    expect(adHocOnly.parameters.properties.name).toBeUndefined();
+  });
+});
+
+describe("Agent tool dispatch", () => {
+  it("routes a named profile and passes its prompt and tools through", async () => {
+    const run = okRun("found it");
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("call-1", { name: "researcher", prompt: "find X" });
+
+    expect(run).toHaveBeenCalledOnce();
+    const request = (run as any).mock.calls[0][0];
+    expect(request).toMatchObject({
+      systemPrompt: "You are a researcher.",
+      prompt: "find X",
+      callId: "call-1",
+      callIndex: 1,
+      depth: 1,
+    });
+    expect(request.definition.allowedTools).toEqual(["Read", "Grep"]);
+    expect(result.content[0].text).toContain("found it");
+    expect(result.content[0].text).toContain("<subagent: researcher · ok");
+  });
+
+  it("falls back to a read-only general-purpose profile when no name is given", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run }));
+    await tool.execute("call-1", { prompt: "look around" });
+
+    const request = (run as any).mock.calls[0][0];
+    expect(request.definition.name).toBe("general-purpose");
+    expect(request.definition.allowedTools).toEqual(DEFAULT_SUBAGENT_TOOLS);
+    expect(request.definition.allowedTools).not.toContain("Bash");
+    expect(request.definition.allowedTools).not.toContain("Write");
+  });
+
+  it("gives a subagent a turn budget it can finish real work inside", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run }));
+    await tool.execute("call-1", { prompt: "x" });
+    expect((run as any).mock.calls[0][0].maxTurns).toBe(100);
+  });
+
+  it("always tells the child it is one level deeper than the parent", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, depth: 0 }));
+    await tool.execute("call-1", { prompt: "x" });
+    expect((run as any).mock.calls[0][0].depth).toBe(1);
+  });
+
+  it("throws on an unknown profile name and lists what is available", async () => {
+    const tool = createAgentTool(subagentOptions());
+    await expect(tool.execute("call-1", { name: "nope", prompt: "x" }))
+      .rejects.toThrow(/unknown subagent "nope"\. Available: researcher, general-purpose/u);
+  });
+});
+
+describe("Agent tool budgets", () => {
+  it("never exceeds maxConcurrent in-flight subagents", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    /** @type {Array<() => void>} */
+    const pending: any = [];
+    const run = vi.fn(() => new Promise((resolve: any) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      pending.push(() => {
+        inFlight -= 1;
+        resolve({ text: "done", events: [] });
+      });
+    }));
+
+    const tool = createAgentTool(subagentOptions({ run, maxConcurrent: 3 }));
+    const calls = Array.from({ length: 8 }, (_: any, i: any) => tool.execute(`c${i}`, { prompt: "x" }));
+
+    // Let every admitted call reach `run`, then release exactly one at a time so
+    // a queued caller can only start as a slot frees.
+    const settle = async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
+    await settle();
+    expect(inFlight).toBe(3);
+
+    while (pending.length > 0) {
+      pending.shift()();
+      await settle();
+    }
+    await Promise.all(calls);
+
+    expect(peak).toBe(3);
+    expect(run).toHaveBeenCalledTimes(8);
+  });
+
+  it("refuses further calls once the per-turn budget is spent", async () => {
+    const tool = createAgentTool(subagentOptions({ maxPerTurn: 2 }));
+    await tool.execute("c1", { prompt: "x" });
+    await tool.execute("c2", { prompt: "x" });
+    await expect(tool.execute("c3", { prompt: "x" }))
+      .rejects.toThrow(/budget for this turn is exhausted \(2 of 2 used\)/u);
+  });
+
+  it("gives a queued call its full timeout rather than burning it while waiting", async () => {
+    vi.useFakeTimers();
+    try {
+      let firstRelease: any;
+      const run = vi.fn((request: any) => new Promise((resolve: any, reject: any) => {
+        if (!firstRelease) {
+          firstRelease = () => resolve({ text: "first", events: [] });
+          return;
+        }
+        // The second call must still see a live signal when it finally starts.
+        request.abortSignal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        resolve({ text: "second", events: [] });
+      }));
+
+      const tool = createAgentTool(subagentOptions({ run, maxConcurrent: 1, timeoutMs: 1_000 }));
+      const first = tool.execute("c1", { prompt: "x" });
+      const second = tool.execute("c2", { prompt: "x" });
+
+      // Hold the slot past the second call's whole timeout budget.
+      await vi.advanceTimersByTimeAsync(5_000);
+      firstRelease();
+      const firstText = (await first).content[0].text;
+      expect(firstText).toContain("first");
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect((await second).content[0].text).toContain("second");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("Agent tool outcomes", () => {
+  it("returns a failed status with the activity log instead of throwing", async () => {
+    const run = vi.fn(async (request: any) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a/b.ts" } }] } });
+      request.onEvent({ type: "tool_timing", tool_use_id: "t1", execution_ms: 12 });
+      request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: false }] } });
+      return { text: null, error: "boom", failureKind: "provider_unavailable", events: [] };
+    });
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    const text = result.content[0].text;
+    expect(text).toContain("· failed ·");
+    expect(text).toContain("provider_unavailable: boom");
+    expect(text).toContain("1. Read /a/b.ts → ok 12ms");
+    // pi ignores a top-level `error` field; the pi-native tool_result hook
+    // reads this status to restore isError, so it is the load-bearing signal.
+    expect(result.details.subagent.status).toBe("failed");
+  });
+
+  it("reports an empty answer distinctly from a failure", async () => {
+    const tool = createAgentTool(subagentOptions({ run: vi.fn(async () => ({ text: "   ", events: [] })) }));
+    const text = (await tool.execute("c1", { prompt: "x" })).content[0].text;
+    expect(text).toContain("· empty ·");
+  });
+
+  it("does not reclassify an answer that legitimately starts with Error:", async () => {
+    // createBuiltinTool would have thrown this away; the Agent tool must not.
+    const tool = createAgentTool(subagentOptions({ run: okRun("Error: the build is broken at foo.ts:12") }));
+    const result = await tool.execute("c1", { prompt: "x" });
+    expect(result.content[0].text).toContain("Error: the build is broken at foo.ts:12");
+    expect(result.details.subagent.status).toBe("ok");
+  });
+
+  it("surfaces a parent-turn abort as an aborted tool call", async () => {
+    const controller = new AbortController();
+    const run = vi.fn(async () => {
+      controller.abort();
+      return { text: "partial", events: [] };
+    });
+    const tool = createAgentTool(subagentOptions({ run }));
+    await expect(tool.execute("c1", { prompt: "x" }, controller.signal))
+      .rejects.toThrow(/tool execution aborted/u);
+  });
+
+  it("reports a timeout with its partial activity preserved", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn((request: any) => new Promise((resolve: any) => {
+        request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Grep", input: { pattern: "x" } }] } });
+        request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: false }] } });
+        request.abortSignal.addEventListener("abort", () => resolve({ text: "", events: [], cancelled: true }), { once: true });
+      }));
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 500 }));
+      const pending = tool.execute("c1", { prompt: "x" });
+      await vi.advanceTimersByTimeAsync(600);
+      const text = (await pending).content[0].text;
+      expect(text).toContain("· timeout ·");
+      expect(text).toContain("Grep");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("detached child deadline admission", () => {
+  const instances = () => ({
+    create: async (spec: any) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "session", sessionsRoot: "/tmp/sessions", ...spec }),
+    reserve: async (id: any) => ({ id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" }),
+    begin: async (id: any) => ({ id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" }),
+    get: async (id: any) => ({ id, turns: 1, status: "idle" }), finish: async (id: any) => ({ id, turns: 1, status: "idle" }), releaseReservation: async () => {},
+  });
+  it("fires the child's timer ahead of an equal job deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const deadlineAt = Date.now() + 60_000;
+      let abortedAt: any;
+      const run = vi.fn((request: any) => new Promise((resolve: any) => {
+        request.abortSignal.addEventListener("abort", () => { abortedAt = Date.now(); resolve({ cancelled: true, subagentContinuity: { turnToken: "turn", state: "retained" } }); }, { once: true });
+      }));
+      const background = { startInternal: async (options: any) => {
+        expect(options.timeoutMs).toBe(75_000); // Host may clamp this to its configured 60s job limit.
+        await options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt });
+        return { jobId: "job", state: "timed_out", startedAt: new Date().toISOString() };
+      } };
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: instances(), backgroundSubagentController: background }));
+      const pending = tool.execute("call", { persist: true, background: true, prompt: "work" });
+      await vi.advanceTimersByTimeAsync(53_999);
+      expect(abortedAt).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(abortedAt).toBeLessThan(deadlineAt);
+      expect(run).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it("recomputes after slow begin and releases the begun turn if its deadline has passed", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(); const finished = vi.fn(async (id: any) => ({ id, status: "idle", turns: 0 }));
+      const slow = { ...instances(), begin: async (id: any) => {
+        await new Promise((resolve: any) => setTimeout(resolve, 2_000));
+        return { id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" };
+      }, finish: finished };
+      const background = { startInternal: async (options: any) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt: Date.now() + 1_000 }) };
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: slow, backgroundSubagentController: background }));
+      const pending = tool.execute("slow", { persist: true, background: true, prompt: "work" });
+      const denied = expect(pending).rejects.toThrow("insufficient job runtime remains");
+      await vi.advanceTimersByTimeAsync(2_100);
+      await denied;
+      expect(finished).toHaveBeenCalledWith("inst-1", { status: "busy" }, expect.anything());
+      expect(run).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it.each([NaN, Infinity])("rejects a non-finite job deadline (%s) without starting the child", async (deadlineAt: any) => {
+    const run = vi.fn(); const finished = vi.fn(async (id: any) => ({ id, status: "idle", turns: 0 }));
+    const background = { startInternal: async (options: any) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt }) };
+    const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: { ...instances(), finish: finished }, backgroundSubagentController: background }));
+    await expect(tool.execute("invalid", { persist: true, background: true, prompt: "work" })).rejects.toThrow("insufficient job runtime remains");
+    expect(finished).toHaveBeenCalledOnce(); expect(run).not.toHaveBeenCalled();
+  });
+  it("refuses provider admission when the remaining job budget cannot reserve settlement time", async () => {
+    const run = vi.fn();
+    const background = { startInternal: async (options: any) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt: Date.now() + 1 }) };
+    const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: instances(), backgroundSubagentController: background }));
+    await expect(tool.execute("call", { persist: true, background: true, prompt: "work" })).rejects.toThrow("insufficient job runtime remains");
+    expect(run).not.toHaveBeenCalled();
+  });
+});
+
+describe("Agent tool result budget", () => {
+  it("keeps a pathological subagent result far under the bloat guard", async () => {
+    const run = vi.fn(async (request: any) => {
+      for (let i = 0; i < 10_000; i += 1) {
+        request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: `t${i}`, name: "Read", input: { file_path: `/very/long/path/number/${i}/${"x".repeat(200)}.ts` } }] } });
+        request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: `t${i}`, is_error: false }] } });
+      }
+      return { text: "y".repeat(5_000_000), events: [] };
+    });
+    const tool = createAgentTool(subagentOptions({ run }));
+    const text = (await tool.execute("c1", { prompt: "x" })).content[0].text;
+
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(24_000);
+    // Head and tail of the trace survive; the middle is elided.
+    expect(text).toContain("1. Read");
+    expect(text).toContain("10000. Read");
+    expect(text).toMatch(/… 9945 calls elided …/u);
+    // No sink was offered, so the model is told the file does not exist.
+    expect(text).toContain("[result truncated; full result not saved: artifact persistence unavailable]");
+  });
+
+  it("spills an over-cap answer to the host artifact sink and references the file", async () => {
+    const answer = `${"a".repeat(30_000)}\nTHE-LAST-LINE`;
+    const saved: any[] = [];
+    const persistArtifact = vi.fn(({ filename, buffer, toolName, toolUseId }: any) => {
+      saved.push({ filename, text: buffer.toString("utf8"), toolName, toolUseId });
+      return `/artifacts/tool-output/run-1/${filename}`;
+    });
+    const tool = createAgentTool(subagentOptions({ run: okRun(answer) }), { persistArtifact });
+    const result = await tool.execute("call/with:odd chars", { name: "researcher", prompt: "x", description: "long report" });
+    const text = result.content[0].text;
+
+    expect(persistArtifact).toHaveBeenCalledTimes(1);
+    expect(saved[0]).toMatchObject({ filename: "Agent__call_with_odd_chars__full.txt", toolName: "Agent", toolUseId: "call/with:odd chars" });
+    // The persisted file carries the complete, unelided result.
+    expect(saved[0].text).toContain("<subagent: researcher · long report · ok ·");
+    expect(saved[0].text).toContain(answer);
+    expect(saved[0].text).not.toContain("[truncated");
+    // The retained text stays bounded, references the file right under the
+    // header, and keeps the visible truncation marker on the answer.
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(24_000);
+    expect(text.split("\n")[1]).toBe("[result truncated; full result saved to: /artifacts/tool-output/run-1/Agent__call_with_odd_chars__full.txt]");
+    expect(text).toContain("… [truncated 18014 chars]");
+    expect(text).not.toContain("THE-LAST-LINE");
+    // Recorded as an artifact reference the same way the bloat guard does.
+    expect(result.details.tool_payload_truncated).toBe(true);
+    expect(result.details.tool_payload_saved_paths).toEqual(["/artifacts/tool-output/run-1/Agent__call_with_odd_chars__full.txt"]);
+  });
+
+  it("keeps the file reference when the remaining turn budget is at the floor", async () => {
+    const persistArtifact = vi.fn(({ filename }: any) => `/artifacts/${filename}`);
+    const options = subagentOptions({ run: okRun("z".repeat(20_000)) });
+    const tool = createAgentTool(options, { persistArtifact, parentRunId: "run-floor" });
+    // Each ~12 KB result eats into the 120 KB per-turn budget; once it is spent
+    // a call gets only the 512-byte floor and must still name its file.
+    for (let i = 0; i < 10; i += 1) await tool.execute(`c${i}`, { prompt: "x" });
+    const text = (await tool.execute("c-last", { prompt: "x" })).content[0].text;
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(512);
+    expect(text.split("\n")[1]).toBe("[result truncated; full result saved to: /artifacts/Agent__c-last__full.txt]");
+    expect(text).toContain("[result truncated]");
+  });
+
+  it("persists nothing and adds no reference when the result fits", async () => {
+    const persistArtifact = vi.fn(() => "/never");
+    const tool = createAgentTool(subagentOptions({ run: okRun("short answer") }), { persistArtifact });
+    const result = await tool.execute("c1", { prompt: "x" });
+    expect(persistArtifact).not.toHaveBeenCalled();
+    expect(result.content[0].text).not.toContain("[result truncated");
+    expect(result.details.tool_payload_truncated).toBeUndefined();
+    expect(result.details.tool_payload_saved_paths).toBeUndefined();
+  });
+
+  it("reports a failed sink write honestly instead of naming a missing file", async () => {
+    const persistArtifact = vi.fn(() => { throw new Error("disk full"); });
+    const tool = createAgentTool(subagentOptions({ run: okRun("q".repeat(20_000)) }), { persistArtifact });
+    const result = await tool.execute("c1", { prompt: "x" });
+    expect(result.content[0].text.split("\n")[1]).toBe("[result truncated; full result not saved: artifact persistence unavailable]");
+    expect(result.details.tool_payload_truncated).toBe(true);
+    expect(result.details.tool_payload_saved_paths).toBeUndefined();
+  });
+
+describe("Agent tool activity forwarding", () => {
+  function capture(runImpl: any, params: any = { name: "researcher", prompt: "x" }, options: any = {}) {
+    const events: any[] = [];
+    const tool = createAgentTool(subagentOptions({ run: runImpl, ...options }), { onEvent: (e: any) => events.push(e) });
+    return { events, done: tool.execute("call-1", params) };
+  }
+
+  it("brackets the subagent with its own lifecycle events", async () => {
+    const { events, done } = capture(okRun("answer"), { name: "researcher", prompt: "x", description: "find the thing" });
+    await done;
+
+    const lifecycle = events.filter((e: any) => e.phase?.startsWith("agent_"));
+    expect(lifecycle.map((e: any) => e.phase)).toEqual(["agent_started", "agent_completed"]);
+    expect(lifecycle[0]).toMatchObject({
+      type: "subagent_activity",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      subagent: { id: "call-1", name: "researcher", callIndex: 1, label: "find the thing" },
+    });
+    expect(lifecycle[1]).toMatchObject({ isError: false, content: "ok · 0 tool calls" });
+    // Unknown stays unknown: with no explicit, profile, or inherited route the
+    // started bookend carries no attribution rather than a guessed badge.
+    expect(lifecycle[0].subagent).not.toHaveProperty("attribution");
+  });
+
+  it("forwards each child tool call with a namespaced id and subagent metadata", async () => {
+    const run = async (request: any) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a.ts" } }] } });
+      request.onEvent({ type: "tool_timing", tool_use_id: "t1", execution_ms: 9 });
+      request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "body", is_error: false }] } });
+      return { text: "done", events: [] };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    const toolEvents = events.filter((e: any) => e.phase === "started" || e.phase === "completed");
+    expect(toolEvents.map((e: any) => e.id)).toEqual(["agent:call-1:t1", "agent:call-1:t1"]);
+    expect(toolEvents[0]).toMatchObject({ name: "researcher▸Read", arguments: { file_path: "/a.ts" } });
+    expect(toolEvents[1]).toMatchObject({ name: "researcher▸Read", isError: false, executionMs: 9, content: "body" });
+    expect(toolEvents[0].subagent).toEqual({ id: "call-1", name: "researcher", callIndex: 1 });
+  });
+
+  it("attributes a child fallback without mixing it into the parent route", async () => {
+    const run = async (request: any) => {
+      request.onEvent({ type: "provider_execution_config", model: "provider:primary", effort: "high", effectiveEffort: "high" });
+      request.onEvent({ type: "provider_retry_started", model: "provider:primary", retryIndex: 1, reason: "overloaded" });
+      request.onEvent({ type: "provider_failover_started", from: "provider:primary", to: "provider:fallback", attemptIndex: 1, reason: "overloaded" });
+      request.onEvent({ type: "provider_execution_config", model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" });
+      return { text: "done", events: [], model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    expect(events.find((event: any) => event.phase === "agent_completed")?.subagent.attribution).toEqual({
+      requested: { model: "provider:primary", effort: "high" },
+      attempted: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+      executed: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+      disposition: "fallback",
+      transitions: [{ from: "provider:primary", to: "provider:fallback", attemptIndex: 1, reason: "overloaded" }],
+      retries: [{ model: "provider:primary", retryIndex: 1, reason: "overloaded" }],
+    });
+    expect(events.find((event: any) => event.phase === "agent_started")?.subagent.attribution).toBeUndefined();
+  });
+
+  it("publishes the launch route on agent_started and replaces it at completion", async () => {
+    const definitions = [{ ...PROFILE,
+      model: { provider: "provider", model: "primary", reference: "provider:primary" }, effort: "high" }];
+    const { events, done } = capture(async () => ({ text: "done", events: [] }),
+      { name: "researcher", prompt: "x" }, { definitions });
+    await done;
+
+    expect(events.find((event: any) => event.phase === "agent_started")?.subagent.attribution).toEqual({
+      requested: { model: "provider:primary", effort: "high" },
+      disposition: "unknown",
+      transitions: [],
+      retries: [],
+    });
+    expect(events.find((event: any) => event.phase === "agent_completed")?.subagent.attribution).toMatchObject({
+      requested: { model: "provider:primary", effort: "high" },
+      disposition: "requested",
+    });
+  });
+
+  it("badges an inherited-only route at launch without verdicting a fallback at completion", async () => {
+    const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+    const events: any[] = [];
+    const tool = createAgentTool(subagentOptions({ run: okRun("done") }),
+      { model: parent, effort: "xhigh", onEvent: (event: any) => events.push(event) });
+    await tool.execute("call-1", { prompt: "x" });
+
+    expect(events.find((event: any) => event.phase === "agent_started")?.subagent.attribution).toEqual({
+      requested: { model: "anthropic:parent", effort: "xhigh" },
+      disposition: "unknown",
+      transitions: [],
+      retries: [],
+    });
+    // The launch route is display-only: with no execution evidence the
+    // completed bookend carries no attribution rather than a
+    // requested/fallback verdict over a route nobody explicitly asked for.
+    expect(events.find((event: any) => event.phase === "agent_completed")?.subagent.attribution).toBeUndefined();
+  });
+
+  it("completes an inherited-only route as requested when the provider confirms it", async () => {
+    const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+    const run = async (request: any) => {
+      request.onEvent({ type: "provider_execution_config", model: "anthropic:parent", effort: "xhigh", effectiveEffort: "xhigh" });
+      return { text: "done", events: [], model: "anthropic:parent", effort: "xhigh", effectiveEffort: "xhigh" };
+    };
+    const events: any[] = [];
+    const tool = createAgentTool(subagentOptions({ run }),
+      { model: parent, effort: "xhigh", onEvent: (event: any) => events.push(event) });
+    await tool.execute("call-1", { prompt: "x" });
+
+    expect(events.find((event: any) => event.phase === "agent_started")?.subagent.attribution).toMatchObject({
+      requested: { model: "anthropic:parent", effort: "xhigh" },
+      disposition: "unknown",
+    });
+    expect(events.find((event: any) => event.phase === "agent_completed")?.subagent.attribution).toMatchObject({
+      disposition: "requested",
+    });
+  });
+
+  it("reports the inherited launch route on a detached child while it runs", async () => {
+    const reports: any[] = [];
+    const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+    const instances: any = {
+      create: async (spec: any) => ({ id: "inst-1", turns: 0, status: "running", ...spec }),
+      reserve: async () => ({ id: "inst-1", incarnation: "", activeTurn: { token: "token" } }),
+      begin: async () => ({ id: "inst-1" }),
+      finish: async () => ({}),
+      releaseReservation: async () => {},
+    };
+    const background = {
+      startInternal: async (options: any) => {
+        await options.run(new AbortController().signal, () => {}, (event: any) => reports.push(event), undefined);
+        return { jobId: "job-1", instanceId: "inst-1", state: "running", startedAt: new Date().toISOString() };
+      },
+    };
+    const tool = createAgentTool(
+      subagentOptions({ run: okRun("done"), instances, backgroundSubagentController: background }),
+      { model: parent, effort: "xhigh" });
+    const result = await tool.execute("call-1", { prompt: "x", persist: true, background: true });
+
+    expect(result.details.state).toBe("running");
+    expect(reports.filter((event: any) => event.type === "route")).toEqual([
+      { type: "route", requested: { model: "anthropic:parent", effort: "xhigh" } },
+    ]);
+  });
+
+  it("bounds a child's multi-hop route history while retaining origin and newest hops", async () => {
+    const run = async (request: any) => {
+      for (let index = 0; index < 40; index += 1) {
+        request.onEvent({
+          type: "provider_failover_started",
+          from: `route-${index}`,
+          to: `route-${index + 1}`,
+          attemptIndex: index + 1,
+          reason: "overloaded",
+        });
+      }
+      return { text: "done", events: [], model: "route-40" };
+    };
+    const { events, done } = capture(run);
+    await done;
+    const attribution = events.find((event: any) => event.phase === "agent_completed")?.subagent.attribution;
+
+    expect(attribution).toMatchObject({ disposition: "fallback", truncated: true });
+    expect(attribution.transitions).toHaveLength(32);
+    expect(attribution.transitions[0]).toMatchObject({ from: "route-0", to: "route-1" });
+    expect(attribution.transitions.at(-1)).toMatchObject({ from: "route-39", to: "route-40" });
+  });
+
+  it("keeps a child same-model retry distinct from fallback", async () => {
+    const run = async (request: any) => {
+      request.onEvent({ type: "provider_execution_config", model: "provider:primary", effort: "high", effectiveEffort: "high" });
+      request.onEvent({ type: "provider_retry_started", model: "provider:primary", retryIndex: 1, attempts: 2, reason: "overloaded" });
+      return { text: "done", events: [], model: "provider:primary", effort: "high", effectiveEffort: "high" };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    expect(events.find((event: any) => event.phase === "agent_completed")?.subagent.attribution).toMatchObject({
+      disposition: "requested",
+      transitions: [],
+      retries: [{ model: "provider:primary", retryIndex: 1, attempts: 2, reason: "overloaded" }],
+    });
+  });
+
+  it.each([
+    ["successful", { text: "done", events: [] }],
+    ["awaiting-reply", { subagentQuestion: { question: "Which scope?" }, events: [] }],
+  ])("keeps a pinned requested route when a %s result reports no executed identifiers", async (_case: any, result: any) => {
+    const definitions = [{ ...PROFILE,
+      model: { provider: "provider", model: "primary", reference: "provider:primary" }, effort: "high" }];
+    const { events, done } = capture(async () => result, { name: "researcher", prompt: "x" }, { definitions });
+    await done;
+
+    expect(events.find((event: any) => event.phase === "agent_completed")?.subagent.attribution).toEqual({
+      requested: { model: "provider:primary", effort: "high" },
+      disposition: "requested",
+      transitions: [],
+      retries: [],
+    });
+  });
+
+  it("never forwards the child's assistant text, which would splice into the parent answer", async () => {
+    const run = async (request: any) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "internal monologue" }] } });
+      request.onEvent({ type: "assistant", message: { content: [{ type: "thinking", thinking: "hmm" }] } });
+      return { text: "final", events: [] };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    expect(JSON.stringify(events)).not.toContain("internal monologue");
+    expect(JSON.stringify(events)).not.toContain("hmm");
+  });
+
+  it("caps a forwarded tool result so the wire reducer never has to run", async () => {
+    const run = async (request: any) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] } });
+      request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "z".repeat(500_000) }] } });
+      return { text: "done", events: [] };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    const completed = events.find((e: any) => e.phase === "completed");
+    expect(completed.content.length).toBeLessThanOrEqual(2_001);
+    expect(completed.content.endsWith("…")).toBe(true);
+  });
+
+  it("keeps forwarding failures from breaking the subagent", async () => {
+    const tool = createAgentTool(subagentOptions(), {
+      onEvent: () => { throw new Error("operator stream is gone"); },
+    });
+    const result = await tool.execute("call-1", { name: "researcher", prompt: "x" });
+    expect(result.content[0].text).toContain("the answer");
+  });
+});
+
+describe("Agent tool confinement", () => {
+  it("materializes the safe read-only set for a named profile that omits tools", async () => {
+    // Forwarding `undefined` would mean pi's allow-all sentinel — every
+    // built-in including Bash, Write, and Exec — for a profile that merely
+    // declined to enumerate its tools.
+    const run = okRun();
+    const tool = createAgentTool({
+      definitions: [{ name: "bare", description: "d", systemPrompt: "s" }],
+      run,
+    });
+    await tool.execute("c1", { name: "bare", prompt: "x" });
+
+    const { definition } = (run as any).mock.calls[0][0];
+    expect(definition.allowedTools).toEqual(DEFAULT_SUBAGENT_TOOLS);
+    expect(definition.allowedTools).not.toContain("Bash");
+  });
+
+  it("unions the hard-deny list onto every profile, including in the bare kernel", async () => {
+    const run = okRun();
+    const tool = createAgentTool({
+      definitions: [{ name: "shelly", description: "d", systemPrompt: "s", allowedTools: ["Read", "Bash"], disallowedTools: ["Write"] }],
+      run,
+    });
+    await tool.execute("c1", { name: "shelly", prompt: "x" });
+
+    const { definition } = (run as any).mock.calls[0][0];
+    expect(definition.disallowedTools).toEqual(expect.arrayContaining([
+      "Write", "Agent", "AskUser", "SlackSendMessage", "TelegramSendMessage", "TelegramSendFile",
+    ]));
+  });
+
+  it("strips a hard-denied tool a profile tries to allow", async () => {
+    const run = okRun();
+    const tool = createAgentTool({
+      definitions: [{ name: "sneaky", description: "d", systemPrompt: "s", allowedTools: ["Read", "Agent", "AskUser"] }],
+      run,
+    });
+    await tool.execute("c1", { name: "sneaky", prompt: "x" });
+
+    const { definition } = (run as any).mock.calls[0][0];
+    expect(definition.allowedTools).toEqual(["Read"]);
+  });
+
+  it("hands the parent's sandbox policy to every child request", async () => {
+    const run = okRun();
+    const sandboxPolicy = { mode: "workspace-write", network: { mode: "deny" } };
+    const sandboxEngine = { id: "srt" };
+    const tool = createAgentTool(subagentOptions({ run }), { sandboxPolicy, sandboxEngine });
+    await tool.execute("c1", { prompt: "x" });
+
+    // A child inheriting no policy would bypass network deny through its own
+    // default WebFetch/WebSearch tools.
+    expect((run as any).mock.calls[0][0]).toMatchObject({ sandboxPolicy, sandboxEngine });
+  });
+
+  it("hands the parent's request tool environment to every child request", async () => {
+    const run = okRun();
+    const toolEnvironment = { schema: 1, values: { MULTICA_TASK_ID: "task-1" } };
+    const tool = createAgentTool(subagentOptions({ run }), { toolEnvironment });
+    await tool.execute("c1", { prompt: "x" });
+
+    expect((run as any).mock.calls[0][0]).toMatchObject({ toolEnvironment });
+  });
+
+  it("offers web configuration and host coordination to every child request", async () => {
+    const run = okRun();
+    const webSearchConfig = { backend: ["parallel", "ollama"], maxRequestsPerRun: 4 };
+    const webFetchConfig = { render: "never", browserCommand: "agent-browser" };
+    const webRequestCoordinator = { scope: "host:test" };
+    const tool = createAgentTool(subagentOptions({ run }), {
+      webSearchConfig, webFetchConfig, webRequestCoordinator,
+    });
+    await tool.execute("c1", { prompt: "x" });
+
+    expect((run as any).mock.calls[0][0]).toMatchObject({
+      webSearchConfig, webFetchConfig, webRequestCoordinator,
+    });
+    expect((run as any).mock.calls[0][0]).not.toHaveProperty("webSearchState");
+  });
+
+  it("offers the parent's skill index and skills root to every child request", async () => {
+    const run = okRun();
+    const skills = [{ name: "research", description: "Reads the web." }];
+    const tool = createAgentTool(subagentOptions({ run }), { skills, skillsRoot: "/repo/skills" });
+    await tool.execute("c1", { prompt: "x" });
+
+    // Offered, not imposed: the host's `run` decides whether this child may have
+    // them. Without the offer it cannot decide at all, and the child rediscovers
+    // by trial and error whatever its parent could have looked up.
+    expect((run as any).mock.calls[0][0]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
+  });
+
+  it("omits the skill keys entirely when the parent has none", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run }), {});
+    await tool.execute("c1", { prompt: "x" });
+
+    // Absent, not `undefined`: the host reads these with conditional spreads, and
+    // an explicit undefined would trip exactOptionalPropertyTypes downstream.
+    expect((run as any).mock.calls[0][0]).not.toHaveProperty("skills");
+    expect((run as any).mock.calls[0][0]).not.toHaveProperty("skillsRoot");
+  });
+});
+
+describe("subagentInvocationCount", () => {
+  // This is what a provider reports as `capabilities_resolved.subagent_invoked`.
+  // pi-native used to hardcode `false` there, so a turn that fanned out several
+  // subagents reported that none ran — the one signal that would have shown
+  // delegation working said it never happened.
+  it("counts what a run actually spawned, keyed by parent run", async () => {
+    const options = subagentOptions({ run: okRun() });
+    const tool = createAgentTool(options, { parentRunId: "run-1" });
+
+    expect(subagentInvocationCount(options, "run-1")).toBe(0);
+    await tool.execute("c1", { prompt: "x" });
+    expect(subagentInvocationCount(options, "run-1")).toBe(1);
+    await tool.execute("c2", { prompt: "y" });
+    expect(subagentInvocationCount(options, "run-1")).toBe(2);
+    // Another logical run must not inherit this one's tally.
+    expect(subagentInvocationCount(options, "run-2")).toBe(0);
+  });
+
+  it("reads 0 rather than throwing when nothing was ever registered", () => {
+    // A run without the Agent tool never creates a budget entry, and that is
+    // indistinguishable from having it and never using it — both mean "no
+    // subagent was invoked", which is exactly the signal's contract.
+    expect(subagentInvocationCount(undefined, "run-1")).toBe(0);
+    expect(subagentInvocationCount({}, "run-1")).toBe(0);
+    expect(subagentInvocationCount({ __budgets: "not a map" }, "run-1")).toBe(0);
+  });
+});
+
+describe("subagentUsageForRun", () => {
+  /** A child that reports one completed provider run's totals, as both bridges do. */
+  function spendingRun(cumulativeUsd: any, tokens: any = { input: 100, output: 20, cacheReadTokens: 5, cacheCreationTokens: 3 }) {
+    return async (request: any) => {
+      request.onEvent({ type: "cost_accumulated", sdk: "pi", model: "m", cumulativeUsd, tokens });
+      return { text: "done", events: [] };
+    };
+  }
+
+  it("sums what every delegation in a run spent, keyed by parent run", async () => {
+    const options = subagentOptions({ run: spendingRun(0.02) });
+    const tool = createAgentTool(options, { parentRunId: "run-1" });
+
+    expect(subagentUsageForRun(options, "run-1")).toEqual({
+      costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    });
+    await tool.execute("c1", { prompt: "x" });
+    await tool.execute("c2", { prompt: "y" });
+    expect(subagentUsageForRun(options, "run-1")).toEqual({
+      costUsd: 0.04, input: 200, output: 40, cacheRead: 10, cacheWrite: 6,
+    });
+    // A later logical turn starts fresh, exactly like the call budget.
+    expect(subagentUsageForRun(options, "run-2").costUsd).toBe(0);
+  });
+
+  it("reads the child's totals as a running total rather than a delta", async () => {
+    // Same rule `ai/observer.js` applies to the parent's own events: two
+    // snapshots from one child run are one child's spend, not two.
+    const run = async (request: any) => {
+      request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0.01, tokens: { input: 50, output: 5 } });
+      request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0.03, tokens: { input: 150, output: 15 } });
+      return { text: "done", events: [] };
+    };
+    const options = subagentOptions({ run });
+    const tool = createAgentTool(options, { parentRunId: "run-1" });
+    await tool.execute("c1", { prompt: "x" });
+
+    expect(subagentUsageForRun(options, "run-1")).toMatchObject({ costUsd: 0.03, input: 150, output: 15 });
+  });
+
+  it("keeps what a child that timed out spent before it was stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn((request: any) => new Promise((resolve: any) => {
+        request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0.05, tokens: { input: 10, output: 2 } });
+        request.abortSignal.addEventListener("abort", () => resolve({ text: "", events: [], cancelled: true }), { once: true });
+      }));
+      const options = subagentOptions({ run, timeoutMs: 500 });
+      const tool = createAgentTool(options, { parentRunId: "run-1" });
+      const pending = tool.execute("c1", { name: "researcher", prompt: "x" });
+      await vi.advanceTimersByTimeAsync(600);
+      await pending;
+
+      // Stopping a subagent does not refund what it already burned.
+      expect(subagentUsageForRun(options, "run-1").costUsd).toBe(0.05);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never republishes the child's cost on the parent stream", async () => {
+    // Consumers read `usage_update` as the run's cumulative figure, so a
+    // child's smaller total arriving last would read as the run getting cheaper.
+    const events: any[] = [];
+    const options = subagentOptions({ run: spendingRun(0.02) });
+    const tool = createAgentTool(options, { parentRunId: "run-1", onEvent: (event: any) => events.push(event) });
+    await tool.execute("c1", { name: "researcher", prompt: "x" });
+
+    expect(events.some((event: any) => event.type === "cost_accumulated")).toBe(false);
+    const completed = events.find((event: any) => event.phase === "agent_completed");
+    expect(completed.subagent).toMatchObject({ id: "c1", name: "researcher", costUsd: 0.02,
+      usage: { input: 100, output: 20, cacheRead: 5, cacheWrite: 3 } });
+  });
+
+  it("emits tokens even if the child was not priced, and omits an all-zero sample", async () => {
+    const events: any[] = [];
+    const run = async (request: any) => {
+      request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0, tokens: { input: 12, output: 2 } });
+      return { text: "done", events: [] };
+    };
+    const tool = createAgentTool(subagentOptions({ run }), { onEvent: (event: any) => events.push(event) });
+    await tool.execute("c1", { prompt: "x" });
+    expect(events.find((event: any) => event.phase === "agent_completed")?.subagent).toMatchObject({
+      usage: { input: 12, output: 2, cacheRead: 0, cacheWrite: 0 },
+    });
+    expect(events.find((event: any) => event.phase === "agent_completed")?.subagent).not.toHaveProperty("costUsd");
+    const unmeasured: any[] = [];
+    await createAgentTool(subagentOptions({ run: okRun() }), { onEvent: (event: any) => unmeasured.push(event) }).execute("c2", { prompt: "x" });
+    expect(unmeasured.find((event: any) => event.phase === "agent_completed")?.subagent).not.toHaveProperty("usage");
+  });
+
+  it("leaves the price off a delegation the runtime never priced", async () => {
+    const events: any[] = [];
+    const options = subagentOptions({ run: okRun() });
+    const tool = createAgentTool(options, { parentRunId: "run-1", onEvent: (event: any) => events.push(event) });
+    await tool.execute("c1", { prompt: "x" });
+
+    expect(events.find((event: any) => event.phase === "agent_completed").subagent).not.toHaveProperty("costUsd");
+  });
+
+  it("reads all zeroes rather than throwing when nothing was ever registered", () => {
+    const zero = { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    expect(subagentUsageForRun(undefined, "run-1")).toEqual(zero);
+    expect(subagentUsageForRun({}, "run-1")).toEqual(zero);
+    expect(subagentUsageForRun({ __budgets: "not a map" }, "run-1")).toEqual(zero);
+  });
+});
+
+describe("Agent tool bounds", () => {
+  it("abandons a runner that ignores both its abort signal and its deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      // A signal only asks. Without an enforceable deadline this call would stay
+      // pending forever, holding its permit and wedging every queued sibling.
+      const run = vi.fn(() => new Promise(() => {}));
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 1_000, maxConcurrent: 1 }));
+      const first = tool.execute("c1", { prompt: "x" });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const text = (await first).content[0].text;
+      expect(text).toContain("· timeout ·");
+      expect(text).toContain("abandoned");
+
+      // The slot is free, so a queued sibling can still run.
+      const second = tool.execute("c2", { prompt: "y" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((await second).content[0].text).toContain("· timeout ·");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the aggregate bytes of many results in one turn", async () => {
+    const run = vi.fn(async () => ({ text: "z".repeat(200_000), events: [] }));
+    const tool = createAgentTool(subagentOptions({ run, maxPerTurn: 20 }));
+
+    let total = 0;
+    for (let i = 0; i < 20; i += 1) {
+      const result = await tool.execute(`c${i}`, { prompt: "x" });
+      total += Buffer.byteLength(result.content[0].text, "utf8");
+    }
+    // Twenty individually-capped 24KB results would be ~480KB of parent context.
+    expect(total).toBeLessThanOrEqual(140_000);
+  });
+
+  it("still reports the outcome after the turn byte budget is spent", async () => {
+    const run = vi.fn(async () => ({ text: "z".repeat(200_000), events: [] }));
+    const tool = createAgentTool(subagentOptions({ run, maxPerTurn: 20 }));
+    for (let i = 0; i < 12; i += 1) await tool.execute(`c${i}`, { prompt: "x" });
+
+    const last = await tool.execute("last", { name: "researcher", prompt: "x" });
+    expect(last.content[0].text).toContain("<subagent: researcher");
+  });
+
+  it("keeps one call budget across router attempts that rebuild the tool", async () => {
+    // getPiBuiltinTools runs per router attempt, so a closure-local counter
+    // would hand each retry and failover a fresh maxPerTurn allowance.
+    const shared = subagentOptions({ maxPerTurn: 2 });
+    const context = { parentRunId: "run-1" };
+
+    const attemptOne = createAgentTool(shared, context);
+    await attemptOne.execute("c1", { prompt: "x" });
+
+    const attemptTwo = createAgentTool(shared, context);
+    await attemptTwo.execute("c2", { prompt: "x" });
+    await expect(attemptTwo.execute("c3", { prompt: "x" }))
+      .rejects.toThrow(/budget for this turn is exhausted/u);
+  });
+
+  it("starts a fresh budget for a different parent run", async () => {
+    const shared = subagentOptions({ maxPerTurn: 1 });
+    const first = createAgentTool(shared, { parentRunId: "run-1" });
+    await first.execute("c1", { prompt: "x" });
+    await expect(first.execute("c2", { prompt: "x" })).rejects.toThrow(/exhausted/u);
+
+    const second = createAgentTool(shared, { parentRunId: "run-2" });
+    await expect(second.execute("c3", { prompt: "x" })).resolves.toBeDefined();
+  });
+});
+});
+
+describe("Agent tool in-flight subagent creation", () => {
+  /** Inline options with a ceiling wide enough to exercise the intersection. */
+  function inlineOptions(overrides: any = {}, inline: any = { allowedTools: ["Read", "Edit", "Bash", "Grep"] }) {
+    return subagentOptions({ inline, ...overrides });
+  }
+
+  it("exposes the authoring parameters and drops the closed name enum", () => {
+    const { properties } = createAgentTool(inlineOptions()).parameters;
+    expect(properties.systemPrompt).toBeDefined();
+    expect(properties.tools).toBeDefined();
+    expect(properties.effort.enum).toContain("high");
+    // A configured profile stays selectable, but `name` must accept an authored
+    // one too, so the enum cannot survive.
+    expect(properties.name.enum).toBeUndefined();
+    expect(properties.name.pattern).toBe("^[a-z0-9][a-z0-9-]{0,39}$");
+  });
+
+  it("keeps today's closed schema when inline authoring is disabled", () => {
+    const { properties } = createAgentTool(subagentOptions({ inline: { enabled: false } })).parameters;
+    expect(properties.systemPrompt).toBeUndefined();
+    expect(properties.tools).toBeUndefined();
+    expect(properties.effort.enum).toContain("high");
+    expect(properties.name.enum).toEqual(["researcher", "general-purpose"]);
+  });
+
+  it("dispatches an authored subagent with its prompt, name, tools, and effort", async () => {
+    const run = okRun("refactored");
+    const tool = createAgentTool(inlineOptions({ run }));
+    await tool.execute("c1", {
+      name: "css-refactorer",
+      systemPrompt: "You refactor CSS. Never touch JavaScript.",
+      tools: ["Read", "Edit"],
+      effort: "high",
+      prompt: "tidy up buttons.css",
+    });
+
+    const request = (run as any).mock.calls[0][0];
+    expect(request.systemPrompt).toBe("You refactor CSS. Never touch JavaScript.");
+    expect(request.definition).toMatchObject({
+      name: "css-refactorer",
+      effort: "high",
+      allowedTools: ["Read", "Edit"],
+    });
+  });
+
+  it("intersects requested tools with the operator ceiling and says what it dropped", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Grep"] }));
+    const result = await tool.execute("c1", {
+      name: "helper",
+      systemPrompt: "s",
+      tools: ["Read", "Write", "Bash"],
+      prompt: "x",
+    });
+
+    expect((run as any).mock.calls[0][0].definition.allowedTools).toEqual(["Read"]);
+    // Silently dropping them would have the model re-request every turn.
+    expect(result.content[0].text).toMatch(/note: Write, Bash are not available/u);
+  });
+
+  it("refuses a hard-denied tool even when the ceiling would allow it", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "AskUser"] }));
+    await tool.execute("c1", { name: "sneaky", systemPrompt: "s", tools: ["Read", "AskUser", "Agent"], prompt: "x" });
+
+    const { definition } = (run as any).mock.calls[0][0];
+    expect(definition.allowedTools).toEqual(["Read"]);
+    expect(definition.disallowedTools).toEqual(expect.arrayContaining(["Agent", "AskUser"]));
+  });
+
+  it("gives an authored subagent that names no tools the read-only default set", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit"] }));
+    await tool.execute("c1", { name: "reader", systemPrompt: "s", prompt: "x" });
+    expect((run as any).mock.calls[0][0].definition.allowedTools).toEqual(DEFAULT_SUBAGENT_TOOLS);
+  });
+
+  it("keeps the omitted-tools default inside a narrower ceiling", async () => {
+    // An operator who caps authored subagents at Read+Edit did not thereby
+    // consent to WebFetch arriving through the read-only default.
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Edit"] }));
+    await tool.execute("c1", { name: "reader", systemPrompt: "s", prompt: "x" });
+    expect((run as any).mock.calls[0][0].definition.allowedTools).toEqual(["Read"]);
+  });
+
+  it.each([undefined, "general-purpose"])(
+    "keeps the built-in general-purpose profile inside a narrower ceiling (name: %s)",
+    async (name: any) => {
+      const run = okRun();
+      const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Edit", "Grep"] }));
+      await tool.execute("c1", { ...(name === undefined ? {} : { name }), prompt: "x" });
+
+      expect((run as any).mock.calls[0][0].definition.allowedTools).toEqual(["Read", "Grep"]);
+    },
+  );
+
+  it("keeps a configured profile's explicit tools outside the inline ceiling", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read"] }));
+    await tool.execute("c1", { name: "researcher", prompt: "x" });
+
+    expect((run as any).mock.calls[0][0].definition.allowedTools).toEqual(["Read", "Grep"]);
+  });
+
+  it("refuses the built-in general-purpose profile when the ceiling has no read-only tools", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Edit", "Bash"] }));
+
+    await expect(tool.execute("c1", { prompt: "x" }))
+      .rejects.toThrow(/no read-only tools available to general-purpose/u);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the read-only set when the host supplies no ceiling", async () => {
+    // A bare-kernel caller must not hand the model every built-in just by
+    // declining to state a ceiling.
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, inline: {} }));
+    await tool.execute("c1", { name: "reader", systemPrompt: "s", tools: ["Bash", "Write", "Read"], prompt: "x" });
+    expect((run as any).mock.calls[0][0].definition.allowedTools).toEqual(["Read"]);
+  });
+
+  it("does not let an all-dropped request fall through to the wider read-only default", async () => {
+    // normalizeProfile treats an empty allow-list as "use the read-only default
+    // set", which is WIDER than a narrow ceiling — so an entirely out-of-ceiling
+    // request must not reach it.
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Edit"] }));
+    await tool.execute("c1", { name: "helper", systemPrompt: "s", tools: ["Bash", "WebFetch"], prompt: "x" });
+
+    const { definition } = (run as any).mock.calls[0][0];
+    expect(definition.allowedTools).toEqual(["Read"]);
+    expect(definition.allowedTools).not.toContain("WebFetch");
+  });
+
+  it("refuses to build a subagent when the ceiling leaves it no tools at all", async () => {
+    const tool = createAgentTool(inlineOptions({}, { allowedTools: ["Bash"] }));
+    await expect(tool.execute("c1", { name: "helper", systemPrompt: "s", tools: ["Write"], prompt: "x" }))
+      .rejects.toThrow(/no tools available/u);
+  });
+
+  it("requires a name for an authored subagent", async () => {
+    const tool = createAgentTool(inlineOptions());
+    await expect(tool.execute("c1", { systemPrompt: "s", prompt: "x" }))
+      .rejects.toThrow(/needs a `name`/u);
+  });
+
+  it("rejects a name that collides with a configured profile", async () => {
+    const tool = createAgentTool(inlineOptions());
+    await expect(tool.execute("c1", { name: "researcher", systemPrompt: "s", prompt: "x" }))
+      .rejects.toThrow(/"researcher" is already a configured subagent/u);
+    await expect(tool.execute("c2", { name: "general-purpose", systemPrompt: "s", prompt: "x" }))
+      .rejects.toThrow(/already a configured subagent/u);
+  });
+
+  it("rejects tools without a system prompt", async () => {
+    const tool = createAgentTool(inlineOptions());
+    await expect(tool.execute("c1", { name: "researcher", tools: ["Read"], prompt: "x" }))
+      .rejects.toThrow(/only applies when you supply `systemPrompt`/u);
+
+  });
+
+  it("still routes a configured profile by name", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }));
+    await tool.execute("c1", { name: "researcher", prompt: "x" });
+    expect((run as any).mock.calls[0][0].systemPrompt).toBe("You are a researcher.");
+  });
+
+  it("still rejects an unknown name when no prompt is authored", async () => {
+    const tool = createAgentTool(inlineOptions());
+    await expect(tool.execute("c1", { name: "nope", prompt: "x" }))
+      .rejects.toThrow(/unknown subagent "nope"/u);
+  });
+});
+
+describe("Agent tool activity log rendering", () => {
+  const CWD = `${homedir()}/agents/assistant`;
+
+  /** Run one child tool call and return the rendered `<activity>` line. */
+  async function activityLine(name: any, input: any, context: any = { cwd: CWD }) {
+    const run = vi.fn(async (request: any) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name, input }] } });
+      request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: false }] } });
+      return { text: "done", events: [] };
+    });
+    const tool = createAgentTool(subagentOptions({ run }), context);
+    const text = (await tool.execute("c1", { prompt: "x" })).content[0].text;
+    // Drop the non-deterministic duration suffix; only the argument summary matters here.
+    return text.split("\n").find((line: any) => line.startsWith("1. "))?.replace(/(→ \w+).*$/u, "$1");
+  }
+
+  it("shows a path under the agent root relative to it", async () => {
+    expect(await activityLine("Read", { file_path: `${CWD}/notes/backlog.md` }))
+      .toBe("1. Read notes/backlog.md → ok");
+  });
+
+  it("collapses the operator's home directory outside the agent root", async () => {
+    expect(await activityLine("Write", { file_path: `${homedir()}/other-repo/x.ts` }))
+      .toBe("1. Write ~/other-repo/x.ts → ok");
+  });
+
+  it("leaves an unrelated absolute path intact", async () => {
+    expect(await activityLine("Read", { file_path: "/etc/hosts" }))
+      .toBe("1. Read /etc/hosts → ok");
+  });
+
+  it("renders the full Exec argv, not just the executable", async () => {
+    // Exec has no `command`; rendering only `executable` collapsed every line to
+    // `Exec "rg"`, which says nothing about what the subagent actually ran.
+    expect(await activityLine("Exec", { executable: "rg", args: ["--json", "needle", `${CWD}/src`] }))
+      .toBe(`1. Exec "rg --json needle src" → ok`);
+  });
+
+  it("relativizes paths inside a Bash command", async () => {
+    expect(await activityLine("Bash", { command: `cat ${CWD}/daily/2026-07-29.md` }))
+      .toBe(`1. Bash "cat daily/2026-07-29.md" → ok`);
+  });
+
+  it("relativizes a Grep path", async () => {
+    expect(await activityLine("Grep", { pattern: "TODO", path: `${CWD}/packages` }))
+      .toBe(`1. Grep pattern="TODO" path=packages → ok`);
+  });
+
+  it("falls back to unrelativized paths when the parent turn has no cwd", async () => {
+    expect(await activityLine("Read", { file_path: "/srv/app/main.ts" }, {}))
+      .toBe("1. Read /srv/app/main.ts → ok");
+  });
+});
+
+
+describe("Agent call-time routes", () => {
+  const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+  const pinned = { provider: "anthropic", model: "pinned", reference: "anthropic:pinned" };
+  const override = { provider: "openai", model: "override", reference: "openai:override" };
+  const models = [{ name: "fast", model: override, key: "openai:override" }];
+
+  it.each([undefined, { enabled: false }, { enabled: true }])("offers effort in every schema and model only with choices (%j)", (inline: any) => {
+    const options = subagentOptions({ inline });
+    expect(createAgentTool(options).parameters.properties.model).toBeUndefined();
+    expect(createAgentTool(options).description).not.toContain("`model`");
+    expect(createAgentTool({ ...options, models: [] }).parameters.properties.model).toBeUndefined();
+    const properties = createAgentTool({ ...options, models }).parameters.properties;
+    expect(properties.model.enum).toEqual(["fast"]);
+    expect(properties.model.description).toContain("fast → openai:override");
+    expect(properties.effort.enum).toContain("high");
+  });
+
+  it.each([
+    { name: "researcher" },
+    { name: "writer", systemPrompt: "Write", tools: ["Read", "Bash"] },
+    {},
+  ])("overrides the route on each call shape without widening tools: %j", async (shape: any) => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, models, inline: { enabled: true, allowedTools: ["Read"] },
+      definitions: [{ ...PROFILE, model: pinned, effort: "low" }],
+    }), { model: parent, effort: "xhigh" });
+    const result = await tool.execute("override", { ...shape, prompt: "x", model: "fast", effort: "high" });
+    expect((run as any).mock.calls[0][0]).toMatchObject({ model: parent, effort: "xhigh", definition: { model: override, effort: "high" } });
+    expect((run as any).mock.calls[0][0].definition.allowedTools).not.toContain("Bash");
+    expect(result.details.subagent.requested).toEqual({ model: "openai:override", effort: "high" });
+    expect(result.content[0].text).toContain("openai:override/high · ok");
+  });
+
+  it("preserves profile pins and leaves unpinned inheritance out of the common header", async () => {
+    const run = okRun();
+    const events: any[] = [];
+    const tool = createAgentTool(subagentOptions({ run, definitions: [{ ...PROFILE, model: pinned, effort: "low" }] }),
+      { model: parent, effort: "xhigh", onEvent: (event: any) => events.push(event) });
+    const result = await tool.execute("pin", { name: "researcher", prompt: "x" });
+    expect((run as any).mock.calls[0][0]).toMatchObject({ model: parent, effort: "xhigh", definition: { model: pinned, effort: "low" } });
+    expect(result.details.subagent.requested).toEqual({ model: "anthropic:pinned", effort: "low" });
+    expect(events.at(-1).subagent.attribution.requested).toEqual(result.details.subagent.requested);
+    const inherited = await tool.execute("inherit", { prompt: "x" });
+    expect(inherited.content[0].text).toContain("<subagent: general-purpose · ok");
+    expect(inherited.details.subagent.requested).toBeUndefined();
+    expect((run as any).mock.calls[1][0]).toMatchObject({ model: parent, effort: "xhigh" });
+    expect((run as any).mock.calls[1][0].definition.model).toBeUndefined();
+  });
+
+  it("keeps requested and executed routes distinct after fallback", async () => {
+    const run = vi.fn(async (request: any) => {
+      request.onEvent({ type: "provider_execution_config", model: "anthropic:pinned", effort: "low" });
+      return { text: "ok", model: "anthropic:pinned", effort: "low", effectiveEffort: "low" };
+    });
+    const tool = createAgentTool(subagentOptions({ run, models }));
+    const result = await tool.execute("fallback", { prompt: "x", model: "fast", effort: "high" });
+    expect(result.details.subagent.requested).toEqual({ model: "openai:override", effort: "high" });
+    expect(result.details.subagent.executed).toEqual({ model: "anthropic:pinned", effort: "low", effectiveEffort: "low" });
+  });
+
+  it("rejects unknown and unconfigured choices before spending a call", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, models }));
+    await expect(tool.execute("bad", { prompt: "x", model: "nope" })).rejects.toThrow('unknown model "nope". Choices: fast.');
+    await expect(createAgentTool(subagentOptions({ run })).execute("bad", { prompt: "x", model: "fast" }))
+      .rejects.toThrow("Choices: none configured");
+    expect(run).not.toHaveBeenCalled();
+  });
+});
+
+
+it("definitions stay byte-identical across admission changes and optional operations refuse before side effects", async () => {
+  const run = okRun();
+  const context = { persistentExposure: true };
+  const unavailable = createAgentTool({ run }, context);
+  const instances: any = { reserve: vi.fn(), releaseReservation: vi.fn(), create: vi.fn() };
+  const available = createAgentTool({ run, instances, backgroundSubagentController: { start: vi.fn() } as any }, context);
+  const definition = ({ name, description, parameters }: any) => JSON.stringify({ name, description, parameters });
+  expect(definition(unavailable)).toBe(definition(available));
+  for (const params of [{ prompt: "x", persist: true }, { prompt: "x", persist: true, background: true }, { prompt: "x", persist: true, verification: { workdir: "/repo" } }]) {
+    await expect(unavailable.execute("no", params)).rejects.toThrow(/unavailable/);
+  }
+  expect(run).not.toHaveBeenCalled(); expect(instances.create).not.toHaveBeenCalled();
+});
+
+describe("Agent tool max-turns wrap-up", () => {
+  const MAX_TURNS_ERROR = "Pi agent stopped before final output: max turns reached";
+
+  /** A child result shaped like a pi-native max-turns exhaustion. */
+  function maxTurnsResult(overrides: any = {}) {
+    return {
+      text: null,
+      error: MAX_TURNS_ERROR,
+      failureKind: "usage_limit",
+      numTurns: 100,
+      diagnostics: { max_turns_hit: true, max_turns: 100, turn_count: 100 },
+      events: [],
+      ...overrides,
+    };
+  }
+
+  /** A run stub answering the main turn with `first` and the wrap-up with `second`. */
+  function scripted(first: any, second: any) {
+    const calls = [];
+    const run = vi.fn(async (request: any) => {
+      calls.push(request);
+      return (calls.length === 1 ? first : second)(request);
+    });
+    return run;
+  }
+
+  it("gives an exhausted run one bounded wrap-up and reports its text", async () => {
+    const run = scripted(
+      async (request: any) => {
+        request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/w/a.ts" } }] } });
+        request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: false }] } });
+        return maxTurnsResult();
+      },
+      async () => ({ text: "wrap-up: committed abc123; report at RESULT.md; remaining: docs", numTurns: 2, events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "do the thing" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    const wrapRequest = (run as any).mock.calls[1][0];
+    expect(wrapRequest.maxTurns).toBe(3);
+    expect(wrapRequest.prompt).toContain("do the thing");
+    expect(wrapRequest.prompt).toContain("Do not start or continue new work");
+    expect(wrapRequest.prompt).toContain("fresh session");
+    expect(wrapRequest.prompt).toContain("Read");
+    expect(wrapRequest).toMatchObject({ callId: "c1", callIndex: 1, depth: 1 });
+    const text = result.content[0].text;
+    expect(text).toContain("· failed ·");
+    expect(text).toContain(`usage_limit: ${MAX_TURNS_ERROR}`);
+    expect(text).toContain("wrap-up: committed abc123");
+    expect(text).toMatch(/wrap-up: max-turns budget exhausted \(100 of 100 turns\); wrap-up ok/u);
+    expect(result.details.subagent.status).toBe("failed");
+    expect(result.details.subagent.wrapUp).toMatchObject({
+      budget: "maxTurns",
+      turnsUsed: 100,
+      turnsAllowed: 100,
+      status: "ok",
+      wrapUpTurnsUsed: 2,
+      wrapUpTurnsAllowed: 3,
+    });
+  });
+
+  it("wraps up on the usage_limit kind even without diagnostics", async () => {
+    const run = scripted(
+      async () => ({ text: null, error: "usage_limit: max turns reached", failureKind: "usage_limit", events: [] }),
+      async () => ({ text: "salvaged position statement", events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "ok", turnsUsed: null, turnsAllowed: 100 });
+    expect(result.content[0].text).toContain("salvaged position statement");
+  });
+
+  it.each([
+    ["a normal answer", async () => ({ text: "done", events: [] })],
+    ["a non-budget failure", async () => ({ text: null, error: "boom", failureKind: "provider_unavailable", events: [] })],
+    ["a cancellation", async () => ({ text: "partial", cancelled: true, events: [] })],
+  ])("issues no wrap-up after %s", async (_case: any, impl: any) => {
+    const run = vi.fn(impl);
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.details.subagent.wrapUp).toBeUndefined();
+    expect(result.content[0].text).not.toContain("wrap-up:");
+  });
+
+  it("keeps usage_limit and falls back to partial text when the wrap-up fails", async () => {
+    const run = scripted(
+      async () => maxTurnsResult({ text: "partial progress notes" }),
+      async () => ({ text: null, error: "boom", failureKind: "provider_unavailable", events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    const text = result.content[0].text;
+    expect(text).toContain("· failed ·");
+    expect(text).toContain(`usage_limit: ${MAX_TURNS_ERROR}`);
+    expect(text).toContain("partial progress notes");
+    expect(text).toMatch(/wrap-up failed/u);
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "failed", turnsUsed: 100, turnsAllowed: 100 });
+  });
+
+  it("never recurses when the wrap-up exhausts its own budget", async () => {
+    const run = scripted(
+      async () => maxTurnsResult(),
+      async () => maxTurnsResult({ numTurns: 3, diagnostics: { max_turns_hit: true, max_turns: 3, turn_count: 3 } }),
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "failed" });
+    expect(result.details.subagent.wrapUp.reason).toMatch(/own 3-turn budget/u);
+    expect(result.content[0].text).toContain(`usage_limit: ${MAX_TURNS_ERROR}`);
+  });
+
+  it("reports unavailable when the wrap-up cannot start, keeping the original result", async () => {
+    const run = scripted(
+      async () => maxTurnsResult({ text: "partial progress notes" }),
+      async () => { throw new Error("route gone"); },
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.status).toBe("failed");
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "unavailable" });
+    expect(result.details.subagent.wrapUp.reason).toContain("route gone");
+    expect(result.content[0].text).toContain("partial progress notes");
+  });
+
+  it("issues no wrap-up when the wall-clock budget fires", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn((request: any) => new Promise((resolve: any) => {
+        request.abortSignal.addEventListener("abort", () => resolve(maxTurnsResult()), { once: true });
+      }));
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 500 }));
+      const pending = tool.execute("c1", { prompt: "x" });
+      await vi.advanceTimersByTimeAsync(600);
+      const result = await pending;
+
+      expect(result.content[0].text).toContain("· timeout ·");
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(result.details.subagent.wrapUp).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** Persistent-instance mock capturing finish outcomes. */
+  function persistentInstances(finished: any) {
+    return {
+      create: async (spec: any) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "sess-1", sessionsRoot: "/tmp/sess", ...spec }),
+      begin: async (id: any) => ({ id, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      finish: async (id: any, outcome: any) => {
+        finished.push(outcome);
+        return { id, turns: 2, status: "idle" };
+      },
+    };
+  }
+
+  it("propagates a wrap-up continuity loss to the instance outcome", async () => {
+    // The host reports session continuity per run: a wrap-up that answered
+    // outside the instance session must not leave the instance recorded
+    // retained on the first run's fields, or the next AgentManage resumes a
+    // lost session.
+    const finished: any[] = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), subagentContinuity: { turnToken: "tok", state: "retained" } }),
+      async () => ({
+        text: null,
+        error: "The child answered outside its persistent session.",
+        failureKind: "session_continuity_lost",
+        subagentContinuity: { turnToken: "tok", state: "lost" },
+        events: [],
+      }),
+    );
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    const result = await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({
+      status: "failed",
+      failureKind: "session_continuity_lost",
+      continuity: { turnToken: "tok", state: "lost" },
+    });
+    expect(result.details.subagent.status).toBe("failed");
+    expect(result.details.subagent.wrapUp.status).toBe("failed");
+  });
+
+  it("reports a wrap-up continuity loss at detached settlement", async () => {
+    const settledCalls: any[] = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), subagentContinuity: { turnToken: "tok", state: "retained" } }),
+      async () => ({
+        text: null,
+        error: "The child answered outside its persistent session.",
+        failureKind: "session_continuity_lost",
+        subagentContinuity: { turnToken: "tok", state: "lost" },
+        events: [],
+      }),
+    );
+    const instances = {
+      create: async (spec: any) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "sess-1", sessionsRoot: "/tmp/sess", ...spec }),
+      reserve: async (id: any) => ({ id, incarnation: "", activeTurn: { token: "tok" }, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      begin: async (id: any) => ({ id, incarnation: "", activeTurn: { token: "tok" }, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      get: async (id: any) => ({ id, turns: 2, status: "idle" }),
+      releaseReservation: async () => {},
+    };
+    const execution = {
+      deadlineAt: Date.now() + 60_000,
+      managed: {
+        started: async () => {},
+        settled: async (report: any) => settledCalls.push(report),
+        report: async () => {},
+        ownedForegroundProcesses: undefined,
+      },
+    };
+    const background = {
+      startInternal: async (options: any) => {
+        await options.run(new AbortController().signal, () => {}, () => {}, execution);
+        return { jobId: "job-1", instanceId: "inst-1", state: "succeeded", startedAt: new Date().toISOString() };
+      },
+    };
+    const tool = createAgentTool(subagentOptions({ run, instances, backgroundSubagentController: background }));
+    await tool.execute("c1", { prompt: "x", persist: true, background: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(settledCalls).toHaveLength(1);
+    expect(settledCalls[0]).toMatchObject({
+      failureKind: "session_continuity_lost",
+      continuity: { turnToken: "tok", state: "lost" },
+    });
+  });
+
+  it.each([
+    ["failed", async () => ({ text: null, error: "boom", failureKind: "provider_unavailable", events: [] })],
+    ["unavailable", async () => { throw new Error("route gone"); }],
+  ])("keeps an ordinary %s wrap-up free of continuity loss", async (status: any, second: any) => {
+    const finished: any[] = [];
+    const run = scripted(async () => maxTurnsResult({ text: "partial" }), second);
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    const result = await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.wrapUp.status).toBe(status);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].status).toBe("failed");
+    expect(finished[0].failureKind).toBeUndefined();
+    expect(finished[0].continuity).toBeUndefined();
+  });
+
+  it("sums both runs' usage in the instance outcome", async () => {
+    const finished: any[] = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 5, cache_creation_tokens: 3, cost_usd: 0.25 } }),
+      async () => ({ text: "wrapped", usage: { input_tokens: 50, output_tokens: 10, cache_read_tokens: 1, cache_creation_tokens: 2, cost_usd: 0.5 }, events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].usage).toEqual({ input: 150, output: 30, cacheRead: 6, cacheWrite: 5, costUsd: 0.75 });
+  });
+
+  it("reuses the persistent instance for the wrap-up and names the report file", async () => {
+    const finished: any[] = [];
+    const instances = {
+      create: async (spec: any) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "sess-1", sessionsRoot: "/tmp/sess", ...spec }),
+      begin: async (id: any) => ({ id, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      finish: async (id: any, outcome: any) => {
+        finished.push(outcome);
+        return { id, turns: 2, status: "idle" };
+      },
+    };
+    const run = scripted(
+      async () => maxTurnsResult(),
+      async () => ({ text: "wrap-up: committed; report at RESULT.md", numTurns: 1, events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run, instances }));
+    const result = await tool.execute("c1", {
+      prompt: "migrate the thing",
+      persist: true,
+      verification: { workdir: "/repo", reportPath: "RESULT.md" },
+    });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect((run as any).mock.calls[0][0].instance).toMatchObject({ id: "inst-1", sessionId: "sess-1" });
+    expect((run as any).mock.calls[1][0].instance).toMatchObject({ id: "inst-1", sessionId: "sess-1" });
+    expect((run as any).mock.calls[1][0].prompt).toContain("same persistent instance");
+    expect((run as any).mock.calls[1][0].prompt).toContain("RESULT.md");
+    // One instance turn spans both provider runs: the turn is finished once.
+    expect(finished).toHaveLength(1);
+    expect(finished[0].status).toBe("failed");
+    expect(result.details.subagent.instance).toMatchObject({ id: "inst-1" });
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "ok" });
+    expect(result.content[0].text).toContain("wrap-up: committed; report at RESULT.md");
+  });
+});

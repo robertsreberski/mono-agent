@@ -1,0 +1,223 @@
+// @ts-check
+
+import { types as nodeUtilTypes } from "node:util";
+
+import { startPreparedProcess } from "./process-runner.js";
+
+/** @typedef {import("../../contracts/process.js").ProcessJobsController} ProcessJobsController */
+
+/**
+ * Transfer one prepared command to the injected host controller. From the
+ * instant `start()` is invoked, the controller owns cleanup on every path.
+ *
+ * @param {{
+ *   controller: ProcessJobsController,
+ *   tool: "Exec"|"Bash",
+ *   prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand,
+ *   summary: string,
+ *   description?: string,
+ *   wakeOnCompletion?: boolean,
+ *   timeoutMs?: number,
+ *   maxOutputChars?: number,
+ *   startedAt: number,
+ *   failed: (text: string, code: string, startedAt: number) => any,
+ * }} input
+ */
+export async function handOffProcessJob({
+  controller,
+  tool,
+  prepared,
+  summary,
+  description,
+  wakeOnCompletion,
+  timeoutMs,
+  maxOutputChars,
+  startedAt,
+  failed,
+}: { controller: ProcessJobsController; tool: "Exec" | "Bash"; prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand; summary: string; description?: string; wakeOnCompletion?: boolean; timeoutMs?: number; maxOutputChars?: number; startedAt: number; failed: (text: string, code: string, startedAt: number) => any }): Promise<any> {
+  const ownedPrepared = withCleanupOnce(prepared);
+  const boundEnvironment = mergedProcessEnvironment(ownedPrepared.env);
+  let launched = false;
+  try {
+    const result = await controller.start({
+      tool,
+      prepared: ownedPrepared,
+      summary,
+      ...(description === undefined ? {} : { description }),
+      ...(wakeOnCompletion === undefined ? {} : { wakeOnCompletion }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(maxOutputChars === undefined ? {} : { maxOutputChars }),
+      launch(options = {}) {
+        if (launched) throw new Error("Process-job prepared command was already launched.");
+        launched = true;
+        return startPreparedProcess({ ...ownedPrepared, env: boundEnvironment }, {
+          ...options,
+          waitForProcessGroup: true,
+          exactEnvironment: true,
+        });
+      },
+    });
+    if (!validProcessJobStartResult(result)) {
+      if (!launched) {
+        try {
+          await ownedPrepared.cleanup?.();
+        } catch {
+          return failed(
+            `Error: ${PUBLIC_BACKGROUND_START_FAILURES.process_job_cleanup_incomplete}`,
+            "process_job_cleanup_incomplete",
+            startedAt,
+          );
+        }
+      }
+      return failed("Error: Process-job controller returned an invalid start result.", "process_job_controller_invalid", startedAt);
+    }
+    const payload = {
+      job_id: result.jobId,
+      state: result.state,
+      started_at: result.startedAt,
+      ...(result.maxRuntimeMs === undefined ? {} : { max_runtime_ms: result.maxRuntimeMs }),
+      ...(result.queuePosition === undefined ? {} : { queue_position: result.queuePosition }),
+      ...(result.queueDeadlineAt === undefined ? {} : { queue_deadline_at: result.queueDeadlineAt }),
+    };
+    return {
+      text: `${result.state === "queued" ? "Background process job queued; no child or provider has started. Queue position is a snapshot, not a guarantee. " : "Background process job running. "}${wakeOnCompletion === false ? "Its terminal lifecycle card will update, but this conversation will not receive a completion turn. Do not report the work as finished yet." : BACKGROUND_START_GUIDANCE}\n${JSON.stringify(payload)}`,
+      outcome: {
+        status: "ok",
+        code: "background_started",
+        retryable: false,
+        attempts: 1,
+        durationMs: Date.now() - startedAt,
+        bytes: 0,
+        truncated: false,
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        background: true,
+        ...payload,
+      },
+      error: false,
+    };
+  } catch (error) {
+    const failure = publicBackgroundStartFailure(error);
+    return failed(
+      `Error: ${failure.message}`,
+      failure.code,
+      startedAt,
+    );
+  }
+}
+
+/**
+ * A bare id/state payload leaves the model to guess what happens next, and the
+ * cheapest wrong guess is a polling loop. Completion delivers its own turn, so
+ * the result says so itself rather than relying on the schema line alone. No
+ * operator command is named on purpose: the model has a shell, and naming a
+ * status command invites exactly the polling this forbids.
+ */
+const BACKGROUND_START_GUIDANCE =
+  "Background process job started (tool-authored guidance): this conversation is woken with a new turn when the job reaches a terminal state, and its output arrives with that turn. Do not poll, sleep, wait on it, or re-run the command to check progress, and do not report the work as finished yet. `max_runtime_ms` is the budget the host granted; if it is below what you requested, the host capped it and the job will be killed at that limit, so plan the work around the granted budget rather than re-running the same command.";
+
+const PUBLIC_BACKGROUND_START_FAILURES = Object.freeze({
+  background_unsupported: "Background process jobs are unsupported for this tool call.",
+  background_unsupported_channel: "Background process jobs are unsupported for this channel.",
+  process_job_disabled: "Process jobs are disabled.",
+  process_job_controller_unavailable: "The process-job controller is unavailable.",
+  process_job_platform_unsupported: "Process jobs are unsupported on this platform.",
+  process_job_not_found: "The process job was not found.",
+  process_job_conflict: "The process job is no longer in the required state.",
+  process_job_capacity: "Process-job capacity is full.",
+  process_job_conversation_capacity: "This conversation reached its process-job capacity.",
+  process_job_queue_full: "The process-job queue is full.",
+  process_job_queue_expired: "The process job expired before launch.",
+  process_job_chain_depth_exceeded: "The process-job chain-depth limit was reached.",
+  process_job_spawn_failed: "The process job could not be launched.",
+  process_job_failed: "The process job failed.",
+  process_job_timeout: "The process job exceeded its runtime limit.",
+  process_job_cancelled: "The process job was cancelled.",
+  process_job_agent_restarted: "The process job was interrupted by an agent restart.",
+  process_job_cleanup_incomplete: "Process-job cleanup could not be confirmed.",
+  process_job_store_error: "Process-job storage failed.",
+  process_job_wake_failed: "Process-job wake delivery failed.",
+  process_job_wake_unknown: "Process-job wake delivery outcome is unknown; replay was suppressed.",
+  process_job_response_too_large: "The process-job response exceeded its size limit.",
+  process_job_invalid: "The process-job request is invalid.",
+});
+
+export function publicBackgroundStartFailure(error: any): { code: string; message: any } {
+  let code = "process_job_controller_unavailable";
+  try {
+    if (typeof error === "object" && error !== null && !nodeUtilTypes.isProxy(error)) {
+      const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+      if (descriptor !== undefined
+        && Object.prototype.hasOwnProperty.call(descriptor, "value")
+        && typeof descriptor.value === "string"
+        && Object.prototype.hasOwnProperty.call(PUBLIC_BACKGROUND_START_FAILURES, descriptor.value)) {
+        code = descriptor.value;
+      }
+    }
+  } catch {
+    // Proxies and revoked proxies are hostile input at this boundary.
+  }
+  let message: string = (PUBLIC_BACKGROUND_START_FAILURES as Record<string, string>)[code]!;
+  if (code === "process_job_queue_full" || code === "process_job_capacity") {
+    try {
+      const field = (name: string) => Object.getOwnPropertyDescriptor(error, name)?.value;
+      const count = field("occupancy");
+      const limit = field("limit");
+      const key = field("limitKey");
+      if (Number.isSafeInteger(count) && count >= 0 && Number.isSafeInteger(limit) && limit > 0
+        && key === (code === "process_job_queue_full" ? "processJobs.maxQueued" : "processJobs.pendingWakeCap")) {
+        message = code === "process_job_queue_full"
+          ? `Global queue full: ${count}/${limit} (processJobs.maxQueued); wait for a job to start or expire, or raise that key within its cap.`
+          : `Pending wakes full: ${count}/${limit} (processJobs.pendingWakeCap); wait for delivery settlement.`;
+        const local = field("conversationOccupancy");
+        const cap = field("conversationLimit");
+        if (code === "process_job_queue_full" && Number.isSafeInteger(local) && local >= 0 && Number.isSafeInteger(cap) && cap > 0) {
+          message += ` Conversation running slots: ${local}/${cap} (processJobs.maxActivePerConversation); wait for a slot or raise that key within its cap.`;
+        }
+      }
+    } catch { /* Never expose an untrusted thrown message. */ }
+  }
+  return { code, message };
+}
+
+function mergedProcessEnvironment(overrides: Record<string, string | undefined> = {}) {
+  const environment = { ...process.env };
+  for (const [name, value] of Object.entries(overrides)) {
+    if (value === undefined) delete environment[name];
+    else environment[name] = value;
+  }
+  return environment;
+}
+
+function withCleanupOnce(prepared: any) {
+  if (typeof prepared.cleanup !== "function") return prepared;
+  /** @type {Promise<void>|undefined} */
+  let cleanup: Promise<void>;
+  const original = prepared.cleanup;
+  return {
+    ...prepared,
+    cleanup: async () => {
+      if (!cleanup) cleanup = Promise.resolve().then(() => original());
+      await cleanup;
+    },
+  };
+}
+
+function validProcessJobStartResult(value: any) {
+  if (!value || typeof value !== "object") return false;
+  if (typeof value.jobId !== "string" || value.jobId.trim().length === 0 || value.jobId.length > 256) return false;
+  if (value.state !== "queued" && value.state !== "starting" && value.state !== "running") return false;
+  if (value.maxRuntimeMs !== undefined
+    && (!Number.isSafeInteger(value.maxRuntimeMs) || value.maxRuntimeMs <= 0)) return false;
+  if (value.state !== "queued" && (value.queuePosition !== undefined || value.queueDeadlineAt !== undefined)) return false;
+  if (value.queuePosition !== undefined && (!Number.isSafeInteger(value.queuePosition) || value.queuePosition < 1)) return false;
+  if (value.queueDeadlineAt !== undefined && (typeof value.queueDeadlineAt !== "string"
+    || !Number.isFinite(Date.parse(value.queueDeadlineAt)) || new Date(value.queueDeadlineAt).toISOString() !== value.queueDeadlineAt)) return false;
+  if (value.startedAt === null) return value.state === "queued";
+  if (typeof value.startedAt !== "string") return false;
+  const timestamp = Date.parse(value.startedAt);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value.startedAt;
+}
+
+export type ProcessJobsController = import("../../contracts/process.js").ProcessJobsController;

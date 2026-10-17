@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -6,8 +8,8 @@ import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { createMonoRuntime } from "@mono-agent/turn/host";
-// @ts-expect-error Private kernel tool boundary.
-import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
+const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"));
+const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
 // @ts-expect-error Real native engine; only provider transport is fake.
 import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";

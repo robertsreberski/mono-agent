@@ -51,7 +51,7 @@ describe("core scan policy", () => {
     const expected = [
       "src/index.ts!", "src/ai/index.ts!", "src/agent/index.ts!",
       "src/host/index.ts!", "src/host/config.ts!", "src/host/types.ts!", "src/host/sandbox/index.ts!",
-      "src/engine/index.ts!", "src/engine/sessions.ts!", "src/engine/owned-fs.ts!", "src/tools/index.js!",
+      "src/engine/index.ts!", "src/engine/sessions.ts!", "src/engine/owned-fs.ts!", "src/tools/index.ts!",
     ];
     expect(expected).toHaveLength(11);
     for (const entry of expected) {
