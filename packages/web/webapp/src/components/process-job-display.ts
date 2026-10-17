@@ -175,7 +175,7 @@ export const processJobPurposeInGroup = (job: ProcessJobProjection, instanceId: 
 export const processJobGroupName = (job: ProcessJobProjection): string =>
   `${job.tool} background job ${job.state.replaceAll("_", " ")}${!processJobIsTerminal(job) && job.cancelRequested ? " (stopping)" : ""}`;
 
-/** The host's "nothing printed" preview for a settled job (process-jobs-service outputPreview). */
+/** The host's "nothing printed" preview for a settled job (process-jobs/presentation.ts outputPreview). */
 export const EMPTY_OUTPUT_PREVIEW = "(no output)";
 const PREVIEW_MARKERS = new Set(["STDOUT:", "STDERR:", "… [earlier output omitted]", EMPTY_OUTPUT_PREVIEW]);
 
