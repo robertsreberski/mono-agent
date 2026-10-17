@@ -2054,8 +2054,8 @@ it.each([undefined, null, "one-at-a-time", "all"])("rejects retired scheduling %
 });
 
 it("refuses resolver-supplied retired scheduling terminally and releases its resources", async () => {
-  const run = vi.fn();
-  const backupRun = vi.fn();
+  const run = vi.fn(async () => ({ text: "primary", events: [], usage: {} }));
+  const backupRun = vi.fn(async () => ({ text: "backup", events: [], usage: {} }));
   const cleanup = vi.fn();
   const events = [];
   const resolveAttempt = vi.fn(({ attemptIndex }) => attemptIndex === 0

@@ -62,7 +62,8 @@ describe("managed SRT read-only profiles", () => {
   });
 
   it("accepts a root-owned managed file for a non-root runtime caller", async () => {
-    vi.spyOn(process, "getuid").mockReturnValue(1234);
+    const unixProcess = process as NodeJS.Process & { getuid: () => number };
+    vi.spyOn(unixProcess, "getuid").mockReturnValue(1234);
     stats.override = { uid: 0, mode: 0o600, nlink: 1, isSymbolicLink: () => false, isFile: () => true };
     await expect(assertManagedSrtRegularFile("/fictional/marker", { requirePrivate: true, label: "managed marker", installRoot: "/fictional/root" }))
       .resolves.toBeUndefined();
