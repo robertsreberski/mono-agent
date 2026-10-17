@@ -13,11 +13,11 @@ const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "
   reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } };
 const result = { text: "Fictional final answer.", error: null, failureKind: null, cancelled: false, stopReason: "stop" };
 async function fixture() {
-  const raw = await new MemorySessionRepo().create({ id: descriptor.handleId });
+  const raw: any = await new MemorySessionRepo().create({ id: descriptor.handleId });
   await raw.beginTurn(descriptor.turnId, { model }, "host", createTurnBinding(descriptor, model)); await raw.sync();
   return raw;
 }
-async function input(raw, operationId) {
+async function input(raw: any, operationId: any) {
   await raw.openOperation(operationId, { model });
   const content = [{ type: "text", text: "Fictional request." }];
   const id = await raw.appendMessage({ role: "user", content }, undefined, { id: descriptor.reconciliation.initialInputId, complete: true,
@@ -29,34 +29,34 @@ const request = (extra = {}) => ({ descriptor, purpose: "execution", expectedMod
 
 describe("indexed protected turn evidence", () => {
   it("has matching protected inline ownership at the first synced start, before later bindings or input dispatch", async () => {
-    const raw = await fixture();
+    const raw: any = await fixture();
     expect(raw.validator.owner).toMatchObject({ kind: "host", ownerKey: descriptor.ownerKey });
-    expect(raw.records.filter((record) => record.turnId === descriptor.turnId && record.kind === "owner_binding")).toEqual([]);
+    expect(raw.records.filter((record: any) => record.turnId === descriptor.turnId && record.kind === "owner_binding")).toEqual([]);
     const evidence = await readTurnEvidence(raw, descriptor.turnId);
     expect(evidence.binding).toEqual(createTurnBinding(descriptor, model)); expect(evidence.operations).toEqual([]);
     expect(matchTurnEvidence(evidence, request()).status).toBe("matched");
     await repairInterruptedSession(raw); await raw.close();
   });
   it("reads only ordered references for the requested turn, retaining the actual final result rather than an earlier operation", async () => {
-    const raw = await fixture(); const all = vi.spyOn(raw, "getAllEntries"); const branch = vi.spyOn(raw, "getEntries");
+    const raw: any = await fixture(); const all = vi.spyOn(raw, "getAllEntries"); const branch = vi.spyOn(raw, "getEntries");
     await input(raw, "first"); await raw.closeOperation("first", "failed");
     await raw.openOperation("compaction", { model }, "compaction", "overflow"); await raw.closeOperation("compaction", "completed");
     await input(raw, "final"); await raw.closeOperation("final", "completed");
     await raw.endTurn(descriptor.turnId, "completed", result); await raw.sync();
     const evidence = await readTurnEvidence(raw, descriptor.turnId);
-    expect(evidence.operations.map((op) => [op.operationId, op.status])).toEqual([["first", "failed"], ["compaction", "completed"], ["final", "completed"]]);
+    expect(evidence.operations.map((op: any) => [op.operationId, op.status])).toEqual([["first", "failed"], ["compaction", "completed"], ["final", "completed"]]);
     expect(evidence.finalOperationId).toBe("final"); expect(evidence.seal).toEqual({ version: 1, outcome: "completed", result });
     expect(evidence.consumedInputIds).toEqual(["fictional-input"]); expect(evidence.inputs).toHaveLength(1);
     expect(matchTurnEvidence(evidence, request()).status).toBe("matched"); expect(all).not.toHaveBeenCalled(); expect(branch).not.toHaveBeenCalled(); await raw.close();
   });
-  it.each(["ownerKey", "historyBucket", "handleId", "baseRevision", "turnId"])("rejects a mismatched %s before callers may repair", async (key) => {
-    const raw = await fixture(); const evidence = await readTurnEvidence(raw, descriptor.turnId); const seq = raw.seq;
+  it.each(["ownerKey", "historyBucket", "handleId", "baseRevision", "turnId"])("rejects a mismatched %s before callers may repair", async (key: any) => {
+    const raw: any = await fixture(); const evidence = await readTurnEvidence(raw, descriptor.turnId); const seq = raw.seq;
     const bad = { ...descriptor, [key]: key === "baseRevision" ? 3 : "foreign" };
     expect(matchTurnEvidence(evidence, request({ descriptor: bad }))).toMatchObject({ status: "mismatch", reason: key }); expect(raw.seq).toBe(seq);
     await repairInterruptedSession(raw); await raw.close();
   });
   it("matches exact model, purpose, fence, baseline and consumed input digests without transforming evidence", async () => {
-    const raw = await fixture(); await input(raw, "prompt"); await raw.closeOperation("prompt", "failed"); await raw.endTurn(descriptor.turnId, "failed"); await raw.sync();
+    const raw: any = await fixture(); await input(raw, "prompt"); await raw.closeOperation("prompt", "failed"); await raw.endTurn(descriptor.turnId, "failed"); await raw.sync();
     const evidence = await readTurnEvidence(raw, descriptor.turnId);
     for (const [extra, reason] of [[{ expectedModel: { ...model, id: "other" } }, "model"], [{ expectedBaseTip: "other" }, "baseline_tip"],
       [{ purpose: "compaction" }, "purpose"], [{ expectedInputs: [{ id: "fictional-input", requestDigest: "b".repeat(64), placement: "initial" }] }, "consumed_inputs"],
@@ -67,7 +67,7 @@ describe("indexed protected turn evidence", () => {
     expect(matchTurnEvidence({ ...evidence, binding: null }, request())).toMatchObject({ status: "mismatch", reason: "unbound_turn" }); await raw.close();
   });
   it("does not silently certify missing/private/wrongly classified runtime results or success from an earlier operation", async () => {
-    const raw = await fixture(); await input(raw, "first"); await raw.closeOperation("first", "completed");
+    const raw: any = await fixture(); await input(raw, "first"); await raw.closeOperation("first", "completed");
     await raw.openOperation("last", { model }); await raw.closeOperation("last", "failed");
     await expect(raw.endTurn(descriptor.turnId, "completed", result)).rejects.toThrow("Invalid");
     await expect(raw.endTurn(descriptor.turnId, "failed", { ...result, controller: {} })).rejects.toThrow("Invalid");
@@ -75,7 +75,7 @@ describe("indexed protected turn evidence", () => {
     expect(raw.failure).toBeNull(); await raw.endTurn(descriptor.turnId, "failed", { ...result, error: "Fictional usage limit.", failureKind: "usage_limit" }); await raw.sync(); await raw.close();
   });
   it("accounts the last closed operation on an unsealed turn and preserves suspension without a continuation", async () => {
-    const raw = await fixture(); await input(raw, "last");
+    const raw: any = await fixture(); await input(raw, "last");
     await raw.appendMessage({ role: "assistant", content: [], stopReason: "deferred" }); await raw.closeOperation("last", "failed");
     expect(selectTurnInterruptionAccounts(raw, descriptor.turnId)).toEqual([{ operationId: "last", cause: "suspended_not_resumed" }]);
     await repairInterruptedSession(raw); const evidence = await readTurnEvidence(raw, descriptor.turnId);
@@ -91,8 +91,8 @@ describe("indexed protected turn evidence", () => {
     }
     expect(() => validateSessionTurn({ ...descriptor, kind: "instance", historyBucket: null }, descriptor.handleId)).toThrow("reconciliation");
   });
-  it.each(["completed", "failed", "aborted"])("accounts the enclosing prompt after a nested %s compaction closes", async (status) => {
-    const raw = await fixture(); await input(raw, "parent");
+  it.each(["completed", "failed", "aborted"])("accounts the enclosing prompt after a nested %s compaction closes", async (status: any) => {
+    const raw: any = await fixture(); await input(raw, "parent");
     await raw.openOperation("child", { model }, "compaction", "threshold");
     await raw.closeOperation("child", status);
     // While the parent is open it remains the interruption owner.
@@ -103,7 +103,7 @@ describe("indexed protected turn evidence", () => {
     // Reopen between operation_end and turn_end must account the parent.
     await repairInterruptedSession(raw);
     const evidence = await readTurnEvidence(raw, descriptor.turnId);
-    expect(evidence.operations.map((op) => op.operationId)).toEqual(["parent", "child"]);
+    expect(evidence.operations.map((op: any) => op.operationId)).toEqual(["parent", "child"]);
     expect(evidence.finalOperationId).toBe("parent");
     expect(evidence.interruptionEvidence).toMatchObject([{ cause: "suspended_not_resumed", operationIds: ["parent"] }]);
     const seq = raw.seq; await repairInterruptedSession(raw); expect(raw.seq).toBe(seq); await raw.close();
@@ -111,7 +111,7 @@ describe("indexed protected turn evidence", () => {
 });
 
 it("validates consumed digests against persisted content and scoped later ownership bindings", async () => {
-  const raw = await fixture(); await raw.openOperation("prompt", { model });
+  const raw: any = await fixture(); await raw.openOperation("prompt", { model });
   await expect(raw.appendMessage({ role: "user", content: "Different fictional content." }, undefined,
     { id: "fictional-input", complete: true, placement: "initial", requestDigest: digestTurnInput("Fictional request.") })).rejects.toThrow("Invalid");
   await expect(raw.write("owner_binding", { kind: "host", ownerKey: "foreign", historyBucket: descriptor.historyBucket })).rejects.toThrow("Invalid");
@@ -120,7 +120,7 @@ it("validates consumed digests against persisted content and scoped later owners
 });
 
 it("separates a protected compaction purpose from execution/input adoption before prompt dispatch", async () => {
-  const raw = await new MemorySessionRepo().create({ id: descriptor.handleId });
+  const raw: any = await new MemorySessionRepo().create({ id: descriptor.handleId });
   const compaction = { ...descriptor, reconciliation: { ...descriptor.reconciliation, purpose: "compaction", initialInputId: null } };
   await raw.beginTurn(compaction.turnId, { model }, "synthetic", createTurnBinding(compaction, model));
   await expect(raw.openOperation("not-a-compaction", { model }, "prompt")).rejects.toThrow("Invalid");
@@ -131,11 +131,11 @@ it("separates a protected compaction purpose from execution/input adoption befor
   expect(matchTurnEvidence(evidence, request()).status).toBe("mismatch"); await raw.close();
 });
 
-const roots = [];
+const roots: any[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it("matches before repairing a torn native tail and leaves mismatched evidence byte-identical", async () => {
   const root = await mkdtemp(join(tmpdir(), "turn-evidence-")); roots.push(root);
-  const repo = new JsonlSessionRepo({ sessionsRoot: root }); const raw = await repo.create({ id: descriptor.handleId });
+  const repo = new JsonlSessionRepo({ sessionsRoot: root }); const raw: any = await repo.create({ id: descriptor.handleId });
   await raw.beginTurn(descriptor.turnId, { model }, "host", createTurnBinding(descriptor, model)); await raw.sync(); const metadata = raw.metadata; await raw.close();
   await appendFile(metadata.path, '{"fictional":"torn'); const bytes = await readFile(metadata.path);
   const inspect = await repo.open(metadata, { repair: false }); const evidence = await readTurnEvidence(inspect, descriptor.turnId);
@@ -150,13 +150,13 @@ it("survives SIGKILL at first bound-start fsync and reconciles idempotently in e
   const root = await mkdtemp(join(tmpdir(), "turn-evidence-kill-")); roots.push(root);
   const start = fork(new URL("./fixtures/turn-evidence-worker.mjs", import.meta.url), [root, "admit"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try {
-    const [notice] = await Promise.race([once(start, "message"), once(start, "exit").then(([code]) => { throw new Error(`Admission worker exited before barrier: ${code}`); })]);
+    const [notice] = await Promise.race([once(start, "message"), once(start, "exit").then(([code]: any) => { throw new Error(`Admission worker exited before barrier: ${code}`); })]);
     expect(notice).toEqual({ phase: "inline-start-synced" }); const exited = once(start, "exit"); start.kill("SIGKILL"); await exited;
   } finally { if (start.exitCode === null && start.signalCode === null) { const exited = once(start, "exit"); start.kill("SIGKILL"); await exited; } }
   async function recover() {
     const child = fork(new URL("./fixtures/turn-evidence-worker.mjs", import.meta.url), [root, "inspect"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
     const exited = once(child, "exit");
-    try { const [notice] = await Promise.race([once(child, "message"), exited.then(([code]) => { throw new Error(`Recovery worker exited before report: ${code}`); })]); expect((await exited)[0]).toBe(0); return notice; }
+    try { const [notice] = await Promise.race([once(child, "message"), exited.then(([code]: any) => { throw new Error(`Recovery worker exited before report: ${code}`); })]); expect((await exited)[0]).toBe(0); return notice; }
     finally { if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; } }
   }
   const first = await recover(), second = await recover(); expect(first.beforeStatus).toBeNull(); expect(second.beforeStatus).toBe("interrupted");
@@ -165,7 +165,7 @@ it("survives SIGKILL at first bound-start fsync and reconciles idempotently in e
 }, 10000);
 
 it("requires every live admission including cancelled/unconsumed offers, while allowing not-yet-native host offers", async () => {
-  const raw = await fixture();
+  const raw: any = await fixture();
   try {
     await raw.write("input_queued", { inputId: "cancelled-live", placement: "live", requestDigest: digestTurnInput("Fictional cancelled offer."), state: "queued" });
     await raw.write("input_queued", { inputId: "cancelled-live", placement: "live", requestDigest: digestTurnInput("Fictional cancelled offer."), state: "cancelled" });
@@ -177,9 +177,9 @@ it("requires every live admission including cancelled/unconsumed offers, while a
   } finally { await raw.close(); }
 });
 it("codes metadata/inline binding handle mismatch as journal corruption on cold and pre-write validation", async () => {
-  const raw = await fixture();
+  const raw: any = await fixture();
   try {
-    expect(() => new SessionStore({ ...raw.metadata, id: "foreign-handle" }, raw.records)).toThrow(expect.objectContaining({ code: "ERR_HARNESS_JOURNAL_CORRUPT" }));
+    expect(() => new (SessionStore as new (...args: any[]) => SessionStore)({ ...raw.metadata, id: "foreign-handle" }, raw.records)).toThrow(expect.objectContaining({ code: "ERR_HARNESS_JOURNAL_CORRUPT" }));
     const other = await new MemorySessionRepo().create();
     await expect(other.beginTurn(descriptor.turnId, { model }, "host", createTurnBinding(descriptor, model))).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" }); expect(other.failure).toBeNull(); await other.close();
   } finally { await raw.close(); }

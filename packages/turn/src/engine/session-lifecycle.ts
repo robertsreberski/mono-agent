@@ -33,7 +33,7 @@ import { validateSessionTurn } from "./journal-schema.js";
 import { readTurnEvidence, matchTurnEvidence } from "./turn-evidence.js";
 import { repairInterruptedSession } from "./interruption.js";
 
-async function syncPath(path) {
+async function syncPath(path: any): Promise<void> {
   const handle = await open(path, "r");
   try {
     await handle.sync();
@@ -42,7 +42,7 @@ async function syncPath(path) {
   }
 }
 
-async function syncDurableTranscript(entry) {
+async function syncDurableTranscript(entry: any): Promise<void> {
   if (entry.recoveryPending) throw new Error("Pi terminal recovery is pending");
   if (!entry.durable) return;
   const path = entry.metadata?.path;
@@ -54,7 +54,7 @@ async function syncDurableTranscript(entry) {
   await entry.repo.sync(entry.metadata);
 }
 
-async function invalidateNativeSession(entry) {
+async function invalidateNativeSession(entry: any): Promise<void> {
   if (entry.durable) {
     const path = entry.metadata?.path;
     if (typeof path !== "string" || !path) {
@@ -65,7 +65,7 @@ async function invalidateNativeSession(entry) {
     try {
       await access(path);
     } catch (error) {
-      if (error?.code === "ENOENT") return;
+      if ((error as { code?: string; message?: string; sessionId?: string })?.code === "ENOENT") return;
       throw error;
     }
   }
@@ -85,7 +85,7 @@ async function invalidateNativeSession(entry) {
  * @param {any} repo
  * @param {any} [knownMetadata]
  */
-async function closeAndDeleteSession(session, repo, knownMetadata) {
+async function closeAndDeleteSession(session: any, repo: any, knownMetadata?: any): Promise<void> {
   let metadata = knownMetadata;
   if (!metadata) {
     try { metadata = await session.getMetadata(); } catch { /* best-effort */ }
@@ -98,9 +98,9 @@ async function closeAndDeleteSession(session, repo, knownMetadata) {
 
 const nativeSessionRepo = new MemorySessionRepo();
 const nativeSessions = createSessionRegistry({
-  isBusy: (entry) => entry.busy === true || entry.recoveryPending === true,
+  isBusy: (entry: any) => entry.busy === true || entry.recoveryPending === true,
   onSync: syncDurableTranscript,
-  onEvict: async (entry, reason) => {
+  onEvict: async (entry: any, reason: string) => {
     if (reason === "invalidated") {
       await invalidateNativeSession(entry);
       return;
@@ -116,7 +116,7 @@ const durableNativeSessionRepos = new Map();
 // whole await window so preserving detach cannot claim that handle is idle.
 const coldOpenCounts = new Map();
 
-export function resolveDurableNativeSessionRepo(sessionsRoot) {
+export function resolveDurableNativeSessionRepo(sessionsRoot: any): any {
   const root = normalizeDurableSessionsRoot(sessionsRoot);
   if (!root) return null;
   let repo = durableNativeSessionRepos.get(root);
@@ -139,7 +139,7 @@ export function resolveDurableNativeSessionRepo(sessionsRoot) {
  * canonical epoch has already rotated, so that old id is never resumable in the
  * interim. Absence is success; cleanup or verification uncertainty rejects.
  */
-export async function retireDurableNativeSession(providerSessionId, sessionsRoot, deletionOptions = undefined) {
+export async function retireDurableNativeSession(providerSessionId: any, sessionsRoot: any, deletionOptions: any = undefined): Promise<void> {
   if (!isSafeSessionId(providerSessionId)) {
     throw new TypeError("providerSessionId must be a safe, non-empty session id");
   }
@@ -158,7 +158,10 @@ export async function retireDurableNativeSession(providerSessionId, sessionsRoot
  * unresolved handle; the host must settle it first. Durable bytes are untouched.
  * This does not establish cross-process canonical retirement authority.
  */
-export async function detachDurableNativeSession(providerSessionId, sessionsRoot) {
+export async function detachDurableNativeSession(providerSessionId: any, sessionsRoot: any): Promise<{
+    status: string;
+    evidence: string;
+}> {
   if (!isSafeSessionId(providerSessionId) || typeof sessionsRoot !== "string" || !sessionsRoot.trim()) throw new TypeError("Invalid durable detach identity");
   const entry = nativeSessions.get(providerSessionId);
   if (coldOpenCounts.has(providerSessionId) || entry?.busy || entry?.recoveryPending) throw Object.assign(new Error("Native turn must be settled before detach"), { code: "ERR_HARNESS_WRITER_BUSY" });
@@ -171,7 +174,7 @@ export async function detachDurableNativeSession(providerSessionId, sessionsRoot
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-function isSafeSessionId(id) {
+function isSafeSessionId(id: any): boolean {
   return typeof id === "string"
     && SAFE_SESSION_ID.test(id)
     && !id.includes("..")
@@ -183,7 +186,7 @@ function isSafeSessionId(id) {
  * block another handle's valid journal. `uncertain` reports that no journal was
  * found while an unreadable entry could be this handle's own damaged journal;
  * `owned` that a damaged entry is attributed to exactly this handle. */
-async function reopenDurableNativeSession(repo, sessionId, context = ENGINE_CONTEXT) {
+async function reopenDurableNativeSession(repo: any, sessionId: any, context: typeof ENGINE_CONTEXT = ENGINE_CONTEXT): Promise<{entry: any; uncertain: boolean; owned?: boolean; busy?: boolean}> {
   if (!isSafeSessionId(sessionId)) return { entry: null, uncertain: false };
   try {
     const metadata = await repo.find(sessionId, context);
@@ -192,16 +195,16 @@ async function reopenDurableNativeSession(repo, sessionId, context = ENGINE_CONT
     // A failed lookup cannot authorize cold replay, but only attributed damage
     // can prohibit a new conversation. A live creator is busy, not damaged.
     return { entry: null, uncertain: true,
-      owned: error?.code === "ERR_HARNESS_JOURNAL_UNREADABLE" && error.sessionId === sessionId,
-      busy: error?.code === "ERR_HARNESS_WRITER_BUSY" };
+      owned: (error as { code?: string; message?: string; sessionId?: string })?.code === "ERR_HARNESS_JOURNAL_UNREADABLE" && (error as { code?: string; message?: string; sessionId?: string }).sessionId === sessionId,
+      busy: (error as { code?: string; message?: string; sessionId?: string })?.code === "ERR_HARNESS_WRITER_BUSY" };
   }
 }
 
 /** @param {any} error */
-const isJournalCorruption = (error) => error instanceof SyntaxError || error?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
+const isJournalCorruption = (error: any) => error instanceof SyntaxError || (error as { code?: string; message?: string; sessionId?: string })?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
 
 /** @param {string} sessionId @param {string} message @param {string} failureKind @param {string} code */
-const unavailable = (sessionId, message, failureKind, code) => ({ status: /** @type {const} */ ("unavailable"), unavailable: { failureKind, code, sessionId, message } });
+const unavailable = (sessionId: string, message: string, failureKind: string, code: string) => ({ status: /** @type {const} */ (("unavailable") as const), unavailable: { failureKind, code, sessionId, message } });
 
 /**
  * Resolve the session for this run: warm registry hit, durable cold reopen,
@@ -212,7 +215,7 @@ const unavailable = (sessionId, message, failureKind, code) => ({ status: /** @t
  * @param {{requestedSessionId:string|null,providerSessionId:string,durableRepo:any,sessionTtlMs?:number,cwd?:string,access?:any,projection?:any,waitSignal?:AbortSignal,keepAlive?:boolean,requireExisting?:boolean}} params
  * @returns {Promise<{status:"ready"} | {status:"unavailable", unavailable:{failureKind:string,code:string,sessionId:string,message:string}}> }
  */
-export async function resolveSession(runState, {
+export async function resolveSession(runState: NativeSessionState, {
   requestedSessionId,
   providerSessionId,
   durableRepo,
@@ -223,7 +226,17 @@ export async function resolveSession(runState, {
   waitSignal,
   keepAlive,
   requireExisting,
-}) {
+}: { requestedSessionId: string | null; providerSessionId: string; durableRepo: any; sessionTtlMs?: number; cwd?: string; access?: any; projection?: any; waitSignal?: AbortSignal; keepAlive?: boolean; requireExisting?: boolean; }): Promise<{
+    status: "ready";
+} | {
+    status: "unavailable";
+    unavailable: {
+        failureKind: string;
+        code: string;
+        sessionId: string;
+        message: string;
+    };
+}> {
   const waitContext = waitSignal ? { abortSignal: waitSignal } : ENGINE_CONTEXT;
   if (access) await assertNativeSessionAccess(access, "open", durableRepo.root);
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
@@ -240,7 +253,7 @@ export async function resolveSession(runState, {
           if (concurrent) {
             entry = concurrent;
           } else {
-            nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+            nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs! });
           }
         }
       } finally {
@@ -265,7 +278,7 @@ export async function resolveSession(runState, {
           busy: true,
         }, sessionTtlMs);
         if (!reservation.ok) {
-          entry = /** @type {{entry: any}} */ (reservation).entry;
+          entry = /** @type {{entry: any}} */ ((reservation) as {entry: any}).entry;
         } else {
           runState.reservation = reservation;
           runState.session = createPiSessionAdapter(await durableRepo.create(
@@ -281,9 +294,9 @@ export async function resolveSession(runState, {
       }
     }
     if (entry && !runState.createdOnMiss) {
-      const claimed = entry.recoveryPending ? { ok: /** @type {const} */ (false), reason: "busy" } : liveness.claim(requestedSessionId);
+      const claimed = entry.recoveryPending ? { ok: /** @type {const} */ ((false) as const), reason: "busy" } : liveness.claim(requestedSessionId);
       if (!claimed.ok) {
-        const missing = /** @type {{reason: string}} */ (claimed).reason === "missing";
+        const missing = /** @type {{reason: string}} */ ((claimed) as {reason: string}).reason === "missing";
         return unavailable(requestedSessionId, missing ? `Session ${requestedSessionId} is not live` : `Session ${requestedSessionId} is busy with another turn`,
           missing ? "session_not_found" : "session_busy", missing ? "pi_session_not_found" : "pi_session_busy");
       }
@@ -296,7 +309,7 @@ export async function resolveSession(runState, {
         }
         const raw = await claimed.entry.repo.open(claimed.entry.metadata, {
           ...(access ? { repair: false, wait: false } : {}), signal: waitSignal,
-          validateHeader: (header) => assertNativeSessionHeader(access, header),
+          validateHeader: (header: any) => assertNativeSessionHeader(access, header),
         });
         try {
           assertNativeSessionHeader(access, raw.metadata);
@@ -321,7 +334,7 @@ export async function resolveSession(runState, {
     runState.session = createPiSessionAdapter(await (runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo)
       .create({ id: providerSessionId, cwd: cwd || process.cwd() }, waitContext));
   }
-  return { status: /** @type {const} */ ("ready") };
+  return { status: /** @type {const} */ (("ready") as const) };
 }
 
 /**
@@ -332,7 +345,7 @@ export async function resolveSession(runState, {
  * @param {{durableRepo: any}} params
  */
 /** Detach opted-in state without rewind/deletion, even after poison or cancellation. */
-async function preserveNativeTurnEvidence(runState) {
+async function preserveNativeTurnEvidence(runState: any): Promise<void> {
   try { await runState.session?.close(); }
   catch (error) { throw isJournalStorageError(error) ? error : new JournalStorageError(error); }
   finally {
@@ -343,7 +356,9 @@ async function preserveNativeTurnEvidence(runState) {
 }
 
 /** @returns {Promise<{status:"settled"}>} */
-export async function discardUncommittedSession(runState, { durableRepo }) {
+export async function discardUncommittedSession(runState: any, { durableRepo }: { durableRepo: any; }): Promise<{
+    status: "settled";
+}> {
   if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return { status: "settled" }; }
   if (runState.session && !runState.sessionEntry) {
     await closeAndDeleteSession(
@@ -365,7 +380,7 @@ export async function discardUncommittedSession(runState, { durableRepo }) {
  * @param {{requestedSessionId:string|null,providerSessionId:string,durableRepo:any,sessionTtlMs?:number,keepAlive?:boolean,externalAbort?:boolean,failed?:boolean}} params
  * @returns {Promise<{status:"settled",persistFailure:null|{code:string|null,message:string}}>}
  */
-export async function commitSession(runState, {
+export async function commitSession(runState: NativeSessionState, {
   keepAlive,
   requestedSessionId,
   providerSessionId,
@@ -373,8 +388,14 @@ export async function commitSession(runState, {
   sessionTtlMs,
   externalAbort,
   failed,
-}) {
-  let persistFailure = null;
+}: { requestedSessionId: string | null; providerSessionId: string; durableRepo: any; sessionTtlMs?: number; keepAlive?: boolean; externalAbort?: boolean; failed?: boolean; }): Promise<{
+    status: "settled";
+    persistFailure: null | {
+        code: string | null;
+        message: string;
+    };
+}> {
+  let persistFailure: any = null;
   const { session, sessionEntry, baselineLeafId, reservation } = runState;
   if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return { status: "settled", persistFailure }; }
   if (keepAlive === true && ((!externalAbort && !failed) || runState.retainRecoveryTail)) {
@@ -382,7 +403,7 @@ export async function commitSession(runState, {
       if (sessionEntry) {
         // Resumed run: the harness appended this run's turns onto the live
         // session; just re-arm the idle window.
-        nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
+        nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs! });
         // Surface a write failure the harness swallowed: a session that can
         // no longer persist must not pretend to be resumable.
         await session.buildContext();
@@ -397,7 +418,7 @@ export async function commitSession(runState, {
         // A create-on-miss reservation is overwritten by its commit (same id);
         // a plain fresh keep-alive run registers directly.
         if (reservation) reservation.commit(entry);
-        else nativeSessions.set(providerSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+        else nativeSessions.set(providerSessionId, entry, { idleTimeoutMs: sessionTtlMs! });
         runState.registeredSessionEntry = entry;
       }
       const retained = runState.sessionEntry || runState.registeredSessionEntry;
@@ -405,7 +426,7 @@ export async function commitSession(runState, {
     } catch (err) {
       // Session persistence must never fail the run; drop the (now
       // inconsistent) session instead of resuming from a broken transcript.
-      persistFailure = { code: typeof err?.code === "string" ? err.code : null, message: err?.message || String(err) };
+      persistFailure = { code: typeof (err as { code?: string; message?: string; sessionId?: string })?.code === "string" ? (err as { code?: string; message?: string; sessionId?: string }).code : null, message: (err as { code?: string; message?: string; sessionId?: string })?.message || String(err) };
       nativeSessions.delete(providerSessionId);
       if (requestedSessionId) nativeSessions.delete(requestedSessionId);
       const broken = sessionEntry;
@@ -417,7 +438,7 @@ export async function commitSession(runState, {
     if ((runState.hasBaselineLeaf || baselineLeafId) && (failed || externalAbort)) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
-    nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
+    nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs! });
   } else {
     if (reservation) reservation.release();
     await closeAndDeleteSession(session, runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo);
@@ -435,7 +456,9 @@ export async function commitSession(runState, {
  * @param {{requestedSessionId: string|null, providerSessionId: string, durableRepo: any}} params
  */
 /** @returns {Promise<{status:"settled"}>} */
-export async function rollbackAbortedTurn(runState, { requestedSessionId, providerSessionId, durableRepo }) {
+export async function rollbackAbortedTurn(runState: any, { requestedSessionId, providerSessionId, durableRepo }: { requestedSessionId: any; providerSessionId: any; durableRepo: any; }): Promise<{
+    status: "settled";
+}> {
   if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return { status: "settled" }; }
   const { session, sessionEntry, baselineLeafId } = runState;
   if (sessionEntry) {
@@ -461,7 +484,9 @@ export async function rollbackAbortedTurn(runState, { requestedSessionId, provid
  * @param {{durableRepo: any}} params
  */
 /** @returns {Promise<{status:"settled"}>} */
-export async function cleanupSessionOnThrow(runState, { durableRepo }) {
+export async function cleanupSessionOnThrow(runState: any, { durableRepo }: { durableRepo: any; }): Promise<{
+    status: "settled";
+}> {
   if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return { status: "settled" }; }
   const { session, sessionEntry, reservation, baselineLeafId } = runState;
   if (session && !sessionEntry) {
@@ -482,7 +507,18 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
  * @param {{identity:{runId:string,revision:number,providerSessionId:string,modelKey:string},model:any,pending:boolean,abortSignal?:AbortSignal}} params
  * @returns {Promise<{status:"not_durable"}|{status:"captured",receipt:{runId:string,revision:number,providerSessionId:string,modelKey:string,tipId:string}}>}
  */
-export async function captureSessionRecovery(runState, { identity, model, pending, abortSignal }) {
+export async function captureSessionRecovery(runState: NativeSessionState, { identity, model, pending, abortSignal }: { identity: { runId: string; revision: number; providerSessionId: string; modelKey: string; }; model: any; pending: boolean; abortSignal?: AbortSignal; }): Promise<{
+    status: "not_durable";
+} | {
+    status: "captured";
+    receipt: {
+        runId: string;
+        revision: number;
+        providerSessionId: string;
+        modelKey: string;
+        tipId: string;
+    };
+}> {
   const entry = runState.sessionEntry || runState.registeredSessionEntry;
   if (!entry?.durable) return { status: "not_durable" };
   try {
@@ -503,23 +539,23 @@ export async function captureSessionRecovery(runState, { identity, model, pendin
 }
 
 /** Read-only settlement: never drive an operation or append host-authored prose. */
-export async function recoverDurableNativeSession(receipt, context) {
+export async function recoverDurableNativeSession(receipt: any, context: any): Promise<boolean> {
   const entry = nativeSessions.get(receipt?.providerSessionId);
   const proof = entry?.recovery;
   if (!entry?.durable || entry.busy || !proof
-    || !["runId", "revision", "providerSessionId", "modelKey", "tipId"].every((key) => receipt[key] === proof.receipt[key])
+    || !["runId", "revision", "providerSessionId", "modelKey", "tipId"].every((key: string) => receipt[key] === proof.receipt[key])
     || !Array.isArray(context?.appliedInputIds)
-    || proof.inputIds.some((id) => typeof id !== "string")
+    || proof.inputIds.some((id: any) => typeof id !== "string")
     || JSON.stringify([...proof.inputIds].sort()) !== JSON.stringify([...context.appliedInputIds].sort())) return false;
   entry.busy = true;
-  let raw;
+  let raw: any;
   try {
     const metadata = await entry.repo.find(receipt.providerSessionId, ENGINE_CONTEXT);
     if (!metadata || metadata.path !== entry.metadata.path) return false;
-    raw = await entry.repo.open(metadata, { validateHeader: (header) => assertNativeSessionHeader(undefined, header) });
+    raw = await entry.repo.open(metadata, { validateHeader: (header: any) => assertNativeSessionHeader(undefined, header) });
     if (await raw.getLeafId() !== receipt.tipId) return false;
     const terminal = await raw.getTerminal(proof.operationId);
-    if ([...raw.validator.inputs.values()].some((input) => input.state === "queued")) return false;
+    if ([...raw.validator.inputs.values()].some((input: any) => input.state === "queued")) return false;
     if ((await raw.getOpenTurns()).length !== 0
       || terminal?.kind !== "operation_end"
       || terminal.config?.model.provider !== proof.model.provider || terminal.config?.model.id !== proof.model.id
@@ -530,11 +566,11 @@ export async function recoverDurableNativeSession(receipt, context) {
       || !["completed", "failed", "aborted"].includes(turn.payload.status)) return false;
     const { entries } = await inspectCurrentEvidence(raw);
     if (createHash("sha256").update(JSON.stringify(entries)).digest("hex") !== proof.ancestry) return false;
-    const baseline = proof.baselineTipId === null ? -1 : entries.findIndex((item) => item.id === proof.baselineTipId);
+    const baseline = proof.baselineTipId === null ? -1 : entries.findIndex((item: any) => item.id === proof.baselineTipId);
     if (proof.baselineTipId !== null && baseline < 0) return false;
     const tail = entries.slice(baseline + 1);
     if (tail[0]?.type !== "message" || tail[0].message.role !== "user"
-      || tail.filter((item) => item.type === "message" && item.message.role === "user").length !== 1 + proof.inputIds.length) return false;
+      || tail.filter((item: any) => item.type === "message" && item.message.role === "user").length !== 1 + proof.inputIds.length) return false;
     if (!validRecoveryProjection(projectContext(entries).messages, proof.model)) return false;
     await raw.sync();
     await raw.close(ENGINE_CONTEXT);
@@ -557,7 +593,7 @@ export async function recoverDurableNativeSession(receipt, context) {
  * reconciliation descriptor/fence. Match before repair; never dispatch or create.
  * Runtime current-handle/projection authority is not required to inspect a prior
  * interrupted epoch for P2 settlement. */
-export async function reconcileNativeSessionTurn(request) {
+export async function reconcileNativeSessionTurn(request: any): Promise<any> {
   validateSessionTurn(request?.descriptor, request?.descriptor?.handleId);
   if (!request.descriptor.reconciliation || typeof request.sessionsRoot !== "string" || !request.sessionsRoot.trim()
     || request.purpose !== request.descriptor.reconciliation.purpose) throw new TypeError("Invalid native turn reconciliation request");
@@ -565,7 +601,7 @@ export async function reconcileNativeSessionTurn(request) {
   if (nativeSessions.get(id)?.busy || nativeSessions.get(id)?.recoveryPending) throw Object.assign(new Error("Native turn ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
   await nativeSessions.refresh(id);
   const repo = resolveDurableNativeSessionRepo(request.sessionsRoot);
-  let raw;
+  let raw: any;
   try {
     const metadata = await repo.find(id);
     // A legacy source predates turn evidence; it is imported only when the runtime opens it.
@@ -575,7 +611,7 @@ export async function reconcileNativeSessionTurn(request) {
     const match = matchTurnEvidence(initial, request);
     if (match.status !== "matched") return match;
     if (raw.validator.openTurns.size && !raw.validator.openTurns.has(request.descriptor.turnId)) return { status: "mismatch", reason: "active_turn" };
-    if (inspectCurrentLifecycle(raw).turns.some((turn) => turn.start.seq > raw.validator.turns.get(request.descriptor.turnId).start.seq
+    if (inspectCurrentLifecycle(raw).turns.some((turn: any) => turn.start.seq > raw.validator.turns.get(request.descriptor.turnId).start.seq
       && (turn.start.payload.binding || turn.operations.length))) return { status: "mismatch", reason: "turn_advanced" };
     if (initial.tipId !== initial.currentTipId) return { status: "mismatch", reason: "tip" };
     await raw.prepareReconciliation();
@@ -586,9 +622,25 @@ export async function reconcileNativeSessionTurn(request) {
       ...(outcome === "completed" && request.purpose === "execution" && evidence.seal?.result ? { commitCandidate: evidence.seal.result } : {}) };
   } catch (error) {
     if (error instanceof SyntaxError) Object.assign(error, { code: "ERR_HARNESS_JOURNAL_CORRUPT" });
-    else if (!error.code) error.code = "ERR_HARNESS_RECONCILIATION_UNCERTAIN";
+    else if (!(error as { code?: string; message?: string; sessionId?: string }).code) (error as { code?: string; message?: string; sessionId?: string }).code = "ERR_HARNESS_RECONCILIATION_UNCERTAIN";
     throw error;
   } finally { if (raw) await raw.close(); }
 }
 
 export { nativeSessions as nativeSessionRegistry };
+
+export type NativeSessionState = {
+    session?: any;
+    sessionEntry?: any;
+    registeredSessionEntry?: any;
+    reservation?: any;
+    ephemeralSessionRepo?: any;
+    createdOnMiss?: boolean;
+    baselineLeafId?: string | null;
+    hasBaselineLeaf?: boolean;
+    preserveTurnEvidence?: boolean;
+    retainRecoveryTail?: boolean;
+    recoveryInputIds?: string[];
+    recoveryOperationId?: string;
+    recoveryBaselineTipId?: string | null;
+};

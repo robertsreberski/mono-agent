@@ -2,7 +2,7 @@
 import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 
 /** Validate the effective provider projection; Pi supplies honest missing results. */
-export function validRecoveryProjection(messages, model) {
+export function validRecoveryProjection(messages: any, model: any): boolean {
   try {
     const projected = transformMessages(messages, model);
     const seen = new Set();

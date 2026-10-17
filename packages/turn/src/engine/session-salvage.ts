@@ -12,18 +12,30 @@ import { join, resolve, sep } from "node:path";
 const MAX_FILE = 32 * 1024 * 1024;
 const MAX_LINE = 2 * 1024 * 1024;
 const safeId = /^[A-Za-z0-9_-]+$/u;
-const valid = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-const fail = () => { throw new Error("Session salvage unavailable"); };
+const valid = (value: any) => value !== null && typeof value === "object" && !Array.isArray(value);
+const fail = (): never => { throw new Error("Session salvage unavailable"); };
 
 /** @returns {Promise<{completed: {name:string, result:string}[], outcomeUnknown: {name:string}[], omittedCompleted:number, omittedUnknown:number, draftText?:string, additionalOutcomesUnknown:boolean}>} */
-export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
+export async function salvageDurableNativeSession(sessionId: any, sessionsRoot: any): Promise<{
+    completed: {
+        name: string;
+        result: string;
+    }[];
+    outcomeUnknown: {
+        name: string;
+    }[];
+    omittedCompleted: number;
+    omittedUnknown: number;
+    draftText?: string;
+    additionalOutcomesUnknown: boolean;
+}> {
   if (typeof sessionId !== "string" || !safeId.test(sessionId) || typeof sessionsRoot !== "string" || !sessionsRoot) fail();
   const root = resolve(sessionsRoot);
   assertSupportedSessionsRoot(root);
   if (!(await lstat(root)).isDirectory()) fail();
   const canonicalRoot = await realpath(root);
   const suffix = `_${encodeURIComponent(sessionId)}.jsonl`;
-  const matches = [];
+  const matches: any[] = [];
   for (const dir of await readdir(root, { withFileTypes: true })) {
     if (!dir.isDirectory() || ["journals", "locks", "aliases"].includes(dir.name)) continue;
     const parent = join(root, dir.name);
@@ -33,17 +45,17 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       matches.push(join(parent, file.name));
     }
   }
-  const owned = [];
+  const owned: any[] = [];
   let skippedJournal = false;
   const journals = join(root, "journals");
-  let journalFiles = [];
+  let journalFiles: any[] = [];
   try { journalFiles = await readdir(journals, { withFileTypes: true }); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
+  catch (error) { if ((error as { code?: unknown; message?: string }).code !== "ENOENT") throw error; }
   for (const file of journalFiles) {
     if (!file.name.endsWith(".jsonl")) continue;
     if (!file.isFile()) { skippedJournal = true; continue; }
     const path = join(journals, file.name);
-    let reader;
+    let reader: any;
     try {
       reader = await JournalReader.open(path, root);
       const header = await reader.readHeader(); validateJournalHeader(header);
@@ -54,14 +66,14 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   // An unreadable journal may be the requested clean-break successor. Never
   // silently return its stale legacy source when ownership is uncertain.
   if (owned.length > 1 || (skippedJournal && owned.length === 0)) fail();
-  if (owned.length === 1) matches.splice(0, matches.length, owned[0]);
+  if (owned.length === 1) matches.splice(0, matches.length, owned[0]!);
   if (matches.length !== 1) fail();
-  const path = matches[0];
+  const path = matches[0]!;
   if (owned.includes(path)) return salvageOwnedJournal(path, root, sessionId);
   const before = await lstat(path);
   if (!before.isFile() || before.size > MAX_FILE) fail();
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  let bytes;
+  let bytes: any;
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino || stat.size > MAX_FILE) fail();
@@ -86,8 +98,8 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   if (finalNewline < 0) fail();
   const torn = finalNewline !== bytes.length - 1;
   const lines = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, finalNewline)).split("\n");
-  if (lines.some((line) => Buffer.byteLength(line) > MAX_LINE || !line)) fail();
-  const header = JSON.parse(lines.shift());
+  if (lines.some((line: string) => Buffer.byteLength(line) > MAX_LINE || !line)) fail();
+  const header = JSON.parse(lines.shift()!);
   const entries = new Map();
   const ids = new Set();
   const values = new Map();
@@ -126,10 +138,10 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   return collectEvidence(entries, values, pending, openTurn, torn);
 }
 
-async function collectEvidence(entries, values, pending, openTurn, torn, materialize = async (entry) => entry) {
+async function collectEvidence(entries: any, values: any, pending: any, openTurn: any, torn: any, materialize: (entry: any) => Promise<any> = async (entry: any) => entry): Promise<{ additionalOutcomesUnknown: any; draftText?: any; completed: { name: any; result: any; }[]; outcomeUnknown: { name: any; }[]; omittedCompleted: number; omittedUnknown: number; }> {
   const tip = values.get("main");
   if (tip !== undefined && tip !== null && (typeof tip !== "string" || !entries.has(tip))) fail();
-  const branch = [];
+  const branch: any[] = [];
   const seen = new Set();
   for (let id = tip; id !== undefined && id !== null;) {
     if (seen.has(id)) fail();
@@ -142,14 +154,14 @@ async function collectEvidence(entries, values, pending, openTurn, torn, materia
   branch.reverse();
   const calls = new Map();
   const results = new Map();
-  let draftText;
+  let draftText: any;
   for (const reference of branch) {
     const entry = await materialize(reference);
     if (entry.type !== "message" || !valid(entry.message)) continue;
     const message = entry.message;
     if (message.role === "assistant" && Array.isArray(message.content)) {
       if (message.stopReason !== "aborted" && message.stopReason !== "error") {
-        const text = message.content.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("\n");
+        const text = message.content.filter((block: any) => block?.type === "text" && typeof block.text === "string").map((block: any) => block.text).join("\n");
         if (text) draftText = text.slice(-4096);
       }
       for (const block of message.content) if (block?.type === "toolCall") {
@@ -158,8 +170,8 @@ async function collectEvidence(entries, values, pending, openTurn, torn, materia
       }
     } else if (message.role === "toolResult") {
       if (typeof message.toolCallId !== "string" || results.has(message.toolCallId)) fail();
-      const excerpt = Array.isArray(message.content) ? message.content.filter((part) => part?.type === "text" && typeof part.text === "string")
-        .map((part) => part.text.slice(-4096)).join("\n").slice(-4096) : "";
+      const excerpt = Array.isArray(message.content) ? message.content.filter((part: any) => part?.type === "text" && typeof part.text === "string")
+        .map((part: any) => part.text.slice(-4096)).join("\n").slice(-4096) : "";
       results.set(message.toolCallId, { message: { toolName: message.toolName, content: [{ type: "text", text: excerpt }] }, seq: entry.seq });
     }
   }
@@ -167,7 +179,7 @@ async function collectEvidence(entries, values, pending, openTurn, torn, materia
   // Its calls have no branch-placed result even if a result is staged too.
   const stagedCalls = new Map();
   let unclassifiedPending = false;
-  const stageAssistant = (message) => {
+  const stageAssistant = (message: any) => {
     if (message.role !== "assistant" || !Array.isArray(message.content)) {
       unclassifiedPending = true;
       return;
@@ -212,13 +224,13 @@ async function collectEvidence(entries, values, pending, openTurn, torn, materia
     if (entry.message.role === "assistant") stageAssistant(entry.message);
     else if (entry.message.role === "toolResult") unclassifiedPending = true;
   }
-  const completed = [];
-  const outcomeUnknown = [];
+  const completed: any[] = [];
+  const outcomeUnknown: any[] = [];
   for (const [id, call] of calls) {
     const placed = results.get(id);
     const result = placed?.message;
     if (result && placed.seq > call.seq && result.toolName === call.name) {
-      const content = Array.isArray(result.content) ? result.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n") : "";
+      const content = Array.isArray(result.content) ? result.content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text).join("\n") : "";
       completed.push({ name: call.name, result: content.slice(-4096) });
     } else outcomeUnknown.push({ name: call.name });
   }
@@ -229,26 +241,26 @@ async function collectEvidence(entries, values, pending, openTurn, torn, materia
     ...(draftText ? { draftText } : {}), additionalOutcomesUnknown: torn || openTurn || unclassifiedPending || results.size > completed.length || tip === undefined };
 }
 
-async function salvageOwnedJournal(path, root, sessionId) {
+async function salvageOwnedJournal(path: any, root: any, sessionId: any): Promise<{ additionalOutcomesUnknown: any; draftText?: any; completed: { name: any; result: any; }[]; outcomeUnknown: { name: any; }[]; omittedCompleted: number; omittedUnknown: number; }> {
   const reader = await JournalReader.open(path, root);
   try {
     const header = await reader.readHeader(); validateJournalHeader(header);
     if (header.id !== sessionId || header.format !== "mono-harness" || header.version !== 2) fail();
-    const store = new SessionStore(header, [], { read: (address) => reader.read(address) });
+    const store = new (SessionStore as new (...args: any[]) => SessionStore)(header, [], { read: (address: any) => reader.read(address) });
     let first = true;
-    const evidence = await reader.scan((record, address) => {
+    const evidence = await reader.scan((record: any, address: { offset: number; length: number; }) => {
       if (first) { first = false; return; }
       store.apply(record, address);
     });
     const result = await collectEvidence(store.entries, new Map([["main", store.tip]]), new Map(),
-      (await store.getOpenTurns()).length > 0, evidence.torn, (entry) => store.getEntry(entry.id));
-    const visible = new Set((await inspectCurrentEvidence(store)).entries.map((entry) => entry.id));
+      (await store.getOpenTurns()).length > 0, evidence.torn, (entry: any) => store.getEntry(entry.id));
+    const visible = new Set((await inspectCurrentEvidence(store)).entries.map((entry: any) => entry.id));
     for (const call of store.validator.calls.values()) {
       if (!call.result || call.placed || !visible.has(call.messageId)) continue;
       const returned = await store.getReturnedOutcome(call.operationId, call.callId);
       if (!returned) continue;
-      const text = returned.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text.slice(-4096)).join("\n").slice(-4096);
-      const at = result.outcomeUnknown.findIndex((item) => item.name === call.name);
+      const text = returned.content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text.slice(-4096)).join("\n").slice(-4096);
+      const at = result.outcomeUnknown.findIndex((item: { name: any; }) => item.name === call.name);
       if (at >= 0) result.outcomeUnknown.splice(at, 1);
       result.completed.push({ name: call.name, result: text });
     }

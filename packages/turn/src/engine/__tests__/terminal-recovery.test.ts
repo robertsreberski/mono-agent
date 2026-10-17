@@ -3,7 +3,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCal
 import { validRecoveryProjection } from "../terminal-recovery.js";
 import { captureSessionRecovery } from "../session-lifecycle.js";
 const model = fauxProvider({ provider: "faux", models: [{ id: "fixture", reasoning: true }] }).getModel();
-const assistant = (content, options) => ({ ...fauxAssistantMessage(content, options), provider: model.provider, model: model.id, api: model.api });
+const assistant = (content: any, options?: any) => ({ ...fauxAssistantMessage(content, options), provider: model.provider, model: model.id, api: model.api });
 const call = assistant([fauxToolCall("Read", { file_path: "file" }, { id: "read-1" })]);
 const result = { role: "toolResult", toolCallId: "read-1", toolName: "Read", content: [{ type: "text", text: "evidence" }], isError: false, timestamp: 1 };
 
@@ -23,11 +23,11 @@ describe("terminal native projection", () => {
     [call, { ...result, toolName: "Other" }],
     [assistant([{ type: "thinking", thinking: "bad", thinkingSignature: {} }])],
     [{ role: "unknown", content: [] }],
-  ])("rejects ambiguous or malformed native content %j", (...messages) => {
+  ])("rejects ambiguous or malformed native content %j", (...messages: any[]) => {
     expect(validRecoveryProjection(messages, model)).toBe(false);
   });
-  it.each(["getLeafId", "getEntries", "close"])("releases pending recovery when %s rejects", async (method) => {
-    const entry = { durable: true, recoveryPending: true };
+  it.each(["getLeafId", "getEntries", "close"])("releases pending recovery when %s rejects", async (method: any) => {
+    const entry: any = { durable: true, recoveryPending: true };
     const session = { getLeafId: async () => "tip", getEntries: async () => [], close: async () => undefined };
     vi.spyOn(session, method).mockRejectedValue(new Error(`${method} failed`));
     await expect(captureSessionRecovery({ sessionEntry: entry, recoveryInputIds: [], session },
@@ -35,8 +35,8 @@ describe("terminal native projection", () => {
     expect(entry.recoveryPending).toBe(false);
     expect(entry.recovery).toBeUndefined();
   });
-  it.each([undefined, ""])("releases pending recovery when the tip is unavailable (%j)", async (tip) => {
-    const entry = { durable: true, recoveryPending: true };
+  it.each([undefined, ""])("releases pending recovery when the tip is unavailable (%j)", async (tip: any) => {
+    const entry: any = { durable: true, recoveryPending: true };
     await expect(captureSessionRecovery({ registeredSessionEntry: entry, recoveryInputIds: [], session: { getLeafId: async () => tip } },
       { identity: { runId: "run", revision: 0, providerSessionId: "id", modelKey: "faux:fixture" }, model, pending: true })).rejects.toThrow("recovery tip is unavailable");
     expect(entry.recoveryPending).toBe(false);

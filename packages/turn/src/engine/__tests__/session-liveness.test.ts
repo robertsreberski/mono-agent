@@ -5,16 +5,16 @@ import { createSessionLiveness } from "../session-liveness.js";
 // Build a registry + liveness pair with a controllable clock and a fake repo so
 // idle-TTL eviction and onEvict fan-out are observable.
 function setup({ idleTimeoutMs = 60_000 } = {}) {
-  const evicted = [];
+  const evicted: any[] = [];
   let clock = 0;
   const registry = createSessionRegistry({
     idleTimeoutMs,
     now: () => clock,
-    isBusy: (entry) => entry.busy === true,
-    onEvict: async (entry, reason) => { evicted.push({ entry, reason }); },
+    isBusy: (entry: any) => entry.busy === true,
+    onEvict: async (entry: any, reason: any) => { evicted.push({ entry, reason }); },
   });
   const liveness = createSessionLiveness(registry);
-  return { registry, liveness, evicted, advance: (ms) => { clock += ms; } };
+  return { registry, liveness, evicted, advance: (ms: any) => { clock += ms; } };
 }
 
 const seed = (over = {}) => ({ session: {}, metadata: {}, repo: {}, durable: false, busy: false, ...over });
@@ -143,11 +143,11 @@ describe("createSessionLiveness — fake timers idle eviction", () => {
   afterEach(() => vi.useRealTimers());
 
   it("the idle timer evicts a free entry and runs onEvict", async () => {
-    const evicted = [];
+    const evicted: any[] = [];
     const registry = createSessionRegistry({
       idleTimeoutMs: 5_000,
-      isBusy: (entry) => entry.busy === true,
-      onEvict: async (entry, reason) => { evicted.push(reason); },
+      isBusy: (entry: any) => entry.busy === true,
+      onEvict: async (entry: any, reason: any) => { evicted.push(reason); },
     });
     const liveness = createSessionLiveness(registry);
     registry.set("s1", seed());
@@ -253,11 +253,11 @@ describe("createSessionLiveness — release vs. the idle timer (fake timers)", (
   afterEach(() => vi.useRealTimers());
 
   it("release() clears the idle timer so no onEvict fires afterward", async () => {
-    const evicted = [];
+    const evicted: any[] = [];
     const registry = createSessionRegistry({
       idleTimeoutMs: 5_000,
-      isBusy: (entry) => entry.busy === true,
-      onEvict: async (entry, reason) => { evicted.push(reason); },
+      isBusy: (entry: any) => entry.busy === true,
+      onEvict: async (entry: any, reason: any) => { evicted.push(reason); },
     });
     const liveness = createSessionLiveness(registry);
     // A committed FREE entry whose idle timer would otherwise fire.
@@ -271,11 +271,11 @@ describe("createSessionLiveness — release vs. the idle timer (fake timers)", (
   });
 
   it("releasing a busy reservation placeholder leaves no entry the idle timer could resurrect", async () => {
-    const evicted = [];
+    const evicted: any[] = [];
     const registry = createSessionRegistry({
       idleTimeoutMs: 5_000,
-      isBusy: (entry) => entry.busy === true,
-      onEvict: async (entry, reason) => { evicted.push(reason); },
+      isBusy: (entry: any) => entry.busy === true,
+      onEvict: async (entry: any, reason: any) => { evicted.push(reason); },
     });
     const liveness = createSessionLiveness(registry);
     const reservation = liveness.reserve("s1", { busy: true }, 5_000);

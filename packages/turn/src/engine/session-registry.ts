@@ -1,7 +1,7 @@
 // Native registry factory; registration/fan-out is owned by the runtime.
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
-function normalizeTtl(value, fallback) {
+function normalizeTtl(value: any, fallback: any): any {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 1_000) return fallback;
   return n;
@@ -21,7 +21,33 @@ export function createSessionRegistry({
   onSync,
   now = Date.now,
   isBusy,
-} = {}) {
+}: { idleTimeoutMs?: number; onEvict?: (value: any, reason: string) => (void | Promise<void>); onSync?: (value: any) => (void | Promise<void>); now?: () => number; isBusy?: (value: any) => boolean; } = {}): {
+    get(id: any): any;
+    /**
+     * @param {any} id
+     * @param {any} value
+     * @param {{idleTimeoutMs?: number}} [options]
+     */
+    set(id: any, value: any, options?: {
+        idleTimeoutMs?: number;
+    }): boolean;
+    /**
+     * @param {any} id
+     * @param {{idleTimeoutMs?: number}} [options]
+     */
+    touch(id: any, options?: {
+        idleTimeoutMs?: number;
+    }): void;
+    has(id: any): boolean;
+    /** Remove without running onEvict — for callers that already cleaned up. */
+    delete(id: any): boolean;
+    dispose(id: any): Promise<any>;
+    sync(id: any): Promise<any>;
+    refresh(id: any): Promise<any>;
+    invalidate(id: any): Promise<any>;
+    disposeAll(): Promise<void>;
+    size(): number;
+} {
   const entries = new Map();
   const defaultTtlMs = normalizeTtl(idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS);
   // A destructive invalidation must keep the id occupied until provider
@@ -30,7 +56,7 @@ export function createSessionRegistry({
   // cold-reopen miss while its JSONL is still being unlinked.
   const unavailable = Object.freeze({ busy: true });
 
-  async function evictBestEffort(id, reason) {
+  async function evictBestEffort(id: any, reason: any): Promise<any> {
     const entry = entries.get(id);
     if (!entry) return false;
     if (entry.state !== "active") {
@@ -59,7 +85,7 @@ export function createSessionRegistry({
     return true;
   }
 
-  async function sync(id) {
+  async function sync(id: any): Promise<any> {
     const entry = entries.get(id);
     if (!entry) return false;
     if (entry.state === "syncing" && entry.operation) return entry.operation;
@@ -100,7 +126,7 @@ export function createSessionRegistry({
     return operation;
   }
 
-  async function invalidate(id) {
+  async function invalidate(id: any): Promise<any> {
     const entry = entries.get(id);
     if (!entry) return false;
     if (entry.state === "invalidating" && entry.operation) return entry.operation;
@@ -136,7 +162,7 @@ export function createSessionRegistry({
     return operation;
   }
 
-  async function refresh(id) {
+  async function refresh(id: any): Promise<any> {
     const entry = entries.get(id);
     if (!entry) return;
     if (entry.state === "refreshing" && entry.operation) return entry.operation;
@@ -174,7 +200,7 @@ export function createSessionRegistry({
     return operation;
   }
 
-  function armTimer(id, entry) {
+  function armTimer(id: any, entry: any): void {
     clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
       void evictBestEffort(id, "idle_timeout");
@@ -183,7 +209,7 @@ export function createSessionRegistry({
   }
 
   const registry = {
-    get(id) {
+    get(id: any): any {
       const entry = entries.get(id);
       if (!entry) return undefined;
       if (entry.state !== "active") return unavailable;
@@ -198,7 +224,7 @@ export function createSessionRegistry({
      * @param {any} value
      * @param {{idleTimeoutMs?: number}} [options]
      */
-    set(id, value, { idleTimeoutMs: entryTtl } = {}) {
+    set(id: any, value: any, { idleTimeoutMs: entryTtl }: { idleTimeoutMs?: number; } = {}): boolean {
       const previous = entries.get(id);
       // Never overwrite an in-flight/failed durability operation. The marker
       // deliberately owns this id until sync recovers or invalidation removes
@@ -221,7 +247,7 @@ export function createSessionRegistry({
      * @param {any} id
      * @param {{idleTimeoutMs?: number}} [options]
      */
-    touch(id, { idleTimeoutMs: entryTtl } = {}) {
+    touch(id: any, { idleTimeoutMs: entryTtl }: { idleTimeoutMs?: number; } = {}): void {
       const entry = entries.get(id);
       if (!entry) return;
       if (entry.state !== "active") return;
@@ -229,11 +255,11 @@ export function createSessionRegistry({
       entry.lastActivityAt = now();
       armTimer(id, entry);
     },
-    has(id) {
+    has(id: any): boolean {
       return registry.get(id) !== undefined;
     },
     /** Remove without running onEvict — for callers that already cleaned up. */
-    delete(id) {
+    delete(id: any): boolean {
       const entry = entries.get(id);
       if (!entry) return false;
       if (entry.state !== "active") return false;
@@ -241,23 +267,23 @@ export function createSessionRegistry({
       clearTimeout(entry.timer);
       return true;
     },
-    async dispose(id) {
+    async dispose(id: any): Promise<any> {
       return evictBestEffort(id, "disposed");
     },
-    async sync(id) {
+    async sync(id: any): Promise<any> {
       return sync(id);
     },
-    async refresh(id) {
+    async refresh(id: any): Promise<any> {
       return refresh(id);
     },
-    async invalidate(id) {
+    async invalidate(id: any): Promise<any> {
       return invalidate(id);
     },
-    async disposeAll() {
+    async disposeAll(): Promise<void> {
       const ids = [...entries.keys()];
       for (const id of ids) await evictBestEffort(id, "disposed");
     },
-    size() {
+    size(): number {
       return entries.size;
     },
   };

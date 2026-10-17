@@ -41,7 +41,7 @@
  * @param {SessionRegistryLike} registry
  * @returns {SessionLiveness}
  */
-export function createSessionLiveness(registry) {
+export function createSessionLiveness(registry: SessionRegistryLike): SessionLiveness {
   return {
     /**
      * Claim a live entry for a turn. The registry get -> busy check -> set-busy
@@ -50,7 +50,7 @@ export function createSessionLiveness(registry) {
      * @param {string} id
      * @returns {{ok: true, entry: any} | {ok: false, reason: "busy" | "missing"}}
      */
-    claim(id) {
+    claim(id: string): { ok: true; entry: any; } | { ok: false; reason: "busy" | "missing"; } {
       const entry = registry.get(id);
       if (!entry) return { ok: false, reason: "missing" };
       if (entry.busy) return { ok: false, reason: "busy" };
@@ -66,7 +66,7 @@ export function createSessionLiveness(registry) {
      * @param {string} id
      * @returns {any | null}
      */
-    adoptIfPresent(id) {
+    adoptIfPresent(id: string): any {
       return registry.get(id) ?? null;
     },
 
@@ -81,10 +81,10 @@ export function createSessionLiveness(registry) {
      * @param {number|undefined} ttl per-entry idle timeout.
      * @returns {{ok: true, id: string, release: () => void, commit: (entry: any) => void} | {ok: false, entry: any}}
      */
-    reserve(id, seed, ttl) {
+    reserve(id: string, seed: any, ttl: number | undefined): { ok: true; id: string; release: () => void; commit: (entry: any) => void; } | { ok: false; entry: any; } {
       const concurrent = registry.get(id);
       if (concurrent) return { ok: false, entry: concurrent };
-      registry.set(id, seed, { idleTimeoutMs: ttl });
+      registry.set(id, seed, { idleTimeoutMs: ttl! });
       return {
         ok: true,
         id,
@@ -93,7 +93,7 @@ export function createSessionLiveness(registry) {
         release: () => { registry.delete(id); },
         // Overwrite the placeholder with the finalized entry on the keep-alive
         // success path (same id, same ttl).
-        commit: (entry) => { registry.set(id, entry, { idleTimeoutMs: ttl }); },
+        commit: (entry: any) => { registry.set(id, entry, { idleTimeoutMs: ttl! }); },
       };
     },
 
@@ -102,8 +102,38 @@ export function createSessionLiveness(registry) {
      * has already cleaned up, or is dropping an uncommitted session).
      * @param {string} id
      */
-    release(id) {
+    release(id: string): void {
       registry.delete(id);
     },
   };
 }
+
+export type SessionRegistryLike = {
+    get: (id: string) => any;
+    set: (id: string, value: any, opts?: {
+        idleTimeoutMs?: number;
+    }) => void;
+    delete: (id: string) => boolean;
+};
+export type ClaimResult = {
+    ok: true;
+    entry: any;
+} | {
+    ok: false;
+    reason: "busy" | "missing";
+};
+export type ReserveResult = {
+    ok: true;
+    id: string;
+    release: () => void;
+    commit: (entry: any) => void;
+} | {
+    ok: false;
+    entry: any;
+};
+export type SessionLiveness = {
+    claim: (id: string) => ClaimResult;
+    adoptIfPresent: (id: string) => any;
+    reserve: (id: string, seed: any, ttl: number | undefined) => ReserveResult;
+    release: (id: string) => void;
+};

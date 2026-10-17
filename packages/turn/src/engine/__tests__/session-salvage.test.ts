@@ -4,10 +4,10 @@ import { mkdtemp, mkdir, readFile, rename, stat, symlink, writeFile, rm } from "
 // Deterministic directory-swap window: enumerate a real directory, replace it
 // before the reader opens the child. A final-component no-follow flag alone
 // cannot detect this redirect.
-const swapRead = vi.hoisted(() => ({ handler: null }));
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const fs = await importOriginal();
-  return { ...fs, readdir: async (...args) => {
+const swapRead = vi.hoisted(() => ({ handler: null as null | ((path: any) => Promise<void>) }));
+vi.mock("node:fs/promises", async (importOriginal: any) => {
+  const fs: any = await importOriginal();
+  return { ...fs, readdir: async (...args: any[]) => {
     const listing = await fs.readdir(...args);
     if (swapRead.handler) await swapRead.handler(args[0]);
     return listing;
@@ -17,22 +17,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { salvageDurableNativeSession } from "../session-salvage.js";
 
-const roots = [];
-afterEach(async () => { swapRead.handler = null; await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+const roots: any[] = [];
+afterEach(async () => { swapRead.handler = null; await Promise.all(roots.splice(0).map((root: any) => rm(root, { recursive: true, force: true }))); });
 const assistant = { role: "assistant", content: [{ type: "text", text: "Draft only" }, { type: "toolCall", id: "call-1", name: "Write", arguments: { path: "/private/never" } }, { type: "toolCall", id: "call-2", name: "Exec", arguments: {} }] };
 const result = { role: "toolResult", toolCallId: "call-1", toolName: "Write", content: [{ type: "text", text: "done" }] };
-const row = (seq, kind, rest) => ({ seq, kind, ...rest });
-const entry = (seq, id, parentId, message) => row(seq, "entry", { id, parentId, type: "message", timestamp: 1, message });
-const tip = (seq, id, key = "main") => row(seq, "value", { op: "set", namespace: "pi.branch.tip", key, value: id });
-async function fixture(transactions, tail = "", id = "session-1") {
+const row = (seq: any, kind: any, rest: any) => ({ seq, kind, ...rest });
+const entry = (seq: any, id: any, parentId: any, message: any) => row(seq, "entry", { id, parentId, type: "message", timestamp: 1, message });
+const tip = (seq: any, id: any, key = "main") => row(seq, "value", { op: "set", namespace: "pi.branch.tip", key, value: id });
+async function fixture(transactions: any, tail = "", id = "session-1") {
   const root = await mkdtemp(join(tmpdir(), "pi-salvage-")); roots.push(root);
   const dir = join(root, "2026-01-01"); await mkdir(dir);
   const path = join(dir, `2026-01-01_${id}.jsonl`);
-  const content = `${[JSON.stringify({ kind: "header", v: 4, storageVersion: 1, id, cwd: "/fictional", createdAt: 1 }), ...transactions.map(JSON.stringify)].join("\n")}\n${tail}`;
+  const content = `${[JSON.stringify({ kind: "header", v: 4, storageVersion: 1, id, cwd: "/fictional", createdAt: 1 }), ...transactions.map(JSON.stringify as unknown as (value: any, index: number) => string)].join("\n")}\n${tail}`;
   await writeFile(path, content);
   return { root, path, id };
 }
-async function unchanged(path, work) {
+async function unchanged(path: any, work: any) {
   const bytes = await readFile(path); const before = await stat(path);
   await work();
   expect(await readFile(path)).toEqual(bytes);
@@ -115,7 +115,7 @@ describe("read-only Pi v4 salvage", () => {
     const parked = join(original.root, "parked");
     const originalBytes = await readFile(original.path);
     const originalMtime = (await stat(original.path)).mtimeMs;
-    swapRead.handler = async (path) => {
+    swapRead.handler = async (path: any) => {
       if (path !== original.root) return;
       swapRead.handler = null;
       await rename(parent, parked);
@@ -139,7 +139,7 @@ describe("read-only Pi v4 salvage", () => {
     });
   });
   it("bounds completed pairs and reports omissions instead of presenting staged results as completed", async () => {
-    const many = { role: "assistant", content: Array.from({ length: 12 }, (_, i) => ({ type: "toolCall", id: `c-${i}`, name: "Exec" })) };
+    const many = { role: "assistant", content: Array.from({ length: 12 }, (_: any, i: any) => ({ type: "toolCall", id: `c-${i}`, name: "Exec" })) };
     const writes = [entry(1, "a", null, many)];
     for (let i = 0; i < 12; i++) writes.push(entry(i + 2, `r-${i}`, i === 0 ? "a" : `r-${i - 1}`,
       { role: "toolResult", toolCallId: `c-${i}`, toolName: "Exec", content: [{ type: "text", text: "x".repeat(400) }] }));
@@ -153,7 +153,7 @@ describe("read-only Pi v4 salvage", () => {
     });
   });
   it("bounds repeated call counts while preserving unknown outcome flags", async () => {
-    const many = { role: "assistant", content: Array.from({ length: 16 }, (_, i) => ({ type: "toolCall", id: `c-${i}`, name: "Exec" })) };
+    const many = { role: "assistant", content: Array.from({ length: 16 }, (_: any, i: any) => ({ type: "toolCall", id: `c-${i}`, name: "Exec" })) };
     const { root, path, id } = await fixture([[entry(1, "a", null, many), tip(2, "a")]]);
     await unchanged(path, async () => {
       const snapshot = await salvageDurableNativeSession(id, root);

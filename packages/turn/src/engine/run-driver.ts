@@ -1,4 +1,6 @@
 // Own admission/queues/persistence, but depend on Pi's loop and all providers.
+import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
+import type { Message, Model, Api, TranscriptContext, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
 import { adaptProviderContext, adaptRequestTools } from "./tool-schema-adaptation.js";
@@ -13,29 +15,58 @@ import { validateSessionTurn } from "./journal-schema.js";
 import { createTurnBinding, digestTurnInput } from "./turn-evidence.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
 
-export function createRunDriver(store, options) {
+export function createRunDriver(store: any, options: any): {
+    hooks: {
+        on: (type: any, handler: any) => () => any;
+    };
+    beginTurn: (id: string, source: string, descriptor: any) => Promise<void>;
+    endTurn: (status: any, result: any) => Promise<void>;
+    emit: (event: any) => Promise<void>;
+    prompt: (text: any, promptOptions: any) => Promise<{
+        tipId: any;
+        deferred?: any;
+        operationId: `${string}-${string}-${string}-${string}-${string}`;
+        status: string;
+        error: {
+            code: string;
+            message: any;
+        };
+    }>;
+    subscribe(listener: any): () => boolean;
+    steer(message: any, identity: any): Promise<`${string}-${string}-${string}-${string}-${string}`>;
+    cancelQueued(entryId: any): Promise<any>;
+    abort(): Promise<void>;
+    waitForIdle(): Promise<void>;
+    compact(): Promise<any>;
+    setTools(value: any): void;
+    setMidRunCompactionArmed(value: any): void;
+    setCompactionSettings(value: any): void;
+    repairOpenOperations(): Promise<void>;
+    abortOpenOperations(): Promise<void>;
+    close(): Promise<void>;
+} {
   // Snapshot accepted content: a request extension cannot mutate a cached handoff
   // while a provider/tool await is in flight.
   const inherited = options.inheritedProjection === undefined ? undefined : structuredClone(options.inheritedProjection);
   const dispatchBudget = options.handoffDispatchBudget === undefined ? undefined : structuredClone(options.handoffDispatchBudget);
-  const project = (entries, extra = {}) => inherited === undefined ? projectContext(entries, extra)
+  const project = (entries: any, extra: {} = {}) => inherited === undefined ? projectContext(entries, extra)
     : projectInheritedContext(entries, inherited, extra);
-  let dispatchRequest;
-  const budgetFailure = (reason) => Object.assign(new Error(`Handoff dispatch budget exceeded: ${reason}`),
+  let dispatchRequest: any;
+  const budgetFailure = (reason: any) => Object.assign(new Error(`Handoff dispatch budget exceeded: ${reason}`),
     { code: "ERR_HANDOFF_DISPATCH_BUDGET", reason });
   if (dispatchBudget && (options.model.contextWindow < dispatchBudget.contextWindow
     || options.model.maxTokens < dispatchBudget.outputReserve)) throw budgetFailure("target_window");
-  const listeners = new Set();
+  const listeners = new Set<(event: any) => void>();
   const registrations = new Map();
   const queue = new Map();
   const messageIds = new WeakMap();
   const executions = new Set();
-  let runId, controller, running;
+  let runId: any, controller: any, running: any;
   let turnBeginning = false, turnEnding = false;
   const inputAdmissions = new Set();
-  let turnId = null, turnBinding, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId, initialMessageId;
+  let turnId: any = null, turnBinding: any, ownsTurn = false, promptCount = 0, initialInputKey: any, currentInputId: any, initialMessageId: any;
   const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
-  async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
+  async function beginTurn(id: string = `synthetic:runtime:${randomUUID()}`, source: string = "synthetic", descriptor?: any): Promise<void> {
     if (turnId || turnBeginning || turnEnding) throw new Error("Pi logical turn is already open");
     turnBeginning = true;
     try {
@@ -65,10 +96,10 @@ export function createRunDriver(store, options) {
       }
     } finally { turnBeginning = false; }
   }
-  async function endTurn(status, result) {
+  async function endTurn(status: any, result?: any): Promise<void> {
     if (!turnId) return;
     if (turnEnding) throw new Error("Pi logical turn is already ending");
-    if ([...store.validator.openOperations].some((id) => store.validator.operations.get(id).turnId === turnId)) {
+    if ([...store.validator.openOperations].some((id: any) => store.validator.operations.get(id).turnId === turnId)) {
       throw new Error("Cannot end a logical turn with open operations");
     }
     turnEnding = true;
@@ -84,7 +115,7 @@ export function createRunDriver(store, options) {
       queue.clear(); turnId = null; turnBinding = undefined; ownsTurn = false;
     } finally { turnEnding = false; }
   }
-  function cancelInput(entryId, item) {
+  function cancelInput(entryId: any, item: any): any {
     const previous = item.state;
     // Synchronous exclusion from poll and retention of message identity are
     // necessary while journal I/O yields. Never delete a selected message early.
@@ -99,17 +130,17 @@ export function createRunDriver(store, options) {
     })();
     return item.cancellation;
   }
-  async function ensureTurn(cause) {
+  async function ensureTurn(cause: any): Promise<boolean> {
     if (turnId) return false;
     await beginTurn(`synthetic:${cause}:${randomUUID()}`); ownsTurn = true; return true;
   }
   let closed = false, compactionArmed = false;
   let settings = { enabled: false, reserveTokens: 16384, keepRecentTokens: 20000 };
-  function toolCall(toolCallId) { return store.validator.calls.get(`${runId}\0${toolCallId}`); }
-  function assertHealthy() { if (store.failure) { controller?.abort(store.failure); throw store.failure; } }
-  async function barrier() { try { await store.sync(); } catch (error) { controller?.abort(error); throw error; } assertHealthy(); }
-  function wrapTools(loadout) { return loadout.map((tool) => ({ ...tool,
-    async execute(toolCallId, args, signal, onUpdate) {
+  function toolCall(toolCallId: any): any { return store.validator.calls.get(`${runId}\0${toolCallId}`); }
+  function assertHealthy(): void { if (store.failure) { controller?.abort(store.failure); throw store.failure; } }
+  async function barrier(): Promise<void> { try { await store.sync(); } catch (error) { controller?.abort(error); throw error; } assertHealthy(); }
+  function wrapTools(loadout: any): any { return loadout.map((tool: any) => ({ ...tool,
+    async execute(toolCallId: any, args: any, signal: any, onUpdate: any): Promise<any> {
       const operationId = runId; const call = toolCall(toolCallId);
       if (!call || call.name !== tool.name || call.admission !== "admitted") {
         throw new Error("Tool call has no durable model-issued admission; nested calls are unsupported");
@@ -119,9 +150,9 @@ export function createRunDriver(store, options) {
         await store.write("tool_call", { callId: toolCallId, name: tool.name, messageId: call.messageId, admission: "started" }, { operationId });
         await barrier();
         if (signal?.aborted) throw new Error("Tool execution interrupted before invocation");
-        let result, isError = false;
+        let result: any, isError = false;
         try { result = await tool.execute(toolCallId, args, signal, onUpdate); isError = result?.isError === true; }
-        catch (error) { result = { content: [{ type: "text", text: error?.message || String(error) }], details: {} }; isError = true; }
+        catch (error) { result = { content: [{ type: "text", text: (error as { code?: unknown; message?: string })?.message || String(error) }], details: {} }; isError = true; }
         // Apply host finalization before capturing the observed outcome. Pi's
         // ordinary hook catch must not swallow a journal admission/outcome fault.
         try {
@@ -133,7 +164,7 @@ export function createRunDriver(store, options) {
             else result = { ...result, structuredContent };
             isError = after.isError ?? isError;
           }
-        } catch (error) { result = { content: [{ type: "text", text: error?.message || String(error) }], details: {} }; isError = true; }
+        } catch (error) { result = { content: [{ type: "text", text: (error as { code?: unknown; message?: string })?.message || String(error) }], details: {} }; isError = true; }
         const message = { role: "toolResult", toolCallId, toolName: tool.name, content: result?.content ?? [],
           details: result?.details, usage: result?.usage, isError, timestamp: Date.now() };
         await store.write("tool_result", { callId: toolCallId, name: tool.name, messageId: null, phase: "returned",
@@ -152,21 +183,21 @@ export function createRunDriver(store, options) {
     || (retry.maxDelayMs !== undefined && !(Number.isFinite(retry.maxDelayMs) && retry.maxDelayMs >= 0))
     || (retry.shouldRetry !== undefined && typeof retry.shouldRetry !== "function")) throw new RangeError("Invalid Pi retry policy");
 
-  function on(type, handler) {
+  function on(type: any, handler: any): () => any {
     const handlers = registrations.get(type) || new Set();
     handlers.add(handler); registrations.set(type, handlers);
     return () => handlers.delete(handler);
   }
-  async function hooks(type, event) {
+  async function hooks(type: any, event: any): Promise<any> {
     /** @type {any} */
-    let merged;
+    let merged: any;
     for (const handler of registrations.get(type) || []) {
       const value = await handler(event, { abortSignal: controller?.signal });
       if (value !== undefined) merged = { ...merged, ...value };
     }
     return merged;
   }
-  function publish(event) {
+  function publish(event: any): void {
     const envelope = { lane: "main", ...(runId ? { runId } : {}), ...event };
     for (const listener of listeners) {
       try { listener(envelope); }
@@ -180,7 +211,7 @@ export function createRunDriver(store, options) {
       }
     }
   }
-  async function emit(event) {
+  async function emit(event: any): Promise<void> {
     if (event.message?.[BACKOFF_ABORT]) return;
     if (event.type === "agent_start" || event.type === "agent_end"
       || ((event.type === "message_start" || event.type === "message_end") && event.message.role === "system")) return;
@@ -191,8 +222,8 @@ export function createRunDriver(store, options) {
       if (event.message.role === "assistant" || event.message.role === "toolResult") delete event.message.durationMs;
       if (event.message.role === "assistant") await hooks("after_response", { message: event.message });
       if (isExecutableAssistant(event.message) && Array.isArray(event.message.content)) {
-        const calls = event.message.content.filter((part) => part.type === "toolCall");
-        if (new Set(calls.map((call) => call.id)).size !== calls.length) throw new TypeError("Invalid provider tool-call evidence: duplicate ID");
+        const calls = event.message.content.filter((part: any) => part.type === "toolCall");
+        if (new Set(calls.map((call: any) => call.id)).size !== calls.length) throw new TypeError("Invalid provider tool-call evidence: duplicate ID");
       }
       const id = messageIds.get(event.message) || randomUUID();
       const isInput = event.message.role === "user" && !queue.has(id);
@@ -205,7 +236,7 @@ export function createRunDriver(store, options) {
         await store.write("input_consumed", { inputId, messageId: entryId }, { operationId: runId });
       }
       if (isExecutableAssistant(event.message) && Array.isArray(event.message.content)) {
-        for (const call of event.message.content.filter((part) => part?.type === "toolCall")) {
+        for (const call of event.message.content.filter((part: any) => part?.type === "toolCall")) {
           await store.write("tool_call", { callId: call.id, name: call.name, messageId: entryId, admission: "observed" }, { operationId: runId });
         }
       } else if (event.message.role === "toolResult" && store.validator.calls.has(`${runId ?? turnId}\0${event.message.toolCallId}`)) {
@@ -218,22 +249,22 @@ export function createRunDriver(store, options) {
       publish({ ...event, entryId });
     } else publish(event);
   }
-  async function poll() {
+  async function poll(): Promise<any[]> {
     if (controller?.signal.aborted || closed || turnBeginning || !turnId) return [];
-    const pending = [...queue.values()].filter((q) => q.state === "queued" && q.turnId === turnId);
+    const pending = [...queue.values()].filter((q: any) => q.state === "queued" && q.turnId === turnId);
     const selected = options.steeringMode === "all" ? pending : pending.slice(0, 1);
     for (const q of selected) q.state = "selected";
-    return selected.map((q) => q.message);
+    return selected.map((q: any) => q.message);
   }
-  async function performCompaction(reason = "manual") {
+  async function performCompaction(reason: string = "manual"): Promise<any> {
     publish({ type: "compaction_start", reason });
     const context = { abortSignal: controller?.signal || new AbortController().signal };
-    let entry, ended = false, operationOpened = false;
+    let entry: any, ended = false, operationOpened = false;
     const operationId = randomUUID();
     const own = await ensureTurn("manual-compaction");
     try {
       await store.openOperation(operationId, modelConfig(), "compaction", reason); operationOpened = true;
-      let decision;
+      let decision: any;
       const nativeEntries = await store.getEntries(); const repairs = await store.getRepairEntries();
       const projection = project(nativeEntries, { repairs, mode: "compaction" });
       const branchEntries = projection.entries;
@@ -250,13 +281,13 @@ export function createRunDriver(store, options) {
       // A composed cut must reduce the entire inherited prefix. Retaining its
       // native envelopes as derived current messages would copy predecessor evidence.
       const source = { sourceTipId: store.tip, sourceSeq: store.seq };
-      if (inherited && (decision.compaction.retainedTail ?? []).some((message) =>
-        inherited.messages.some((prior) => JSON.stringify(prior) === JSON.stringify(message)))) {
+      if (inherited && (decision.compaction.retainedTail ?? []).some((message: any) =>
+        inherited.messages.some((prior: any) => JSON.stringify(prior) === JSON.stringify(message)))) {
         throw new Error("Composed compaction must cover the inherited prefix");
       }
       // Omission after a composed checkpoint means the native summary owns the
       // prefix. Every later checkpoint must carry its coverage, not revert to v2.
-      const inheritedCoverage = inherited?.coverage ?? nativeEntries.filter((prior) => prior.type === "compaction"
+      const inheritedCoverage = inherited?.coverage ?? nativeEntries.filter((prior: any) => prior.type === "compaction"
         && prior.checkpoint?.inheritedCoverage).at(-1)?.checkpoint.inheritedCoverage;
       const id = await store.appendCompaction(decision.compaction, inheritedCoverage, inheritedCoverage ? source : undefined);
       await barrier();
@@ -277,30 +308,30 @@ export function createRunDriver(store, options) {
       if (!ended && reason !== "manual") publish({ type: "compaction_end", reason, status: "declined", cancelled: true });
     }
   }
-  async function requestContext() {
+  async function requestContext(): Promise<{ messages: Message[]; tools: any; }> {
     if (options.assertSessionCurrent) await options.assertSessionCurrent();
     const messages = project(await store.getEntries(), { repairs: await store.getRepairEntries() }).messages;
     // The host supplies the current prompt/loadout on every reopen. Rebuild that
     // leading declaration after compaction too, without duplicating old prompts.
     const declarations = tools.map(toToolDeclaration);
     const normalized = normalizeContext({ systemPrompt: options.systemPrompt,
-      tools: declarations, messages: messages.filter((m) => m.role !== "system") });
+      tools: declarations, messages: messages.filter((m: any) => m.role !== "system") });
     if (dispatchBudget) {
       const entries = await store.getEntries();
-      const input = entries.find((entry) => entry.type === "message" && entry.id === initialMessageId)?.message;
-      const currentInput = input ?? messages.findLast((message) => message.role === "user");
-      const reverseIndex = [...normalized.messages].reverse().findIndex((message) => message === currentInput
+      const input = entries.find((entry: any) => entry.type === "message" && entry.id === initialMessageId)?.message;
+      const currentInput = input ?? messages.findLast((message: any) => message.role === "user");
+      const reverseIndex = [...normalized.messages].reverse().findIndex((message: Message) => message === currentInput
         || JSON.stringify(message) === JSON.stringify(currentInput));
       const index = reverseIndex < 0 ? -1 : normalized.messages.length - reverseIndex - 1;
       dispatchRequest = { systemPrompt: options.systemPrompt, tools: adaptRequestTools(tools, options.model.api).map(toToolDeclaration),
-        messages: normalized.messages.filter((message, at) => at !== index && message.role !== "system"), currentInput };
+        messages: normalized.messages.filter((message: Message, at: number) => at !== index && message.role !== "system"), currentInput };
       /** @type {{status:string, reason?:any}} */
-      const fit = checkHandoffDispatch(dispatchRequest, dispatchBudget);
+      const fit: {status:string, reason?:any} = checkHandoffDispatch(dispatchRequest, dispatchBudget);
       if (fit.status !== "ready") throw budgetFailure(fit.reason);
     }
     return { messages: normalized.messages, tools };
   }
-  async function drive(text, promptOptions) {
+  async function drive(text: any, promptOptions: any): Promise<{ tipId: any; deferred?: any; operationId: `${string}-${string}-${string}-${string}-${string}`; status: string; error: { code: string; message: any; }; }> {
     if (closed || running || turnEnding) throw new Error("mono-agent harness is closed, busy or ending its turn");
     runId = randomUUID(); controller = new AbortController();
     const id = runId;
@@ -308,7 +339,7 @@ export function createRunDriver(store, options) {
     publish({ type: "run_start" });
     // Start synchronously owning the promise before the first storage await.
     running = (async () => {
-      let opened = false, status = "failed", error, deferred;
+      let opened = false, status = "failed", error: any, deferred: any;
       try {
         await ensureTurn("prompt");
         promptCount += 1;
@@ -319,7 +350,7 @@ export function createRunDriver(store, options) {
         await store.openOperation(id, modelConfig(), "prompt", promptCount === 1 ? "prompt" : "re_prompt"); opened = true;
         const messages = project(await store.getEntries()).messages;
         /** @type {any[]} */
-        const prompts = [{ role: "user", content: [{ type: "text", text }, ...(promptOptions?.images || [])], timestamp: Date.now() }];
+        const prompts: any[] = [{ role: "user", content: [{ type: "text", text }, ...(promptOptions?.images || [])], timestamp: Date.now() }];
         await runAgentLoop(prompts, { messages, tools }, {
           ...options.streamOptions,
           ...(dispatchBudget ? { maxTokens: dispatchBudget.outputReserve } : {}),
@@ -337,7 +368,7 @@ export function createRunDriver(store, options) {
             }
             return { context: await requestContext() };
           },
-          beforeToolCall: async ({ toolCall, args }) => {
+          beforeToolCall: async ({ toolCall, args }: BeforeToolCallContext) => {
             assertHealthy();
             const result = await hooks("before_tool", { toolName: toolCall.name, toolCallId: toolCall.id, args });
             const call = toolCall.name && store.validator.calls.get(`${id}\0${toolCall.id}`);
@@ -347,7 +378,7 @@ export function createRunDriver(store, options) {
             return result?.block ? { block: true, ...result.block } : undefined;
           },
 
-          onPayload: async (payload, model) => {
+          onPayload: async (payload: unknown, model: Model<Api>) => {
             if (options.assertSessionCurrent) await options.assertSessionCurrent();
             const before = dispatchBudget ? estimateHandoffTokens(payload) : 0;
             const result = await hooks("before_payload", { payload, model: model || options.model });
@@ -363,12 +394,12 @@ export function createRunDriver(store, options) {
             options.onPreparedPayload?.(result?.payload ?? payload, model || options.model);
             return result?.payload;
           },
-        }, emit, controller.signal, (model, context, streamOptions) => /** @type {any} */ (createRetryStream(
+        }, emit, controller.signal, (model: Model<Api>, context: TranscriptContext, streamOptions: SimpleStreamOptions | undefined) => /** @type {any} */ ((createRetryStream(
           options.models, model, adaptProviderContext(context, tools, model.api), streamOptions, retry, emit,
-        )));
+        )) as any));
         assertHealthy();
         const entries = await store.getEntries();
-        const final = [...entries].reverse().find((e) => e.type === "message" && e.message.role === "assistant")?.message;
+        const final = [...entries].reverse().find((e: any) => e.type === "message" && e.message.role === "assistant")?.message;
         status = controller.signal.aborted || final?.stopReason === "aborted" ? "aborted"
           : final?.stopReason === "error" ? "failed" : "completed";
         if (final?.stopReason === "deferred") {
@@ -380,7 +411,7 @@ export function createRunDriver(store, options) {
         if (status === "failed" && !error) error = { code: "assistant_error", message: final?.errorMessage || "Pi assistant failed" };
       } catch (cause) {
         controller.abort(cause);
-        error = { code: "run_failed", message: cause?.message || String(cause) };
+        error = { code: "run_failed", message: (cause as { code?: unknown; message?: string })?.message || String(cause) };
         throw cause;
       } finally {
         await Promise.allSettled([...executions]);
@@ -402,8 +433,8 @@ export function createRunDriver(store, options) {
     beginTurn, endTurn,
     emit,
     prompt: drive,
-    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async steer(message, identity) {
+    subscribe(listener: any): () => boolean { listeners.add(listener); return () => listeners.delete(listener); },
+    async steer(message: any, identity: any): Promise<`${string}-${string}-${string}-${string}-${string}`> {
       if (closed || turnEnding || turnBeginning || !turnId) throw new Error("mono-agent harness has no active turn or is closed, beginning or ending its turn");
       const entryId = randomUUID(); const copy = typeof message === "string"
         ? { role: "user", content: [{ type: "text", text: message }], timestamp: Date.now() }
@@ -420,27 +451,27 @@ export function createRunDriver(store, options) {
       inputAdmissions.add(admission);
       try { return await admission; } finally { inputAdmissions.delete(admission); }
     },
-    async cancelQueued(entryId) {
+    async cancelQueued(entryId: any): Promise<any> {
       const item = queue.get(entryId);
       if (item?.state === "queued") return await cancelInput(entryId, item);
       if (item?.state === "cancelling") return await item.cancellation;
       return { kind: item ? "already_placed" : "not_found", entryId };
     },
-    async abort() { controller?.abort(); },
-    async waitForIdle() { await running; },
-    async compact() {
+    async abort(): Promise<void> { controller?.abort(); },
+    async waitForIdle(): Promise<void> { await running; },
+    async compact(): Promise<any> {
       if (running || closed || turnEnding) throw new Error("mono-agent harness is closed, busy or ending its turn");
       controller = new AbortController();
       running = performCompaction();
       try { return await running; } finally { running = null; }
     },
-    setTools(value) { tools = wrapTools(value); },
-    setMidRunCompactionArmed(value) { compactionArmed = value === true; },
-    setCompactionSettings(value) { settings = { ...settings, ...value }; },
-    async repairOpenOperations() { await repairInterruptedSession(store); queue.clear(); turnId = null; turnBinding = undefined; ownsTurn = false; },
-    async abortOpenOperations() {
+    setTools(value: any): void { tools = wrapTools(value); },
+    setMidRunCompactionArmed(value: any): void { compactionArmed = value === true; },
+    setCompactionSettings(value: any): void { settings = { ...settings, ...value }; },
+    async repairOpenOperations(): Promise<void> { await repairInterruptedSession(store); queue.clear(); turnId = null; turnBinding = undefined; ownsTurn = false; },
+    async abortOpenOperations(): Promise<void> {
       const open = await store.getOpenOperations();
-      for (const turn of await store.getOpenTurns()) await recordInterruption(store, turn.turnId, "user_interrupted", open.filter((op) => op.turnId === turn.turnId).map((op) => op.operationId));
+      for (const turn of await store.getOpenTurns()) await recordInterruption(store, turn.turnId, "user_interrupted", open.filter((op: any) => op.turnId === turn.turnId).map((op: any) => op.operationId));
       for (const op of (await store.getOpenOperations()).reverse()) await store.closeOperation(op.operationId, "aborted");
       for (const turn of await store.getOpenTurns()) {
         if (turn.turnId === turnId) await endTurn("aborted");
@@ -448,6 +479,6 @@ export function createRunDriver(store, options) {
       }
       await barrier(); turnId = null; ownsTurn = false;
     },
-    async close() { closed = true; controller?.abort(); await running; },
+    async close(): Promise<void> { closed = true; controller?.abort(); await running; },
   };
 }

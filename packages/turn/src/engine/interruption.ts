@@ -2,19 +2,21 @@ import { createHash } from "node:crypto";
 import { selectTurnInterruptionAccounts } from "./turn-evidence.js";
 
 export class NativeSuspendedError extends Error {
+  declare name: string;
+
   constructor() { super("Native provider suspended this operation; it has not been resumed"); this.name = "NativeSuspendedError"; }
 }
-export const isExecutableAssistant = (message) => message?.role === "assistant"
+export const isExecutableAssistant = (message: any) => message?.role === "assistant"
   && !["error", "aborted", "deferred"].includes(message.stopReason);
 
 /** Append one idempotent operation account, never a tool result/success receipt. */
-export async function recordInterruption(store, turnId, cause, operationIds) {
+export async function recordInterruption(store: any, turnId: any, cause: any, operationIds: any): Promise<void> {
   for (const operationId of operationIds.length ? operationIds : [null]) {
     const key = `${turnId}\0${operationId ?? ""}`;
     if (store.interruptedOperations.has(key)) continue;
-    const calls = [...store.validator.calls.values()].filter((call) => call.turnId === turnId && call.operationId === operationId && !call.placed
+    const calls = [...store.validator.calls.values()].filter((call: any) => call.turnId === turnId && call.operationId === operationId && !call.placed
       && !["error", "aborted", "deferred"].includes(store.validator.contextInfo.get(call.messageId)?.stopReason))
-      .map((call) => ({ callId: call.callId, name: call.name, operationId: call.operationId,
+      .map((call: any) => ({ callId: call.callId, name: call.name, operationId: call.operationId,
         messageId: call.messageId, admission: call.admission,
         cause: call.result ? "observed_outcome" : call.admission !== "started" ? "skipped" : cause }));
     await store.write("interruption", { cause, operationIds: operationId === null ? [] : [operationId], calls, tipId: store.tip, draftLossPossible: true },
@@ -24,7 +26,7 @@ export async function recordInterruption(store, turnId, cause, operationIds) {
 }
 
 /** Account and seal one turn. Administrative completion scopes are caller-excluded. */
-async function repairInterruptedTurn(store, turnId, cause = "crashed") {
+async function repairInterruptedTurn(store: any, turnId: any, cause: string = "crashed"): Promise<void> {
   for (const account of selectTurnInterruptionAccounts(store, turnId, cause)) {
     await recordInterruption(store, turnId, account.cause, account.operationId === null ? [] : [account.operationId]);
   }
@@ -34,10 +36,12 @@ async function repairInterruptedTurn(store, turnId, cause = "crashed") {
 }
 
 /** Storage-only reopen: no model/tool execution and no inferred completion. */
-export async function repairInterruptedSession(store, cause = "crashed", excludedTurnIds = []) {
+export async function repairInterruptedSession(store: any, cause: string = "crashed", excludedTurnIds: any[] = []): Promise<{
+    repaired: boolean;
+}> {
   if (!["crashed", "user_interrupted", "skipped", "superseded"].includes(cause)) throw new TypeError("Invalid native interruption cause");
   const excluded = new Set(excludedTurnIds);
-  const turns = (await store.getOpenTurns()).filter((turn) => !excluded.has(turn.turnId));
+  const turns = (await store.getOpenTurns()).filter((turn: any) => !excluded.has(turn.turnId));
   for (const turn of turns) await repairInterruptedTurn(store, turn.turnId, cause);
   return { repaired: turns.length > 0 };
 }
@@ -51,8 +55,8 @@ const causeText = {
 };
 
 /** Synthetic prompt evidence only. Native storage and receipts remain untouched. */
-export function projectInterruptions(messages, repairs = [], messageIds = new WeakMap()) {
-  const result = [], noticesByTip = new Map(), evidenceByMessage = new Map();
+export function projectInterruptions(messages: any, repairs: any[] = [], messageIds: WeakMap<object, any> = new WeakMap()): any[] {
+  const result: any[] = [], noticesByTip = new Map(), evidenceByMessage = new Map();
   for (const repair of repairs) {
     const notices = noticesByTip.get(repair.tipId) ?? []; notices.push(repair); noticesByTip.set(repair.tipId, notices);
     for (const call of repair.calls ?? []) {
@@ -65,7 +69,7 @@ export function projectInterruptions(messages, repairs = [], messageIds = new We
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message.role === "assistant") pending = new Set(isExecutableAssistant(message) && Array.isArray(message.content)
-      ? message.content.filter((part) => part.type === "toolCall").map((call) => `${call.id}\0${call.name}`) : []);
+      ? message.content.filter((part: any) => part.type === "toolCall").map((call: any) => `${call.id}\0${call.name}`) : []);
     else if (message.role !== "toolResult") pending.clear();
     // Old checkpoints can contain synthetic results from non-executable drafts.
     // Never let those orphan projection-only envelopes reach provider serializers.
@@ -76,19 +80,19 @@ export function projectInterruptions(messages, repairs = [], messageIds = new We
     const placed = new Set();
     for (let next = index + 1; next < messages.length && messages[next].role === "toolResult"; next += 1) placed.add(`${messages[next].toolCallId}\0${messages[next].toolName}`);
     const evidence = evidenceByMessage.get(messageIds.get(message));
-    for (const call of message.content.filter((part) => part.type === "toolCall")) {
+    for (const call of message.content.filter((part: any) => part.type === "toolCall")) {
       const key = `${call.id}\0${call.name}`; if (placed.has(key)) continue;
       const account = evidence?.get(key); if (!account) continue;
       result.push(account.returned ? { ...account.returned, projectionOnly: true }
         : { role: "toolResult", toolCallId: call.id, toolName: call.name,
-          content: [{ type: "text", text: causeText[account.cause] ?? causeText.crashed }], isError: true,
+          content: [{ type: "text", text: causeText[account.cause as keyof typeof causeText] ?? causeText.crashed }], isError: true,
           timestamp: account.timestamp, projectionOnly: true, interruptionCause: account.cause });
     }
     appendNotices(result, notices);
   }
   return result;
 }
-function appendNotices(result, notices) {
+function appendNotices(result: any, notices: any): void {
   for (const repair of notices) result.push({ role: "user", content: [{ type: "text", text: `${repair.cause === "suspended_not_resumed" ? causeText.suspended_not_resumed : "Native execution was interrupted."} Completed evidence is preserved, no tool was replayed, and any non-durable streamed draft may have been lost. Continue only in response to the next user message.` }],
     timestamp: repair.timestamp, projectionOnly: true, interruptionCause: repair.cause });
 }

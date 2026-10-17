@@ -2,8 +2,8 @@ import { isContextOverflow, isRecoverableLength, isRetryableAssistantError } fro
 
 export const BACKOFF_ABORT = Symbol("mono-pi-backoff-abort");
 
-function backoff(ms, signal) {
-  return new Promise((resolve, reject) => {
+function backoff(ms: any, signal: any): Promise<any> {
+  return new Promise((resolve: (value: any) => void, reject: (reason?: any) => void) => {
     if (signal.aborted) { reject(signal.reason); return; }
     const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
     const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(undefined); }, ms);
@@ -16,10 +16,10 @@ function backoff(ms, signal) {
  * receives the failed message and whether that attempt's response started
  * (the provider emitted `start`); the default keeps Pi's classifier.
  */
-async function retryRequest(produce, policy, signal, callbacks) {
+async function retryRequest(produce: any, policy: any, signal: any, callbacks: any): Promise<any> {
   const maxRetries = policy?.enabled ? policy.maxRetries : 0;
   const shouldRetry = typeof policy?.shouldRetry === "function" ? policy.shouldRetry
-    : (message) => isRetryableAssistantError(message);
+    : (message: any) => isRetryableAssistantError(message);
   let retries = 0;
   for (;;) {
     const { response, responseStarted } = await produce();
@@ -45,19 +45,19 @@ async function retryRequest(produce, policy, signal, callbacks) {
 
 // Single-item, acknowledged channel: retry callbacks cannot overtake streamed
 // deltas. The loop acknowledges a yielded event only after its awaited sink ran.
-function eventChannel(onClose) {
-  let item, wake, failure;
+function eventChannel(onClose: any): { push(value: any): Promise<void>; end(error?: any): void; cancel(): void; [Symbol.asyncIterator](): AsyncGenerator<any, void, unknown>; } {
+  let item: any, wake: any, failure: any;
   let ended = false;
   return {
-    async push(value) {
+    async push(value: any): Promise<void> {
       if (ended) throw new Error("Retry stream consumer closed");
-      await new Promise((ack) => { item = { value, ack }; wake?.(); });
+      await new Promise((ack: (value: any) => void) => { item = { value, ack }; wake?.(); });
     },
-    end(error) { ended = true; failure = error; wake?.(); },
-    cancel() { ended = true; item?.ack(); item = undefined; wake?.(); onClose(); },
-    async *[Symbol.asyncIterator]() {
+    end(error?: any): void { ended = true; failure = error; wake?.(); },
+    cancel(): void { ended = true; item?.ack(); item = undefined; wake?.(); onClose(); },
+    async *[Symbol.asyncIterator](): AsyncGenerator<any, void, unknown> {
       while (true) {
-        if (!item && !ended) await new Promise((r) => { wake = r; });
+        if (!item && !ended) await new Promise((r: (value: any) => void) => { wake = r; });
         if (item) {
           const next = item; item = undefined;
           try { yield next.value; } finally { next.ack(); }
@@ -69,7 +69,15 @@ function eventChannel(onClose) {
 }
 
 /** Retry one conversational provider request, not tools or the whole agent run. */
-export function createRetryStream(models, model, context, options, policy, emit) {
+export function createRetryStream(models: any, model: any, context: any, options: any, policy: any, emit: any): {
+    [Symbol.asyncIterator]: () => {
+        [Symbol.asyncIterator](): /*elided*/ any;
+        next: () => Promise<IteratorResult<any, void>>;
+        return: () => Promise<IteratorResult<any, void>>;
+        throw: (error: any) => Promise<IteratorResult<any, void>>;
+    };
+    result: () => Promise<any>;
+} {
   // The old harness re-resolved identity through Models before dispatch and
   // classification. Host policy metadata may differ from the transport catalog;
   // use the same facade (including probe caps/context-1M) as the actual request.
@@ -81,15 +89,15 @@ export function createRetryStream(models, model, context, options, policy, emit)
   if (options.signal?.aborted) abort();
   let consumerClosed = false;
   const assertConsumerOpen = () => { if (consumerClosed) throw new Error("Retry stream consumer closed"); };
-  const emitIfOpen = (event) => { assertConsumerOpen(); return emit(event); };
+  const emitIfOpen = (event: any) => { assertConsumerOpen(); return emit(event); };
   const channel = eventChannel(() => { consumerClosed = true; controller.abort(); });
-  let resolveResult = (_value) => {}, rejectResult = (_error) => {};
-  const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+  let resolveResult = (_value: any) => {}, rejectResult = (_error: any) => {};
+  const result = new Promise((resolve: (value: any) => void, reject: (reason?: any) => void) => { resolveResult = resolve; rejectResult = reject; });
   // The iterator carries errors too; don't manufacture an unhandled rejection
   // when a caller exits through the iterator rather than calling result().
   void result.catch(() => {});
   /** @type {any} */
-  let last;
+  let last: any;
   let ordinal = 0, hasStart = false;
   void (async () => {
     try {
@@ -121,7 +129,7 @@ export function createRetryStream(models, model, context, options, policy, emit)
         }
         return { response: last, responseStarted };
       }, policy, controller.signal, {
-        onRetryScheduled: async (attempt, maxRetries, delayMs, errorMessage) => {
+        onRetryScheduled: async (attempt: any, maxRetries: any, delayMs: any, errorMessage: any) => {
           assertConsumerOpen();
           // Old harness persisted and billed failed attempts, but did not emit
           // turn_end until a request settled. Keep that stream/accounting shape.
@@ -130,7 +138,7 @@ export function createRetryStream(models, model, context, options, policy, emit)
           await emitIfOpen({ type: "retry_scheduled", attempt: attempt + 1, maxAttempts: maxRetries + 1, delayMs, errorMessage });
         },
         onRetryAttemptStart: () => emitIfOpen({ type: "retry_start", attempt: ordinal + 1 }),
-        onRetryFinished: (success, attempt, finalError) => emitIfOpen({ type: "retry_end", success, attempt: attempt + 1, finalError }),
+        onRetryFinished: (success: any, attempt: any, finalError: any) => emitIfOpen({ type: "retry_end", success, attempt: attempt + 1, finalError }),
       });
       if (final.stopReason === "aborted" && last?.stopReason === "error") {
         Object.defineProperty(final, BACKOFF_ABORT, { value: true });
@@ -146,9 +154,9 @@ export function createRetryStream(models, model, context, options, policy, emit)
   })();
   return { [Symbol.asyncIterator]: () => {
     const iterator = channel[Symbol.asyncIterator]();
-    return { [Symbol.asyncIterator]() { return this; }, next: () => iterator.next(),
+    return { [Symbol.asyncIterator](): { [Symbol.asyncIterator](): any; next: () => Promise<IteratorResult<any, void>>; return: () => Promise<IteratorResult<any, void>>; throw: (error: any) => Promise<IteratorResult<any, void>>; } { return this; }, next: () => iterator.next(),
       return: async () => { channel.cancel(); return iterator.return(undefined); },
-      throw: async (error) => { channel.cancel(); return iterator.throw(error); },
+      throw: async (error: any) => { channel.cancel(); return iterator.throw(error); },
     };
   }, result: () => result };
 }
