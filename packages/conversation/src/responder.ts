@@ -626,6 +626,7 @@ export function streamEventFromRuntimeEvent(
       ...(model === undefined ? {} : { model }),
       ...(typeof event.cumulativeUsd === "number" ? { cumulativeUsd: event.cumulativeUsd } : {}),
       ...(tokens === undefined ? {} : { tokens }),
+      ...(Number.isSafeInteger(event.contextTokens) && Number(event.contextTokens) >= 0 ? { contextTokens: Number(event.contextTokens) } : {}),
     };
   }
   if (

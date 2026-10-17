@@ -1256,6 +1256,8 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.maxLength = 80;
     schema.pattern = "^[^\\u0000-\\u001f\\u007f]+$";
 
+  } else if (field.jsonPath === "runtime.compaction.effort") {
+    schema.enum = ["auto", ...EFFORT_LEVELS];
   } else if (field.jsonPath === "runtime.effort") {
     schema.enum = EFFORT_LEVELS;
   } else if (field.jsonPath === "memory.backend") {
@@ -1310,6 +1312,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     "runtime.compaction.triggerRatio": { minimum: 0.2, maximum: 0.95 },
     "runtime.compaction.keepRecentTokens": { minimum: 4_000, maximum: 200_000 },
     "runtime.compaction.summaryMaxTokens": { minimum: 1_000, maximum: 64_000 },
+    "runtime.compaction.failureCooldownMs": { minimum: 0, maximum: 86_400_000 },
     "runtime.compaction.minSavingsTokens": { minimum: 0, maximum: 500_000 },
     "runtime.compaction.contextWindowOverride": { minimum: 32_000, maximum: 10_000_000 },
     "runtime.retry.primaryAttempts": { minimum: 1, maximum: 10 },
@@ -1495,6 +1498,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.retry.backoffMs": 1_000,
     "runtime.retry.maxBackoffMs": 15_000,
     "runtime.compaction.enabled": true,
+    "runtime.compaction.effort": "auto",
+    "runtime.compaction.failureCooldownMs": 900000,
     "runtime.compaction.triggerRatio": 0.90,
     "runtime.compaction.fixedOverheadEnabled": true,
     "runtime.workspace": ".",
@@ -1628,6 +1633,8 @@ function exampleFor(id: string): SettingsJsonValue {
     "runtime.compaction.triggerRatio": 0.90,
     "runtime.compaction.keepRecentTokens": 12_800,
     "runtime.compaction.summaryMaxTokens": 5_120,
+    "runtime.compaction.effort": "auto",
+    "runtime.compaction.failureCooldownMs": 900000,
     "runtime.compaction.minSavingsTokens": 12_800,
     "runtime.compaction.contextWindowOverride": 128_000,
     "context.identityPath": "./IDENTITY.md",
@@ -1776,10 +1783,12 @@ function descriptionFor(id: string): string {
     return "Removes matching native @mentions from responder text in `mention` mode; replies without a mention are unchanged.";
   }
   const compactionDescriptions: Record<string, string> = {
+    "runtime.compaction.effort": "Independent summary effort: auto disables thinking when supported, otherwise uses low or the lowest supported level; never inherits conversation effort.",
+    "runtime.compaction.failureCooldownMs": "Suppress unchanged failed summaries for this many milliseconds (default 15 minutes); 0 disables suppression. Meaningful growth or summary-policy changes allow an earlier attempt.",
     "runtime.compaction.enabled": "Enables adaptive proactive compaction and one-shot reactive overflow recovery.",
     "runtime.compaction.triggerRatio": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom (10% of the window, 16,000-48,000 tokens).",
     "runtime.compaction.keepRecentTokens": "Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens.",
-    "runtime.compaction.summaryMaxTokens": "Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens.",
+    "runtime.compaction.summaryMaxTokens": "Combined generated-summary text target; omitted derives 4% of the effective window, clamped to 2,000-12,000 tokens. Adaptive thinking may add a bounded 2,048-8,192-token allowance per request, subject to model/context limits.",
     "runtime.compaction.minSavingsTokens": "Minimum verified token reduction required for proactive compaction; omitted derives 10% of the effective window, clamped to 4,000-20,000. Reactive recovery accepts any positive reduction.",
     "runtime.compaction.fixedOverheadEnabled": "Includes system instructions, tool schemas, and the current user turn in proactive request-size estimates.",
     "runtime.compaction.contextWindowOverride": "Persistent correction for inaccurate provider context-window metadata; learned overflow ceilings may lower it process-locally.",

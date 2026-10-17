@@ -99,6 +99,7 @@ export function windowUsage(detail: ThreadDetail): WebThreadUsage {
   return {
     ...partial,
     total: { ...usage.total, tokensPartial: true, costPartial: true },
+    ...(usage.compaction ? { compaction: { ...usage.compaction, tokensPartial: true, costPartial: true } } : {}),
     byModel: usage.byModel.map((model) => ({ ...model, costPartial: true as const, tokensPartial: true as const })),
     ...(partialSubagents === undefined ? {} : { subagents: partialSubagents }),
   };

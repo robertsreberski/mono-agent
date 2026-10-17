@@ -1,6 +1,7 @@
 // Own admission/queues/persistence, but depend on Pi's loop and all providers.
 import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
+import { adaptProviderContext, adaptRequestTools } from "./tool-schema-adaptation.js";
 import { randomUUID, createHash } from "node:crypto";
 import { projectContext, projectInheritedContext } from "./request-projection.js";
 import { evidenceDigest } from "./evidence-view.js";
@@ -291,7 +292,7 @@ export function createRunDriver(store, options) {
       const reverseIndex = [...normalized.messages].reverse().findIndex((message) => message === currentInput
         || JSON.stringify(message) === JSON.stringify(currentInput));
       const index = reverseIndex < 0 ? -1 : normalized.messages.length - reverseIndex - 1;
-      dispatchRequest = { systemPrompt: options.systemPrompt, tools: declarations,
+      dispatchRequest = { systemPrompt: options.systemPrompt, tools: adaptRequestTools(tools, options.model.api).map(toToolDeclaration),
         messages: normalized.messages.filter((message, at) => at !== index && message.role !== "system"), currentInput };
       const fit = checkHandoffDispatch(dispatchRequest, dispatchBudget);
       if (fit.status !== "ready") throw budgetFailure(fit.reason);
@@ -358,10 +359,11 @@ export function createRunDriver(store, options) {
               if (estimateHandoffTokens(dispatchRequest) + growth + dispatchBudget.outputReserve
                 + dispatchBudget.safety > dispatchBudget.contextWindow) throw budgetFailure("target_window");
             }
+            options.onPreparedPayload?.(result?.payload ?? payload, model || options.model);
             return result?.payload;
           },
         }, emit, controller.signal, (model, context, streamOptions) => /** @type {any} */ (createRetryStream(
-          options.models, model, context, streamOptions, retry, emit,
+          options.models, model, adaptProviderContext(context, tools, model.api), streamOptions, retry, emit,
         )));
         assertHealthy();
         const entries = await store.getEntries();

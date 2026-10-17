@@ -321,6 +321,13 @@ The normalized runtime map is an internal resolved form, not a JSON config field
 
 ## Architecture
 
+Summary reasoning uses `runtime.compaction.effort` (default `auto`: none when
+supported, otherwise low/the minimum supported level), independently of
+conversation effort. `runtime.compaction.failureCooldownMs` defaults to 900000;
+zero disables unchanged paid-failure suppression. The summary text target and
+its bounded adaptive thinking allowance are distinct from conversation output.
+
+
 `memory.profile.enabled` is a validated BuJo-only boolean, default off,
 enabling a deterministic owner label profile. See [owner context](../../docs/memory/capture-and-recall.md#optional-bujo-owner-context)
 for budgets, privacy boundaries and retained-session behavior.

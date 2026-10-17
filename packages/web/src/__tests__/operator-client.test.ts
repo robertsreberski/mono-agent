@@ -72,6 +72,15 @@ describe("OperatorClient", () => {
     await expect(client.restart()).rejects.toMatchObject({ code: "restart_unconfirmed" });
     expect(calls).toEqual(Array(5).fill("http://127.0.0.1:1234/gui/v1/restart"));
   });
+  it("carries bounded settled manual failure accounting and rejects prose fields", async () => {
+    const accounting = { version: 2, usageIncluded: false, requests: [{ requestId: "fictional:1", model: "faux:summary", status: "rejected", providerInvoked: false, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }] };
+    let invalid = false;
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234", fetchImpl: async () => Response.json({ status: "failed", trigger: "manual", operationId: "fictional", accounting: invalid ? { ...accounting, summary: "Do not expose prose" } : accounting }) });
+    await expect(client.compactConversation("fictional")).resolves.toMatchObject({ status: "failed", accounting });
+    invalid = true;
+    await expect(client.compactConversation("fictional")).rejects.toMatchObject({ code: "invalid_compaction_response" });
+  });
+
   it("feature-detects v1 manual compaction and posts only the exact conversation", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "fixture", fetchImpl: (async (input, init) => {

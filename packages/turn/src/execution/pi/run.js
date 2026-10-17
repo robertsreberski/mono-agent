@@ -324,6 +324,8 @@ function splitUserContent(content) {
   return { text: texts.join("\n"), images };
 }
 
+import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
+
 export async function generateEngineTurnResponse(systemPrompt, options = {}) {
   return await executePiNativeResponse(systemPrompt, options);
 }
@@ -339,7 +341,21 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
   if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
   const dispatchProgress = createDispatchProgress();
   try {
-    const result = await executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress);
+    const compactionUsage = createCompactionUsage();
+    const observed = { ...options, onEvent: (event) => { compactionUsage.observe(event); options.onEvent?.(event); } };
+    const result = withCompactionUsage(await executeTrackedPiNativeResponse(systemPrompt, observed, control, dispatchProgress), compactionUsage);
+    if (options.manualCompaction && result.usage?.compaction) {
+      const accounting = manualCompactionAccounting(result.usage.compaction);
+      if (result.manualCompaction) result.manualCompaction.accounting = accounting;
+      else if (!result.cancelled && !options.abortSignal?.aborted && accounting.requests.some((row) => row.input !== null || row.output !== null || row.costUsd !== null)) {
+        result.manualCompaction = { status: "failed", trigger: "manual", operationId: accounting.requests[0].requestId.replace(/:\d+$/, ""), accounting, reason: "summary_failed" };
+      }
+    }
+    if (result.usage?.compaction) {
+      const event = compactionCostEvent(result);
+      options.onEvent?.(event);
+      result.events = [...(result.events || []), event];
+    }
     return { ...result, dispatchProgress: Object.freeze({ ...dispatchProgress }) };
   } catch (error) {
     throw withDispatchProgress(error, dispatchProgress);
@@ -735,8 +751,10 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       maxRetries,
       maxRetryDelayMs,
       steeringMode: toolSteeringMode,
-      options,
+      options: { ...options, onEffectiveEffort: (effectiveEffort) => onEvent({ type: "provider_execution_config", sdk: "pi", model: reference,
+        ...(options.effort ? { effort: options.effort } : {}), ...(effectiveEffort ? { effectiveEffort } : {}), timestamp: Date.now() }) },
     });
+    harness.compactionFailureKey = JSON.stringify([options.sessionsRoot || options.cwd || "runtime", requestedSessionId || providerSessionId]);
 
     if (options.nativeSessionProjection) {
       runState.session.setInheritedProjection(options.nativeSessionProjection.inherited);
@@ -937,18 +955,8 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     runState.silentTurn.liveInputRefusalReason = liveInputEpoch.silenceRefusalReason;
     const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch, dispatchProgress });
 
-    // Report the live harness value, not a downstream recreation of Pi's
-    // thinking-level normalization. This also captures any future adapter-side
-    // adjustment between construction and the provider request.
-    const providerEffectiveEffort = harness.getThinkingLevel();
-    onEvent({
-      type: "provider_execution_config",
-      sdk: "pi",
-      model: reference,
-      ...(options.effort ? { effort: options.effort } : {}),
-      effectiveEffort: providerEffectiveEffort,
-      timestamp: Date.now(),
-    });
+    onEvent({ type: "provider_execution_config", sdk: "pi", model: reference,
+      ...(options.effort ? { effort: options.effort } : {}), timestamp: Date.now() });
 
     onEvent({
       type: "provider_request_started",
@@ -1246,7 +1254,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       capabilitiesUsed,
       usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
       structuredResult: runState.structuredResult,
-      effectiveEffort: providerEffectiveEffort,
+      effectiveEffort: harness.getEffectiveEffort?.(),
     });
     const finalResult = buildFinalResult();
     await harness.endTurn(runState.externalAbort ? "aborted" : finalResult.error || finalResult.failureKind ? "failed" : "completed", {
@@ -1351,7 +1359,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       runtimeWarnings,
       isRetryable,
       piTransport,
-      effectiveEffort: harness?.getThinkingLevel?.(),
+      effectiveEffort: harness?.getEffectiveEffort?.(),
     });
     if (err?.code === "ERR_NATIVE_SESSION_AUTHORITY" || err?.code === "ERR_HANDOFF_DISPATCH_BUDGET") {
       return { ...failure, failureKind: err.code === "ERR_NATIVE_SESSION_AUTHORITY" ? "safety_native_session_authority" : "safety_handoff_dispatch_budget",

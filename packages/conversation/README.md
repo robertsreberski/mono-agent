@@ -362,6 +362,17 @@ and root drain/serialization remain prerequisites for a supported opt-in.
 
 ## Architecture
 
+Usage updates preserve inclusive billing totals while carrying optional
+context-eligible token counts for occupancy consumers. Settled failed manual
+compaction results are projected field by field, never returned as raw runtime
+objects.
+
+
+Manual compaction carries optional bounded billing accounting. A known settled
+failed summary returns `status: failed` after failure reconciliation without
+reusing the retired session. Lost/cancelled/unsettled outcomes remain errors.
+
+
 Memory reads receive the host-confirmed `retainedContext` signal from history
 mode. Optional `recordInvocation` and `resetRecallContext` store hooks maintain
 volatile automatic-recall receipts only after successful retained provider

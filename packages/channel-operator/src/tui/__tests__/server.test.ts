@@ -116,6 +116,17 @@ describe("startTuiAdapter", () => {
 
   });
 
+  it("preserves settled failed manual billing without summary prose", async () => {
+    const accounting = { version: 2 as const, usageIncluded: false as const, requests: [{ requestId: "fictional:1", model: "faux:summary", status: "rejected" as const,
+      input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd: 1.25 }] };
+    running = await startTuiAdapter({ apiKey: "test-owner", responder: { respond: async () => ({ text: "unused" }),
+      compactConversation: async () => ({ status: "failed", trigger: "manual", operationId: "fictional", accounting }) } });
+    const path = new URL("./conversations/fictional/compact", running.infoUrl).toString();
+    const response = await fetch(path, { method: "POST", headers: { authorization: "Bearer test-owner", "content-type": "application/json" }, body: "{}" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "failed", accounting });
+  });
+
   it("aborts the responder when the compaction HTTP client disconnects", async () => {
     let observed!: AbortSignal;
     let started!: () => void;

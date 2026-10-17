@@ -7,7 +7,10 @@
 import { calculateContextTokens, compact as compactPreparedContext, estimateContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../engine/context.js";
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
+import { compactionFailureGuard } from "./compaction-failures.js";
+import { summaryThinkingLevel } from "./summary-policy.js";
 import { randomUUID } from "node:crypto";
+import { MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 import {
   estimateFixedOverheadTokens,
   isLikelyContextTermination,
@@ -237,7 +240,7 @@ function emitCompactionEvent(onEvent, {
  * summary-model facade.
  */
 export function createCompactionAccounting() {
-  return { version: 1, requests: [], splitTurn: null, generatedSummaryTokens: null,
+  return { version: 2, usageIncluded: true, requests: [], splitTurn: null, generatedSummaryTokens: null,
     appendedMetadataBytes: null, tailEstimateTokens: null, transcriptBefore: null, transcriptAfter: null,
     fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null };
 }
@@ -284,10 +287,11 @@ export function createGuardedCompactionHook({
   beforeAttempt = null,
   beforeSummary = null,
 }) {
-  /** @type {null | {kind: string, reason?: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, retainedTailLength?: number, compaction?: any, error?: any}} */
+  /** @type {null | {kind: string, reason?: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, retainedTailLength?: number, compaction?: any, error?: any, warn?: boolean, retryAfterMs?: number, growthRequiredTokens?: number}} */
   let decision = null;
   const handler = async (event) => {
     decision = null;
+    let failureGuard = null;
     try {
       if (typeof beforeAttempt === "function") {
         const veto = await beforeAttempt(event);
@@ -339,21 +343,31 @@ export function createGuardedCompactionHook({
       accounting.splitTurn = prepared.value.isSplitTurn;
       accounting.transcriptBefore = await estimateBuiltContextTokens(event.branchEntries);
       accounting.fullRequestBefore = fixedOverheadTokens === null || accounting.transcriptBefore === null ? null : accounting.transcriptBefore + fixedOverheadTokens;
+      failureGuard = compactionFailureGuard({ scope: harness.compactionFailureKey, model: harness.getModel(),
+        policy: effectivePolicy, tokens: accounting.fullRequestBefore ?? accounting.transcriptBefore ?? prepared.value.tokensBefore, trigger });
+      if (failureGuard?.suppressed) {
+        decision = { kind: "suppressed", reason: "recent_identical_failure", warn: failureGuard.warn, retryAfterMs: failureGuard.retryAfterMs, growthRequiredTokens: failureGuard.growthRequiredTokens };
+        failureGuard.suppress();
+        return { cancel: true };
+      }
       accounting.tailEstimateTokens = prepared.value.retainedTail.reduce((sum, message) => sum + estimateTokens(message), 0);
       const input = prepareSummaryInput(prepared.value);
       accounting.preparation = input.metadata;
       const compacted = await compactPreparedContext(
         input.preparation,
-        summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests }),
+        summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort,
+          // Derive the useful minimum before the kit clamps requests to model.maxTokens.
+          // Small explicit split budgets may be shorter than Pi's normal answer minimum.
+          minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, Math.floor(prepared.value.settings.reserveTokens * (prepared.value.isSplitTurn ? 0.5 : 0.8))) }),
         harness.getModel(),
         event.customInstructions,
-        typeof harness.getThinkingLevel === "function" ? harness.getThinkingLevel() : undefined,
+        summaryThinkingLevel(harness.getModel(), effectivePolicy.effort),
         undefined,
         undefined,
         event.context || BACKGROUND_CONTEXT,
       );
       if (compacted.ok === false) {
-        decision = { kind: "failed", error: compacted.error };
+        decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error: compacted.error };
         return { cancel: true };
       }
       const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
@@ -391,8 +405,10 @@ export function createGuardedCompactionHook({
       };
       return { compaction: compacted.value };
     } catch (error) {
-      decision = { kind: "failed", error };
+      decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error };
       return { cancel: true };
+    } finally {
+      failureGuard?.settle(decision?.kind, accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
     }
   };
   return { handler, getDecision: () => decision };
@@ -417,6 +433,19 @@ export function reportGuardedCompactionOutcome({
   runtimeWarnings,
   effectivePolicy,
 }) {
+  if (decision?.kind === "headroom_unavailable") {
+    runtimeWarnings?.push({ warning_kind: "context_compaction_insufficient_headroom", source: "pi", trigger,
+      message: "Summary cannot fit a useful answer within the model/context ceiling; provider was not invoked." });
+    emit(onEvent, { operationId, status: "skipped", trigger, model, reason: "insufficient_summary_headroom" });
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
+  }
+  if (decision?.kind === "suppressed") {
+    if (decision.warn) runtimeWarnings?.push({ warning_kind: "context_compaction_suppressed", source: "pi", trigger,
+      message: "An unchanged failed compaction was suppressed; retry after cooldown, meaningful context growth or a summary-policy change.",
+      retry_after_ms: decision.retryAfterMs, growth_required_tokens: decision.growthRequiredTokens });
+    emit(onEvent, { operationId, status: "skipped", trigger, model, reason: "recent_identical_failure" });
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
+  }
   if (decision?.kind === "not_reducible" || decision?.kind === "insufficient_savings") {
     const warningKind = decision.kind === "not_reducible"
       ? "context_compaction_not_reducible"
@@ -529,6 +558,7 @@ export async function tryCompact(harness, {
   const operationId = randomUUID();
   const started = performance.now();
   const accounting = createCompactionAccounting();
+  accounting.usageIncluded = trigger !== "manual";
   const emit = createCompactionEmitter(accounting, started);
   emit(onEvent, {
     operationId,

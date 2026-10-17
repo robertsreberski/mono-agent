@@ -853,17 +853,22 @@ describe("pi-native AgentHarness bridge", () => {
 
     expect(result.error).toBeNull();
     expect(observedReasoning).toBe("max");
-    expect(result.effectiveEffort).toBe("max");
+    expect(result.effectiveEffort).toBeNull(); // Faux emitted no provider payload.
   });
 
   it.each([
-    ["non-reasoning", false, "high", false, "off"],
-    ["max-clamped", true, "max", false, "xhigh"],
+    ["non-reasoning", false, "high", false, "none"],
+    ["max-clamped", true, "max", false, "high"],
     ["max-capable", true, "max", true, "max"],
     ["ultra-compatibility", true, "ultra", false, "low"],
-  ])("reports the live Pi thinking level for %s", async (_name, reasoning, effort, nativeMax, expected) => {
+  ])("reports the observed provider payload effort for %s", async (_name, reasoning, effort, nativeMax, expected) => {
     const model = setup({ reasoning });
     if (nativeMax) model.thinkingLevelMap = { xhigh: "xhigh", max: "max" };
+    const original = faux.provider.streamSimple.bind(faux.provider);
+    faux.provider.streamSimple = async (selected, context, options) => {
+      await options.onPayload?.({ reasoning_effort: expected }, { ...selected, api: "openai-completions" });
+      return original(selected, context, options);
+    };
     faux.setResponses([fauxAssistantMessage([fauxText("done")])]);
     const onEvent = vi.fn();
 
@@ -873,7 +878,7 @@ describe("pi-native AgentHarness bridge", () => {
       onEvent,
     }));
     const events = onEvent.mock.calls.map(([event]) => event);
-    const configIndex = events.findIndex((event) => event?.type === "provider_execution_config");
+    const configIndex = events.findIndex((event) => event?.type === "provider_execution_config" && event.effectiveEffort);
 
     expect(result.effectiveEffort).toBe(expected);
     expect(events[configIndex]).toMatchObject({
@@ -881,7 +886,7 @@ describe("pi-native AgentHarness bridge", () => {
       effort,
       effectiveEffort: expected,
     });
-    expect(events[configIndex + 1]).toMatchObject({ type: "provider_request_started", model: "faux:faux-model" });
+    expect(events.findIndex((event) => event.type === "provider_request_started")).toBeLessThan(configIndex);
   });
 
   it("returns the unified result shape and streams normalized events on a simple turn", async () => {
@@ -902,7 +907,7 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.sdk).toBe("pi");
     expect(result.model).toBe("faux:faux-model");
     expect(result.effort).toBe("medium");
-    expect(result.effectiveEffort).toBe("medium");
+    expect(result.effectiveEffort).toBeNull(); // No serialized effort from the faux provider.
     expect(result.cancelled).toBe(false);
     expect(result.providerSessionId).toBeTruthy();
     expect(Array.isArray(result.events)).toBe(true);
@@ -917,7 +922,6 @@ describe("pi-native AgentHarness bridge", () => {
       sdk: "pi",
       model: "faux:faux-model",
       effort: "medium",
-      effectiveEffort: "medium",
     });
     expect(events[1]).toMatchObject({ type: "provider_request_started", sdk: "pi", runtime: "pi" });
     expect(events.some((event) => event?.type === "provider_request_completed")).toBe(true);
@@ -2386,9 +2390,55 @@ describe("pi-native auto-compaction", () => {
     return messages;
   }
 
+  it("suppresses unchanged failed summaries across resumed runs and retains their spend", async () => {
+    const base = setup();
+    let summaries = 0;
+    const respond = (context) => {
+      if (JSON.stringify(context.messages[0]).includes("context summarization assistant")) {
+        summaries += 1;
+        return fauxAssistantMessage([], { stopReason: "length" });
+      }
+      return fauxAssistantMessage([fauxText("Fictional reply")]);
+    };
+    faux.setResponses(Array.from({ length: 12 }, () => respond));
+    const options = runOptions(base, { piResolvedModel: { ...base, contextWindow: 200000 }, compaction: { contextWindowOverride: 32000 },
+      sessionId: "fictional-suppression", sessionKeepAlive: true, sessionsRoot,
+      messages: bigHistory(60, 2000), resolvePiApiKey: async () => "faux-key" });
+    const first = await generateEngineTurnResponse("system", options);
+    expect(first.usage.compaction.requests).toHaveLength(1);
+    expect(first.usage.compaction.requests[0].status).toBe("rejected");
+    const second = await generateEngineTurnResponse("system", { ...options, messages: [{ role: "user", content: "Continue" }] });
+    const third = await generateEngineTurnResponse("system", { ...options, messages: [{ role: "user", content: "Continue again" }] });
+    expect(summaries).toBe(1);
+    expect([first, second, third].flatMap((result) => result.runtimeWarnings).filter((warning) => warning.warning_kind === "context_compaction_suppressed")).toHaveLength(1);
+    expect(third.runtimeWarnings.some((warning) => warning.warning_kind === "context_compaction_suppressed")).toBe(false);
+  });
+
+  it("skips and suppresses doomed low-headroom summaries without invoking a provider", async () => {
+    const base = setup();
+    let summaries = 0;
+    const respond = (context) => {
+      if (JSON.stringify(context.messages[0]).includes("context summarization assistant")) summaries += 1;
+      return fauxAssistantMessage([fauxText("Fictional reply")]);
+    };
+    faux.setResponses(Array.from({ length: 8 }, () => respond));
+    const options = runOptions(base, { piResolvedModel: { ...base, contextWindow: 4000 },
+      sessionId: "fictional-headroom", sessionKeepAlive: true, sessionsRoot,
+      messages: bigHistory(60, 2000), resolvePiApiKey: async () => "faux-key" });
+    const first = await generateEngineTurnResponse("system", options);
+    const second = await generateEngineTurnResponse("system", { ...options, messages: [{ role: "user", content: "Continue" }] });
+    expect(summaries).toBe(0);
+    expect(first.runtimeWarnings.some((warning) => warning.warning_kind === "context_compaction_insufficient_headroom")).toBe(true);
+    expect(first.events.some((event) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom")).toBe(true);
+    expect(first.usage.compaction).toMatchObject({ cost_usd: 0 });
+    expect(first.events.find((event) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom").accounting.requests[0]).toMatchObject({
+      providerInvoked: false, reason: "insufficient_summary_headroom", costUsd: 0 });
+    expect([first, second].flatMap((result) => result.runtimeWarnings).filter((warning) => warning.warning_kind === "context_compaction_suppressed")).toHaveLength(1);
+  });
+
   it("proactively compacts before the turn when near the window", async () => {
     const base = setup();
-    const windowed = { ...base, contextWindow: 4000 };
+    const windowed = { ...base, contextWindow: 200000 };
     let summaryCalled = false;
     faux.setResponses([
       () => { summaryCalled = true; return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]); },
@@ -2396,6 +2446,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
+      compaction: { contextWindowOverride: 4000 },
       model: { provider: "faux", model: "proactive", reference: "faux:proactive" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
@@ -2427,7 +2478,7 @@ describe("pi-native auto-compaction", () => {
     }));
     expect(result.manualCompaction).toMatchObject({ status: "succeeded" });
     expect(summaries).toBe(1);
-    expect(result.events).toBeUndefined();
+    expect(result.events).toEqual([expect.objectContaining({ type: "cost_accumulated" })]);
     // The only provider request is Pi's own summarization prompt; the host
     // system prompt never reaches a model in manual mode.
     expect(summaryContext.messages[0]).toMatchObject({ role: "system", content: expect.stringContaining("context summarization assistant") });
@@ -2509,7 +2560,8 @@ describe("pi-native auto-compaction", () => {
         reconciliation: { version: 1, purpose: "compaction", fenceDigest: "a".repeat(64), initialInputId: null } },
       resolvePiApiKey: async () => "faux-key",
     }));
-    expect(result.manualCompaction).toBeUndefined();
+    if (outcome === "cancelled") expect(result.manualCompaction).toBeUndefined();
+    else expect(result.manualCompaction).toMatchObject({ status: "failed", accounting: { version: 2 } });
     await refreshProviderSession(id);
     const repo = new JsonlSessionRepo({ sessionsRoot }), raw = await repo.open(await repo.find(id), { repair: false });
     try {
@@ -2557,13 +2609,13 @@ describe("pi-native auto-compaction", () => {
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
     }));
-    expect(failed.manualCompaction).toBeUndefined();
+    expect(failed.manualCompaction).toMatchObject({ status: "failed", accounting: { version: 2 } });
     expect(failed.error).toBeTruthy();
   });
 
   it("uses the same OpenCode session headers for compaction and the main turn", async () => {
     const base = setup({ id: "deepseek-v4-pro" }, "opencode-go");
-    const windowed = { ...base, contextWindow: 4000 };
+    const windowed = { ...base, contextWindow: 200000 };
     const dispatchedHeaders = [];
     faux.setResponses([
       (_context, options) => {
@@ -2578,6 +2630,7 @@ describe("pi-native auto-compaction", () => {
 
     const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
+      compaction: { contextWindowOverride: 4000 },
       providerAttributionSessionId: "compaction-epoch",
       messages: bigHistory(60, 2000),
     }));
@@ -2618,8 +2671,8 @@ describe("pi-native auto-compaction", () => {
 
   it("does not re-compact (or loop) when a proactively-compacted turn still overflows", async () => {
     const base = setup();
-    // Small window so the PROACTIVE trigger fires; the turn then still overflows.
-    const windowed = { ...base, contextWindow: 4000 };
+    // Early compaction override triggers before the real provider window is full.
+    const windowed = { ...base, contextWindow: 200000 };
     let providerCalls = 0;
     faux.setResponses([
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); }, // proactive compact
@@ -2628,6 +2681,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
+      compaction: { contextWindowOverride: 4000 },
       model: { provider: "faux", model: "guard", reference: "faux:guard" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",

@@ -1,4 +1,4 @@
-import { parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/contracts";
+import { isAgentCompactionAccounting, parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/contracts";
 import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   AGENT_CONTEXT_IMPORT_VERSION,
@@ -607,7 +607,7 @@ export class OperatorClient {
     }
     let raw: unknown;
     try {
-      raw = JSON.parse(await readBoundedBody(response, 2048, "compaction_response_too_large")) as unknown;
+      raw = JSON.parse(await readBoundedBody(response, 8192, "compaction_response_too_large")) as unknown;
     } catch {
       throw new WebConsoleError("invalid_compaction_response", "The agent returned invalid compaction data.", 502);
     }
@@ -619,7 +619,9 @@ export class OperatorClient {
       || (body.tokensAfter !== undefined && (typeof body.tokensAfter !== "number" || !Number.isFinite(body.tokensAfter) || body.tokensAfter < 0))) {
       throw new WebConsoleError("invalid_compaction_response", "The agent returned invalid compaction data.", 502);
     }
+    if (body.accounting !== undefined && !isAgentCompactionAccounting(body.accounting)) throw new WebConsoleError("invalid_compaction_response", "Invalid compaction accounting.", 502);
     return {
+      ...(isAgentCompactionAccounting(body.accounting) ? { accounting: body.accounting } : {}),
       status: body.status as AgentManualCompactionResult["status"], trigger: "manual", operationId: body.operationId,
       ...(typeof body.reason === "string" ? { reason: body.reason.slice(0, 128) } : {}),
       ...(typeof body.tokensBefore === "number" ? { tokensBefore: body.tokensBefore } : {}),

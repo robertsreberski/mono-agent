@@ -194,7 +194,7 @@ export const normalizeUsage = (data: unknown): NormalizedUsage | null => {
  * anything; subagent delegations are not top-level telemetry and are never
  * added on top of the aggregate that already contains them.
  */
-export function latestMessageCostUsd(parts: readonly CostTelemetryPart[]): number | undefined {
+function latestAggregateCostUsd(parts: readonly CostTelemetryPart[]): number | undefined {
   for (let partIndex = parts.length - 1; partIndex >= 0; partIndex -= 1) {
     const part = parts[partIndex];
     if (part?.type !== "telemetry" || part.event === undefined) continue;
@@ -204,6 +204,58 @@ export function latestMessageCostUsd(parts: readonly CostTelemetryPart[]): numbe
     if (cost !== undefined) return cost;
   }
   return undefined;
+}
+
+/** Read summary request snapshots separately: a lifecycle cost is not a run aggregate. */
+function compactionObservations(parts: readonly CostTelemetryPart[]) {
+  type Row = { tokensPartial?: boolean; model?: string | undefined; included: boolean; input?: number | undefined; cachedInput?: number | undefined; cacheCreation?: number | undefined; output?: number | undefined; cost?: number | undefined };
+  const requests = new Map<string, Row>();
+  for (const part of parts) {
+    if (part.type !== "telemetry" || !part.event) continue;
+    const layers = dataLayers(part.data);
+    if (!isCompactionTelemetry(part.event, layers)) continue;
+    for (const layer of layers) {
+      const accounting = recordValue(layer.accounting);
+      if (!accounting || !Array.isArray(accounting.requests)) continue;
+      for (const raw of accounting.requests) {
+        const row = recordValue(raw);
+        if (!row || typeof row.requestId !== "string" || row.requestId.length > 256) continue;
+        if (row.providerInvoked === false) { requests.delete(row.requestId); continue; }
+        const usage = normalizeUsage(row);
+        const tokens = tokenObservation(row);
+        const before = requests.get(row.requestId);
+        const known = (value: number | undefined, previous: number | undefined) => value !== undefined && value >= 0 ? value : previous;
+        requests.set(row.requestId, { included: accounting.version === 2 && accounting.usageIncluded === true,
+          model: usage?.model ?? before?.model ?? (typeof layer.model === "string" ? layer.model : undefined),
+          tokensPartial: hasTokenFields(row) && tokens === undefined,
+          input: known(tokens ? usage?.input : undefined, before?.input), cachedInput: known(tokens ? usage?.cachedInput : undefined, before?.cachedInput),
+          cacheCreation: known(tokens ? usage?.cacheCreation : undefined, before?.cacheCreation), output: known(tokens ? usage?.output : undefined, before?.output), cost: known(usage?.cost, before?.cost) });
+      }
+    }
+  }
+  const rows = [...requests.values()];
+  const slice = (values: Row[]): MessageUsageSlice => {
+    const observed = values.filter((row) => [row.input, row.cachedInput, row.cacheCreation, row.output].some((value) => value !== undefined));
+    const costs = values.filter((row) => row.cost !== undefined);
+    const sums = (["input", "cachedInput", "cacheCreation", "output"] as const).map((key) => observed.reduce((sum, row) => sum + (row[key] ?? 0), 0));
+    const [input = 0, cacheRead = 0, cacheWrite = 0, output = 0] = sums.map((value) => Math.min(Number.MAX_SAFE_INTEGER, value));
+    return {
+      ...(observed.length ? { tokens: { input, cacheRead, cacheWrite, output } } : {}),
+      ...(costs.length ? { costUsd: costs.reduce((sum, row) => sum + row.cost!, 0) } : {}),
+      ...(costs.length < values.length ? { costPartial: true as const } : {}),
+      ...(sums.some((value) => !Number.isSafeInteger(value)) || values.some((row) => row.tokensPartial || [row.input, row.cachedInput, row.cacheCreation, row.output].some((value) => value === undefined)) ? { tokensPartial: true as const } : {}),
+    };
+  };
+  return { rows, slice: slice(rows), extra: slice(rows.filter((row) => !row.included)),
+    byModel: [...new Set(rows.map((row) => row.model))].map((model) => ({ ...slice(rows.filter((row) => row.model === model)), ...(model === undefined ? {} : { model }) })) };
+}
+
+/** Aggregate totals already include v2 run summaries; legacy/manual receipts do not. */
+export function latestMessageCostUsd(parts: readonly CostTelemetryPart[]): number | undefined {
+  const aggregate = latestAggregateCostUsd(parts);
+  const compaction = compactionObservations(parts);
+  if (aggregate === undefined) return compaction.slice.costUsd;
+  return aggregate + (compaction.extra.costUsd ?? 0);
 }
 
 /**
@@ -233,6 +285,8 @@ export interface MessageUsageSlice {
 export interface MessageUsageRollup {
   readonly main: MessageUsageSlice;
   readonly subagents: readonly (MessageUsageSlice & { readonly detached: boolean })[];
+  readonly compaction?: MessageUsageSlice & { readonly requests: number; readonly requestsWithUsage: number };
+  readonly compactionByModel?: readonly (MessageUsageSlice & { readonly model?: string })[];
 }
 
 type PartRecord = CostTelemetryPart & Readonly<Record<string, unknown>>;
@@ -312,16 +366,20 @@ export function messageUsageRollup(message: {
   const fields = ["input", "output", "cacheRead", "cacheWrite"] as const;
   const syncTotals = Object.fromEntries(fields.map((field) => [field,
     syncTokens.reduce((sum, child) => sum + child[field], 0)])) as Record<(typeof fields)[number], number>;
+  const compaction = compactionObservations(message.parts);
+  const extraTokens = tokens === undefined ? compaction.slice.tokens : compaction.extra.tokens;
+  if (extraTokens) tokens = { input: (tokens?.input ?? 0) + extraTokens.input, output: (tokens?.output ?? 0) + extraTokens.output,
+    cacheRead: (tokens?.cacheRead ?? 0) + extraTokens.cacheRead, cacheWrite: (tokens?.cacheWrite ?? 0) + extraTokens.cacheWrite };
   const guardedTokens = tokens === undefined && syncTokens.length === 0 ? undefined
     : Object.fromEntries(fields.map((field) => [field,
       Math.min(Number.MAX_SAFE_INTEGER, Math.max(tokens?.[field] ?? 0, syncTotals[field]))])) as MessageUsageSlice["tokens"];
-  const tokenGuardPartial = fields.some((field) => syncTotals[field] > Number.MAX_SAFE_INTEGER
+  const tokenGuardPartial = fields.some((field) => (tokens?.[field] ?? 0) > Number.MAX_SAFE_INTEGER || syncTotals[field] > Number.MAX_SAFE_INTEGER
     || (tokens !== undefined && syncTotals[field] > tokens[field]));
   const reportedCost = latestMessageCostUsd(message.parts);
   const syncObserved = subagents.some((child) => !child.detached && child.costUsd !== undefined);
   const costUsd = reportedCost === undefined
     ? syncObserved ? syncCost : undefined
-    : Math.max(reportedCost, syncCost);
+    : Math.max(reportedCost, syncCost + (compaction.slice.costUsd ?? 0));
   // A failed run may have no executed attribution, but its attempted reference
   // still names the provider model used by the persisted turn when available.
   const model = aggregate?.model ?? message.attribution?.executed?.model ?? message.attribution?.attempted?.model;
@@ -330,10 +388,15 @@ export function messageUsageRollup(message: {
       ...(model === undefined ? {} : { model }),
       ...(guardedTokens === undefined ? {} : { tokens: guardedTokens }),
       ...(costUsd === undefined ? {} : { costUsd }),
-      ...(guardedTokens !== undefined && reportedCost === undefined ? { costPartial: true as const } : {}),
-      ...(rejectedTokens || tokenGuardPartial || (tokens === undefined && syncTokens.length > 0)
+      ...((guardedTokens !== undefined && reportedCost === undefined) || compaction.slice.costPartial
+        || (compaction.rows.length > 0 && latestAggregateCostUsd(message.parts) === undefined)
+        || (reportedCost !== undefined && reportedCost < syncCost + (compaction.slice.costUsd ?? 0)) ? { costPartial: true as const } : {}),
+      ...(rejectedTokens || tokenGuardPartial || compaction.slice.tokensPartial || (tokens === undefined && syncTokens.length > 0)
         ? { tokensPartial: true as const } : {}),
     },
     subagents,
+    ...(compaction.rows.length ? { compaction: { ...compaction.slice, requests: compaction.rows.length,
+      requestsWithUsage: compaction.rows.filter((row) => row.input !== undefined || row.output !== undefined).length },
+      compactionByModel: compaction.byModel } : {}),
   };
 }

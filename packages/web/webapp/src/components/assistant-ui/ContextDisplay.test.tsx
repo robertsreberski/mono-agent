@@ -254,3 +254,16 @@ describe("ContextDisplay", () => {
     expect(within(popup).queryByRole("region", { name: "Codex plan" })).not.toBeInTheDocument();
   });
 });
+
+it("shows Compaction as an included cost subset and preserves unknown pricing", async () => {
+  const { rerender } = render(<ContextDisplay context={context} totals={{ ...typical, total: { costUsd: 1.75 }, compaction: { requests: 1, costUsd: 1.25 } }} />);
+  let popup = await open();
+  expect(within(popup).getByText("(included in total)")).toHaveClass("sr-only");
+  expect(within(popup).getByText("Compaction").parentElement).toHaveTextContent("$1.25");
+  expect(popup.querySelector(".context-display-cost-total")).toHaveTextContent("$1.75");
+  fireEvent.click(screen.getByRole("button", { name: /^Context usage:/ }));
+  rerender(<ContextDisplay context={context} totals={{ ...typical, total: {}, compaction: { requests: 1, costPartial: true } }} />);
+  popup = await open();
+  expect(within(popup).getByText("Compaction").parentElement).toHaveTextContent("—");
+  expect(popup.querySelector(".context-display-cost-total")).toBeNull();
+});

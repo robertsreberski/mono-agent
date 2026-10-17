@@ -149,7 +149,7 @@ function redact(
     // Closed, typed compaction metadata exceptions. Strings/objects under these
     // names are still sensitive; null estimates and boolean exactness carry no secret.
     && !(key === "tokenCountsExact" && typeof value === "boolean")
-    && !(["generatedSummaryTokens", "tailEstimateTokens"].includes(key) && value === null)
+    && !(["generatedSummaryTokens", "tailEstimateTokens", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cache_creation_tokens"].includes(key) && value === null)
   ) {
     return "[redacted]";
   }

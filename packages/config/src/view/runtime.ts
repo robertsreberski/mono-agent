@@ -120,6 +120,8 @@ export function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): Confi
         value: compaction.keepRecentTokens === undefined ? "adaptive by model" : String(compaction.keepRecentTokens),
         jsonPresent: json.runtime?.compaction?.keepRecentTokens !== undefined,
       }),
+      toField({ id: "runtime.compaction.effort", label: "Summary effort", value: compaction.effort || "auto", jsonPresent: json.runtime?.compaction?.effort !== undefined }),
+      toField({ id: "runtime.compaction.failureCooldownMs", label: "Summary failure cooldown", value: String(compaction.failureCooldownMs ?? 900000), jsonPresent: json.runtime?.compaction?.failureCooldownMs !== undefined }),
       toField({
         id: "runtime.compaction.summaryMaxTokens",
         label: "Compaction summary budget",

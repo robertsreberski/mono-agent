@@ -103,7 +103,7 @@ describe("summary request accounting", () => {
     const originalContext = { systemPrompt: "original", messages: [user("private")] };
     const requests = [];
     const models = { marker: "bound", completeSimple: vi.fn(async function (m, context, opts, ctx) {
-      expect(this).toBe(models); expect(m).toBe(model); expect(opts).toEqual({ ...options, transport: "sse", maxRetries: 0 }); expect(ctx).toBe(requestContext);
+      expect(this).toBe(models); expect(m).toBe(model); expect(opts).toEqual({ ...options, reasoning: undefined, transport: "sse", maxRetries: 0 }); expect(ctx).toBe(requestContext);
       expect(context.messages).toBe(originalContext.messages);
       return { ...answer(), usage: undefined };
     }), other() { return this.marker; } };
@@ -129,4 +129,24 @@ describe("summary request accounting", () => {
     expect(requests[0]).toMatchObject({ status: "failed", reason: "request_failed", costUsd: null });
     expect(JSON.stringify(requests)).not.toMatch(/SECRET|private/u);
   });
+});
+it.each(["context", "model"])("rejects %s-clamped doomed summaries before invoking the provider", async (limit) => {
+  const requests = [];
+  const target = { completeSimple: vi.fn(async () => answer()) };
+  const facade = summaryModels(target, { operationId: `fictional-low-${limit}`, focus: SUMMARY_FOCUS, requests });
+  const cramped = { ...model, maxTokens: limit === "model" ? 512 : 4000, contextWindow: limit === "context" ? 1000 : 200000 };
+  await expect(facade.completeSimple(cramped, { messages: [user("Fictional input")] }, { maxTokens: 2000 })).rejects.toThrow("insufficient_summary_headroom");
+  expect(target.completeSimple).not.toHaveBeenCalled();
+  expect(requests[0]).toMatchObject({ status: "rejected", reason: "insufficient_summary_headroom", providerInvoked: false,
+    input: 0, output: 0, costUsd: 0, minimumAnswerTokens: 1024 });
+});
+
+it("keeps the useful-answer floor when the kit already clamped a request to model.maxTokens", async () => {
+  const requests = [];
+  const target = { completeSimple: vi.fn(async () => answer()) };
+  const facade = summaryModels(target, { operationId: "fictional-model-floor", focus: SUMMARY_FOCUS, requests, minimumAnswerTokens: 1024 });
+  await expect(compact(prep([user("Fictional input")], { settings: { reserveTokens: 15000, keepRecentTokens: 1000 } }),
+    facade, { ...model, maxTokens: 512 }, undefined, undefined, undefined, undefined, BACKGROUND_CONTEXT)).rejects.toThrow("insufficient_summary_headroom");
+  expect(target.completeSimple).not.toHaveBeenCalled();
+  expect(requests[0]).toMatchObject({ textTargetTokens: 512, minimumAnswerTokens: 1024, providerInvoked: false, costUsd: 0 });
 });

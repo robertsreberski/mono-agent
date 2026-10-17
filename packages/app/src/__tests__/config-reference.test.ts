@@ -31,6 +31,8 @@ const EXPECTED_CORE_FIELD_TYPES: Record<keyof typeof CORE_CONFIG_FIELD_IDS, Conf
   "runtime.effort": "string",
   "runtime.maxTurns": "integer",
   "runtime.compaction.enabled": "boolean",
+  "runtime.compaction.effort": "string",
+  "runtime.compaction.failureCooldownMs": "integer",
   "runtime.compaction.triggerRatio": "number",
   "runtime.compaction.keepRecentTokens": "integer",
   "runtime.compaction.summaryMaxTokens": "integer",

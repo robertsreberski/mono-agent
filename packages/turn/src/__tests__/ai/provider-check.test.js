@@ -160,7 +160,7 @@ describe("provider check", () => {
     expect(fixture.faux.state.callCount).toBe(1);
   });
 
-  it("keeps ordinary runtime premature-length recovery semantics unchanged", async () => {
+  it("preserves ordinary length failure without paying for a doomed summary", async () => {
     const fixture = transportFixture(fauxAssistantMessage("four token reply", { stopReason: "length" }));
     const outcome = await generateEngineTurnResponse("Provider connectivity check. Reply OK.", {
       ...fixture.input.runtimeOptions,
@@ -171,7 +171,9 @@ describe("provider check", () => {
     });
     expect(outcome.failureKind).toBe("context_limit");
     expect(fixture.dispatch.mock.calls[0][3].maxTokens).toBe(64);
-    expect(fixture.faux.state.callCount).toBe(2); // Ordinary reactive compaction is still attempted.
+    expect(fixture.faux.state.callCount).toBe(1); // Recovery evaluates headroom, but a 64-token model cannot summarize usefully.
+    expect(outcome.runtimeWarnings.some((warning) => warning.warning_kind === "context_compaction_insufficient_headroom")).toBe(true);
+    expect(outcome.events.some((event) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom")).toBe(true);
   });
 
   it("gives cancellation precedence over a real length response", async () => {

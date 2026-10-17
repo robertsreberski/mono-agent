@@ -7,6 +7,8 @@ import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "../tools/mcp/timeouts.js"
 
 /**
  * @typedef {Object} AgentCompactionPolicy
+ * @property {string} effort
+ * @property {number} failureCooldownMs
  * @property {boolean} enabled
  * @property {number} contextWindow
  * @property {number} triggerRatio
@@ -99,6 +101,8 @@ export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} 
   const adaptiveMinSavingsTokens = clampInteger(contextWindow * 0.10, 4000, 4000, 20000);
   return {
     enabled: compaction.enabled !== false,
+    effort: compaction.effort || "auto",
+    failureCooldownMs: clampInteger(compaction.failureCooldownMs, 900000, 0, 86400000),
     contextWindow,
     triggerRatio,
     triggerTokens: Math.min(ratioTrigger, reserveTrigger),

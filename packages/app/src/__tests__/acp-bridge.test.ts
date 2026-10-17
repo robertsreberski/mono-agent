@@ -337,7 +337,8 @@ describe("ACP bridge", () => {
       contextWindow: undefined,
     },
     { name: "prefers the live corrected ON window for ACP accounting", advertisesToolEnvironment: true, requireToolEnvironment: true, contextWindow: 500_000 },
-  ])("$name", async ({ advertisesToolEnvironment, requireToolEnvironment, contextWindow }) => {
+    { name: "excludes billed compaction tokens from ACP occupancy", advertisesToolEnvironment: true, requireToolEnvironment: true, contextWindow: undefined, summaryTokens: 10000 },
+  ])("$name", async ({ advertisesToolEnvironment, requireToolEnvironment, contextWindow, summaryTokens = 0 }) => {
     let turnBody: Record<string, unknown> | undefined;
     const server = createServer(async (request, response) => {
       if (request.method === "GET" && request.url === "/gui/v1/info") {
@@ -363,7 +364,8 @@ describe("ACP bridge", () => {
               type: "usage_update",
               model: "fixture-model",
               cumulativeUsd: 0.01,
-              tokens: { input: 10, output: 3, cacheRead: 2, cacheCreation: 1 },
+              tokens: { input: 10 + summaryTokens, output: 3, cacheRead: 2, cacheCreation: 1 },
+              ...(summaryTokens ? { contextTokens: 16 } : {}),
             },
           }),
           JSON.stringify({ kind: "append", delta: "hello" }),

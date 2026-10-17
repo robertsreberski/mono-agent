@@ -124,11 +124,13 @@ async function captureRuntime(session) {
 async function captureMidRun(pn) {
   const { createMidRunCompaction } = await pn("mid-run-compaction");
   const hooks = [], subscribers = [], settings = [], requests = [], events = [], warnings = [];
-  const model = { provider: "fictional", api: "faux", id: "summary", contextWindow: 10000, maxTokens: 1000, reasoning: false };
+  // Keep the frozen catalog threshold at 10k, with a live request model large
+  // enough for the 12.5k summary input. The old live 10k metadata was impossible.
+  const model = { provider: "fictional", api: "faux", id: "summary", contextWindow: 200000, maxTokens: 1000, reasoning: false };
   const branchEntries = Array.from({ length: 10 }, (_, index) => ({ type: "message", id: `mid-${index}`, parentId: index ? `mid-${index - 1}` : null, timestamp: 1,
     message: index % 2 ? { ...fauxAssistantMessage([fauxText(`Fictional reply ${index} ${"x".repeat(5000)}`)]), timestamp: 1 }
       : { role: "user", content: `Fictional request ${index} ${"x".repeat(5000)}`, timestamp: 1 } }));
-  const harness = { models: { getModel: () => model, completeSimple: async (_model, context, options) => { requests.push(JSON.stringify({ context, options })); return {
+  const harness = { models: { getModel: () => ({ ...model, contextWindow: 10000 }), completeSimple: async (_model, context, options) => { requests.push(JSON.stringify({ context, options })); return {
     role: "assistant", content: [{ type: "text", text: "Fictional older-history checkpoint" }], stopReason: "stop", usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0 } },
   }; } }, getModel: () => model, getThinkingLevel: () => "off", setCompactionSettings: async (value) => settings.push(value), setMidRunCompactionArmed: () => {},
     on: (_type, hook) => { hooks.push(hook); return () => {}; }, subscribe: (hook) => { subscribers.push(hook); return () => {}; } };

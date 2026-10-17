@@ -24,6 +24,8 @@
  * Typed per-run context-compaction policy. Every field is
  * optional; omitted scalar budgets resolve adaptively against the effective
  * model context window.
+ * @property {"auto"|"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra"} [effort] Independent summary reasoning; default auto chooses none or the lowest supported level.
+ * @property {number} [failureCooldownMs] Cross-run summary failure suppression; default 900000, 0 disables.
  * @property {boolean} [enabled]              Whether auto-compaction runs at all.
  * @property {number} [triggerRatio]          Fraction of the context window that arms the proactive trigger.
  * @property {number} [keepRecentTokens]      Recent-token budget preserved across a compaction.

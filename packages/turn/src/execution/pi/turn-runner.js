@@ -140,6 +140,7 @@ export async function buildTurnTools(runState, {
         askParentController: options.askParentController,
         finishSilentlyController: options.finishSilentlyController,
         silentTurnState: runState.silentTurn,
+    onEffectiveEffort: options.onEffectiveEffort,
         toolExposure: options.toolExposure,
         // The child inherits the parent's route and workspace unless its profile
         // pins a model; the tool closure reads these to build each child request.
@@ -305,6 +306,7 @@ export async function buildTurnHarness(runState, {
     tools,
     toolExecutionMode,
     silentTurnState: runState.silentTurn,
+    onEffectiveEffort: options.onEffectiveEffort,
     streamOptions: { transport: providerCheck ? "sse" : transport, maxRetries: providerCheck ? 0 : maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },

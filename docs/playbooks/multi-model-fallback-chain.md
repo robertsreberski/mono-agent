@@ -99,3 +99,21 @@ rollback restores those backups. Only persisted Web inbound message IDs authoriz
 switch/summary work; pending messages are not replayed. This does not enable native
 switching on fallback routes, TUI/ACP requests or subagents. See the session-switch
 section in the runtime sessions documentation for limits and billing behavior.
+
+After a context overflow, known too-small backups are skipped with estimated
+window/size evidence. Unknown windows retain normal admission. Provider-local
+tool-schema dialect rejection can advance to the next provider, but generic
+invalid requests and tool/live-input side-effect fences stay terminal.
+
+For long conversations, leave `runtime.compaction.effort` at `auto` to avoid
+inheriting expensive conversation reasoning for summaries. The combined
+`summaryMaxTokens` text target has bounded extra adaptive-thinking headroom.
+Repeated unchanged failures are suppressed for `failureCooldownMs` (900000 by
+default); meaningful growth, model/summary-policy changes or a manual action
+permit another attempt. Check the console’s Compaction cost line for summary
+spend, including rejected requests; it is already included in the total.
+
+If accounting reports `insufficient_summary_headroom`, no summary provider call
+was made: the context/model cap could not preserve the useful answer minimum
+after reasoning reserves. Raising a genuinely supported model/output ceiling or
+reducing the request can help; do not repeatedly retry the same doomed summary.
