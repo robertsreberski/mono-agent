@@ -906,6 +906,12 @@ control. Measured context usage remains authoritative after a toggle.
 
 ## Architecture
 
+Never-invoked summary rejections remain in runtime telemetry, but are excluded
+from the console Compaction request/count/cost subset. Compaction token samples
+use the same safe-integer validation as ordinary usage; malformed samples mark
+tokens partial instead of invalidating the thread response.
+
+
 The context popover shows a separate **Compaction** cost subset included in
 the total. Reported rejected-summary spend is billed too; unknown pricing is
 not zero. Promptless manual receipts are additive to the prior answer, while

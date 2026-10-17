@@ -7155,6 +7155,9 @@ describe("thread usage aggregation", () => {
           input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd: 1.25 }] } };
       store.recordManualCompaction(thread.id, receipt);
       store.recordManualCompaction(thread.id, receipt);
+      store.recordManualCompaction(thread.id, { ...receipt, operationId: "fictional-local-rejection", accounting: {
+        ...receipt.accounting, requests: [{ ...receipt.accounting.requests[0]!, requestId: "fictional-local:1", providerInvoked: false,
+          input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }] } });
       for (let i = 0; i < 2; i += 1) {
         const usage = await store.threadUsage(thread.id);
         expect(usage.total.costUsd).toBe(1.75);

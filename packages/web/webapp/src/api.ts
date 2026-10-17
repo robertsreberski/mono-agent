@@ -396,7 +396,12 @@ function validUsageSlice(value: unknown): value is WebUsageSlice {
 }
 export function parseThreadUsage(value: unknown): WebThreadUsage {
   const usage = recordOf(value);
+  const compaction = recordOf(usage?.compaction);
   if (usage === null || !validUsageSlice(usage.total)
+    || (usage.compaction !== undefined && (!validUsageSlice(usage.compaction) || compaction === null
+      || !Number.isSafeInteger(compaction.requests) || Number(compaction.requests) < 1
+      || (compaction.requestsWithUsage !== undefined && (!Number.isSafeInteger(compaction.requestsWithUsage) || Number(compaction.requestsWithUsage) < 0
+        || Number(compaction.requestsWithUsage) > Number(compaction.requests)))))
     || (usage.settledAssistantTurns !== undefined
       && (!Number.isSafeInteger(usage.settledAssistantTurns) || Number(usage.settledAssistantTurns) < 0))
     || typeof usage.computedAt !== "string" || Number.isNaN(Date.parse(usage.computedAt))

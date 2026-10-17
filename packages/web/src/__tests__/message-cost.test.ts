@@ -244,3 +244,28 @@ describe("compaction spend", () => {
     expect(latestMessageCostUsd([summary(2, false, 0)])).toBe(0);
   });
 });
+
+describe("compaction token and non-dispatch boundaries", () => {
+  const summary = (requests: unknown[]) => telemetry("context_compaction", { accounting: { version: 2, usageIncluded: false, requests } });
+  const row = { requestId: "fictional:1", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd: 1.25 };
+  it.each([1.5, -1, Number.MAX_SAFE_INTEGER + 1])("drops invalid compaction tokens %s without losing thread cost", (input) => {
+    const parts = [summary([{ ...row, input }])];
+    const usage = sumThreadUsage([messageUsageRollup({ parts })], "2026-01-01T00:00:00Z");
+    expect(usage.total.costUsd).toBe(1.25);
+    expect(usage.total.tokens).toBeUndefined();
+    expect(usage.compaction).toMatchObject({ requests: 1, requestsWithUsage: 0, tokensPartial: true });
+  });
+  it("bounds sums of safe compaction samples", () => {
+    const usage = messageUsageRollup({ parts: [summary([{ ...row, input: Number.MAX_SAFE_INTEGER }, { ...row, requestId: "fictional:2" }])] });
+    expect(usage.compaction?.tokens?.input).toBe(Number.MAX_SAFE_INTEGER);
+    expect(usage.compaction?.tokensPartial).toBe(true);
+  });
+  it("omits never-invoked requests from UI cost/counts while retaining measured free summaries", () => {
+    const local = summary([{ ...row, input: 0, output: 0, costUsd: 0, providerInvoked: false }]);
+    expect(messageUsageRollup({ parts: [local] }).compaction).toBeUndefined();
+    expect(latestMessageCostUsd([local])).toBeUndefined();
+    expect(sumThreadUsage([messageUsageRollup({ parts: [local] })], "2026-01-01T00:00:00Z").compaction).toBeUndefined();
+    const mixed = messageUsageRollup({ parts: [local, summary([{ ...row, requestId: "fictional:2", costUsd: 0, providerInvoked: true }])] });
+    expect(mixed.compaction).toMatchObject({ requests: 1, requestsWithUsage: 1, costUsd: 0 });
+  });
+});

@@ -150,7 +150,7 @@ function CostSection({ totals, loading, id }: { readonly totals?: WebThreadUsage
     {loading && totals === undefined ? null : total?.costUsd === undefined && totals?.compaction === undefined
       ? <p className="context-display-empty">No cost was reported for this conversation.</p>
       : <dl className="context-display-cost">
-        {totals?.compaction && <div className="context-display-cost-row is-sub" title="Context summary requests, included in the total"><dt>Compaction</dt><dd>{cost(totals.compaction)}</dd></div>}
+        {totals?.compaction && <div className="context-display-cost-row is-sub" title="Context summary requests, included in the total"><dt>Compaction<span className="sr-only"> (included in total)</span></dt><dd>{cost(totals.compaction)}</dd></div>}
         {totals?.subagents?.costUsd !== undefined && totals.subagents.costUsd > 0 &&
           <div className="context-display-cost-row is-sub"><dt>incl. subagents</dt><dd>{cost(totals.subagents)}</dd></div>}
         {models.length >= 2 && <><div className="context-display-cost-divider" aria-hidden="true" />

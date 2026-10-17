@@ -153,6 +153,9 @@ it.each([[390, 844], [1280, 900]])("renders compaction-inclusive cost at %i × %
   render(<div style={{ position: "fixed", bottom: 24, right: 16 }}><ContextDisplay context={context} totals={fictional} /></div>);
   fireEvent.click(screen.getByRole("button", { name: /^Context usage:/ }));
   const dialog = await screen.findByRole("dialog", { name: "Context usage" });
+  const inclusion = within(dialog).getByText("(included in total)");
+  expect(inclusion).toHaveClass("sr-only");
+  expect(inclusion.getBoundingClientRect().width).toBeLessThanOrEqual(1);
   expect(within(dialog).getByText("Compaction").parentElement).toHaveTextContent("$1.25");
   expect(dialog.querySelector(".context-display-cost-total")).toHaveTextContent("$1.75");
   expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
