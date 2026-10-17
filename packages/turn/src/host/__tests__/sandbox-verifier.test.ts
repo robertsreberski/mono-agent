@@ -15,6 +15,7 @@ import { assertManagedSrtDirectory, assertManagedSrtRegularFile, hashPrivateMana
 const roots: string[] = [];
 afterEach(async () => {
   stats.override = undefined;
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 async function fixture() {
@@ -34,6 +35,37 @@ describe("managed SRT read-only profiles", () => {
         .rejects.toMatchObject({ name: "ManagedSrtCorruptError", installRoot: "/fictional/root",
           message: "Managed SRT install at /fictional/root is unsafe or corrupt: managed marker has an unexpected owner" });
     }
+  });
+
+  it.each(["file", "directory"])("rejects foreign-owned tree %s entries under both profiles", async (kind) => {
+    const root = await fixture();
+    const path = join(root, "entry");
+    if (kind === "directory") await mkdir(path, { mode: 0o700 });
+    else await writeFile(path, "fixture", { mode: 0o600 });
+    stats.override = { uid: (process.getuid?.() ?? 0) + 10, mode: 0o700, nlink: 1,
+      isSymbolicLink: () => false, isDirectory: () => kind === "directory", isFile: () => kind === "file" };
+    await expect(hashPrivateManagedSrtTree(root, "runtime")).rejects.toMatchObject({
+      message: `Managed SRT install at ${root} is unsafe or corrupt: managed dependency tree has an unexpected owner: entry`,
+    });
+    await expect(hashPrivateManagedSrtTree(root, "installer")).rejects.toMatchObject({
+      message: "unsafe managed dependency tree entry: entry",
+    });
+  });
+
+  it("rejects foreign-owned directories under both profiles with exact wording", async () => {
+    stats.override = { uid: (process.getuid?.() ?? 0) + 10, mode: 0o700,
+      isSymbolicLink: () => false, isDirectory: () => true };
+    await expect(assertManagedSrtDirectory("/fictional/directory", "install root", "/fictional/root", "runtime"))
+      .rejects.toMatchObject({ message: "Managed SRT install at /fictional/root is unsafe or corrupt: install root is not owned by the current user" });
+    await expect(assertManagedSrtDirectory("/fictional/directory", "", "/fictional/root", "installer"))
+      .rejects.toMatchObject({ message: "/fictional/directory must be a real owner-only directory owned by the current user" });
+  });
+
+  it("accepts a root-owned managed file for a non-root runtime caller", async () => {
+    vi.spyOn(process, "getuid").mockReturnValue(1234);
+    stats.override = { uid: 0, mode: 0o600, nlink: 1, isSymbolicLink: () => false, isFile: () => true };
+    await expect(assertManagedSrtRegularFile("/fictional/marker", true, "managed marker", "/fictional/root"))
+      .resolves.toBeUndefined();
   });
 
   it("retains caller-specific directory and regular-file messages", async () => {
