@@ -1,3 +1,4 @@
+import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "./suggest-replies.js";
 import { trackResponderActivity, type WorkerActivityTracker } from "./durable-state/worker-activity.js";
@@ -39,7 +40,6 @@ import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
 import {
   createReplyArtifactService,
-  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
   isPublishReplyFileToolAllowed,
   replyArtifactStorageBudgetFor,
 } from "./reply-artifacts.js";
@@ -153,7 +153,7 @@ const SELF_BOUNDED_CHANNEL_ID = "tui";
 /** @internal deterministic composition contract used by focused tests. */
 export function replyArtifactStorageMaxBytesForMcpApps(
   mcpAppsEnabled: boolean,
-  maxStorageBytes: number | "unlimited" = DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
+  maxStorageBytes: number | "unlimited" = DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES,
 ): number | "unlimited" {
   if (maxStorageBytes === "unlimited" || !mcpAppsEnabled) return maxStorageBytes;
   if (maxStorageBytes <= DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES) {

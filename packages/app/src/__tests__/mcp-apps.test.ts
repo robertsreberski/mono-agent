@@ -1,3 +1,4 @@
+import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import {
   access,
   chmod,
@@ -32,7 +33,6 @@ import {
   DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
 } from "../mcp-apps.js";
 import {
-  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
   replyArtifactStorageBudgetFor,
 } from "../reply-artifacts.js";
 
@@ -595,7 +595,7 @@ describe("MCP Apps registry", () => {
     let clock = new Date("2026-08-15T12:00:00.000Z");
     const storageBudget = replyArtifactStorageBudgetFor(
       artifactDir,
-      DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
+      DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
     );
     const publishingService = createMcpAppService({
       artifactDir,

@@ -1,3 +1,4 @@
+import { DEFAULT_RUNTIME_RETRY_BACKOFF_MS, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS } from "./retry-defaults.js";
 import { isDispatchProgress } from "../execution/pi/dispatch-progress.js";
 import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../execution/pi/prepared-dispatch.js";
 // Provider fallback router.
@@ -839,8 +840,8 @@ function normalizeChainAttempts(attempts) {
  * @returns {RouterRetryPolicy}
  */
 function normalizeRetryPolicy(retry) {
-  const backoffMs = normalizeRetryDelay(retry?.backoffMs, 1000, "backoffMs");
-  const maxBackoffMs = normalizeRetryDelay(retry?.maxBackoffMs, 15000, "maxBackoffMs");
+  const backoffMs = normalizeRetryDelay(retry?.backoffMs, DEFAULT_RUNTIME_RETRY_BACKOFF_MS, "backoffMs");
+  const maxBackoffMs = normalizeRetryDelay(retry?.maxBackoffMs, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS, "maxBackoffMs");
   return { backoffMs, maxBackoffMs };
 }
 

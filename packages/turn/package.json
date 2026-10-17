@@ -111,6 +111,10 @@
     "@types/turndown": "5.0.6"
   },
   "imports": {
+    "#turn/runtime/retry-defaults": {
+      "types": "./types/runtime/retry-defaults.d.ts",
+      "default": "./src/runtime/retry-defaults.js"
+    },
     "#turn/contracts/runtime": {
       "types": "./types/contracts/runtime.d.ts",
       "default": "./src/contracts/runtime.js"
