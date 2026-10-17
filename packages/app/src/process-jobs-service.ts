@@ -1,8 +1,10 @@
+import { publishManagedJob } from "./process-jobs/managed-publication.js";
+import { deliverProcessJobWake, MAX_WAKE_ATTEMPTS, type WakeAttempt, type WakeDecision } from "./process-jobs/wake-delivery.js";
 import { ProcessJobServiceError } from "./process-jobs/errors.js";
-import { MAX_IN_MEMORY_RECORDS, occupiesRunningSlot, conversationSlotAvailable, enforceAdmission, pendingWakeCap, boundedNewestRecords, terminalFromResult, assertAvailable, processJobCapacity } from "./process-jobs/policy.js";
-import { processJobSummary, processJobWakePrompt, boundOutput, outputPreview, boundedSummary, boundUtf8, boundedSafeDiagnostic } from "./process-jobs/presentation.js";
-import { isInternal, type ServiceStartRequest } from "./process-jobs/types.js";
-import { MAX_WAKE_CERTIFICATES, validWakeToken, type WakeRecovery } from "./process-jobs-wake-fence.js";
+import { MAX_IN_MEMORY_RECORDS, conversationSlotAvailable, enforceAdmission, pendingWakeCap, boundedNewestRecords, terminalFromResult, assertAvailable, processJobCapacity } from "./process-jobs/policy.js";
+import { processJobSummary, boundOutput, outputPreview, boundedSafeDiagnostic } from "./process-jobs/presentation.js";
+import { isInternal, type ServiceStartRequest, type ProcessJobWakeInput } from "./process-jobs/types.js";
+import { MAX_WAKE_CERTIFICATES, validWakeToken } from "./process-jobs-wake-fence.js";
 import type { SubagentStopIdentity, SubagentSteerProof, SubagentStopProof } from "./process-jobs-internal.js";
 import { createLiveInputMailbox, type LiveInputMailbox } from "@mono-agent/conversation";
 import type { SubagentVerificationTarget, SubagentVerificationObservation } from "./subagent-verification-observer.js";
@@ -20,7 +22,7 @@ import { hasPendingSubagentPublication, hasPendingSubagentReleaseReceipt, hasSub
 import { subagentProgressUsage, SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import {
@@ -33,9 +35,9 @@ import {
 import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "@mono-agent/turn/host/types";
 
 import type { NotifyDeliveryResult } from "./channels/types.js";
-import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
+import { type ProcessJobsSettings } from "./process-jobs-config.js";
 import { ProcessJobOutputTail } from "./process-job-output-tail.js";
-import { consumeSilentProcessJobWake, offerClaimedProcessJobLiveInput, recordProcessJobWakeAdmission, revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
+import { offerClaimedProcessJobLiveInput, recordProcessJobWakeAdmission, revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
 import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import {
   attestProcessJobsRootRegistration,
@@ -55,12 +57,10 @@ import {
 } from "@mono-agent/conversation/process-incarnation";
 import {
   isTerminalProcessJobState,
-  isProcessJobOriginRecord,
   clearProcessJobHealthIncident,
   loadOrCreateProcessJobSecret,
   openProcessJobStore,
   prepareProcessJobStateDirectory,
-  PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX,
   PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
   PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
   PROCESS_JOB_ENV_KEYS_CAPS,
@@ -77,8 +77,6 @@ const PROCESS_JOB_OWNER_SCHEMA = "mono-agent.process-jobs-owner.v1";
 const RECOVERY_KILL_GRACE_MS = 1_000;
 const RECOVERY_GROUP_EXIT_POLL_MS = 25;
 const RECOVERY_GROUP_EXIT_POLLS = 40;
-const MAX_WAKE_ATTEMPTS = 3;
-const WAKE_RETRY_BASE_MS = 100;
 const WAKE_BUSY_REARM_MS = 5_000;
 const INITIAL_SURFACE_UPDATE_WAIT_MS = 250;
 const SHUTDOWN_INTERRUPTED_MESSAGE =
@@ -115,16 +113,6 @@ interface MutableProcessJobsHealth {
   quarantinedTransactions: number;
   failureOperation?: string;
   failureDetectedAt?: string;
-}
-
-export interface ProcessJobWakeInput {
-  readonly projection: ProcessJobProjection;
-  readonly prompt: string;
-  readonly conversationId: string;
-  readonly channel: ProcessJobOriginRecord["channel"];
-  readonly deliveryKey: string;
-  readonly chainDepth: number;
-  readonly wakeRecovery?: WakeRecovery;
 }
 
 export interface OpenProcessJobsServiceOptions {
@@ -1021,61 +1009,22 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private async publishManaged(jobId: string, outcome?: InstanceOutcome): Promise<void> {
     const previous = this.managedPublications.get(jobId) ?? Promise.resolve();
     const task = previous.catch(() => undefined).then(async () => {
-      if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
-      const record = await this.storeGet(jobId, "subagent.publication");
-      const owner = record?.subagentOwnership;
-      if (!record || !owner?.disposition || !hasPendingSubagentPublication(record)) return;
-      if (!this.managedRegistry || owner.registryRoot !== this.managedRegistry.root) throw new Error("Managed subagent registry is unavailable.");
-      const publication: SubagentRegistryPublication = { identity: this.managedIdentity(record), sequence: owner.publication.sequence,
-        disposition: owner.disposition, released: !hasUnresolvedSubagentOwnership(record) && isTerminalProcessJobState(record.state),
-        ...(this.neverStarted(record) ? { neverStarted: true as const } : {}),
-        outcome: { status: owner.disposition.status, ...(owner.usage ? { usage: owner.usage } : {}), ...(record.subagentQuestion ? { question: record.subagentQuestion } : {}) } };
-      if (owner.publication.state === "pending") {
-        await this.withManagedRegistry(async (registry) => await registry.publish("intent", publication));
-        await this.withManagedRegistry(async (registry) => await registry.publish("confirm", publication));
-        await this.withManagedLock(async () => await this.storeMutate("subagent.publication_confirmed", (records) => {
-          const current = requireRecord(records, jobId).subagentOwnership!;
-          if (current.publication.sequence === publication.sequence) {
-            current.publication.state = "confirmed";
-            current.publication.receiptPending = publication.released;
-          }
-        }));
-      }
-      if (publication.released) {
-        // Never hold the service lock while entering the registry transaction.
-        // It verifies the committed job proof and durably writes its certificate.
-        if (owner.publication.receiptRecorded !== publication.sequence) {
-          await this.withManagedRegistry(async (registry) => await registry.publish("finalize", publication));
-          await this.withManagedLock(async () => await this.storeMutate("subagent.release_certificate_recorded", (records) => {
-            const current = requireRecord(records, jobId);
-            if (!sameSubagentOwner(publication.identity, this.managedIdentity(current))
-              || current.subagentOwnership!.publication.sequence !== publication.sequence) throw new Error("Managed certificate identity changed.");
-            current.subagentOwnership!.publication.receiptRecorded = publication.sequence;
-          }));
-        }
-        // Registry deletion is safe only after the job has durably copied its
-        // certificate. Reopen can finish this transfer even if that row is gone.
-        await this.withManagedRegistry(async (registry) => await registry.publish("acknowledge", publication));
-        await this.withManagedLock(async () => {
-          const occupied = this.runningOccupancy();
-          await this.storeMutate("subagent.release_receipt_acknowledged", (records) => {
-            const current = requireRecord(records, jobId);
-            const owner = current.subagentOwnership!;
-            if (sameSubagentOwner(publication.identity, this.managedIdentity(current))
-              && owner.publication.sequence === publication.sequence && owner.publication.state === "confirmed"
-              && !hasUnresolvedSubagentOwnership(current) && isTerminalProcessJobState(current.state)) owner.publication.receiptPending = false;
-          });
-          // The exact durable acknowledgement owns the capacity transition.
-          if (this.runningOccupancy() < occupied) await this.drainQueue();
-          if (record.rejectedAdmission) await this.storeMutate("admission.release", (records) => {
-            const current = records.get(jobId);
-            if (current?.rejectedAdmission && current.subagentOwnership?.publication.receiptPending === false) records.delete(jobId);
-          });
-        });
-        if (record.rejectedAdmission) await this.storeDiscardArtifacts(jobId);
-      }
-      if (publication.released) { this.managedCommands.delete(jobId); this.closeSubagentLiveInput(jobId); }
-      if (!record.rejectedAdmission) this.scheduleWake(jobId);
+      await publishManagedJob(jobId, {
+        assertWritable: () => { if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended."); },
+        read: async (id) => await this.storeGet(id, "subagent.publication"),
+        matchesRegistry: (root) => this.managedRegistry !== undefined && root === this.managedRegistry.root,
+        identity: (record) => this.managedIdentity(record),
+        neverStarted: (record) => this.neverStarted(record),
+        publish: async (phase, publication) => await this.withManagedRegistry(async (registry) => await registry.publish(phase, publication)),
+        confirm: async (id, publication) => await this.confirmManagedPublication(id, publication),
+        recordCertificate: async (id, publication) => await this.recordManagedCertificate(id, publication),
+        acknowledgeReceipt: async (id, publication, record) => await this.acknowledgeManagedReceipt(id, publication, record),
+        discardArtifacts: async (id) => await this.storeDiscardArtifacts(id),
+        finish: (id, released, rejectedAdmission) => {
+          if (released) { this.managedCommands.delete(id); this.closeSubagentLiveInput(id); }
+          if (!rejectedAdmission) this.scheduleWake(id);
+        },
+      });
     });
     this.managedPublications.set(jobId, task);
     try { await task; } finally {
@@ -1088,6 +1037,44 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         if (this.managedPublicationRearmPending.delete(jobId)) this.scheduleManagedPublication(jobId);
       }
     }
+  }
+
+  private async confirmManagedPublication(jobId: string, publication: SubagentRegistryPublication): Promise<void> {
+    await this.withManagedLock(async () => await this.storeMutate("subagent.publication_confirmed", (records) => {
+      const current = requireRecord(records, jobId).subagentOwnership!;
+      if (current.publication.sequence === publication.sequence) {
+        current.publication.state = "confirmed";
+        current.publication.receiptPending = publication.released;
+      }
+    }));
+  }
+
+  private async recordManagedCertificate(jobId: string, publication: SubagentRegistryPublication): Promise<void> {
+    await this.withManagedLock(async () => await this.storeMutate("subagent.release_certificate_recorded", (records) => {
+      const current = requireRecord(records, jobId);
+      if (!sameSubagentOwner(publication.identity, this.managedIdentity(current))
+        || current.subagentOwnership!.publication.sequence !== publication.sequence) throw new Error("Managed certificate identity changed.");
+      current.subagentOwnership!.publication.receiptRecorded = publication.sequence;
+    }));
+  }
+
+  private async acknowledgeManagedReceipt(jobId: string, publication: SubagentRegistryPublication, record: DurableProcessJobRecord): Promise<void> {
+    await this.withManagedLock(async () => {
+      const occupied = this.runningOccupancy();
+      await this.storeMutate("subagent.release_receipt_acknowledged", (records) => {
+        const current = requireRecord(records, jobId);
+        const owner = current.subagentOwnership!;
+        if (sameSubagentOwner(publication.identity, this.managedIdentity(current))
+          && owner.publication.sequence === publication.sequence && owner.publication.state === "confirmed"
+          && !hasUnresolvedSubagentOwnership(current) && isTerminalProcessJobState(current.state)) owner.publication.receiptPending = false;
+      });
+      // The exact durable acknowledgement owns the capacity transition.
+      if (this.runningOccupancy() < occupied) await this.drainQueue();
+      if (record.rejectedAdmission) await this.storeMutate("admission.release", (records) => {
+        const current = records.get(jobId);
+        if (current?.rejectedAdmission && current.subagentOwnership?.publication.receiptPending === false) records.delete(jobId);
+      });
+    });
   }
 
   private scheduleManagedPublication(jobId: string): void {
@@ -2035,195 +2022,150 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private async deliverWake(jobId: string): Promise<void> {
-    for (;;) {
-      let record: DurableProcessJobRecord | undefined;
-      let previousDelivery: { readonly attempts: number; readonly lastAttemptAt: string | null } | undefined;
-      await this.withLock(async () => {
-        await this.storeMutate("wake.attempt", (records) => {
-          const current = records.get(jobId);
-          if (this.stopping || this.stopped || current === undefined
-            || !isTerminalProcessJobState(current.state)
-            || current.wake.state !== "pending"
-            || hasPendingSubagentPublication(current)
-            || current.wake.attempts >= MAX_WAKE_ATTEMPTS) return;
-          previousDelivery = {
-            attempts: current.wake.attempts,
-            lastAttemptAt: current.wake.lastAttemptAt,
-          };
-          // Durably clear the safe-retry proof before crossing the external
-          // delivery boundary. A crash from here through receipt persistence is
-          // ambiguous and must never be replayed automatically.
-          current.wake.retrySafe = false;
-          if (current.origin.channel === "web") {
-            current.wake.admission = { version: 1, token: randomUUID(), state: "not_crossed" };
-          }
-          current.wake.attempts += 1;
-          current.wake.lastAttemptAt = this.now().toISOString();
-          record = structuredClone(current);
-        });
+    await deliverProcessJobWake(jobId, {
+      beginAttempt: async (id) => await this.beginWakeAttempt(id),
+      settleAttempt: async (id, attempt, result, decision, silent) => await this.settleWakeAttempt(id, attempt, result, decision, silent),
+      readSalvage: async (record) => await this.readWakeSalvage(record),
+      updateSurface: async (projection) => await this.updateSurface(projection),
+      updateSurfaceById: async (id) => await this.updateSurfaceById(id),
+      wake: this.options.wake,
+      now: this.now,
+      applyRetention: async () => await this.withLock(async () => await this.storeApplyRetention("wake.retention")),
+      rearm: (id) => { this.wakeRearmPending.add(id); },
+      sleep: this.sleep,
+      isStopping: () => this.stopping,
+    });
+  }
+
+  private async beginWakeAttempt(jobId: string): Promise<WakeAttempt> {
+    let record: DurableProcessJobRecord | undefined;
+    let previousDelivery: { readonly attempts: number; readonly lastAttemptAt: string | null } | undefined;
+    await this.withLock(async () => {
+      await this.storeMutate("wake.attempt", (records) => {
+        const current = records.get(jobId);
+        if (this.stopping || this.stopped || current === undefined
+          || !isTerminalProcessJobState(current.state)
+          || current.wake.state !== "pending"
+          || hasPendingSubagentPublication(current)
+          || current.wake.attempts >= MAX_WAKE_ATTEMPTS) return;
+        previousDelivery = {
+          attempts: current.wake.attempts,
+          lastAttemptAt: current.wake.lastAttemptAt,
+        };
+        // Durably clear the safe-retry proof before crossing the external
+        // delivery boundary. A crash from here through receipt persistence is
+        // ambiguous and must never be replayed automatically.
+        current.wake.retrySafe = false;
+        if (current.origin.channel === "web") {
+          current.wake.admission = { version: 1, token: randomUUID(), state: "not_crossed" };
+        }
+        current.wake.attempts += 1;
+        current.wake.lastAttemptAt = this.now().toISOString();
+        record = structuredClone(current);
       });
-      if (record === undefined) return;
-      const projection = projectProcessJob(record);
-      await this.updateSurface(projection);
-      // External read after the durable release acknowledgement, never inside the
-      // process-job service lock. The snapshot is not persisted or projected.
-      let salvage: SubagentSalvage | undefined;
-      if (record.kind === "internal" && record.state === "interrupted"
-        && record.subagentOwnership?.disposition?.continuity === "unknown"
-        && record.subagentOwnership.owner.settlement !== "not_started"
-        && record.subagentOwnership.publication.state === "confirmed"
-        && record.subagentOwnership.publication.receiptPending === false
-        && !hasUnresolvedSubagentOwnership(record)) {
-        try { salvage = await this.managedRegistry?.salvage?.(this.managedIdentity(record)); }
-        catch { /* A failed reader cannot suppress an already owed wake. */ }
-      }
-      const result = await this.options.wake({
-        projection,
-        prompt: processJobWakePrompt(projection, salvage, record.kind === "internal" && record.state === "interrupted"
-          && record.subagentOwnership?.disposition?.continuity === "unknown" && record.subagentOwnership.owner.settlement !== "not_started"),
-        conversationId: record.origin.replyToConversationId,
-        channel: record.origin.channel,
-        deliveryKey: record.wake.deliveryKey,
-        chainDepth: record.chainDepth + 1,
-        ...(record.wake.admission === undefined ? {} : { wakeRecovery: {
-          version: 1 as const, token: record.wake.admission.token, notCrossed: record.wake.notCrossed ?? [],
-        } }),
-      }).catch((error: unknown): NotifyDeliveryResult => ({
-        delivered: false,
-        code: "process_job_wake_failed",
-        reason: boundedSafeDiagnostic("Process-job wake failed."),
-        retryable: false,
-        ambiguous: true,
-      }));
-      const attempt = record.wake.attempts;
-      const silent = consumeSilentProcessJobWake(record.wake.deliveryKey);
-      const conversationBusy = !result.delivered
-        && result.code === "conversation_busy"
-        && result.retryable === true
-        && result.ambiguous !== true;
-      const destinationUnavailable = !result.delivered
-        && result.code === "destination_channel_unavailable"
-        && result.retryable === true
-        && result.ambiguous !== true;
-      const retryablePreDispatchRefusal = conversationBusy || destinationUnavailable;
-      const busyObservedAt = this.now();
-      const nextConversationBusyAttempts = conversationBusy
-        ? Math.min(
-          (record.wake.conversationBusyAttempts ?? 0) + 1,
-          PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX,
-        )
-        : (record.wake.conversationBusyAttempts ?? 0);
-      const conversationBusySinceAt = record.wake.conversationBusySinceAt ?? busyObservedAt.toISOString();
-      const conversationBusyExhausted = conversationBusy
-        && Date.parse(conversationBusySinceAt) + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS
-          <= busyObservedAt.getTime();
-      const nextDestinationUnavailableAttempts = (record.wake.destinationUnavailableAttempts ?? 0)
-        + (destinationUnavailable ? 1 : 0);
-      const destinationUnavailableExhausted = destinationUnavailable
-        && nextDestinationUnavailableAttempts >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
-      const safeRetry = !result.delivered
-        && !retryablePreDispatchRefusal
-        && result.retryable === true
-        && result.ambiguous !== true
-        && attempt < MAX_WAKE_ATTEMPTS;
-      await this.withLock(async () => {
-        await this.storeMutate("wake.settle", (records) => {
-          const current = records.get(jobId);
-          if (current?.wake.state !== "pending"
-            || current.wake.admission?.token !== record?.wake.admission?.token
-            || current.wake.admission?.state === "fenced") return;
-          if (!result.delivered && !silent && current.wake.admission !== undefined) {
-            const fence = current.wake.admission;
-            // Neither a transport code nor a supposedly safe adapter receipt
-            // can override an instrumented may-have-crossed boundary.
-            if (fence.state === "crossed" || fence.legacy === true) {
+    });
+    return { record, previousDelivery };
+  }
+
+  private async settleWakeAttempt(jobId: string, attempt: WakeAttempt, result: NotifyDeliveryResult, decision: WakeDecision, silent: boolean): Promise<void> {
+    const { record, previousDelivery } = attempt;
+    const { conversationBusy, destinationUnavailable, nextConversationBusyAttempts, conversationBusySinceAt, conversationBusyExhausted, nextDestinationUnavailableAttempts, destinationUnavailableExhausted, safeRetry } = decision;
+    await this.withLock(async () => {
+      await this.storeMutate("wake.settle", (records) => {
+        const current = records.get(jobId);
+        if (current?.wake.state !== "pending"
+          || current.wake.admission?.token !== record?.wake.admission?.token
+          || current.wake.admission?.state === "fenced") return;
+        if (!result.delivered && !silent && current.wake.admission !== undefined) {
+          const fence = current.wake.admission;
+          // Neither a transport code nor a supposedly safe adapter receipt
+          // can override an instrumented may-have-crossed boundary.
+          if (fence.state === "crossed" || fence.legacy === true) {
+            current.wake.state = "unknown";
+            current.wake.retrySafe = false;
+            recordWakeFailure(current);
+            return;
+          }
+          if (result.retryable === true && result.ambiguous !== true) {
+            const certificates = current.wake.notCrossed ?? [];
+            if (certificates.length >= MAX_WAKE_CERTIFICATES) {
               current.wake.state = "unknown";
               current.wake.retrySafe = false;
               recordWakeFailure(current);
               return;
             }
-            if (result.retryable === true && result.ambiguous !== true) {
-              const certificates = current.wake.notCrossed ?? [];
-              if (certificates.length >= MAX_WAKE_CERTIFICATES) {
-                current.wake.state = "unknown";
-                current.wake.retrySafe = false;
-                recordWakeFailure(current);
-                return;
-              }
-              fence.state = "fenced";
-              current.wake.notCrossed = [...certificates, fence.token];
-            }
+            fence.state = "fenced";
+            current.wake.notCrossed = [...certificates, fence.token];
           }
-          if (result.delivered || silent) {
-            clearConversationBusyDeferral(current);
-            current.wake.state = silent ? "suppressed" : "delivered";
+        }
+        if (result.delivered || silent) {
+          clearConversationBusyDeferral(current);
+          current.wake.state = silent ? "suppressed" : "delivered";
+          current.wake.retrySafe = false;
+        } else if (conversationBusy) {
+          // Busy admission does not spend the external delivery-attempt
+          // budget, but it has its own durable attempt and age bound.
+          current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
+          current.wake.lastAttemptAt = previousDelivery === undefined
+            ? current.wake.lastAttemptAt
+            : previousDelivery.lastAttemptAt;
+          current.wake.conversationBusyAttempts = nextConversationBusyAttempts;
+          current.wake.conversationBusySinceAt = conversationBusySinceAt;
+          if (conversationBusyExhausted) {
+            current.wake.state = "failed";
             current.wake.retrySafe = false;
-          } else if (conversationBusy) {
-            // Busy admission does not spend the external delivery-attempt
-            // budget, but it has its own durable attempt and age bound.
-            current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
-            current.wake.lastAttemptAt = previousDelivery === undefined
-              ? current.wake.lastAttemptAt
-              : previousDelivery.lastAttemptAt;
-            current.wake.conversationBusyAttempts = nextConversationBusyAttempts;
-            current.wake.conversationBusySinceAt = conversationBusySinceAt;
-            if (conversationBusyExhausted) {
-              current.wake.state = "failed";
-              current.wake.retrySafe = false;
-              recordWakeFailure(current);
-            } else {
-              current.wake.retrySafe = true;
-            }
-          } else if (destinationUnavailable) {
-            clearConversationBusyDeferral(current);
-            // Destination absence is also pre-dispatch, but unlike conversation
-            // capacity it has its own durable bound so disabled channels cannot
-            // retain terminal records and artifacts forever.
-            current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
-            current.wake.lastAttemptAt = previousDelivery === undefined
-              ? current.wake.lastAttemptAt
-              : previousDelivery.lastAttemptAt;
-            current.wake.destinationUnavailableAttempts = nextDestinationUnavailableAttempts;
-            if (destinationUnavailableExhausted) {
-              current.wake.state = "failed";
-              current.wake.retrySafe = false;
-              recordWakeFailure(current);
-            } else {
-              current.wake.retrySafe = true;
-            }
-          } else if (safeRetry) {
-            clearConversationBusyDeferral(current);
-            // This receipt proves no native delivery was accepted. Preserve
-            // that fact so shutdown/restart can safely resume the same stable
-            // delivery key without confusing it with an ambiguous attempt.
-            current.wake.retrySafe = true;
-          } else {
-            clearConversationBusyDeferral(current);
-            current.wake.state = result.ambiguous === true ? "unknown" : "failed";
-            current.wake.retrySafe = false;
-            const reason = result.reason ?? "Process-job wake was not delivered.";
             recordWakeFailure(current);
+          } else {
+            current.wake.retrySafe = true;
           }
-        });
+        } else if (destinationUnavailable) {
+          clearConversationBusyDeferral(current);
+          // Destination absence is also pre-dispatch, but unlike conversation
+          // capacity it has its own durable bound so disabled channels cannot
+          // retain terminal records and artifacts forever.
+          current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
+          current.wake.lastAttemptAt = previousDelivery === undefined
+            ? current.wake.lastAttemptAt
+            : previousDelivery.lastAttemptAt;
+          current.wake.destinationUnavailableAttempts = nextDestinationUnavailableAttempts;
+          if (destinationUnavailableExhausted) {
+            current.wake.state = "failed";
+            current.wake.retrySafe = false;
+            recordWakeFailure(current);
+          } else {
+            current.wake.retrySafe = true;
+          }
+        } else if (safeRetry) {
+          clearConversationBusyDeferral(current);
+          // This receipt proves no native delivery was accepted. Preserve
+          // that fact so shutdown/restart can safely resume the same stable
+          // delivery key without confusing it with an ambiguous attempt.
+          current.wake.retrySafe = true;
+        } else {
+          clearConversationBusyDeferral(current);
+          current.wake.state = result.ambiguous === true ? "unknown" : "failed";
+          current.wake.retrySafe = false;
+          const reason = result.reason ?? "Process-job wake was not delivered.";
+          recordWakeFailure(current);
+        }
       });
-      await this.updateSurfaceById(jobId);
-      const wakeSettled = result.delivered || silent
-        || conversationBusyExhausted
-        || destinationUnavailableExhausted
-        || (!retryablePreDispatchRefusal && !safeRetry);
-      if (wakeSettled) {
-        await this.withLock(async () => await this.storeApplyRetention("wake.retention"));
-      }
-      if (silent) return;
-      if ((conversationBusy && !conversationBusyExhausted)
-        || (destinationUnavailable && !destinationUnavailableExhausted)) {
-        this.wakeRearmPending.add(jobId);
-        return;
-      }
-      if (!safeRetry) return;
-      await this.sleep(WAKE_RETRY_BASE_MS * (2 ** Math.max(0, attempt - 1)));
-      if (this.stopping) return;
+    });
+  }
+
+  private async readWakeSalvage(record: DurableProcessJobRecord): Promise<SubagentSalvage | undefined> {
+    // External read after the durable release acknowledgement, never inside the
+    // process-job service lock. The snapshot is not persisted or projected.
+    let salvage: SubagentSalvage | undefined;
+    if (record.kind === "internal" && record.state === "interrupted"
+      && record.subagentOwnership?.disposition?.continuity === "unknown"
+      && record.subagentOwnership.owner.settlement !== "not_started"
+      && record.subagentOwnership.publication.state === "confirmed"
+      && record.subagentOwnership.publication.receiptPending === false
+      && !hasUnresolvedSubagentOwnership(record)) {
+      try { salvage = await this.managedRegistry?.salvage?.(this.managedIdentity(record)); }
+      catch { /* A failed reader cannot suppress an already owed wake. */ }
     }
+    return salvage;
   }
 
   private async stopOnce(shutdownDeadline?: number): Promise<void> {

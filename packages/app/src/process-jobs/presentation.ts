@@ -144,12 +144,12 @@ function safeCharacterTail(value: string, maxChars: number): string {
   return result;
 }
 
-export function boundedSummary(value: string): string {
+function boundedSummary(value: string): string {
   const normalized = value.trim().length === 0 ? "Process job" : value.trim();
   return boundUtf8(normalized, 8_000, "…");
 }
 
-export function boundUtf8(value: string, maxBytes: number, marker: string): string {
+function boundUtf8(value: string, maxBytes: number, marker: string): string {
   const bytes = Buffer.from(value, "utf8");
   if (bytes.byteLength <= maxBytes) return value;
   const markerBytes = Buffer.from(marker, "utf8");
@@ -160,4 +160,3 @@ export function boundUtf8(value: string, maxBytes: number, marker: string): stri
 export function boundedSafeDiagnostic(fallback: string): string {
   return boundedSummary(fallback);
 }
-
