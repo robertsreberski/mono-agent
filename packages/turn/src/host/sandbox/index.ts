@@ -1,3 +1,4 @@
+import { ManagedSrtCorruptError } from "./managed-verifier.js";
 import type { SandboxMode, SandboxNetworkMode, SandboxFallback, SandboxEngineId, SandboxNetworkPolicy, SandboxPolicy, SandboxCommandSpec, PreparedSandboxCommand, SandboxEngine, SandboxEffectiveMode, SandboxEffectiveState } from "./contracts.js";
 import { SANDBOX_MODES, SANDBOX_NETWORK_MODES, SANDBOX_FALLBACKS } from "./contracts.js";
 export type { SandboxMode, SandboxNetworkMode, SandboxFallback, SandboxEngineId, SandboxNetworkPolicy, SandboxPolicy, SandboxCommandSpec, PreparedSandboxCommand, SandboxEngine, SandboxEffectiveMode, SandboxEffectiveState } from "./contracts.js";
@@ -15,7 +16,6 @@ import { promisify } from "node:util";
 import { CodedError } from "@mono-agent/contracts";
 
 import {
-  ManagedSrtCorruptError,
   type ResolveSrtLaunchOptions,
   type SrtFileIdentity,
   type SrtLaunch,
@@ -1444,3 +1444,5 @@ function errorMessage(error: unknown): string {
 
 export { MANAGED_SRT_PACKAGE, MANAGED_SRT_VERSION, MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_TREE_SHA256, MANAGED_SRT_MARKER, MANAGED_SRT_TREE_EXCLUSIONS, managedSrtCacheRoot, managedSrtInstallRoot } from "./managed-identity.js";
 export type { ManagedSrtMarker } from "./managed-identity.js";
+
+export { assertManagedSrtDirectory, assertManagedSrtRegularFile, hashManagedSrtFile, hashPrivateManagedSrtTree } from "./managed-verifier.js";

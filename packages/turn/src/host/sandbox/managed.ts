@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { ManagedSrtCorruptError, assertManagedSrtDirectory, assertManagedSrtRegularFile, hashManagedSrtFile, hashPrivateManagedSrtTree } from "./managed-verifier.js";
 import { constants as fsConstants } from "node:fs";
-import { access, lstat, opendir, readFile, realpath } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { access, lstat, readFile, realpath } from "node:fs/promises";
+import { delimiter, dirname, isAbsolute, resolve, sep } from "node:path";
 
-import { MANAGED_SRT_PACKAGE, MANAGED_SRT_VERSION, MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_TREE_SHA256, MANAGED_SRT_MARKER, MANAGED_SRT_TREE_EXCLUSIONS, managedSrtInstallRoot, type ManagedSrtMarker } from "./managed-identity.js";
+import { MANAGED_SRT_PACKAGE, MANAGED_SRT_VERSION, MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_TREE_SHA256, MANAGED_SRT_MARKER, managedSrtInstallRoot, type ManagedSrtMarker } from "./managed-identity.js";
 
 export interface SrtFileIdentity {
   readonly path: string;
@@ -31,16 +31,6 @@ export interface ResolveSrtLaunchOptions {
   readonly platform?: NodeJS.Platform;
   readonly env?: NodeJS.ProcessEnv;
   readonly homeDir?: string;
-}
-
-export class ManagedSrtCorruptError extends Error {
-  readonly installRoot: string;
-
-  constructor(installRoot: string, message: string) {
-    super(`Managed SRT install at ${installRoot} is unsafe or corrupt: ${message}`);
-    this.name = "ManagedSrtCorruptError";
-    this.installRoot = installRoot;
-  }
 }
 
 export async function resolveSrtLaunch(options: ResolveSrtLaunchOptions = {}): Promise<SrtLaunch> {
@@ -97,10 +87,10 @@ export async function resolveSrtLaunch(options: ResolveSrtLaunchOptions = {}): P
 
 export async function verifyManagedSrtInstall(installRoot: string): Promise<string> {
   assertAbsolutePath(installRoot, "installRoot");
-  await assertSecureDirectory(installRoot, "install root", installRoot);
+  await assertManagedSrtDirectory(installRoot, "install root", installRoot);
   let ancestor = dirname(installRoot);
   for (const label of ["version root", "SRT root", "tools root", "mono-agent cache root"] as const) {
-    await assertSecureDirectory(ancestor, label, installRoot);
+    await assertManagedSrtDirectory(ancestor, label, installRoot);
     ancestor = dirname(ancestor);
   }
 
@@ -109,10 +99,10 @@ export async function verifyManagedSrtInstall(installRoot: string): Promise<stri
   const cliPath = resolve(installRoot, "node_modules", "@anthropic-ai", "sandbox-runtime", "dist", "cli.js");
   const packageJsonPath = resolve(installRoot, "node_modules", "@anthropic-ai", "sandbox-runtime", "package.json");
 
-  await assertSecureRegularFile(markerPath, true, "managed marker", installRoot);
-  await assertSecureRegularFile(lockPath, true, "managed lockfile", installRoot);
-  await assertSecureRegularFile(cliPath, true, "SRT CLI", installRoot);
-  await assertSecureRegularFile(packageJsonPath, true, "SRT package manifest", installRoot);
+  await assertManagedSrtRegularFile(markerPath, true, "managed marker", installRoot);
+  await assertManagedSrtRegularFile(lockPath, true, "managed lockfile", installRoot);
+  await assertManagedSrtRegularFile(cliPath, true, "SRT CLI", installRoot);
+  await assertManagedSrtRegularFile(packageJsonPath, true, "SRT package manifest", installRoot);
 
   let marker: ManagedSrtMarker;
   try {
@@ -133,10 +123,10 @@ export async function verifyManagedSrtInstall(installRoot: string): Promise<stri
   }
 
   const [lockHash, cliHash, packageJsonHash, treeHash] = await Promise.all([
-    sha256File(lockPath),
-    sha256File(cliPath),
-    sha256File(packageJsonPath),
-    hashPrivateManagedTree(installRoot),
+    hashManagedSrtFile(lockPath),
+    hashManagedSrtFile(cliPath),
+    hashManagedSrtFile(packageJsonPath),
+    hashPrivateManagedSrtTree(installRoot),
   ]);
   if (lockHash !== MANAGED_SRT_LOCK_SHA256) {
     throw corrupt(installRoot, "package-lock.json does not match the checked-in lock hash");
@@ -172,74 +162,6 @@ function assertSupportedNodeVersion(version: string): void {
   const minor = Number(match[2]);
   if (major < 20 || (major === 20 && minor < 11)) {
     throw new Error(`Managed SRT requires Node >=20.11.0; current Node is ${version}.`);
-  }
-}
-
-async function assertSecureDirectory(path: string, label: string, installRoot: string): Promise<void> {
-  let stat;
-  try {
-    stat = await lstat(path);
-  } catch (error) {
-    throw corrupt(installRoot, `${label} is unavailable (${errorMessage(error)})`);
-  }
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw corrupt(installRoot, `${label} is not a real directory`);
-  }
-  if (process.getuid !== undefined && stat.uid !== process.getuid()) {
-    throw corrupt(installRoot, `${label} is not owned by the current user`);
-  }
-  if ((stat.mode & 0o077) !== 0) {
-    throw corrupt(installRoot, `${label} grants access to group or other users`);
-  }
-}
-
-async function assertSecureRegularFile(
-  path: string,
-  requirePrivate: boolean,
-  label: string,
-  installRoot = path,
-  requireExecutable = false,
-): Promise<void> {
-  let stat;
-  try {
-    stat = await lstat(path);
-  } catch (error) {
-    throw corrupt(installRoot, `${label} is unavailable (${errorMessage(error)})`);
-  }
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw corrupt(installRoot, `${label} is not a regular non-symbolic file`);
-  }
-  // The launcher path is checked against sandbox writable roots later, but a
-  // second hardlink could name the same owner-writable inode from inside one of
-  // those roots. There is no portable way to enumerate every alias, so retain
-  // the single-link invariant for launchers as well as private managed files.
-  if (stat.nlink !== 1) {
-    throw corrupt(
-      installRoot,
-      `${label} has ${stat.nlink} hard links; expected exactly one so no writable-root alias can modify it`,
-    );
-  }
-  if (requireExecutable && process.getuid === undefined) {
-    throw corrupt(installRoot, `${label} ownership cannot be verified on this platform`);
-  }
-  if (process.getuid !== undefined && stat.uid !== process.getuid() && stat.uid !== 0) {
-    throw corrupt(installRoot, `${label} has an unexpected owner`);
-  }
-  if (requirePrivate && (stat.mode & 0o077) !== 0) {
-    throw corrupt(installRoot, `${label} grants access to group or other users`);
-  }
-  if (!requirePrivate && (stat.mode & 0o022) !== 0) {
-    throw corrupt(installRoot, `${label} is writable by group or other users`);
-  }
-  if (requireExecutable && (stat.mode & 0o6000) !== 0) {
-    throw corrupt(installRoot, `${label} has setuid or setgid privilege bits`);
-  }
-  if (requireExecutable) {
-    try {
-      await access(path, fsConstants.X_OK);
-    } catch (error) {
-      throw corrupt(installRoot, `${label} is not executable by the current user (${errorMessage(error)})`);
-    }
   }
 }
 
@@ -297,59 +219,15 @@ export async function resolveTrustedFile(
     throw corrupt(installRoot, `${label} cannot be resolved canonically (${errorMessage(error)})`);
   }
   assertAbsolutePath(canonicalPath, label);
-  await assertSecureRegularFile(canonicalPath, requirePrivate, label, installRoot, requireExecutable);
+  await assertManagedSrtRegularFile(canonicalPath, requirePrivate, label, installRoot, requireExecutable);
   const fileStat = await lstat(canonicalPath);
   return {
     path: canonicalPath,
-    sha256: await sha256File(canonicalPath),
+    sha256: await hashManagedSrtFile(canonicalPath),
     dev: fileStat.dev,
     ino: fileStat.ino,
     size: fileStat.size,
   };
-}
-
-async function sha256File(path: string): Promise<string> {
-  return createHash("sha256").update(await readFile(path)).digest("hex");
-}
-
-async function hashPrivateManagedTree(installRoot: string): Promise<string> {
-  const hash = createHash("sha256");
-  async function walk(directoryPath: string): Promise<void> {
-    const directory = await opendir(directoryPath);
-    const entries = [];
-    for await (const entry of directory) {
-      entries.push(entry);
-    }
-    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
-    for (const entry of entries) {
-      const path = resolve(directoryPath, entry.name);
-      const relativePath = relative(installRoot, path);
-      if (MANAGED_SRT_TREE_EXCLUSIONS.includes(relativePath)) {
-        continue;
-      }
-      const entryStat = await lstat(path);
-      if (entryStat.isSymbolicLink()) {
-        throw corrupt(installRoot, `managed dependency tree contains a symbolic link: ${relativePath}`);
-      }
-      if (process.getuid !== undefined && entryStat.uid !== process.getuid()) {
-        throw corrupt(installRoot, `managed dependency tree has an unexpected owner: ${relativePath}`);
-      }
-      if ((entryStat.mode & 0o077) !== 0) {
-        throw corrupt(installRoot, `managed dependency tree is not owner-only: ${relativePath}`);
-      }
-      if (entryStat.isDirectory()) {
-        hash.update(`D\0${relativePath}\0`);
-        await walk(path);
-      } else if (entryStat.isFile() && entryStat.nlink === 1) {
-        hash.update(`F\0${relativePath}\0${entryStat.size}\0`);
-        hash.update(await readFile(path));
-      } else {
-        throw corrupt(installRoot, `managed dependency tree contains an unsupported entry: ${relativePath}`);
-      }
-    }
-  }
-  await walk(installRoot);
-  return hash.digest("hex");
 }
 
 function assertAbsolutePath(path: string, field: string): void {

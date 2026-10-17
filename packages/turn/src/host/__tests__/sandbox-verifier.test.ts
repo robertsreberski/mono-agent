@@ -1,0 +1,85 @@
+import { createHash } from "node:crypto";
+import { chmod, link, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const stats = vi.hoisted(() => ({ override: undefined as object | undefined }));
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return { ...actual, lstat: vi.fn(async (...args: Parameters<typeof actual.lstat>) => stats.override ?? actual.lstat(...args)) };
+});
+
+import { assertManagedSrtDirectory, assertManagedSrtRegularFile, hashPrivateManagedSrtTree } from "../sandbox/managed-verifier.js";
+
+const roots: string[] = [];
+afterEach(async () => {
+  stats.override = undefined;
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), "srt-inspection-"));
+  roots.push(root);
+  await chmod(root, 0o700);
+  return root;
+}
+
+describe("managed SRT read-only profiles", () => {
+  it("preserves the foreign-owner marker policy difference", async () => {
+    stats.override = { uid: (process.getuid?.() ?? 0) + 10, mode: 0o600, nlink: 1,
+      isSymbolicLink: () => false, isFile: () => true };
+    await expect(assertManagedSrtRegularFile("/fictional/marker", true, "managed marker", "/fictional/root", false, "installer")).resolves.toBeUndefined();
+    if (process.getuid !== undefined) {
+      await expect(assertManagedSrtRegularFile("/fictional/marker", true, "managed marker", "/fictional/root"))
+        .rejects.toMatchObject({ name: "ManagedSrtCorruptError", installRoot: "/fictional/root",
+          message: "Managed SRT install at /fictional/root is unsafe or corrupt: managed marker has an unexpected owner" });
+    }
+  });
+
+  it("retains caller-specific directory and regular-file messages", async () => {
+    const root = await fixture();
+    const file = join(root, "marker");
+    await writeFile(file, "fixture", { mode: 0o600 });
+    await chmod(file, 0o644);
+    await expect(assertManagedSrtRegularFile(file, true, "managed marker", root, false, "installer"))
+      .rejects.toThrow(`${file} must be a private single-link regular file`);
+    await expect(assertManagedSrtRegularFile(file, true, "managed marker", root))
+      .rejects.toThrow("managed marker grants access to group or other users");
+    await chmod(root, 0o755);
+    await expect(assertManagedSrtDirectory(root, "", root, "installer"))
+      .rejects.toThrow(`${root} must be a real owner-only directory owned by the current user`);
+    await expect(assertManagedSrtDirectory(root, "install root", root))
+      .rejects.toThrow("install root grants access to group or other users");
+  });
+
+  it("pins traversal, framing and exclusions independently without writing", async () => {
+    const root = await fixture();
+    await mkdir(join(root, "z"), { mode: 0o700 });
+    await mkdir(join(root, "node_modules"), { mode: 0o700 });
+    await writeFile(join(root, "z", "b"), "second", { mode: 0o600 });
+    await writeFile(join(root, "a"), "first", { mode: 0o600 });
+    await writeFile(join(root, ".mono-agent-srt.json"), "not hashed");
+    await writeFile(join(root, "node_modules", ".package-lock.json"), "not hashed");
+    const expected = createHash("sha256").update("F\0a\0" + "5\0firstD\0node_modules\0D\0z\0F\0z/b\0" + "6\0second").digest("hex");
+    const before = await readdir(root);
+    for (const policy of ["runtime", "installer"] as const) {
+      expect(await hashPrivateManagedSrtTree(root, policy)).toBe(expected);
+    }
+    expect(await readdir(root)).toEqual(before);
+    expect(await readFile(join(root, "a"), "utf8")).toBe("first");
+  });
+
+  it.each(["symlink", "hardlink", "mode"])("rejects %s trees with each wrapper's wording", async (kind) => {
+    const root = await fixture();
+    const file = join(root, "entry");
+    if (kind === "symlink") await symlink("absent", file);
+    else {
+      await writeFile(file, "fixture", { mode: 0o600 });
+      if (kind === "hardlink") await link(file, join(root, "alias"));
+      else await chmod(file, 0o644);
+    }
+    await expect(hashPrivateManagedSrtTree(root, "installer")).rejects.toThrow(kind === "hardlink"
+      ? "unsupported managed dependency tree entry: alias" : "unsafe managed dependency tree entry: entry");
+    await expect(hashPrivateManagedSrtTree(root)).rejects.toMatchObject({ name: "ManagedSrtCorruptError", installRoot: root });
+  });
+});

@@ -1,3 +1,4 @@
+import { ManagedSrtCorruptError } from "../sandbox/managed-verifier.js";
 import { MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_MARKER, MANAGED_SRT_PACKAGE, MANAGED_SRT_TREE_SHA256, MANAGED_SRT_VERSION, managedSrtInstallRoot } from "../sandbox/managed-identity.js";
 import { createHash } from "node:crypto";
 import { chmod, link, lstat, mkdir, mkdtemp, opendir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -8,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  ManagedSrtCorruptError,
   resolveSrtLaunch,
   verifyManagedSrtInstall,
 } from "../sandbox/managed.js";

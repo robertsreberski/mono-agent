@@ -350,6 +350,9 @@ configuration enables this path; configured switching remains separate work.
 
 Managed SRT pins, cache paths and readonly marker identity are owned by
 `@mono-agent/turn/host/sandbox`; app owns installation and repair.
+Read-only managed-directory/file inspection and hashing use explicit runtime
+or installer profiles; hashing alone does not establish release trust. Runtime
+verification always requires the independently pinned release tree.
 
 Typed hosts can use the built-in sandbox and process protection directly:
 
@@ -780,10 +783,14 @@ SandboxNetworkPolicy
 SandboxPolicy
 SandboxPolicyError
 SandboxUnavailableError
+assertManagedSrtDirectory
+assertManagedSrtRegularFile
 createSandboxPolicy
 createSrtSandboxEngine
 describeSandboxEffectiveState
 failClosedSandboxPolicy
+hashManagedSrtFile
+hashPrivateManagedSrtTree
 managedSrtCacheRoot
 managedSrtInstallRoot
 mergeSandboxPolicies
