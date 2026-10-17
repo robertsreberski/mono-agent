@@ -11,7 +11,6 @@ export function summaryThinkingLevel(model, effort = "auto") {
   return clampThinkingLevel(model, /** @type {import('@earendil-works/pi-ai').ModelThinkingLevel} */ (requested));
 }
 
-/** @param {any} model @param {any} context @param {any} options @param {string} effort */
 /** The kit supplies the text target (including its existing split-turn division).
  * Adaptive thinking shares that ceiling, unlike Pi's legacy Anthropic adjustment.
  */
@@ -25,7 +24,10 @@ export function summaryRequestOptions(model, context, options = {}, effort = "au
   const maxTokens = clampMaxTokensToContext(model, { ...context, messages: context.messages ?? [] },
     Math.min(model.maxTokens, textTargetTokens + reasoningAllowance));
   return {
-    options: { ...options, reasoning: level === "off" ? undefined : level, maxTokens,
+    options: { ...options,
+      ...(["google-generative-ai", "google-vertex", "google-gemini-cli"].includes(model.api) && level !== "off"
+        ? { thinkingBudgets: Object.fromEntries(["minimal", "low", "medium", "high"].map((key) => [key, Math.min(2048, Math.max(128, maxTokens - 1024))])) } : {}),
+      reasoning: level === "off" ? undefined : level, maxTokens,
       transport: "sse", maxRetries: 0 },
     metadata: { requestedEffort: effort, effectiveEffort: level === "off" ? "none" : level,
       textTargetTokens, reasoningAllowance, providerMaxTokens: maxTokens },

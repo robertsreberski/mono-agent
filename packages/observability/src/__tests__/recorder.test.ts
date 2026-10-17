@@ -72,7 +72,9 @@ describe("JsonlRunRecorder", () => {
     const event = { type: "context_compaction", operationId: "op", status: "failed", tokenCountsExact: false,
       accounting: { generatedSummaryTokens: null, tailEstimateTokens: null, requests: [{ requestId: "op:1", input: null, costUsd: null }] } };
     recorder.onEvent(event);
-    const summary = await recorder.finish({});
+    const usage = { cost_usd: 1.75, compaction: { version: 1, cost_usd: 1.25, requests: [{ requestId: "op:1", cost_usd: 1.25, output_tokens: null }] } };
+    const summary = await recorder.finish({ usage });
+    expect(summary.usage).toEqual(usage);
     const persisted = JSON.parse((await readFile(summary.artifactPaths[0]!, "utf8")).trim());
     expect(persisted).toMatchObject(event);
     expect(redactJsonValue({ tokenCountsExact: "PRIVATE", generatedSummaryTokens: { secret: "PRIVATE" }, tailEstimateTokens: "PRIVATE", api_token: null }))

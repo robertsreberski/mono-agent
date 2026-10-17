@@ -239,7 +239,7 @@ function emitCompactionEvent(onEvent, {
  * summary-model facade.
  */
 export function createCompactionAccounting() {
-  return { version: 1, requests: [], splitTurn: null, generatedSummaryTokens: null,
+  return { version: 2, usageIncluded: true, requests: [], splitTurn: null, generatedSummaryTokens: null,
     appendedMetadataBytes: null, tailEstimateTokens: null, transcriptBefore: null, transcriptAfter: null,
     fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null };
 }
@@ -548,6 +548,7 @@ export async function tryCompact(harness, {
   const operationId = randomUUID();
   const started = performance.now();
   const accounting = createCompactionAccounting();
+  accounting.usageIncluded = trigger !== "manual";
   const emit = createCompactionEmitter(accounting, started);
   emit(onEvent, {
     operationId,

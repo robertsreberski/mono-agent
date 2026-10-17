@@ -300,5 +300,6 @@ export type AgentManualCompactionResult = {
   readonly tokensBefore?: number;
   readonly tokensAfter?: number;
   readonly tokenCountsExact?: boolean;
+  readonly accounting?: import("./compaction-accounting.js").AgentCompactionAccounting;
   readonly reason?: string;
 };

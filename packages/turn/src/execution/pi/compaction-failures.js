@@ -4,14 +4,14 @@ const LIMIT = 2048;
 
 /** Bounded, metadata-only process cache. A restart intentionally clears it. */
 export function compactionFailureGuard({ scope, model, policy, tokens, trigger, now = Date.now() }) {
-  if (!scope || trigger === "manual" || policy.failureCooldownMs === 0) return null;
+  if (!scope || policy.failureCooldownMs === 0) return null;
   const key = createHash("sha256").update(JSON.stringify([scope, model.provider, model.id, model.api,
     policy.effort, policy.summaryMaxTokens, policy.keepRecentTokens, policy.compactionMinSavingsTokens,
     policy.contextWindow, "summary-focus-v1"])).digest("hex");
   const cooldown = policy.failureCooldownMs ?? 900000;
   const previous = failures.get(key);
   const growth = previous ? Math.max(8192, Math.ceil(previous.tokens * 0.1)) : 0;
-  const suppressed = previous && now - previous.at < cooldown && tokens - previous.tokens < growth;
+  const suppressed = trigger !== "manual" && previous && now - previous.at < cooldown && tokens - previous.tokens < growth;
   if (!suppressed) failures.delete(key);
   return {
     suppressed: Boolean(suppressed),

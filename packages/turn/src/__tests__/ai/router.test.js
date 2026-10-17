@@ -2023,3 +2023,15 @@ it("does not replay tools after a provider-local schema rejection", async () => 
   await router.run("sys", { messages: [] });
   expect(executeMock).toHaveBeenCalledTimes(1);
 });
+
+it("retains paid primary compaction exactly once after a backup succeeds", async () => {
+  const requests = [{ requestId: "fictional-summary:1", model: "faux:primary", status: "rejected", input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 1.25 }];
+  executeMock.mockResolvedValueOnce({ error: "context window exceeded", failureKind: "context_limit", events: [], usage: { cost_usd: 1.25, compaction: { requests, cost_usd: 1.25 } } })
+    .mockResolvedValueOnce({ text: "reply", events: [], usage: { input_tokens: 10, output_tokens: 2, cost_usd: 0.5 } });
+  const events = [];
+  const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-5-5"), modelRef("openai-codex", "gpt-6-luna")] });
+  const result = await router.run("sys", { messages: [], onEvent: (event) => events.push(event) });
+  expect(result.usage.cost_usd).toBe(1.75);
+  expect(result.usage.compaction.requests).toHaveLength(1);
+  expect(events.at(-1)).toMatchObject({ type: "cost_accumulated", cumulativeUsd: 1.75 });
+});

@@ -119,6 +119,9 @@ export function summaryModels(models, { operationId, focus, evidence = "", reque
           const response = await target.completeSimple(model, preparedContext, policy.options, ...rest);
           for (const key of ["input", "cacheRead", "cacheWrite", "output"]) row[key] = finite(response?.usage?.[key]);
           row.costUsd = finite(response?.usage?.cost?.total);
+          if (["error", "aborted"].includes(response?.stopReason) && ![row.input, row.output, row.cacheRead, row.cacheWrite, row.costUsd].some((value) => value > 0)) {
+            for (const key of ["input", "output", "cacheRead", "cacheWrite", "costUsd"]) row[key] = null;
+          }
           const text = textOf(response);
           row.generatedSummaryTokens = text ? estimateTokens({ role: "user", content: text, timestamp: 0 }) : 0;
           if (response?.stopReason === "error" || response?.stopReason === "aborted") {
@@ -133,7 +136,11 @@ export function summaryModels(models, { operationId, focus, evidence = "", reque
           row.status = "succeeded";
           row.reason = "completed";
           return response;
-        } catch {
+        } catch (error) {
+          if (error?.usage && typeof error.usage === "object") {
+            for (const key of ["input", "cacheRead", "cacheWrite", "output"]) row[key] = finite(error.usage[key]) ?? row[key];
+            row.costUsd = finite(error.usage.cost?.total) ?? row.costUsd;
+          }
           // Provider exceptions may contain request text or credentials.
           throw new Error(`Compaction summary request failed: ${row.reason}`);
         } finally {

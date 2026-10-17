@@ -49,6 +49,7 @@ import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../
 
 import { randomUUID } from "node:crypto";
 import { createRuntime } from "./create-runtime.js";
+import { createCompactionUsage, withCompactionUsage, compactionCostEvent } from "../ai/compaction-usage.js";
 import { fallbackContextFit } from "./context-fit.js";
 import { resolvePiRuntimeModel } from "../providers/pi/models.js";
 import { isProviderLocalToolSchemaFailure, isProviderAuthFailureText, retryableProviderFailureInfo } from "../telemetry/failure.js";
@@ -183,7 +184,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
   // Single ordinary attempt engine. Prepared native dispatch never enters it.
   /** @param {string} systemPrompt @param {Partial<RuntimeRunOptions>} options
    * @returns {Promise<RuntimeResult>} */
-  async function runAttemptLoop(systemPrompt, options) {
+  async function runAttemptLoop(systemPrompt, options, compactionUsage) {
       options = {
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
@@ -482,6 +483,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
           }
 
+          compactionUsage.add(result.usage?.compaction?.requests);
+          for (const event of result.events || []) compactionUsage.observe(event);
           result = normalizeAttemptResult(result, sessionEligibleAttempt);
           if (Array.isArray(result.events) && result.events.some(isToolActivityEvent)) attemptEffects.tool = true;
           if (isDispatchProgress(result.dispatchProgress)) {
@@ -680,10 +683,18 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         }
       }
       const routeWarnings = [];
-      const result = await runAttemptLoop(systemPrompt, { ...options, onEvent: (event) => {
+      const compactionUsage = createCompactionUsage();
+      let result = await runAttemptLoop(systemPrompt, { ...options, onEvent: (event) => {
+        compactionUsage.observe(event);
         if (event.type === "runtime_warning" && event.warning_kind === "fallback_context_window_skipped") routeWarnings.push(event);
         options.onEvent?.(event);
-      } });
+      } }, compactionUsage);
+      result = withCompactionUsage(result, compactionUsage);
+      if (result.usage?.compaction) {
+        const event = compactionCostEvent(result);
+        options.onEvent?.(event);
+        result.events = [...(result.events || []), event];
+      }
       return routeWarnings.length ? { ...result, runtimeWarnings: [...(result.runtimeWarnings || []), ...routeWarnings] } : result;
     },
     // Preparation is a primary-only single attempt, never a routed retry or

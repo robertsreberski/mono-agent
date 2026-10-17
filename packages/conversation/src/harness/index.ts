@@ -1,3 +1,4 @@
+import { isAgentCompactionAccounting } from "@mono-agent/contracts";
 import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "../history/canonical/store.js";
 import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "../history/pending-turn/contract.js";
 import { senderLabel as canonicalSenderLabel } from "./speaker-context.js";
@@ -384,7 +385,10 @@ export class ConversationHarnessImpl implements ConversationHarness {
       if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       await prepared.commit();
       providerTurn = undefined;
-      if (!synced) throw new ConversationHarnessError("compaction_failed", "Context compaction failed; the session was retired safely.");
+      if (!synced) {
+        if (outcome?.status === "failed" && outcome.accounting && isAgentCompactionAccounting(outcome.accounting)) return outcome;
+        throw new ConversationHarnessError("compaction_failed", "Context compaction failed; the session was retired safely.");
+      }
       // prepareCommit(synced) publishes exactly revision + 1 (durable-history.ts),
       // matching the turn path's saveSession.
       this.saveSession(conversationId, sessionId, record, revision + 1, undefined, modelKey);
@@ -396,6 +400,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
         ...(outcome!.tokensBefore === undefined ? {} : { tokensBefore: outcome!.tokensBefore }),
         ...(outcome!.tokensAfter === undefined ? {} : { tokensAfter: outcome!.tokensAfter }),
         tokenCountsExact: outcome!.tokenCountsExact === true,
+        ...(isAgentCompactionAccounting(outcome!.accounting) ? { accounting: outcome!.accounting } : {}),
       };
     } catch (error) {
       if (providerTurn !== undefined) {

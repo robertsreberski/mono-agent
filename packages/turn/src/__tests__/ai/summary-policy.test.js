@@ -40,3 +40,10 @@ it.each([false, true])("real compact path survives fake adaptive thinking-only t
   expect(requests).toHaveLength(split ? 2 : 1);
   expect(requests.every((row) => row.effectiveEffort === "low" && row.status === "succeeded" && row.costUsd === 2.5)).toBe(true);
 });
+it("bounds shared Google thinking budgets instead of inheriting conversation reasoning", () => {
+  const context = { messages: [] };
+  const { options } = summaryRequestOptions({ ...model, api: "google-generative-ai" }, context, { maxTokens: 2000 }, "low");
+  expect(options.thinkingBudgets.low).toBe(976);
+  expect(options.maxTokens).toBe(2000);
+  expect(summaryRequestOptions({ ...model, api: "google-generative-ai" }, context, { maxTokens: 1000 }, "low").options.thinkingBudgets.low).toBe(128);
+});

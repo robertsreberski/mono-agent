@@ -23,7 +23,7 @@ it("isolates sessions, ignores unbilled/aborted work, clears success and bypasse
   compactionFailureGuard(input).settle(false, true, "provider_error");
   expect(compactionFailureGuard(input).suppressed).toBe(true);
   expect(compactionFailureGuard({ ...input, scope: "new-epoch" }).suppressed).toBe(false);
-  expect(compactionFailureGuard({ ...input, trigger: "manual" })).toBeNull();
+  expect(compactionFailureGuard({ ...input, trigger: "manual" }).suppressed).toBe(false);
   expect(compactionFailureGuard({ ...input, scope: null })).toBeNull();
   expect(compactionFailureGuard({ ...input, policy: { failureCooldownMs: 0 } })).toBeNull();
   compactionFailureGuard(input).settle(true, true);

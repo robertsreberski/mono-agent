@@ -245,6 +245,17 @@ async function manualFixture(options: {
 }
 
 describe("ConversationHarness manual compaction", () => {
+  it("returns settled failed manual accounting without reusing the retired session", async () => {
+    const accounting = { version: 2 as const, usageIncluded: false as const, requests: [{ requestId: "fictional:1", model: "faux:summary", status: "rejected" as const, input: 100, output: 10, cacheRead: 0, cacheWrite: 0, costUsd: 1.25 }] };
+    const { makeHarness, fake } = await manualFixture({ run: async (_prompt, options) => isManual(options)
+      ? { providerSessionId: options.sessionId, error: "Summary rejected", manualCompaction: { status: "failed", trigger: "manual", operationId: "fictional", accounting } } as unknown as RuntimeResult
+      : { text: "answer", providerSessionId: options.sessionId as string } });
+    const harness = makeHarness();
+    await expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "failed", accounting });
+    await harness.run(request("manual", "next"));
+    expect(fake.calls[1]?.options.sessionId).not.toBe(fake.calls[0]?.options.sessionId);
+  });
+
   it("passes explicit false through the manual policy hook even on the configured primary", async () => {
     const { fake, makeHarness } = await manualFixture({ withContext1M: true });
     await expect(makeHarness().compactConversation!("manual", { context1M: false })).resolves.toMatchObject({ status: "succeeded" });
