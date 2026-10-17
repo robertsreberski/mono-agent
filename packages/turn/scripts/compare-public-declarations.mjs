@@ -148,7 +148,7 @@ export function compareGraphs(baseline, candidate, entries) {
         const b = after.get(a.name), label = `${path}.${a.name}`;
         if (!b) { fail(label, "removed member"); continue; }
         if (!(a.flags & ts.SymbolFlags.Optional) && b.flags & ts.SymbolFlags.Optional) fail(label, "required became optional");
-        if (mode === "input" && a.flags & ts.SymbolFlags.Optional && !(b.flags & ts.SymbolFlags.Optional)) fail(label, "optional became required");
+        if (a.flags & ts.SymbolFlags.Optional && !(b.flags & ts.SymbolFlags.Optional)) fail(label, "optional became required");
         if (readonly(a) && !readonly(b)) fail(label, "lost readonly");
         documentation(a, b, label);
         walk(symbolType(a), symbolType(b), label, mode);
