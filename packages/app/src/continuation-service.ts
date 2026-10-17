@@ -1,31 +1,45 @@
-import { createHmac, randomBytes } from "node:crypto";
-import { createServer } from "node:http";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createServer, type Server } from "node:http";
 import { resolve } from "node:path";
 
 import { createContinuationHttpRoutes } from "./continuation-http-routes.js";
 import { createContinuationOperatorOperations } from "./continuations/operator-operations.js";
 import { createContinuationProtocolOperations } from "./continuations/protocol-operations.js";
-import { ContinuationDispatchWorker } from "./continuation-dispatch-worker.js";
-import { ContinuationProtocolError } from "./continuation-service-errors.js";
-import { operatorContinuationPage, requireBearer } from "./continuation-service-helpers.js";
+import { createContinuationDispatchOperations } from "./continuation-dispatch-worker.js";
+import { createContinuationOriginOperations } from "./continuation-service-origin.js";
+import {
+  ContinuationOperationTimeoutError,
+  ContinuationProtocolError,
+  ContinuationServiceStoppingError,
+} from "./continuation-service-errors.js";
 import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
 import { loadOrCreateContinuationSecret } from "./continuation-secret.js";
-import { openContinuationStore } from "./continuation-store.js";
+import { openContinuationStore, type ContinuationStore } from "./continuation-store.js";
 import {
   clearLease,
   closeContinuationServer,
+  continuationOperatorToken,
   errorRecord,
   formatHost,
   isLoopbackHost,
+  operatorContinuationPage,
+  originContextBindingMac,
+  requireBearer,
+  resolveContinuationLimits,
   safeReason,
   statusOf,
   statusOfRequired,
   validateNamedRoutes,
 } from "./continuation-service-helpers.js";
-import type {
-  ClaimBinding,
-  ContinuationServiceHandle,
-  ContinuationServiceOptions,
+import {
+  DEFAULT_LEASE_MS,
+  DEFAULT_MAX_DEADLINE_MS,
+  DEFAULT_MAX_RESULT_BYTES,
+  DEFAULT_WORKER_INTERVAL_MS,
+  type ClaimBinding,
+  type ContinuationServiceHandle,
+  type ContinuationServiceLogger,
+  type ContinuationServiceOptions,
 } from "./continuation-service-types.js";
 import {
   CONTINUATION_CLAIM_TOKEN_ENV,
@@ -40,7 +54,9 @@ import {
   continuationTokenMatches,
   normalizeContinuationReplyTarget,
   type ContinuationClaimCapability,
+  type ContinuationLimits,
   type IssueContinuationCapabilityInput,
+  type NamedContinuationRoute,
 } from "./continuations.js";
 
 export { ContinuationSynthesisUnavailableError } from "./continuation-service-errors.js";
@@ -74,21 +90,259 @@ export async function startContinuationService(
   }
 }
 
-class ContinuationService extends ContinuationDispatchWorker {
-  private readonly protocol = createContinuationProtocolOperations({
-    store: this.store, now: this.now, maxDeadlineMs: this.maxDeadlineMs, limits: this.limits, namedRoutes: this.namedRoutes,
-    baseUrl: () => this.baseUrl,
-    deriveResultToken: (id, taskHash) => createHmac("sha256", this.secret).update(`continuation-result\0${id}\0${taskHash}`).digest("base64url"),
-    scheduleProcess: () => this.scheduleProcess(),
-  });
-  private readonly operator = createContinuationOperatorOperations({
-    store: this.store, now: this.now, limits: this.limits, recordHistory: this.options.recordHistory,
-    scheduleProcess: () => this.scheduleProcess(),
-    isResolvingUnknown: (id) => this.resolvingUnknown.has(id),
-    beginResolvingUnknown: (id) => { this.resolvingUnknown.add(id); },
-    finishResolvingUnknown: (id) => { this.resolvingUnknown.delete(id); },
-    runBoundedOperation: async (phase, timeoutMs, operation) => await this.runBoundedOperation(phase, timeoutMs, operation),
-  });
+class ContinuationService {
+  private readonly instanceId = randomUUID();
+  private readonly operatorToken: string;
+  private readonly claimBindings = new Map<string, ClaimBinding>();
+  private readonly activeClaimBindings = new Set<ClaimBinding>();
+  private readonly namedRoutes: Readonly<Record<string, NamedContinuationRoute>>;
+  private readonly detachedServiceTokenHashes: ReadonlyMap<string, string>;
+  private readonly maxResultBytes: number;
+  private readonly maxDeadlineMs: number;
+  private readonly leaseMs: number;
+  private readonly workerIntervalMs: number;
+  private readonly autoProcess: boolean;
+  private readonly limits: ContinuationLimits;
+  private readonly now: () => Date;
+  private readonly logger: ContinuationServiceLogger | undefined;
+  private readonly origin: ReturnType<typeof createContinuationOriginOperations>;
+  private readonly dispatch: ReturnType<typeof createContinuationDispatchOperations>;
+
+  private readonly protocol: ReturnType<typeof createContinuationProtocolOperations>;
+  private readonly operator: ReturnType<typeof createContinuationOperatorOperations>;
+  private readonly lifecycleAbort = new AbortController();
+  private readonly inFlight = new Map<string, Promise<boolean>>();
+  private readonly activeHttpRequests = new Set<Promise<void>>();
+  private activeHandleOperations = 0;
+  private handleDrainPromise: Promise<void> | undefined;
+  private resolveHandleDrain: (() => void) | undefined;
+  private readonly resolvingUnknown = new Set<string>();
+  private dispatchTail: Promise<void> = Promise.resolve();
+  private server: Server | undefined;
+  private baseUrl = "";
+  private worker: ReturnType<typeof setInterval> | undefined;
+  private stopped = false;
+  private stopPromise: Promise<void> | undefined;
+
+  constructor(
+    private readonly store: ContinuationStore,
+    private readonly secret: Buffer,
+    private readonly options: ContinuationServiceOptions,
+    private readonly releaseStoreLock: () => Promise<void>,
+  ) {
+    this.namedRoutes = options.namedRoutes ?? {};
+    this.operatorToken = continuationOperatorToken(secret);
+    this.detachedServiceTokenHashes = new Map(Object.entries(options.detachedServices ?? {}).map(
+      ([name, token]) => [name, continuationDigest(token)],
+    ));
+    this.maxResultBytes = options.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES;
+    this.maxDeadlineMs = options.maxDeadlineMs ?? DEFAULT_MAX_DEADLINE_MS;
+    this.leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
+    this.workerIntervalMs = options.workerIntervalMs ?? DEFAULT_WORKER_INTERVAL_MS;
+    this.autoProcess = options.autoProcess !== false;
+    this.limits = resolveContinuationLimits(options.limits);
+    this.now = options.now ?? (() => new Date());
+    this.logger = options.logger;
+    this.origin = createContinuationOriginOperations({
+      store: this.store,
+      now: () => this.now(),
+      instanceId: this.instanceId,
+      isStopped: () => this.stopped,
+      beginSettlement: (binding) => this.beginOriginSettlementOperation(binding),
+      claimDrain: (binding) => this.claimDrain(binding),
+      settleBinding: (binding) => this.settleClaimBinding(binding),
+      bindingMac: (record, reference) => originContextBindingMac(this.secret, record, reference),
+      scheduleProcess: () => this.scheduleProcess(),
+    });
+    this.dispatch = createContinuationDispatchOperations({
+      store: this.store,
+      now: () => this.now(),
+      instanceId: this.instanceId,
+      leaseMs: this.leaseMs,
+      limits: this.limits,
+      synthesisPreflight: this.options.synthesisPreflight,
+      synthesize: this.options.synthesize,
+      deliver: this.options.deliver,
+      isStopped: () => this.stopped,
+      isSupervised: (id) => this.inFlight.has(id),
+      startDueJobs: async (limit) => await this.startDueJobs(limit),
+      throwIfStopping: () => this.throwIfStopping(),
+      resolveOriginContext: async (record) => await this.origin.resolveOriginContext(record),
+      runBoundedOperation: async (phase, timeoutMs, operation) => await this.runBoundedOperation(phase, timeoutMs, operation),
+    });
+    this.protocol = createContinuationProtocolOperations({
+      store: this.store,
+      now: () => this.now(),
+      maxDeadlineMs: this.maxDeadlineMs,
+      limits: this.limits,
+      namedRoutes: this.namedRoutes,
+      baseUrl: () => this.baseUrl,
+      deriveResultToken: (id, taskHash) => createHmac("sha256", this.secret).update(`continuation-result\0${id}\0${taskHash}`).digest("base64url"),
+      scheduleProcess: () => this.scheduleProcess(),
+    });
+    this.operator = createContinuationOperatorOperations({
+      store: this.store,
+      now: () => this.now(),
+      limits: this.limits,
+      recordHistory: this.options.recordHistory,
+      scheduleProcess: () => this.scheduleProcess(),
+      isResolvingUnknown: (id) => this.resolvingUnknown.has(id),
+      beginResolvingUnknown: (id) => { this.resolvingUnknown.add(id); },
+      finishResolvingUnknown: (id) => { this.resolvingUnknown.delete(id); },
+      runBoundedOperation: async (phase, timeoutMs, operation) => await this.runBoundedOperation(phase, timeoutMs, operation),
+    });
+  }
+
+  private throwIfStopping(): void {
+    if (this.stopped || this.lifecycleAbort.signal.aborted) {
+      throw new ContinuationServiceStoppingError();
+    }
+  }
+
+  private async runBoundedOperation<T>(
+    phase: "synthesis" | "delivery",
+    timeoutMs: number,
+    operation: () => Promise<T> | T,
+  ): Promise<T> {
+    this.throwIfStopping();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new ContinuationOperationTimeoutError(phase, timeoutMs)), timeoutMs);
+      timeout.unref?.();
+    });
+    const stopped = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(new ContinuationServiceStoppingError());
+      this.lifecycleAbort.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([Promise.resolve().then(operation), timedOut, stopped]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (onAbort !== undefined) this.lifecycleAbort.signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private async runHandleOperation<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.stopped) throw new Error("Continuation service is stopped.");
+    this.activeHandleOperations += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeHandleOperations -= 1;
+      if (this.stopped && this.activeHandleOperations === 0) {
+        this.resolveHandleDrain?.();
+        this.resolveHandleDrain = undefined;
+        this.handleDrainPromise = undefined;
+      }
+    }
+  }
+
+  private async drainHandleOperations(): Promise<void> {
+    if (this.activeHandleOperations === 0) return;
+    this.handleDrainPromise ??= new Promise<void>((resolve) => { this.resolveHandleDrain = resolve; });
+    await this.handleDrainPromise;
+  }
+
+  private claimDrain(binding: ClaimBinding): Promise<void> | undefined {
+    if (binding.inFlightOperations <= 0) return undefined;
+    binding.drainPromise ??= new Promise<void>((resolve) => { binding.resolveDrain = resolve; });
+    return binding.drainPromise;
+  }
+
+  private async closeClaimBinding(token: string, binding: ClaimBinding): Promise<void> {
+    binding.closed = true;
+    if (this.claimBindings.get(token) === binding) this.claimBindings.delete(token);
+    if (binding.inFlightOperations === 0) return;
+    binding.drainPromise ??= new Promise<void>((resolve) => { binding.resolveDrain = resolve; });
+    await binding.drainPromise;
+  }
+
+  private beginClaim(binding: ClaimBinding): () => void {
+    if (binding.closed) {
+      throw new ContinuationProtocolError(401, "invalid_claim_capability", "Invalid or expired claim capability.");
+    }
+    binding.inFlightOperations += 1;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      binding.inFlightOperations -= 1;
+      if (binding.closed && binding.inFlightOperations === 0) {
+        binding.resolveDrain?.();
+        delete binding.resolveDrain;
+        delete binding.drainPromise;
+      }
+    };
+  }
+
+  private beginOriginSettlementOperation(binding: ClaimBinding): (() => void) | undefined {
+    if (this.stopped || binding.settled) return undefined;
+    if (!binding.closed) {
+      throw new Error("Continuation claims must be revoked before origin settlement begins.");
+    }
+    if (binding.inFlightOperations !== 0) {
+      throw new Error("Continuation capability release has not finished draining admitted work.");
+    }
+    binding.inFlightOperations += 1;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      binding.inFlightOperations -= 1;
+      if (binding.closed && binding.inFlightOperations === 0) {
+        binding.resolveDrain?.();
+        delete binding.resolveDrain;
+        delete binding.drainPromise;
+      }
+    };
+  }
+
+  private settleClaimBinding(binding: ClaimBinding): void {
+    binding.settled = true;
+    this.activeClaimBindings.delete(binding);
+  }
+
+  private async startDueJobs(limit: number): Promise<readonly Promise<boolean>[]> {
+    const dispatch = this.dispatchTail.then(async () => {
+      if (this.stopped) return [];
+      await this.dispatch.recover();
+      if (this.stopped) return [];
+      const capacity = Math.max(0, Math.min(limit, this.limits.maxConcurrent - this.inFlight.size));
+      if (capacity === 0) return [];
+      const nowMs = this.now().getTime();
+      const candidates = (await this.store.list())
+        .filter((record) =>
+          !this.inFlight.has(record.continuationId)
+          && (
+            (record.state === "result_received" && Date.parse(record.nextAttemptAt ?? record.updatedAt) <= nowMs)
+            || record.state === "ready_to_deliver"
+            || (record.state === "delivery_retry" && Date.parse(record.nextAttemptAt ?? record.updatedAt) <= nowMs)
+          ))
+        .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt))
+        .slice(0, capacity);
+      if (this.stopped) return [];
+      return candidates.map((candidate) => this.startOne(candidate.continuationId));
+    });
+    this.dispatchTail = dispatch.then(() => undefined, () => undefined);
+    return await dispatch;
+  }
+
+  private startOne(id: string): Promise<boolean> {
+    const existing = this.inFlight.get(id);
+    if (existing !== undefined) return existing;
+    const job = this.dispatch.processOne(id);
+    this.inFlight.set(id, job);
+    void job.then(
+      () => { if (this.inFlight.get(id) === job) this.inFlight.delete(id); },
+      () => { if (this.inFlight.get(id) === job) this.inFlight.delete(id); },
+    );
+    return job;
+  }
+
+  async recover(startup = false): Promise<void> { await this.dispatch.recover(startup); }
+
+  private async processDue(limit?: number): Promise<number> { return await this.dispatch.processDue(limit); }
 
   private scheduleProcess(): void {
     if (this.autoProcess) void this.processDue().catch(() => undefined);
@@ -97,8 +351,10 @@ class ContinuationService extends ContinuationDispatchWorker {
   async start(host: string, port: number): Promise<ContinuationServiceHandle> {
     const routes = createContinuationHttpRoutes({
       ...this.operator,
-      maxResultBytes: this.maxResultBytes, logger: this.logger,
-      isStopped: () => this.stopped, baseUrl: () => this.baseUrl,
+      maxResultBytes: this.maxResultBytes,
+      logger: this.logger,
+      isStopped: () => this.stopped,
+      baseUrl: () => this.baseUrl,
       authorizeRunClaim: (token) => {
         const binding = this.claimBindings.get(token);
         if (binding === undefined) throw new ContinuationProtocolError(401, "invalid_claim_capability", "Invalid or expired claim capability.");
@@ -232,10 +488,10 @@ class ContinuationService extends ContinuationDispatchWorker {
         [CONTINUATION_FINGERPRINT_ENV]: fingerprint,
         [CONTINUATION_MODE_ENV]: mode,
       }),
-      requiresOriginContext: async () => await this.requiresOriginContext(binding),
-      finalizeOriginContext: async (snapshot) => await this.finalizeOriginContext(binding, snapshot),
-      activateOriginContext: async () => await this.activateOriginContext(binding),
-      abandonOriginContext: async () => await this.abandonOriginContext(binding),
+      requiresOriginContext: async () => await this.origin.requiresOriginContext(binding),
+      finalizeOriginContext: async (snapshot) => await this.origin.finalizeOriginContext(binding, snapshot),
+      activateOriginContext: async () => await this.origin.activateOriginContext(binding),
+      abandonOriginContext: async () => await this.origin.abandonOriginContext(binding),
       release: async () => {
         if (released) return;
         released = true;

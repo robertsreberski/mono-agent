@@ -1,6 +1,6 @@
 import type { IncomingMessage } from "node:http";
-import type { ContinuationStore, DurableContinuationRecord } from "../continuation-store.js";
-import type { ContinuationServiceHandle, ContinuationServiceLogger, ContinuationServiceOptions } from "../continuation-service-types.js";
+import type { ContinuationStore, DurableContinuationRecord, ContinuationOriginContextReference } from "../continuation-store.js";
+import type { ClaimBinding, ContinuationServiceHandle, ContinuationServiceLogger, ContinuationServiceOptions, ResolvedOriginContext } from "../continuation-service-types.js";
 import type { ContinuationLimits, NamedContinuationRoute } from "../continuations.js";
 import type { operatorContinuationPage } from "../continuation-service-helpers.js";
 
@@ -41,4 +41,33 @@ export interface ContinuationHttpOperations extends ContinuationOperatorOperatio
   acceptResult(id: string, token: string, body: unknown): Promise<Record<string, unknown>>;
   authorizedRecord(id: string, token: string): Promise<DurableContinuationRecord>;
   list(url: URL): Promise<ReturnType<typeof operatorContinuationPage>>;
+}
+
+export interface ContinuationOriginDependencies {
+  readonly store: Pick<ContinuationStore, "list" | "mutate" | "stageOriginContext" | "activateOriginContextGroup" | "loadOriginContext">;
+  readonly instanceId: string;
+  now(): Date;
+  isStopped(): boolean;
+  claimDrain(binding: ClaimBinding): Promise<void> | undefined;
+  beginSettlement(binding: ClaimBinding): (() => void) | undefined;
+  settleBinding(binding: ClaimBinding): void;
+  bindingMac(record: DurableContinuationRecord, reference: ContinuationOriginContextReference): string;
+  scheduleProcess(): void;
+}
+
+export interface ContinuationDispatchDependencies {
+  readonly store: Pick<ContinuationStore, "list" | "get" | "mutate">;
+  readonly instanceId: string;
+  readonly leaseMs: number;
+  readonly limits: Pick<ContinuationLimits, "maxConcurrent" | "synthesisTimeoutMs" | "deliveryTimeoutMs">;
+  readonly synthesisPreflight: ContinuationServiceOptions["synthesisPreflight"];
+  readonly synthesize: ContinuationServiceOptions["synthesize"];
+  readonly deliver: ContinuationServiceOptions["deliver"];
+  now(): Date;
+  isStopped(): boolean;
+  isSupervised(id: string): boolean;
+  startDueJobs(limit: number): Promise<readonly Promise<boolean>[]>;
+  throwIfStopping(): void;
+  resolveOriginContext(record: DurableContinuationRecord): Promise<ResolvedOriginContext>;
+  runBoundedOperation<T>(phase: "synthesis" | "delivery", timeoutMs: number, operation: () => Promise<T> | T): Promise<T>;
 }
