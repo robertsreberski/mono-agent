@@ -32,7 +32,7 @@ import {
   replyArtifactStorageBudgetFor,
   type ReplyArtifactService,
 } from "../artifacts/reply-artifacts.js";
-import { createReplyPartBudget } from "../reply-part-budget.js";
+import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
 
 const tempDirs: string[] = [];
 

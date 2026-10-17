@@ -10,18 +10,18 @@ import {
 } from "../composition/app-config.js";
 import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
 import type { ChannelDriver, ChannelId, ChannelStartInput, MonoAgentAppLogger, RunningChannel, ChannelStatus } from "../channels/types.js";
-import { resolvePostedMessageIndexPath } from "../posted-message-index.js";
+import { resolvePostedMessageIndexPath } from "../delivery/posted-message-index.js";
 import { reasonOf } from "./app-controller-utils.js";
 import type { ConfigApplyResult, TraceabilityStatus } from "./app-controller-types.js";
 import { notifyDestination as notifyDestinationForChannel } from "./app-controller-maintenance.js";
-import type { InteractionBridgeHandle } from "../interaction-bridge.js";
+import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
 import type { ContinuationServiceHandle } from "../continuation-service.js";
 import type { NotifyDeliveryResult } from "../channels/types.js";
-import type { NotifyDestination } from "../notify-destinations.js";
+import type { NotifyDestination } from "../delivery/notify-destinations.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "../provider-auth-observations.js";
 import { createProviderAuthOperator } from "../provider-auth-operator.js";
-import { startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
+import { startAppOwnedTuiChannel } from "../channels/drivers/tui.js";
 import {
   unsafeProcessJobsProtectionStatus,
   type ProcessJobsProtectionPosture,

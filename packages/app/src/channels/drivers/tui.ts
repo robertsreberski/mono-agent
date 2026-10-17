@@ -1,5 +1,5 @@
-import type { TuiChannelOverrides } from "../channels/types.js";
-import { currentProcessJobWakeRecovery } from "../process-jobs-context.js";
+import type { TuiChannelOverrides } from "../types.js";
+import { currentProcessJobWakeRecovery } from "../../process-jobs-context.js";
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -27,12 +27,12 @@ import {
 } from "@mono-agent/web";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
-import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels/types.js";
-import { appPackageVersion } from "../host/package-version.js";
-import { buildProviderModelCatalog } from "../provider-model-catalog.js";
-import { configuredRuntimeModels } from "../composition/runtime-routes.js";
-import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../skill-registry.js";
-import type { CronOperatorRegistry } from "../cron-operator-service.js";
+import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../types.js";
+import { appPackageVersion } from "../../host/package-version.js";
+import { buildProviderModelCatalog } from "../../provider-model-catalog.js";
+import { configuredRuntimeModels } from "../../composition/runtime-routes.js";
+import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../../skill-registry.js";
+import type { CronOperatorRegistry } from "../../cron-operator-service.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/channel-operator");
 

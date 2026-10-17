@@ -39,7 +39,7 @@ vi.mock("@mono-agent/contracts", async (original) => ({
   ...await original<typeof import("@mono-agent/contracts")>(),
   readSettingsJson: async () => ({ duplicateKeyPaths: ["runtime.model"] }),
 }));
-vi.mock("../channel-config-view.js", () => ({ collectChannelConfigViews: async () => [] }));
+vi.mock("../channels/channel-config-view.js", () => ({ collectChannelConfigViews: async () => [] }));
 vi.mock("../doctor/cross-checks.js", () => ({
   collectStaticTriggerCredentialRefs: async () => [],
   applyRequestModelOverrideCompatibilityChecks: async () => { state.calls.push("model-cross-check"); },

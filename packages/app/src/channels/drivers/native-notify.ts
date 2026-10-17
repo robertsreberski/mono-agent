@@ -7,9 +7,9 @@ import type {
   WebhookInvocationStatus,
 } from "@mono-agent/trigger-webhook";
 
-import type { MonoAgentAppLogger } from "../channels/types.js";
-import type { NotifyDestination } from "../notify-destinations.js";
-import type { NotifyDeliveryResult } from "../channels/types.js";
+import type { MonoAgentAppLogger } from "../types.js";
+import type { NotifyDestination } from "../../delivery/notify-destinations.js";
+import type { NotifyDeliveryResult } from "../types.js";
 
 /**
  * Suppress delivery, and say so when the model went off-contract to get there.

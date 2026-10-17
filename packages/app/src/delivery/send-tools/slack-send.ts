@@ -10,7 +10,7 @@ import {
   withDeliveryHistoryWarning,
   type DeliveryHistoryOutcome,
 } from "./delivery-history.js";
-import { appendPostedMessage } from "../../posted-message-index.js";
+import { appendPostedMessage } from "../posted-message-index.js";
 import type { AdapterSendToolsDeliveryHistory, AdapterSendToolsIndexing, SlackSendToolSettings } from "./types.js";
 
 /**

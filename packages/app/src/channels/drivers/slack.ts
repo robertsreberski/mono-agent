@@ -1,4 +1,4 @@
-import type { SlackChannelOverrides } from "../channels/types.js";
+import type { SlackChannelOverrides } from "../types.js";
 import type {
   AgentContinuationOriginContext,
   ChannelInteractionSink,
@@ -14,12 +14,12 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { buildChannelRuntimeControls } from "../channel-runtime-controls.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver, ContinuationChannelSynthesisResult } from "../channels/types.js";
+import type { ChannelDriver, ContinuationChannelSynthesisResult } from "../types.js";
 import {
   appendPostedMessage,
   compactPostedMessageIndex,
   lookupProducingConversation,
-} from "../posted-message-index.js";
+} from "../../delivery/posted-message-index.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type SlackAdapterModule = typeof import("@mono-agent/channel-slack");

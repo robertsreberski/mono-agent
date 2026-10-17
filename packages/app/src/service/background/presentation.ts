@@ -2,8 +2,8 @@ import { resolve } from "node:path";
 
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
-import { formatChannelFactValue } from "../../channel-fact-format.js";
-import { formatHumanChannelSections } from "../../channel-status-display.js";
+import { formatChannelFactValue } from "../../channels/channel-fact-format.js";
+import { formatHumanChannelSections } from "../../channels/channel-status-display.js";
 import type { LaunchctlResult } from "../../launchd.js";
 import type { ManagedBackgroundRuntime } from "../managed-runtime/types.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "../../runs-health.js";

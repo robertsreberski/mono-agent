@@ -14,7 +14,7 @@ import { type MonoRuntimeLike, type RuntimeNativePreparedDispatch } from "@mono-
 import { createConfiguredAgentResponder, createConfiguredAgentResponderForApp } from "../composition/configured-agent.js";
 import { wrapOwnedConfiguredRuntime } from "../composition/runtime-ownership.js";
 import { createRequestModelOverrideRuntimeExtension } from "../composition/request-model-override.js";
-import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
+import { createSlackPostedReplyHistory } from "../delivery/posted-reply-history.js";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "../composition/configured-native-switch.js";
 import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../durable-state/agent-root-coordinator.js";
 import { completionOnlyRuntime } from "../composition/configured-runtime-capabilities.js";

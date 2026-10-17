@@ -20,7 +20,7 @@ import {
   encodeRequestScopedCursor,
   requestScopedCursorDigest,
   splitRequestScopedModelText,
-} from "./request-scoped-mcp.js";
+} from "./mcp/request-scoped-mcp.js";
 import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 import {
   containsKnownSecretValue,

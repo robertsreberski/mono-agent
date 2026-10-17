@@ -3,8 +3,8 @@ import type { Server } from "node:http";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { createLoopbackMcpEndpoint } from "./mcp/loopback-transport.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+import { createLoopbackMcpEndpoint } from "./loopback-transport.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
 /** Pi bounds MCP text content at 12,000 characters; leave framing headroom. */
 const REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS = 10_000;

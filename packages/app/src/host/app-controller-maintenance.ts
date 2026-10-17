@@ -12,17 +12,17 @@ import { loadAppCoreConfig, resolveAppArtifactDir } from "../composition/app-con
 import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
 import { createConfiguredAgentRuntimeForApp } from "../composition/configured-runtime.js";
 import type { createConfiguredMemory } from "../composition/configured-memory.js";
-import { routeProactiveNotification } from "../proactive-notify.js";
+import { routeProactiveNotification } from "../delivery/proactive-notify.js";
 import type { NotifyDeliveryResult } from "../channels/types.js";
 import { startMemoryRituals } from "../memory-rituals.js";
 import type { RunningRituals } from "../memory-rituals.js";
 import { startArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
 import type { RunningArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
-import { resolveNotifyDestinations } from "../notify-destinations.js";
-import type { NotifyDestination } from "../notify-destinations.js";
+import { resolveNotifyDestinations } from "../delivery/notify-destinations.js";
+import type { NotifyDestination } from "../delivery/notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
 import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "../channels/types.js";
-import type { SeenNotifyDestinationCache } from "../seen-conversations.js";
+import type { SeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
 import type { ProcessJobsProtectionPosture } from "../process-jobs-protection.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;

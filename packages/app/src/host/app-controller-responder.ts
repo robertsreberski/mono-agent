@@ -1,10 +1,10 @@
 import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { effectiveSandboxBoundary } from "../effective-sandbox.js";
-import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "../suggest-replies.js";
+import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "../request-tools/suggest-replies.js";
 import { trackResponderActivity, type WorkerActivityTracker } from "../durable-state/worker-activity.js";
 import { createProviderUsageRuntimeExtension } from "../provider-usage-tool.js";
 import { readJsonSection, readSettingsJson, type ProviderUsageOperator } from "@mono-agent/contracts";
-import { createConsoleProjectsRuntimeExtension } from "../console-projects.js";
+import { createConsoleProjectsRuntimeExtension } from "../request-tools/console-projects.js";
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -27,18 +27,18 @@ import {
   adapterSendToolNames,
   requestSuppressesInteractionTools,
   resolveAdapterSendToolsSettings,
-} from "../adapter-send-tools.js";
+} from "../delivery/send-tools/adapter-send-tools.js";
 import { createAdapterSendToolsRuntimeExtension } from "../delivery/send-tools/host-extension.js";
 import {
   createSetConversationTitleRuntimeExtension,
   isSetConversationTitleToolAllowed,
-} from "../conversation-title.js";
+} from "../request-tools/conversation-title.js";
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import { createRestartProposalService, isProposeRestartToolAllowed } from "../restart-proposal.js";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
 import { isRetiredProjectSkillName } from "../project-skills.js";
-import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "../run-history.js";
-import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "../session-history.js";
+import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "../request-tools/run-history.js";
+import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "../request-tools/session-history.js";
 import {
   createReplyArtifactService,
   isPublishReplyFileToolAllowed,
@@ -48,15 +48,15 @@ import {
   createMcpAppService,
   DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
 } from "../mcp-apps.js";
-import { createReplyPartBudget } from "../reply-part-budget.js";
+import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
 import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideRoutesOnlyPiNative,
 } from "../composition/request-model-override.js";
-import { resolvePostedMessageIndexPath } from "../posted-message-index.js";
+import { resolvePostedMessageIndexPath } from "../delivery/posted-message-index.js";
 import { configuredRuntimeFallbackModels, runtimeUsesFallbackRouter } from "../composition/runtime-routes.js";
-import { isNotifyDestinationConversationId } from "../notify-destinations.js";
-import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
+import { isNotifyDestinationConversationId } from "../delivery/notify-destinations.js";
+import { createSlackPostedReplyHistory } from "../delivery/posted-reply-history.js";
 import {
   isInteractionToolName,
   historyToolRouteSupport,
@@ -65,10 +65,10 @@ import {
 } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger } from "../channels/types.js";
 import { loadContinuationSettings } from "../continuation-config.js";
-import type { InteractionBridgeHandle } from "../interaction-bridge.js";
+import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
 import type { ContinuationServiceHandle } from "../continuation-service.js";
 import type { MemoryRetrievalService } from "../memory-retrieval.js";
-import type { SeenNotifyDestinationCache } from "../seen-conversations.js";
+import type { SeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
 import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
 
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";

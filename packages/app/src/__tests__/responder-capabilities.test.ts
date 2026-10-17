@@ -11,7 +11,7 @@ import { createConfiguredConversationHarness } from "../composition/configured-a
 import type { AgentResponder } from "@mono-agent/contracts";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 
-import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
+import { createSlackPostedReplyHistory } from "../delivery/posted-reply-history.js";
 import { bindProcessJobWakeContextToResponder } from "../process-jobs-context.js";
 
 // Keep this inventory tied to the shared contract: a new optional capability

@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { describe, expect, it, vi } from "vitest";
 import { createRestartProposalService, isProposeRestartToolAllowed, PROPOSE_RESTART_SERVER_NAME, PROPOSE_RESTART_TOOL_NAME } from "../restart-proposal.js";
-import { createReplyPartBudget } from "../reply-part-budget.js";
+import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
 
 function request(metadata: Record<string, unknown> = { source: "web", web: { threadId: "one", turnId: "turn-1" } }): ConversationHarnessRuntimeOptionsInput {
   return { request: { conversationId: "web:one", userMessage: "work", abortSignal: new AbortController().signal, metadata },

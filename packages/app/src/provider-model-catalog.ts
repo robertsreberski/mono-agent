@@ -39,7 +39,7 @@ export const MAX_PAGE_SIZE = 200;
  * it at the parser would have cost an operator a route that runs.
  *
  * `/v1/info.models` deliberately does not inherit them (see the `/v1/info`
- * budget note in `channel-drivers/tui.ts`) — reusing them there deleted runnable
+ * budget note in `channels/drivers/tui.ts`) — reusing them there deleted runnable
  * models from schema-1 clients at a wire schema that cannot be bumped. The TUI
  * has no `/v1/models` call site at all, so a model this filter drops is still
  * selectable in the picker; `tui-channel.test.ts` pins that divergence.

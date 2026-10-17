@@ -8,7 +8,7 @@ import {
   isSetConversationTitleToolAllowed,
   SET_CONVERSATION_TITLE_MCP_SERVER_NAME,
   SET_CONVERSATION_TITLE_TOOL_NAME,
-} from "../conversation-title.js";
+} from "../request-tools/conversation-title.js";
 
 function request(overrides: {
   readonly conversationId?: string;

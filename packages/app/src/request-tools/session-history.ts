@@ -16,8 +16,8 @@ import {
   requestScopedCursorDigest,
   requestScopedNestedResult,
   splitRequestScopedModelText,
-} from "./request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+} from "../mcp/request-scoped-mcp.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
 export const SESSION_HISTORY_MCP_SERVER_NAME = "mono-agent-session-history";
 export const SESSION_HISTORY_TOOL_NAME = "SessionHistory";

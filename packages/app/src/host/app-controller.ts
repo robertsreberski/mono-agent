@@ -19,10 +19,10 @@ import type { SandboxEngine } from "@mono-agent/turn/host/types";
 import type { AppTraceDefaults, PrivateBackgroundRuntimePaths } from "../composition/app-config.js";
 import type { createConfiguredMemory } from "../composition/configured-memory.js";
 import type { ConfiguredAgentSessionEvent } from "../composition/configured-agent-options.js";
-import { resolveChannelDrivers } from "../channels.js";
+import { resolveChannelDrivers } from "../channels/channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "../channels/types.js";
 import type { NotifyDeliveryResult } from "../channels/types.js";
-import type { InteractionBridgeHandle } from "../interaction-bridge.js";
+import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
 import type { ContinuationServiceHandle } from "../continuation-service.js";
 import type {
   ContinuationHealthSnapshot,
@@ -35,8 +35,8 @@ import type { RunningRituals } from "../memory-rituals.js";
 import type { RunningArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
 import type { MemoryRetrievalService } from "../memory-retrieval.js";
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
-import type { NotifyDestination } from "../notify-destinations.js";
-import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
+import type { NotifyDestination } from "../delivery/notify-destinations.js";
+import { createSeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
 import { MemoryHealthWorkerClient } from "../memory-health-worker-client.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import type { ManagedRuntimeLaunchVerification } from "../service/managed-runtime/types.js";

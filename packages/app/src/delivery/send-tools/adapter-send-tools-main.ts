@@ -6,9 +6,9 @@ import {
   safeAdapterSendProxyErrorMessage,
 } from "./adapter-send-proxy.js";
 import { resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
-import { adapterSendToolsChildConfigFromEnv } from "./delivery/send-tools/child-config.js";
-import { createAdapterSendToolsClients } from "./delivery/send-tools/clients.js";
-import { createAdapterSendToolsServer } from "./delivery/send-tools/server.js";
+import { adapterSendToolsChildConfigFromEnv } from "./child-config.js";
+import { createAdapterSendToolsClients } from "./clients.js";
+import { createAdapterSendToolsServer } from "./server.js";
 
 async function main(): Promise<void> {
   const childConfig = adapterSendToolsChildConfigFromEnv(process.env, process.cwd());

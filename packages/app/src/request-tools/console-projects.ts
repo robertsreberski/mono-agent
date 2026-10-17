@@ -3,9 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolPolicyInput } from "@mono-agent/conversation";
 import { createWebConsoleToolClient } from "@mono-agent/web";
 import * as z from "zod/v4";
-import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
-import { telegramProjectTurnFor } from "./telegram-projects.js";
+import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
+import { telegramProjectTurnFor } from "../channels/telegram/telegram-projects.js";
 
 const SERVER = "mono-agent-console-projects";
 const id = z.string().min(1).max(128);

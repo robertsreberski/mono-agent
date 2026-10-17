@@ -25,8 +25,8 @@ vi.mock("../durable-state/agent-root-coordinator.js", async (importOriginal) => 
   assertAgentRootLeaseOutsideWorkspace() {},
 }));
 
-vi.mock("../channels.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../channels.js")>(),
+vi.mock("../channels/channels.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../channels/channels.js")>(),
   resolveChannelDrivers: async () => {
     order.push("driver-resolution");
     return [];

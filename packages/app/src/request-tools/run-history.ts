@@ -16,14 +16,14 @@ import {
 } from "@mono-agent/observability";
 import * as z from "zod/v4";
 
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import {
   createRequestScopedMcpRuntimeExtension,
   requestScopedConversationMatches,
   requestScopedCurrentRunBlocked,
   requestScopedNestedResult,
   splitRequestScopedModelText,
-} from "./request-scoped-mcp.js";
+} from "../mcp/request-scoped-mcp.js";
 
 export const RUN_HISTORY_MCP_SERVER_NAME = "mono-agent-run-history";
 export const RUN_HISTORY_TOOL_NAME = "RunHistory";

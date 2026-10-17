@@ -255,8 +255,8 @@ it.each([
 it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MCP and builtin %s definitions stable on real request-scoped endpoints', async (api) => {
   const { getPiBuiltinTools } = await import("../../tools/pi-tools.js");
   const { initPiMcpTools, closePiMcpClients } = await import("../../tools/mcp/tools.js");
-  const { createSetConversationTitleRuntimeExtension } = await import('../../../../app/src/conversation-title.ts');
-  const { createConsoleProjectsRuntimeExtension } = await import('../../../../app/src/console-projects.ts');
+  const { createSetConversationTitleRuntimeExtension } = await import('../../../../app/src/request-tools/conversation-title.ts');
+  const { createConsoleProjectsRuntimeExtension } = await import('../../../../app/src/request-tools/console-projects.ts');
   const { createMemoryRememberRuntimeExtension } = await import('../../../../app/src/memory-remember.ts');
   const { createAdapterSendToolsServer } = await import('../../../../app/src/delivery/send-tools/server.ts');
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');

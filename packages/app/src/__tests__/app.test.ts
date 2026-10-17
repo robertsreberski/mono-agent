@@ -33,7 +33,7 @@ import {
   createSlackChannelDriver,
   createTelegramChannelDriver,
   defaultChannelDrivers,
-} from "../channels.js";
+} from "../channels/channels.js";
 import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
 import { startContinuationService } from "../continuation-service.js";
 import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations.js";

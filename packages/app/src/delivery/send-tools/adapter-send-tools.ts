@@ -1,8 +1,8 @@
 import { ALLOW_ALL_TOOLS } from "@mono-agent/config";
 
-import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME, optionalString } from "./delivery/send-tools/child-config.js";
-import { loadSlackModule, loadTelegramModule, normalizeSlackChannelId } from "./delivery/send-tools/clients.js";
-import { parseFileIdentity } from "./delivery/send-tools/file-identity.js";
+import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME, optionalString } from "./child-config.js";
+import { loadSlackModule, loadTelegramModule, normalizeSlackChannelId } from "./clients.js";
+import { parseFileIdentity } from "./file-identity.js";
 import type {
   AdapterSendToolsSettings,
   AdapterSendToolsResolveOptions,
@@ -10,9 +10,9 @@ import type {
   AskUserToolSettings,
   SlackSendToolSettings,
   TelegramSendToolSettings,
-} from "./delivery/send-tools/types.js";
-import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
-import { LEGACY_TOOL_ALIASES } from "./modules/known-tools.js";
+} from "./types.js";
+import type { MonoAgentAppConfigInput } from "../../composition/app-config.js";
+import { LEGACY_TOOL_ALIASES } from "../../modules/known-tools.js";
 
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.

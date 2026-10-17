@@ -62,8 +62,8 @@ import type {
 import { writeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { clearLaunchdSnapshotRefusal, writeLaunchdSnapshotRefusal } from "./launchd-snapshot-refusal.js";
 import { selectBackgroundOperationalEnvironment, selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
-import { formatChannelFactValue } from "./channel-fact-format.js";
-import { formatHumanChannelSections } from "./channel-status-display.js";
+import { formatChannelFactValue } from "./channels/channel-fact-format.js";
+import { formatHumanChannelSections } from "./channels/channel-status-display.js";
 import type { ChannelStatus } from "./channels/types.js";
 import { loadCliEnvFile } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";

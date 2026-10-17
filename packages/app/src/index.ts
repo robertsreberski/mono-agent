@@ -15,7 +15,7 @@ export {
   createWebhookChannelDriver,
   defaultChannelDrivers,
   resolveChannelDrivers,
-} from "./channels.js";
+} from "./channels/channels.js";
 export type { ChannelDriver, ChannelDriverOverrides, ChannelId, ChannelStartInput, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
 export type { CronChannelOverrides } from "./channels/types.js";
 export type { OpenAIApiChannelOverrides } from "./channels/types.js";

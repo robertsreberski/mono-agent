@@ -1,4 +1,4 @@
-import * as ui from "./ui.js";
+import * as ui from "../ui.js";
 
 interface HumanChannelStatus {
   readonly id: string;

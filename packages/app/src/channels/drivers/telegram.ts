@@ -1,5 +1,5 @@
 import { type TelegramConversationTarget } from "@mono-agent/channel-telegram/conversation";
-import type { TelegramChannelOverrides } from "../channels/types.js";
+import type { TelegramChannelOverrides } from "../types.js";
 import type { AgentResponder, ChannelInteractionSink, NotifyDeliveryResult } from "@mono-agent/contracts";
 import { describeRunFailureKind } from "@mono-agent/observability";
 import type {
@@ -17,15 +17,15 @@ import { buildChannelRuntimeControls } from "../channel-runtime-controls.js";
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
-import { telegramTargetFromConversation } from "../telegram-destination.js";
+import type { ChannelDriver, ChannelStartInput } from "../types.js";
+import { telegramTargetFromConversation } from "../telegram/telegram-destination.js";
 import {
   bindTelegramProjectTurn,
   createTelegramProjectsService,
   type TelegramProjectsService,
-} from "../telegram-projects.js";
-import { openTelegramTopicDirectory, telegramBotIdFromToken } from "../telegram-topic-directory.js";
-import type { TelegramProjectsBridgePort } from "../interaction-bridge.js";
+} from "../telegram/telegram-projects.js";
+import { openTelegramTopicDirectory, telegramBotIdFromToken } from "../telegram/telegram-topic-directory.js";
+import type { TelegramProjectsBridgePort } from "../../mcp/interaction-bridge.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type TelegramAdapterModule = typeof import("@mono-agent/channel-telegram");

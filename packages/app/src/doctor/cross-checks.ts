@@ -3,7 +3,7 @@ import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { MODEL_REFERENCE_ECHO_MAX_BYTES, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
-import { isAdapterSendToolAllowed } from "../adapter-send-tools.js";
+import { isAdapterSendToolAllowed } from "../delivery/send-tools/adapter-send-tools.js";
 import { isAllowAllTools } from "../modules/known-tools.js";
 import type { ChannelDriver } from "../channels/types.js";
 import { collectUsedProviderReferences } from "../provider-auth-status.js";

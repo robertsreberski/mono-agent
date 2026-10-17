@@ -17,13 +17,13 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createSlackChannelDriver } from "../channels.js";
+import { createSlackChannelDriver } from "../channels/channels.js";
 import {
   appendPostedMessage,
   compactPostedMessageIndex,
   lookupProducingConversation,
   resolvePostedMessageIndexPath,
-} from "../posted-message-index.js";
+} from "../delivery/posted-message-index.js";
 
 let dir: string;
 let indexPath: string;
@@ -451,7 +451,7 @@ describe("posted-message-index", () => {
     const cachedIdentity = await stat(indexPath);
     expect(nonEmptyLineCount(await readFile(indexPath, "utf8"))).toBe(1);
 
-    const builtModuleUrl = new URL("../../dist/posted-message-index.js", import.meta.url).href;
+    const builtModuleUrl = new URL("../../dist/delivery/posted-message-index.js", import.meta.url).href;
     const child = spawn(
       process.execPath,
       [
@@ -656,7 +656,7 @@ describe("posted-message-index", () => {
       await writeFile(indexPath, deterministicEntries(10), "utf8");
       const lockPath = `${indexPath}.lock.sqlite`;
       const savedLockPath = `${lockPath}.pre-split`;
-      const builtModuleUrl = new URL("../../dist/posted-message-index.js", import.meta.url).href;
+      const builtModuleUrl = new URL("../../dist/delivery/posted-message-index.js", import.meta.url).href;
 
       await compactPostedMessageIndex(indexPath, 3, {
         afterPrepareBody: async () => {
@@ -701,7 +701,7 @@ describe("posted-message-index", () => {
       await writeFile(indexPath, deterministicEntries(10), "utf8");
       const lockPath = `${indexPath}.lock.sqlite`;
       const savedLockPath = `${lockPath}.post-check-split`;
-      const builtModuleUrl = new URL("../../dist/posted-message-index.js", import.meta.url).href;
+      const builtModuleUrl = new URL("../../dist/delivery/posted-message-index.js", import.meta.url).href;
 
       await compactPostedMessageIndex(indexPath, 3, {
         afterPromotionChecks: async () => {
@@ -775,7 +775,7 @@ describe("posted-message-index", () => {
       ).join("\n")}\n`;
       expect(Buffer.byteLength(expandedBody)).toBeGreaterThan(Buffer.byteLength(original));
       await writeFile(indexPath, original, "utf8");
-      const builtModuleUrl = new URL("../../dist/posted-message-index.js", import.meta.url).href;
+      const builtModuleUrl = new URL("../../dist/delivery/posted-message-index.js", import.meta.url).href;
       let child: ReturnType<typeof spawn> | undefined = spawn(
         process.execPath,
         [

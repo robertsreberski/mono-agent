@@ -1,4 +1,4 @@
-import type { OpenAIApiChannelOverrides } from "../channels/types.js";
+import type { OpenAIApiChannelOverrides } from "../types.js";
 import type {
   OpenAIApiAdapterConfig
 } from "@mono-agent/channel-openai-api";
@@ -6,7 +6,7 @@ import type {
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver } from "../channels/types.js";
+import type { ChannelDriver } from "../types.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type OpenAIApiAdapterModule = typeof import("@mono-agent/channel-openai-api");

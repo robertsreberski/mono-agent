@@ -2,8 +2,8 @@ import type { ConfigViewField, ConfigViewSection } from "@mono-agent/config";
 import { encodeJsonEnvValue, normalizeOptionalString, readJsonSection, readSettingsJson } from "@mono-agent/contracts";
 import type { JsonEnvFieldSpec } from "@mono-agent/contracts";
 
-import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
-import type { ChannelDriver } from "./channels/types.js";
+import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
+import type { ChannelDriver } from "./types.js";
 
 const PLACEHOLDER = "—";
 

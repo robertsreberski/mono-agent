@@ -12,8 +12,8 @@ import { WEBHOOK_CONFIG_FIELDS } from "@mono-agent/trigger-webhook";
 import type { JsonEnvFieldSpec } from "@mono-agent/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { collectChannelConfigViews } from "../channel-config-view.js";
-import { createCronChannelDriver, createTelegramChannelDriver, defaultChannelDrivers } from "../channels.js";
+import { collectChannelConfigViews } from "../channels/channel-config-view.js";
+import { createCronChannelDriver, createTelegramChannelDriver, defaultChannelDrivers } from "../channels/channels.js";
 
 let dir: string;
 

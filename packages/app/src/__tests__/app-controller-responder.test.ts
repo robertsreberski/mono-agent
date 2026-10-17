@@ -22,7 +22,7 @@ import {
   PUBLISH_REPLY_FILE_TOOL_NAME,
   REPLY_ARTIFACT_MCP_SERVER_NAME,
 } from "../artifacts/reply-artifacts.js";
-import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
+import { createSeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {

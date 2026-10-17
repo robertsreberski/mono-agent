@@ -43,7 +43,7 @@ import {
   type ProcessJobStoreWorkCounter,
 } from "../process-jobs-store.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
-import { routeProactiveNotification } from "../proactive-notify.js";
+import { routeProactiveNotification } from "../delivery/proactive-notify.js";
 import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 
 const INCARNATION: ProcessIncarnation = {

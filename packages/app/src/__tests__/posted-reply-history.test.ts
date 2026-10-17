@@ -19,7 +19,7 @@ import {
 } from "@mono-agent/conversation";
 import type { MonoRuntimeLike, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
+import { createSlackPostedReplyHistory } from "../delivery/posted-reply-history.js";
 
 const MODEL = {
   provider: "fake",

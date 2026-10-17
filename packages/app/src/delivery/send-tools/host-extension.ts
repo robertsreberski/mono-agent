@@ -25,7 +25,7 @@ export function adapterSendToolsMcpServerSpec(
     // is intentionally unavailable inside strict SRT. Force Node's bundled CA
     // set for this child while still honoring NODE_EXTRA_CA_CERTS when SRT TLS
     // termination or an operator supplies an additional root.
-    args: ["--use-bundled-ca", fileURLToPath(new URL("../../adapter-send-tools-main.js", import.meta.url))],
+    args: ["--use-bundled-ca", fileURLToPath(new URL("./adapter-send-tools-main.js", import.meta.url))],
     cwd,
     env: adapterSendToolsMcpEnv(configPath, allowedTools, context, interaction),
   };

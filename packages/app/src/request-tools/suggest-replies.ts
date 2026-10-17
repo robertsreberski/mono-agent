@@ -4,9 +4,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type AgentReplyPart, type AgentReplyOptionsPart, type AgentResponder } from "@mono-agent/contracts";
 import type { ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
-import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
-import { mergeReplyParts, type ReplyPartBudget } from "./reply-part-budget.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
+import { mergeReplyParts, type ReplyPartBudget } from "../delivery/reply-part-budget.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
 export const SUGGEST_REPLIES_SERVER_NAME = "mono-agent-suggest-replies";
 export const SUGGEST_REPLIES_TOOL_NAME = "SuggestReplies";

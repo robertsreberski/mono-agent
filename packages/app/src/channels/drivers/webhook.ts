@@ -1,4 +1,4 @@
-import type { WebhookChannelOverrides } from "../channels/types.js";
+import type { WebhookChannelOverrides } from "../types.js";
 import type {
   WebhookAdapterConfig
 } from "@mono-agent/trigger-webhook";
@@ -6,8 +6,8 @@ import type {
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver } from "../channels/types.js";
-import { findTriggerOverrideIssues } from "../composition/trigger-overrides.js";
+import type { ChannelDriver } from "../types.js";
+import { findTriggerOverrideIssues } from "../../composition/trigger-overrides.js";
 import { deliverNativeWebhookNotification, inferUniqueNotifyDestination } from "./native-notify.js";
 import { unconfiguredChannelView } from "./shared.js";
 

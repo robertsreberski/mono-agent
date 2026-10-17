@@ -46,7 +46,7 @@ import {
   createReplyPartBudget,
   mergeReplyParts,
   type ReplyPartBudget,
-} from "../reply-part-budget.js";
+} from "../delivery/reply-part-budget.js";
 
 const PRIVATE_CAPABILITY_URL = Symbol.for("@mono-agent/private-capability-url");
 

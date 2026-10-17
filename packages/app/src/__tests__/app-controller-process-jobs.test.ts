@@ -19,7 +19,7 @@ import {
   acquireAgentRootOwnership,
   type AgentRootOwnership,
 } from "../durable-state/agent-root-coordinator.js";
-import { createSlackChannelDriver, createTelegramChannelDriver } from "../channels.js";
+import { createSlackChannelDriver, createTelegramChannelDriver } from "../channels/channels.js";
 import { type ChannelStartInput } from "../channels/types.js";
 import type {
   OpenProcessJobsServiceOptions,

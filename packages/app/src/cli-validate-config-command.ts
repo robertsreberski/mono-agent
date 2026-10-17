@@ -15,8 +15,8 @@ import {
   isAppCoreConfigError,
   loadAppCoreConfig,
 } from "./composition/app-config.js";
-import { collectChannelConfigViews } from "./channel-config-view.js";
-import { resolveChannelDrivers } from "./channels.js";
+import { collectChannelConfigViews } from "./channels/channel-config-view.js";
+import { resolveChannelDrivers } from "./channels/channels.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";

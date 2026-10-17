@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadInteractionSettings, startInteractionBridge, type InteractionBridgeHandle } from "../interaction-bridge.js";
+import { loadInteractionSettings, startInteractionBridge, type InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
 
 const handles: InteractionBridgeHandle[] = [];
 

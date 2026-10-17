@@ -2575,7 +2575,7 @@ type SheddableInfoField = (typeof INFO_SHED_ORDER)[number];
  * Send `/v1/info` under the byte contract its consumer enforces.
  *
  * Every contributor to this body carries its own producer-side budget (see the
- * budget table in `agent-app`'s `channel-drivers/tui.ts`, and
+ * budget table in `app`'s `channels/drivers/tui.ts`, and
  * `MAX_SKILL_REGISTRY_BYTES` for skills) and those budgets sum to 960 KiB. This
  * is the last-resort fence behind them: without it the ONLY enforcement of the
  * 1 MiB cap lived in the consumer, so any producer-side miss took the agent

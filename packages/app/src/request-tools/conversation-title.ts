@@ -2,8 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
 
-import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
 export const SET_CONVERSATION_TITLE_MCP_SERVER_NAME = "mono-agent-conversation-title";
 export const SET_CONVERSATION_TITLE_TOOL_NAME = "SetConversationTitle";

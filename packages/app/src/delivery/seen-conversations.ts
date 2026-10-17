@@ -1,7 +1,7 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { ChannelId } from "./channels/types.js";
+import type { ChannelId } from "../channels/types.js";
 import { channelIdForConversation, isNotifyCapableChannel } from "./proactive-notify.js";
 
 /** A real conversation the agent has handled, recovered from run artifacts. */

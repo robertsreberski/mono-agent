@@ -13,7 +13,7 @@ import * as z from "zod/v4";
 import {
   telegramTargetFromConversation,
   telegramTopicOfMessage,
-} from "../../telegram-destination.js";
+} from "../../channels/telegram/telegram-destination.js";
 import { recordAdapterDeliveryHistory, withDeliveryHistoryWarning } from "./delivery-history.js";
 import { readStrictTelegramFile, resolveTelegramFileBytes, resolveTelegramUploadPath } from "./telegram-file-access.js";
 import type { TelegramAdapterModule, TelegramSendToolSettings, AdapterSendToolsDeliveryHistory } from "./types.js";

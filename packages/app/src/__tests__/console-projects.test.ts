@@ -4,7 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { describe, expect, it, vi } from "vitest";
-import { CONSOLE_PROJECT_SCHEMAS, createConsoleProjectsRuntimeExtension, isConsoleProjectToolAllowed } from "../console-projects.js";
+import { CONSOLE_PROJECT_SCHEMAS, createConsoleProjectsRuntimeExtension, isConsoleProjectToolAllowed } from "../request-tools/console-projects.js";
 
 const request = (): ConversationHarnessRuntimeOptionsInput => ({
   request: { conversationId: "web:thread", userMessage: "Organize", abortSignal: new AbortController().signal,

@@ -8,7 +8,7 @@ import type { AgentResponder } from "@mono-agent/contracts";
 import type { TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/channel-operator";
 
 import { startChannel, type ChannelsControllerPort } from "../host/app-controller-channels.js";
-import { createTuiChannelDriver } from "../channels.js";
+import { createTuiChannelDriver } from "../channels/channels.js";
 import type { ChannelDriver, ChannelStartInput, ChannelStatus } from "../channels/types.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 

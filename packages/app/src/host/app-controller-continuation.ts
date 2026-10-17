@@ -6,9 +6,9 @@ import { isAppCoreConfigError, loadAppCoreConfig } from "../composition/app-conf
 import {
   isAdapterSendToolAllowed,
   resolveAdapterSendToolsSettings,
-} from "../adapter-send-tools.js";
-import { loadInteractionSettings, startInteractionBridge } from "../interaction-bridge.js";
-import type { InteractionBridgeHandle } from "../interaction-bridge.js";
+} from "../delivery/send-tools/adapter-send-tools.js";
+import { loadInteractionSettings, startInteractionBridge } from "../mcp/interaction-bridge.js";
+import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
 import { loadContinuationSettings } from "../continuation-config.js";
 import { ContinuationSynthesisUnavailableError, startContinuationService } from "../continuation-service.js";
 import type { ContinuationServiceHandle } from "../continuation-service.js";
@@ -17,7 +17,7 @@ import type {
   ContinuationNativeDeliveryResult,
   ContinuationSynthesisInput,
 } from "../continuations.js";
-import { channelIdForConversation } from "../proactive-notify.js";
+import { channelIdForConversation } from "../delivery/proactive-notify.js";
 import {
   continuationSynthesisPrompt,
   isActionableContinuationPayload,

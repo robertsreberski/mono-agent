@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { startMonoAgentApp } from "../host/app.js";
-import { collectChannelConfigViews } from "../channel-config-view.js";
+import { collectChannelConfigViews } from "../channels/channel-config-view.js";
 import {
   ChannelPluginConfigError,
   configuredChannelPluginPackageNames,
-} from "../channel-plugins.js";
-import { resolveChannelDrivers } from "../channels.js";
+} from "../channels/channel-plugins.js";
+import { resolveChannelDrivers } from "../channels/channels.js";
 import type { ChannelDriver } from "../channels/types.js";
 import { validateMonoAgentFolder } from "../doctor.js";
 

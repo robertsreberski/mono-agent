@@ -14,8 +14,8 @@ import {
   isAppCoreConfigError,
   loadAppCoreConfig,
 } from "./composition/app-config.js";
-import { collectChannelConfigViews } from "./channel-config-view.js";
-import { resolveChannelDrivers } from "./channels.js";
+import { collectChannelConfigViews } from "./channels/channel-config-view.js";
+import { resolveChannelDrivers } from "./channels/channels.js";
 import { readSettingsJson } from "@mono-agent/contracts";
 import { runsSection } from "./doctor-runs.js";
 import { sessionToolHistorySection } from "./doctor-session-history.js";
