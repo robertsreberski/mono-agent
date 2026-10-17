@@ -210,27 +210,27 @@ export const retainedExports = [
       "createCodexAppServerClient"
     ],
     "reason": "consumed: runtime Codex broker; tested client subpath retained until turn entry regrouping",
-    "citation": "packages/turn/src/tools/web/codex-subscription-search.js:7",
+    "citation": "packages/turn/src/tools/web/codex-subscription-search.ts:7",
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/tools/web/codex-subscription-search.js",
+    "file": "packages/turn/src/tools/web/codex-subscription-search.ts",
     "names": [
       "__resetCodexSubscriptionSearchForTests"
     ],
     "reason": "test isolation control for process-global Codex broker/cache",
-    "citation": "packages/turn/src/tools/web/codex-subscription-search.js",
+    "citation": "packages/turn/src/tools/web/codex-subscription-search.ts",
     "taggedNames": [
       "__resetCodexSubscriptionSearchForTests"
     ]
   },
   {
-    "file": "packages/turn/src/tools/web/search-providers/shared.js",
+    "file": "packages/turn/src/tools/web/search-providers/shared.ts",
     "names": [
       "__resetWebSearchThrottleForTests"
     ],
     "reason": "test isolation control for process-global WebSearch throttle",
-    "citation": "packages/turn/src/tools/web/search-providers/shared.js",
+    "citation": "packages/turn/src/tools/web/search-providers/shared.ts",
     "taggedNames": [
       "__resetWebSearchThrottleForTests"
     ]
@@ -247,12 +247,12 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/tools/web/web-controller.js",
+    "file": "packages/turn/src/tools/web/web-controller.ts",
     "names": [
       "__resetSharedSearchCacheForTests"
     ],
     "reason": "test isolation control for process-global shared search cache",
-    "citation": "packages/turn/src/tools/web/web-controller.js",
+    "citation": "packages/turn/src/tools/web/web-controller.ts",
     "taggedNames": [
       "__resetSharedSearchCacheForTests"
     ]
