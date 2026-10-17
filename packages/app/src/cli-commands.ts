@@ -17,7 +17,8 @@ import { monoAgentVersion, renderHelp, renderHelpTopic, renderMemorySubcommandHe
 import { runInstallSkill } from "./cli-install-skill-command.js";
 import { runConfig, runPresets, runValidate } from "./cli-validate-config-command.js";
 
-import { runAuth, runInit } from "./cli-init-command.js";
+import { runAuth } from "./cli/commands/auth.js";
+import { runInit } from "./cli-init-command.js";
 
 import {
   runBackgroundCommand,

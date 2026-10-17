@@ -26,7 +26,7 @@ vi.mock("../provider-setup.js", async (importOriginal) => {
 });
 
 import { parseCliArgs } from "../cli-args.js";
-import { readApiKeyFromStdin } from "../cli-init-command.js";
+import { readApiKeyFromStdin } from "../cli/commands/auth.js";
 import { runCli } from "../cli.js";
 
 const originalCwd = process.cwd();
