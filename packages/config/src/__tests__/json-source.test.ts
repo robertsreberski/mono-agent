@@ -390,7 +390,6 @@ describe("writeMonoAgentConfigJson", () => {
   });
 });
 
-
 describe("retired scheduling key diagnostics", () => {
   it.each([undefined, null, "one-at-a-time", "all"])("rejects raw and host-container presence %s", async (value) => {
     const { assertNoRetiredMonoAgentConfig } = await import("../retired-fields.js");

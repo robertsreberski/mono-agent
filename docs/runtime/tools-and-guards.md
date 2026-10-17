@@ -515,8 +515,9 @@ const runtimeOptions = {
 
 There is no config-file or CLI key for this (coverage: `code`). The retired
 `piToolParallelismMode` key is rejected. Migrate `one-at-a-time` to
-`piToolExecutionMode: "sequential"` and `all` to `"safe-parallel"` (the default). Tool scheduling is independent from
-Pi's one-at-a-time user steering/follow-up queue.
+`piToolExecutionMode: "sequential"` and `all` to `"safe-parallel"` (the default).
+Tool scheduling is independent from Pi's one-at-a-time user steering/follow-up
+queue.
 
 See [Programmatic composition](/programmatic/composition/) for where
 `runtimeOptions` is supplied.

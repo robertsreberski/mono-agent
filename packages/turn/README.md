@@ -1132,7 +1132,6 @@ The retired `piToolParallelismMode` field is rejected, including direct provider
 and prepared-dispatch callers. Use `piToolExecutionMode: "sequential"` for the
 former `one-at-a-time` value, or `"safe-parallel"` for `all` (also the default).
 
-
 Per-call options (a non-exhaustive selection):
 
 | Option | Type | Notes |
