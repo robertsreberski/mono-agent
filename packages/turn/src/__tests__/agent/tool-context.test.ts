@@ -1,3 +1,5 @@
+import type { ToolContext } from "../../tools/shared/tool-context.js";
+import type { SandboxPolicy } from "../../agent/sandbox-seam.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -20,7 +22,7 @@ import {
 import { prepareMcpStdioCommand } from "../../tools/mcp/connection.js";
 import { createNodeReplController } from "../../tools/commands/node-repl.js";
 
-const tempDirs = [];
+const tempDirs: string[] = [];
 
 function tempDir() {
   const dir = mkdtempSync(resolve("/tmp", "agent-runtime-tool-ctx-"));
@@ -29,7 +31,7 @@ function tempDir() {
 }
 
 afterEach(() => {
-  while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
+  while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
 describe("createToolContext", () => {
@@ -55,18 +57,18 @@ describe("createToolContext", () => {
   });
 
   it("defaults the brand to DEFAULT_RUNTIME_BRAND and ignores unknown keys", () => {
-    const ctx = createToolContext({ workspace: "/tmp/w", bogus: "nope" });
+    const ctx = createToolContext({ workspace: "/tmp/w", bogus: "nope" } as Parameters<typeof createToolContext>[0]);
     expect(ctx.runtimeBrand).toEqual(DEFAULT_RUNTIME_BRAND);
-    expect(ctx.bogus).toBeUndefined();
+    expect((ctx as ToolContext & { bogus?: unknown }).bogus).toBeUndefined();
   });
 });
 
 describe("direct execution requires context", () => {
   it.each([
-    ["Bash", () => bashToolImpl({ command: "exit 0" })],
-    ["Exec", () => execToolImpl({ executable: process.execPath, args: ["-e", "process.exit(0)"] })],
-    ["WebFetch", () => webFetchToolImpl({ url: "https://example.invalid", render: "never" })],
-    ["WebSearch", () => webSearchToolImpl({ query: "context regression" })],
+    ["Bash", () => (bashToolImpl as (params: Parameters<typeof bashToolImpl>[0]) => ReturnType<typeof bashToolImpl>)({ command: "exit 0" })],
+    ["Exec", () => (execToolImpl as (params: Parameters<typeof execToolImpl>[0]) => ReturnType<typeof execToolImpl>)({ executable: process.execPath, args: ["-e", "process.exit(0)"] })],
+    ["WebFetch", () => (webFetchToolImpl as (params: Parameters<typeof webFetchToolImpl>[0]) => ReturnType<typeof webFetchToolImpl>)({ url: "https://example.invalid", render: "never" })],
+    ["WebSearch", () => (webSearchToolImpl as (params: Parameters<typeof webSearchToolImpl>[0]) => ReturnType<typeof webSearchToolImpl>)({ query: "context regression" })],
     ["MCP stdio", () => prepareMcpStdioCommand({ command: process.execPath })],
   ])("rejects missing context for %s before execution", async (_name, run) => {
     const fetch = vi.spyOn(globalThis, "fetch");
@@ -83,8 +85,8 @@ describe("direct execution requires context", () => {
   });
 
   it.each([
-    ["path", () => isPathAllowed("target.txt", undefined)],
-    ["workdir", () => isWorkdirAllowed("/tmp")],
+    ["path", () => (isPathAllowed as (path: string, workdir: undefined) => boolean)("target.txt", undefined)],
+    ["workdir", () => (isWorkdirAllowed as (workdir: string) => boolean)("/tmp")],
   ])("rejects missing context for the exported %s guard", (_name, run) => {
     expect(run).toThrow("explicit ToolContext");
   });
@@ -122,7 +124,7 @@ describe("direct execution requires context", () => {
     values.TASK_ID = "changed";
     pathPrepend.push("/tmp/changed/bin");
     expect(ctx.toolEnvironment).toEqual({ schema: 1, values: { TASK_ID: "first" }, pathPrepend: ["/tmp/first/bin"] });
-    updateToolContext(ctx, { toolEnvironment: undefined });
+    updateToolContext(ctx, { toolEnvironment: undefined } as unknown as Parameters<typeof updateToolContext>[1]);
     expect(ctx.toolEnvironment).toBeUndefined();
   });
 });
@@ -156,7 +158,7 @@ describe("resolveSandboxPolicy (I13 monotonic merge)", () => {
   });
 
   it("delegates the merge to ctx.sandbox.mergePolicies, passing both policies through untouched", () => {
-    const calls = [];
+    const calls: [SandboxPolicy | undefined, SandboxPolicy | undefined][] = [];
     const hostPolicy = failClosedSandboxPolicy({ root: "/tmp/host" });
     const requestPolicy = failClosedSandboxPolicy({ root: "/tmp/host/sub" });
     const fake = createFakeSandbox();
@@ -181,7 +183,7 @@ describe("resolveSandboxPolicy (I13 monotonic merge)", () => {
     // A bare ToolContext-shaped object built without createToolContext (e.g. a
     // hand-rolled host object) still gets a safe default merge.
     const hostPolicy = { mode: "native", network: { mode: "none" } };
-    const resolved = resolveSandboxPolicy({ sandboxPolicy: hostPolicy }, undefined);
+    const resolved = resolveSandboxPolicy({ sandboxPolicy: hostPolicy } as ToolContext, undefined);
     expect(resolved).toEqual(hostPolicy);
   });
 
@@ -213,6 +215,6 @@ describe("per-instance context isolation", () => {
     expect(withCtx).toContain("hello from ctx");
 
     // Omitting ctx must fail before an unconfined filesystem read.
-    await expect(readToolImpl({ file_path: "target.txt" }, {})).rejects.toThrow("explicit ToolContext");
+    await expect(readToolImpl({ file_path: "target.txt" }, {} as Parameters<typeof readToolImpl>[1])).rejects.toThrow("explicit ToolContext");
   });
 });

@@ -4,7 +4,8 @@
  * @param {boolean | undefined} sandboxed
  * @param {string} diagnostic
  */
-export function sandboxFailureDiagnostic(sandboxed, diagnostic) {
+export function sandboxFailureDiagnostic(sandboxed: boolean | undefined, diagnostic: string): { code: string; prefix: string };
+export function sandboxFailureDiagnostic(sandboxed: boolean | undefined, diagnostic: string): { code: string | undefined; prefix: string } | undefined {
   if (!sandboxed) return undefined;
   const denied = /blocked by sandbox|sandbox(?:[- ](?:exec|denial))?[^\n]*\b(?:deny|denied|violation)\b/i.test(diagnostic);
   return {

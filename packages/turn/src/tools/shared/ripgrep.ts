@@ -14,7 +14,7 @@ import { writeToolArtifact } from "./output-truncation.js";
 const requireFromHere = createRequire(import.meta.url);
 
 // Lazy so the message respects whatever runtimeBrand the host configured.
-export function ripgrepMissingMessage(ctx) {
+export function ripgrepMissingMessage(ctx: any): string {
   const brand = ctx?.runtimeBrand ?? DEFAULT_RUNTIME_BRAND;
   return `Error: ripgrep (rg) is not available. Configure ripgrepPath on your runtime or explicit tool context or install ripgrep on PATH; run \`${brand.doctorCommand}\` for details.`;
 }
@@ -34,7 +34,7 @@ export function ripgrepMissingMessage(ctx) {
 // documented (and asserted as a known-shared cache in the two-runtimes
 // isolation test) rather than fixed, since a per-instance rg cache would be a
 // larger change with no real-world payoff today.
-export const cachedRgPath = { value: undefined };
+export const cachedRgPath: { value: any } = { value: undefined };
 
 function packagedRgPath() {
   try {
@@ -71,7 +71,7 @@ function rgFromPath() {
 /**
  * @param {{refresh?: boolean, ctx?: any}} [options]
  */
-export function resolveRgPath({ refresh = false, ctx } = {}) {
+export function resolveRgPath({ refresh = false, ctx }: { refresh?: boolean; ctx?: any } = {}): any {
   if (!refresh && cachedRgPath.value !== undefined) return cachedRgPath.value;
   const { ripgrepPath } = ctx ?? {};
   if (ripgrepPath) {
@@ -82,7 +82,7 @@ export function resolveRgPath({ refresh = false, ctx } = {}) {
   return cachedRgPath.value;
 }
 
-export function excludedGlobArgs() {
+export function excludedGlobArgs(): string[] {
   const args = [];
   for (const dir of DEFAULT_EXCLUDED_DIRS) {
     args.push("--glob", `!${dir}/**`, "--glob", `!**/${dir}/**`);
@@ -91,7 +91,7 @@ export function excludedGlobArgs() {
   return args;
 }
 
-export function normalizeGlobPattern(pattern) {
+export function normalizeGlobPattern(pattern: any): string {
   const raw = String(pattern || "**/*").trim().replace(/^\.\//, "");
   return raw || "**/*";
 }
@@ -100,14 +100,15 @@ export function normalizeGlobPattern(pattern) {
  * @param {any} rawLines
  * @param {{label?: string, noMatches?: string, maxLines?: number, maxChars?: number, offset?: number, ctx?: any}} [options]
  */
-export function formatSearchLines(rawLines, {
+export function formatSearchLines(rawLines: any, options?: { label?: string; noMatches?: string; maxLines?: number; maxChars?: number; offset?: number; ctx?: any }): string;
+export function formatSearchLines(rawLines: any, {
   label,
   noMatches,
   maxLines = DEFAULT_MAX_SEARCH_LINES,
   maxChars = DEFAULT_MAX_SEARCH_CHARS,
   offset = 0,
   ctx,
-} = {}) {
+}: { label?: string; noMatches?: string; maxLines?: number; maxChars?: number; offset?: number; ctx?: any } = {}): string | undefined {
   const lines = Array.isArray(rawLines) ? rawLines.filter(Boolean) : String(rawLines || "").trim().split("\n").filter(Boolean);
   if (!lines.length) return noMatches;
   const start = boundedInt(offset, 0, { min: 0 });
@@ -124,7 +125,7 @@ export function formatSearchLines(rawLines, {
   }
   if (kept.length === slice.length) return kept.join("\n");
   const fullText = lines.join("\n");
-  const artifact = writeToolArtifact(label, fullText, ctx);
+  const artifact = writeToolArtifact(label!, fullText, ctx);
   const suffix = [
     `[truncated ${label || "search"} result: showing ${kept.length} of ${total} lines after excluding generated/vendor paths.`,
     start ? `Offset ${start} was applied.` : null,
@@ -138,14 +139,14 @@ export function formatSearchLines(rawLines, {
  * @param {string} text
  * @param {{label?: string, noMatches?: string, maxLines?: number, maxChars?: number, offset?: number, ctx?: any}} [options]
  */
-export function capLines(text, {
+export function capLines(text: string, {
   label,
   noMatches,
   maxLines = DEFAULT_MAX_SEARCH_LINES,
   maxChars = DEFAULT_MAX_SEARCH_CHARS,
   offset = 0,
   ctx,
-} = {}) {
+}: { label?: string; noMatches?: string; maxLines?: number; maxChars?: number; offset?: number; ctx?: any } = {}): string {
   return formatSearchLines(String(text || "").trim().split("\n").filter(Boolean), {
     label,
     noMatches,
@@ -153,9 +154,9 @@ export function capLines(text, {
     maxChars,
     offset,
     ctx,
-  });
+  } as Parameters<typeof formatSearchLines>[1]);
 }
 
-export function excludedPathSummary() {
+export function excludedPathSummary(): string {
   return `Excluded directories: ${DEFAULT_EXCLUDED_DIRS.join(", ")}; excluded files: ${DEFAULT_EXCLUDED_FILES.join(", ")}.`;
 }

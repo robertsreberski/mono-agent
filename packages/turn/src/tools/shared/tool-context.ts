@@ -73,7 +73,7 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../runtime-brand.
 // The data keys (everything except the always-resolved runtimeBrand). A fixed
 // list — not `Object.keys(ctx)` — so an unknown key on `next` is ignored, matching
 // the supported tool-context contract.
-const TOOL_CONTEXT_KEYS = /** @type {const} */ ([
+const TOOL_CONTEXT_KEYS = /** @type {const} */ (([
   "workspace",
   "repoRoot",
   "additionalReadRoots",
@@ -84,7 +84,7 @@ const TOOL_CONTEXT_KEYS = /** @type {const} */ ([
   "qaOutputDir",
   "sandboxPolicy",
   "sandboxEngine",
-]);
+]) as const);
 
 /**
  * Build a fresh ToolContext from a partial input. `runtimeBrand` is always
@@ -93,9 +93,9 @@ const TOOL_CONTEXT_KEYS = /** @type {const} */ ([
  * @param {ToolContextOptions} [input]
  * @returns {ToolContext}
  */
-export function createToolContext(input = {}) {
+export function createToolContext(input: ToolContextOptions = {}): ToolContext {
   /** @type {ToolContext} */
-  const ctx = {
+  const ctx: { [K in keyof ToolContext]: ToolContext[K] | undefined } = {
     workspace: undefined,
     repoRoot: undefined,
     additionalReadRoots: undefined,
@@ -109,7 +109,7 @@ export function createToolContext(input = {}) {
     sandbox: passthroughSandbox,
     runtimeBrand: { ...DEFAULT_RUNTIME_BRAND },
   };
-  return updateToolContext(ctx, input);
+  return updateToolContext(ctx as ToolContext, input);
 }
 
 /**
@@ -122,16 +122,16 @@ export function createToolContext(input = {}) {
  * @param {ToolContextOptions} [next]
  * @returns {ToolContext}
  */
-export function updateToolContext(ctx, next = {}) {
+export function updateToolContext(ctx: ToolContext, next: ToolContextOptions = {}): ToolContext {
   for (const key of TOOL_CONTEXT_KEYS) {
     // Per-key assignment across a heterogeneous record: TS can't correlate the
     // looked-up value type with `key` across two independent indexed accesses
     // (a known structural limitation, not a real type hazard here).
-    if (key in next) ctx[key] = /** @type {any} */ (next)[key];
+    if (key in next) ctx[key] = /** @type {any} */ ((next) as any)[key];
   }
   if ("toolEnvironment" in next) {
     const environment = next.toolEnvironment;
-    ctx.toolEnvironment = environment === undefined ? undefined : {
+    (ctx as { toolEnvironment?: ToolContext["toolEnvironment"] }).toolEnvironment = environment === undefined ? undefined : {
       schema: 1,
       values: { ...environment.values },
       ...(environment.pathPrepend === undefined ? {} : { pathPrepend: [...environment.pathPrepend] }),
@@ -151,7 +151,7 @@ export function updateToolContext(ctx, next = {}) {
  * @param {ToolContext|null|undefined} ctx
  * @returns {ToolContext}
  */
-export function requireToolContext(ctx) {
+export function requireToolContext(ctx: ToolContext | null | undefined): ToolContext {
   if (!ctx) {
     throw new Error("Tool execution requires an explicit ToolContext; use createToolContext() and pass it as ctx.");
   }
@@ -169,7 +169,7 @@ export function requireToolContext(ctx) {
  * @param {SandboxPolicy} [requestPolicy]
  * @returns {SandboxPolicy|undefined}
  */
-export function resolveSandboxPolicy(ctx, requestPolicy = undefined) {
+export function resolveSandboxPolicy(ctx: ToolContext | undefined, requestPolicy: SandboxPolicy = undefined): SandboxPolicy | undefined {
   const sandbox = ctx?.sandbox ?? passthroughSandbox;
   const merged = sandbox.mergePolicies(ctx?.sandboxPolicy ?? undefined, requestPolicy ?? undefined);
   return merged && merged.mode !== "off" ? merged : undefined;
@@ -184,7 +184,7 @@ export function resolveSandboxPolicy(ctx, requestPolicy = undefined) {
  * @param {Record<string, string|undefined>} [base]
  * @returns {Record<string, string|undefined>|undefined}
  */
-export function requestToolProcessEnvironment(ctx, base = undefined) {
+export function requestToolProcessEnvironment(ctx: ToolContext | undefined, base: Record<string, string | undefined> | undefined = undefined): Record<string, string | undefined> | undefined {
   const request = ctx?.toolEnvironment;
   if (request === undefined) return base;
   const env = { ...(base ?? {}), ...request.values };
@@ -193,3 +193,46 @@ export function requestToolProcessEnvironment(ctx, base = undefined) {
   }
   return env;
 }
+
+export type RuntimeBrand = import("../../runtime-brand.js").RuntimeBrand;
+
+export type SandboxPolicy = import("../../agent/sandbox-seam.js").SandboxPolicy;
+
+export type RuntimeSandboxEngine = import("../../agent/sandbox-seam.js").RuntimeSandboxEngine;
+
+export type RuntimeSandbox = import("../../agent/sandbox-seam.js").RuntimeSandbox;
+
+export type ToolContext = {
+  workspace?: string;
+  repoRoot?: string;
+  additionalReadRoots?: ReadonlyArray<string>;
+  additionalWriteRoots?: ReadonlyArray<string>;
+  runId?: string;
+  toolArtifactDir?: string;
+  ripgrepPath?: string;
+  qaOutputDir?: string;
+  sandboxPolicy?: SandboxPolicy;
+  sandboxEngine?: RuntimeSandboxEngine;
+  sandbox: RuntimeSandbox;
+  runtimeBrand: RuntimeBrand;
+  toolEnvironment?: {
+      schema: 1;
+      values: Readonly<Record<string, string>>;
+      pathPrepend?: readonly string[];
+  };
+  /**
+   * Run-scoped host artifact sink. Not a configurable key: the turn runner
+   * attaches it to a per-run copy of the context so per-tool output caps can
+   * spill their full text into the run's tool-output directory.
+   */
+  persistArtifact?: (artifact: {
+      filename: string;
+      buffer: Buffer;
+      toolName: string;
+      toolUseId: string | null;
+  }) => string | null;
+};
+
+export type ToolContextOptions = Omit<Partial<ToolContext>, "runtimeBrand"> & {
+  runtimeBrand?: Partial<RuntimeBrand>;
+};

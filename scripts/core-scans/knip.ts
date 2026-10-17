@@ -64,7 +64,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/tools/shared/tool-context.js",
+    "file": "packages/turn/src/tools/shared/tool-context.ts",
     "names": [
       "createToolContext",
       "updateToolContext"
@@ -74,7 +74,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/tools/files/read.js",
+    "file": "packages/turn/src/tools/files/read.ts",
     "names": [
       "readToolImpl"
     ],

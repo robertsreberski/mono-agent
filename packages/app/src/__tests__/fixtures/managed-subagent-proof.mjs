@@ -14,7 +14,7 @@ import { buildSubagentsOptions } from "../../../dist/composition/configured-suba
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { createAgentTool } from "../../../../turn/src/tools/delegation/agent-tool.js";
 import { generateEngineTurnResponse } from "../../../../turn/src/execution/pi/run.js";
-import { createToolContext, updateToolContext } from "../../../../turn/src/tools/shared/tool-context.js";
+import { createToolContext, updateToolContext } from "@mono-agent/turn/tools";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
 

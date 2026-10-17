@@ -15,7 +15,7 @@ import sharp from "sharp";
 const MAX_INLINE_IMAGE_EDGE_PX = 2_000;
 
 const ANIMATED_IMAGE_MIME_TYPES = new Set(["image/gif", "image/webp"]);
-const OUTPUT_MIME_BY_FORMAT = {
+const OUTPUT_MIME_BY_FORMAT: Record<string, string> = {
   png: "image/png",
   jpeg: "image/jpeg",
   gif: "image/gif",
@@ -31,12 +31,12 @@ const OUTPUT_MIME_BY_FORMAT = {
  * @param {Buffer} source
  * @param {string} imageMime
  */
-export async function normalizeImageForModel(source, imageMime) {
+export async function normalizeImageForModel(source: Buffer, imageMime: string): Promise<{ data: Buffer<ArrayBufferLike>; mimeType: string; reason?: undefined } | { data: Buffer<ArrayBuffer>; mimeType: any; reason?: undefined } | { reason: string; data?: undefined; mimeType?: undefined }> {
   const inputOptions = { animated: ANIMATED_IMAGE_MIME_TYPES.has(imageMime) };
 
   try {
-    let width;
-    let height;
+    let width: number;
+    let height: number;
     let createPipeline;
 
     if (imageMime === "image/bmp") {

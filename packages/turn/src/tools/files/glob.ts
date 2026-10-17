@@ -37,7 +37,7 @@ const execFileAsync = promisify(execFile);
  * @param {{pattern: string, path?: string, limit?: number, offset?: number, max_matches?: number, max_output_chars?: number, workdir?: string}} params
  * @param {{ctx: import("../shared/tool-context.js").ToolContext, sandboxPolicy?: any, sandboxEngine?: any}} options
  */
-export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }, options) {
+export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }: { pattern: string; path?: string; limit?: number; offset?: number; max_matches?: number; max_output_chars?: number; workdir?: string }, options: { ctx: import("../shared/tool-context.js").ToolContext; sandboxPolicy?: any; sandboxEngine?: any }): Promise<string> {
   const { sandboxPolicy, sandboxEngine, ctx } = options ?? {};
   const cwd = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
   const protectedSearch = protectedFilesystemTargetPlan(cwd, { sandboxPolicy, ctx });
@@ -74,7 +74,7 @@ export async function globToolImpl({ pattern, path, limit, offset = 0, max_match
   const rgPath = resolveRgPath({ ctx });
   if (!rgPath) return ripgrepMissingMessage(ctx);
   try {
-    let stdout;
+    let stdout: string;
     if (!protectedExecution) {
       ({ stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER }));
     } else {
@@ -116,7 +116,7 @@ export async function globToolImpl({ pattern, path, limit, offset = 0, max_match
       ctx,
     });
     return result === "No files found matching pattern." ? result : `${result}\n\n${excludedPathSummary()}`;
-  } catch (err) {
+  } catch (err: any) {
     if (protectedExecution) return "Error: Protected filesystem search was denied.";
     if (err.code === 1) return "No files found matching pattern.";
     if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || /maxBuffer/i.test(err.message || "")) {

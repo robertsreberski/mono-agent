@@ -34,7 +34,7 @@ export async function handOffProcessJob({
   maxOutputChars,
   startedAt,
   failed,
-}) {
+}: { controller: ProcessJobsController; tool: "Exec" | "Bash"; prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand; summary: string; description?: string; wakeOnCompletion?: boolean; timeoutMs?: number; maxOutputChars?: number; startedAt: number; failed: (text: string, code: string, startedAt: number) => any }): Promise<any> {
   const ownedPrepared = withCleanupOnce(prepared);
   const boundEnvironment = mergedProcessEnvironment(ownedPrepared.env);
   let launched = false;
@@ -143,7 +143,7 @@ const PUBLIC_BACKGROUND_START_FAILURES = Object.freeze({
   process_job_invalid: "The process-job request is invalid.",
 });
 
-export function publicBackgroundStartFailure(error) {
+export function publicBackgroundStartFailure(error: any): { code: string; message: any } {
   let code = "process_job_controller_unavailable";
   try {
     if (typeof error === "object" && error !== null && !nodeUtilTypes.isProxy(error)) {
@@ -158,10 +158,10 @@ export function publicBackgroundStartFailure(error) {
   } catch {
     // Proxies and revoked proxies are hostile input at this boundary.
   }
-  let message = PUBLIC_BACKGROUND_START_FAILURES[code];
+  let message: string = (PUBLIC_BACKGROUND_START_FAILURES as Record<string, string>)[code]!;
   if (code === "process_job_queue_full" || code === "process_job_capacity") {
     try {
-      const field = (name) => Object.getOwnPropertyDescriptor(error, name)?.value;
+      const field = (name: string) => Object.getOwnPropertyDescriptor(error, name)?.value;
       const count = field("occupancy");
       const limit = field("limit");
       const key = field("limitKey");
@@ -181,7 +181,7 @@ export function publicBackgroundStartFailure(error) {
   return { code, message };
 }
 
-function mergedProcessEnvironment(overrides = {}) {
+function mergedProcessEnvironment(overrides: Record<string, string | undefined> = {}) {
   const environment = { ...process.env };
   for (const [name, value] of Object.entries(overrides)) {
     if (value === undefined) delete environment[name];
@@ -190,10 +190,10 @@ function mergedProcessEnvironment(overrides = {}) {
   return environment;
 }
 
-function withCleanupOnce(prepared) {
+function withCleanupOnce(prepared: any) {
   if (typeof prepared.cleanup !== "function") return prepared;
   /** @type {Promise<void>|undefined} */
-  let cleanup;
+  let cleanup: Promise<void>;
   const original = prepared.cleanup;
   return {
     ...prepared,
@@ -204,7 +204,7 @@ function withCleanupOnce(prepared) {
   };
 }
 
-function validProcessJobStartResult(value) {
+function validProcessJobStartResult(value: any) {
   if (!value || typeof value !== "object") return false;
   if (typeof value.jobId !== "string" || value.jobId.trim().length === 0 || value.jobId.length > 256) return false;
   if (value.state !== "queued" && value.state !== "starting" && value.state !== "running") return false;
@@ -219,3 +219,5 @@ function validProcessJobStartResult(value) {
   const timestamp = Date.parse(value.startedAt);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value.startedAt;
 }
+
+export type ProcessJobsController = import("../../contracts/process.js").ProcessJobsController;

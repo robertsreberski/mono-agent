@@ -1,3 +1,4 @@
+import type { SandboxCommandSpec, SandboxPolicy } from "../../agent/sandbox-seam.js";
 import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -13,12 +14,12 @@ import { join } from "node:path";
 
 const authorizationSeam = vi.hoisted(() => ({
   remainingChecks: 0,
-  swap: undefined,
+  swap: undefined as (() => void) | undefined,
 }));
 
 vi.mock("../../tools/shared/path-resolver.js", async (importOriginal) => {
-  const actual = await importOriginal();
-  const afterAllowedCheck = (allowed) => {
+  const actual = await importOriginal<typeof import("../../tools/shared/path-resolver.js")>();
+  const afterAllowedCheck = (allowed: boolean) => {
     if (!allowed || authorizationSeam.remainingChecks <= 0) return allowed;
     authorizationSeam.remainingChecks -= 1;
     if (authorizationSeam.remainingChecks === 0) {
@@ -30,16 +31,16 @@ vi.mock("../../tools/shared/path-resolver.js", async (importOriginal) => {
   };
   return {
     ...actual,
-    isPathAllowed(...args) {
+    isPathAllowed(...args: Parameters<typeof actual.isPathAllowed>) {
       return afterAllowedCheck(actual.isPathAllowed(...args));
     },
-    isPathLexicallyAllowed(...args) {
+    isPathLexicallyAllowed(...args: Parameters<typeof actual.isPathLexicallyAllowed>) {
       return afterAllowedCheck(actual.isPathLexicallyAllowed(...args));
     },
-    isWritablePathAllowed(...args) {
+    isWritablePathAllowed(...args: Parameters<typeof actual.isWritablePathAllowed>) {
       return afterAllowedCheck(actual.isWritablePathAllowed(...args));
     },
-    isWritablePathLexicallyAllowed(...args) {
+    isWritablePathLexicallyAllowed(...args: Parameters<typeof actual.isWritablePathLexicallyAllowed>) {
       return afterAllowedCheck(actual.isWritablePathLexicallyAllowed(...args));
     },
   };
@@ -55,11 +56,11 @@ import {
 } from "../../tools/index.js";
 import { createFakeSandbox, testSandboxPolicy } from "../helpers/fake-sandbox.js";
 
-const tempDirs = [];
+const tempDirs: string[] = [];
 let ctx = createToolContext();
 const PROTECTED_SENTINEL = "PROTECTED_SENTINEL_UNCHANGED";
 
-function createFixture({ denyProtectedCommands = true } = {}) {
+function createFixture({ denyProtectedCommands = true }: { denyProtectedCommands?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "agent-runtime-metadata-oracle-"));
   tempDirs.push(root);
   const protectedRoot = join(root, ".mono-agent", "protected-state");
@@ -79,7 +80,7 @@ function createFixture({ denyProtectedCommands = true } = {}) {
     async isAvailable() {
       return true;
     },
-    async prepareCommand(command) {
+    async prepareCommand(command: SandboxCommandSpec) {
       if (!denyProtectedCommands) {
         return {
           ...command,
@@ -113,12 +114,12 @@ function createFixture({ denyProtectedCommands = true } = {}) {
   };
 }
 
-function pointSymlink(linkPath, targetPath) {
+function pointSymlink(linkPath: string, targetPath: string) {
   rmSync(linkPath, { force: true });
   symlinkSync(targetPath, linkPath);
 }
 
-function swapAfterAuthorization(checkCount, swap) {
+function swapAfterAuthorization(checkCount: number, swap: () => void) {
   authorizationSeam.remainingChecks = checkCount;
   authorizationSeam.swap = swap;
 }
@@ -128,7 +129,7 @@ afterEach(() => {
   authorizationSeam.swap = undefined;
   ctx = createToolContext();
   resolveRgPath({ ctx, refresh: true });
-  while (tempDirs.length > 0) rmSync(tempDirs.pop(), { recursive: true, force: true });
+  while (tempDirs.length > 0) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
 const protectedToolCases = [
@@ -138,7 +139,7 @@ const protectedToolCases = [
     initialTarget: "file",
     expected: "Error: Protected filesystem read was denied.",
     variants: [undefined],
-    async run(path, policy) {
+    async run(path: string, policy: SandboxPolicy) {
       return await readToolImpl({ file_path: path }, { ctx, sandboxPolicy: policy });
     },
   },
@@ -148,7 +149,7 @@ const protectedToolCases = [
     initialTarget: "file",
     expected: "Error: Protected filesystem write was denied.",
     variants: [undefined],
-    async run(path, policy) {
+    async run(path: string, policy: SandboxPolicy) {
       return await writeToolImpl({
         file_path: path,
         content: "WRITE_REPLACEMENT",
@@ -161,7 +162,7 @@ const protectedToolCases = [
     initialTarget: "file",
     expected: "Error: Protected filesystem edit was denied.",
     variants: [undefined],
-    async run(path, policy) {
+    async run(path: string, policy: SandboxPolicy) {
       return await editToolImpl({
         file_path: path,
         old_string: PROTECTED_SENTINEL,
@@ -175,7 +176,7 @@ const protectedToolCases = [
     initialTarget: "directory",
     expected: "Error: Protected filesystem search was denied.",
     variants: [undefined],
-    async run(path, policy) {
+    async run(path: string, policy: SandboxPolicy) {
       return await globToolImpl({ path, pattern: "**/*" }, { ctx, sandboxPolicy: policy });
     },
   },
@@ -185,7 +186,7 @@ const protectedToolCases = [
     initialTarget: "directory",
     expected: "Error: Protected filesystem search was denied.",
     variants: ["content", "count", "files_with_matches", undefined],
-    async run(path, policy, output_mode) {
+    async run(path: string, policy: SandboxPolicy, output_mode?: string) {
       return await grepToolImpl({
         path,
         pattern: PROTECTED_SENTINEL,
@@ -198,8 +199,8 @@ const protectedToolCases = [
 describe("protected filesystem target metadata", () => {
   it("prefers the request-scoped sandbox engine for all five filesystem operations", async () => {
     const fixture = createFixture({ denyProtectedCommands: false });
-    const contextPrepares = [];
-    const requestPrepares = [];
+    const contextPrepares: SandboxCommandSpec[] = [];
+    const requestPrepares: SandboxCommandSpec[] = [];
     let contextAvailabilityChecks = 0;
     let requestAvailabilityChecks = 0;
     const contextEngine = {
@@ -207,7 +208,7 @@ describe("protected filesystem target metadata", () => {
         contextAvailabilityChecks += 1;
         return true;
       },
-      async prepareCommand(command) {
+      async prepareCommand(command: SandboxCommandSpec) {
         contextPrepares.push(command);
         throw new Error("context engine must not prepare a request-scoped operation");
       },
@@ -217,7 +218,7 @@ describe("protected filesystem target metadata", () => {
         requestAvailabilityChecks += 1;
         return true;
       },
-      async prepareCommand(command) {
+      async prepareCommand(command: SandboxCommandSpec) {
         requestPrepares.push(command);
         return {
           ...command,
@@ -232,14 +233,14 @@ describe("protected filesystem target metadata", () => {
       sandbox: createFakeSandbox(),
       sandboxEngine: contextEngine,
     });
-    const protectedOptions = {
+    const protectedOptions: { sandboxPolicy: SandboxPolicy; sandboxEngine: typeof requestEngine; ctx?: typeof ctx } = {
       sandboxPolicy: fixture.policy,
       sandboxEngine: requestEngine,
       ctx,
     };
     const protectedWritePath = join(fixture.root, "request-engine-write.txt");
 
-    const expectRequestPrepare = async (operation) => {
+    const expectRequestPrepare = async <T>(operation: () => Promise<T>) => {
       const before = requestPrepares.length;
       const result = await operation();
       expect(requestPrepares).toHaveLength(before + 1);
@@ -277,7 +278,7 @@ describe("protected filesystem target metadata", () => {
     expect(readFileSync(protectedWritePath, "utf8")).toBe("request write");
     expect(readFileSync(fixture.siblingFile, "utf8")).toBe("sibling edited");
 
-    const noProtectedOptions = {
+    const noProtectedOptions: { sandboxPolicy: SandboxPolicy; sandboxEngine: typeof requestEngine; ctx?: typeof ctx } = {
       sandboxPolicy: testSandboxPolicy({ root: fixture.root }),
       sandboxEngine: requestEngine,
       ctx,

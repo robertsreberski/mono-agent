@@ -1,3 +1,5 @@
+import type { SandboxCommandSpec } from "../../agent/sandbox-seam.js";
+import type { ToolContext } from "../../tools/shared/tool-context.js";
 import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -23,7 +25,7 @@ import {
   writeToolImpl,
 } from "../../tools/index.js";
 
-const tempDirs = [];
+const tempDirs: string[] = [];
 let ctx = createToolContext();
 let previousPath = process.env.PATH;
 
@@ -36,7 +38,7 @@ function tempWorkspace() {
   return dir;
 }
 
-function writeFile(path, content = "") {
+function writeFile(path: any, content: any = "") {
   mkdirSync(resolve(path, ".."), { recursive: true });
   writeFileSync(path, content, "utf8");
 }
@@ -46,7 +48,7 @@ afterEach(() => {
   else process.env.PATH = previousPath;
   ctx = createToolContext();
   resolveRgPath({ ctx, refresh: true });
-  while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
+  while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
 describe("ai tool helpers", () => {
@@ -190,7 +192,7 @@ describe("ai tool helpers", () => {
     }).png().toBuffer();
     writeFileSync(join(root, "shot.png"), pngBytes);
 
-    const result = await readToolImpl({ file_path: "shot.png" }, { ctx });
+    const result = await readToolImpl({ file_path: "shot.png" }, { ctx }) as Exclude<Awaited<ReturnType<typeof readToolImpl>>, string>;
 
     expect(typeof result).not.toBe("string");
     expect(result.kind).toBe("image");
@@ -205,7 +207,7 @@ describe("ai tool helpers", () => {
     }).jpeg().toBuffer();
     writeFileSync(join(root, "photo.JPG"), jpgBytes);
 
-    const result = await readToolImpl({ file_path: "photo.JPG" }, { ctx });
+    const result = await readToolImpl({ file_path: "photo.JPG" }, { ctx }) as Exclude<Awaited<ReturnType<typeof readToolImpl>>, string>;
 
     expect(result.kind).toBe("image");
     expect(result.mimeType).toBe("image/jpeg");
@@ -220,7 +222,7 @@ describe("ai tool helpers", () => {
     }).png().toBuffer();
     writeFileSync(sourcePath, pngBytes);
 
-    const result = await readToolImpl({ file_path: "tall.png" }, { ctx });
+    const result = await readToolImpl({ file_path: "tall.png" }, { ctx }) as Exclude<Awaited<ReturnType<typeof readToolImpl>>, string>;
     const normalized = Buffer.from(result.data, "base64");
     const metadata = await sharp(normalized).metadata();
 
@@ -240,10 +242,10 @@ describe("ai tool helpers", () => {
     const source = sharp({
       create: { width: 2, height: 2_001, channels: 3, background: { r: 80, g: 100, b: 120 } },
     });
-    const imageBytes = await source.toFormat(format).toBuffer();
+    const imageBytes = await source.toFormat(format as "jpeg" | "webp").toBuffer();
     writeFileSync(join(root, `tall.${extension}`), imageBytes);
 
-    const result = await readToolImpl({ file_path: `tall.${extension}` }, { ctx });
+    const result = await readToolImpl({ file_path: `tall.${extension}` }, { ctx }) as Exclude<Awaited<ReturnType<typeof readToolImpl>>, string>;
     const metadata = await sharp(Buffer.from(result.data, "base64")).metadata();
 
     expect(result.mimeType).toBe(mimeType);
@@ -264,7 +266,7 @@ describe("ai tool helpers", () => {
       .toBuffer();
     writeFileSync(join(root, "animated.gif"), gifBytes);
 
-    const result = await readToolImpl({ file_path: "animated.gif" }, { ctx });
+    const result = await readToolImpl({ file_path: "animated.gif" }, { ctx }) as Exclude<Awaited<ReturnType<typeof readToolImpl>>, string>;
     const normalized = Buffer.from(result.data, "base64");
     const metadata = await sharp(normalized, { animated: true }).metadata();
 
@@ -284,7 +286,7 @@ describe("ai tool helpers", () => {
     }).data;
     writeFileSync(join(root, "tall.bmp"), bmpBytes);
 
-    const result = await readToolImpl({ file_path: "tall.bmp" }, { ctx });
+    const result = await readToolImpl({ file_path: "tall.bmp" }, { ctx }) as Exclude<Awaited<ReturnType<typeof readToolImpl>>, string>;
     const normalized = Buffer.from(result.data, "base64");
     const metadata = await sharp(normalized).metadata();
 
@@ -348,8 +350,8 @@ describe("ai tool helpers", () => {
     // A configured app never sets toolArtifactDir; its only sink is the
     // run-bound persistArtifact callback the turn runner attaches to ctx.
     const root = tempWorkspace();
-    const saved = [];
-    const persistArtifact = ({ filename, buffer, toolName, toolUseId }) => {
+    const saved: { filename: string; text: string; toolName: string; toolUseId: string | null }[] = [];
+    const persistArtifact: NonNullable<ToolContext["persistArtifact"]> = ({ filename, buffer, toolName, toolUseId }) => {
       saved.push({ filename, text: buffer.toString("utf8"), toolName, toolUseId });
       return `/artifacts/tool-output/run-7/${filename}`;
     };
@@ -361,12 +363,12 @@ describe("ai tool helpers", () => {
     );
 
     expect(saved).toHaveLength(1);
-    expect(saved[0].filename).toMatch(/^\d+-Bash-[0-9a-f-]{36}\.txt$/u);
-    expect(saved[0].toolName).toBe("Bash");
-    expect(saved[0].text.startsWith("HEAD")).toBe(true);
-    expect(saved[0].text.endsWith("TAIL")).toBe(true);
-    expect(saved[0].text.length).toBeGreaterThan(4000);
-    expect(result).toContain(`Full output saved to: /artifacts/tool-output/run-7/${saved[0].filename}`);
+    expect(saved[0]!.filename).toMatch(/^\d+-Bash-[0-9a-f-]{36}\.txt$/u);
+    expect(saved[0]!.toolName).toBe("Bash");
+    expect(saved[0]!.text.startsWith("HEAD")).toBe(true);
+    expect(saved[0]!.text.endsWith("TAIL")).toBe(true);
+    expect(saved[0]!.text.length).toBeGreaterThan(4000);
+    expect(result).toContain(`Full output saved to: /artifacts/tool-output/run-7/${saved[0]!.filename}`);
   });
 
   it("omits the saved-to line when the run-scoped sink declines the write", async () => {
@@ -393,7 +395,7 @@ describe("ai tool helpers", () => {
           async isAvailable() {
             return true;
           },
-          async prepareCommand(command) {
+          async prepareCommand(command: SandboxCommandSpec) {
             return {
               ...command,
               command: process.execPath,
@@ -468,7 +470,7 @@ describe("ai tool helpers", () => {
     let calls = 0;
     globalThis.fetch = async () => {
       calls += 1;
-      const err = new Error("read ECONNRESET");
+      const err: Error & { code?: string } = new Error("read ECONNRESET");
       err.code = "ECONNRESET";
       throw err;
     };
@@ -669,7 +671,7 @@ describe("ai tool helpers", () => {
           async isAvailable() {
             return true;
           },
-          async prepareCommand(command) {
+          async prepareCommand(command: SandboxCommandSpec) {
             return {
               ...command,
               command: process.execPath,
@@ -733,7 +735,7 @@ describe("ai tool helpers", () => {
     updateToolContext(ctx, {
       sandboxEngine: {
         async isAvailable() { return true; },
-        async prepareCommand(command) {
+        async prepareCommand(command: SandboxCommandSpec) {
           if ((command.args ?? []).some((arg) => arg === secretPath || arg === aliasSecretPath)) {
             return {
               command: process.execPath,

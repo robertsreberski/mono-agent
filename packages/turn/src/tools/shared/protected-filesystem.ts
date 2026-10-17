@@ -15,13 +15,13 @@ const PROTECTED_OPERATION_TIMEOUT_MS = 15_000;
  * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, input?: string|Buffer, maxBufferBytes?: number}} [options]
  * @returns {Promise<any|null>}
  */
-export async function runProtectedFilesystemCommand(command, {
+export async function runProtectedFilesystemCommand(command: { command: string; args?: string[]; cwd?: string; env?: Record<string, string | undefined> }, {
   sandboxPolicy,
   sandboxEngine,
   ctx,
   input,
   maxBufferBytes,
-} = {}) {
+}: { sandboxPolicy?: any; sandboxEngine?: any; ctx?: any; input?: string | Buffer; maxBufferBytes?: number } = {}): Promise<any | null> {
   const resolvedCtx = requireToolContext(ctx);
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   if (!hasProtectedRoots(policy)) {
@@ -46,7 +46,7 @@ export async function runProtectedFilesystemCommand(command, {
 }
 
 /** @param {any} policy */
-function hasProtectedRoots(policy) {
+function hasProtectedRoots(policy: any) {
   return policy !== undefined
     && Array.isArray(policy.protectedRoots)
     && policy.protectedRoots.length > 0;
@@ -62,7 +62,7 @@ function hasProtectedRoots(policy) {
  * @param {{sandboxPolicy?: any, ctx?: any}} [options]
  * @returns {{cwd: string, searchTarget: string}|null}
  */
-export function protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx } = {}) {
+export function protectedFilesystemTargetPlan(target: string, { sandboxPolicy, ctx }: { sandboxPolicy?: any; ctx?: any } = {}): { cwd: string; searchTarget: string } | null {
   const resolvedCtx = requireToolContext(ctx);
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   if (!hasProtectedRoots(policy)) return null;
@@ -87,7 +87,7 @@ export function protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx } = {
 }
 
 /** @param {string} searchTarget */
-export function protectedDirectorySearchTarget(searchTarget) {
+export function protectedDirectorySearchTarget(searchTarget: string): string {
   return searchTarget.endsWith(sep) ? searchTarget : `${searchTarget}${sep}`;
 }
 
@@ -96,7 +96,7 @@ export function protectedDirectorySearchTarget(searchTarget) {
  * @param {string} pattern
  * @param {string} searchTarget
  */
-export function scopeProtectedSearchGlob(pattern, searchTarget) {
+export function scopeProtectedSearchGlob(pattern: string, searchTarget: string): string {
   const normalizedTarget = normalizeSearchPath(searchTarget);
   if (normalizedTarget === ".") return pattern;
   const negated = pattern.startsWith("!");
@@ -114,7 +114,7 @@ export function scopeProtectedSearchGlob(pattern, searchTarget) {
  * @param {string} line
  * @param {string} searchTarget
  */
-export function normalizeProtectedSearchLine(line, searchTarget) {
+export function normalizeProtectedSearchLine(line: string, searchTarget: string): string {
   const normalizedLine = normalizeSearchPath(line).replace(/^\.\//u, "");
   const normalizedTarget = normalizeSearchPath(searchTarget).replace(/^\.\//u, "");
   if (normalizedTarget === ".") return normalizedLine;
@@ -129,7 +129,7 @@ export function normalizeProtectedSearchLine(line, searchTarget) {
 }
 
 /** @param {any} result */
-export function protectedCommandSucceeded(result) {
+export function protectedCommandSucceeded(result: any): boolean {
   return result !== null
     && result.code === 0
     && result.signal === null
@@ -138,12 +138,12 @@ export function protectedCommandSucceeded(result) {
     && result.bufferExceeded === false;
 }
 
-function normalizeSearchPath(path) {
+function normalizeSearchPath(path: any) {
   const normalized = sep === "\\" ? String(path).replaceAll("\\", "/") : String(path);
   return normalized.replace(/\/+$/u, "") || ".";
 }
 
-function lexicallyContains(root, target) {
+function lexicallyContains(root: any, target: any) {
   const rel = relative(resolve(root), resolve(target));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }

@@ -48,7 +48,7 @@ export async function grepToolImpl({
   max_matches,
   max_output_chars,
   workdir,
-}, options) {
+}: { pattern: string; path?: string; glob?: string; type?: string; output_mode?: string; context?: number; case_insensitive?: boolean; multiline?: boolean; head_limit?: number; offset?: number; max_matches?: number; max_output_chars?: number; workdir?: string }, options: { ctx: import("../shared/tool-context.js").ToolContext; sandboxPolicy?: any; sandboxEngine?: any }): Promise<string> {
   const { sandboxPolicy, sandboxEngine, ctx } = options ?? {};
   const target = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
   const protectedSearch = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });
@@ -93,7 +93,7 @@ export async function grepToolImpl({
   const rgPath = resolveRgPath({ ctx });
   if (!rgPath) return ripgrepMissingMessage(ctx);
   try {
-    let stdout;
+    let stdout: string;
     if (!protectedExecution) {
       ({ stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER }));
     } else {
@@ -128,7 +128,7 @@ export async function grepToolImpl({
       ctx,
     });
     return formatted === "No matches found." ? formatted : `${formatted}\n\n${excludedPathSummary()}`;
-  } catch (err) {
+  } catch (err: any) {
     if (protectedExecution) return "Error: Protected filesystem search was denied.";
     if (err.code === 1) return "No matches found.";
     if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || /maxBuffer/i.test(err.message || "")) {

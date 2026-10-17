@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./constants.js";
 import { boundedInt } from "./dedup.js";
 
-function sanitizeName(value) {
+function sanitizeName(value: any) {
   return String(value || "tool").replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "tool";
 }
 
@@ -29,7 +29,7 @@ function sanitizeName(value) {
  * @param {any} [ctx]
  * @returns {{path: string, bytes: number}|null}
  */
-export function writeToolArtifact(label, text, ctx) {
+export function writeToolArtifact(label: string, text: string, ctx?: any): { path: string; bytes: number } | null {
   const { toolArtifactDir, runId, persistArtifact } = ctx ?? {};
   const body = String(text || "");
   const filename = `${Date.now()}-${sanitizeName(label)}-${randomUUID()}.txt`;
@@ -59,7 +59,7 @@ export function writeToolArtifact(label, text, ctx) {
   }
 }
 
-function truncationSuffix({ label, shown, total, artifact, hint }) {
+function truncationSuffix({ label, shown, total, artifact, hint }: { label: any; shown: any; total: any; artifact: any; hint: any; }) {
   return [
     "",
     `[truncated ${label} output: showing ${shown} of ${total} characters.]`,
@@ -72,13 +72,13 @@ function truncationSuffix({ label, shown, total, artifact, hint }) {
  * @param {string} text
  * @param {{label?: string, maxChars?: number, strategy?: string, hint?: string, ctx?: any}} [options]
  */
-export function capChars(text, {
+export function capChars(text: string, {
   label = "tool",
   maxChars = DEFAULT_MAX_TOOL_OUTPUT_CHARS,
   strategy = "head",
   hint,
   ctx,
-} = {}) {
+}: { label?: string; maxChars?: number; strategy?: string; hint?: string; ctx?: any } = {}): string {
   const value = String(text || "");
   const limit = boundedInt(maxChars, DEFAULT_MAX_TOOL_OUTPUT_CHARS, { min: 200 });
   if (value.length <= limit) return value;

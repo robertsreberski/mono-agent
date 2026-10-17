@@ -29,7 +29,7 @@ process.stdin.on("end", () => {
  * @param {{file_path: string, content?: string, workdir?: string}} params
  * @param {{ctx: import("../shared/tool-context.js").ToolContext, sandboxPolicy?: any, sandboxEngine?: any}} options
  */
-export async function writeToolImpl({ file_path, content, workdir }, options) {
+export async function writeToolImpl({ file_path, content, workdir }: { file_path: string; content?: string; workdir?: string }, options: { ctx: import("../shared/tool-context.js").ToolContext; sandboxPolicy?: any; sandboxEngine?: any }): Promise<string> {
   const { sandboxPolicy, sandboxEngine, ctx } = options ?? {};
   const target = resolveToolPath(file_path, workdir, ctx);
   const pathOptions = { sandboxPolicy, ctx };

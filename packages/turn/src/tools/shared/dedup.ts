@@ -3,17 +3,18 @@ import { MAX_READ_LINE_CHARS, READ_HISTORY_LIMIT } from "./constants.js";
 
 const readHistory = new Map();
 
-export function boundedInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+export function boundedInt(value: any, fallback: any, { min = 1, max = Number.MAX_SAFE_INTEGER }: { min?: number; max?: number } = {}): any {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(Math.floor(n), min), max);
 }
 
-export function safeStat(path) {
+export function safeStat(path: any): import("fs").Stats;
+export function safeStat(path: any): import("fs").Stats | null {
   try { return statSync(path); } catch { return null; }
 }
 
-export function rememberRead(target, start, count) {
+export function rememberRead(target: any, start: any, count: any): boolean {
   const key = `${target}:${start}:${count}`;
   const repeated = readHistory.has(key);
   readHistory.set(key, Date.now());
@@ -24,7 +25,7 @@ export function rememberRead(target, start, count) {
   return repeated;
 }
 
-export function trimLine(line) {
+export function trimLine(line: any): string {
   const text = String(line ?? "");
   if (text.length <= MAX_READ_LINE_CHARS) return text;
   return `${text.slice(0, MAX_READ_LINE_CHARS)} [line truncated at ${MAX_READ_LINE_CHARS} of ${text.length} chars]`;
