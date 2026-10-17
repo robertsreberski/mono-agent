@@ -2,7 +2,7 @@ import { constants as fsConstants, type Stats } from "node:fs";
 import { open } from "node:fs/promises";
 import process from "node:process";
 
-import { writeOwnerPrivateLaunchdFile } from "./background.js";
+import { writeOwnerPrivateLaunchdFile } from "./service/launchd/plist-files.js";
 import type { ManagedWebLogMonitorStatus } from "./managed-web-logs.js";
 
 const MAX_MONITOR_STATUS_BYTES = 1024;

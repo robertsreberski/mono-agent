@@ -112,10 +112,18 @@ vi.mock("../background.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../background.js")>();
   return {
     ...actual,
-    defaultBackgroundDeps: mocks.defaultBackgroundDeps,
     ensureBackgroundReady: mocks.ensureBackgroundReady,
-    resolveInstanceTarget: mocks.resolveInstanceTarget,
   };
+});
+
+vi.mock("../service/background/deps.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/deps.js")>();
+  return { ...actual, defaultBackgroundDeps: mocks.defaultBackgroundDeps };
+});
+
+vi.mock("../service/background/target.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/target.js")>();
+  return { ...actual, resolveInstanceTarget: mocks.resolveInstanceTarget };
 });
 
 vi.mock("../provider-setup.js", async (importOriginal) => {
@@ -166,7 +174,7 @@ vi.mock("../init.js", async (importOriginal) => {
 import { runCli } from "../cli.js";
 import { BROWSER_CONSOLE_HOST, BROWSER_CONSOLE_PORT } from "../setup/render.js";
 import { DEFAULT_MODEL } from "../modules/index.js";
-import { DEFAULT_WEB_PORT } from "../web-command.js";
+import { DEFAULT_WEB_PORT } from "../web-service-definition.js";
 import { defaultAnswers } from "../wizard/answers.js";
 
 /** Provider id of the route `defaultAnswers()` selects, e.g. `openai-codex`. */

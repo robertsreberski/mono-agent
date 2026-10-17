@@ -3,7 +3,7 @@ import process from "node:process";
 
 import { readMonoAgentConfigJson } from "@mono-agent/config";
 
-import { canonicalBackgroundConfigPath } from "../../background.js";
+import { canonicalBackgroundConfigPath } from "../../service/background/target.js";
 import type { ParsedCliArgs } from "../../cli-args.js";
 import { resolveEffectivePiAuthPath } from "../../first-run-readiness.js";
 import { executeProviderSetupPlan } from "../../provider-setup.js";

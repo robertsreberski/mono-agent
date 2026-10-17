@@ -95,3 +95,7 @@ export function maintenanceErrorMessage(error: unknown): string {
   }
   return String(error);
 }
+
+export function isErrno(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === code;
+}

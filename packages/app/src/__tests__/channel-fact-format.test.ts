@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeChannel } from "../background.js";
+import { describeChannel } from "../service/background/presentation.js";
 import { formatChannelFactValue } from "../channel-fact-format.js";
 import { describeChannelStatus } from "../cli-background-command.js";
 

@@ -111,6 +111,7 @@ function codeEnvKeys(root: string): Set<string> {
     join(root, "packages/app/src/adapter-send-tools.ts"),
     join(root, "packages/app/src/delivery/send-tools/child-config.ts"),
     join(root, "packages/app/src/web-command.ts"),
+    join(root, "packages/app/src/service/web/service.ts"),
     // Harness-owned request capability keys are injected into opted stdio MCPs;
     // they are real runtime env, although operators do not configure them.
     join(root, "packages/conversation/src/harness/index.ts"),

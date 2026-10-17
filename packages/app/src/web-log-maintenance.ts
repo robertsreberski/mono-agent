@@ -1,11 +1,11 @@
 import { fileURLToPath } from "node:url";
 
+import { acquireFilesystemLifecycleLock } from "./launchd-lifecycle-lock.js";
+import { defaultBackgroundDeps } from "./service/background/deps.js";
 import {
-  acquireFilesystemLifecycleLock,
-  defaultBackgroundDeps,
   inspectOwnerPrivateLaunchdPlist,
   readOwnerPrivateLaunchdPlist,
-} from "./background.js";
+} from "./service/launchd/plist-files.js";
 import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import {
   maintainLaunchdLogsWithSharedLockOperation,

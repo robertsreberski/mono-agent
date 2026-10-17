@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
-import { canonicalBackgroundConfigPath, resolveInstanceTarget } from "./background.js";
+import { canonicalBackgroundConfigPath, resolveInstanceTarget } from "./service/background/target.js";
 import {
   selectSystemdBackgroundOperationalEnvironment,
   SYSTEMD_BACKGROUND_WORKER_ENV,

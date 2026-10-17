@@ -23,20 +23,18 @@ import { startMonoAgentApp } from "./app.js";
 import type { MonoAgentApp, SandboxStatus } from "./app.js";
 import { startVerifiedManagedMonoAgentApp } from "./app-controller.js";
 import {
-  acquireBackgroundWorkerLease,
-  canonicalBackgroundConfigPath,
-  defaultBackgroundDeps,
   forceRestartBackground,
   maintainLaunchdController,
-  managedBackgroundEnvironment,
-  resolveInstanceTarget,
   restartBackground,
   startBackground,
-  statusBackground,
   stopBackground,
   tailLogs,
 } from "./background.js";
-import type { BackgroundDeps, InstanceTarget } from "./background.js";
+import { acquireBackgroundWorkerLease } from "./background-worker-lease.js";
+import { canonicalBackgroundConfigPath, managedBackgroundEnvironment, resolveInstanceTarget } from "./service/background/target.js";
+import { defaultBackgroundDeps } from "./service/background/deps.js";
+import { statusBackground } from "./service/background/status.js";
+import type { BackgroundDeps, InstanceTarget } from "./service/background/types.js";
 import type { LaunchdMaintenanceCommandArgs } from "./launchd-maintenance-command.js";
 import {
   assertLaunchdMaintenanceLifecycleLease,
