@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -40,8 +40,18 @@ export function compareGraphs(baseline, candidate, entries) {
       symbol.valueDeclaration ?? symbol.declarations?.[0] ?? program.getSourceFile(roots[0]));
     const unalias = (symbol) => symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
     const documentation = (before, after, path) => {
-      if (ts.displayPartsToString(before.getDocumentationComment(checker)).trim()
-        && !ts.displayPartsToString(after.getDocumentationComment(checker)).trim()) fail(path, "lost documentation");
+      const normalize = (value) => value.replace(/\r\n?/gu, "\n").trim().split(/\n[ \t]*\n/gu)
+        .map((paragraph) => paragraph.split("\n").map((line) => line.trim().replace(/[ \t]+/gu, " ")).reduce((text, line) =>
+          `${text}${text ? /^(?:[-+*]|\d+[.)])\s/u.test(line) ? "\n" : " " : ""}${line}`, "")).join("\n\n");
+      const previous = normalize(ts.displayPartsToString(before.getDocumentationComment(checker)));
+      const current = normalize(ts.displayPartsToString(after.getDocumentationComment(checker)));
+      if (previous && previous !== current) fail(path, current ? "changed documentation" : "lost documentation");
+      const tags = (symbol) => symbol.getJsDocTags(checker).map(({ name, text }) => ({ name,
+        text: normalize(typeof text === "string" ? text : ts.displayPartsToString(text)) }));
+      const previousTags = tags(before), currentTags = tags(after);
+      if (previousTags.length && JSON.stringify(previousTags) !== JSON.stringify(currentTags)) {
+        fail(path, currentTags.length ? "changed documentation tags" : "lost documentation tags");
+      }
     };
     const text = (type) => checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation)
       .replaceAll(baseline, "<snapshot>").replaceAll(candidate, "<snapshot>");
@@ -50,6 +60,7 @@ export function compareGraphs(baseline, candidate, entries) {
       if (after.length < before.length) fail(path, "removed overload");
       for (let index = 0; index < Math.min(before.length, after.length); index += 1) {
         const a = before[index], b = after[index], label = `${path}.signature[${index}]`;
+        documentation(a, b, label);
         if (b.minArgumentCount > a.minArgumentCount) fail(label, "new required parameter");
         if (b.parameters.length < a.parameters.length) fail(label, "removed parameter");
         if ((a.typeParameters?.length ?? 0) !== (b.typeParameters?.length ?? 0)) fail(label, "changed generic arity");
@@ -137,6 +148,7 @@ export function compareGraphs(baseline, candidate, entries) {
         const b = after.get(a.name), label = `${path}.${a.name}`;
         if (!b) { fail(label, "removed member"); continue; }
         if (!(a.flags & ts.SymbolFlags.Optional) && b.flags & ts.SymbolFlags.Optional) fail(label, "required became optional");
+        if (mode === "input" && a.flags & ts.SymbolFlags.Optional && !(b.flags & ts.SymbolFlags.Optional)) fail(label, "optional became required");
         if (readonly(a) && !readonly(b)) fail(label, "lost readonly");
         documentation(a, b, label);
         walk(symbolType(a), symbolType(b), label, mode);
@@ -187,7 +199,11 @@ export function compareRevision(revision = "origin/main") {
   const archive = execFileSync("git", ["archive", oid, "packages/turn", "tsconfig.base.json"], { cwd: root, maxBuffer: 16 * 1024 * 1024 });
   execFileSync("tar", ["-xf", "-", "-C", archived], { cwd: root, input: archive });
   const turn = join(archived, "packages/turn");
-  symlinkSync(join(root, "packages/turn/node_modules"), join(turn, "node_modules"), "dir");
+  // A baseline build must not share the candidate's staged-product ownership journal.
+  mkdirSync(join(turn, "node_modules"));
+  for (const entry of readdirSync(join(root, "packages/turn/node_modules"))) {
+    if (entry !== ".cache") symlinkSync(join(root, "packages/turn/node_modules", entry), join(turn, "node_modules", entry), "dir");
+  }
   const manifest = JSON.parse(readFileSync(join(turn, "package.json"), "utf8"));
   const result = spawnSync("pnpm", ["run", "build"], { cwd: turn, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`Baseline build failed:\n${result.stdout}\n${result.stderr}`);
