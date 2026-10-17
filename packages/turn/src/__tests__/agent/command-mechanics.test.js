@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join, parse, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runner = vi.hoisted(() => ({ run: vi.fn() }));
@@ -17,6 +19,9 @@ const result = { code: 0, signal: null, stdout: "fictional output", stderr: "", 
   timedOut: false, bufferExceeded: false, truncated: false, bytes: 16, storedBytes: 16,
   spawnError: null, durationMs: 1 };
 let root, workspace, allowed, ctx, cleanup, prepareCommand;
+// Never created. The policy-free path rules admit all of /tmp, which is os.tmpdir() on Linux,
+// so the denied workdir sits directly under the filesystem root instead of the temp root.
+const deniedWorkdir = join(parse(tmpdir()).root, `turn-command-mechanics-denied-${randomUUID()}`);
 beforeEach(async () => {
   vi.clearAllMocks();
   root = await mkdtemp(join(tmpdir(), "turn-command-mechanics-"));
@@ -46,9 +51,11 @@ for (const [tool, run, params, invalid] of [
 
   it.each(["relative", "outside", "missing", "denied"])("keeps ordered workdir checks (%s)", async (scenario) => {
     const workdir = scenario === "relative" ? relative(process.cwd(), join(workspace, "relative")) : scenario === "outside" ? allowed
-      : scenario === "missing" ? join(workspace, "missing") : join(root, "denied");
+      : scenario === "missing" ? join(workspace, "missing") : deniedWorkdir;
     const answer = await run({ ...params, workdir }, { ctx });
     if (scenario === "missing" || scenario === "denied") {
+      // Both paths are absent, so a denial proves containment is checked before existence.
+      expect(existsSync(workdir)).toBe(false);
       expect(answer).toMatchObject({ text: `Error: Working directory ${scenario === "missing" ? "not found" : "not allowed"}: ${workdir}`,
         outcome: { code: scenario === "missing" ? "workdir_not_found" : "workdir_denied" } });
       expect(prepareCommand).not.toHaveBeenCalled();
