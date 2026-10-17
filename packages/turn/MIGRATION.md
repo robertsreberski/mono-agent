@@ -969,6 +969,12 @@ file/command/web tools and their context from `@mono-agent/turn/tools`. The root
 keeps only the high-level factory/model/metrics/policy API. There are no aliases
 or forwarding modules for retired paths.
 
+Eight unused values are removed, not moved or aliased:
+`estimateFixedOverheadTokens`, `ripgrepMissingMessage`, `excludedGlobArgs`,
+`normalizeGlobPattern`, `formatSearchLines`, `capLines`, `excludedPathSummary`,
+and `cachedRgPath`. Of the former ripgrep exports, only `resolveRgPath` remains
+public, at `@mono-agent/turn/tools`.
+
 `TurnHostError` replaces `RuntimeAdapterError` at `@mono-agent/turn/host/config`,
 including its intentional `Error.name` change. Codes, details and messages stay
 unchanged; historical arbitrary diagnostic names are not rewritten.

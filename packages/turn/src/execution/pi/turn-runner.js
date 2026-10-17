@@ -2,7 +2,7 @@ import { assertNativeSessionAccess } from "../../engine/session-authority.js";
 // @ts-check
 // Turn execution for the pi-native bridge.
 //
-// Pure moves out of engine-turn.js: effort→thinkingLevel mapping, harness
+// Pure moves out of execution/pi/run.js: effort→thinkingLevel mapping, harness
 // construction + stream-subscriber wiring + abort wiring, the live-input
 // steering consumer, and the prompt/waitForIdle run. No module-level mutable
 // state; run state (harness, removeAbortHandler, externalAbort) lives on the

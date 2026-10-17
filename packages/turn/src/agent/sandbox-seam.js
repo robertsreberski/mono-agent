@@ -4,7 +4,7 @@
 // workspace dependency by turning "how commands get sandboxed" into data a
 // host hands the kernel, not code the kernel imports. A host constructs a
 // `RuntimeSandbox` implementation and passes it to `createRuntime({sandbox})`
-// (see runtime.js); every internal tool helper that used to import the sandbox
+// (see runtime/create-runtime.js); every internal tool helper that used to import the sandbox
 // implementation directly (bash.js, tools/mcp/connection.js's MCP-stdio launcher,
 // web-fetch.js, web-search.js,
 // tool-context.js's policy merge) now reads `ctx.sandbox` and calls through
@@ -12,7 +12,7 @@
 //
 // `passthroughSandbox` is the zero-dependency default every ToolContext gets
 // when no host supplies one (createToolContext in
-// ./tools/shared/tool-context.js). Its contract covers both no-injected-sandbox
+// ../tools/shared/tool-context.js). Its contract covers both no-injected-sandbox
 // paths equally:
 //   - No policy at all (both sides of a merge undefined, or a resolved policy
 //     that is undefined): every operation is allowed, byte-identical to
@@ -32,7 +32,7 @@
 //     denyWrite union — the real, byte-identical merge algorithm is owned by
 //     @mono-agent/turn/host in packages/turn/src/host/sandbox/index.ts
 //     (`mergeSandboxPolicies`) and is wired in by every mono-agent host through
-//     runtime-adapter.
+//     host/create-runtime.ts.
 //
 // Real hosts (mono-agent, via @mono-agent/turn/host) inject
 // `{mergePolicies: mergeSandboxPolicies, prepareCommand: prepareSandboxedCommand,
@@ -94,7 +94,7 @@
  * @typedef {Object} RuntimeSandboxEngine
  * Optional concrete sandboxing backend a caller can hand to `prepareCommand`
  * (matches @mono-agent/turn/host's `SandboxEngine`). Not used by
- * `passthroughSandbox` (see module doc: adapters live in runtime-adapter, not
+ * `passthroughSandbox` (see module doc: adapters live in host/sandbox, not
  * the kernel) — documented here only because it is part of the
  * `prepareCommand` input shape real implementations accept.
  * @property {() => Promise<boolean>} isAvailable

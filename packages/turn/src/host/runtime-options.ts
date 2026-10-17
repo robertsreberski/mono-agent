@@ -65,7 +65,7 @@ export type MonoRuntimeAttemptResolver = (
 
 
 export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
-  /** The sandbox implementation is owned and injected by runtime-adapter. */
+  /** The sandbox implementation is owned and injected by host/create-runtime.ts. */
   readonly sandbox?: never;
   /**
    * Ordered model chain for provider failover. When present, runs are served by

@@ -150,7 +150,7 @@ export async function discoverEmbeddingOnlyModelIds(
 }
 
 /**
- * Mirrors `openAiCompatBaseUrl` in agent-runtime's pi-models.js: ollama's
+ * Mirrors `openAiCompatBaseUrl` in agent-runtime's providers/pi/models.js: ollama's
  * OpenAI-compat surface always lives at `<root>/v1` (stripping any existing
  * `/api` or `/v1` suffix first); other local provider types get `/v1`
  * appended unless the configured baseUrl already ends in a version segment

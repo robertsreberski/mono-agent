@@ -1147,7 +1147,7 @@ function entrySatisfiesRequirements(entry, options) {
   const requires = entry.requires;
   // Synthesize effective requirements: merge the entry's own `requires` with
   // requirements inferred from per-run options, so a chain entry that carries
-  // no explicit `requires` (the agent-host + runtime-adapter paths cannot carry
+  // no explicit `requires` (the host integration paths cannot carry
   // one today) still respects option-implied capability needs. Each option
   // inference defers to an explicit entry pin, never overriding it.
   const effectiveRequires = { ...(requires || null) };

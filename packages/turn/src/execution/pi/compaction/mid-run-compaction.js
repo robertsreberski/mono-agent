@@ -89,7 +89,7 @@ function piThresholdWindow(harness) {
  * The retained tail is a contiguous SUFFIX of the pre-compaction context (Pi
  * builds it from the same branch path — harness/compaction/compaction.js:
  * 457-462), and the rebuilt context is exactly `[summary, ...retainedTail]`
- * (engine-adapter.js projectContext), so the run-owned messages that
+ * (execution/pi/driver-adapter.js projectContext), so the run-owned messages that
  * survive are the last `min(retained, runOwned)` of them.
  * @param {Array<any>} contextBefore
  * @param {number} baseline

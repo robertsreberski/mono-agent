@@ -1303,7 +1303,7 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       }
       if (type === "cost_accumulated") {
         // Read as a running total, not a delta — the same rule
-        // `ai/observer.js` applies to the parent's own events, because a bridge
+        // `telemetry/observer.js` applies to the parent's own events, because a bridge
         // emits one of these per completed provider run carrying that run's
         // totals. Keeping one rule means a child that failed over undercounts
         // exactly as its parent does today rather than inventing a second.

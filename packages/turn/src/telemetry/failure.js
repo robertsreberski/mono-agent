@@ -94,7 +94,7 @@ const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|no api 
 // being classified as non-retryable.
 // pi-ai 0.83.0 adds a second such bare sentence: openai-completions.js throws
 // "Stream ended without finish_reason" when an SSE stream terminates without a
-// finish_reason chunk. Because pi-models.js pins every custom/OpenAI-compatible
+// finish_reason chunk. Because providers/pi/models.js pins every custom/OpenAI-compatible
 // provider to the openai-completions api, a truncated gateway response was terminal
 // on the first occurrence — a configured fallback chain never advanced off the
 // primary. Matched as the full sentence on purpose: mono-agent's own TUI/web

@@ -467,11 +467,11 @@ export interface RuntimeToolOptions {
 }
 
 
-/** A parsed model reference as agent-runtime's pricing resolvers receive it (see ai/cost.js's ParsedModelReference). */
+/** A parsed model reference as agent-runtime's pricing resolvers receive it (see telemetry/cost.js's ParsedModelReference). */
 export type MonoRuntimeParsedPricingModel = Readonly<Pricing.ParsedModelReference>;
 
 
-/** agent-runtime's normalized per-token pricing row (see ai/cost.js's NormalizedPricing). */
+/** agent-runtime's normalized per-token pricing row (see telemetry/cost.js's NormalizedPricing). */
 export type MonoRuntimePricing = Readonly<Pricing.NormalizedPricing>;
 
 

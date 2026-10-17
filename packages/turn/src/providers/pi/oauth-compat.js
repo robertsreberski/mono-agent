@@ -16,7 +16,7 @@
 //
 // Deliberately NOT using `createModels({credentials})`: that hands credential
 // locking and persistence to pi, while mono-agent already owns `auth.json`
-// through `pi-auth.js` (serialized writes, atomic 0600 rename). `refresh()` and
+// through `providers/pi/auth.js` (serialized writes, atomic 0600 rename). `refresh()` and
 // `toAuth()` are callable directly, so the pure caller-persists contract stays.
 
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -35,7 +35,7 @@ let providerIndexCache;
 
 /**
  * `builtinProviders()` freshly constructs every provider (~41 objects) on each
- * call, and `pi-auth.js` sits on the per-request credential path. The catalog is
+ * call, and `providers/pi/auth.js` sits on the per-request credential path. The catalog is
  * static for the process lifetime, so index it once.
  *
  * @returns {Map<string, import("@earendil-works/pi-ai").Provider>}

@@ -6,8 +6,8 @@ import { runtimeCapabilities } from "./capabilities.js";
 /**
  * `RuntimeModelRef` is referenced inline (not aliased with a top-level
  * `@typedef`) so this barrel does not re-export a second `RuntimeModelRef`
- * type alongside model-refs.js's — that duplicate `export *` re-export is a
- * TS2308 ambiguity. The canonical export stays in model-refs.js/types.js.
+ * type alongside runtime/model-reference.js's — that duplicate `export *` re-export is a
+ * TS2308 ambiguity. The canonical declaration lives in contracts/model.js.
  * @typedef {import("../contracts/runtime.js").RuntimeBridge} RuntimeBridge
  * @typedef {import("../contracts/runtime.js").RuntimeBridgeDescriptor} RuntimeBridgeDescriptor
  * @typedef {import("../contracts/model.js").RuntimeBridgeId} RuntimeBridgeId

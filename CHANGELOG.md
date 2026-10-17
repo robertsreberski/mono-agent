@@ -8,6 +8,10 @@
   `RuntimeAdapterError` to `TurnHostError` in `/host/config`, including its
   intentional `Error.name` change; codes, details and message text stay intact.
   Existing diagnostic strings remain readable and are not rewritten.
+  Remove unused `estimateFixedOverheadTokens`, `ripgrepMissingMessage`,
+  `excludedGlobArgs`, `normalizeGlobPattern`, `formatSearchLines`, `capLines`,
+  `excludedPathSummary` and `cachedRgPath` exports; `resolveRgPath` remains in
+  `/tools`.
 
 - Remove unused public exports and dead helpers from `@mono-agent/contracts`,
   `@mono-agent/config`, `@mono-agent/turn`, `@mono-agent/conversation`, and

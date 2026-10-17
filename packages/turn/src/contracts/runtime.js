@@ -89,7 +89,7 @@
  * } RuntimeRequest
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
  * second (options) argument: the host-supplied RuntimeRunOptions, merged by
- * createRuntime (runtime.js) with the bound HOST_KEYS host-integration
+ * createRuntime (runtime/create-runtime.js) with the bound HOST_KEYS host-integration
  * callbacks, the resolved runtimeBrand, the per-instance toolContext (read by
  * internal tool helpers; absent when a host drives a bridge directly without
  * createRuntime), and the per-run observerHub (onEvent is overridden to the
@@ -238,7 +238,7 @@
  * @property {boolean} [retryable] Explicit terminal safety rejection overrides route retryability.
  * @property {{runId: string, revision: number, providerSessionId: string, modelKey: string, tipId: string}} [providerSessionRecovery]
  * @property {string|null} [providerSessionId]
- * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (ai/failure.js).
+ * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (telemetry/failure.js).
  * @property {Array<Object>} [runtimeWarnings]
  * @property {Object} [diagnostics]
  * @property {Object} [capabilitiesUsed]
@@ -340,11 +340,11 @@
  * @property {import("../agent/sandbox-seam.js").SandboxPolicy} [sandboxPolicy]
  * @property {import("../agent/sandbox-seam.js").RuntimeSandboxEngine} [sandboxEngine]
  * @property {import("../agent/sandbox-seam.js").RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject host integration's implementation from packages/turn/src/host/sandbox/index.ts.
- * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
+ * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime/create-runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
- * @property {(parsed: {provider: string, model: string}) => (import("../telemetry/cost.js").NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
- * @property {import("../providers/pi/auth.js").PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
+ * @property {(parsed: {provider: string, model: string}) => (import("../telemetry/cost.js").NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (telemetry/cost.js).
+ * @property {import("../providers/pi/auth.js").PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (providers/pi/auth.js) for a ready-made implementation.
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact]
  * @property {(record: CompactionRecordedPayload) => void} [onCompactionRecorded]
  * @property {(payload: ApprovalRequestPayload) => Promise<ApprovalDecision>} [onToolApprovalRequest]

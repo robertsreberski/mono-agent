@@ -740,7 +740,7 @@ function piModelResolutionIssue(
 
   // This is doctor's own validate-time diagnostic, not the runtime failure
   // string. The one that must stay byte-identical for `NON_RETRYABLE_PROVIDER_RE`
-  // is built in agent-runtime's `ai/providers/pi-models.js`; nothing matches
+  // is built in agent-runtime's `providers/pi/models.js`; nothing matches
   // against this text. So the reference is bounded here, which matters now that
   // the parser imposes no length ceiling and a legitimately long id reaches this
   // line whole.

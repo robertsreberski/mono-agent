@@ -128,7 +128,7 @@ export function resolvePiRuntimeModel(resolved, options) {
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
   const catalogModel = getPiModel(/** @type {*} */ (provider), model);
   if (!catalogModel) {
-    // Phrasing matters: this must match ai/failure.js's NON_RETRYABLE_PROVIDER_RE
+    // Phrasing matters: this must match telemetry/failure.js's NON_RETRYABLE_PROVIDER_RE
     // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss
     // as non-retryable and bails cleanly instead of retrying/misclassifying it as
     // a transient provider_unavailable failure.

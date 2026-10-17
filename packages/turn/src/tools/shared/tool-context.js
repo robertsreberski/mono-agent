@@ -26,7 +26,7 @@
 //   sandboxEngine    — optional concrete engine handed to the injected sandbox
 //                      implementation when it prepares subprocess commands.
 //   sandbox          — RuntimeSandbox implementation the policy is enforced
-//                      through (see ../../sandbox-seam.js). Always resolved,
+//                      through (see ../../agent/sandbox-seam.js). Always resolved,
 //                      like runtimeBrand: defaults to passthroughSandbox when
 //                      a host doesn't inject a real one.
 //   runtimeBrand     — resolved RuntimeBrand object (see runtime-brand.js).
