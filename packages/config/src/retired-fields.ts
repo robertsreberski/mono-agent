@@ -133,7 +133,7 @@ export function assertNoRetiredMonoAgentConfigJson(json: object): void {
   // read provider settings during retired-field rejection.
   const providers = (json as { providers?: unknown }).providers;
   const native = isJsonRecord(providers) ? providers.piNative : undefined;
-  if (isJsonRecord(native) && Object.hasOwn(native, "piSessionsRoot")) {
+  if (isJsonRecord(native) && hasRetiredPiSessionsRoot(native)) {
     throw new MonoAgentConfigError("invalid_json",
       "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
       { path: "providers.piNative.piSessionsRoot", paths: ["providers.piNative.piSessionsRoot"] });
@@ -142,4 +142,9 @@ export function assertNoRetiredMonoAgentConfigJson(json: object): void {
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Presence only: callers retain their own container guards and diagnostics. */
+export function hasRetiredPiSessionsRoot(value: unknown): boolean {
+  return value !== null && typeof value === "object" && Object.hasOwn(value, "piSessionsRoot");
 }

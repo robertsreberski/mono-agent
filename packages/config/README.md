@@ -349,6 +349,9 @@ See [intention lifecycle and recency](../../docs/memory/capture-and-recall.md#op
 
 ### Data flow
 
+`hasRetiredPiSessionsRoot` shares presence detection with administrative readers;
+callers retain their own container guards and error details.
+
 Configuration follows one deterministic pipeline:
 
 1. `readMonoAgentConfigJson()` reads the optional file and treats a missing or
@@ -415,6 +418,7 @@ assertNoRetiredMonoAgentConfig
 buildMonoAgentConfigView
 findJsonSecretConfigWarnings
 findRemovedConfigWarnings
+hasRetiredPiSessionsRoot
 loadMonoAgentConfig
 modelReferenceFromConfigJson
 readMonoAgentConfigJson

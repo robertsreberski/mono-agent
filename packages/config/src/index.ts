@@ -29,7 +29,7 @@ export type { ConfigViewField, ConfigViewSection } from "./view/types.js";
 
 export { modelReferenceFromConfigJson } from "./json-types.js";
 
-export { assertNoRetiredMonoAgentConfig } from "./retired-fields.js";
+export { assertNoRetiredMonoAgentConfig, hasRetiredPiSessionsRoot } from "./retired-fields.js";
 export { MonoAgentConfigError } from "./errors.js";
 
 export { resolveConfiguredProviders } from "./parse/providers.js";

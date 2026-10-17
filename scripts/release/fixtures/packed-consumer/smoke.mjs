@@ -439,6 +439,7 @@ async function verifyEngineRoundTrip() {
       "NativeEvidenceCapacityError",
       "assertNativeSessionAccess",
       "normalizeDurableSessionsRoot",
+      "probeUnsupportedSessionsRoot",
       "validateSessionTurn",
       "isJournalStorageError",
       "NativeSuspendedError",

@@ -3,7 +3,7 @@ export { resolveDurableNativeSessionRepo, resolveSession, discardUncommittedSess
 export { salvageDurableNativeSession } from "./session-salvage.js";
 export { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "./native-journal-storage.js";
 export { assertNativeSessionAccess } from "./session-authority.js";
-export { normalizeDurableSessionsRoot } from "./sessions-root.js";
+export { normalizeDurableSessionsRoot, probeUnsupportedSessionsRoot } from "./sessions-root.js";
 export { validateSessionTurn } from "./journal-schema.js";
 export { isJournalStorageError } from "./storage-error.js";
 export { NativeSuspendedError } from "./interruption.js";

@@ -385,6 +385,9 @@ flags. Ordinary retries/backups stop after tool or live-input progress, with
 normalized-event evidence retained for other backends. Prepared native dispatch
 remains primary-only.
 
+`probeUnsupportedSessionsRoot` on `./host` exposes the engine-owned read-only
+pre-release storage probe without opening a writer. Callers own refusal errors.
+
 The provider bridge imports the model-run loop, native journal/storage and
 compaction kit from `@mono-agent/turn/engine`. The separate `conversation` host
 package owns conversation/history orchestration. Native session lifecycle,
@@ -710,6 +713,7 @@ discardUncommittedSession
 isJournalStorageError
 nativeSessionRegistry
 normalizeDurableSessionsRoot
+probeUnsupportedSessionsRoot
 reconcileNativeSessionTurn
 recoverDurableNativeSession
 resolveDurableNativeSessionRepo
@@ -731,6 +735,7 @@ discoverLocalProviders
 monoRuntimeSupportsLiveInput
 monoRuntimeSupportsMcpApps
 monoRuntimeSupportsSessionResume
+probeUnsupportedSessionsRoot
 ```
 
 **`@mono-agent/turn/host/config`**
