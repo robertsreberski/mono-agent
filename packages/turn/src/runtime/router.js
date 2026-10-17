@@ -1,3 +1,5 @@
+import { assertNoRetiredRunOptions, RetiredRunOptionError } from "./retired-options.js";
+import { DEFAULT_RUNTIME_RETRY_BACKOFF_MS, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS } from "./retry-defaults.js";
 import { isDispatchProgress } from "../execution/pi/dispatch-progress.js";
 import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../execution/pi/prepared-dispatch.js";
 // Provider fallback router.
@@ -319,6 +321,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             }
           } catch (error) {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+            if (error instanceof RetiredRunOptionError) throw error;
             const failure = attemptResolutionFailureResult(error);
             lastResult = failure;
             if (i === 0 && retryIndex === 0) markPendingDetach(entry.model, i, retryIndex, failure);
@@ -648,6 +651,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
      */
     async run(systemPrompt, options = {}) {
       if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+      assertNoRetiredRunOptions(options);
       if (options.manualCompaction === true) {
         // A provider session belongs to exactly one route. Never retry/fail over
         // a mutating manual operation against a different model or session.
@@ -701,6 +705,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
     // backup. A custom resolver must explicitly certify native ownership.
     async prepareNativeDispatch(systemPrompt, options) {
       if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+      assertNoRetiredRunOptions(options);
       const primary = entries[0];
       if (resolveAttempt !== undefined && sessionTurnReconciliation !== "v1"
         || !primary || modelKey(options.model) !== modelKey(primary.model)
@@ -839,8 +844,8 @@ function normalizeChainAttempts(attempts) {
  * @returns {RouterRetryPolicy}
  */
 function normalizeRetryPolicy(retry) {
-  const backoffMs = normalizeRetryDelay(retry?.backoffMs, 1000, "backoffMs");
-  const maxBackoffMs = normalizeRetryDelay(retry?.maxBackoffMs, 15000, "maxBackoffMs");
+  const backoffMs = normalizeRetryDelay(retry?.backoffMs, DEFAULT_RUNTIME_RETRY_BACKOFF_MS, "backoffMs");
+  const maxBackoffMs = normalizeRetryDelay(retry?.maxBackoffMs, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS, "maxBackoffMs");
   return { backoffMs, maxBackoffMs };
 }
 
@@ -990,6 +995,7 @@ function normalizeAttemptPolicyOptions(value) {
  * @param {Object<string, *>|undefined} resolved
  */
 function mergeAttemptOptions(base, resolved) {
+  if (resolved !== undefined) assertNoRetiredRunOptions(resolved);
   const merged = withoutAttemptScopedOptions(base);
   if (resolved === undefined) return merged;
   for (const [key, value] of Object.entries(resolved)) {

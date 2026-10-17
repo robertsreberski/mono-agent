@@ -82,3 +82,12 @@ if (false) {
   // @ts-expect-error host checkpoint evidence stays unknown until narrowed.
   host.prepared.checkpoints[0]!.legacyField.nested = true;
 }
+
+if (false) {
+  // @ts-expect-error open host extensions are unknown, not a supported alias.
+  const oldMode: "all" | "one-at-a-time" | undefined = run.piToolParallelismMode;
+  void oldMode;
+  const core = createRuntime();
+  // @ts-expect-error retired scheduling has no packed canonical alias.
+  core.run("SYSTEM", { model: run.model, piToolParallelismMode: "all" });
+}

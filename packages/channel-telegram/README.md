@@ -366,6 +366,11 @@ The request lifecycle is:
 
 ### Start here
 
+Import `@mono-agent/channel-telegram/conversation` for SDK-free parsing, topic
+detection and conversation formatting. `telegramConversationId` validates a
+destination; `formatTelegramConversationTarget` formats an already-selected
+target without changing its validation policy. Neither loads the client/poller.
+
 | API | Use it for |
 | --- | --- |
 | `loadTelegramAdapterConfig` | Load, validate, and redact the config/env surface. |
@@ -508,6 +513,15 @@ telegramChatObservationFromMessage
 telegramConversationId
 telegramMessageThreadId
 telegramReplyCallbackData
+```
+
+**`@mono-agent/channel-telegram/conversation`**
+
+```text
+TelegramConversationTarget
+formatTelegramConversationTarget
+parseTelegramConversationId
+telegramMessageThreadId
 ```
 
 <!-- public-api-inventory:end -->

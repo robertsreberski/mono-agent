@@ -1,3 +1,4 @@
+import { formatTelegramConversationTarget, type TelegramConversationTarget } from "@mono-agent/channel-telegram/conversation";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, rm, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
@@ -22,10 +23,8 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { LEGACY_TOOL_ALIASES } from "./modules/known-tools.js";
 import { appendPostedMessage } from "./posted-message-index.js";
 import {
-  telegramConversationIdFor,
   telegramTargetFromConversation,
   telegramTopicOfMessage,
-  type TelegramDestinationTarget,
 } from "./telegram-destination.js";
 
 // Lazy per module (mirrors channels.ts): a config without slack/telegram
@@ -1142,7 +1141,7 @@ function registerTelegramSendTool(
             args.reply_to_message_id === undefined,
           );
       const result: TelegramSentMessage = await withTopicGoneReport(settings, adapter, deliveryHistory, fetchImpl,
-        telegramConversationIdFor({ chatId, ...(messageThreadId === undefined ? {} : { messageThreadId }) }),
+        formatTelegramConversationTarget({ chatId, ...(messageThreadId === undefined ? {} : { messageThreadId }) }),
         "TelegramSendMessage", () => client.sendMessage(
         {
           chat_id: chatId,
@@ -1172,7 +1171,7 @@ function registerTelegramSendTool(
       const history = await recordAdapterDeliveryHistory({
         settings: deliveryHistory,
         fetchImpl,
-        conversationId: telegramConversationIdFor({
+        conversationId: formatTelegramConversationTarget({
           chatId: result.chat.id,
           ...(landedTopic === undefined ? {} : { messageThreadId: landedTopic }),
         }),
@@ -1272,7 +1271,7 @@ function registerTelegramSendFileTool(
         ? resolveTelegramSendFileDestination(settings, requestedChatId, requestedThreadId)
         : project.target;
       const chatId = destination.chatId;
-      const landing = telegramConversationIdFor(destination);
+      const landing = formatTelegramConversationTarget(destination);
       const reportGone = <T>(send: () => Promise<T>) => withTopicGoneReport(settings, adapter, deliveryHistory, fetchImpl, landing, "TelegramSendFile", send);
       const threadParams = destination.messageThreadId === undefined
         ? {}
@@ -1407,7 +1406,7 @@ function resolveTelegramThreadId(
   return producing.messageThreadId;
 }
 
-function producingTelegramTarget(settings: TelegramSendToolSettings): TelegramDestinationTarget | undefined {
+function producingTelegramTarget(settings: TelegramSendToolSettings): TelegramConversationTarget | undefined {
   return telegramTargetFromConversation(settings.producingConversationId);
 }
 
@@ -1469,7 +1468,7 @@ async function resolveTelegramProjectTarget(
   projectId: string,
   toolName: TelegramSendToolName,
   conflictingTarget: boolean,
-): Promise<{ readonly target: TelegramDestinationTarget; readonly label: string }> {
+): Promise<{ readonly target: TelegramConversationTarget; readonly label: string }> {
   if (conflictingTarget) throw new Error(`${toolName}: projectId cannot be combined with chat_id or message_thread_id.`);
   if (bridge === undefined) throw new Error(`${toolName}: project destinations are unavailable in this run; nothing was sent.`);
   let response: Response;

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Remove the deprecated `piToolParallelismMode` key (breaking config/API change).
+  Migrate `piToolParallelismMode: "one-at-a-time"` to
+  `piToolExecutionMode: "sequential"`, and `piToolParallelismMode: "all"` to
+  `piToolExecutionMode: "safe-parallel"` (or omit it for the default).
+  The old key is rejected even when the new key is also supplied.
+
+- Add the SDK-free `@mono-agent/channel-telegram/conversation` entry for routing
+  Telegram chat and forum-topic destinations.
+
 - Rename the conversation harness APIs to `ConversationHarness*`,
   `createConversationHarness`, and `createConversationResponder` without aliases.
   Use `ConfiguredConversationHarnessOptions` and

@@ -348,6 +348,12 @@ storage-only repair; it neither creates a session nor dispatches a model/tool.
 No existing
 configuration enables this path; configured switching remains separate work.
 
+Managed SRT pins, cache paths and readonly marker identity are owned by
+`@mono-agent/turn/host/sandbox`; app owns installation and repair.
+Read-only managed-directory/file inspection and hashing use explicit runtime
+or installer profiles; hashing alone does not establish release trust. Runtime
+verification always requires the independently pinned release tree.
+
 Typed hosts can use the built-in sandbox and process protection directly:
 
 ```ts
@@ -378,6 +384,10 @@ only after replay seeding: tool admission and yielded live input are distinct
 flags. Ordinary retries/backups stop after tool or live-input progress, with
 normalized-event evidence retained for other backends. Prepared native dispatch
 remains primary-only.
+
+`probeUnsupportedSessionsRoot` on `./engine/sessions.js` exposes the engine-owned
+read-only pre-release storage probe without opening a writer. Callers own refusal
+errors.
 
 The provider bridge imports the model-run loop, native journal/storage and
 compaction kit from `@mono-agent/turn/engine`. The separate `conversation` host
@@ -704,6 +714,7 @@ discardUncommittedSession
 isJournalStorageError
 nativeSessionRegistry
 normalizeDurableSessionsRoot
+probeUnsupportedSessionsRoot
 reconcileNativeSessionTurn
 recoverDurableNativeSession
 resolveDurableNativeSessionRepo
@@ -730,6 +741,8 @@ monoRuntimeSupportsSessionResume
 **`@mono-agent/turn/host/config`**
 
 ```text
+DEFAULT_RUNTIME_RETRY_BACKOFF_MS
+DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS
 MODEL_REFERENCE_ECHO_MAX_BYTES
 MODEL_REFERENCE_REASON_MAX_BYTES
 TurnHostError
@@ -754,7 +767,12 @@ validateProviderDefinition
 **`@mono-agent/turn/host/sandbox`**
 
 ```text
+MANAGED_SRT_LOCK_SHA256
+MANAGED_SRT_MARKER
+MANAGED_SRT_PACKAGE
 MANAGED_SRT_TREE_SHA256
+MANAGED_SRT_VERSION
+ManagedSrtMarker
 PreparedSandboxCommand
 SANDBOX_FALLBACKS
 SANDBOX_MODES
@@ -771,10 +789,16 @@ SandboxNetworkPolicy
 SandboxPolicy
 SandboxPolicyError
 SandboxUnavailableError
+assertManagedSrtDirectory
+assertManagedSrtRegularFile
 createSandboxPolicy
 createSrtSandboxEngine
 describeSandboxEffectiveState
 failClosedSandboxPolicy
+hashManagedSrtFile
+hashPrivateManagedSrtTree
+managedSrtCacheRoot
+managedSrtInstallRoot
 mergeSandboxPolicies
 networkPolicyAllowsUrl
 prepareSandboxedCommand
@@ -1104,6 +1128,10 @@ Returns:
 - `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 #### `runtime.run(systemPrompt, options)`
+
+The retired `piToolParallelismMode` field is rejected, including direct provider
+and prepared-dispatch callers. Use `piToolExecutionMode: "sequential"` for the
+former `one-at-a-time` value, or `"safe-parallel"` for `all` (also the default).
 
 Per-call options (a non-exhaustive selection):
 

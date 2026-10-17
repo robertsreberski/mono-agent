@@ -2035,3 +2035,40 @@ it("retains paid primary compaction exactly once after a backup succeeds", async
   expect(result.usage.compaction.requests).toHaveLength(1);
   expect(events.at(-1)).toMatchObject({ type: "cost_accumulated", cumulativeUsd: 1.75 });
 });
+
+it.each([undefined, null, "one-at-a-time", "all"])("rejects retired scheduling %s before dispatch/preparation", async (piToolParallelismMode) => {
+  const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7")] });
+  const runtime = createRuntime();
+  const { generateEngineTurnResponse, preparePiNativeDispatch } = await vi.importActual("../../execution/pi/run.js");
+  const options = { piToolParallelismMode, piToolExecutionMode: "safe-parallel" };
+  const hint = "piToolParallelismMode was renamed to piToolExecutionMode";
+  for (const target of [router, runtime]) {
+    await expect(target.run("sys", options)).rejects.toThrow(hint);
+    await expect(target.prepareNativeDispatch("sys", options)).rejects.toThrow(hint);
+  }
+  await expect(generateEngineTurnResponse("sys", options)).rejects.toThrow(hint);
+  expect(() => preparePiNativeDispatch("sys", options)).toThrow(hint);
+  await expect(router.run("sys", { ...options, piSessionsRoot: "old" })).rejects.toThrow("piSessionsRoot was renamed");
+  await expect(runtime.run("sys", { ...options, settings: {} })).rejects.toThrow("runOptions.settings was removed");
+  expect(executeMock).not.toHaveBeenCalled();
+});
+
+it("refuses resolver-supplied retired scheduling terminally and releases its resources", async () => {
+  const run = vi.fn(async () => ({ text: "primary", events: [], usage: {} }));
+  const backupRun = vi.fn(async () => ({ text: "backup", events: [], usage: {} }));
+  const cleanup = vi.fn();
+  const events = [];
+  const resolveAttempt = vi.fn(({ attemptIndex }) => attemptIndex === 0
+    ? { options: { piToolParallelismMode: "all" }, runtime: { run, configureTools() {} }, cleanup }
+    : { runtime: { run: backupRun, configureTools() {} } });
+  const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7"), modelRef("openai", "gpt-4o")], resolveAttempt });
+  await expect(router.run("sys", { onEvent: (event) => events.push(event) })).rejects.toMatchObject({
+    name: "RetiredRunOptionError", message: expect.stringContaining("piToolParallelismMode was renamed to piToolExecutionMode"),
+  });
+  expect(resolveAttempt).toHaveBeenCalledOnce();
+  expect(run).not.toHaveBeenCalled();
+  expect(backupRun).not.toHaveBeenCalled();
+  expect(executeMock).not.toHaveBeenCalled();
+  expect(cleanup).toHaveBeenCalledOnce();
+  expect(events).not.toEqual(expect.arrayContaining([expect.objectContaining({ failureKind: "provider_unavailable" })]));
+});

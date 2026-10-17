@@ -1,3 +1,5 @@
+import { DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } from "@mono-agent/contracts";
+import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "./defaults.js";
 import { resolve } from "node:path";
 
 import { localProviderDefinitionFor } from "@mono-agent/turn/host/config";
@@ -139,8 +141,8 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
   const replyFilesJson = jsonContainer(artifactsJson?.replyFiles);
   const maxStorageValue = replyFilesJson?.maxStorageBytes;
   const maxStorageBytes = maxStorageValue === "unlimited" ? "unlimited" :
-    replyFileByteLimit(maxStorageValue, "artifacts.replyFiles.maxStorageBytes", 2 * 1024 * 1024 * 1024, Number.MAX_SAFE_INTEGER);
-  const maxFileBytes = replyFileByteLimit(replyFilesJson?.maxFileBytes, "artifacts.replyFiles.maxFileBytes", 20 * 1024 * 1024, 20 * 1024 * 1024);
+    replyFileByteLimit(maxStorageValue, "artifacts.replyFiles.maxStorageBytes", DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES, Number.MAX_SAFE_INTEGER);
+  const maxFileBytes = replyFileByteLimit(replyFilesJson?.maxFileBytes, "artifacts.replyFiles.maxFileBytes", DEFAULT_AGENT_ATTACHMENT_MAX_BYTES, DEFAULT_AGENT_ATTACHMENT_MAX_BYTES);
   const artifactRetention = readArtifactRetentionConfig(artifactsJson?.retention);
   const memoryArtifactRetention = readMemoryArtifactRetentionConfig(artifactsJson?.memoryRetention, artifactRetention);
   const traceability = readTraceabilityConfig(json.traceability, cwd, agentName);

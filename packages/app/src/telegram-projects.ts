@@ -1,3 +1,4 @@
+import { type TelegramConversationTarget } from "@mono-agent/channel-telegram/conversation";
 import type { TelegramChatObservation, TelegramKnownTopicName } from "@mono-agent/channel-telegram";
 import {
   beginWebExternalTurn,
@@ -10,7 +11,7 @@ import {
   type WebExternalObservationInput,
 } from "@mono-agent/web";
 
-import { telegramTargetFromConversation, type TelegramDestinationTarget } from "./telegram-destination.js";
+import { telegramTargetFromConversation } from "./telegram-destination.js";
 import type { TelegramDirectoryEntry, TelegramTopicDirectoryStore } from "./telegram-topic-directory.js";
 
 /**
@@ -82,7 +83,7 @@ export interface TelegramProjectsService {
 }
 
 /** Host-owned topic key: never model-visible, stored only by the web console. */
-function telegramProjectKey(botId: string, target: TelegramDestinationTarget): string | undefined {
+function telegramProjectKey(botId: string, target: TelegramConversationTarget): string | undefined {
   const chat = String(target.chatId);
   if (!/^-?\d{1,20}$/u.test(chat)) return undefined;
   return `telegram:${botId}:${chat}:${target.messageThreadId === undefined ? "main" : String(target.messageThreadId)}`;

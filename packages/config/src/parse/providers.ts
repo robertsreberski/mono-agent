@@ -1,3 +1,4 @@
+import { hasRetiredPiSessionsRoot } from "../retired-fields.js";
 import { homedir } from "node:os";
 
 import { resolve } from "node:path";
@@ -306,7 +307,7 @@ function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>>
       path: "providers.piNative.cacheRetention",
     });
   }
-  if (Object.hasOwn(record, "piSessionsRoot")) throw new MonoAgentConfigError(
+  if (hasRetiredPiSessionsRoot(record)) throw new MonoAgentConfigError(
     "invalid_json", "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
     { path: "providers.piNative.piSessionsRoot" });
   const allowed = new Set(["transport", "cacheRetention", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs"]);

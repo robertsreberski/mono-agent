@@ -18,14 +18,14 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import { createServer } from "node:http";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { CodedError } from "@mono-agent/contracts";
-import { createSandboxPolicy, createSrtSandboxEngine, MANAGED_SRT_TREE_SHA256 } from "@mono-agent/turn/host/sandbox";
+import { createSandboxPolicy, createSrtSandboxEngine, MANAGED_SRT_PACKAGE, MANAGED_SRT_VERSION, MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_MARKER, MANAGED_SRT_TREE_SHA256, assertManagedSrtDirectory, assertManagedSrtRegularFile, hashManagedSrtFile, hashPrivateManagedSrtTree, managedSrtCacheRoot, managedSrtInstallRoot, type ManagedSrtMarker } from "@mono-agent/turn/host/sandbox";
 import { type PreparedSandboxCommand, type SandboxEngine, type SandboxPolicy } from "@mono-agent/turn/host/types";
 
 import {
@@ -37,11 +37,6 @@ import { acquireOwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import type { OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 
 const execFileAsync = promisify(execFile);
-
-export const MANAGED_SRT_PACKAGE = "@anthropic-ai/sandbox-runtime";
-export const MANAGED_SRT_VERSION = "0.0.64";
-export const MANAGED_SRT_LOCK_SHA256 = "0f34561ddc700ad43c31f254beb0e1e4b87bae61795acac5d7fa890dd5890924";
-export const MANAGED_SRT_MARKER = ".mono-agent-srt.json";
 
 const MANAGED_SRT_RESOURCE_ROOT = fileURLToPath(new URL("../resources/srt", import.meta.url));
 const INSTALL_GUARD_NAME = ".install.guard";
@@ -60,16 +55,6 @@ type SandboxManagerErrorCode =
   | "sandbox_check_failed";
 
 class SandboxManagerError extends CodedError<SandboxManagerErrorCode> {}
-
-interface ManagedSrtMarker {
-  readonly schemaVersion: 2;
-  readonly package: typeof MANAGED_SRT_PACKAGE;
-  readonly version: typeof MANAGED_SRT_VERSION;
-  readonly lockSha256: typeof MANAGED_SRT_LOCK_SHA256;
-  readonly cliSha256: string;
-  readonly packageJsonSha256: string;
-  readonly treeSha256: string;
-}
 
 export interface SandboxRuntimeStatus {
   readonly state: "ready" | "absent" | "corrupt" | "unsupported";
@@ -191,13 +176,6 @@ interface HeldInstallGuard {
   readonly handle: FileHandle;
   readonly identity: InstallLockIdentity;
   readonly beforeClose?: (guardPath: string) => Promise<void>;
-}
-
-export function managedSrtInstallRoot(options: SandboxManagerOptions = {}): string {
-  return resolve(
-    managedSrtVersionRoot(options),
-    MANAGED_SRT_LOCK_SHA256,
-  );
 }
 
 export async function sandboxRuntimeStatus(options: SandboxManagerOptions = {}): Promise<SandboxRuntimeStatus> {
@@ -555,24 +533,11 @@ async function inspectManagedOnly(options: SandboxManagerOptions): Promise<Sandb
 }
 
 function managedSrtVersionRoot(options: SandboxManagerOptions): string {
-  const cacheRoot = options.cacheRoot ?? defaultCacheRoot(options);
-  return resolve(cacheRoot, "mono-agent", "tools", "srt", MANAGED_SRT_VERSION);
-}
-
-function defaultCacheRoot(options: SandboxManagerOptions): string {
-  const env = options.env ?? process.env;
-  const xdg = env.XDG_CACHE_HOME?.trim();
-  if (xdg !== undefined && xdg.length > 0 && isAbsolute(xdg)) {
-    return resolve(xdg);
-  }
-  const home = options.homeDir ?? homedir();
-  return (options.platform ?? process.platform) === "darwin"
-    ? resolve(home, "Library", "Caches")
-    : resolve(home, ".cache");
+  return dirname(managedSrtInstallRoot(options));
 }
 
 async function ensurePrivateVersionRoot(options: SandboxManagerOptions): Promise<void> {
-  const cacheRoot = options.cacheRoot ?? defaultCacheRoot(options);
+  const cacheRoot = options.cacheRoot ?? managedSrtCacheRoot(options);
   const roots = [
     resolve(cacheRoot, "mono-agent"),
     resolve(cacheRoot, "mono-agent", "tools"),
@@ -587,7 +552,7 @@ async function ensurePrivateVersionRoot(options: SandboxManagerOptions): Promise
         throw error;
       }
     }
-    await assertPrivateDirectory(root);
+    await assertManagedSrtDirectory(root, "", root, "installer");
   }
 }
 
@@ -723,7 +688,7 @@ async function assertTrustedNodeExecutable(nodePath: string): Promise<void> {
 async function writeInstallMarker(stagingRoot: string, options: SandboxManagerOptions): Promise<void> {
   const cliPath = managedCliPath(stagingRoot);
   const packageJsonPath = managedPackageJsonPath(stagingRoot);
-  const treeSha256 = await hashPrivateManagedTree(stagingRoot);
+  const treeSha256 = await hashPrivateManagedSrtTree(stagingRoot, "installer");
   const expectedTreeSha256 = await trustedTreeSha256(stagingRoot, options);
   if (treeSha256 !== expectedTreeSha256) {
     throw new SandboxManagerError(
@@ -732,7 +697,7 @@ async function writeInstallMarker(stagingRoot: string, options: SandboxManagerOp
       { expectedTreeSha256, treeSha256 },
     );
   }
-  const marker: ManagedSrtMarker = {
+  const marker: ManagedSrtMarker<string> = {
     schemaVersion: 2,
     package: MANAGED_SRT_PACKAGE,
     version: MANAGED_SRT_VERSION,
@@ -757,10 +722,10 @@ async function writeInstallMarker(stagingRoot: string, options: SandboxManagerOp
 
 async function verifyManagedInstall(installRoot: string, options: SandboxManagerOptions): Promise<string> {
   try {
-    await assertPrivateDirectory(installRoot);
+    await assertManagedSrtDirectory(installRoot, "", installRoot, "installer");
     let ancestor = dirname(installRoot);
     for (let index = 0; index < 4; index += 1) {
-      await assertPrivateDirectory(ancestor);
+      await assertManagedSrtDirectory(ancestor, "", ancestor, "installer");
       ancestor = dirname(ancestor);
     }
     const markerPath = resolve(installRoot, MANAGED_SRT_MARKER);
@@ -768,9 +733,9 @@ async function verifyManagedInstall(installRoot: string, options: SandboxManager
     const cliPath = managedCliPath(installRoot);
     const packageJsonPath = managedPackageJsonPath(installRoot);
     for (const path of [markerPath, lockPath, cliPath, packageJsonPath]) {
-      await assertSingleRegularFile(path, true);
+      await assertManagedSrtRegularFile(path, { requirePrivate: true, policy: "installer" });
     }
-    const marker = JSON.parse(await readFile(markerPath, "utf8")) as ManagedSrtMarker;
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as ManagedSrtMarker<string>;
     if (
       marker.schemaVersion !== 2
       || marker.package !== MANAGED_SRT_PACKAGE
@@ -783,10 +748,10 @@ async function verifyManagedInstall(installRoot: string, options: SandboxManager
       throw new Error("install marker identity is invalid");
     }
     const [lockHash, cliHash, packageJsonHash, treeHash] = await Promise.all([
-      hashFile(lockPath),
-      hashFile(cliPath),
-      hashFile(packageJsonPath),
-      hashPrivateManagedTree(installRoot),
+      hashManagedSrtFile(lockPath),
+      hashManagedSrtFile(cliPath),
+      hashManagedSrtFile(packageJsonPath),
+      hashPrivateManagedSrtTree(installRoot, "installer"),
     ]);
     if (lockHash !== MANAGED_SRT_LOCK_SHA256) {
       throw new Error("installed package-lock.json differs from the pinned lock");
@@ -1458,60 +1423,10 @@ async function makeTreePrivateAndRejectLinks(root: string): Promise<void> {
   await chmod(root, 0o700);
 }
 
-async function hashPrivateManagedTree(installRoot: string): Promise<string> {
-  const hash = createHash("sha256");
-  async function walk(directoryPath: string): Promise<void> {
-    const directory = await opendir(directoryPath);
-    const entries = [];
-    for await (const entry of directory) {
-      entries.push(entry);
-    }
-    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
-    for (const entry of entries) {
-      const path = resolve(directoryPath, entry.name);
-      const relativePath = relative(installRoot, path);
-      if (relativePath === MANAGED_SRT_MARKER || relativePath === "node_modules/.package-lock.json") {
-        continue;
-      }
-      const entryStat = await lstat(path);
-      if (
-        entryStat.isSymbolicLink()
-        || (process.getuid !== undefined && entryStat.uid !== process.getuid())
-        || (entryStat.mode & 0o077) !== 0
-      ) {
-        throw new Error(`unsafe managed dependency tree entry: ${relativePath}`);
-      }
-      if (entryStat.isDirectory()) {
-        hash.update(`D\0${relativePath}\0`);
-        await walk(path);
-      } else if (entryStat.isFile() && entryStat.nlink === 1) {
-        hash.update(`F\0${relativePath}\0${entryStat.size}\0`);
-        hash.update(await readFile(path));
-      } else {
-        throw new Error(`unsupported managed dependency tree entry: ${relativePath}`);
-      }
-    }
-  }
-  await walk(installRoot);
-  return hash.digest("hex");
-}
-
 async function trustedTreeSha256(installRoot: string, options: SandboxManagerOptions): Promise<string> {
   return options.hooks?.expectedTreeSha256 === undefined
     ? MANAGED_SRT_TREE_SHA256
     : await options.hooks.expectedTreeSha256(installRoot);
-}
-
-async function assertPrivateDirectory(path: string): Promise<void> {
-  const pathStat = await lstat(path);
-  if (
-    pathStat.isSymbolicLink()
-    || !pathStat.isDirectory()
-    || (pathStat.mode & 0o077) !== 0
-    || (process.getuid !== undefined && pathStat.uid !== process.getuid())
-  ) {
-    throw new Error(`${path} must be a real owner-only directory owned by the current user`);
-  }
 }
 
 async function assertSingleRegularFile(path: string, privateFile: boolean, requireSingleLink = true): Promise<void> {
@@ -1588,10 +1503,6 @@ function managedCliPath(installRoot: string): string {
 
 function managedPackageJsonPath(installRoot: string): string {
   return resolve(installRoot, "node_modules", "@anthropic-ai", "sandbox-runtime", "package.json");
-}
-
-async function hashFile(path: string): Promise<string> {
-  return sha256(await readFile(path));
 }
 
 function sha256(content: string | Buffer): string {

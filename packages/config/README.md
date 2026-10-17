@@ -349,6 +349,13 @@ See [intention lifecycle and recency](../../docs/memory/capture-and-recall.md#op
 
 ### Data flow
 
+Reply-file storage defaults are config-owned; the per-file default uses the
+contracts attachment bound. Runtime retry delays come from turn host/config,
+while attempt counts and JSON validation remain config policy.
+
+`hasRetiredPiSessionsRoot` shares presence detection with administrative readers;
+callers retain their own container guards and error details.
+
 Configuration follows one deterministic pipeline:
 
 1. `readMonoAgentConfigJson()` reads the optional file and treats a missing or
@@ -395,6 +402,7 @@ ArtifactRetentionConfig
 CORE_CONFIG_FIELD_IDS
 ConfigViewField
 ConfigViewSection
+DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES
 EFFORT_LEVELS
 EffortLevel
 MAX_AGENT_NAME_LENGTH
@@ -415,6 +423,7 @@ assertNoRetiredMonoAgentConfig
 buildMonoAgentConfigView
 findJsonSecretConfigWarnings
 findRemovedConfigWarnings
+hasRetiredPiSessionsRoot
 loadMonoAgentConfig
 modelReferenceFromConfigJson
 readMonoAgentConfigJson

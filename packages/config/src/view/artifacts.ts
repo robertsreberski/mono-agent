@@ -1,3 +1,5 @@
+import { DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } from "@mono-agent/contracts";
+import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "../defaults.js";
 
 
 import type { BuildMonoAgentConfigViewInput, ConfigViewSection } from "./types.js";
@@ -23,13 +25,13 @@ export function buildArtifactsSection(input: BuildMonoAgentConfigViewInput): Con
       toField({
         id: "artifacts.replyFiles.maxStorageBytes",
         label: "Reply artifact storage budget",
-        value: String(redacted.artifacts.replyFiles?.maxStorageBytes ?? 2_147_483_648),
+        value: String(redacted.artifacts.replyFiles?.maxStorageBytes ?? DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES),
         jsonPresent: json.artifacts?.replyFiles?.maxStorageBytes !== undefined,
       }),
       toField({
         id: "artifacts.replyFiles.maxFileBytes",
         label: "Reply file maximum bytes",
-        value: String(redacted.artifacts.replyFiles?.maxFileBytes ?? 20_971_520),
+        value: String(redacted.artifacts.replyFiles?.maxFileBytes ?? DEFAULT_AGENT_ATTACHMENT_MAX_BYTES),
         jsonPresent: json.artifacts?.replyFiles?.maxFileBytes !== undefined,
       }),
       toField({

@@ -1,3 +1,4 @@
+import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -49,7 +50,6 @@ import {
   type ReplyPartBudget,
 } from "./reply-part-budget.js";
 import {
-  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
   ReplyArtifactStorageFullError,
   replyArtifactStorageBudgetFor,
   type ReplyArtifactStorageBudget,
@@ -375,7 +375,7 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
       "MCP App auditStorageMaxBytes must hold the active audit file and every retained rotation.",
     );
   }
-  const aggregateStorageMaxBytes = options.aggregateStorageMaxBytes ?? DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES;
+  const aggregateStorageMaxBytes = options.aggregateStorageMaxBytes ?? DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES;
   if (aggregateStorageMaxBytes !== "unlimited" && (
     !Number.isSafeInteger(aggregateStorageMaxBytes) || aggregateStorageMaxBytes <= auditStorageMaxBytes
   )) {

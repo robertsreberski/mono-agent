@@ -6,6 +6,9 @@
     "declarationDir": "types",
     "tsBuildInfoFile": "dist/.host.tsbuildinfo",
     "paths": {
+      "#turn/runtime/retry-defaults": [
+        "./types/runtime/retry-defaults.d.ts"
+      ],
       "#turn/contracts/runtime": [
         "./types/contracts/runtime.d.ts"
       ],

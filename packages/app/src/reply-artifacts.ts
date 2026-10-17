@@ -1,3 +1,4 @@
+import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { createHash, randomUUID } from "node:crypto";
 import {
   close as closeFd,
@@ -66,7 +67,6 @@ const DEFAULT_RETENTION_DAYS = 30;
 const READ_CHUNK_BYTES = 64 * 1024;
 const STAGING_NAMESPACE = ".staging";
 const DEFAULT_STAGING_GRACE_MS = 10 * 60 * 1000;
-export const DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 const REPLY_ARTIFACT_STORAGE_NAMESPACES = ["reply-files", "mcp-apps"] as const;
 const STORAGE_FULL_FAILURE_MESSAGE = "Reply artifact storage is full; this file was not published.";
 const BIDI_CONTROL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
@@ -219,7 +219,7 @@ const replyArtifactStorageStates = new Map<string, ReplyArtifactStorageState>();
  */
 export function replyArtifactStorageBudgetFor(
   artifactDir: string,
-  maxBytes: number | "unlimited" = DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
+  maxBytes: number | "unlimited" = DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES,
 ): ReplyArtifactStorageBudget {
   if (maxBytes !== "unlimited" && (!Number.isSafeInteger(maxBytes) || maxBytes < 1)) {
     throw new RangeError("reply artifact storage maxBytes must be a positive safe integer.");

@@ -1,3 +1,4 @@
+import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -18,7 +19,6 @@ import {
 } from "../app-controller-responder.js";
 import { DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES } from "../mcp-apps.js";
 import {
-  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
   PUBLISH_REPLY_FILE_TOOL_NAME,
   REPLY_ARTIFACT_MCP_SERVER_NAME,
 } from "../reply-artifacts.js";
@@ -68,9 +68,9 @@ afterEach(async () => {
 
 describe("reply artifact responder composition", () => {
   it("does not reserve MCP App audit storage when MCP Apps are disabled", () => {
-    expect(replyArtifactStorageMaxBytesForMcpApps(false)).toBe(DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES);
+    expect(replyArtifactStorageMaxBytesForMcpApps(false)).toBe(DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES);
     expect(replyArtifactStorageMaxBytesForMcpApps(true)).toBe(
-      DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
+      DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
     );
     expect(replyArtifactStorageMaxBytesForMcpApps(false, 4096)).toBe(4096);
     expect(replyArtifactStorageMaxBytesForMcpApps(true, 2_097_152)).toBe(1_048_576);

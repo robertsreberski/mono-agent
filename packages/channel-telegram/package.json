@@ -16,6 +16,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./conversation": {
+      "types": "./dist/conversation-entry.d.ts",
+      "import": "./dist/conversation-entry.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

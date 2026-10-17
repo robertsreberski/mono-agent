@@ -31,13 +31,10 @@ vi.mock("@mono-agent/turn/host/sandbox", async (importOriginal) => {
   return { ...actual, createSrtSandboxEngine: runtimeAdapterMocks.createSrtSandboxEngine };
 });
 
+import { MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_MARKER, MANAGED_SRT_PACKAGE, MANAGED_SRT_VERSION, managedSrtInstallRoot } from "@mono-agent/turn/host/sandbox";
+
 import {
-  MANAGED_SRT_LOCK_SHA256,
-  MANAGED_SRT_MARKER,
-  MANAGED_SRT_PACKAGE,
-  MANAGED_SRT_VERSION,
   checkSandboxRuntime,
-  managedSrtInstallRoot,
   sandboxRuntimeStatus,
   setupManagedSrt,
   type ManagedSrtHooks,

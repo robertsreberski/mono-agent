@@ -389,3 +389,28 @@ describe("writeMonoAgentConfigJson", () => {
     expect(stats.isFile()).toBe(true);
   });
 });
+
+describe("retired scheduling key diagnostics", () => {
+  it.each([undefined, null, "one-at-a-time", "all"])("rejects raw and host-container presence %s", async (value) => {
+    const { assertNoRetiredMonoAgentConfig } = await import("../retired-fields.js");
+    for (const config of [{ piToolParallelismMode: value }, { runtimeOptions: { piToolParallelismMode: value, piToolExecutionMode: "safe-parallel" } }]) {
+      expect(() => assertNoRetiredMonoAgentConfig(config)).toThrow("was renamed to");
+      expect(() => assertNoRetiredMonoAgentConfig(config)).toThrow("piToolExecutionMode");
+    }
+    expect(() => assertNoRetiredMonoAgentConfig({ runtimeOptions: { piToolExecutionMode: "sequential" } })).not.toThrow();
+  });
+
+  it("preserves existing retirement precedence and aggregates the new repair", async () => {
+    const { assertNoRetiredMonoAgentConfigJson } = await import("../retired-fields.js");
+    try {
+      assertNoRetiredMonoAgentConfigJson({ runtime: { permissionMode: "old" }, piToolParallelismMode: "all",
+        providers: { piNative: { piSessionsRoot: "old" } } });
+    } catch (error) {
+      expect(error).toMatchObject({ code: "invalid_json", details: { path: "runtime.permissionMode",
+        paths: ["runtime.permissionMode", "piToolParallelismMode"] } });
+      expect((error as Error).message).toContain("piToolExecutionMode");
+      return;
+    }
+    throw new Error("Expected retired-field refusal");
+  });
+});

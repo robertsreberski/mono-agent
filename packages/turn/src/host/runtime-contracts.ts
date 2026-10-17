@@ -265,7 +265,7 @@ export interface RuntimeSessionTurnDetachedAttempt {
   readonly result: RuntimeResult;
 }
 /** Common request facts, narrowed by the host's authority and required inputs. */
-export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions, "sessionRecovery" | "sessionTurn" | "providerAttributionSessionId" | "processJobs" | "ownedForegroundProcesses" | "promptCacheDiagnostics" | "cacheRetention" | "toolLifecycleSink" | "effort" | "cwd" | "maxTurns" | "allowedTools" | "disallowedTools" | "mcpCallNoTotalTimeoutTools" | "liveInput" | "piToolExecutionMode" | "piToolParallelismMode">> & {
+export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions, "sessionRecovery" | "sessionTurn" | "providerAttributionSessionId" | "processJobs" | "ownedForegroundProcesses" | "promptCacheDiagnostics" | "cacheRetention" | "toolLifecycleSink" | "effort" | "cwd" | "maxTurns" | "allowedTools" | "disallowedTools" | "mcpCallNoTotalTimeoutTools" | "liveInput" | "piToolExecutionMode">> & {
   readonly model: RuntimeModelReference;
   readonly toolLimits?: RuntimeToolLimits;
   readonly compaction?: RuntimeCompactionPolicy;

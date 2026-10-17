@@ -1,3 +1,5 @@
+import { DEFAULT_RUNTIME_RETRY_BACKOFF_MS, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS } from "@mono-agent/turn/host/config";
+import { DEFAULT_RUNTIME_PRIMARY_ATTEMPTS } from "../defaults.js";
 
 
 import type { RedactedMonoAgentConfig } from "../types.js";
@@ -71,19 +73,19 @@ export function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): Confi
       toField({
         id: "runtime.retry.primaryAttempts",
         label: "Primary attempts",
-        value: String(runtime.retry?.primaryAttempts ?? 2),
+        value: String(runtime.retry?.primaryAttempts ?? DEFAULT_RUNTIME_PRIMARY_ATTEMPTS),
         jsonPresent: json.runtime?.retry?.primaryAttempts !== undefined,
       }),
       toField({
         id: "runtime.retry.backoffMs",
         label: "Retry backoff (ms)",
-        value: String(runtime.retry?.backoffMs ?? 1_000),
+        value: String(runtime.retry?.backoffMs ?? DEFAULT_RUNTIME_RETRY_BACKOFF_MS),
         jsonPresent: json.runtime?.retry?.backoffMs !== undefined,
       }),
       toField({
         id: "runtime.retry.maxBackoffMs",
         label: "Retry backoff cap (ms)",
-        value: String(runtime.retry?.maxBackoffMs ?? 15_000),
+        value: String(runtime.retry?.maxBackoffMs ?? DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS),
         jsonPresent: json.runtime?.retry?.maxBackoffMs !== undefined,
       }),
       toField({
