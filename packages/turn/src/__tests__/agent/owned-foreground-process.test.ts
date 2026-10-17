@@ -9,7 +9,7 @@ import { runOwnedForegroundProcess } from "../../tools/commands/owned-foreground
 import { createToolContext, updateToolContext } from "../../tools/shared/tool-context.js";
 import { buildTurnTools } from "../../execution/pi/turn-runner.js";
 
-const roots = [];
+const roots: any[] = [];
 let ctx = createToolContext();
 afterEach(async () => {
   ctx = createToolContext();
@@ -27,9 +27,9 @@ const result = (patch = {}) => ({ code: 0, signal: null, stdout: "checked", stde
 
 describe("awaited owned foreground command seam", () => {
   it.each([["Exec", execToolRun, { executable: process.execPath, args: ["-e", "process.exit(0)"] }],
-    ["Bash", bashToolRun, { command: "printf checked" }]])("keeps %s foreground results, identities and limits while transferring ownership", async (tool, run, params) => {
+    ["Bash", bashToolRun, { command: "printf checked" }]])("keeps %s foreground results, identities and limits while transferring ownership", async (tool, run: (...args: any[]) => Promise<any>, params: any) => {
     const root = await workspace();
-    const controller = { run: vi.fn(async (request) => { await request.prepared.cleanup(); return result(); }) };
+    const controller = { run: vi.fn(async (request) => { await request.prepared.cleanup!(); return result(); }) };
     const value = await run({ ...params, workdir: root, timeout_ms: 180_000 }, {
       ctx, toolCallId: "host-call", ownedForegroundProcessController: controller, toolLimits: { bashTimeoutMs: 180_000 },
     });
@@ -37,12 +37,12 @@ describe("awaited owned foreground command seam", () => {
     expect(value.outcome).toMatchObject({ status: "ok", exitCode: 0 });
     expect(value.outcome.background).toBeUndefined();
     expect(controller.run).toHaveBeenCalledOnce();
-    expect(controller.run.mock.calls[0][0]).toMatchObject({ callId: "host-call", tool, timeoutMs: 180_000, prepared: { cwd: root } });
+    expect(controller.run.mock.calls[0]![0]!).toMatchObject({ callId: "host-call", tool, timeoutMs: 180_000, prepared: { cwd: root } });
   });
 
   it("passes the controller and host call id through the actual session turn tool builder", async () => {
     const root = await workspace();
-    const run = vi.fn(async (request) => { await request.prepared.cleanup(); return result(); });
+    const run = vi.fn(async (request) => { await request.prepared.cleanup!(); return result(); });
     const forAttempt = vi.fn(() => ({ run }));
     const built = await buildTurnTools({}, { options: {
       allowedTools: ["Exec"], cwd: root, ownedForegroundProcesses: { forAttempt }, mcpServers: {}, toolContext: ctx,
@@ -54,7 +54,7 @@ describe("awaited owned foreground command seam", () => {
       await tool.execute("pi-host-call", { executable: process.execPath, workdir: root });
       expect(forAttempt).toHaveBeenCalledOnce();
       expect(run).toHaveBeenCalledOnce();
-      expect(run.mock.calls[0][0]).toMatchObject({ callId: "pi-host-call", prepared: { cwd: root } });
+      expect(run.mock.calls[0]![0]!).toMatchObject({ callId: "pi-host-call", prepared: { cwd: root } });
     } finally { await built.closeRunTools(); }
   });
 
@@ -63,7 +63,7 @@ describe("awaited owned foreground command seam", () => {
     const marker = resolve(root, "must-not-run");
     const controller = { run: vi.fn(async () => { throw new Error("private host failure"); }) };
     const cleanup = vi.fn(async () => {});
-    const ctx = { workspace: root, sandbox: { ...passthroughSandbox, prepareCommand: async ({ command }) => ({ ...command, sandboxed: false, cleanup }) } };
+    const ctx = { workspace: root, sandbox: { ...passthroughSandbox, prepareCommand: async ({ command }: any) => ({ ...command, sandboxed: false, cleanup }) } } as unknown as import("../../tools/shared/tool-context.js").ToolContext;
     const value = await execToolRun({ executable: process.execPath,
       args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'wrong')`], workdir: root },
     { ownedForegroundProcessController: controller, toolCallId: "call", ctx });
@@ -79,7 +79,7 @@ describe("awaited owned foreground command seam", () => {
     for (const callId of [undefined, "", "é".repeat(129)]) {
       await expect(runOwnedForegroundProcess({ controller: { run }, tool: "Exec", callId,
         timeoutMs: 1, prepared: { command: "unused", args: [], cwd: process.cwd(), sandboxed: false, cleanup },
-      })).rejects.toThrow(/identity/);
+      } as Parameters<typeof runOwnedForegroundProcess>[0])).rejects.toThrow(/identity/);
     }
     expect(run).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalledTimes(3);
@@ -98,9 +98,9 @@ describe("awaited owned foreground command seam", () => {
         expect(handle.pid).toBe(handle.pgid);
         expect(() => request.launch()).toThrow(/already launched/);
         try { await handle.release(); return await handle.completion; }
-        finally { await request.prepared.cleanup(); await request.prepared.cleanup(); }
+        finally { await request.prepared.cleanup!(); await request.prepared.cleanup!(); }
       } },
-    });
+    } as Parameters<typeof runOwnedForegroundProcess>[0]);
     expect(value).toMatchObject({ code: 0, stdout: "checked", groupExitConfirmed: true });
     expect(await readFile(marker, "utf8")).toBe("done");
     expect(cleanup).toHaveBeenCalledOnce();
@@ -118,7 +118,7 @@ describe("awaited owned foreground command seam", () => {
     const root = await workspace();
     const value = await execToolRun({ executable: process.execPath, workdir: root }, {
       ctx, toolCallId: "failure", ownedForegroundProcessController: { run: async (request) => {
-        await request.prepared.cleanup(); return result(patch);
+        await request.prepared.cleanup!(); return result(patch);
       } },
     });
     expect(value.error).toBe(true);

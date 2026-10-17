@@ -22,7 +22,7 @@ import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy
  * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
  * @param {{ctx: import("../shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: import("./process-jobs.js").ProcessJobsController}} options
  */
-export async function bashToolImpl(params, options) {
+export async function bashToolImpl(params: { command: string; description?: string; timeout?: number; timeout_ms?: number; max_output_chars?: number; workdir?: string; background?: boolean; wake_on_completion?: boolean }, options: { ctx: import("../shared/tool-context.js").ToolContext; signal?: AbortSignal; sandboxPolicy?: any; sandboxEngine?: any; toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits; toolCallId?: string; ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController; processJobsController?: import("./process-jobs.js").ProcessJobsController }): Promise<any> {
   return (await bashToolRun(params, options)).text;
 }
 
@@ -42,9 +42,9 @@ export async function bashToolRun(
     workdir,
     background,
     wake_on_completion,
-  },
-  options,
-) {
+  }: { command: string; description?: string; timeout?: number; timeout_ms?: number; max_output_chars?: number; workdir?: string; background?: boolean; wake_on_completion?: boolean },
+  options: { ctx: import("../shared/tool-context.js").ToolContext; signal?: AbortSignal; sandboxPolicy?: any; sandboxEngine?: any; toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits; toolCallId?: string; ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController; processJobsController?: import("./process-jobs.js").ProcessJobsController },
+): Promise<any> {
   const {
     signal,
     sandboxPolicy,
@@ -86,9 +86,9 @@ export async function bashToolRun(
         args: ["--noprofile", "--norc", "-c", command],
         cwd,
         env: requestToolProcessEnvironment(resolvedCtx, cleanBashEnvironment()),
-      },
+      } as import("../../agent/sandbox-seam.js").SandboxCommandSpec,
     });
-  } catch (error) {
+  } catch (error: any) {
     return failed(`Error: ${error?.message || String(error)}`, "sandbox_prepare_failed", startedAt);
   }
 
@@ -109,13 +109,13 @@ export async function bashToolRun(
       maxOutputChars: max_output_chars === undefined ? undefined : maxChars,
       startedAt,
       failed,
-    });
+    } as Parameters<typeof handOffProcessJob>[0]);
     return handedOff.error || !legacyTimeoutUsed
       ? handedOff
       : { ...handedOff, outcome: { ...handedOff.outcome, legacyTimeoutUsed: true } };
   }
 
-  const foreground = await runForegroundCommand({ prepared, controller: ownedForegroundProcessController, tool: "Bash", callId: toolCallId, timeoutMs, signal });
+  const foreground = await runForegroundCommand({ prepared, controller: ownedForegroundProcessController, tool: "Bash", callId: toolCallId, timeoutMs, signal } as Parameters<typeof runForegroundCommand>[0]);
   if (foreground.failure) return failed(foreground.failure.text, foreground.failure.code, startedAt);
   const { result, cleanupError } = foreground;
 
@@ -187,12 +187,12 @@ export async function bashToolRun(
   return completed(partial, baseOutcome, maxChars, "Bash", resolvedCtx);
 }
 
-function finitePositiveInteger(value, fallback) {
+function finitePositiveInteger(value: any, fallback: any) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
-function processOutcome(result, extra = {}) {
+function processOutcome(result: any, extra: any = {}) {
   return {
     status: "ok",
     code: "ok",
@@ -208,11 +208,11 @@ function processOutcome(result, extra = {}) {
   };
 }
 
-function withPartial(message, output) {
+function withPartial(message: any, output: any) {
   return output && output !== "(no output)" ? `${message}\n\nPartial output:\n${output}` : message;
 }
 
-function completed(text, outcome, maxChars, label, ctx) {
+function completed(text: any, outcome: any, maxChars: any, label: any, ctx: any) {
   const raw = String(text || "(no output)");
   const truncated = raw.length > maxChars || outcome.truncated;
   return {
@@ -222,7 +222,7 @@ function completed(text, outcome, maxChars, label, ctx) {
   };
 }
 
-function failed(text, code, startedAt) {
+function failed(text: any, code: any, startedAt: any) {
   return {
     text,
     outcome: {
@@ -241,7 +241,7 @@ function failed(text, code, startedAt) {
   };
 }
 
-function failedWithOutcome(text, outcome, maxChars, ctx) {
+function failedWithOutcome(text: any, outcome: any, maxChars: any, ctx: any) {
   const completedResult = completed(text, outcome, maxChars, "Bash", ctx);
   return { ...completedResult, error: true };
 }

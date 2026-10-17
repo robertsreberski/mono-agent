@@ -17,8 +17,8 @@ const BASH_STARTUP_ENV_KEYS = new Set([
   "SHELLOPTS",
 ]);
 
-export function cleanBashEnvironment(sourceEnv = process.env) {
-  const env = {
+export function cleanBashEnvironment(sourceEnv: NodeJS.ProcessEnv = process.env): { BASH_ENV: string; ENV: string } {
+  const env: Record<string, string | undefined> & { BASH_ENV: string; ENV: string } = {
     BASH_ENV: "/dev/null",
     ENV: "/dev/null",
   };

@@ -13,7 +13,7 @@ import {
   startPreparedProcess,
 } from "../../tools/commands/process-runner.js";
 
-const tempDirs = [];
+const tempDirs: any[] = [];
 
 function tempWorkspace() {
   const dir = mkdtempSync(resolve("/tmp", "agent-runtime-process-"));
@@ -21,8 +21,8 @@ function tempWorkspace() {
   return dir;
 }
 
-function options(workspace) {
-  return { ctx: { workspace, sandbox: passthroughSandbox } };
+function options(workspace: any) {
+  return { ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext };
 }
 
 afterEach(() => {
@@ -42,14 +42,14 @@ describe("Exec", () => {
 
   it.each([["Exec", execToolRun, { executable: process.execPath }], ["Bash", bashToolRun, { command: "true" }]])(
     "propagates explicit %s completion optout and rejects foreground use",
-    async (_name, run, params) => {
+    async (_name, run: (...args: any[]) => Promise<any>, params: any) => {
       const workspace = tempWorkspace();
       const start = vi.fn(async (request) => {
         await request.prepared.cleanup?.();
         return { jobId: "optout", state: "queued", startedAt: null };
       });
-      const result = await run({ ...params, background: true, wake_on_completion: false }, { ...options(workspace), processJobsController: { start } });
-      expect(start.mock.calls[0][0].wakeOnCompletion).toBe(false);
+      const result = await run({ ...params, background: true, wake_on_completion: false }, { ...options(workspace), processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
+      expect(start.mock.calls[0]![0]!.wakeOnCompletion).toBe(false);
       expect(result.text).toContain("will not receive a completion turn");
       expect((await run({ ...params, wake_on_completion: false }, options(workspace))).outcome.code).toBe("process_job_invalid");
       expect((await run({ ...params, background: true }, options(workspace))).outcome.code).toBe("background_unsupported");
@@ -57,15 +57,15 @@ describe("Exec", () => {
   );
   it.each([["Exec", execToolRun, { executable: process.execPath }], ["Bash", bashToolRun, { command: "true" }]])(
     "reports %s queued position and deadline without claiming a process started",
-    async (_name, run, params) => {
+    async (_name, run: (...args: any[]) => Promise<any>, params: any) => {
       const workspace = tempWorkspace();
       const result = await run({ ...params, background: true }, { ...options(workspace), processJobsController: {
-        start: async (request) => {
+        start: async (request: any) => {
           await request.prepared.cleanup?.();
           return { jobId: "queued-job", state: "queued", startedAt: null, queuePosition: 2,
             queueDeadlineAt: "2026-01-01T00:00:00.000Z" };
         },
-      } });
+      } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
       expect(result.text).toContain("no child or provider has started");
       expect(JSON.parse(result.text.split("\n").at(-1))).toMatchObject({
         job_id: "queued-job", state: "queued", queue_position: 2, queue_deadline_at: "2026-01-01T00:00:00.000Z",
@@ -79,7 +79,7 @@ describe("Exec", () => {
       ...options(workspace), processJobsController: { start: async () => {
         throw Object.assign(new Error("private command description"), { code: "process_job_queue_full", occupancy: 3,
           limit: 3, limitKey: "processJobs.maxQueued", conversationOccupancy: 1, conversationLimit: 1 });
-      } },
+      } } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     });
     expect(result.text).toContain("3/3 (processJobs.maxQueued)");
     expect(result.text).toContain("1/1 (processJobs.maxActivePerConversation)");
@@ -93,7 +93,7 @@ describe("Exec", () => {
     expect(JSON.parse(baseline.Bash).properties).toHaveProperty("background");
 
     const withController = getPiBuiltinTools(["Exec", "Bash"], { ctx,
-      processJobsController: { start: vi.fn() },
+      processJobsController: { start: vi.fn() } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     });
     expect(withController.find((tool) => tool.name === "Exec").parameters.properties.background)
       .toEqual(expect.objectContaining({ type: "boolean" }));
@@ -116,16 +116,16 @@ describe("Exec", () => {
   it("hands off the exact prepared command, returns before completion, and cleans up once", async () => {
     const workspace = tempWorkspace();
     const cleanup = vi.fn(async () => {});
-    const preparedCommands = [];
+    const preparedCommands: any[] = [];
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         const prepared = { ...command, args: command.args ?? [], sandboxed: true, sandboxSettingsPath: resolve(workspace, "settings.json"), cleanup };
         preparedCommands.push(prepared);
         return prepared;
       },
     };
-    let terminal;
+    let terminal: any;
     const start = vi.fn(async (request) => {
       const handle = request.launch({ timeoutMs: 5_000, maxBufferBytes: 1024 });
       await handle.release();
@@ -141,7 +141,7 @@ describe("Exec", () => {
       args: ["--eval", "setTimeout(() => process.stdout.write('done'), 180)"],
       description: "Running the process-job handoff test",
       background: true,
-    }, { ctx: { workspace, sandbox }, processJobsController: { start } });
+    }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext, processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
 
     expect(Date.now() - started).toBeLessThan(150);
     expect(result).toMatchObject({
@@ -154,11 +154,11 @@ describe("Exec", () => {
     expect(guidance).toContain("Do not poll");
     expect(JSON.parse(startPayload)).toMatchObject({ job_id: "pj_runtime", state: "running" });
     expect(start).toHaveBeenCalledTimes(1);
-    expect(start.mock.calls[0][0].prepared.command).toBe(preparedCommands[0].command);
-    expect(start.mock.calls[0][0].prepared.sandboxSettingsPath).toBe(resolve(workspace, "settings.json"));
-    expect(start.mock.calls[0][0].summary).toBe("Exec command (2 arguments; values redacted)");
-    expect(start.mock.calls[0][0].summary).not.toContain(process.execPath);
-    expect(start.mock.calls[0][0].description).toBe("Running the process-job handoff test");
+    expect(start.mock.calls[0]![0]!.prepared.command).toBe(preparedCommands[0].command);
+    expect(start.mock.calls[0]![0]!.prepared.sandboxSettingsPath).toBe(resolve(workspace, "settings.json"));
+    expect(start.mock.calls[0]![0]!.summary).toBe("Exec command (2 arguments; values redacted)");
+    expect(start.mock.calls[0]![0]!.summary).not.toContain(process.execPath);
+    expect(start.mock.calls[0]![0]!.description).toBe("Running the process-job handoff test");
     expect(cleanup).not.toHaveBeenCalled();
     await terminal;
     expect(cleanup).toHaveBeenCalledTimes(1);
@@ -166,7 +166,7 @@ describe("Exec", () => {
 
   it("hands off and launches an unsandboxed background command with no sandbox settings path", async () => {
     const workspace = tempWorkspace();
-    let completion;
+    let completion: any;
     const start = vi.fn(async (request) => {
       expect(request.prepared.sandboxed).toBe(false);
       expect(request.prepared.sandboxSettingsPath).toBeUndefined();
@@ -181,8 +181,8 @@ describe("Exec", () => {
       args: ["--eval", "process.stdout.write('unsandboxed handoff')"],
       background: true,
     }, {
-      ctx: { workspace, sandbox: passthroughSandbox },
-      processJobsController: { start },
+      ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     });
 
     expect(result).toMatchObject({
@@ -201,7 +201,7 @@ describe("Exec", () => {
     const cleanup = vi.fn(async () => {});
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return { ...command, args: command.args ?? [], cleanup };
       },
     };
@@ -211,8 +211,8 @@ describe("Exec", () => {
       args: ["--eval", "process.stdout.write('must-not-run')"],
       background: true,
     }, {
-      ctx: { workspace, sandbox },
-      processJobsController: { start: vi.fn(async () => ({ invalid: true })) },
+      ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start: vi.fn(async () => ({ invalid: true })) } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     });
 
     expect(result).toMatchObject({
@@ -228,7 +228,7 @@ describe("Exec", () => {
     const cleanup = vi.fn(async () => { throw new Error(privateText); });
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return { ...command, args: command.args ?? [], cleanup };
       },
     };
@@ -238,8 +238,8 @@ describe("Exec", () => {
       args: ["--eval", "process.stdout.write('must-not-run')"],
       background: true,
     }, {
-      ctx: { workspace, sandbox },
-      processJobsController: { start: vi.fn(async () => ({ invalid: true })) },
+      ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start: vi.fn(async () => ({ invalid: true })) } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     });
 
     expect(result).toMatchObject({
@@ -259,7 +259,7 @@ describe("Exec", () => {
     const failure = Object.assign(new Error(privateText), { code: "process_job_store_error" });
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return { ...command, args: command.args ?? [], cleanup };
       },
     };
@@ -269,8 +269,8 @@ describe("Exec", () => {
       args: ["--eval", "process.stdout.write('must-not-run')"],
       background: true,
     }, {
-      ctx: { workspace, sandbox },
-      processJobsController: { start: vi.fn(async () => { throw failure; }) },
+      ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start: vi.fn(async () => { throw failure; }) } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     });
 
     expect(result).toMatchObject({
@@ -294,7 +294,7 @@ describe("Exec", () => {
     const cleanup = vi.fn(async () => {});
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return { ...command, args: command.args ?? [], cleanup };
       },
     };
@@ -304,8 +304,8 @@ describe("Exec", () => {
       args: ["--eval", "process.stdout.write('must-not-run')"],
       background: true,
     }, {
-      ctx: { workspace, sandbox },
-      processJobsController: { start: vi.fn(async () => { throw failure; }) },
+      ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start: vi.fn(async () => { throw failure; }) } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     });
 
     expect(result).toMatchObject({
@@ -319,16 +319,16 @@ describe("Exec", () => {
   it("does not clean underneath a launched handle when the controller result is invalid", async () => {
     const workspace = tempWorkspace();
     const cleanup = vi.fn(async () => {});
-    let handle;
-    let ownedPrepared;
+    let handle: any;
+    let ownedPrepared: any;
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return { ...command, args: command.args ?? [], cleanup };
       },
     };
     const controller = {
-      async start(request) {
+      async start(request: any) {
         ownedPrepared = request.prepared;
         handle = request.launch({ timeoutMs: 5_000 });
         return { invalid: true };
@@ -339,7 +339,7 @@ describe("Exec", () => {
       executable: process.execPath,
       args: ["--eval", "process.stdout.write('owned')"],
       background: true,
-    }, { ctx: { workspace, sandbox }, processJobsController: controller });
+    }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext, processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
 
     expect(result).toMatchObject({
       error: true,
@@ -355,9 +355,9 @@ describe("Exec", () => {
   it("does not spawn the target until the host releases its durable ownership gate", async () => {
     const workspace = tempWorkspace();
     const marker = resolve(workspace, "target-started");
-    let terminal;
+    let terminal: any;
     const controller = {
-      async start(request) {
+      async start(request: any) {
         const handle = request.launch({ timeoutMs: 5_000 });
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
         expect(existsSync(marker)).toBe(false);
@@ -371,7 +371,7 @@ describe("Exec", () => {
       executable: process.execPath,
       args: ["--eval", "require('node:fs').writeFileSync(process.argv[1], 'started')", marker],
       background: true,
-    }, { ...options(workspace), processJobsController: controller });
+    }, { ...options(workspace), processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
     await terminal;
     expect(existsSync(marker)).toBe(true);
   });
@@ -381,9 +381,9 @@ describe("Exec", () => {
     const key = "MONO_AGENT_BACKGROUND_ENV_SNAPSHOT";
     const previous = process.env[key];
     process.env[key] = "value-at-handoff";
-    let terminal;
+    let terminal: any;
     const controller = {
-      async start(request) {
+      async start(request: any) {
         process.env[key] = "changed-before-launch";
         const handle = request.launch({ timeoutMs: 5_000 });
         await handle.release();
@@ -396,7 +396,7 @@ describe("Exec", () => {
         executable: process.execPath,
         args: ["--eval", `process.stdout.write(process.env.${key} ?? 'missing')`],
         background: true,
-      }, { ...options(workspace), processJobsController: controller });
+      }, { ...options(workspace), processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
       await expect(terminal).resolves.toMatchObject({ stdout: "value-at-handoff" });
     } finally {
       if (previous === undefined) delete process.env[key];
@@ -422,7 +422,7 @@ describe("Exec", () => {
     let parentError = "";
     parent.stdout.on("data", (chunk) => { parentOutput += chunk.toString("utf8"); });
     parent.stderr.on("data", (chunk) => { parentError += chunk.toString("utf8"); });
-    await new Promise((resolvePromise, reject) => {
+    await new Promise<void>((resolvePromise, reject) => {
       parent.once("error", reject);
       parent.once("close", (code) => code === 0
         ? resolvePromise()
@@ -442,9 +442,9 @@ describe("Exec", () => {
     if (process.platform === "win32") return;
     const workspace = tempWorkspace();
     const marker = resolve(workspace, "descendant-finished");
-    let terminal;
+    let terminal: any;
     const controller = {
-      async start(request) {
+      async start(request: any) {
         const handle = request.launch({ timeoutMs: 5_000 });
         await handle.release();
         terminal = handle.completion;
@@ -461,7 +461,7 @@ describe("Exec", () => {
       executable: process.execPath,
       args: ["--eval", target, marker],
       background: true,
-    }, { ...options(workspace), processJobsController: controller });
+    }, { ...options(workspace), processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
 
     expect(existsSync(marker)).toBe(false);
     await terminal;
@@ -502,17 +502,17 @@ describe("Exec", () => {
     writeFileSync(settingsPath, "{}\n");
     const cleanup = vi.fn(async () => rmSync(settingsPath, { force: true }));
     const nativeKill = process.kill.bind(process);
-    const probes = [];
-    let handle;
-    let terminal;
-    let tree;
+    const probes: any[] = [];
+    let handle: any;
+    let terminal: any;
+    let tree: any;
     const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
       if (handle?.pgid !== null && handle?.pgid !== undefined
         && pid === -handle.pgid && signal === 0) probes.push(pid);
       return nativeKill(pid, signal);
     });
     const controller = {
-      async start(request) {
+      async start(request: any) {
         handle = request.launch({ timeoutMs: 10_000 });
         terminal = (async () => {
           await handle.release();
@@ -531,7 +531,7 @@ describe("Exec", () => {
     };
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return { ...command, args: command.args ?? [], sandboxSettingsPath: settingsPath, cleanup };
       },
     };
@@ -540,7 +540,7 @@ describe("Exec", () => {
         executable: process.execPath,
         args: ["--eval", inheritedProcessTreeSource(), treePath],
         background: true,
-      }, { ctx: { workspace, sandbox }, processJobsController: controller });
+      }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext, processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
       const outcome = await within(terminal, 4_000);
       expect(outcome).toMatchObject({ aborted: false, timedOut: false, groupExitConfirmed: true });
       await Promise.all([handle.pid, tree.target, tree.descendant].map(async (pid) => await waitForProcessExit(pid)));
@@ -559,11 +559,11 @@ describe("Exec", () => {
     const settingsPath = resolve(workspace, "settings.json");
     writeFileSync(settingsPath, "{}\n");
     const cleanup = vi.fn(async () => rmSync(settingsPath, { force: true }));
-    let handle;
-    let terminal;
-    let tree;
+    let handle: any;
+    let terminal: any;
+    let tree: any;
     const controller = {
-      async start(request) {
+      async start(request: any) {
         const timeoutMs = 1_000;
         handle = request.launch({ timeoutMs });
         terminal = (async () => {
@@ -583,7 +583,7 @@ describe("Exec", () => {
     };
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return { ...command, args: command.args ?? [], sandboxSettingsPath: settingsPath, cleanup };
       },
     };
@@ -592,7 +592,7 @@ describe("Exec", () => {
         executable: process.execPath,
         args: ["--eval", inheritedProcessTreeSource(), treePath],
         background: true,
-      }, { ctx: { workspace, sandbox }, processJobsController: controller });
+      }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext, processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
       const outcome = await within(terminal, 4_000);
       expect(outcome).toMatchObject({ timedOut: true, groupExitConfirmed: true });
       await Promise.all([handle.pid, tree.target, tree.descendant].map(async (pid) => await waitForProcessExit(pid)));
@@ -648,7 +648,7 @@ describe("Exec", () => {
     const nativeKill = process.kill.bind(process);
     let leaderKilled = false;
     let postExitProbeObserved = false;
-    const groupSignals = [];
+    const groupSignals: any[] = [];
     const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
       if (leaderKilled && pid === -(handle.pgid ?? 0) && signal === 0) postExitProbeObserved = true;
       if (pid === -(handle.pgid ?? 0) && signal !== 0) groupSignals.push(signal);
@@ -689,7 +689,7 @@ describe("Exec", () => {
     const nativeKill = process.kill.bind(process);
     let reportPostExitAbsence = false;
     let absenceObserved = false;
-    const groupSignals = [];
+    const groupSignals: any[] = [];
     const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
       if (reportPostExitAbsence && pid === -(handle.pgid ?? 0) && signal === 0) {
         reportPostExitAbsence = false;
@@ -732,7 +732,7 @@ describe("Exec", () => {
     }, { waitForProcessGroup: true, timeoutMs: 10_000 });
     const nativeKill = process.kill.bind(process);
     let injectIndeterminateProbe = false;
-    const groupSignals = [];
+    const groupSignals: any[] = [];
     const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
       if (injectIndeterminateProbe && pid === -(handle.pgid ?? 0) && signal === 0) {
         injectIndeterminateProbe = false;
@@ -795,7 +795,7 @@ describe("Exec", () => {
       return true;
     });
 
-    killProcessGroup({ pid: 4321 }, "SIGTERM");
+    killProcessGroup({ pid: 4321 } as import("node:child_process").ChildProcess, "SIGTERM");
 
     expect(kill).toHaveBeenCalledOnce();
     expect(kill).toHaveBeenCalledWith(-4321, "SIGTERM");
@@ -809,7 +809,7 @@ describe("Exec", () => {
     });
 
     killProcessGroup(
-      { pid: 4321, exitCode: null, signalCode: null },
+      { pid: 4321, exitCode: null, signalCode: null } as import("node:child_process").ChildProcess,
       "SIGTERM",
       { fallbackToChildPid: true },
     );
@@ -830,7 +830,7 @@ describe("Exec", () => {
       return true;
     });
 
-    killProcessGroup(child, "SIGKILL", { fallbackToChildPid: true });
+    killProcessGroup(child as import("node:child_process").ChildProcess, "SIGKILL", { fallbackToChildPid: true });
 
     expect(kill.mock.calls).toEqual([[-4321, "SIGKILL"]]);
   });
@@ -841,7 +841,7 @@ describe("Exec", () => {
     const foreground = await execToolRun({ executable: process.execPath, args: ["--eval", "process.stdout.write('same')"] }, options(workspace));
     const injectedForeground = await execToolRun(
       { executable: process.execPath, args: ["--eval", "process.stdout.write('same')"] },
-      { ...options(workspace), processJobsController: controller },
+      { ...options(workspace), processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController },
     );
     expect({ ...injectedForeground, outcome: { ...injectedForeground.outcome, durationMs: 0 } })
       .toEqual({ ...foreground, outcome: { ...foreground.outcome, durationMs: 0 } });
@@ -849,8 +849,8 @@ describe("Exec", () => {
 
     const exec = getPiBuiltinTools(["Exec"], {
       cwd: workspace,
-      ctx: { workspace, sandbox: passthroughSandbox },
-      processJobsController: controller,
+      ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
       toolLimits: { bashTimeoutMs: 1_000, bashOutputLimitChars: 100 },
     }).find((tool) => tool.name === "Exec");
     await exec.execute("job-limits", {
@@ -868,11 +868,11 @@ describe("Exec", () => {
     // launched with timeout_ms: 14_400_000 was SIGTERMed at exactly 120s and the
     // model had no way to see that its own setting had been discarded.
     const workspace = tempWorkspace();
-    const start = vi.fn(async () => ({ jobId: "pj_long", state: "queued", startedAt: null }));
+    const start: any = vi.fn(async () => ({ jobId: "pj_long", state: "queued", startedAt: null }));
     const [bash, exec] = ["Bash", "Exec"].map((name) => getPiBuiltinTools([name], {
       cwd: workspace,
-      ctx: { workspace, sandbox: passthroughSandbox },
-      processJobsController: { start },
+      ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     }).find((tool) => tool.name === name));
 
     await bash.execute("job-long-bash", {
@@ -889,7 +889,7 @@ describe("Exec", () => {
       background: true,
     });
 
-    expect(start.mock.calls[0][0]).toMatchObject({
+    expect(start.mock.calls[0]![0]!).toMatchObject({
       tool: "Bash",
       description: "Checking the Bash runtime version",
       timeoutMs: 14_400_000,
@@ -903,11 +903,11 @@ describe("Exec", () => {
 
   it("keeps the legacy background timeout in seconds without capping it", async () => {
     const workspace = tempWorkspace();
-    const start = vi.fn(async () => ({ jobId: "pj_legacy", state: "queued", startedAt: null }));
+    const start: any = vi.fn(async () => ({ jobId: "pj_legacy", state: "queued", startedAt: null }));
     const bash = getPiBuiltinTools(["Bash"], {
       cwd: workspace,
-      ctx: { workspace, sandbox: passthroughSandbox },
-      processJobsController: { start },
+      ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     }).find((tool) => tool.name === "Bash");
 
     const result = await bash.execute("job-legacy", {
@@ -916,7 +916,7 @@ describe("Exec", () => {
       background: true,
     });
 
-    expect(start.mock.calls[0][0]).toMatchObject({ timeoutMs: 500_000 });
+    expect(start.mock.calls[0]![0]!).toMatchObject({ timeoutMs: 500_000 });
     expect(result.details).toMatchObject({
       tool: "Bash",
       outcome: {
@@ -932,7 +932,7 @@ describe("Exec", () => {
     // Visibility is the other half of the fix: a host that narrows the request
     // must say so, or the model reads the cap as its own mistake and relaunches.
     const workspace = tempWorkspace();
-    const start = vi.fn(async () => ({
+    const start: any = vi.fn(async () => ({
       jobId: "pj_budget",
       state: "queued",
       startedAt: null,
@@ -943,7 +943,7 @@ describe("Exec", () => {
       args: ["--version"],
       timeout_ms: 14_400_000,
       background: true,
-    }, { ctx: { workspace, sandbox: passthroughSandbox }, processJobsController: { start } });
+    }, { ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext, processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
 
     expect(result.error).toBe(false);
     const [guidance, startPayload] = result.text.split("\n");
@@ -954,12 +954,12 @@ describe("Exec", () => {
 
   it("omits the granted budget when the host controller does not report one", async () => {
     const workspace = tempWorkspace();
-    const start = vi.fn(async () => ({ jobId: "pj_silent", state: "queued", startedAt: null }));
+    const start: any = vi.fn(async () => ({ jobId: "pj_silent", state: "queued", startedAt: null }));
     const result = await execToolRun({
       executable: process.execPath,
       args: ["--version"],
       background: true,
-    }, { ctx: { workspace, sandbox: passthroughSandbox }, processJobsController: { start } });
+    }, { ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext, processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
 
     expect(result.error).toBe(false);
     expect(JSON.parse(result.text.split("\n")[1])).not.toHaveProperty("max_runtime_ms");
@@ -967,19 +967,19 @@ describe("Exec", () => {
 
   it("lets the host defaults own omitted background limits", async () => {
     const workspace = tempWorkspace();
-    const start = vi.fn(async () => ({ jobId: "pj_defaults", state: "queued", startedAt: null }));
+    const start: any = vi.fn(async () => ({ jobId: "pj_defaults", state: "queued", startedAt: null }));
     const exec = getPiBuiltinTools(["Exec"], {
       cwd: workspace,
-      ctx: { workspace, sandbox: passthroughSandbox },
-      processJobsController: { start },
+      ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     }).find((tool) => tool.name === "Exec");
     await exec.execute("job-defaults", {
       executable: process.execPath,
       args: ["--version"],
       background: true,
     });
-    expect(start.mock.calls[0][0]).not.toHaveProperty("timeoutMs");
-    expect(start.mock.calls[0][0]).not.toHaveProperty("maxOutputChars");
+    expect(start.mock.calls[0]![0]!).not.toHaveProperty("timeoutMs");
+    expect(start.mock.calls[0]![0]!).not.toHaveProperty("maxOutputChars");
   });
 
   it("applies a request environment and PATH prepend only to the current tool run", async () => {
@@ -992,7 +992,7 @@ describe("Exec", () => {
         values: { MULTICA_TASK_ID: "task-fixture" },
         pathPrepend: [workspace],
       },
-    };
+    } as unknown as import("../../tools/shared/tool-context.js").ToolContext;
     const injected = await execToolRun({
       executable: process.execPath,
       args: ["--eval", "process.stdout.write(JSON.stringify({task:process.env.MULTICA_TASK_ID,path:process.env.PATH?.split(require('node:path').delimiter)[0]}))"],
@@ -1054,7 +1054,7 @@ describe("Exec", () => {
     const workspace = tempWorkspace();
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return {
           ...command,
           cleanup: async () => { throw new Error("cleanup broke"); },
@@ -1064,7 +1064,7 @@ describe("Exec", () => {
     const result = await execToolRun({
       executable: process.execPath,
       args: ["--eval", "process.stdout.write('retained output')"],
-    }, { ctx: { workspace, sandbox } });
+    }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext });
 
     expect(result.text).toContain("cleanup broke");
     expect(result.text).toContain("retained output");
@@ -1081,10 +1081,10 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     const workspace = tempWorkspace();
     const childPidPath = resolve(workspace, "child.pid");
     const cleanup = vi.fn(async () => {});
-    let terminal;
-    let childPid;
+    let terminal: any;
+    let childPid: any;
     const controller = {
-      async start(request) {
+      async start(request: any) {
         const handle = request.launch({ timeoutMs: 10_000 });
         await handle.release();
         terminal = (async () => {
@@ -1099,14 +1099,14 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     };
     const sandbox = {
       ...passthroughSandbox,
-      async prepareCommand({ command }) {
+      async prepareCommand({ command }: any) {
         return { ...command, args: command.args ?? [], sandboxed: true, cleanup };
       },
     };
     const result = await bashToolRun({
       command: `sleep 30 & echo $! > ${JSON.stringify(childPidPath)}; wait`,
       background: true,
-    }, { ctx: { workspace, sandbox }, processJobsController: controller });
+    }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext, processJobsController: controller as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
     expect(result.outcome).toMatchObject({ code: "background_started" });
     const outcome = await terminal;
     expect(outcome.signal).toBeTruthy();
@@ -1116,13 +1116,13 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
 
   it("preserves the legacy Bash timeout warning on a successful background handoff", async () => {
     const workspace = tempWorkspace();
-    const events = [];
-    const start = vi.fn(async () => ({ jobId: "pj_legacy", state: "queued", startedAt: null }));
+    const events: any[] = [];
+    const start: any = vi.fn(async () => ({ jobId: "pj_legacy", state: "queued", startedAt: null }));
     const bash = getPiBuiltinTools(["Bash"], {
       cwd: workspace,
       onEvent: (event) => events.push(event),
-      ctx: { workspace, sandbox: passthroughSandbox },
-      processJobsController: { start },
+      ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
+      processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController,
     }).find((tool) => tool.name === "Bash");
 
     await bash.execute("bash-background-legacy", {
@@ -1144,7 +1144,7 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
         workspace,
         sandbox: passthroughSandbox,
         toolEnvironment: { schema: 1, values: { MULTICA_AGENT_ID: "agent-fixture" } },
-      },
+      } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
     });
     expect(result.text).toBe("agent-fixture");
   });
@@ -1153,9 +1153,9 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     const prepareCommand = vi.fn();
     const sandbox = { ...passthroughSandbox, prepareCommand };
 
-    await expect(bashToolRun({ command: /** @type {any} */ (null) }, { ctx: { workspace, sandbox } }))
+    await expect(bashToolRun({ command: /** @type {any} */ ((null) as any) }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext }))
       .resolves.toMatchObject({ error: true, outcome: { code: "invalid_command" } });
-    await expect(bashToolRun({ command: "printf\0unsafe" }, { ctx: { workspace, sandbox } }))
+    await expect(bashToolRun({ command: "printf\0unsafe" }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext }))
       .resolves.toMatchObject({ error: true, outcome: { code: "invalid_command" } });
     expect(prepareCommand).not.toHaveBeenCalled();
   });
@@ -1204,11 +1204,11 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
 
   it("emits one legacy-timeout warning and omits commands from raw result details", async () => {
     const workspace = tempWorkspace();
-    const events = [];
+    const events: any[] = [];
     const bash = getPiBuiltinTools(["Bash"], {
       cwd: workspace,
       onEvent: (event) => events.push(event),
-      ctx: { workspace, sandbox: passthroughSandbox },
+      ctx: { workspace, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
     }).find((tool) => tool.name === "Bash");
     const result = await bash.execute("bash-1", {
       command: "printf safe",
@@ -1308,7 +1308,7 @@ describe("process fixture readiness", () => {
   });
 });
 
-async function waitForPid(path, timeoutMs = 2_000) {
+async function waitForPid(path: any, timeoutMs: any = 2_000) {
   return await waitForFixture(path, () => {
     const content = readFileSync(path, "utf8").trim();
     const pid = Number(content);
@@ -1319,16 +1319,16 @@ async function waitForPid(path, timeoutMs = 2_000) {
   }, "a positive safe-integer PID", timeoutMs);
 }
 
-async function waitForProcessTree(path, timeoutMs = 2_000) {
+async function waitForProcessTree(path: any, timeoutMs: any = 2_000) {
   return await waitForFixture(path, () => readProcessTree(path), "valid process-tree PIDs", timeoutMs);
 }
 
-async function waitForFixture(path, read, description, timeoutMs) {
+async function waitForFixture(path: any, read: any, description: any, timeoutMs: any) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     // File creation precedes its write: existence alone is not readiness.
     try { return read(); }
-    catch (cause) {
+    catch (cause: any) {
       if (Date.now() >= deadline) {
         throw new Error(`Timed out waiting for ${description} in ${path}.`, { cause });
       }
@@ -1346,7 +1346,7 @@ function inheritedProcessTreeSource() {
   ].join("\n");
 }
 
-function readProcessTree(path) {
+function readProcessTree(path: any) {
   const value = JSON.parse(readFileSync(path, "utf8"));
   if (!Number.isSafeInteger(value?.target) || value.target <= 0
     || !Number.isSafeInteger(value?.descendant) || value.descendant <= 0) {
@@ -1355,7 +1355,7 @@ function readProcessTree(path) {
   return value;
 }
 
-async function waitForProcessExit(pid, timeoutMs = 2_000) {
+async function waitForProcessExit(pid: any, timeoutMs: any = 2_000) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error(`Invalid process PID: ${String(pid)}.`);
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -1366,8 +1366,8 @@ async function waitForProcessExit(pid, timeoutMs = 2_000) {
   }
 }
 
-async function within(promise, timeoutMs) {
-  let timer;
+async function within(promise: any, timeoutMs: any) {
+  let timer: any;
   try {
     return await Promise.race([
       promise,
@@ -1385,7 +1385,7 @@ describe("per-run foreground command ceilings", () => {
   for (const [name, run, params] of [
     ["Bash", bashToolRun, { command: `"${process.execPath}" --version` }],
     ["Exec", execToolRun, { executable: process.execPath, args: ["--version"] }],
-  ]) {
+  ] as [string, (...args: any[]) => Promise<any>, Record<string, unknown>][]) {
     it.each([undefined, 900_000, 5_000])(`${name} direct and Pi execution use the same ceiling %s`, async (bashTimeoutMs) => {
       const workspace = tempWorkspace();
       const toolLimits = bashTimeoutMs === undefined ? {} : { bashTimeoutMs };
@@ -1414,15 +1414,15 @@ describe("subprocess sandbox provenance", () => {
   it.each(["Bash", "Exec"])("attributes recognizable %s denials and bounds stderr", async (tool) => {
     const workspace = tempWorkspace();
     const cleanup = vi.fn();
-    const engine = { isAvailable: async () => true, prepareCommand: async (command) => ({
+    const engine = { isAvailable: async () => true, prepareCommand: async (command: any) => ({
       ...command, command: process.execPath,
       args: ["-e", "process.stderr.write('blocked by sandbox: Operation not permitted\\n' + 'x'.repeat(1000));process.exit(127)"],
       sandboxed: true, cleanup,
     }) };
-    const run = tool === "Bash" ? bashToolRun : execToolRun;
+    const run: (...args: any[]) => Promise<any> = tool === "Bash" ? bashToolRun : execToolRun;
     const params = tool === "Bash" ? { command: "fictional-command", max_output_chars: 300 }
       : { executable: "fictional-command", max_output_chars: 300 };
-    const result = await run(params, { ctx: { workspace, sandbox: createFakeSandbox() },
+    const result = await run(params, { ctx: { workspace, sandbox: createFakeSandbox() } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
       sandboxPolicy: testSandboxPolicy({ root: workspace }), sandboxEngine: engine });
     expect(result.outcome).toMatchObject({ code: "sandbox_denied", exitCode: 127 });
     expect(result.text).toContain("Sandbox denied");
@@ -1434,12 +1434,12 @@ describe("subprocess sandbox provenance", () => {
   it.each(["Bash", "Exec"])("qualifies bare permission errors from %s without a definitive sandbox code", async (tool) => {
     const workspace = tempWorkspace();
     const args = ["-e", "process.stderr.write('EPERM: Operation not permitted');process.exit(1)"];
-    const engine = { isAvailable: async () => true, prepareCommand: async (command) => ({
+    const engine = { isAvailable: async () => true, prepareCommand: async (command: any) => ({
       ...command, command: process.execPath, args, sandboxed: true,
     }) };
-    const run = tool === "Bash" ? bashToolRun : execToolRun;
+    const run: (...args: any[]) => Promise<any> = tool === "Bash" ? bashToolRun : execToolRun;
     const wrapped = await run(tool === "Bash" ? { command: "fictional-command" } : { executable: "fictional-command" }, {
-      ctx: { workspace, sandbox: createFakeSandbox() },
+      ctx: { workspace, sandbox: createFakeSandbox() } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
       sandboxPolicy: testSandboxPolicy({ root: workspace }), sandboxEngine: engine,
     });
     expect(wrapped.outcome).toMatchObject({ code: "nonzero_exit", exitCode: 1 });
@@ -1459,9 +1459,9 @@ describe("subprocess sandbox provenance", () => {
     const host = await execToolRun(params, options(workspace));
     expect(host.outcome.code).toBe("spawn_error");
     expect(host.text).not.toContain("sandboxed");
-    const wrapped = await execToolRun(params, { ctx: { workspace, sandbox: createFakeSandbox() },
+    const wrapped = await execToolRun(params, { ctx: { workspace, sandbox: createFakeSandbox() } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
       sandboxPolicy: testSandboxPolicy({ root: workspace }), sandboxEngine: {
-        isAvailable: async () => true, prepareCommand: async (command) => ({ ...command, sandboxed: true }),
+        isAvailable: async () => true, prepareCommand: async (command: any) => ({ ...command, sandboxed: true }),
       } });
     expect(wrapped.outcome.code).toBe("spawn_error");
     expect(wrapped.text).toContain("Command ran sandboxed");
@@ -1471,7 +1471,7 @@ describe("subprocess sandbox provenance", () => {
   it.each([undefined, "off"])("ignores an unavailable engine under %s", async (mode) => {
     const workspace = tempWorkspace();
     const engine = { isAvailable: vi.fn(async () => false), prepareCommand: vi.fn() };
-    const opts = { ctx: { workspace, sandbox: createFakeSandbox() }, sandboxEngine: engine,
+    const opts = { ctx: { workspace, sandbox: createFakeSandbox() } as unknown as import("../../tools/shared/tool-context.js").ToolContext, sandboxEngine: engine,
       ...(mode ? { sandboxPolicy: { ...testSandboxPolicy({ root: workspace }), mode } } : {}) };
     expect((await execToolRun({ executable: process.execPath, args: ["-e", "console.log('host')"] }, opts)).text).toContain("host");
     expect((await bashToolRun({ command: "printf host" }, opts)).text).toContain("host");

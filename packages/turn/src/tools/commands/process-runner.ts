@@ -139,22 +139,22 @@ input.once("end", () => {
  * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer, exactEnvironment?: boolean}} [options]
  */
 export function runPreparedProcess(
-  commandSpec,
+  commandSpec: { command: string; args?: readonly string[]; cwd?: string; env?: Record<string, string | undefined> },
   {
     timeoutMs,
     signal,
     maxBufferBytes = DEFAULT_PROCESS_BUFFER_BYTES,
     input,
     exactEnvironment = false,
-  } = {},
-) {
+  }: { timeoutMs?: number; signal?: AbortSignal; maxBufferBytes?: number; input?: string | Buffer; exactEnvironment?: boolean } = {},
+): Promise<import("../../contracts/process.js").ProcessJobProcessResult> {
   return startPreparedProcess(commandSpec, {
     timeoutMs,
     signal,
     maxBufferBytes,
     input,
     exactEnvironment,
-  }).completion;
+  } as Parameters<typeof startPreparedProcess>[1]).completion;
 }
 
 /**
@@ -182,7 +182,7 @@ export function runPreparedProcess(
  * @returns {import("../../contracts/process.js").ProcessJobProcessHandle}
  */
 export function startPreparedProcess(
-  commandSpec,
+  commandSpec: { command: string; args?: readonly string[]; cwd?: string; env?: Record<string, string | undefined> },
   {
     timeoutMs,
     signal,
@@ -193,8 +193,8 @@ export function startPreparedProcess(
     outputMode = "buffer",
     onStdout,
     onStderr,
-  } = {},
-) {
+  }: { timeoutMs?: number; signal?: AbortSignal; maxBufferBytes?: number; input?: string | Buffer; waitForProcessGroup?: boolean; exactEnvironment?: boolean; outputMode?: "buffer" | "stream"; onStdout?: (chunk: Buffer) => void; onStderr?: (chunk: Buffer) => void } = {},
+): import("../../contracts/process.js").ProcessJobProcessHandle {
   const startedAt = Date.now();
   const gated = waitForProcessGroup && process.platform !== "win32";
   const targetEnvironment = exactEnvironment
@@ -214,11 +214,11 @@ export function startPreparedProcess(
     throw new RangeError("Process-job launch payload exceeds the safe in-memory gate limit.");
   }
   /** @type {import("node:child_process").ChildProcess|null} */
-  let child = null;
+  let child: import("node:child_process").ChildProcess | null = null;
   let cancel = () => {};
   let release = async () => {};
   /** @type {Promise<import("../../contracts/process.js").ProcessJobProcessResult>} */
-  const completion = new Promise((resolve) => {
+  const completion: Promise<import("../../contracts/process.js").ProcessJobProcessResult> = new Promise((resolve) => {
     try {
       child = spawn(
         gated ? process.execPath : commandSpec.command,
@@ -234,7 +234,7 @@ export function startPreparedProcess(
           : [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       },
       );
-    } catch (error) {
+    } catch (error: any) {
       resolve({
         code: null,
         signal: null,
@@ -257,32 +257,32 @@ export function startPreparedProcess(
       child.stdin?.end(input);
     }
 
-    const stdout = [];
-    const stderr = [];
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
     const state = {
       aborted: false,
       bufferExceeded: false,
       bytes: 0,
       storedBytes: 0,
-      spawnError: null,
+      spawnError: null as Error | null,
       timedOut: false,
       truncated: false,
     };
-    let targetStatus = null;
+    let targetStatus: any = null;
     let statusInvalid = false;
-    const statusChunks = [];
+    const statusChunks: Buffer[] = [];
     let statusBytes = 0;
-    let killTimer = null;
-    let killExitTimer = null;
-    let groupProbeTimer = null;
-    let timeoutTimer = null;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    let killExitTimer: ReturnType<typeof setTimeout> | null = null;
+    let groupProbeTimer: ReturnType<typeof setTimeout> | null = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     let settled = false;
     let childClosed = false;
-    let closeCode = null;
-    let closeSignal = null;
+    let closeCode: number | null = null;
+    let closeSignal: NodeJS.Signals | null = null;
     let groupAbsentObserved = false;
     let terminationRequested = false;
-    let terminationFailure = null;
+    let terminationFailure: string | null = null;
     const ownedGroup = gated && child.pid ? createOwnedProcessGroupAttestation(child.pid) : null;
 
     const finish = (groupExitConfirmed = true) => {
@@ -401,11 +401,11 @@ export function startPreparedProcess(
     cancel = terminate;
 
     if (gated) {
-      const gate = /** @type {import("node:stream").Writable|undefined} */ (child.stdio?.[3]);
-      const status = /** @type {import("node:stream").Readable|undefined} */ (child.stdio?.[4]);
+      const gate = /** @type {import("node:stream").Writable|undefined} */ ((child.stdio?.[3]) as import("node:stream").Writable|undefined);
+      const status = /** @type {import("node:stream").Readable|undefined} */ ((child.stdio?.[4]) as import("node:stream").Readable|undefined);
       let releasePromise;
       release = async () => {
-        releasePromise ??= new Promise((resolveRelease, rejectRelease) => {
+        releasePromise ??= new Promise<void>((resolveRelease, rejectRelease) => {
           if (!gate || typeof gate.end !== "function" || launchPayload === null) {
             rejectRelease(new Error("Process-job launch gate is unavailable."));
             return;
@@ -448,7 +448,7 @@ export function startPreparedProcess(
       });
     }
 
-    function append(target, chunk, observe, mode = "buffer") {
+    function append(target: any, chunk: any, observe: any, mode: string = "buffer") {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       try { observe?.(buffer); } catch { /* observers cannot break process ownership */ }
       state.bytes += buffer.length;
@@ -524,8 +524,8 @@ export function startPreparedProcess(
     });
   });
   return {
-    pid: child?.pid ?? null,
-    pgid: process.platform === "win32" ? null : (child?.pid ?? null),
+    pid: (child as import("node:child_process").ChildProcess | null)?.pid ?? null,
+    pgid: process.platform === "win32" ? null : ((child as import("node:child_process").ChildProcess | null)?.pid ?? null),
     startedAt: new Date(startedAt).toISOString(),
     completion,
     release: () => release(),
@@ -533,7 +533,7 @@ export function startPreparedProcess(
   };
 }
 
-function validTargetStatus(value) {
+function validTargetStatus(value: any) {
   if (!value || typeof value !== "object") return false;
   if (value.code !== null && !Number.isInteger(value.code)) return false;
   if (value.signal !== null && typeof value.signal !== "string") return false;
@@ -543,25 +543,25 @@ function validTargetStatus(value) {
     && (value.spawnError.code === undefined || typeof value.spawnError.code === "string");
 }
 
-function processSpawnError(value) {
+function processSpawnError(value: any) {
   return Object.assign(
     new Error(value.message),
     typeof value.code === "string" ? { code: value.code } : {},
   );
 }
 
-function createOwnedProcessGroupAttestation(pgid) {
+function createOwnedProcessGroupAttestation(pgid: any) {
   return {
     pgid,
     leaderExited: false,
     observedAfterLeaderExit: false,
     ownershipLost: false,
     /** @type {number|null} */
-    lastObservedAt: null,
+    lastObservedAt: null as number | null,
   };
 }
 
-function reattestOwnedProcessGroup(attestation) {
+function reattestOwnedProcessGroup(attestation: any) {
   if (attestation.ownershipLost
     || !attestation.leaderExited
     || !attestation.observedAfterLeaderExit
@@ -590,7 +590,7 @@ function reattestOwnedProcessGroup(attestation) {
   return true;
 }
 
-function signalAttestedProcessGroup(child, attestation, signal) {
+function signalAttestedProcessGroup(child: any, attestation: any, signal: any) {
   if (!child?.pid) return "absent";
   // While the exact self-led ChildProcess is definitely live and unreaped,
   // POSIX cannot recycle its PID/PGID. Event-loop stalls do not weaken that
@@ -599,7 +599,7 @@ function signalAttestedProcessGroup(child, attestation, signal) {
     try {
       process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
       return "signalled";
-    } catch (error) {
+    } catch (error: any) {
       if (error?.code === "ESRCH") return "absent";
       return "unproven";
     }
@@ -626,35 +626,35 @@ function signalAttestedProcessGroup(child, attestation, signal) {
   try {
     process.kill(-child.pid, signal);
     return "signalled";
-  } catch (error) {
+  } catch (error: any) {
     if (error?.code === "ESRCH") return "absent";
     return "unproven";
   }
 }
 
-function ownedProcessGroupPresence(pgid) {
+function ownedProcessGroupPresence(pgid: any) {
   try {
     process.kill(-pgid, 0);
     return "present";
-  } catch (error) {
+  } catch (error: any) {
     if (error?.code === "ESRCH") return "absent";
     return "unknown";
   }
 }
 
-function mergedProcessEnv(overrides) {
+function mergedProcessEnv(overrides: any) {
   const env = { ...process.env };
-  for (const [key, value] of Object.entries(overrides)) {
+  for (const [key, value] of Object.entries<string | undefined>(overrides)) {
     if (value === undefined) delete env[key];
     else env[key] = value;
   }
   return env;
 }
 
-function exactProcessEnv(values = {}) {
+function exactProcessEnv(values: any = {}) {
   /** @type {Record<string, string>} */
-  const env = {};
-  for (const [key, value] of Object.entries(values)) {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries<string | undefined>(values)) {
     if (value !== undefined) env[key] = value;
   }
   return env;
@@ -665,7 +665,7 @@ function exactProcessEnv(values = {}) {
  * @param {NodeJS.Signals} signal
  * @param {{fallbackToChildPid?: boolean}} [options]
  */
-export function killProcessGroup(child, signal, { fallbackToChildPid = false } = {}) {
+export function killProcessGroup(child: import("node:child_process").ChildProcess, signal: NodeJS.Signals, { fallbackToChildPid = false }: { fallbackToChildPid?: boolean } = {}): void {
   if (!child?.pid) return;
   try {
     process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
@@ -677,7 +677,7 @@ export function killProcessGroup(child, signal, { fallbackToChildPid = false } =
   }
 }
 
-function processLeaderExited(child) {
+function processLeaderExited(child: any) {
   return !child?.pid
     || (child.exitCode !== null && child.exitCode !== undefined)
     || (child.signalCode !== null && child.signalCode !== undefined);
@@ -686,7 +686,7 @@ function processLeaderExited(child) {
 /**
  * @param {{stdout?: string, stderr?: string}} result
  */
-export function combinedProcessOutput(result) {
+export function combinedProcessOutput(result: { stdout?: string; stderr?: string }): string {
   const stdout = String(result.stdout || "");
   const stderr = String(result.stderr || "");
   if (stdout && stderr) return `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;

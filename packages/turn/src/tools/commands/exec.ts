@@ -23,7 +23,7 @@ const MAX_EXEC_ARGS = 256;
  * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
  * @param {{ctx: import("../shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
  */
-export async function execToolImpl(params, options) {
+export async function execToolImpl(params: { executable: string; args?: string[]; workdir?: string; description?: string; timeout_ms?: number; max_output_chars?: number; background?: boolean; wake_on_completion?: boolean }, options: { ctx: import("../shared/tool-context.js").ToolContext; signal?: AbortSignal; sandboxPolicy?: any; sandboxEngine?: any; toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits; toolCallId?: string; ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController; processJobsController?: ProcessJobsController }): Promise<any> {
   return (await execToolRun(params, options)).text;
 }
 
@@ -43,9 +43,9 @@ export async function execToolRun(
     max_output_chars,
     background,
     wake_on_completion,
-  },
-  options,
-) {
+  }: { executable: string; args?: string[]; workdir?: string; description?: string; timeout_ms?: number; max_output_chars?: number; background?: boolean; wake_on_completion?: boolean },
+  options: { ctx: import("../shared/tool-context.js").ToolContext; signal?: AbortSignal; sandboxPolicy?: any; sandboxEngine?: any; toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits; toolCallId?: string; ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController; processJobsController?: ProcessJobsController },
+): Promise<any> {
   const {
     signal,
     sandboxPolicy,
@@ -86,7 +86,7 @@ export async function execToolRun(
         ...(requestEnvironment === undefined ? {} : { env: requestEnvironment }),
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     return failed(`Error: ${error?.message || String(error)}`, "sandbox_prepare_failed", startedAt);
   }
 
@@ -104,10 +104,10 @@ export async function execToolRun(
       maxOutputChars: max_output_chars === undefined ? undefined : maxChars,
       startedAt,
       failed,
-    });
+    } as Parameters<typeof handOffProcessJob>[0]);
   }
 
-  const foreground = await runForegroundCommand({ prepared, controller: ownedForegroundProcessController, tool: "Exec", callId: toolCallId, timeoutMs, signal });
+  const foreground = await runForegroundCommand({ prepared, controller: ownedForegroundProcessController, tool: "Exec", callId: toolCallId, timeoutMs, signal } as Parameters<typeof runForegroundCommand>[0]);
   if (foreground.failure) return failed(foreground.failure.text, foreground.failure.code, startedAt);
   const { result, cleanupError } = foreground;
 
@@ -185,7 +185,7 @@ export async function execToolRun(
   return finish(partial, outcome, maxChars, resolvedCtx, false);
 }
 
-function validateExecutable(value) {
+function validateExecutable(value: any) {
   if (typeof value !== "string" || value.trim().length === 0) {
     return "Error: Exec executable must be a non-empty string.";
   }
@@ -195,7 +195,7 @@ function validateExecutable(value) {
   return null;
 }
 
-function validateArgs(value) {
+function validateArgs(value: any) {
   if (!Array.isArray(value)) return "Error: Exec args must be an array of strings.";
   if (value.length > MAX_EXEC_ARGS) return `Error: Exec accepts at most ${MAX_EXEC_ARGS} arguments.`;
   if (value.some((entry) => typeof entry !== "string" || entry.includes("\0"))) {
@@ -204,16 +204,16 @@ function validateArgs(value) {
   return null;
 }
 
-function positiveInteger(value, fallback) {
+function positiveInteger(value: any, fallback: any) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
-function withPartial(message, output) {
+function withPartial(message: any, output: any) {
   return output && output !== "(no output)" ? `${message}\n\nPartial output:\n${output}` : message;
 }
 
-function finish(text, outcome, maxChars, ctx, error) {
+function finish(text: any, outcome: any, maxChars: any, ctx: any, error: any) {
   const raw = String(text || "(no output)");
   const truncated = raw.length > maxChars || outcome.truncated;
   return {
@@ -223,11 +223,11 @@ function finish(text, outcome, maxChars, ctx, error) {
   };
 }
 
-function finishError(text, outcome, maxChars, ctx) {
+function finishError(text: any, outcome: any, maxChars: any, ctx: any) {
   return finish(text, outcome, maxChars, ctx, true);
 }
 
-function failed(text, code, startedAt) {
+function failed(text: any, code: any, startedAt: any) {
   return {
     text,
     outcome: {
@@ -245,3 +245,5 @@ function failed(text, code, startedAt) {
     error: true,
   };
 }
+
+export type ProcessJobsController = import("./process-jobs.js").ProcessJobsController;

@@ -7,13 +7,13 @@ import { runOwnedForegroundProcess } from "./owned-foreground-process.js";
  * controller?: import("./owned-foreground-process.js").OwnedForegroundProcessController,
  * tool: "Bash"|"Exec", callId?: string, timeoutMs: number, signal?: AbortSignal}} options
  */
-export async function runForegroundCommand({ prepared, controller, tool, callId, timeoutMs, signal }) {
+export async function runForegroundCommand({ prepared, controller, tool, callId, timeoutMs, signal }: { prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand; controller?: import("./owned-foreground-process.js").OwnedForegroundProcessController; tool: "Bash" | "Exec"; callId?: string; timeoutMs: number; signal?: AbortSignal }): Promise<{ failure: { text: string; code: string }; result?: undefined; cleanupError?: undefined } | { result: import("../../contracts/process.js").ProcessJobProcessResult; cleanupError: any; failure?: undefined }> {
   let result;
   let cleanupError;
   try {
     result = controller
-      ? await runOwnedForegroundProcess({ controller, tool, callId, prepared, timeoutMs, signal })
-      : await runPreparedProcess(prepared, { timeoutMs, signal, maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES });
+      ? await runOwnedForegroundProcess({ controller, tool, callId, prepared, timeoutMs, signal } as Parameters<typeof runOwnedForegroundProcess>[0])
+      : await runPreparedProcess(prepared, { timeoutMs, signal, maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES } as Parameters<typeof runPreparedProcess>[1]);
   } catch (error) {
     if (!controller) throw error;
     return { failure: { text: "Error: Owned foreground command could not be completed safely.", code: "owned_process_unavailable" } };

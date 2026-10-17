@@ -18,7 +18,7 @@ import { normalizeBashTimeoutMs, normalizeProcessTimeoutMs, normalizeBackgroundT
 const result = { code: 0, signal: null, stdout: "fictional output", stderr: "", aborted: false,
   timedOut: false, bufferExceeded: false, truncated: false, bytes: 16, storedBytes: 16,
   spawnError: null, durationMs: 1 };
-let root, workspace, allowed, ctx, cleanup, prepareCommand;
+let root: any, workspace: any, allowed: any, ctx: any, cleanup: any, prepareCommand: any;
 // Never created. The policy-free path rules admit all of /tmp, which is os.tmpdir() on Linux,
 // so the denied workdir sits directly under the filesystem root instead of the temp root.
 const deniedWorkdir = join(parse(tmpdir()).root, `turn-command-mechanics-denied-${randomUUID()}`);
@@ -39,7 +39,7 @@ afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 for (const [tool, run, params, invalid] of [
   ["Bash", bashToolRun, { command: "fictional" }, { command: null }],
   ["Exec", execToolRun, { executable: "fictional" }, { executable: null, args: [null] }],
-]) describe(`${tool} common mechanics`, () => {
+] as [string, (...args: any[]) => Promise<any>, Record<string, unknown>, Record<string, unknown>][]) describe(`${tool} common mechanics`, () => {
   it.each([
     [{ background: true, wake_on_completion: "invalid" }, "process_job_invalid", "Error: wake_on_completion requires background=true and a boolean value."],
     [{ background: false, wake_on_completion: true }, "process_job_invalid", "Error: wake_on_completion requires background=true and a boolean value."],
@@ -62,22 +62,22 @@ for (const [tool, run, params, invalid] of [
     } else {
       expect(answer.error).toBe(false);
       expect(cleanup).toHaveBeenCalledTimes(1);
-      expect(runner.run.mock.calls[0][0].cwd).toBe(scenario === "relative" ? join(workspace, "relative") : allowed);
+      expect(runner.run.mock.calls[0]![0]!.cwd).toBe(scenario === "relative" ? join(workspace, "relative") : allowed);
     }
   });
 
   it.each([[undefined, 1777], [0.5, 1], [1_000_000, 1777]])("keeps exact foreground milliseconds (%s)", async (timeout_ms, expected) => {
     await run({ ...params, ...(timeout_ms === undefined ? {} : { timeout_ms }) }, { ctx, toolLimits: { bashTimeoutMs: 1777 } });
-    expect(runner.run.mock.calls[0][1].timeoutMs).toBe(expected);
+    expect(runner.run.mock.calls[0]![1]!.timeoutMs).toBe(expected);
   });
 
   it.each([undefined, 1_000_000])("does not replace the host background budget (%s)", async (timeout_ms) => {
-    const start = vi.fn(async () => ({ jobId: "fixture", state: "queued", startedAt: null }));
+    const start: any = vi.fn(async () => ({ jobId: "fixture", state: "queued", startedAt: null }));
     const answer = await run({ ...params, background: true, ...(timeout_ms === undefined ? {} : { timeout_ms }) },
-      { ctx, toolLimits: { bashTimeoutMs: 1777 }, processJobsController: { start } });
+      { ctx, toolLimits: { bashTimeoutMs: 1777 }, processJobsController: { start } as unknown as import("../../tools/commands/process-jobs.js").ProcessJobsController });
     expect(answer.outcome.code).toBe("background_started");
-    if (timeout_ms === undefined) expect(start.mock.calls[0][0]).not.toHaveProperty("timeoutMs");
-    else expect(start.mock.calls[0][0].timeoutMs).toBe(timeout_ms);
+    if (timeout_ms === undefined) expect(start.mock.calls[0]![0]!).not.toHaveProperty("timeoutMs");
+    else expect(start.mock.calls[0]![0]!.timeoutMs).toBe(timeout_ms);
     expect(runner.run).not.toHaveBeenCalled(); expect(cleanup).not.toHaveBeenCalled();
   });
 
@@ -107,7 +107,7 @@ for (const [tool, run, params, invalid] of [
   });
 
   it("transfers ownership before waiting and preserves one owner cleanup", async () => {
-    let admit, finish, owned;
+    let admit: any, finish: any, owned: any;
     const admitted = new Promise((resolve) => { admit = resolve; });
     const completion = new Promise((resolve) => { finish = resolve; });
     const owner = { run: vi.fn((input) => { owned = input; admit(); return completion; }) };
@@ -121,12 +121,12 @@ for (const [tool, run, params, invalid] of [
   });
 });
 
-it.each([
+it.each(([
   [normalizeBashTimeoutMs, 600, 600_000], [normalizeBashTimeoutMs, 601, 1000], [normalizeBashTimeoutMs, 0.5, 1000],
   [normalizeProcessTimeoutMs, 0.5, 1], [normalizeProcessTimeoutMs, 0, 1_000_000],
   [normalizeBackgroundTimeoutMs, undefined, undefined], [normalizeBackgroundTimeoutMs, 0, undefined],
   [normalizeBackgroundTimeoutMs, 0.5, 1], [normalizeBackgroundBashTimeoutMs, 600, 600_000],
   [normalizeBackgroundBashTimeoutMs, 601, 1000], [normalizeBackgroundBashTimeoutMs, 0, undefined],
-].map(([normalize, input, expected]) => [normalize.name, input, expected, normalize]))("retains timeout facts (%s, %s)", (_name, input, expected, normalize) => {
+] as [((...args: any[]) => any), any, any][]).map(([normalize, input, expected]) => [normalize.name, input, expected, normalize]))("retains timeout facts (%s, %s)", (_name, input, expected, normalize) => {
   expect(normalize(input, 1_000_000)).toBe(expected);
 });

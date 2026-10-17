@@ -15,7 +15,7 @@ const KILL_GRACE_MS = 1_000;
 
 // Kept self-contained so the sandboxed child can start from `node --eval`
 // without needing read access to agent-runtime's installed package directory.
-function nodeReplWorkerMain(frameToken) {
+function nodeReplWorkerMain(frameToken: any) {
   const repl = require("node:repl");
   const { PassThrough } = require("node:stream");
   const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
@@ -31,11 +31,11 @@ function nodeReplWorkerMain(frameToken) {
     terminal: false,
     useGlobal: false,
   });
-  const replServer = /** @type {any} */ (server);
-  let active = null;
+  const replServer = /** @type {any} */ ((server) as any);
+  let active: { id: any; output: string; stdout: string; stderr: string; bytes: number; [key: string]: any } | null = null;
   let protocolBuffer = Buffer.alloc(0);
 
-  function encodeFrame(message) {
+  function encodeFrame(message: any) {
     const payload = Buffer.from(JSON.stringify(message), "utf8");
     return Buffer.concat([
       Buffer.from(`${frameToken}:${payload.length}\n`, "utf8"),
@@ -43,7 +43,7 @@ function nodeReplWorkerMain(frameToken) {
     ]);
   }
 
-  function send(message) {
+  function send(message: any) {
     try {
       protocolWrite(encodeFrame(message));
     } catch {
@@ -51,12 +51,12 @@ function nodeReplWorkerMain(frameToken) {
     }
   }
 
-  function errorText(error) {
+  function errorText(error: any) {
     const cause = error?.err ?? error;
     return String(cause?.stack || cause?.message || cause || "Node REPL evaluation failed.");
   }
 
-  function finish(ok, text, reset = false) {
+  function finish(ok: any, text: any, reset: boolean = false) {
     const request = active;
     if (!request) return;
     active = null;
@@ -88,14 +88,14 @@ function nodeReplWorkerMain(frameToken) {
     });
   }
 
-  function captureProcessWrite(field, originalWrite) {
-    return function capturedWrite(chunk, encoding, callback) {
+  function captureProcessWrite(field: any, originalWrite: any) {
+    return function capturedWrite(chunk: any, encoding?: any, callback?: any) {
       if (!active) return originalWrite(chunk, encoding, callback);
       const resolvedEncoding = typeof encoding === "string" ? encoding : "utf8";
       const resolvedCallback = typeof encoding === "function" ? encoding : callback;
       const buffer = typeof chunk === "string"
-        ? Buffer.from(chunk, /** @type {any} */ (resolvedEncoding))
-        : Buffer.from(/** @type {any} */ (chunk));
+        ? Buffer.from(chunk, /** @type {any} */ ((resolvedEncoding) as any))
+        : Buffer.from(/** @type {any} */ ((chunk) as any));
       active.bytes += buffer.length;
       if (active.bytes > MAX_BUFFER_BYTES) {
         finish(false, `Node REPL output exceeded ${MAX_BUFFER_BYTES} bytes.`, true);
@@ -111,7 +111,7 @@ function nodeReplWorkerMain(frameToken) {
   process.stdout.write = captureProcessWrite("stdout", protocolWrite);
   process.stderr.write = captureProcessWrite("stderr", originalStderrWrite);
 
-  output.on("data", (chunk) => {
+  output.on("data", (chunk: Buffer) => {
     if (!active) return;
     active.bytes += chunk.length;
     if (active.bytes > MAX_BUFFER_BYTES) {
@@ -131,7 +131,7 @@ function nodeReplWorkerMain(frameToken) {
     finish(false, active.output.trimEnd() || "Node REPL evaluation failed.");
   };
 
-  function evaluate(requestMessage) {
+  function evaluate(requestMessage: any) {
     if (!requestMessage || requestMessage.type !== "evaluate") return;
     if (active) {
       send({ type: "result", id: requestMessage.id, ok: false, text: "Node REPL is already evaluating code." });
@@ -143,7 +143,7 @@ function nodeReplWorkerMain(frameToken) {
     }
     active = { id: requestMessage.id, output: "", stdout: "", stderr: "", bytes: 0 };
     try {
-      replServer.eval(requestMessage.code, replServer.context, "<mono-agent-node-repl>", (error, value) => {
+      replServer.eval(requestMessage.code, replServer.context, "<mono-agent-node-repl>", (error: any, value: any) => {
         if (!active || active.id !== requestMessage.id) return;
         if (error) {
           if (!replServer.underscoreErrAssigned) replServer.lastError = error;
@@ -160,12 +160,12 @@ function nodeReplWorkerMain(frameToken) {
         }
         finish(true, `${active.output}${rendered}`.trimEnd());
       });
-    } catch (error) {
+    } catch (error: any) {
       finish(false, [active.output.trimEnd(), errorText(error)].filter(Boolean).join("\n"));
     }
   }
 
-  function consumeFrames(chunk) {
+  function consumeFrames(chunk: any) {
     protocolBuffer = Buffer.concat([protocolBuffer, chunk]);
     if (protocolBuffer.length > MAX_FRAME_BYTES) process.exit(1);
     while (protocolBuffer.length > 0) {
@@ -197,11 +197,11 @@ function nodeReplWorkerMain(frameToken) {
   });
 }
 
-function workerSource(frameToken) {
+function workerSource(frameToken: any) {
   return `(${nodeReplWorkerMain.toString()})(${JSON.stringify(frameToken)});`;
 }
 
-function encodeFrame(frameToken, message) {
+function encodeFrame(frameToken: any, message: any) {
   const payload = Buffer.from(JSON.stringify(message), "utf8");
   return Buffer.concat([
     Buffer.from(`${frameToken}:${payload.length}\n`, "utf8"),
@@ -209,11 +209,11 @@ function encodeFrame(frameToken, message) {
   ]);
 }
 
-function errorMessage(error) {
+function errorMessage(error: any) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function appendStderr(record, chunk) {
+function appendStderr(record: any, chunk: any) {
   record.directOutputBytes += chunk.length;
   if (record.directOutputBytes > NODE_REPL_MAX_BUFFER_BYTES) {
     record.failureReason = `Node REPL output exceeded ${NODE_REPL_MAX_BUFFER_BYTES} bytes.`;
@@ -223,7 +223,7 @@ function appendStderr(record, chunk) {
   record.stderr.push(chunk);
 }
 
-function directOutput(record, capturedStdout = "", capturedStderr = "") {
+function directOutput(record: any, capturedStdout: string = "", capturedStderr: string = "") {
   const sections = [];
   const stdout = String(capturedStdout || "").trimEnd();
   const stderr = `${capturedStderr}${Buffer.concat(record.stderr).toString("utf8")}`.trimEnd();
@@ -232,23 +232,23 @@ function directOutput(record, capturedStdout = "", capturedStderr = "") {
   return sections.join("\n");
 }
 
-function clearRequestOutput(record) {
+function clearRequestOutput(record: any) {
   record.stderr = [];
   record.directOutputBytes = 0;
   record.failureReason = null;
 }
 
-function resultText(record, text, stdout, stderr) {
+function resultText(record: any, text: any, stdout: any, stderr: any) {
   return [directOutput(record, stdout, stderr), String(text || "").trimEnd()].filter(Boolean).join("\n");
 }
 
-async function cleanupPrepared(record) {
+async function cleanupPrepared(record: any) {
   if (record.cleaned) return;
   record.cleaned = true;
   try { await record.prepared.cleanup?.(); } catch { /* best-effort teardown */ }
 }
 
-async function terminateRecord(record) {
+async function terminateRecord(record: any) {
   if (record.closed) {
     await record.done;
     return;
@@ -264,7 +264,7 @@ async function terminateRecord(record) {
   await record.done;
 }
 
-function consumeWorkerFrames(record, chunk, onMessage) {
+function consumeWorkerFrames(record: any, chunk: any, onMessage: any) {
   record.protocolBuffer = Buffer.concat([record.protocolBuffer, chunk]);
   if (record.protocolBuffer.length > NODE_REPL_MAX_FRAME_BYTES) {
     record.failureReason = "Node REPL protocol frame exceeded its byte limit.";
@@ -307,8 +307,8 @@ function consumeWorkerFrames(record, chunk, onMessage) {
   }
 }
 
-function codedError(message, code) {
-  const error = /** @type {Error & {code?: string}} */ (new Error(message));
+function codedError(message: any, code: any) {
+  const error = /** @type {Error & {code?: string}} */ ((new Error(message)) as Error & {code?: string});
   error.code = code;
   return error;
 }
@@ -323,13 +323,13 @@ export function createNodeReplController({
   sandboxPolicy,
   sandboxEngine,
   ctx,
-} = {}) {
+}: { cwd?: string; maxOutputChars?: number; sandboxPolicy?: any; sandboxEngine?: any; ctx?: any } = {}): { execute: ({ code }: { code: string }, { signal }?: { signal?: AbortSignal }) => Promise<any>; /** Structured result used by the Pi bridge so telemetry does not depend on text prefixes. */ executeDetailed(params: any, execution?: {}): Promise<{ text: any; outcome: { status: string; code: string; retryable: boolean; attempts: number; durationMs: number; bytes: number; truncated: boolean }; error: boolean } | { text: string; outcome: { status: string; code: any; retryable: boolean; attempts: number; durationMs: number; bytes: number; truncated: boolean }; error: boolean }>; close(): Promise<void> } {
   const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   const workdir = resolve(cwd || resolvedCtx.workspace || process.cwd());
-  let current = null;
-  let starting = null;
+  let current: NodeReplRecord | null = null;
+  let starting: Promise<NodeReplRecord> | null = null;
   let permanentlyClosed = false;
   let nextRequestId = 0;
 
@@ -357,14 +357,14 @@ export function createNodeReplController({
         env: prepared.env ? { ...process.env, ...prepared.env } : process.env,
         stdio: ["pipe", "pipe", "pipe"],
       });
-    } catch (error) {
+    } catch (error: any) {
       await prepared.cleanup?.();
       throw error;
     }
 
     let resolveDone = () => {};
-    const done = new Promise((resolveDonePromise) => { resolveDone = () => resolveDonePromise(); });
-    const record = {
+    const done = new Promise<void>((resolveDonePromise) => { resolveDone = () => resolveDonePromise(); });
+    const record: NodeReplRecord = {
       child,
       prepared,
       done,
@@ -383,7 +383,7 @@ export function createNodeReplController({
     current = record;
 
     child.stdout?.on("data", (chunk) => {
-      consumeWorkerFrames(record, chunk, (message) => handleWorkerMessage(record, message));
+      consumeWorkerFrames(record, chunk, (message: any) => handleWorkerMessage(record, message));
     });
     child.stderr?.on("data", (chunk) => appendStderr(record, chunk));
     child.once("error", (error) => { record.spawnError = error; });
@@ -406,7 +406,7 @@ export function createNodeReplController({
     return record;
   }
 
-  function handleWorkerMessage(record, result) {
+  function handleWorkerMessage(record: any, result: any) {
     const pending = record.pending;
     if (!pending || !result || result.type !== "result" || result.id !== pending.id) return;
     record.pending = null;
@@ -421,7 +421,7 @@ export function createNodeReplController({
           maxChars: maxOutputChars,
           strategy: "head_tail",
           ctx: resolvedCtx,
-        }));
+        } as Parameters<typeof capChars>[1]));
       } else {
         pending.reject(codedError(text || "Node REPL evaluation failed.", result.reset ? "output_limit" : "evaluation_error"));
       }
@@ -435,7 +435,7 @@ export function createNodeReplController({
     return await starting;
   }
 
-  async function resetForFailure(record, pending, message, code) {
+  async function resetForFailure(record: any, pending: any, message: any, code: any) {
     if (record.pending === pending) record.pending = null;
     clearTimeout(pending.timeoutTimer);
     pending.signal?.removeEventListener?.("abort", pending.onAbort);
@@ -447,7 +447,7 @@ export function createNodeReplController({
    * @param {{code: string}} params
    * @param {{signal?: AbortSignal}} [execution]
    */
-  async function execute({ code }, { signal } = {}) {
+  async function execute({ code }: { code: string; }, { signal }: { signal?: AbortSignal; } = {}): Promise<any> {
     if (typeof code !== "string" || code.trim().length === 0) {
       throw codedError("Node REPL code must not be empty.", "invalid_code");
     }
@@ -462,13 +462,13 @@ export function createNodeReplController({
     const id = `node-repl-${++nextRequestId}`;
 
     return await new Promise((resolveResult, rejectResult) => {
-      const pending = {
+      const pending: NodeReplPending = {
         id,
         resolve: resolveResult,
         reject: rejectResult,
         signal,
-        onAbort: null,
-        timeoutTimer: null,
+        onAbort: null as unknown as () => void,
+        timeoutTimer: null as unknown as ReturnType<typeof setTimeout>,
       };
       pending.onAbort = () => {
         void resetForFailure(record, pending, "Node REPL execution aborted.", "aborted");
@@ -514,7 +514,7 @@ export function createNodeReplController({
           },
           error: false,
         };
-      } catch (error) {
+      } catch (error: any) {
         const text = errorMessage(error);
         return {
           text,
@@ -542,3 +542,30 @@ export function createNodeReplController({
     },
   };
 }
+
+
+type NodeReplPending = {
+  id: string;
+  resolve: (value: any) => void;
+  reject: (reason: any) => void;
+  signal: AbortSignal | undefined;
+  onAbort: () => void;
+  timeoutTimer: ReturnType<typeof setTimeout>;
+};
+
+type NodeReplRecord = {
+  child: import("node:child_process").ChildProcessWithoutNullStreams;
+  prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand;
+  done: Promise<void>;
+  resolveDone: () => void;
+  frameToken: string;
+  protocolBuffer: Buffer;
+  closed: boolean;
+  cleaned: boolean;
+  killTimer: ReturnType<typeof setTimeout> | null;
+  spawnError: Error | null;
+  failureReason: string | null;
+  pending: NodeReplPending | null;
+  stderr: Buffer[];
+  directOutputBytes: number;
+};

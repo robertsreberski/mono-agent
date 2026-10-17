@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { createNodeReplController } from "../../tools/commands/node-repl.js";
 
-const tempDirs = [];
+const tempDirs: any[] = [];
 
 function tempWorkspace() {
   const dir = mkdtempSync(resolve("/tmp", "agent-runtime-node-repl-"));
@@ -12,10 +12,10 @@ function tempWorkspace() {
   return dir;
 }
 
-function controllerFor(root, options = {}) {
+function controllerFor(root: any, options: any = {}) {
   return createNodeReplController({
     cwd: root,
-    ctx: { workspace: root, sandbox: passthroughSandbox },
+    ctx: { workspace: root, sandbox: passthroughSandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
     ...options,
   });
 }
@@ -110,14 +110,14 @@ describe("run-scoped Node REPL controller", () => {
       cleanup,
     }));
     const sandbox = {
-      mergePolicies: (_configured, request) => request,
+      mergePolicies: (_configured: any, request: any) => request,
       prepareCommand,
       networkAllowsUrl: () => false,
     };
     const controller = createNodeReplController({
       cwd: root,
       sandboxPolicy: { mode: "native" },
-      ctx: { workspace: root, sandbox },
+      ctx: { workspace: root, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
     });
 
     expect(prepareCommand).not.toHaveBeenCalled();
@@ -126,7 +126,7 @@ describe("run-scoped Node REPL controller", () => {
       policy: { mode: "native" },
       command: expect.objectContaining({ command: process.execPath, cwd: root }),
     }));
-    expect(prepareCommand.mock.calls[0][0].command).not.toHaveProperty("allowLocalBinding");
+    expect(prepareCommand.mock.calls[0]![0]!.command).not.toHaveProperty("allowLocalBinding");
 
     await controller.close();
     await controller.close();
@@ -160,14 +160,14 @@ describe("run-scoped Node REPL controller", () => {
       sandboxed: true,
     }));
     const sandbox = {
-      mergePolicies: (_configured, request) => request,
+      mergePolicies: (_configured: any, request: any) => request,
       prepareCommand,
       networkAllowsUrl: () => false,
     };
     const controller = createNodeReplController({
       cwd: root,
       sandboxPolicy: { mode: "native" },
-      ctx: { workspace: root, sandbox },
+      ctx: { workspace: root, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext,
     });
 
     try {

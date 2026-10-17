@@ -13,7 +13,7 @@ import { startPreparedProcess } from "./process-runner.js";
  * prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand,
  * timeoutMs: number, signal?: AbortSignal}} input
  */
-export async function runOwnedForegroundProcess({ controller, tool, callId, prepared, timeoutMs, signal }) {
+export async function runOwnedForegroundProcess({ controller, tool, callId, prepared, timeoutMs, signal }: { controller: OwnedForegroundProcessController; tool: "Exec" | "Bash"; callId?: string; prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand; timeoutMs: number; signal?: AbortSignal }): Promise<import("../../contracts/process.js").ProcessJobProcessResult> {
   if (typeof callId !== "string" || !callId.trim() || Buffer.byteLength(callId, "utf8") > 256
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     await prepared.cleanup?.();
@@ -44,9 +44,13 @@ export async function runOwnedForegroundProcess({ controller, tool, callId, prep
         signal: options.signal ?? signal,
         waitForProcessGroup: true,
         exactEnvironment: true,
-      });
+      } as Parameters<typeof startPreparedProcess>[1]);
     },
   });
   if (result.groupExitConfirmed === false) throw new Error("Owned foreground command cleanup remains unresolved.");
   return result;
 }
+
+export type OwnedForegroundProcessController = ReturnType<OwnedForegroundProcesses["forAttempt"]>;
+
+export type OwnedForegroundProcesses = import("../../contracts/process.js").OwnedForegroundProcesses;

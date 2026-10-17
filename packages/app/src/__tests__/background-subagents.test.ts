@@ -3,8 +3,7 @@ import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 import { createLiveInputMailbox } from "@mono-agent/conversation";
 import { formatHostCapabilities } from "@mono-agent/conversation";
-// @ts-expect-error Real direct kernel execution seam.
-import { execToolRun } from "../../../turn/src/tools/commands/exec.js";
+import { execToolRun } from "@mono-agent/turn/tools";
 import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/contracts";
 import { fileURLToPath } from "node:url";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
@@ -1806,7 +1805,7 @@ describe("managed detached production execution", () => {
     const run = async (request: any) => {
       sessions.push(request.instance.sessionId);
       const result = await execToolRun({ executable: process.execPath, args: ["-e", "process.stdout.write('verified')"], workdir: f.root }, {
-        ctx: { workspace: f.root }, toolCallId: "owned-call", ownedForegroundProcessController: request.ownedForegroundProcesses.forAttempt(),
+        ctx: { workspace: f.root } as import("@mono-agent/turn/tools").ToolContext, toolCallId: "owned-call", ownedForegroundProcessController: request.ownedForegroundProcesses.forAttempt(),
       });
       expect(result.error).not.toBe(true);
       expect(result.text).toContain("verified");

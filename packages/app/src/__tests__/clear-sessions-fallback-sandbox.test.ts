@@ -9,8 +9,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const processRunnerHooks = vi.hoisted(() => ({
   run: undefined as ((command: { readonly command: string; readonly args?: readonly string[] }) => unknown) | undefined,
 }));
+const processRunnerPath = await vi.hoisted(async () => {
+  const { createRequire } = await import("node:module");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  return fileURLToPath(new URL("./commands/process-runner.js", pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"))));
+});
 
-vi.mock("../../../turn/src/tools/commands/process-runner.js", async (importOriginal) => {
+vi.mock(processRunnerPath, async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
