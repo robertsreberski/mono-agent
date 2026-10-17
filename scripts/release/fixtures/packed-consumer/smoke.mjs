@@ -29,8 +29,9 @@ if (packageNames.includes("@mono-agent/memory")) {
   const count = execFileSync(process.execPath, ["--input-type=module", "--eval", `
     import { registerHooks } from "node:module";
     const target = ${JSON.stringify(targetUrl)};
+    const allowed = new Set([target, new URL("./conversation.js", target).href]);
     registerHooks({ load(url, context, next) {
-      if (url !== target) throw new Error("Health metadata imported another module: " + url);
+      if (!allowed.has(url)) throw new Error("Health metadata imported another module: " + url);
       return next(url, context);
     } });
     const metadata = await import(target);
@@ -46,15 +47,17 @@ if (packageNames.includes("@mono-agent/channel-telegram")) {
     import assert from "node:assert/strict";
     import { registerHooks } from "node:module";
     const target = ${JSON.stringify(targetUrl)};
+    const allowed = new Set([target, new URL("./conversation.js", target).href]);
     registerHooks({ load(url, context, next) {
-      if (url !== target) throw new Error("Conversation routing loaded another module: " + url);
+      if (!allowed.has(url)) throw new Error("Conversation routing loaded another module: " + url);
       return next(url, context);
     } });
     const routing = await import(target);
+    assert.deepEqual(Object.keys(routing).sort(), ["formatTelegramConversationTarget", "parseTelegramConversationId", "telegramMessageThreadId"]);
     const topic = routing.parseTelegramConversationId("telegram:-1001:12#bucket");
     assert.deepEqual(topic, { chatId: -1001, messageThreadId: 12 });
     assert.equal(routing.formatTelegramConversationTarget(topic), "telegram:-1001:12");
-    assert.equal(routing.telegramConversationId(topic), "telegram:-1001:12");
+    assert.equal(routing.telegramMessageThreadId({ message_thread_id: 12, is_topic_message: true }), 12);
     assert.equal(routing.parseTelegramConversationId("telegram:1:0"), undefined);
   `], { encoding: "utf8" });
 }

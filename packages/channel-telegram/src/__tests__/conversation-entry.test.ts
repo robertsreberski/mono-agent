@@ -1,18 +1,22 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { formatTelegramConversationTarget, parseTelegramConversationId, telegramConversationId, type TelegramConversationTarget } from "../conversation.js";
+import { formatTelegramConversationTarget, parseTelegramConversationId, type TelegramConversationTarget } from "../conversation-entry.js";
+import { telegramConversationId } from "../conversation.js";
 
 describe("pure conversation entry", () => {
   it("loads the built entry without any SDK or client dependency", () => {
     expect(execFileSync(process.execPath, ["--input-type=module", "--eval", `
       import { registerHooks } from "node:module";
       const target = import.meta.resolve("@mono-agent/channel-telegram/conversation");
+      const allowed = new Set([target, new URL("./conversation.js", target).href]);
       registerHooks({ load(url, context, next) {
-        if (url !== target) throw new Error("Unexpected routing dependency: " + url);
+        if (!allowed.has(url)) throw new Error("Unexpected routing dependency: " + url);
         return next(url, context);
       } });
       const routing = await import(target);
-      console.log(routing.telegramConversationId({ chatId: "@fictional", messageThreadId: 12 }));
+      const expected = ["formatTelegramConversationTarget", "parseTelegramConversationId", "telegramMessageThreadId"];
+      if (JSON.stringify(Object.keys(routing).sort()) !== JSON.stringify(expected)) throw new Error("Unexpected public routing surface");
+      console.log(routing.formatTelegramConversationTarget({ chatId: "@fictional", messageThreadId: 12 }));
     `], { encoding: "utf8" }).trim()).toBe("telegram:@fictional:12");
   });
 

@@ -518,24 +518,10 @@ telegramReplyCallbackData
 **`@mono-agent/channel-telegram/conversation`**
 
 ```text
-TelegramChatObservation
 TelegramConversationTarget
-TelegramDestination
-TelegramKnownTopicName
-TelegramTopicNameRecord
-TelegramTopicNameSource
 formatTelegramConversationTarget
-isTelegramForumServiceMessage
-mergeTelegramTopicName
 parseTelegramConversationId
-telegramChatObservationFromMessage
-telegramConversationId
-telegramConversationTarget
-telegramMessageTarget
 telegramMessageThreadId
-telegramThreadParams
-telegramTopicNameFromMessage
-withoutImplicitTopicReply
 ```
 
 <!-- public-api-inventory:end -->

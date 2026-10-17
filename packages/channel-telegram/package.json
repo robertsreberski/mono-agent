@@ -17,8 +17,8 @@
   "types": "./dist/index.d.ts",
   "exports": {
     "./conversation": {
-      "types": "./dist/conversation.d.ts",
-      "import": "./dist/conversation.js"
+      "types": "./dist/conversation-entry.d.ts",
+      "import": "./dist/conversation-entry.js"
     },
     ".": {
       "types": "./dist/index.d.ts",
