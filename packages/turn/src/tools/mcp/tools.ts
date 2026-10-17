@@ -6,7 +6,7 @@ import { MCP_TEXT_RESULT_LIMIT, MCP_IMAGE_INLINE_MAX_BYTES, normalizeMcpToolPara
 import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "./timeouts.js";
 import { registerMcpAppForToolResult } from "./apps.js";
 
-function mcpToolName(serverName, toolName, reservedNames) {
+function mcpToolName(serverName: any, toolName: any, reservedNames: any) {
   if (!reservedNames.has(toolName)) return toolName;
   return `mcp__${serverName}__${toolName}`;
 }
@@ -14,11 +14,11 @@ function mcpToolName(serverName, toolName, reservedNames) {
 // Inactivity wall clock around an MCP call. `registerReset` (optional) hands the
 // caller a rearm function so tool progress notifications can keep a legitimately
 // long call alive; the SDK's maxTotalTimeout stays the hard cap.
-function withTimeout(promise, timeoutMs, signal, label, registerReset) {
+function withTimeout(promise: any, timeoutMs: any, signal: any, label: any, registerReset: any) {
   if (signal?.aborted) return Promise.reject(new Error("tool execution aborted"));
   const ms = Number(timeoutMs) || 120000;
-  let timeout;
-  const timer = new Promise((_, reject) => {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timer = new Promise((_: (value: any) => void, reject: (reason?: any) => void) => {
     const arm = () => setTimeout(() => reject(new Error(`${label || "MCP tool"} timed out after ${ms}ms`)), ms);
     timeout = arm();
     registerReset?.(() => {
@@ -34,7 +34,8 @@ function withTimeout(promise, timeoutMs, signal, label, registerReset) {
  * @param {Set<any>} [reservedNames]
  * @param {{limits?: any, mcpCallNoTotalTimeoutTools?: readonly string[], cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any, mcpApps?: any, onRichOutput?: () => void, runId?: string}} [options]
  */
-export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
+export function initPiMcpTools(mcpConfig: any, reservedNames?: Set<any>, { limits, mcpCallNoTotalTimeoutTools, cwd, persistArtifact, qaOutputDir, onTruncate, toolPayloadMaxBytes, sandboxPolicy, sandboxEngine, onToolProgress, ctx, mcpApps, onRichOutput, runId, }?: { limits?: any; mcpCallNoTotalTimeoutTools?: readonly string[]; cwd?: any; persistArtifact?: any; qaOutputDir?: any; onTruncate?: any; toolPayloadMaxBytes?: number; sandboxPolicy?: any; sandboxEngine?: any; onToolProgress?: any; ctx?: any; mcpApps?: any; onRichOutput?: () => void; runId?: string; }): Promise<{ clients: { name: any; client: import("@modelcontextprotocol/sdk/client").Client<{ method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }>; transport: import("@modelcontextprotocol/sdk/client/streamableHttp").StreamableHTTPClientTransport | import("@modelcontextprotocol/sdk/client/sse").SSEClientTransport | import("@modelcontextprotocol/sdk/client/stdio").StdioClientTransport; connectionId: `${string}-${string}-${string}-${string}-${string}`; retainedByMcpApps: boolean; privateCapabilityUrl: boolean; closed: boolean; inFlight: Set<any>; }[]; tools: any[]; warnings: { server: string; message: any; code?: string; type: string; warning_kind: string; }[]; }>;
+export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = new Set(), {
   limits = {},
   mcpCallNoTotalTimeoutTools = [],
   cwd = null,
@@ -49,11 +50,11 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   mcpApps = null,
   onRichOutput = null,
   runId = null,
-} = {}) {
+}: { limits?: any; mcpCallNoTotalTimeoutTools?: readonly string[]; cwd?: any; persistArtifact?: any; qaOutputDir?: any; onTruncate?: any; toolPayloadMaxBytes?: number; sandboxPolicy?: any; sandboxEngine?: any; onToolProgress?: any; ctx?: any; mcpApps?: any; onRichOutput?: (() => void) | null; runId?: string | null } = {}) {
   const clients = [];
   const tools = [];
-  const entries = Object.entries(mcpConfig || {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, {
+  const entries = Object.entries(mcpConfig || {}).sort(([a]: [string, any], [b]: [string, any]) => a < b ? -1 : a > b ? 1 : 0);
+  const settled = await Promise.allSettled(entries.map(([name, cfg]: [string, any]) => connectMcpClient(name, cfg, {
     cwd,
     sandboxPolicy,
     sandboxEngine,
@@ -67,7 +68,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   // deterministic) and record connect failures.
   const connectedList = [];
   for (const [index, result] of settled.entries()) {
-    const serverName = entries[index]?.[0];
+    const serverName = entries[index]?.[0]!;
     if (result.status !== "fulfilled") {
       warnings.push({
         type: "runtime_warning",
@@ -85,10 +86,10 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   // Phase 2: list tools from every connected server CONCURRENTLY (previously
   // serial, adding ~Nx the slowest listTools to turn startup, painful over a
   // SOCKS proxy). Results are awaited in entry order to keep registration stable.
-  const listings = await Promise.all(connectedList.map(async ({ serverName, connected }) => {
+  const listings = await Promise.all(connectedList.map(async ({ serverName, connected }: { serverName: string; connected: Awaited<ReturnType<typeof connectMcpClient>> }) => {
     try {
       return { serverName, connected, listed: await connected.client.listTools() };
-    } catch (err) {
+    } catch (err: any) {
       return { serverName, connected, error: err };
     }
   }));
@@ -106,7 +107,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
       continue;
     }
 
-    for (const sourceTool of [...(listed.tools || [])].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+    for (const sourceTool of [...(listed!.tools || [])].sort((a: { inputSchema: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; }; name: string; description?: string | undefined; outputSchema?: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; } | undefined; annotations?: { title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; } | undefined; execution?: { taskSupport?: "optional" | "required" | "forbidden" | undefined; } | undefined; _meta?: Record<string, unknown> | undefined; icons?: { src: string; mimeType?: string | undefined; sizes?: string[] | undefined; theme?: "light" | "dark" | undefined; }[] | undefined; title?: string | undefined; }, b: { inputSchema: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; }; name: string; description?: string | undefined; outputSchema?: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; } | undefined; annotations?: { title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; } | undefined; execution?: { taskSupport?: "optional" | "required" | "forbidden" | undefined; } | undefined; _meta?: Record<string, unknown> | undefined; icons?: { src: string; mimeType?: string | undefined; sizes?: string[] | undefined; theme?: "light" | "dark" | undefined; }[] | undefined; title?: string | undefined; }) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const name = mcpToolName(serverName, sourceTool.name, seen);
       if (seen.has(name)) continue;
       seen.add(name);
@@ -114,8 +115,8 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
         name,
         label: sourceTool.title || sourceTool.name,
         description: sourceTool.description || `${serverName}:${sourceTool.name}`,
-        parameters: sourceTool.inputSchema || /** @type {any} */ (sourceTool).input_schema || objectSchema({}),
-        async execute(toolCallId, params, signal) {
+        parameters: sourceTool.inputSchema || /** @type {any} */ ((sourceTool) as any).input_schema || objectSchema({}),
+        async execute(toolCallId: any, params: any, signal: any) {
           if (signal?.aborted) throw new Error("tool execution aborted");
           // OWN this request's abort signal rather than forwarding the caller's
           // directly, so run teardown can cancel the call ON THE WIRE. The SDK
@@ -159,8 +160,8 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           // resetTimeoutOnProgress) when an onprogress callback is present, so one
           // is always attached: it rearms the outer wall clock and optionally
           // surfaces the notification to the host.
-          let resetInactivityTimeout = null;
-          const onprogress = (progress) => {
+          let resetInactivityTimeout: (() => void) | null = null;
+          const onprogress = (progress: any) => {
             resetInactivityTimeout?.();
             onToolProgress?.({
               type: "tool_progress",
@@ -185,7 +186,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               signal: callAbort.signal,
               onprogress,
             },
-          ).catch((error) => {
+          ).catch((error: any) => {
             if (connected.privateCapabilityUrl) {
               throw new Error("Private request-scoped MCP tool call failed.");
             }
@@ -196,7 +197,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
             mcpCallTimeoutMs,
             callAbort.signal,
             `${serverName}:${sourceTool.name}`,
-            (reset) => {
+            (reset: any) => {
               resetInactivityTimeout = reset;
             },
           );
@@ -209,13 +210,13 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               serverName,
               connected,
               sourceTool,
-              listedTools: listed.tools || [],
+              listedTools: listed!.tools || [],
               toolCallId,
               toolInput: normalizedParams || {},
               toolResult: out,
             });
           }
-          const imageTruncations = [];
+          const imageTruncations: { original_bytes?: unknown; saved_paths?: string[] }[] = [];
           return {
             content: await coerceMcpContent(out, {
               textLimit,
@@ -223,7 +224,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               persistArtifact,
               toolName: name,
               toolUseId: toolCallId,
-              onTruncate: (event) => {
+              onTruncate: (event: any) => {
                 imageTruncations.push(event);
                 onTruncate?.(event);
               },
@@ -241,8 +242,8 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               raw: compactRawMcpResult(out),
               ...(imageTruncations.length ? {
                 tool_payload_truncated: true,
-                tool_payload_original_bytes: imageTruncations.reduce((sum, event) => sum + (Number(event.original_bytes) || 0), 0),
-                tool_payload_saved_paths: imageTruncations.flatMap((event) => event.saved_paths || []),
+                tool_payload_original_bytes: imageTruncations.reduce((sum: any, event: any) => sum + (Number(event.original_bytes) || 0), 0),
+                tool_payload_saved_paths: imageTruncations.flatMap((event: any) => event.saved_paths || []),
               } : {}),
             },
           };
@@ -262,11 +263,11 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   };
 }
 
-export async function closePiMcpClients(clients, { timeoutMs = 5000 } = {}) {
+export async function closePiMcpClients(clients: any, { timeoutMs = 5000 }: { timeoutMs?: number } = {}): Promise<void> {
   // Close the client first (stop accepting messages) then the transport (tear
   // down I/O), each bounded by a timeout so a hung stdio pipe cannot stall
   // shutdown — a common source of "Connection closed" churn on reconnect.
-  await Promise.all((clients || []).map(async (connected) => {
+  await Promise.all((clients || []).map(async (connected: any) => {
     if (connected?.retainedByMcpApps === true) return;
     await closeConnectedMcpClient(connected, timeoutMs);
   }));

@@ -15,13 +15,13 @@ export async function registerMcpAppForToolResult({
   toolCallId,
   toolInput,
   toolResult,
-}) {
+}: { mcpApps: any; onRichOutput: any; runId: any; serverName: any; connected: any; sourceTool: any; listedTools: any; toolCallId: any; toolInput: any; toolResult: any }): Promise<void> {
   const resourceUri = mcpAppResourceUri(sourceTool);
   if (!resourceUri) return;
   // A negotiated app can outlive the tool result; it is already visible even
   // when a later turn tries to terminate silently.
   onRichOutput?.();
-  const fail = async (code, message) => {
+  const fail = async (code: any, message: any) => {
     try {
       await mcpApps.recordFailure({
         ...(runId ? { runId } : {}),
@@ -39,11 +39,11 @@ export async function registerMcpAppForToolResult({
     return;
   }
   const hostVersions = Array.isArray(mcpApps.protocolVersions)
-    ? mcpApps.protocolVersions.filter((value) => typeof value === "string")
+    ? mcpApps.protocolVersions.filter((value: any) => typeof value === "string")
     : [];
-  const protocolVersion = MCP_APP_SUPPORTED_VERSIONS.find((version) => hostVersions.includes(version));
+  const protocolVersion = MCP_APP_SUPPORTED_VERSIONS.find((version: "2026-01-26" | "2025-11-21") => hostVersions.includes(version));
   const hostMimeTypes = Array.isArray(mcpApps.mimeTypes)
-    ? mcpApps.mimeTypes.filter((value) => typeof value === "string")
+    ? mcpApps.mimeTypes.filter((value: any) => typeof value === "string")
     : [];
   if (
     !protocolVersion
@@ -68,11 +68,11 @@ export async function registerMcpAppForToolResult({
 
   const connection = {
     connectionId: connected.connectionId,
-    readResource: async (uri) => await connected.client.readResource({ uri }),
+    readResource: async (uri: any) => await connected.client.readResource({ uri }),
     // Same in-flight registration as the tool path: a retained MCP App
     // connection torn down mid-call must cancel on the wire, not be closed out
     // from under the request. See closeConnectedMcpClient.
-    callTool: async (name, args, signal) => {
+    callTool: async (name: any, args: any, signal: any) => {
       const callAbort = new AbortController();
       const forwardAbort = () => callAbort.abort(signal?.reason);
       signal?.addEventListener("abort", forwardAbort, { once: true });
@@ -112,8 +112,8 @@ export async function registerMcpAppForToolResult({
       toolResult,
       resource,
       appVisibleTools: listedTools
-        .filter((tool) => mcpToolVisibleToApp(tool))
-        .map((tool) => tool.name),
+        .filter((tool: any) => mcpToolVisibleToApp(tool))
+        .map((tool: any) => tool.name),
       connection,
     });
     if (registered?.retainConnection === true && registered.part?.type === "mcp_app") {
@@ -124,7 +124,7 @@ export async function registerMcpAppForToolResult({
   }
 }
 
-function mcpAppResourceUri(tool) {
+function mcpAppResourceUri(tool: any) {
   const meta = tool?._meta || tool?.meta;
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
   if (meta.ui && typeof meta.ui === "object" && !Array.isArray(meta.ui)
@@ -132,15 +132,15 @@ function mcpAppResourceUri(tool) {
   return typeof meta["ui/resourceUri"] === "string" ? meta["ui/resourceUri"] : null;
 }
 
-function mcpToolVisibleToApp(tool) {
+function mcpToolVisibleToApp(tool: any) {
   const meta = tool?._meta || tool?.meta;
   const visibility = meta?.ui?.visibility;
   return !Array.isArray(visibility) || visibility.includes("app");
 }
 
-function selectMcpAppResource(response, resourceUri) {
+function selectMcpAppResource(response: any, resourceUri: any) {
   const content = Array.isArray(response?.contents)
-    ? response.contents.find((entry) => entry?.uri === resourceUri)
+    ? response.contents.find((entry: any) => entry?.uri === resourceUri)
     : null;
   if (!content || typeof content.text !== "string") return null;
   const mimeType = content.mimeType || content.mime_type;

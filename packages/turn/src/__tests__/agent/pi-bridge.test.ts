@@ -11,8 +11,8 @@ import { getPiBuiltinTools, normalizePiBuiltinToolParams } from "../../tools/pi-
 import { prepareMcpStdioCommand, resolveMcpStdioCwd } from "../../tools/mcp/connection.js";
 import { createApprovalManager } from "../../agent/approval.js";
 
-function makeSink(runDir) {
-  return ({ filename, buffer }) => {
+function makeSink(runDir: any) {
+  return ({ filename, buffer }: any) => {
     const dir = join(runDir, "tool-output");
     mkdirSync(dir, { recursive: true });
     const target = join(dir, filename);
@@ -21,7 +21,7 @@ function makeSink(runDir) {
   };
 }
 
-const tempDirs = [];
+const tempDirs: string[] = [];
 let ctx = createToolContext();
 
 function tempWorkspace() {
@@ -40,7 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   ctx = createToolContext();
-  while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
+  while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
 describe("pi MCP tool helpers", () => {
@@ -64,7 +64,7 @@ describe("pi MCP tool helpers", () => {
     const root = tempWorkspace();
     const runArtifactDir = join(root, ".mono-agent", "artifacts", "run-image");
     const imageBytes = Buffer.from("large screenshot payload");
-    const truncations = [];
+    const truncations: any[] = [];
 
     const content = await coerceMcpContent(
       { content: [{ type: "image", data: imageBytes.toString("base64"), mimeType: "image/png" }] },
@@ -73,7 +73,7 @@ describe("pi MCP tool helpers", () => {
         persistArtifact: makeSink(runArtifactDir),
         toolName: "mcp__playwright__browser_take_screenshot",
         toolUseId: "shot-1",
-        onTruncate: (event) => truncations.push(event),
+        onTruncate: (event: any) => truncations.push(event),
       },
     );
 
@@ -82,8 +82,8 @@ describe("pi MCP tool helpers", () => {
     expect(content[0].text).toContain("saved_to=");
     const files = readdirSync(join(runArtifactDir, "tool-output"));
     expect(files).toHaveLength(1);
-    expect(files[0]).toMatch(/mcp__playwright__browser_take_screenshot.*\.png$/);
-    expect(readFileSync(join(runArtifactDir, "tool-output", files[0])).toString()).toBe("large screenshot payload");
+    expect(files[0]!).toMatch(/mcp__playwright__browser_take_screenshot.*\.png$/);
+    expect(readFileSync(join(runArtifactDir, "tool-output", files[0]!)).toString()).toBe("large screenshot payload");
     expect(truncations[0]).toMatchObject({
       tool: "mcp__playwright__browser_take_screenshot",
       tool_use_id: "shot-1",
@@ -204,8 +204,8 @@ describe("pi MCP tool helpers", () => {
     });
 
     const tools = getPiBuiltinTools(["Read", "Bash"], { ctx, toolLimits });
-    const readSchema = tools.find((tool) => tool.name === "Read").parameters;
-    const bashSchema = tools.find((tool) => tool.name === "Bash").parameters;
+    const readSchema = tools.find((tool: any) => tool.name === "Read").parameters;
+    const bashSchema = tools.find((tool: any) => tool.name === "Bash").parameters;
     expect(readSchema.properties.max_output_chars.maximum).toBeUndefined();
     expect(readSchema.properties.start_line.type).toBe("integer");
     expect(bashSchema.properties.max_output_chars.maximum).toBeUndefined();
@@ -214,7 +214,7 @@ describe("pi MCP tool helpers", () => {
     expect(bashSchema.properties.workdir.type).toBe("string");
   });
 
-  it.each(["Bash", "Exec"])("honors policy-allowed workdirs outside the session workspace for %s", async (name) => {
+  it.each(["Bash", "Exec"])("honors policy-allowed workdirs outside the session workspace for %s", async (name: any) => {
     const workspace = tempWorkspace();
     const outside = tempWorkspace();
     const deniedDir = tempWorkspace();
@@ -226,10 +226,10 @@ describe("pi MCP tool helpers", () => {
     });
     const sandboxEngine = {
       isAvailable: async () => true,
-      prepareCommand: async (command) => ({ ...command, sandboxed: false }),
+      prepareCommand: async (command: any) => ({ ...command, sandboxed: false }),
     };
     const tool = getPiBuiltinTools([name], { ctx, cwd: workspace, sandboxPolicy, sandboxEngine })
-      .find((entry) => entry.name === name);
+      .find((entry: any) => entry.name === name);
     const params = name === "Bash" ? { command: "pwd -P" } : { executable: "/bin/pwd", args: ["-P"] };
 
     const allowed = await tool.execute(`${name}:outside`, { ...params, workdir: outside });
@@ -260,24 +260,24 @@ describe("pi MCP tool helpers", () => {
     expect(notFound.content[0].text).toContain(missing);
   });
 
-  it.each(["Bash", "Exec"])("passes allowed outside workdirs into %s background process jobs", async (name) => {
+  it.each(["Bash", "Exec"])("passes allowed outside workdirs into %s background process jobs", async (name: any) => {
     const workspace = tempWorkspace();
     const outside = tempWorkspace();
     updateToolContext(ctx, { workspace });
     const sandboxPolicy = failClosedSandboxPolicy({ root: workspace, readableRoots: [workspace, outside] });
-    const starts = [];
+    const starts: any[] = [];
     const processJobsController = {
-      start: async (request) => {
+      start: async (request: any) => {
         starts.push(request.prepared.cwd);
         return { jobId: "test-job", state: "queued", startedAt: null };
       },
     };
     const sandboxEngine = {
       isAvailable: async () => true,
-      prepareCommand: async (command) => ({ ...command, sandboxed: false }),
+      prepareCommand: async (command: any) => ({ ...command, sandboxed: false }),
     };
     const tool = getPiBuiltinTools([name], { ctx, cwd: workspace, sandboxPolicy, sandboxEngine, processJobsController })
-      .find((entry) => entry.name === name);
+      .find((entry: any) => entry.name === name);
     const params = name === "Bash" ? { command: "pwd -P" } : { executable: "/bin/pwd", args: ["-P"] };
     const allowed = await tool.execute(`${name}:background`, { ...params, workdir: outside, background: true });
     expect(allowed.details.outcome.code).toBe("background_started");
@@ -350,13 +350,13 @@ describe("pi MCP tool helpers", () => {
   it("keeps host ceilings out of the tool schema", () => {
     // The model must be able to size the work BEFORE launching. Learning the
     // budget only from a start receipt means it has already committed to a plan.
-    const [bash, exec] = ["Bash", "Exec"].map((name) => getPiBuiltinTools([name], { ctx,
+    const [bash, exec] = ["Bash", "Exec"].map((name: any) => getPiBuiltinTools([name], { ctx,
       cwd: "/repo",
       processJobsController: {
         start: async () => ({ jobId: "pj", state: "queued", startedAt: null }),
         limits: { maxRuntimeMs: 28_800_000, maxOutputBytes: 1_048_576 },
       },
-    }).find((tool) => tool.name === name));
+    }).find((tool: any) => tool.name === name));
 
     for (const tool of [bash, exec]) {
       expect(tool.parameters.properties.background.description).not.toContain("28800000");
@@ -370,7 +370,7 @@ describe("pi MCP tool helpers", () => {
     const bash = getPiBuiltinTools(["Bash"], { ctx,
       cwd: "/repo",
       processJobsController: { start: async () => ({ jobId: "pj", state: "queued", startedAt: null }) },
-    }).find((tool) => tool.name === "Bash");
+    }).find((tool: any) => tool.name === "Bash");
 
     expect(bash.parameters.properties.background.description).not.toContain("ms)");
     expect(bash.parameters.properties.timeout_ms.description).toContain("current command ceiling");
@@ -384,7 +384,7 @@ describe("pi MCP tool helpers", () => {
     }).png().toBuffer();
     writeFileSync(join(root, "shot.png"), pngBytes);
 
-    const read = getPiBuiltinTools(["Read"], { ctx, cwd: root }).find((tool) => tool.name === "Read");
+    const read = getPiBuiltinTools(["Read"], { ctx, cwd: root }).find((tool: any) => tool.name === "Read");
     const result = await read.execute("Read:1", { file_path: "shot.png" });
 
     expect(Array.isArray(result.content)).toBe(true);
@@ -401,7 +401,7 @@ describe("pi MCP tool helpers", () => {
     updateToolContext(ctx, { workspace: root });
     writeFileSync(join(root, "broken.png"), Buffer.from("not an image"));
 
-    const read = getPiBuiltinTools(["Read"], { ctx, cwd: root }).find((tool) => tool.name === "Read");
+    const read = getPiBuiltinTools(["Read"], { ctx, cwd: root }).find((tool: any) => tool.name === "Read");
 
     await expect(read.execute("Read:broken", { file_path: "broken.png" }))
       .rejects.toThrow(/^Error: Unable to read image .*broken\.png:/);
@@ -415,14 +415,14 @@ describe("pi MCP tool helpers", () => {
       create: { width: 64, height: 64, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
     }).png({ compressionLevel: 0 }).toBuffer();
     writeFileSync(join(root, "big.png"), big);
-    const truncations = [];
+    const truncations: any[] = [];
 
     const read = getPiBuiltinTools(["Read"], { ctx,
       cwd: root,
       toolPayloadMaxBytes: 10,
       persistArtifact: makeSink(runArtifactDir),
-      onTruncate: (event) => truncations.push(event),
-    }).find((tool) => tool.name === "Read");
+      onTruncate: (event: any) => truncations.push(event),
+    }).find((tool: any) => tool.name === "Read");
     const result = await read.execute("Read:2", { file_path: "big.png" });
 
     expect(result.content[0].type).toBe("text");
@@ -432,7 +432,7 @@ describe("pi MCP tool helpers", () => {
     // image block — not the JSON-stringified object on the text path.
     const files = readdirSync(join(runArtifactDir, "tool-output"));
     expect(files).toHaveLength(1);
-    expect(files[0]).toMatch(/\.png$/);
+    expect(files[0]!).toMatch(/\.png$/);
   });
 
   it("lets large Read images through when imageInlineMaxBytes is high", async () => {
@@ -449,7 +449,7 @@ describe("pi MCP tool helpers", () => {
       toolPayloadMaxBytes: 256,
       imageInlineMaxBytes: 1_000_000,
       persistArtifact: makeSink(join(root, ".mono-agent", "artifacts", "run-big-img")),
-    }).find((tool) => tool.name === "Read");
+    }).find((tool: any) => tool.name === "Read");
     const result = await read.execute("Read:big", { file_path: "big.png" });
 
     expect(result.content).toHaveLength(1);
@@ -478,7 +478,7 @@ describe("pi MCP tool helpers", () => {
           async isAvailable() {
             return true;
           },
-          async prepareCommand(command) {
+          async prepareCommand(command: any) {
             return {
               ...command,
               command: "sandbox",
@@ -505,7 +505,7 @@ describe("pi MCP tool helpers", () => {
       value: true,
       enumerable: false,
     });
-    const seen = [];
+    const seen: any[] = [];
 
     await prepareMcpStdioCommand(cfg, { ctx,
       cwd: "/repo/project",
@@ -515,7 +515,7 @@ describe("pi MCP tool helpers", () => {
         async isAvailable() {
           return true;
         },
-        async prepareCommand(command) {
+        async prepareCommand(command: any) {
           seen.push(command);
           return { ...command, sandboxed: true };
         },
@@ -529,7 +529,7 @@ describe("pi MCP tool helpers", () => {
         async isAvailable() {
           return true;
         },
-        async prepareCommand(command) {
+        async prepareCommand(command: any) {
           seen.push(command);
           return { ...command, sandboxed: true };
         },
@@ -557,7 +557,7 @@ describe("pi MCP tool helpers", () => {
           async isAvailable() {
             return true;
           },
-          async prepareCommand(command) {
+          async prepareCommand(command: any) {
             return { ...command, command: "sandbox", sandboxed: true };
           },
         },
@@ -588,7 +588,7 @@ describe("pi MCP tool helpers", () => {
           async isAvailable() {
             return true;
           },
-          async prepareCommand(command) {
+          async prepareCommand(command: any) {
             return {
               ...command,
               command: process.execPath,
@@ -610,7 +610,7 @@ describe("pi MCP tool helpers", () => {
   });
 
   it.each(["blocked by sandbox: Operation not permitted", "Operation not permitted", "EPERM", "ordinary startup failure"])(
-    "keeps sandboxed stdio startup details operator-only (%s) and cleanup", async (reason) => {
+    "keeps sandboxed stdio startup details operator-only (%s) and cleanup", async (reason: any) => {
       const root = tempWorkspace();
       const cleanup = vi.fn();
       const privatePath = "/private/fictional-agent/credentials.json";
@@ -621,7 +621,7 @@ describe("pi MCP tool helpers", () => {
         const result = await initPiMcpTools({ broken: { command: "fictional-command" } }, new Set(), {
           ctx, cwd: root, sandboxPolicy: failClosedSandboxPolicy({ root }), sandboxEngine: {
             id: "fake", isAvailable: async () => true,
-            prepareCommand: async (command) => ({ ...command, command: process.execPath,
+            prepareCommand: async (command: any) => ({ ...command, command: process.execPath,
               env: { FICTIONAL_SECRET: secret },
               args: ["-e", `process.stderr.write(${JSON.stringify(`${reason}: ${privatePath} env=`)} + process.env.FICTIONAL_SECRET);process.exit(127)`],
               sandboxed: true, cleanup }),
@@ -635,10 +635,10 @@ describe("pi MCP tool helpers", () => {
               ? "Command ran sandboxed. Permission error is commonly a sandbox denial, but may be an OS permission error. "
               : "Command ran sandboxed. "}Stdio MCP startup failed.`,
         });
-        expect(result.warnings[0].code).toBe(reason.startsWith("blocked") ? "sandbox_denied" : undefined);
+        expect(result.warnings[0]!.code).toBe(reason.startsWith("blocked") ? "sandbox_denied" : undefined);
         expect(JSON.stringify(result.warnings)).not.toContain(privatePath);
         expect(JSON.stringify(result.warnings)).not.toContain(secret);
-        expect(operatorWrite.mock.calls.map(([chunk]) => String(chunk)).join("")).toBe(stderr);
+        expect(operatorWrite.mock.calls.map(([chunk]: any) => String(chunk)).join("")).toBe(stderr);
         expect(cleanup).toHaveBeenCalledOnce();
       } finally { operatorWrite.mockRestore(); }
     },
@@ -652,10 +652,10 @@ describe("pi MCP tool helpers", () => {
       const result = await initPiMcpTools({ broken: { command: "fictional-command" } }, new Set(), {
         ctx, cwd: root, sandboxPolicy: failClosedSandboxPolicy({ root }), sandboxEngine: {
           id: "fake", isAvailable: async () => true,
-          prepareCommand: async (command) => ({ ...command, sandboxed: true }),
+          prepareCommand: async (command: any) => ({ ...command, sandboxed: true }),
         },
       });
-      expect(result.warnings[0].message).toBe("Command ran sandboxed. Stdio MCP startup failed.");
+      expect(result.warnings[0]!.message).toBe("Command ran sandboxed. Stdio MCP startup failed.");
     } finally { connect.mockRestore(); }
   });
 
@@ -663,7 +663,7 @@ describe("pi MCP tool helpers", () => {
     const root = tempWorkspace();
     const operatorWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const cleanup = vi.fn();
-    let clients = [];
+    let clients: any[] = [];
     try {
       // Real stdio handshake; listTools writes a post-connect marker.
       const server = `
@@ -680,7 +680,7 @@ describe("pi MCP tool helpers", () => {
       const result = await initPiMcpTools({ healthy: { command: "fictional-command" } }, new Set(), {
         ctx, cwd: root, sandboxPolicy: failClosedSandboxPolicy({ root }), sandboxEngine: {
           id: "fake", isAvailable: async () => true,
-          prepareCommand: async (command) => ({ ...command, command: process.execPath,
+          prepareCommand: async (command: any) => ({ ...command, command: process.execPath,
             args: ["-e", server], sandboxed: true, cleanup }),
         },
       });
@@ -688,7 +688,7 @@ describe("pi MCP tool helpers", () => {
       expect(clients).toHaveLength(1);
       expect(result.warnings).toEqual([]);
       await vi.waitFor(() => {
-        expect(operatorWrite.mock.calls.map(([chunk]) => String(chunk)).join("")).toBe("startup-marker\nconnected-marker\n");
+        expect(operatorWrite.mock.calls.map(([chunk]: any) => String(chunk)).join("")).toBe("startup-marker\nconnected-marker\n");
       });
     } finally {
       await closePiMcpClients(clients);
@@ -697,7 +697,7 @@ describe("pi MCP tool helpers", () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
-  it.each([undefined, "off"])("ignores unavailable stdio engine with %s policy", async (mode) => {
+  it.each([undefined, "off"])("ignores unavailable stdio engine with %s policy", async (mode: any) => {
     const root = tempWorkspace();
     const engine = { id: "fake", isAvailable: vi.fn(async () => false), prepareCommand: vi.fn() };
     const command = { command: process.execPath, args: ["-e", "process.exit(0)"] };
@@ -748,13 +748,13 @@ describe("pi MCP tool helpers", () => {
         new Set(),
         { ctx, limits: { mcpCallTimeoutMs: 90000 } },
       );
-      const tool = tools.find((entry) => entry.name === "do_thing");
+      const tool = tools.find((entry: any) => entry.name === "do_thing");
       expect(tool).toBeTruthy();
       const ac = new AbortController();
       await tool.execute("call-1", {}, ac.signal);
 
       expect(callSpy).toHaveBeenCalledTimes(1);
-      const [params, resultSchema, requestOptions] = callSpy.mock.calls[0];
+      const [params, resultSchema, requestOptions] = callSpy.mock.calls[0]!;
       expect(params).toMatchObject({ name: "do_thing" });
       // resultSchema is left at the SDK default so the third arg carries our timeout.
       expect(resultSchema).toBeUndefined();
@@ -765,8 +765,8 @@ describe("pi MCP tool helpers", () => {
       // A signal DERIVED from the caller's is forwarded (not the caller's own),
       // so run teardown can cancel this one call without touching the caller's.
       // Forwarding in both directions is covered by the two tests below.
-      expect(requestOptions.signal).toBeInstanceOf(AbortSignal);
-      expect(requestOptions.signal).not.toBe(ac.signal);
+      expect(requestOptions!.signal).toBeInstanceOf(AbortSignal);
+      expect(requestOptions!.signal).not.toBe(ac.signal);
     } finally {
       connectSpy.mockRestore();
       listSpy.mockRestore();
@@ -796,8 +796,8 @@ describe("pi MCP tool helpers", () => {
           mcpCallNoTotalTimeoutTools: ["adapter:AskUser"],
         },
       );
-      await tools.find((entry) => entry.name === "AskUser").execute("call-ask", {}, undefined);
-      await tools.find((entry) => entry.name === "other").execute("call-other", {}, undefined);
+      await tools.find((entry: any) => entry.name === "AskUser").execute("call-ask", {}, undefined);
+      await tools.find((entry: any) => entry.name === "other").execute("call-other", {}, undefined);
 
       expect(callSpy.mock.calls[0]?.[2]).toMatchObject({
         timeout: 90_000,
@@ -824,11 +824,11 @@ describe("pi MCP tool helpers", () => {
   // must fail, and the README's MCP + "Approval gates" sections must be
   // rewritten in the same change rather than the test being relaxed.
   it("does not route MCP tool calls through the host approval gate, though built-ins with the same manager are gated", async () => {
-    const approvalCalls = [];
+    const approvalCalls: any[] = [];
     const approvalManager = createApprovalManager({
       // Highest tier + a blanket deny: nothing that reaches the gate can run.
       defaultRiskTier: "high",
-      onToolApprovalRequest: async (payload) => {
+      onToolApprovalRequest: async (payload: any) => {
         approvalCalls.push(payload.toolName);
         return { decision: "deny", reason: "test denies every gated call" };
       },
@@ -860,9 +860,9 @@ describe("pi MCP tool helpers", () => {
         new Set(),
         // The same manager the built-in above was denied by, passed the same way
         // a host would expect it to apply everywhere.
-        { ctx, cwd: root, limits: {}, approvalManager },
+        { ctx, cwd: root, limits: {}, approvalManager } as Parameters<typeof initPiMcpTools>[2],
       );
-      const tool = tools.find((entry) => entry.name === "danger_wipe");
+      const tool = tools.find((entry: any) => entry.name === "danger_wipe");
       expect(tool).toBeTruthy();
 
       const result = await tool.execute("ungated-call", {});
@@ -884,15 +884,15 @@ describe("pi MCP tool helpers", () => {
     const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
       tools: [{ name: "slow_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
     });
-    let observedSignal = null;
-    let sawCall = null;
-    const callStarted = new Promise((resolve) => { sawCall = resolve; });
+    let observedSignal: any = null;
+    let sawCall: any = null;
+    const callStarted = new Promise((resolve: any) => { sawCall = resolve; });
     const callSpy = vi
       .spyOn(McpClient.prototype, "callTool")
-      .mockImplementation(async (_params, _schema, requestOptions) => {
+      .mockImplementation(async (_params: any, _schema: any, requestOptions: any) => {
         observedSignal = requestOptions?.signal ?? null;
         sawCall();
-        return await new Promise((_resolve, reject) => {
+        return await new Promise((_resolve: any, reject: any) => {
           observedSignal?.addEventListener("abort", () => {
             reject(observedSignal.reason ?? new Error("aborted"));
           }, { once: true });
@@ -904,11 +904,11 @@ describe("pi MCP tool helpers", () => {
         new Set(),
         { ctx,},
       );
-      const tool = tools.find((entry) => entry.name === "slow_thing");
+      const tool = tools.find((entry: any) => entry.name === "slow_thing");
       const ac = new AbortController();
       const settled = tool.execute("call-1", {}, ac.signal).then(
         () => ({ ok: true }),
-        (error) => ({ ok: false, error }),
+        (error: any) => ({ ok: false, error }),
       );
       await callStarted;
       expect(observedSignal.aborted).toBe(false);
@@ -934,16 +934,16 @@ describe("pi MCP tool helpers", () => {
     const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
       tools: [{ name: "slow_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
     });
-    let observedSignal = null;
-    let sawCall = null;
-    const callStarted = new Promise((resolve) => { sawCall = resolve; });
+    let observedSignal: any = null;
+    let sawCall: any = null;
+    const callStarted = new Promise((resolve: any) => { sawCall = resolve; });
     const callSpy = vi
       .spyOn(McpClient.prototype, "callTool")
-      .mockImplementation(async (_params, _schema, requestOptions) => {
+      .mockImplementation(async (_params: any, _schema: any, requestOptions: any) => {
         observedSignal = requestOptions?.signal ?? null;
         sawCall();
         // Mirror the SDK: reject only when the request's own signal aborts.
-        return await new Promise((_resolve, reject) => {
+        return await new Promise((_resolve: any, reject: any) => {
           observedSignal?.addEventListener("abort", () => {
             reject(observedSignal.reason ?? new Error("aborted"));
           }, { once: true });
@@ -956,11 +956,11 @@ describe("pi MCP tool helpers", () => {
         new Set(),
         { ctx, limits: { mcpCallTimeoutMs: 120000 } },
       );
-      const tool = tools.find((entry) => entry.name === "slow_thing");
+      const tool = tools.find((entry: any) => entry.name === "slow_thing");
       const pending = tool.execute("call-1", {}, undefined);
       // Keep the rejection observed from the first tick so teardown cannot
       // surface as an unhandled rejection.
-      const settled = pending.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
+      const settled = pending.then(() => ({ ok: true }), (error: any) => ({ ok: false, error }));
       await callStarted;
       expect(observedSignal?.aborted).toBe(false);
 
@@ -996,20 +996,20 @@ describe("pi MCP tool helpers", () => {
     const callSpy = vi.spyOn(McpClient.prototype, "callTool").mockResolvedValue({
       content: [{ type: "text", text: "ok" }],
     });
-    const readSpy = vi.spyOn(McpClient.prototype, "readResource").mockImplementation(async ({ uri }) => ({
+    const readSpy = vi.spyOn(McpClient.prototype, "readResource").mockImplementation(async ({ uri }: any) => ({
       contents: [{ uri, mimeType, text: "<!doctype html><p>chart</p>" }],
     }));
-    const registrations = [];
+    const registrations: any[] = [];
     const mcpApps = {
       get protocolVersions() { return hostVersions; },
       mimeTypes: [mimeType],
       recordFailure: vi.fn(),
-      register: vi.fn(async (registration) => {
+      register: vi.fn(async (registration: any) => {
         registrations.push(registration);
         return { retainConnection: true, part: { type: "mcp_app" } };
       }),
     };
-    let clients = [];
+    let clients: any[] = [];
     try {
       const initialized = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
@@ -1018,7 +1018,7 @@ describe("pi MCP tool helpers", () => {
       );
       clients = initialized.clients;
       const clientClose = vi.spyOn(clients[0].client, "close").mockResolvedValue(undefined);
-      const tool = initialized.tools.find((entry) => entry.name === "show_chart");
+      const tool = initialized.tools.find((entry: any) => entry.name === "show_chart");
 
       expect(clients[0].client._capabilities.extensions["io.modelcontextprotocol/ui"]).toEqual({
         mimeTypes: [mimeType],
@@ -1028,8 +1028,8 @@ describe("pi MCP tool helpers", () => {
       await tool.execute("call-current", { range: "month" });
 
       expect(readSpy).toHaveBeenNthCalledWith(1, { uri: resourceUri });
-      expect(registrations.map((entry) => entry.protocolVersion)).toEqual(["2025-11-21", "2026-01-26"]);
-      expect(new Set(registrations.map((entry) => entry.connection.connectionId)).size).toBe(1);
+      expect(registrations.map((entry: any) => entry.protocolVersion)).toEqual(["2025-11-21", "2026-01-26"]);
+      expect(new Set(registrations.map((entry: any) => entry.connection.connectionId)).size).toBe(1);
       await closePiMcpClients(clients);
       expect(clientClose).not.toHaveBeenCalled();
 
@@ -1040,7 +1040,7 @@ describe("pi MCP tool helpers", () => {
       expect(clientClose).toHaveBeenCalledOnce();
       expect(mcpApps.recordFailure).not.toHaveBeenCalled();
     } finally {
-      await Promise.all(clients.map(async (client) => {
+      await Promise.all(clients.map(async (client: any) => {
         client.retainedByMcpApps = false;
       }));
       connectSpy.mockRestore();
@@ -1065,7 +1065,7 @@ describe("pi MCP tool helpers", () => {
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(), { ctx },
       );
-      const result = await tools.find((entry) => entry.name === "failing_thing").execute("call-error", {}, undefined);
+      const result = await tools.find((entry: any) => entry.name === "failing_thing").execute("call-error", {}, undefined);
 
       expect(result.content).toEqual([{ type: "text", text: "permission denied" }]);
       expect(result.details.mcp_result_is_error).toBe(true);
@@ -1088,25 +1088,25 @@ describe("pi MCP tool helpers", () => {
     });
     const callSpy = vi
       .spyOn(McpClient.prototype, "callTool")
-      .mockImplementation(async (_params, _schema, requestOptions) => {
+      .mockImplementation(async (_params: any, _schema: any, requestOptions: any) => {
         requestOptions?.onprogress?.({ progress: 3, total: 8, message: "tick 3" });
         return { content: [{ type: "text", text: "ok" }] };
       });
     try {
-      const progressEvents = [];
+      const progressEvents: any[] = [];
       const { tools } = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
         { ctx,
           limits: { mcpCallTimeoutMs: 90000, mcpCallMaxTotalTimeoutMs: 500000 },
-          onToolProgress: (event) => progressEvents.push(event),
+          onToolProgress: (event: any) => progressEvents.push(event),
         },
       );
-      const tool = tools.find((entry) => entry.name === "slow_thing");
+      const tool = tools.find((entry: any) => entry.name === "slow_thing");
       await tool.execute("call-1", {}, undefined);
 
-      const [, , requestOptions] = callSpy.mock.calls[0];
-      expect(typeof requestOptions.onprogress).toBe("function");
+      const [, , requestOptions] = callSpy.mock.calls[0]!;
+      expect(typeof requestOptions!.onprogress).toBe("function");
       expect(requestOptions).toMatchObject({ timeout: 90000, resetTimeoutOnProgress: true, maxTotalTimeout: 500000 });
       expect(progressEvents).toEqual([
         {
@@ -1136,7 +1136,7 @@ describe("pi MCP tool helpers", () => {
     // wall-clock race.
     const callSpy = vi
       .spyOn(McpClient.prototype, "callTool")
-      .mockImplementation((_params, _schema, requestOptions) => new Promise((resolvePromise) => {
+      .mockImplementation((_params: any, _schema: any, requestOptions: any) => new Promise((resolvePromise: any) => {
         const ticker = setInterval(() => requestOptions?.onprogress?.({ progress: 1 }), 25);
         setTimeout(() => {
           clearInterval(ticker);
@@ -1149,7 +1149,7 @@ describe("pi MCP tool helpers", () => {
         new Set(),
         { ctx, limits: { mcpCallTimeoutMs: 90, mcpCallMaxTotalTimeoutMs: 5000 } },
       );
-      const tool = tools.find((entry) => entry.name === "slow_thing");
+      const tool = tools.find((entry: any) => entry.name === "slow_thing");
       const out = await tool.execute("call-1", {}, undefined);
       expect(out.content[0].text).toBe("slow ok");
     } finally {
@@ -1173,7 +1173,7 @@ describe("pi MCP tool helpers", () => {
         new Set(),
         { ctx, limits: { mcpCallTimeoutMs: 60, mcpCallMaxTotalTimeoutMs: 5000 } },
       );
-      const tool = tools.find((entry) => entry.name === "stalled_thing");
+      const tool = tools.find((entry: any) => entry.name === "stalled_thing");
       await expect(tool.execute("call-1", {}, undefined)).rejects.toThrow(/timed out/);
     } finally {
       connectSpy.mockRestore();
@@ -1187,7 +1187,7 @@ describe("pi MCP tool helpers", () => {
     const bash = getPiBuiltinTools(["Bash"], { ctx,
       cwd: root,
       toolPolicy: { bashReadOnly: true },
-    }).find((tool) => tool.name === "Bash");
+    }).find((tool: any) => tool.name === "Bash");
 
     await expect(bash.execute("tool-write", { command: "touch should-not-exist" })).rejects.toThrow("Planning shell policy");
     const result = await bash.execute("tool-read", { command: "pwd" });
@@ -1228,7 +1228,7 @@ describe("pi MCP tool helpers", () => {
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "---\nname: research\n---\n# Research\n\nFull research skill body.\n");
 
     const tools = getPiBuiltinTools(["Read"], { ctx, skillsRoot, skillNames: ["research"] });
-    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const readSkill = tools.find((tool: any) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
     expect(readSkill.description).toBe(
       "Load the complete instructions for a named skill. Use ReadSkill instead of Read for SKILL.md files. If a skill's instructions are already present in this conversation, apply those instead of loading it again.",
@@ -1254,7 +1254,7 @@ describe("pi MCP tool helpers", () => {
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
 
     const tools = getPiBuiltinTools(["Bash", "Read", "Glob", "Grep"], { ctx, skillsRoot, skillNames: ["research"] });
-    expect(tools.find((tool) => tool.name === "ReadSkill")).toBeTruthy();
+    expect(tools.find((tool: any) => tool.name === "ReadSkill")).toBeTruthy();
   });
 
   it("withholds ReadSkill when a profile denies it, under either spelling", () => {
@@ -1267,7 +1267,7 @@ describe("pi MCP tool helpers", () => {
     // is not a policy, so agent-app checks both when deciding what a child gets.
     for (const denied of ["ReadSkill", "read_skill"]) {
       const tools = getPiBuiltinTools(["Read"], { ctx, skillsRoot, skillNames: ["research"], disallowedTools: [denied] });
-      expect(tools.find((tool) => tool.name === "ReadSkill"), denied).toBeFalsy();
+      expect(tools.find((tool: any) => tool.name === "ReadSkill"), denied).toBeFalsy();
     }
   });
 
@@ -1282,7 +1282,7 @@ describe("pi MCP tool helpers", () => {
     );
 
     const tools = getPiBuiltinTools([], { ctx, skillsRoot, skillNames: ["research"] });
-    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const readSkill = tools.find((tool: any) => tool.name === "ReadSkill");
     const result = await readSkill.execute("ReadSkill:full", { name: "research" });
 
     expect(result.content[0].text).toContain(sentinel);
@@ -1298,7 +1298,7 @@ describe("pi MCP tool helpers", () => {
     writeFileSync(join(root, "SKILL.md"), "# secret\n\nshould not be reachable\n");
 
     const tools = getPiBuiltinTools([], { ctx, skillsRoot, skillNames: ["research", "..", "../secret"] });
-    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const readSkill = tools.find((tool: any) => tool.name === "ReadSkill");
     // Traversal-shaped names are filtered out of the enum entirely.
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
     // Executing with a non-existent skill throws rather than reading anything.
@@ -1311,7 +1311,7 @@ describe("pi MCP tool helpers", () => {
     writeFileSync(join(dataDir, "skills", "writing", "SKILL.md"), "# Writing\n\nThe writing body.\n");
 
     const tools = getPiBuiltinTools([], { ctx, dataDir, skillNames: ["writing"] });
-    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const readSkill = tools.find((tool: any) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
     const result = await readSkill.execute("ReadSkill:dd", { name: "writing" });
     expect(result.content[0].text).toContain("The writing body.");
@@ -1319,7 +1319,7 @@ describe("pi MCP tool helpers", () => {
 
   it("does not create ReadSkill when neither skillsRoot nor dataDir is supplied", () => {
     const tools = getPiBuiltinTools([], { ctx, skillNames: ["research"] });
-    expect(tools.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
+    expect(tools.find((tool: any) => tool.name === "ReadSkill")).toBeUndefined();
   });
 
   // Phase 5: ReadSkill accepts pi's neutral Skill shape ({name, description,
@@ -1335,7 +1335,7 @@ describe("pi MCP tool helpers", () => {
     const tools = getPiBuiltinTools([], { ctx,
       skills: [{ name: "research", description: "when researching", content: "ignored — read lazily", filePath }],
     });
-    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const readSkill = tools.find((tool: any) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
 
@@ -1357,7 +1357,7 @@ describe("pi MCP tool helpers", () => {
     const tools = getPiBuiltinTools([], { ctx,
       skills: [{ name: "writing", description: "d", content: "c", filePath }],
     });
-    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const readSkill = tools.find((tool: any) => tool.name === "ReadSkill");
     const result = await readSkill.execute("ReadSkill:flat", { name: "writing" });
     expect(result.content[0].text).toContain("flat skill body.");
   });
@@ -1378,7 +1378,7 @@ describe("pi MCP tool helpers", () => {
       skillNames: ["research"],
       skills: [{ name: "research", description: "d", content: "c", filePath: strayPath }],
     });
-    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const readSkill = tools.find((tool: any) => tool.name === "ReadSkill");
     const result = await readSkill.execute("ReadSkill:shared", { name: "research" });
     expect(result.content[0].text).toContain("shared-root body.");
     expect(result.content[0].text).not.toContain("stray body");
@@ -1398,7 +1398,7 @@ describe("pi MCP tool helpers", () => {
       skillNames: ["research"],
       skills: [{ name: "research" }],
     });
-    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const readSkill = tools.find((tool: any) => tool.name === "ReadSkill");
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
     const result = await readSkill.execute("ReadSkill:min", { name: "research" });
     expect(result.content[0].text).toContain("minimal-form body.");
@@ -1411,12 +1411,12 @@ describe("pi MCP tool helpers", () => {
         { name: "nofile", description: "d", content: "c" },
       ],
     });
-    expect(tools.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
+    expect(tools.find((tool: any) => tool.name === "ReadSkill")).toBeUndefined();
   });
 
   it("passes abort signals to Bash tool execution", async () => {
     const root = tempWorkspace();
-    const bash = getPiBuiltinTools(["Bash"], { ctx, cwd: root }).find((tool) => tool.name === "Bash");
+    const bash = getPiBuiltinTools(["Bash"], { ctx, cwd: root }).find((tool: any) => tool.name === "Bash");
     const ac = new AbortController();
     const promise = bash.execute("tool-1", {
       command: `${process.execPath} -e "setTimeout(() => {}, 5000)"`,
@@ -1440,15 +1440,15 @@ describe("pi MCP tool helpers", () => {
 // read_skill) is appended separately only when skills are supplied.
 const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "WebFetch", "WebSearch"];
 
-function toolNames(tools) {
-  return tools.map((tool) => tool.name).sort();
+function toolNames(tools: any) {
+  return tools.map((tool: any) => tool.name).sort();
 }
 
 describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", () => {
   it("teaches explicit search routing and transparent static-to-browser escalation", () => {
     const tools = getPiBuiltinTools(["WebFetch", "WebSearch"], { ctx,});
-    const fetch = tools.find((tool) => tool.name === "WebFetch");
-    const search = tools.find((tool) => tool.name === "WebSearch");
+    const fetch = tools.find((tool: any) => tool.name === "WebFetch");
+    const search = tools.find((tool: any) => tool.name === "WebSearch");
 
     expect(search.description).toContain("Parallel then local Ollama");
     expect(search.description).toContain("explicit ordered chain");
@@ -1490,21 +1490,21 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
 
   it('applies disallowedTools to the "*" allow-all set (deny wins)', () => {
     const tools = getPiBuiltinTools(["*"], { ctx, disallowedTools: ["Bash"] });
-    const names = tools.map((tool) => tool.name);
+    const names = tools.map((tool: any) => tool.name);
     expect(names).not.toContain("Bash");
-    expect([...names].sort()).toEqual(BUILTIN_TOOL_NAMES.filter((name) => name !== "Bash").sort());
+    expect([...names].sort()).toEqual(BUILTIN_TOOL_NAMES.filter((name: any) => name !== "Bash").sort());
   });
 
   it("applies disallowedTools to an explicit allow list (deny wins)", () => {
     const tools = getPiBuiltinTools(["Read", "Bash"], { ctx, disallowedTools: ["Bash"] });
-    expect(tools.map((tool) => tool.name)).toEqual(["Read"]);
+    expect(tools.map((tool: any) => tool.name)).toEqual(["Read"]);
   });
 
   it("exposes a sequential NodeRepl tool only when its run-owned controller is supplied", async () => {
     const execute = vi.fn(async () => "42");
     const controller = { execute };
     const tools = getPiBuiltinTools(["NodeRepl"], { ctx, nodeReplController: controller });
-    const nodeRepl = tools.find((tool) => tool.name === "NodeRepl");
+    const nodeRepl = tools.find((tool: any) => tool.name === "NodeRepl");
     const signal = new AbortController().signal;
 
     expect(nodeRepl).toMatchObject({
@@ -1541,14 +1541,14 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
 
     // Baseline: ReadSkill is present without the denylist.
     const withSkill = getPiBuiltinTools(["*"], { ctx, skillsRoot, skillNames: ["research"] });
-    expect(withSkill.find((tool) => tool.name === "ReadSkill")).toBeTruthy();
+    expect(withSkill.find((tool: any) => tool.name === "ReadSkill")).toBeTruthy();
 
     const denied = getPiBuiltinTools(["*"], { ctx,
       skillsRoot,
       skillNames: ["research"],
       disallowedTools: ["ReadSkill"],
     });
-    expect(denied.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
+    expect(denied.find((tool: any) => tool.name === "ReadSkill")).toBeUndefined();
   });
 
   it("drops the ReadSkill tool when the legacy read_skill alias is disallowed", () => {
@@ -1562,7 +1562,7 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
       skillNames: ["research"],
       disallowedTools: ["read_skill"], // legacy alias
     });
-    expect(denied.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
+    expect(denied.find((tool: any) => tool.name === "ReadSkill")).toBeUndefined();
   });
 
 describe("getPiBuiltinTools Agent registration", () => {
@@ -1570,7 +1570,7 @@ describe("getPiBuiltinTools Agent registration", () => {
     definitions: [{ name: "researcher", description: "d", systemPrompt: "s" }],
     run: async () => ({ text: "ok", events: [] }),
   });
-  const names = (tools) => tools.map((tool) => tool.name);
+  const names = (tools: any) => tools.map((tool: any) => tool.name);
 
   it("registers Agent only when subagents are wired for this run", () => {
     expect(names(getPiBuiltinTools(["Agent"], { ctx,}))).not.toContain("Agent");
@@ -1591,7 +1591,7 @@ describe("getPiBuiltinTools Agent registration", () => {
 
   it("marks Agent shareable and describes invoked exclusive barriers", () => {
     const agent = getPiBuiltinTools(["Agent"], { ctx, subagents: subagents() })
-      .find((tool) => tool.name === "Agent");
+      .find((tool: any) => tool.name === "Agent");
     expect(agent.executionMode).toBeUndefined();
     expect(agent.description).toContain("can overlap");
     expect(agent.description).toContain("exclusive barrier");
@@ -1607,11 +1607,11 @@ describe("getPiBuiltinTools Agent registration", () => {
     const agent = getPiBuiltinTools(["Agent"], { ctx,
       subagents: { ...subagents(), run },
       subagentContext: { skills, skillsRoot: "/repo/skills" },
-    }).find((tool) => tool.name === "Agent");
+    }).find((tool: any) => tool.name === "Agent");
 
     await agent.execute("c1", { name: "researcher", prompt: "x" });
 
-    expect(run.mock.calls[0][0]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
+    expect((run.mock.calls as any)[0][0]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
   });
 
   it("spills an over-cap subagent answer through the run's artifact sink", async () => {
@@ -1622,15 +1622,15 @@ describe("getPiBuiltinTools Agent registration", () => {
     const agent = getPiBuiltinTools(["Agent"], { ctx,
       subagents: { ...subagents(), run: async () => ({ text: answer, events: [] }) },
       persistArtifact: makeSink(runArtifactDir),
-    }).find((tool) => tool.name === "Agent");
+    }).find((tool: any) => tool.name === "Agent");
 
     const result = await agent.execute("c-spill", { name: "researcher", prompt: "x" });
 
     const [saved] = readdirSync(join(runArtifactDir, "tool-output"));
     expect(saved).toBe("Agent__c-spill__full.txt");
-    expect(readFileSync(join(runArtifactDir, "tool-output", saved), "utf8")).toContain(answer);
-    expect(result.content[0].text).toContain(`full result saved to: ${join(runArtifactDir, "tool-output", saved)}`);
-    expect(result.details.tool_payload_saved_paths).toEqual([join(runArtifactDir, "tool-output", saved)]);
+    expect(readFileSync(join(runArtifactDir, "tool-output", saved!), "utf8")).toContain(answer);
+    expect(result.content[0].text).toContain(`full result saved to: ${join(runArtifactDir, "tool-output", saved!)}`);
+    expect(result.details.tool_payload_saved_paths).toEqual([join(runArtifactDir, "tool-output", saved!)]);
   });
 });
 });
@@ -1641,7 +1641,7 @@ describe("stable MCP discovery surface", () => {
     let connectionOrdinal = 0;
     const connect = vi.spyOn(McpClient.prototype, "connect").mockImplementation(async () => {
       const index = connectionOrdinal++ % 2;
-      await new Promise((resolve) => setTimeout(resolve, (reverse ? index === 0 : index === 1) ? 10 : 0));
+      await new Promise((resolve: any) => setTimeout(resolve, (reverse ? index === 0 : index === 1) ? 10 : 0));
     });
     const close = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
     let ordinal = 0;
@@ -1649,42 +1649,42 @@ describe("stable MCP discovery surface", () => {
     let changeSchema = false;
     const list = vi.spyOn(McpClient.prototype, "listTools").mockImplementation(async () => {
       const index = ordinal++ % 2;
-      await new Promise((resolve) => setTimeout(resolve, (reverse ? index === 0 : index === 1) ? 10 : 0));
+      await new Promise((resolve: any) => setTimeout(resolve, (reverse ? index === 0 : index === 1) ? 10 : 0));
       if (failSecond && index === 1) throw new Error("fixture listing failure");
       return { tools: [{ name: index === 0 ? "zeta" : "alpha", description: "Same tool contract", inputSchema: {
         type: "object", properties: { query: { type: "string", ...(changeSchema ? { description: "new schema" } : {}) } }, required: ["query"],
       } }] };
     });
-    const discover = async (port) => {
+    const discover = async (port: any) => {
       const result = await initPiMcpTools({
         first: { type: "http", url: `http://127.0.0.1:${port}/mcp` },
         second: { type: "http", url: `http://127.0.0.1:${port + 1}/mcp` },
       }, new Set(), { ctx, cwd: tempWorkspace(), limits: {} });
       await closePiMcpClients(result.clients);
-      return { bytes: JSON.stringify(result.tools.map(({ name, description, parameters }) => ({ name, description, parameters }))), result };
+      return { bytes: JSON.stringify(result.tools.map(({ name, description, parameters }: any) => ({ name, description, parameters }))), result };
     };
     try {
       const first = await discover(19000);
       reverse = true;
       const reversed = await discover(20000);
       const repeated = await discover(21000);
-      expect(first.result.tools.map((tool) => tool.name)).toEqual(["zeta", "alpha"]);
+      expect(first.result.tools.map((tool: any) => tool.name)).toEqual(["zeta", "alpha"]);
       expect(reversed.bytes).toBe(first.bytes);
       expect(repeated.bytes).toBe(first.bytes);
       changeSchema = true;
       expect((await discover(22000)).bytes).not.toBe(first.bytes);
       failSecond = true;
       const failed = await discover(23000);
-      expect(failed.result.tools.map((tool) => tool.name)).toEqual(["zeta"]);
+      expect(failed.result.tools.map((tool: any) => tool.name)).toEqual(["zeta"]);
       expect(failed.result.warnings).toContainEqual(expect.objectContaining({ warning_kind: "mcp_list_tools_failed", server: "second" }));
     } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
   });
 });
 
-it.each([1, 30_000, 1_800_000])("advertises and normalizes a per-run command ceiling of %s ms", (bashTimeoutMs) => {
+it.each([1, 30_000, 1_800_000])("advertises and normalizes a per-run command ceiling of %s ms", (bashTimeoutMs: any) => {
   for (const name of ["Bash", "Exec"]) {
     const toolLimits = { bashTimeoutMs };
-    const tool = getPiBuiltinTools([name], { ctx, toolLimits }).find((t) => t.name === name);
+    const tool = getPiBuiltinTools([name], { ctx, toolLimits }).find((t: any) => t.name === name);
     expect(tool.description).toContain("host_turn_context");
     expect(tool.parameters.properties.timeout_ms.description).not.toContain(`${bashTimeoutMs} ms`);
     expect(tool.parameters.properties.timeout_ms.description).toContain("requires current host admission");
@@ -1697,35 +1697,35 @@ it.each([1, 30_000, 1_800_000])("advertises and normalizes a per-run command cei
 it("sorts servers and source tools before collision naming regardless of randomized discovery order", async () => {
   let seed = 42;
   const random = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
-  const shuffle = (items) => {
+  const shuffle = (items: any) => {
     const result = [...items];
     for (let i = result.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]]; }
     return result;
   };
   const connect = vi.spyOn(McpClient.prototype, "connect").mockImplementation(async () => {
-    await new Promise((resolve) => setTimeout(resolve, Math.floor(random() * 5)));
+    await new Promise((resolve: any) => setTimeout(resolve, Math.floor(random() * 5)));
   });
   const close = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
   const list = vi.spyOn(McpClient.prototype, "listTools").mockImplementation(async () => {
-    await new Promise((resolve) => setTimeout(resolve, Math.floor(random() * 5)));
-    return { tools: shuffle(["shared", "Read", "alpha"]).map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} } })) };
+    await new Promise((resolve: any) => setTimeout(resolve, Math.floor(random() * 5)));
+    return { tools: shuffle(["shared", "Read", "alpha"]).map((name: any) => ({ name, description: name, inputSchema: { type: "object", properties: {} } })) };
   });
   try {
     let baseline;
     for (let i = 0; i < 12; i++) {
-      const servers = Object.fromEntries(shuffle(["z", "A", "a"]).map((name) => [name, { type: "http", url: "http://127.0.0.1:19000/mcp" }]));
+      const servers = Object.fromEntries(shuffle(["z", "A", "a"]).map((name: any) => [name, { type: "http", url: "http://127.0.0.1:19000/mcp" }]));
       const result = await initPiMcpTools(servers, new Set(["Read"]), { ctx });
-      const bytes = JSON.stringify(result.tools.map(({ name, description, parameters }) => ({ name, description, parameters })));
+      const bytes = JSON.stringify(result.tools.map(({ name, description, parameters }: any) => ({ name, description, parameters })));
       baseline ??= bytes;
       expect(bytes).toBe(baseline);
-      expect(result.tools.map((tool) => tool.name)).toEqual(["mcp__A__Read", "alpha", "shared", "mcp__a__Read", "mcp__a__alpha", "mcp__a__shared", "mcp__z__Read", "mcp__z__alpha", "mcp__z__shared"]);
+      expect(result.tools.map((tool: any) => tool.name)).toEqual(["mcp__A__Read", "alpha", "shared", "mcp__a__Read", "mcp__a__alpha", "mcp__a__shared", "mcp__z__Read", "mcp__z__alpha", "mcp__z__shared"]);
       await closePiMcpClients(result.clients);
     }
   } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
 });
 
 describe("web delivery guards", () => {
-  function searchEnvelopeWithAction(url = "https://example.com/evidence") {
+  function searchEnvelopeWithAction(url: any = "https://example.com/evidence") {
     const next_actions = [{ tool: "WebFetch", args: { url }, reason: "Fetch for evidence." }];
     const text = JSON.stringify({
       tool: "WebSearch", status: "ok", code: "ok", summary: "Found 1 result.",
@@ -1740,13 +1740,13 @@ describe("web delivery guards", () => {
   }
 
   it("returns a JSON envelope when the web controller is unavailable", async () => {
-    const fetch = getPiBuiltinTools(["WebFetch"], { ctx }).find((tool) => tool.name === "WebFetch");
+    const fetch = getPiBuiltinTools(["WebFetch"], { ctx }).find((tool: any) => tool.name === "WebFetch");
     const fetchResult = await fetch.execute("WebFetch:1", { url: "https://example.com" });
     expect(JSON.parse(fetchResult.content[0].text)).toMatchObject({
       tool: "WebFetch", status: "error", code: "controller_unavailable",
     });
 
-    const search = getPiBuiltinTools(["WebSearch"], { ctx }).find((tool) => tool.name === "WebSearch");
+    const search = getPiBuiltinTools(["WebSearch"], { ctx }).find((tool: any) => tool.name === "WebSearch");
     const searchResult = await search.execute("WebSearch:1", { query: "evidence" });
     expect(JSON.parse(searchResult.content[0].text)).toMatchObject({
       tool: "WebSearch", status: "error", code: "controller_unavailable",
@@ -1757,12 +1757,12 @@ describe("web delivery guards", () => {
     const webController = { search: async () => searchEnvelopeWithAction(), fetch: async () => ({}) };
 
     const searchOnly = getPiBuiltinTools(["WebSearch"], { ctx, webController })
-      .find((tool) => tool.name === "WebSearch");
+      .find((tool: any) => tool.name === "WebSearch");
     const stripped = await searchOnly.execute("WebSearch:1", { query: "evidence" });
     expect(JSON.parse(stripped.content[0].text)).not.toHaveProperty("next_actions");
 
     const both = getPiBuiltinTools(["WebSearch", "WebFetch"], { ctx, webController })
-      .find((tool) => tool.name === "WebSearch");
+      .find((tool: any) => tool.name === "WebSearch");
     const kept = await both.execute("WebSearch:1", { query: "evidence" });
     const payload = JSON.parse(kept.content[0].text);
     expect(payload.next_actions).toHaveLength(1);
@@ -1774,7 +1774,7 @@ describe("web delivery guards", () => {
     const search = getPiBuiltinTools(["WebSearch", "WebFetch"], { ctx,
       webController,
       sandboxPolicy: { mode: "native", network: { mode: "none" } },
-    }).find((tool) => tool.name === "WebSearch");
+    }).find((tool: any) => tool.name === "WebSearch");
     const result = await search.execute("WebSearch:1", { query: "evidence" });
     expect(JSON.parse(result.content[0].text)).not.toHaveProperty("next_actions");
   });

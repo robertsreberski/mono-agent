@@ -13,14 +13,16 @@ import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 
 const PRIVATE_CAPABILITY_URL = Symbol.for("@mono-agent/private-capability-url");
 
-export function resolveMcpStdioCwd(cfg = {}, cwd = null) {
+export function resolveMcpStdioCwd(cfg?: {}, cwd?: any): any;
+export function resolveMcpStdioCwd(cfg: any = {}, cwd: any = null): any {
   const configured = cfg.cwd || null;
   if (configured && isAbsolute(configured)) return configured;
   if (configured) return resolve(cwd || process.cwd(), configured);
   return cwd || process.cwd();
 }
 
-export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null, ctx = null } = {}) {
+export function prepareMcpStdioCommand(cfg?: {}, options?: { cwd?: any; sandboxPolicy?: any; sandboxEngine?: any; ctx?: any }): Promise<import("../../agent/sandbox-seam.js").PreparedSandboxCommand>;
+export async function prepareMcpStdioCommand(cfg: any = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null, ctx = null }: { cwd?: any; sandboxPolicy?: any; sandboxEngine?: any; ctx?: any } = {}): Promise<import("../../agent/sandbox-seam.js").PreparedSandboxCommand> {
   const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const appOwnedLocalBinding = cfg[Symbol.for("@mono-agent/app-owned-local-binding")] === true;
@@ -44,7 +46,8 @@ export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPoli
  * @param {any} cfg
  * @param {{cwd?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, mcpApps?: any}} [options]
  */
-export async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx, mcpApps } = {}) {
+export function connectMcpClient(name: any, cfg: any, { cwd, sandboxPolicy, sandboxEngine, ctx, mcpApps }?: { cwd?: any; sandboxPolicy?: any; sandboxEngine?: any; ctx?: any; mcpApps?: any; }): Promise<{ name: any; client: McpClient<{ method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }>; transport: StreamableHTTPClientTransport | SSEClientTransport | StdioClientTransport; connectionId: `${string}-${string}-${string}-${string}-${string}`; retainedByMcpApps: boolean; privateCapabilityUrl: boolean; closed: boolean; inFlight: Set<any>; }>;
+export async function connectMcpClient(name: any, cfg: any, { cwd, sandboxPolicy, sandboxEngine, ctx, mcpApps }: { cwd?: any; sandboxPolicy?: any; sandboxEngine?: any; ctx?: any; mcpApps?: any } = {}) {
   const brand = (requireToolContext(ctx)).runtimeBrand;
   const privateCapabilityUrl = cfg?.[PRIVATE_CAPABILITY_URL] === true;
   const client = new McpClient(
@@ -60,7 +63,7 @@ export async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxE
           }
         : {},
     },
-  );
+  ) as unknown as Awaited<ReturnType<typeof connectMcpClient>>["client"];
   let transport;
   let preparedStdio;
   let startupStderr = "";
@@ -72,7 +75,7 @@ export async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxE
       transport = new SSEClientTransport(new URL(cfg.url), {
         // SSE EventSourceInit's typed shape omits `headers`, but the transport
         // forwards them to the underlying EventSource — keep the header pass-through.
-        eventSourceInit: /** @type {any} */ ({ headers: cfg.headers || {} }),
+        eventSourceInit: /** @type {any} */ (({ headers: cfg.headers || {} }) as any),
         requestInit: { headers: cfg.headers || {} },
       });
     } else {
@@ -84,12 +87,12 @@ export async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxE
         // Copy the (readonly) prepared args into the transport's mutable list.
         args: [...(prepared.args || [])],
         cwd: prepared.cwd,
-        env: { ...process.env, ...(prepared.env || {}) },
+        env: { ...process.env, ...(prepared.env || {}) } as Record<string, string>,
       });
       // Monkey-patched cleanup handle: not part of the MCP transport's typed shape.
-      /** @type {any} */ (transport).__monoSandboxCleanup = prepared.cleanup;
+      /** @type {any} */ ((transport) as any).__monoSandboxCleanup = prepared.cleanup;
       if (prepared.sandboxed) {
-        captureStderr = (chunk) => {
+        captureStderr = (chunk: any) => {
           // Preserve inherited-stderr operator visibility, including startup bytes.
           process.stderr.write(chunk);
           startupStderr = (startupStderr + String(chunk)).slice(0, 4096);
@@ -97,11 +100,11 @@ export async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxE
         transport.stderr?.on("data", captureStderr);
       }
     }
-    await client.connect(transport);
+    await client.connect(transport as Parameters<typeof client.connect>[0]);
     if (captureStderr && transport instanceof StdioClientTransport) {
       transport.stderr?.removeListener("data", captureStderr);
       // Keep forwarding for the server lifetime without retaining its output.
-      transport.stderr?.on("data", (chunk) => { process.stderr.write(chunk); });
+      transport.stderr?.on("data", (chunk: any) => { process.stderr.write(chunk); });
     }
     return {
       name,
@@ -117,7 +120,7 @@ export async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxE
     };
   } catch (error) {
     try { await transport?.close?.(); } catch { /* best-effort */ }
-    try { await /** @type {any} */ (transport)?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+    try { await /** @type {any} */ ((transport) as any)?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
     if (captureStderr && transport instanceof StdioClientTransport) transport.stderr?.removeListener("data", captureStderr);
     if (privateCapabilityUrl) throw new Error("Private request-scoped MCP server connection failed.");
     const diagnostic = sandboxFailureDiagnostic(preparedStdio?.sandboxed, startupStderr);
@@ -125,14 +128,14 @@ export async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxE
       // This message becomes model-facing runtime_warning content. Neither raw
       // stderr nor transport errors are safe to publish (paths, env secrets).
       const failure = new Error(`${diagnostic.prefix}Stdio MCP startup failed.`);
-      /** @type {any} */ (failure).code = diagnostic.code ?? "sandboxed_mcp_startup_failed";
+      /** @type {any} */ ((failure) as any).code = diagnostic.code ?? "sandboxed_mcp_startup_failed";
       throw failure;
     }
     throw error;
   }
 }
 
-async function closeWithTimeout(close, timeoutMs) {
+async function closeWithTimeout(close: any, timeoutMs: any) {
   if (typeof close !== "function") return;
   const result = close();
   if (!(result && typeof result.then === "function")) return;
@@ -140,7 +143,7 @@ async function closeWithTimeout(close, timeoutMs) {
   try {
     await Promise.race([
       result,
-      new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+      new Promise((resolve: (value: any) => void) => { timer = setTimeout(resolve, timeoutMs); }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
@@ -159,7 +162,7 @@ async function closeWithTimeout(close, timeoutMs) {
  * so the server can unwind, and rejects the caller with a sentence naming the
  * server and tool. See mono-agent#664.
  */
-function cancelInFlightMcpCalls(connected) {
+function cancelInFlightMcpCalls(connected: any) {
   const pending = connected?.inFlight;
   if (!pending || pending.size === 0) return;
   for (const entry of [...pending]) {
@@ -173,7 +176,7 @@ function cancelInFlightMcpCalls(connected) {
   pending.clear();
 }
 
-export async function closeConnectedMcpClient(connected, timeoutMs) {
+export async function closeConnectedMcpClient(connected: any, timeoutMs: any): Promise<void> {
   if (!connected || connected.closed === true) return;
   connected.closed = true;
   cancelInFlightMcpCalls(connected);

@@ -18,7 +18,7 @@ const PLAYWRIGHT_FILENAME_TOOLS = new Set([
   "browser_take_screenshot",
 ]);
 
-function artifactFilename(filename, outputDir) {
+function artifactFilename(filename: any, outputDir: any) {
   if (!filename || typeof filename !== "string" || isAbsolute(filename) || !outputDir) return filename;
   const base = resolve(outputDir);
   const requested = resolve(base, filename);
@@ -33,7 +33,7 @@ function artifactFilename(filename, outputDir) {
  * @param {any} params
  * @param {{qaOutputDir?: any, ctx?: any}} [options]
  */
-export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutputDir, ctx } = {}) {
+export function normalizeMcpToolParams(_serverName: any, toolName: any, params: any, { qaOutputDir, ctx }: { qaOutputDir?: any; ctx?: any } = {}): any {
   if (!params || typeof params !== "object" || Array.isArray(params)) return params;
   if (!PLAYWRIGHT_FILENAME_TOOLS.has(toolName) || !params.filename || isAbsolute(String(params.filename))) return params;
   const dir = qaOutputDir ?? (requireToolContext(ctx)).qaOutputDir;
@@ -43,14 +43,14 @@ export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutput
   };
 }
 
-function base64Bytes(data) {
+function base64Bytes(data: any) {
   const text = String(data || "");
   if (!text) return 0;
   const clean = text.includes(",") ? text.slice(text.indexOf(",") + 1) : text;
   return Math.floor(clean.length * 0.75);
 }
 
-function truncateMcpText(text, limit = MCP_TEXT_RESULT_LIMIT) {
+function truncateMcpText(text: any, limit: number = MCP_TEXT_RESULT_LIMIT) {
   const value = String(text || "");
   if (value.length <= limit) return { text: value, truncated: false, originalLength: value.length };
   const marker = [
@@ -65,7 +65,7 @@ function truncateMcpText(text, limit = MCP_TEXT_RESULT_LIMIT) {
   };
 }
 
-export function compactRawMcpResult(out) {
+export function compactRawMcpResult(out: any): any {
   let text;
   try {
     text = JSON.stringify(out || {});
@@ -86,7 +86,7 @@ export function compactRawMcpResult(out) {
 // sailing through the byte cap below. Normalize pixels before measuring bytes: a
 // shrunk screenshot may now fit the inline budget instead of being dropped for a
 // text pointer.
-async function normalizeMcpImage(data, mimeType) {
+async function normalizeMcpImage(data: any, mimeType: any) {
   const raw = typeof data === "string" ? data : String(data ?? "");
   const source = Buffer.from(raw, "base64");
   if (source.length === 0) return { data: raw, mimeType };
@@ -100,16 +100,16 @@ async function normalizeMcpImage(data, mimeType) {
   return { data: normalized.data.toString("base64"), mimeType: normalized.mimeType };
 }
 
-export async function coerceMcpContent(out, {
+export async function coerceMcpContent(out: any, {
   textLimit = MCP_TEXT_RESULT_LIMIT,
   imageInlineMaxBytes = MCP_IMAGE_INLINE_MAX_BYTES,
   persistArtifact = null,
   toolName = "mcp",
   toolUseId = null,
   onTruncate = null,
-} = {}) {
+}: { textLimit?: number; imageInlineMaxBytes?: number; persistArtifact?: any; toolName?: string; toolUseId?: any; onTruncate?: any } = {}): Promise<any[]> {
   if (Array.isArray(out?.content) && out.content.length) {
-    return await Promise.all(out.content.map(async (part) => {
+    return await Promise.all(out.content.map(async (part: any) => {
       if (part.type === "text") return { type: "text", text: truncateMcpText(part.text || "", textLimit).text };
       if (part.type === "image") {
         const image = await normalizeMcpImage(part.data, part.mimeType || part.mime_type || "image/png");
@@ -151,9 +151,9 @@ export async function coerceMcpContent(out, {
 // Text-only. Images are measured after dimension normalization inside
 // coerceMcpContent, which reports a real truncation through onTruncate; judging
 // the raw part here would flag a screenshot that shrinking brought back under budget.
-export function mcpContentWasTruncated(out, { textLimit = MCP_TEXT_RESULT_LIMIT } = {}) {
+export function mcpContentWasTruncated(out: any, { textLimit = MCP_TEXT_RESULT_LIMIT }: { textLimit?: number } = {}): any {
   if (Array.isArray(out?.content) && out.content.length) {
-    return out.content.some((part) => {
+    return out.content.some((part: any) => {
       if (part.type === "text") return truncateMcpText(part.text || "", textLimit).truncated;
       if (part.type === "image") return false;
       return truncateMcpText(JSON.stringify(part), textLimit).truncated;

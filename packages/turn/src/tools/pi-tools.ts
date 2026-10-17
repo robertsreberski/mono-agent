@@ -18,41 +18,41 @@ import { silentTurnRefusalReason } from "../runtime/silent-turn.js";
 import { createAgentManageTool } from "./delegation/agent-manage-tool.js";
 import { wrapToolsWithApprovalGate } from "../agent/approval.js";
 
-function textResult(text, details = {}) {
+function textResult(text: any, details: any = {}) {
   return {
     content: [{ type: "text", text: String(text ?? "") }],
     details,
   };
 }
 
-function imageResult(data, mimeType, details = {}) {
+function imageResult(data: any, mimeType: any, details: any = {}) {
   return {
     content: [{ type: "image", data: String(data ?? ""), mimeType: mimeType || "image/png" }],
     details,
   };
 }
 
-function isImageToolResult(raw) {
+function isImageToolResult(raw: any) {
   return Boolean(raw) && typeof raw === "object" && raw.kind === "image" && typeof raw.data === "string";
 }
 
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 
-function stripFrontmatter(content) {
+function stripFrontmatter(content: any) {
   const m = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
   return m ? content.slice(m[0].length).trim() : content.trim();
 }
 
-function isErrorText(value) {
+function isErrorText(value: any) {
   return /^Error:|^Exit code \d+:/i.test(String(value || "").trim());
 }
 
-function absolutizePath(value, cwd) {
+function absolutizePath(value: any, cwd: any) {
   if (!value || typeof value !== "string" || isAbsolute(value) || !cwd) return value;
   return resolve(cwd, value);
 }
 
-function normalizeWorkdir(value, cwd, ctx, allowOutside = false) {
+function normalizeWorkdir(value: any, cwd: any, ctx: any, allowOutside: boolean = false) {
   const base = resolve(cwd || (requireToolContext(ctx)).workspace || process.cwd());
   const resolved = value ? resolve(absolutizePath(value, base)) : base;
   // Command tools check the requested cwd against isWorkdirAllowed/isPathAllowed
@@ -62,7 +62,7 @@ function normalizeWorkdir(value, cwd, ctx, allowOutside = false) {
   return allowOutside || isInsidePath(base, resolved) ? resolved : base;
 }
 
-function withAbsolutePaths(name, params, cwd, ctx) {
+function withAbsolutePaths(name: any, params: any, cwd: any, ctx: any) {
   const next = { ...(params || {}) };
   if (["Read", "Write", "Edit"].includes(name)) next.file_path = absolutizePath(next.file_path, cwd);
   if (["Glob", "Grep"].includes(name)) next.path = absolutizePath(next.path, cwd);
@@ -72,13 +72,13 @@ function withAbsolutePaths(name, params, cwd, ctx) {
   return next;
 }
 
-function toolText(result) {
+function toolText(result: any) {
   if (typeof result === "string") return result;
   if (result == null) return "";
   try { return JSON.stringify(result); } catch { return String(result); }
 }
 
-function writeFileChangeDetails(path, before, after) {
+function writeFileChangeDetails(path: any, before: any, after: any) {
   const change = {
     path,
     kind: before && before.exists ? "update" : "add",
@@ -98,7 +98,7 @@ function writeFileChangeDetails(path, before, after) {
  * enforces, plus a human unit, so the model can both reason about the scale and
  * pass an exact value back.
  */
-function formatDurationForModel(ms) {
+function formatDurationForModel(ms: any) {
   const hours = ms / 3_600_000;
   const minutes = ms / 60_000;
   const human = hours >= 1
@@ -107,13 +107,13 @@ function formatDurationForModel(ms) {
   return `${human} (${String(ms)} ms)`;
 }
 
-function limitedNumber(value, fallback) {
+function limitedNumber(value: any, fallback: any) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.min(Math.floor(n), fallback);
 }
 
-function withToolLimits(name, params, limits = {}) {
+function withToolLimits(name: any, params: any, limits: any = {}) {
   const next = { ...(params || {}) };
   if (["Read", "Glob", "Grep", "WebFetch"].includes(name)) {
     next.max_output_chars = limitedNumber(next.max_output_chars, limits.toolTextLimitChars || 16000);
@@ -153,7 +153,7 @@ function withToolLimits(name, params, limits = {}) {
  * @param {any} params
  * @param {{cwd?: any, toolLimits?: any, ctx?: any}} [options]
  */
-export function normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx } = {}) {
+export function normalizePiBuiltinToolParams(name: any, params: any, { cwd, toolLimits, ctx }: { cwd?: any; toolLimits?: any; ctx?: any } = {}): any {
   return withToolLimits(name, withAbsolutePaths(name, params, cwd, ctx), toolLimits);
 }
 
@@ -161,7 +161,7 @@ function integerSchema() {
   return { type: "integer" };
 }
 
-function isReadOnlyShellCommand(command) {
+function isReadOnlyShellCommand(command: any) {
   const text = String(command || "").trim();
   if (!text) return false;
   if (/[;&|`<>]|\$\(/.test(text)) return false;
@@ -178,14 +178,14 @@ function isReadOnlyShellCommand(command) {
     /^tail(\s|$)/,
     /^wc(\s|$)/,
     /^git\s+(status|diff|log|show|branch|rev-parse|ls-files)(\s|$)/,
-  ].some((pattern) => pattern.test(text));
+  ].some((pattern: RegExp) => pattern.test(text));
 }
 
 const ALWAYS_SEQUENTIAL_BUILTINS = new Set(["Write", "Edit", "Bash", "Exec", "NodeRepl"]);
 
 const SENSITIVE_RESULT_PARAMS = new Set(["Bash", "Exec", "WebFetch", "WebSearch"]);
 
-function isStructuredToolRun(value) {
+function isStructuredToolRun(value: any) {
   return Boolean(value)
     && typeof value === "object"
     && typeof value.text === "string"
@@ -201,7 +201,7 @@ function isStructuredToolRun(value) {
  * @param {any} execute
  * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: any, ownedForegroundProcessController?: any, forceSequential?: boolean}} [options]
  */
-function createBuiltinTool(name, label, description, parameters, execute, {
+function createBuiltinTool(name: any, label: any, description: any, parameters: any, execute: any, {
   cwd,
   onEvent,
   toolLimits,
@@ -212,14 +212,14 @@ function createBuiltinTool(name, label, description, parameters, execute, {
   processJobsController,
   ownedForegroundProcessController,
   forceSequential = false,
-} = {}) {
+}: { cwd?: any; onEvent?: ((event: any) => void) | undefined; toolLimits?: any; toolPolicy?: any; sandboxPolicy?: any; sandboxEngine?: any; ctx?: any; processJobsController?: any; ownedForegroundProcessController?: any; forceSequential?: boolean; } = {}) {
   return {
     name,
     label,
     description,
     parameters,
     executionMode: forceSequential || ALWAYS_SEQUENTIAL_BUILTINS.has(name) ? "sequential" : undefined,
-    async execute(toolCallId, params, signal) {
+    async execute(toolCallId: any, params: any, signal: any) {
       if (signal?.aborted) throw new Error("tool execution aborted");
       const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx });
       if (processJobsController && params?.background === true && (name === "Bash" || name === "Exec")) {
@@ -265,11 +265,11 @@ function createBuiltinTool(name, label, description, parameters, execute, {
           message: "Bash.timeout is deprecated; use timeout_ms for exact millisecond semantics.",
         });
       }
-      const details = /** @type {any} */ ({
+      const details = /** @type {any} */ (({
         tool: name,
         ...(SENSITIVE_RESULT_PARAMS.has(name) ? {} : { params: normalized }),
         ...(structured ? { outcome: structured.outcome } : {}),
-      });
+      }) as any);
       if (shouldTrackWrite) {
         details.file_change = writeFileChangeDetails(normalized.file_path, beforeWrite, readFileChangeSnapshot(normalized.file_path));
       }
@@ -301,11 +301,11 @@ function createBuiltinTool(name, label, description, parameters, execute, {
  * @param {any[]} [skillNames]
  * @param {{skillsRoot?: any, dataDir?: any, skills?: any[]}} [options]
  */
-function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {}) {
+function readSkillTool(skillNames: any[] = [], { skillsRoot, dataDir, skills = [] }: { skillsRoot?: any; dataDir?: any; skills?: any[]; } = {}) {
   const sharedRoot = skillsRoot
     ? resolve(skillsRoot)
     : (dataDir ? resolve(dataDir, "skills") : null);
-  const isSafeName = (name) => typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name);
+  const isSafeName = (name: any) => typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name);
 
   // name -> {path, assetsPath, skillsRoot} derived from the pi Skill filePath.
   // filePath is the skill file itself (nested `<root>/<name>/SKILL.md` or a flat
@@ -335,7 +335,7 @@ function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {
     label: "Read Skill",
     description: "Load the complete instructions for a named skill. Use ReadSkill instead of Read for SKILL.md files. If a skill's instructions are already present in this conversation, apply those instead of loading it again.",
     parameters: objectSchema({ name: { type: "string", enum: [...new Set(enumNames)].sort() } }, ["name"]),
-    async execute(_toolCallId, { name }) {
+    async execute(_toolCallId: any, { name }: { name: any; }) {
       if (sharedRoot) {
         const path = resolve(sharedRoot, name, "SKILL.md");
         if (!path.startsWith(sharedRoot + "/")) throw new Error(`invalid skill path: ${name}`);
@@ -357,7 +357,8 @@ function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {
   };
 }
 
-export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
+export function createStructuredOutputTool(outputSchema: any, onStructuredOutput: any): { name: string; label: string; description: string; parameters: Type.TUnsafe<unknown>; executionMode: string; execute(_toolCallId: any, params: any): Promise<{ content: { type: string; text: string; }[]; details: any; terminate: boolean; }>; };
+export function createStructuredOutputTool(outputSchema: any, onStructuredOutput: any): { name: string; label: string; description: string; parameters: Type.TUnsafe<unknown>; executionMode: string; execute(_toolCallId: any, params: any): Promise<{ content: { type: string; text: string }[]; details: any; terminate: boolean }> } | null {
   if (!outputSchema) return null;
   return {
     name: "StructuredOutput",
@@ -365,7 +366,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
     description: "Submit the final structured result object. Call this once when the response is complete.",
     parameters: Type.Unsafe(outputSchema),
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: any, params: any) {
       onStructuredOutput?.(params);
       return {
         content: [{ type: "text", text: "Structured output received." }],
@@ -380,7 +381,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
  * @param {any} allowedTools
  * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, ownedForegroundProcessController?: any, processJobsAvailability?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, askParentController?: any, finishSilentlyController?: any, silentTurnState?: any, toolExposure?: any, subagentContext?: any, ctx?: any}} [options]
  */
-export function getPiBuiltinTools(allowedTools, {
+export function getPiBuiltinTools(allowedTools: any, {
   disallowedTools = [],
   skillNames = [],
   skills = [],
@@ -411,8 +412,8 @@ export function getPiBuiltinTools(allowedTools, {
   toolExposure = {},
   toolExecutionMode = "safe-parallel",
   ctx = null,
-} = {}) {
-  const instancesEnabled = ["Agent", "AgentManage"].every((name) =>
+}: { disallowedTools?: any[]; skillNames?: any[]; skills?: any[]; skillsRoot?: any; dataDir?: any; cwd?: any; onEvent?: (event: any) => void; toolLimits?: any; persistArtifact?: any; onTruncate?: any; toolPayloadMaxBytes?: number; imageInlineMaxBytes?: any; toolPolicy?: any; sandboxPolicy?: any; sandboxEngine?: any; approvalManager?: any; approvalModel?: any; nodeReplController?: any; webController?: any; processJobsController?: any; ownedForegroundProcessController?: any; processJobsAvailability?: any; toolExecutionMode?: "sequential" | "safe-parallel"; subagents?: any; askParentController?: any; finishSilentlyController?: any; silentTurnState?: any; toolExposure?: any; subagentContext?: any; ctx?: any } = {}): any[] {
+  const instancesEnabled = ["Agent", "AgentManage"].every((name: string) =>
     (!Array.isArray(allowedTools) || allowedTools.includes("*") || allowedTools.includes(name))
     && !disallowedTools.includes(name));
   const textLimitSchema = integerSchema();
@@ -456,7 +457,7 @@ export function getPiBuiltinTools(allowedTools, {
     readableRoots: (requireToolContext(ctx)).additionalReadRoots ?? [],
     sandboxPolicy: resolveSandboxPolicy(requireToolContext(ctx), sandboxPolicy),
     sandboxEngine: sandboxEngine ?? (requireToolContext(ctx)).sandboxEngine,
-    runProbe: async (prepared, timeoutMs) => {
+    runProbe: async (prepared: any, timeoutMs: any) => {
       if (prepared?.sandboxed !== true) throw new Error("Readonly observation sandbox is unavailable.");
       const handle = startPreparedProcess({ ...prepared, args: [...prepared.args] }, {
         timeoutMs: Math.max(1, Math.min(1500, timeoutMs)), maxBufferBytes: 16384, exactEnvironment: true, waitForProcessGroup: true,
@@ -473,13 +474,13 @@ export function getPiBuiltinTools(allowedTools, {
   // never delivered. Hints confer no authority.
   const webDeliveryDenied = new Set(Array.isArray(disallowedTools) ? disallowedTools : []);
   const webDeliveryAllowAll = !Array.isArray(allowedTools) || allowedTools.includes("*");
-  const webDeliveryExposed = (name) => (webDeliveryAllowAll || allowedTools.includes(name)) && !webDeliveryDenied.has(name);
-  const filterWebDelivery = (result) => {
+  const webDeliveryExposed = (name: any) => (webDeliveryAllowAll || allowedTools.includes(name)) && !webDeliveryDenied.has(name);
+  const filterWebDelivery = (result: any) => {
     if (!result || result.error || typeof result.text !== "string" || !result.outcome) return result;
     const runtime = requireToolContext(ctx);
     const sandbox = runtime.sandbox ?? passthroughSandbox;
     const policy = resolveSandboxPolicy(runtime, sandboxPolicy);
-    const filtered = filterEnvelopeNextActions(result.text, result.outcome, (action) => {
+    const filtered = filterEnvelopeNextActions(result.text, result.outcome, (action: any) => {
       if (action?.tool !== "WebFetch" && action?.tool !== "WebSearch") return false;
       if (!webDeliveryExposed(action.tool)) return false;
       if (action?.tool === "WebFetch") {
@@ -560,7 +561,7 @@ export function getPiBuiltinTools(allowedTools, {
         "Node REPL",
         "Evaluate JavaScript in a run-scoped Node.js REPL. Variables persist across NodeRepl calls in this run.",
         objectSchema({ code: { type: "string", minLength: 1 } }, ["code"]),
-        (params, { signal }) => typeof nodeReplController.executeDetailed === "function"
+        (params: any, { signal }: { signal: any; }) => typeof nodeReplController.executeDetailed === "function"
           ? nodeReplController.executeDetailed(params, { signal })
           : nodeReplController.execute(params, { signal }),
         toolContext,
@@ -578,7 +579,7 @@ export function getPiBuiltinTools(allowedTools, {
       description: "End this admitted host notification turn without a visible reply. Call this alone, without narration or attachments. Otherwise use the NOTHING_TO_REPORT fallback.",
       parameters: objectSchema({}),
       executionMode: "sequential",
-      async execute(_toolCallId, params, signal) {
+      async execute(_toolCallId: any, params: any, signal: any) {
         const reason = signal?.aborted ? "failure"
           : params === null || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length !== 0 ? "failure"
           : silentTurnRefusalReason(silentTurnState, finishSilentlyController);
@@ -603,7 +604,7 @@ export function getPiBuiltinTools(allowedTools, {
       focus: { type: "string", maxLength: 500, description: "Deterministic post-extraction block filter; the focused view keeps focused line coordinates and must be preserved across continuations." },
       include_links: { type: "boolean", description: "List bounded main-content links from static HTML extraction; other sources report the capability as unavailable." },
     }, ["url"]), webController
-      ? async (params, execution) => filterWebDelivery(await webController.fetch(params, execution))
+      ? async (params: any, execution: any) => filterWebDelivery(await webController.fetch(params, execution))
       : async () => webFailureEnvelope("WebFetch", "controller_unavailable", "Error: WebFetch controller is unavailable."), toolContext),
     WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted result leads, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Use the configured provider or explicit ordered chain (default: Parallel then local Ollama); a single provider name is strict. Optional country requests a two-letter ISO 3166-1 search-region preference separate from language; omission requests no country/global mode where supported, and provider coverage reports advisory or unsupported handling. Country targeting does not guarantee every result is geographically located there. Start with one broad, high-yield query covering the decision's main constraints, then use WebFetch on returned URLs. Treat snippets as leads, not final evidence. Refine only for a material evidence gap. Never sleep, retry, or delegate to bypass a request budget, cooldown, quota limit, or access gate; continue honestly from available evidence. Domain constraints (the domains and exclude_domains parameters, or site: operators in the query text) travel as site: query operators and are additionally enforced client-side; per-provider handling is reported in coverage filterSupport.domains.", objectSchema({
       query: { type: "string" },
@@ -615,7 +616,7 @@ export function getPiBuiltinTools(allowedTools, {
       country: { type: "string", pattern: "^[A-Za-z]{2}$", description: "Optional ISO 3166-1 alpha-2 search-region preference, normalized case-insensitively." },
       time_range: { type: "string", enum: ["day", "month", "year"] },
     }, ["query"]), webController
-      ? async (params, execution) => filterWebDelivery(await webController.search(params, execution))
+      ? async (params: any, execution: any) => filterWebDelivery(await webController.search(params, execution))
       : async () => webFailureEnvelope("WebSearch", "controller_unavailable", "Error: WebSearch controller is unavailable."), toolContext),
   };
   // allowedTools honors the `"*"` allow-all sentinel (and undefined) as "every
@@ -623,13 +624,13 @@ export function getPiBuiltinTools(allowedTools, {
   const allowAll = !Array.isArray(allowedTools) || allowedTools.includes("*");
   const selected = allowAll ? Object.keys(all) : allowedTools;
   const denied = new Set(Array.isArray(disallowedTools) ? disallowedTools : []);
-  const names = [...new Set(selected)].filter((name) => !denied.has(name)).sort();
-  const tools = names.map((name) => all[name]).filter(Boolean);
+  const names = [...new Set(selected)].filter((name: any) => !denied.has(name)).sort();
+  const tools = names.map((name: any) => all[name as keyof typeof all]).filter(Boolean);
   const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir, skills });
   // Deny-check the canonical PascalCase name AND the legacy snake_case alias so
   // an old denylist keeps disabling the tool after the rename.
   if (skillTool && !denied.has("ReadSkill") && !denied.has("read_skill" /* legacy alias */)) tools.push(skillTool);
-  tools.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  tools.sort((a: any, b: any) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   if (toolExecutionMode === "sequential") {
     for (const tool of tools) tool.executionMode = "sequential";
   }
