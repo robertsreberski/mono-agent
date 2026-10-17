@@ -1,3 +1,4 @@
+import type { Stats } from "node:fs";
 // @ts-check
 // Streaming JSONL validation plus offset-backed lookup. No transcript/line caps.
 import { constants } from "node:fs";
@@ -6,23 +7,34 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { isOwned, sameIdentity as same } from "./owned-fs-impl.js";
 /** @returns {never} */
-const fail = () => { throw new Error("Harness journal read unavailable"); };
+const fail = (): never => { throw new Error("Harness journal read unavailable"); };
 const decoder = new TextDecoder("utf-8", { fatal: true });
 /** @param {import("node:fs").Stats} stat @param {boolean} directory */
-const secure = (stat, directory, ownerOnly = true) => { if (!isOwned(stat, directory, !ownerOnly)) fail(); };
-function parse(bytes) {
+const secure = (stat: Stats, directory: boolean, ownerOnly: boolean = true) => { if (!isOwned(stat, directory, !ownerOnly)) fail(); };
+function parse(bytes: any): any {
   if (!bytes.length) fail();
   // Invalid UTF-8, JSON, memory/size limits remain explicit errors, never omissions.
   return JSON.parse(decoder.decode(bytes));
 }
 export class JournalReader {
-  constructor(path, root, handle, identity, directories, ownerOnly = true) {
+  declare path: any;
+  declare root: any;
+  declare handle: any;
+  declare identity: any;
+  declare directories: any;
+  declare ownerOnly: boolean;
+  declare cache: Map<any, any>;
+  declare cacheBytes: number;
+  declare cacheVersion: any;
+  declare cacheLimit: number;
+
+  constructor(path: any, root: any, handle: any, identity: any, directories: any, ownerOnly: boolean = true) {
     this.path = path; this.root = root; this.handle = handle;
     this.identity = identity; this.directories = directories; this.ownerOnly = ownerOnly;
     this.cache = new Map(); this.cacheBytes = 0; this.cacheVersion = identity; this.cacheLimit = 8 * 1024 * 1024;
   }
   /** @param {string} filename @param {string} sessionsRoot @param {{ownerOnly?:boolean}} [options] */
-  static async open(filename, sessionsRoot, { ownerOnly = true } = {}) {
+  static async open(filename: string, sessionsRoot: string, { ownerOnly = true }: { ownerOnly?: boolean; } = {}): Promise<JournalReader> {
     const path = resolve(filename), root = resolve(sessionsRoot);
     if (!path.startsWith(`${root}${sep}`)) fail();
     const directories = new Map();
@@ -42,8 +54,8 @@ export class JournalReader {
       await reader.assertIdentity(); return reader;
     } catch (error) { await handle.close(); throw error; }
   }
-  clearCache() { this.cache.clear(); this.cacheBytes = 0; }
-  remember(address, record) {
+  clearCache(): void { this.cache.clear(); this.cacheBytes = 0; }
+  remember(address: any, record: any): void {
     if (!["message", "compaction"].includes(record.kind) && !(record.kind === "tool_result" && record.payload.phase === "returned")) return;
     if (address.length > this.cacheLimit) return;
     const key = `${address.offset}:${address.length}`;
@@ -54,12 +66,12 @@ export class JournalReader {
       this.cacheBytes -= Number(oldest.split(":")[1]); this.cache.delete(oldest);
     }
   }
-  cached(address) {
+  cached(address: any): any {
     const key = `${address.offset}:${address.length}`; const value = this.cache.get(key);
     if (!value) return undefined;
     this.cache.delete(key); this.cache.set(key, value); return structuredClone(value);
   }
-  async assertIdentity() {
+  async assertIdentity(): Promise<any> {
     for (const [path, identity] of this.directories) {
       const current = await lstat(path); secure(current, true, this.ownerOnly); if (!same(current, identity)) fail();
     }
@@ -73,7 +85,7 @@ export class JournalReader {
    * IDs/offsets; retaining native envelopes would defeat the storage boundary.
    * @param {(record:any, address:{offset:number, length:number}) => Promise<void>|void} visit
    */
-  async scan(visit) {
+  async scan(visit: (record: any, address: { offset: number; length: number; }) => Promise<void> | void): Promise<{ identity: any; completeBytes: number; torn: boolean; }> {
     const before = await this.assertIdentity();
     const chunk = Buffer.alloc(64 * 1024);
     let offset = 0, lineOffset = 0, completeBytes = 0, fragments = [], fragmentBytes = 0;
@@ -101,7 +113,7 @@ export class JournalReader {
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail();
     return { identity: before, completeBytes, torn: fragmentBytes > 0 };
   }
-  async fingerprint() {
+  async fingerprint(): Promise<{ dev: any; ino: any; size: any; mtimeMs: any; sha256: string; }> {
     const before = await this.assertIdentity();
     const hash = createHash("sha256"), chunk = Buffer.alloc(64 * 1024);
     for (let offset = 0; offset < before.size;) {
@@ -113,7 +125,7 @@ export class JournalReader {
     return { dev: before.dev, ino: before.ino, size: before.size, mtimeMs: before.mtimeMs, sha256: hash.digest("hex") };
   }
   /** @param {{allowIncomplete?: boolean}} [options] */
-  async readHeader({ allowIncomplete = false } = {}) {
+  async readHeader({ allowIncomplete = false }: { allowIncomplete?: boolean; } = {}): Promise<any> {
     const before = await this.assertIdentity();
     let offset = 0, parts = [];
     while (offset < before.size) {
@@ -131,7 +143,7 @@ export class JournalReader {
     fail();
   }
   /** @param {{offset:number,length:number}} address */
-  async read(address) {
+  async read(address: { offset: number; length: number; }): Promise<any> {
     const stat = await this.assertIdentity();
     if (stat.size !== this.cacheVersion.size || stat.mtimeMs !== this.cacheVersion.mtimeMs || stat.ctimeMs !== this.cacheVersion.ctimeMs) this.clearCache();
     this.cacheVersion = stat;
@@ -149,5 +161,5 @@ export class JournalReader {
     if (bytes[length] !== 10) fail();
     await this.assertIdentity(); const record = parse(bytes.subarray(0, length)); this.remember(address, record); return record;
   }
-  async close() { await this.handle.close(); }
+  async close(): Promise<void> { await this.handle.close(); }
 }

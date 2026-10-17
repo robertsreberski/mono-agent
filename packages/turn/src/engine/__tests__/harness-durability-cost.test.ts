@@ -1,12 +1,13 @@
+import type { FauxProviderHandle, MutableModels } from "@earendil-works/pi-ai";
 import { afterEach, expect, it, vi } from "vitest";
 const meter = vi.hoisted(() => ({ enabled: false, journal: 0, directory: 0, lock: 0, reads: 0 }));
-vi.mock("node:fs/promises", async (original) => {
-  const fs = /** @type {typeof import("node:fs/promises")} */ (await original());
-  return { ...fs, open: async (...args) => {
-    const handle = await fs.open(.../** @type {Parameters<typeof fs.open>} */ (args)); const path = String(args[0]);
+vi.mock("node:fs/promises", async (original: <T extends unknown = unknown>() => Promise<T>) => {
+  const fs = /** @type {typeof import("node:fs/promises")} */ (((await original()) as typeof import("node:fs/promises")));
+  return { ...fs, open: async (...args: any[]) => {
+    const handle = await fs.open(.../** @type {Parameters<typeof fs.open>} */ (((args) as Parameters<typeof fs.open>))); const path = String(args[0]);
     const sync = handle.sync.bind(handle), read = handle.read.bind(handle);
-    handle.sync = async (...rest) => { if (meter.enabled) meter[path.includes(".jsonl") ? "journal" : String(path).endsWith(".sqlite") ? "lock" : "directory"] += 1; return sync(...rest); };
-    handle.read = async (...rest) => { if (meter.enabled && path.includes(".jsonl")) meter.reads += 1; return read(...rest); };
+    handle.sync = async (...rest: []) => { if (meter.enabled) meter[path.includes(".jsonl") ? "journal" : String(path).endsWith(".sqlite") ? "lock" : "directory"] += 1; return sync(...rest); };
+    handle.read = async (...rest: Parameters<typeof handle.read>) => { if (meter.enabled && path.includes(".jsonl")) meter.reads += 1; return read(...rest); };
     return handle;
   } };
 });
@@ -14,19 +15,19 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxToolCall, fauxText } from "@earendil-works/pi-ai";
-import { JsonlSessionRepo } from "../session-store.js";
+import { JsonlSessionRepo, type SessionStore } from "../session-store.js";
 import { createRunDriver } from "../run-driver.js";
 import { JournalReader } from "../journal-reader.js";
-const roots = [];
+const roots: string[] = [];
 afterEach(async () => { meter.enabled = false; vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const reset = () => { Object.assign(meter, { journal: 0, directory: 0, lock: 0, reads: 0, enabled: true }); };
-async function fixture() {
+async function fixture(): Promise<{ root: string; repo: JsonlSessionRepo; raw: SessionStore; faux: FauxProviderHandle; models: MutableModels; }> {
   const root = await mkdtemp(join(tmpdir(), "durability-cost-")); roots.push(root); const repo = new JsonlSessionRepo({ sessionsRoot: root });
   const raw = await repo.create({ id: "fictional-cost" });
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "cost" }], tokensPerSecond: undefined }); const models = createModels(); models.setProvider(faux.provider);
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "cost" }], tokensPerSecond: undefined as unknown as number }); const models = createModels(); models.setProvider(faux.provider);
   return { root, repo, raw, faux, models };
 }
-async function turn(raw, faux, models) {
+async function turn(raw: any, faux: any, models: any): Promise<void> {
   let effects = 0;
   faux.setResponses([fauxAssistantMessage([fauxToolCall("Read", {}, { id: `call-${raw.seq}` })]), fauxAssistantMessage([fauxText("Fictional completed.")])]);
   const driver = createRunDriver(raw, { models, model: faux.getModel(), systemPrompt: "Fictional test.", retry: { enabled: false },
@@ -34,7 +35,7 @@ async function turn(raw, faux, models) {
       expect([...raw.validator.calls.values()].at(-1).admission).toBe("started"); expect(meter.journal).toBe(5);
       effects += 1; return { content: [{ type: "text", text: "Fictional observation." }] };
     } }] });
-  expect((await driver.prompt("Fictional tool turn.")).status).toBe("completed"); expect(effects).toBe(1); await driver.close();
+  expect((await (driver.prompt as (...args: any[]) => ReturnType<typeof driver.prompt>)("Fictional tool turn.")).status).toBe("completed"); expect(effects).toBe(1); await driver.close();
 }
 it("keeps all nine tool-turn file barriers but zero repeated directory fsyncs or parsed-envelope reads", async () => {
   const { repo, raw, faux, models } = await fixture(); reset();
@@ -62,7 +63,7 @@ it("invalidates envelope and warm caches on rewind/retire and rejects same-inode
   const { repo, raw } = await fixture(); const a = await raw.appendMessage({ role: "user", content: "Fictional first." });
   await raw.appendMessage({ role: "user", content: "Fictional second." }); await raw.sync(); await raw.getEntries();
   expect(raw.io.cached(raw.entries.get(a).address)).toBeDefined(); await raw.moveTo(a); expect(raw.io.cached(raw.entries.get(a).address)).toBeUndefined();
-  expect((await raw.getEntries()).map((entry) => entry.message.content)).toEqual(["Fictional first."]); await raw.sync();
+  expect((await raw.getEntries()).map((entry: any) => entry.message.content)).toEqual(["Fictional first."]); await raw.sync();
   const original = await readFile(raw.metadata.path, "utf8"); await writeFile(raw.metadata.path, original.replace("Fictional first.", "Fictional third."));
   await expect(raw.getEntries()).rejects.toMatchObject({ name: "JournalStorageError" }); expect(raw.io.cached(raw.entries.get(a).address)).toBeUndefined();
   await raw.close().catch(() => {}); expect(repo.warm).toBeNull();
@@ -88,12 +89,12 @@ it("still syncs new journal/lock directory publication and retirement unlink", a
 
 it("serializes verified cache batches against legitimate queued appends instead of falsely poisoning their version", async () => {
   const { raw } = await fixture(); await raw.appendMessage({ role: "user", content: "Fictional prefix." }); await raw.sync();
-  const verify = raw.io.verify; let entered, release, once = true;
-  const waiting = new Promise((resolve) => { entered = resolve; }); const gate = new Promise((resolve) => { release = resolve; });
+  const verify = raw.io.verify; let entered: any, release: any, once = true;
+  const waiting = new Promise((resolve: (value: any) => void) => { entered = resolve; }); const gate = new Promise((resolve: (value: any) => void) => { release = resolve; });
   raw.io.verify = async () => { if (once) { once = false; entered?.(); await gate; } return verify(); };
   const read = raw.getEntries(); await waiting; const seq = raw.seq; const append = raw.appendMessage({ role: "user", content: "Fictional concurrent tail." });
-  await new Promise((resolve) => setImmediate(resolve)); expect(raw.seq).toBe(seq); /** @type {any} */ (release)?.();
-  expect((await read).map((entry) => entry.message.content)).toEqual(["Fictional prefix."]); await append;
+  await new Promise((resolve: (value: any) => void) => setImmediate(resolve)); expect(raw.seq).toBe(seq); /** @type {any} */ (((release) as any))?.();
+  expect((await read).map((entry: any) => entry.message.content)).toEqual(["Fictional prefix."]); await append;
   expect((await raw.getEntries()).at(-1).message.content).toBe("Fictional concurrent tail."); expect(raw.failure).toBeNull(); await raw.close();
 });
 

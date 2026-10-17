@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, expect, afterEach } from "vitest";
 import { JsonlSessionRepo } from "../index.js";
-const roots = [];
-async function root() { const r = await mkdtemp(join(tmpdir(), "harness-salvage-")); roots.push(r); return r; }
+const roots: string[] = [];
+async function root(): Promise<string> { const r = await mkdtemp(join(tmpdir(), "harness-salvage-")); roots.push(r); return r; }
 afterEach(async () => { for (const r of roots.splice(0)) await rm(r, { recursive:true, force:true }); });
 it("salvages owned paired tool evidence without executing an unfinished turn", async () => {
   const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r });
   const s = await repo.create({ id: "salvage-fixture" });
-  await s.beginTurn("interrupted", {});
+  await (s.beginTurn as (...args: any[]) => ReturnType<typeof s.beginTurn>)("interrupted", {});
   await s.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1700000000000 });
   await s.appendMessage({ role: "toolResult", toolCallId: "call", toolName: "Read", content: [{ type: "text", text: "Fictional evidence." }], isError: false, timestamp: 1700000000001 });
   await s.close();
@@ -25,7 +25,7 @@ it("salvages owned paired tool evidence without executing an unfinished turn", a
 it("salvages large v2 journals read-only with bounded result excerpts", async () => {
   const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const s = await repo.create({ id: "large-salvage" });
-  await s.beginTurn("synthetic:large-salvage");
+  await (s.beginTurn as (...args: any[]) => ReturnType<typeof s.beginTurn>)("synthetic:large-salvage");
   for (let i = 0; i < 12; i++) await s.appendMessage({ role: "user", content: "x".repeat(3 * 1024 * 1024), timestamp: i });
   await s.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Read", arguments: {} }], timestamp: 13 });
   await s.appendMessage({ role: "toolResult", toolCallId: "call", toolName: "Read", content: [{ type: "text", text: "y".repeat(5000) }], isError: false, timestamp: 14 });
@@ -48,7 +48,7 @@ it("salvages the requested v2 ID despite unrelated malformed, insecure and non-f
   expect((await readFile(session.metadata.path)).equals(bytes)).toBe(true);
 });
 
-it.each(["insecure", "corrupt", "non-file"])("fails closed instead of salvaging a clean-break legacy source when v2 is %s", async (damage) => {
+it.each(["insecure", "corrupt", "non-file"])("fails closed instead of salvaging a clean-break legacy source when v2 is %s", async (damage: string) => {
   const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); await mkdir(join(r, "legacy")); const source = join(r, "legacy", "fixture_fixture-session.jsonl");
   await copyFile(new URL("./fixtures/legacy-v4.jsonl", import.meta.url), source);

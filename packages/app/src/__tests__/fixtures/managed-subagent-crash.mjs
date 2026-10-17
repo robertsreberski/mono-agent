@@ -1,28 +1,38 @@
 // Physical owner crash/reopen proof: compiled app/adapter, shipped runtime JS,
 // fake transport, real registry locks, gated process group and OS incarnation.
+import { registerHooks } from "node:module";
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { JournalReader } from "../../../../turn/src/engine/journal-reader.js";
-import { salvageDurableNativeSession } from "@mono-agent/turn/engine/sessions.js";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadMonoAgentConfig } from "@mono-agent/config";
-import { createMonoRuntime } from "@mono-agent/turn/host";
-import { acquireAgentRootOwnership } from "../../../dist/durable-state/agent-root-coordinator.js";
-import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
-import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
-import { PROCESS_JOBS_DEFAULTS } from "../../../dist/process-jobs-config.js";
-import { createSubagentInstanceRegistry, subagentConversationRoot } from "../../../dist/subagent-instances.js";
-import { buildSubagentsOptions } from "../../../dist/composition/configured-subagents.js";
-import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
-import { readProcessIncarnation, processIncarnationsEqual } from "@mono-agent/conversation/process-incarnation";
-import { createAgentTool } from "../../../../turn/src/tools/delegation/agent-tool.js";
-import { createRuntime } from "../../../../turn/src/runtime/create-runtime.js";
-import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js";
-import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
+
+// Keep transitive public/private self imports on the same built graph too.
+const turnSourceRoot = new URL("../../../../turn/src/", import.meta.url).href;
+const turnDistRoot = new URL("../../../../turn/dist/", import.meta.url).href;
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
+  return resolved.url.startsWith(turnSourceRoot)
+    ? { ...resolved, url: turnDistRoot + resolved.url.slice(turnSourceRoot.length) } : resolved;
+} });
+const { JournalReader } = await import("../../../../turn/dist/engine/journal-reader.js");
+const { salvageDurableNativeSession } = await import("../../../../turn/dist/engine/sessions.js");
+const { loadMonoAgentConfig } = await import("@mono-agent/config");
+const { createMonoRuntime } = await import("../../../../turn/dist/host/index.js");
+const { acquireAgentRootOwnership } = await import("../../../dist/durable-state/agent-root-coordinator.js");
+const { registerProcessJobsRoot } = await import("../../../dist/process-jobs-root-registry.js");
+const { openProcessJobsService } = await import("../../../dist/process-jobs-service.js");
+const { PROCESS_JOBS_DEFAULTS } = await import("../../../dist/process-jobs-config.js");
+const { createSubagentInstanceRegistry, subagentConversationRoot } = await import("../../../dist/subagent-instances.js");
+const { buildSubagentsOptions } = await import("../../../dist/composition/configured-subagents.js");
+const { openProcessJobStore } = await import("../../../dist/process-jobs-store.js");
+const { readProcessIncarnation, processIncarnationsEqual } = await import("@mono-agent/conversation/process-incarnation");
+const { createAgentTool } = await import("../../../../turn/dist/tools/delegation/agent-tool.js");
+const { createRuntime } = await import("../../../../turn/dist/runtime/create-runtime.js");
+const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import("../../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js");
+const { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } = await import("./verification-scratch.mjs");
 
 const ROOT = fileURLToPath(new URL("../../../../../", import.meta.url)).replace(/\/$/, "");
 assert.equal(process.cwd(), ROOT);

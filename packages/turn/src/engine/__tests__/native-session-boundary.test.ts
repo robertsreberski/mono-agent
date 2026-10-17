@@ -7,30 +7,30 @@ import { createRunDriver } from "../run-driver.js";
 import { JsonlSessionRepo } from "../session-store.js";
 import { commitSession, captureSessionRecovery, resolveSession, nativeSessionRegistry } from "../session-lifecycle.js";
 import { settleNativeSession } from "../session-settlement.js";
-const roots = [];
+const roots: string[] = [];
 afterEach(async () => { await nativeSessionRegistry.disposeAll(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 it("returns storage-only unavailable and persistence outcomes", async () => {
-  expect(await resolveSession({}, { requestedSessionId: "missing", providerSessionId: "missing" })).toEqual({
+  expect(await resolveSession({}, { requestedSessionId: "missing", providerSessionId: "missing" } as Parameters<typeof resolveSession>[1])).toEqual({
     status: "unavailable", unavailable: { failureKind: "session_not_found", code: "pi_session_not_found", sessionId: "missing", message: "Session missing is not live" },
   });
   const entry = { busy: true };
   nativeSessionRegistry.set("busy", entry);
-  expect(await resolveSession({}, { requestedSessionId: "busy", providerSessionId: "busy" })).toEqual({
+  expect(await resolveSession({}, { requestedSessionId: "busy", providerSessionId: "busy" } as Parameters<typeof resolveSession>[1])).toEqual({
     status: "unavailable", unavailable: { failureKind: "session_busy", code: "pi_session_busy", sessionId: "busy", message: "Session busy is busy with another turn" },
   });
   nativeSessionRegistry.delete("busy");
   const session = { buildContext: async () => { throw Object.assign(new Error("Fictional persistence failure"), { code: "ENOSPC" }); }, close: vi.fn() };
   const repo = { delete: vi.fn() };
-  expect(await commitSession({ session, sessionEntry: { metadata: {}, repo } }, { keepAlive: true, providerSessionId: "broken" })).toEqual({
+  expect(await commitSession({ session, sessionEntry: { metadata: {}, repo } }, { keepAlive: true, providerSessionId: "broken" } as Parameters<typeof commitSession>[1])).toEqual({
     status: "settled", persistFailure: { code: "ENOSPC", message: "Fictional persistence failure" },
   });
   expect(session.close).toHaveBeenCalledOnce(); expect(repo.delete).toHaveBeenCalledOnce();
 });
 
 it("captures only storage receipt coordinates and checks abort after close", async () => {
-  expect(await captureSessionRecovery({}, {})).toEqual({ status: "not_durable" });
-  const controller = new AbortController(), entry = { durable: true };
+  expect(await captureSessionRecovery({}, {} as Parameters<typeof captureSessionRecovery>[1])).toEqual({ status: "not_durable" });
+  const controller = new AbortController(), entry: {durable: boolean; recoveryPending?: unknown} = { durable: true };
   const state = { sessionEntry: entry, recoveryInputIds: [], session: {
     getLeafId: async () => "tip", getEntries: async () => [], close: async () => { controller.abort(); },
   } };
@@ -42,10 +42,10 @@ it("captures only storage receipt coordinates and checks abort after close", asy
 });
 
 it("seals suspended operations in reverse order, clearing recovery before I/O", async () => {
-  const actions = [], entry = { recoveryPending: true, recovery: {} };
+  const actions: any[] = [], entry = { recoveryPending: true, recovery: {} };
   const raw = { getOpenOperations: async () => [{ operationId: "one" }, { operationId: "two" }],
-    closeOperation: async (id, status) => { expect(entry.recoveryPending).toBe(false); expect(entry.recovery).toBeUndefined(); actions.push([id, status]); },
-    getOpenTurns: async () => [{ turnId: "turn" }], endTurn: async (...args) => actions.push(args), sync: async () => actions.push("sync") };
+    closeOperation: async (id: any, status: any) => { expect(entry.recoveryPending).toBe(false); expect(entry.recovery).toBeUndefined(); actions.push([id, status]); },
+    getOpenTurns: async () => [{ turnId: "turn" }], endTurn: async (...args: any[]) => actions.push(args), sync: async () => actions.push("sync") };
   const state = { session: { rawSession: raw }, sessionEntry: entry, retainRecoveryTail: true };
   expect(await settleNativeSession(state, { action: "fail-suspended" })).toEqual({ status: "sealed" });
   expect(state.retainRecoveryTail).toBe(false);
@@ -63,7 +63,7 @@ it("seals and reopens a real suspended tool turn twice without repeating its eff
   const driver = createRunDriver(raw, { models, model, retry: { enabled: false }, tools: [{ name: "Effect", description: "Fictional effect", parameters: { type: "object", properties: {} },
     execute: async () => { effects += 1; return { content: [{ type: "text", text: "Fictional effect" }] }; } }] });
   try {
-    expect((await driver.prompt("Fictional request")).status).toBe("suspended");
+    expect((await (driver.prompt as (...args: any[]) => ReturnType<typeof driver.prompt>)("Fictional request")).status).toBe("suspended");
     const state = { session: { rawSession: raw }, sessionEntry: { recoveryPending: true }, retainRecoveryTail: true };
     expect(await settleNativeSession(state, { action: "sync" })).toEqual({ status: "synced" });
     expect(await settleNativeSession(state, { action: "fail-suspended" })).toEqual({ status: "sealed" });

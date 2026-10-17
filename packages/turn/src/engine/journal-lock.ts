@@ -1,3 +1,4 @@
+import type { Stats } from "node:fs";
 // @ts-check
 // Narrow port of agent-harness/durable-history's SQLite kernel-lock primitive.
 // Catalogue acquisition and per-journal lock reclamation use the same mutex.
@@ -10,25 +11,30 @@ import { setTimeout as delay } from "node:timers/promises";
 import { assertIdentity, isOwned, sameIdentity as same, syncDir } from "./owned-fs-impl.js";
 
 /** @returns {never} */
-const fail = () => { throw new Error("Harness journal ownership unavailable"); };
+const fail = (): never => { throw new Error("Harness journal ownership unavailable"); };
 /** @param {import("node:fs").Stats} stat */
-const secure = (stat, directory = false) => { if (!isOwned(stat, directory)) fail(); };
+const secure = (stat: Stats, directory: boolean = false) => { if (!isOwned(stat, directory)) fail(); };
 /** Abortable poll; a cancelled waiter rejects with its signal's reason.
  * @param {AbortSignal|undefined} signal */
-const pause = (signal) => delay(10, undefined, signal && { signal }).catch(() => signal?.throwIfAborted());
-const busy = (error) => error?.code === "ERR_SQLITE_ERROR"
-  && (error.errcode === 5 || error.errcode === 6);
+const pause = (signal: AbortSignal | undefined) => delay(10, undefined, signal && { signal }).catch(() => signal?.throwIfAborted());
+const busy = (error: any) => (error as NodeJS.ErrnoException)?.code === "ERR_SQLITE_ERROR"
+  && ((error as {errcode?: number}).errcode === 5 || (error as {errcode?: number}).errcode === 6);
 
 /** Pinned root identity prevents a late writer recreating a quarantined/purged root. */
 export class JournalLocks {
-  constructor(root, identities) {
+  declare root: any;
+  declare identities: any;
+  declare directory: string;
+  declare catalogPath: string;
+
+  constructor(root: any, identities: any) {
     this.root = root;
     this.identities = identities;
     this.directory = join(root, "locks");
     this.catalogPath = join(this.directory, "catalog.sqlite");
   }
   /** @param {string} sessionsRoot */
-  static async open(sessionsRoot, onRootPermissionsTightened = () => {}) {
+  static async open(sessionsRoot: string, onRootPermissionsTightened: () => void = () => {}): Promise<JournalLocks> {
     const root = resolve(sessionsRoot);
     assertSupportedSessionsRoot(root);
     // Validate each existing parent under the supplied trust boundary before
@@ -36,7 +42,7 @@ export class JournalLocks {
     const identities = new Map();
     for (const path of [root, join(root, "locks")]) {
       try { await mkdir(path, { mode: 0o700, recursive: path === root }); }
-      catch (error) { if (error.code !== "EEXIST") throw error; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
       let stat = await lstat(path);
       if (path === root && (stat.mode & 0o077) !== 0) {
         // Pi 0.99 created owned roots as 0755. Tighten only a non-writable
@@ -56,30 +62,31 @@ export class JournalLocks {
     await locks.ensureFile(locks.catalogPath);
     return locks;
   }
-  async assertRoot() {
+  async assertRoot(): Promise<void> {
     assertSupportedSessionsRoot(this.root);
     for (const [path, identity] of this.identities) await assertIdentity(path, identity, fail);
   }
-  async syncDirectory() {
+  async syncDirectory(): Promise<void> {
     await this.assertRoot(); await syncDir(this.directory, undefined, fail); await this.assertRoot();
   }
-  async ensureFile(path) {
+  async ensureFile(path: any): Promise<Stats> {
     await this.assertRoot();
     let handle, created = false;
     try {
       handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       created = true; await handle.sync();
-    } catch (error) { if (error.code !== "EEXIST") throw error; }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     finally { await handle?.close(); }
     const identity = await lstat(path); secure(identity);
     if (created) await this.syncDirectory();
     return identity;
   }
   /** A failed attempt closes its connection; never retain a SQLite waiter. */
-  async tryLock(path) {
+  tryLock(path: any): Promise<{ path: any; identity: Stats; release(): void; }>;
+  async tryLock(path: any): Promise<{ path: any; identity: Stats; release(): void; } | null> {
     await this.assertRoot();
     const identity = await lstat(path); secure(identity);
-    let database;
+    let database: DatabaseSync;
     try {
       database = new DatabaseSync(path);
       database.exec("PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN IMMEDIATE");
@@ -87,12 +94,12 @@ export class JournalLocks {
       const current = await lstat(path); secure(current);
       if (!same(current, identity)) fail();
       let released = false;
-      return { path, identity, release() {
+      return { path, identity, release(): void {
         if (released) return; released = true;
         try { database.exec("ROLLBACK"); } finally { database.close(); }
       } };
     } catch (error) {
-      try { database?.close(); } catch { /* preserve the acquisition error */ }
+      try { database!?.close(); } catch { /* preserve the acquisition error */ }
       if (busy(error)) return null;
       throw error;
     }
@@ -100,7 +107,7 @@ export class JournalLocks {
   /** `signal` cancels only the wait: an acquisition that races cancellation is
    * released before the callback runs, and the callback itself is never cancelled.
    * @template T @param {() => Promise<T>} callback @param {{wait?:boolean, signal?:AbortSignal}} [options] */
-  async withCatalog(callback, { wait = true, signal } = {}) {
+  async withCatalog<T>(callback: () => Promise<T>, { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined; } = {}): Promise<T> {
     for (;;) {
       signal?.throwIfAborted();
       const lock = await this.tryLock(this.catalogPath);
@@ -113,7 +120,7 @@ export class JournalLocks {
     }
   }
   /** @param {string} journalId @param {{wait?:boolean, signal?:AbortSignal}} [options] */
-  async acquireWriter(journalId, { wait = true, signal } = {}) {
+  async acquireWriter(journalId: string, { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined; } = {}): Promise<{ path: any; identity: Stats; release(): void; }> {
     if (!/^[A-Za-z0-9_-]+$/.test(journalId)) throw new TypeError("Unsafe harness journal ID");
     const path = join(this.directory, `${journalId}.sqlite`);
     for (;;) {
@@ -142,14 +149,14 @@ export class JournalLocks {
    * caller already released its writer): never blocks cancellation; on any
    * failure the lock file simply stays, pinning no data.
    * @param {string} path @param {() => Promise<boolean>} dataGone */
-  reclaimLater(path, dataGone) {
+  reclaimLater(path: string, dataGone: () => Promise<boolean>): void {
     setImmediate(async () => {
       let lock;
       try { lock = await this.tryLock(path); if (lock) await this.releaseWriter(lock, dataGone); }
       catch { /* keep the lock file */ } finally { lock?.release(); }
     });
   }
-  async releaseWriter(lock, dataGone) {
+  async releaseWriter(lock: any, dataGone: any): Promise<void> {
     if (!dataGone) { lock.release(); return; }
     await this.withCatalog(async () => {
       await this.assertRoot();

@@ -6,11 +6,11 @@ import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JsonlSessionRepo, MemorySessionRepo, SessionStore } from "../session-store.js";
 import { readLegacySession, listLegacySessions } from "../legacy-import.js";
-const roots = [];
-async function root() { const r = await mkdtemp(join(tmpdir(), "mono-pi-store-")); roots.push(r); return r; }
+const roots: string[] = [];
+async function root(): Promise<string> { const r = await mkdtemp(join(tmpdir(), "mono-pi-store-")); roots.push(r); return r; }
 afterEach(async () => { for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true }); });
 const message = { role: "user", content: [{ type: "text", text: "Fictional project." }], timestamp: 1700000000000 };
-async function fixture(r, version) {
+async function fixture(r: any, version: any): Promise<string> {
   await mkdir(join(r, "legacy"));
   const path = join(r, "legacy", "fixture_fixture-session.jsonl");
   await copyFile(new URL(`./fixtures/legacy-v${version}.jsonl`, import.meta.url), path);
@@ -23,7 +23,7 @@ describe("mono-agent harness session store", () => {
       const repo = durable ? new JsonlSessionRepo({ sessionsRoot: await root() }) : new MemorySessionRepo();
       const s = await repo.create({ id: "fictional-session" });
       const a = await s.appendMessage(message);
-      await s.beginTurn("turn-one");
+      await (s.beginTurn as (...args: any[]) => ReturnType<typeof s.beginTurn>)("turn-one");
       await s.openOperation("run-one", { model: { provider: "faux", id: "fictional-model" } });
       await s.appendCompaction({ summary: "Fictional summary.", retainedTail: [message], tokensBefore: 100 });
       await s.closeOperation("run-one", "completed");
@@ -52,12 +52,12 @@ describe("mono-agent harness session store", () => {
       const [metadata] = await repo.list();
       const s = await repo.open(metadata);
       expect(s.continuity).toBe("import");
-      expect((await s.getEntries()).map((e) => e.message.role)).toEqual(["user", "assistant"]);
+      expect((await s.getEntries()).map((e: any) => e.message.role)).toEqual(["user", "assistant"]);
       expect(sync).toHaveBeenCalledTimes(3);
       expect(await readFile(`${old}.migrated`)).toEqual(original);
       await expect(stat(old)).rejects.toMatchObject({ code: "ENOENT" });
       await s.close(); sync.mockRestore();
-      expect((await repo.list()).map((m) => m.id)).toEqual(["fixture-session"]);
+      expect((await repo.list()).map((m: any) => m.id)).toEqual(["fixture-session"]);
     });
   }
   it("does not archive or publish an import when fsync fails", async () => {
@@ -82,7 +82,7 @@ describe("mono-agent harness session store", () => {
   it("clean-breaks open operations, leaves legacy bytes intact and returns an empty new store", async () => {
     const r = await root(); const old = await fixture(r, 4);
     const lines = (await readFile(old, "utf8")).trim().split("\n");
-    const seq = Math.max(...lines.slice(1).flatMap((line) => { const w = JSON.parse(line); return (Array.isArray(w) ? w : [w]).map((x) => x.seq); }));
+    const seq = Math.max(...lines.slice(1).flatMap((line: string) => { const w = JSON.parse(line); return (Array.isArray(w) ? w : [w]).map((x: any) => x.seq); }));
     await appendFile(old, `${JSON.stringify({ kind: "value", seq: seq + 1, namespace: "pi.op.meta", key: "open-operation", op: "set", value: { lane: "main" } })}\n`);
     const bytes = await readFile(old);
     const repo = new JsonlSessionRepo({ sessionsRoot: r });
@@ -96,27 +96,27 @@ describe("mono-agent harness session store", () => {
   it("repairs a torn owned tail and seals the surviving turn as interrupted without changing native context", async () => {
     const repo = new JsonlSessionRepo({ sessionsRoot: await root() });
     const s = await repo.create({ id: "torn-session" });
-    await s.beginTurn("interrupted", {}); await s.appendMessage(message);
+    await (s.beginTurn as (...args: any[]) => ReturnType<typeof s.beginTurn>)("interrupted", {}); await s.appendMessage(message);
     await s.close(); await appendFile(s.metadata.path, '{"kind":"turn_close"');
     const reopened = await repo.open(s.metadata);
     expect(await reopened.getEntries()).toHaveLength(1);
     expect(await reopened.getOpenTurns()).toEqual([]);
     expect(await reopened.getTurn("interrupted")).toMatchObject({ payload: { status: "interrupted" } });
-    expect([...reopened.interruptions.values()].find((repair) => repair.turnId === "interrupted")).toMatchObject({ cause: "crashed", draftLossPossible: true });
+    expect([...reopened.interruptions.values()].find((repair: any) => repair.turnId === "interrupted")).toMatchObject({ cause: "crashed", draftLossPossible: true });
     await reopened.close();
     expect((await readFile(s.metadata.path, "utf8")).endsWith("\n")).toBe(true);
   });
   it("serializes append before sync before the host commit", async () => {
-    const order = []; let release;
-    const appendBarrier = new Promise((r) => { release = r; });
-    const s = new SessionStore({ id: "ordering" }, [], {
-      append: async (text) => { if (JSON.parse(text).kind === "message") { order.push("append"); await appendBarrier; } },
+    const order: any[] = []; let release: any;
+    const appendBarrier = new Promise((r: (value: any) => void) => { release = r; });
+    const s = new (SessionStore as new (...args: any[]) => SessionStore)({ id: "ordering" }, [], {
+      append: async (text: any) => { if (JSON.parse(text).kind === "message") { order.push("append"); await appendBarrier; } },
       sync: async () => { order.push("file+directory-sync"); },
     });
     const pending = s.appendMessage(message);
     const commit = s.sync().then(() => order.push("host-history-commit"));
     await vi.waitFor(() => expect(order).toEqual(["append"]));
-    /** @type {any} */ (release)?.(); await pending; await commit;
+    /** @type {any} */ (((release) as any))?.(); await pending; await commit;
     expect(order).toEqual(["append", "file+directory-sync", "host-history-commit"]);
     await s.close();
   });
@@ -141,9 +141,9 @@ describe("mono-agent harness session store", () => {
 it("projects only the legacy main branch through its latest compaction", async () => {
   const r = await root(); const path = await fixture(r, 4);
   const lines = (await readFile(path, "utf8")).trim().split("\n");
-  const writes = lines.slice(1).flatMap((line) => { const w = JSON.parse(line); return Array.isArray(w) ? w : [w]; });
-  let seq = Math.max(...writes.map((w) => w.seq));
-  const tip = writes.filter((w) => w.namespace === "pi.branch.tip" && w.key === "main").at(-1).value;
+  const writes = lines.slice(1).flatMap((line: string) => { const w = JSON.parse(line); return Array.isArray(w) ? w : [w]; });
+  let seq = Math.max(...writes.map((w: any) => w.seq));
+  const tip = writes.filter((w: any) => w.namespace === "pi.branch.tip" && w.key === "main").at(-1).value;
   const transaction = [
     { kind: "entry", seq: ++seq, id: "summary", parentId: tip, timestamp: 1700000000002, type: "compaction", summary: "Fictional earlier work.", tokensBefore: 200, retainedTail: [message] },
     { kind: "value", seq: ++seq, namespace: "pi.branch.tip", key: "main", op: "set", value: "summary" },
@@ -153,7 +153,7 @@ it("projects only the legacy main branch through its latest compaction", async (
   await appendFile(path, `${JSON.stringify(transaction)}\n`);
   const repo = new JsonlSessionRepo({ sessionsRoot: r });
   const s = await repo.open((await repo.list())[0]);
-  expect((await s.getEntries()).map((e) => e.message.role)).toEqual(["compactionSummary", "user"]);
+  expect((await s.getEntries()).map((e: any) => e.message.role)).toEqual(["compactionSummary", "user"]);
   expect(JSON.stringify(await s.getEntries())).not.toContain("Sibling context");
   await s.close();
 });
@@ -162,7 +162,7 @@ it("projects only the legacy main branch through its latest compaction", async (
 it("reopens a journal above 32 MiB with records above 2 MiB using offset-backed storage", async () => {
   const repo = new JsonlSessionRepo({ sessionsRoot: await root() });
   const session = await repo.create({ id: "large-session" });
-  await session.beginTurn("synthetic:large");
+  await (session.beginTurn as (...args: any[]) => ReturnType<typeof session.beginTurn>)("synthetic:large");
   const native = { role: "assistant", content: [{ type: "thinking", thinking: "x".repeat(3 * 1024 * 1024), thinkingSignature: "opaque" }], additive: { opaque: true } };
   for (let i = 0; i < 12; i++) await session.appendMessage(native);
   await session.endTurn("synthetic:large", "completed"); await session.sync(); await session.close();
@@ -170,7 +170,7 @@ it("reopens a journal above 32 MiB with records above 2 MiB using offset-backed 
   const reopened = await repo.open(session.metadata);
   try {
     expect(reopened.records).toBeNull();
-    expect([...reopened.entries.values()].every((entry) => entry.address && entry.message === undefined)).toBe(true);
+    expect([...reopened.entries.values()].every((entry: any) => entry.address && entry.message === undefined)).toBe(true);
     expect((await reopened.getEntries()).at(-1).message).toEqual(native);
   } finally { await reopened.close(); }
 });
@@ -179,7 +179,7 @@ it("completes short writes instead of publishing a partial record", async () => 
   const repo = new JsonlSessionRepo({ sessionsRoot: await root() }); const session = await repo.create({ id: "short-write" });
   const fd = await open(session.metadata.path, "r"); const prototype = Object.getPrototypeOf(fd); await fd.close();
   const original = prototype.write;
-  const spy = vi.spyOn(prototype, "write").mockImplementationOnce(function (buffer, offset, length, position) {
+  const spy = vi.spyOn(prototype, "write").mockImplementationOnce(function (this: any, buffer: unknown, offset: unknown, length: unknown, position: unknown): any {
     return original.call(this, buffer, offset, Math.min(7, Number(length)), position);
   });
   try { await session.appendMessage(message); expect(spy.mock.calls.length).toBeGreaterThan(1); }
@@ -191,7 +191,7 @@ it("poisons ENOSPC writes, releases ownership on close, and fsync-repairs only t
   const repo = new JsonlSessionRepo({ sessionsRoot: await root() }); const session = await repo.create({ id: "no-space" });
   const fd = await open(session.metadata.path, "r"); const prototype = Object.getPrototypeOf(fd); await fd.close();
   const original = prototype.write;
-  const spy = vi.spyOn(prototype, "write").mockImplementationOnce(async function (buffer, offset, length, position) {
+  const spy = vi.spyOn(prototype, "write").mockImplementationOnce(async function (this: any, buffer: unknown, offset: unknown, length: unknown, position: unknown): Promise<never> {
     await original.call(this, buffer, offset, Math.min(7, Number(length)), position);
     throw Object.assign(new Error("Fictional no space"), { code: "ENOSPC" });
   });
@@ -226,7 +226,7 @@ it("rejects complete corrupt records without repairing them", async () => {
   expect(await readFile(session.metadata.path)).toEqual(original);
 });
 
-it.each(["journals", "locks"])("rejects replaced %s and symlink files without recreating or mutating them", async (directory) => {
+it.each(["journals", "locks"])("rejects replaced %s and symlink files without recreating or mutating them", async (directory: string) => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "replaced" });
   await rename(join(r, directory), join(r, "quarantined"));
   await expect(session.appendMessage(message)).rejects.toMatchObject({ code: "ENOENT" });
@@ -242,12 +242,12 @@ it.each(["journals", "locks"])("rejects replaced %s and symlink files without re
 
 it("retires a local writer only after draining storage and holds its lock until close", async () => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "retiring" });
-  await session.beginTurn("synthetic:retire");
-  let release, started; const gate = new Promise((resolve) => { release = resolve; }); const admitted = new Promise((resolve) => { started = resolve; });
-  const append = session.io.append; session.io.append = async (text) => { started(); await gate; return append(text); };
+  await (session.beginTurn as (...args: any[]) => ReturnType<typeof session.beginTurn>)("synthetic:retire");
+  let release: any, started: any; const gate = new Promise((resolve: (value: any) => void) => { release = resolve; }); const admitted = new Promise((resolve: (value: any) => void) => { started = resolve; });
+  const append = session.io.append; session.io.append = async (text: any) => { started(); await gate; return append(text); };
   const pending = session.appendMessage(message); await admitted;
   const retired = repo.retire(session.metadata); expect(await stat(session.metadata.path)).toBeTruthy();
-  /** @type {any} */ (release)?.(); await pending; await retired;
+  /** @type {any} */ (((release) as any))?.(); await pending; await retired;
   await expect(stat(session.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(session.appendMessage(message)).rejects.toThrow("retired");
   expect((await readdir(join(r, "locks"))).length).toBe(2);
@@ -262,12 +262,12 @@ it("waits for foreign writer ownership before retirement and reclaims its releas
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "foreign-owner" });
   await session.appendMessage(message); await session.close();
   const child = fork(new URL("./fixtures/store-owner-worker.mjs", import.meta.url), [r], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
-  let spy;
+  let spy: any;
   try {
     const [notice] = await once(child, "message"); expect(notice.phase).toBe("opened");
     const locks = await repo.locksPromise; const original = locks.tryLock.bind(locks);
-    let signal; const blocked = new Promise((resolve) => { signal = resolve; });
-    spy = vi.spyOn(locks, "tryLock").mockImplementation(async (path) => {
+    let signal: any; const blocked = new Promise((resolve: (value: any) => void) => { signal = resolve; });
+    spy = vi.spyOn(locks, "tryLock").mockImplementation(async (path: unknown) => {
       const result = await original(path); if (!result && String(path).endsWith(`${session.metadata.journalId}.sqlite`)) signal(); return result;
     });
     const retirement = repo.retire(session.metadata); await blocked;
@@ -316,21 +316,21 @@ it("concurrent close releases a retired writer and reclaims its lock exactly onc
 
 it("cleans its O_EXCL partial header after failure, and ignores orphan incomplete creations", async () => {
   const r = await root(); let failOnce = true;
-  const repo = new JsonlSessionRepo({ sessionsRoot: r, onImportPhase: async (phase) => {
+  const repo = new JsonlSessionRepo({ sessionsRoot: r, onImportPhase: async (phase: any) => {
     if (phase === "stage_created" && failOnce) {
       failOnce = false; const [name] = await readdir(join(r, "journals"));
-      await appendFile(join(r, "journals", name), '{"format":'); throw new Error("Fictional header write failure");
+      await appendFile(join(r, "journals", name!), '{"format":'); throw new Error("Fictional header write failure");
     }
   } });
   await expect(repo.create({ id: "first" })).rejects.toThrow("header write failure");
   expect(await readdir(join(r, "journals"))).toEqual([]);
   await writeFile(join(r, "journals", "orphan.jsonl.creating"), '{"format":', { mode: 0o600 });
   const good = await repo.create({ id: "unrelated" }); await good.appendMessage(message); await good.close();
-  expect((await repo.list()).map((m) => m.id)).toEqual(["unrelated"]);
+  expect((await repo.list()).map((m: any) => m.id)).toEqual(["unrelated"]);
   await repo.retireByHandle("unrelated"); expect(await repo.list()).toEqual([]);
 });
 
-it.each([".importing", ".creating"])("rejects opening non-published %s metadata without touching publication", async (suffix) => {
+it.each([".importing", ".creating"])("rejects opening non-published %s metadata without touching publication", async (suffix: string) => {
   const repo = new JsonlSessionRepo({ sessionsRoot: await root() }); const session = await repo.create({ id: "published" });
   await session.appendMessage(message); const metadata = session.metadata; await session.close();
   const before = await readFile(metadata.path); await copyFile(metadata.path, metadata.path + suffix);
@@ -346,7 +346,7 @@ it("tracks active scopes without iterating complete historical turn/operation ma
   }
   for (let i = 0; i < 1000; i++) {
     const turn = `turn-${i}`, op = `op-${i}`;
-    await store.beginTurn(turn); await store.openOperation(op, {});
+    await (store.beginTurn as (...args: any[]) => ReturnType<typeof store.beginTurn>)(turn); await store.openOperation(op, {});
     expect(store.activeTurnId()).toBe(turn); expect(store.activeOperationId()).toBe(op);
     await store.closeOperation(op, "completed"); await store.endTurn(turn, "completed");
   }
@@ -356,32 +356,32 @@ it("tracks active scopes without iterating complete historical turn/operation ma
 
 it("publishes concurrent same-handle creations under one catalogue reservation", async () => {
   const r = await root(); const repos = [new JsonlSessionRepo({ sessionsRoot: r }), new JsonlSessionRepo({ sessionsRoot: r })];
-  const outcomes = await Promise.allSettled(repos.map((repo) => repo.create({ id: "one-handle" })));
-  expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
-  expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+  const outcomes = await Promise.allSettled(repos.map((repo: JsonlSessionRepo) => repo.create({ id: "one-handle" })));
+  expect(outcomes.filter((outcome: PromiseSettledResult<SessionStore>) => outcome.status === "fulfilled")).toHaveLength(1);
+  expect(outcomes.filter((outcome: PromiseSettledResult<SessionStore>) => outcome.status === "rejected")).toHaveLength(1);
   for (const outcome of outcomes) if (outcome.status === "fulfilled") await outcome.value.close();
-  expect(await repos[0].listOwned()).toHaveLength(1);
+  expect(await repos[0]!.listOwned()).toHaveLength(1);
 });
 
-it.each(["stage_created", "stage_synced"].flatMap((phase) => ["native", "legacy"].map((next) => [phase, next])))("reclaims SIGKILLed native %s creation and its writer before %s reuse", async (phase, next) => {
+it.each(["stage_created", "stage_synced"].flatMap((phase: string) => ["native", "legacy"].map((next: string) => [phase, next])))("reclaims SIGKILLed native %s creation and its writer before %s reuse", async (phase: string, next: string) => {
   const r = await root();
   const child = fork(new URL("./fixtures/native-create-worker.mjs", import.meta.url), [r, phase], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try {
-    const notice = await Promise.race([once(child, "message"), once(child, "exit").then(([code]) => { throw new Error(`Native creator exited: ${code}`); })]);
+    const notice = await Promise.race([once(child, "message"), once(child, "exit").then(([code]: any[]) => { throw new Error(`Native creator exited: ${code}`); })]);
     expect(notice[0]).toEqual({ phase }); const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
   const directory = join(r, "journals"); const [abandoned] = await readdir(directory);
-  expect(abandoned).toMatch(/\.jsonl\.creating$/); const journalId = abandoned.slice(0, -".jsonl.creating".length);
+  expect(abandoned).toMatch(/\.jsonl\.creating$/); const journalId = abandoned!.slice(0, -".jsonl.creating".length);
   const lock = join(r, "locks", `${journalId}.sqlite`); expect((await stat(lock)).isFile()).toBe(true);
-  const bytes = await readFile(join(directory, abandoned), "utf8");
+  const bytes = await readFile(join(directory, abandoned!), "utf8");
   if (phase === "stage_created") expect(bytes).toBe("");
   else expect(JSON.parse(bytes)).toMatchObject({ id: "fixture-session", journalId });
-  const repo = new JsonlSessionRepo({ sessionsRoot: r }); let resumed;
+  const repo = new JsonlSessionRepo({ sessionsRoot: r }); let resumed: any;
   if (next === "native") resumed = await repo.create({ id: "fixture-session" });
   else { await fixture(r, 4); resumed = await repo.open((await listLegacySessions(r)).sessions[0]); expect(await resumed.getEntries()).toHaveLength(2); }
-  await resumed.close(); await expect(stat(join(directory, abandoned))).rejects.toMatchObject({ code: "ENOENT" });
+  await resumed.close(); await expect(stat(join(directory, abandoned!))).rejects.toMatchObject({ code: "ENOENT" });
   expect(resumed.metadata.journalId).toBe(journalId); expect((await stat(lock)).isFile()).toBe(true);
-  expect((await repo.list()).map((metadata) => metadata.id)).toEqual(["fixture-session"]);
+  expect((await repo.list()).map((metadata: any) => metadata.id)).toEqual(["fixture-session"]);
 });
 
 it("does not reclaim a native creation whose writer is still held", async () => {
@@ -416,23 +416,23 @@ it("ignores stray entries and skips unattributed damaged journal-named files wit
   for (const [name, text] of Object.entries(strays)) await writeFile(join(journals, name), text, { mode: 0o600 });
   await mkdir(join(journals, "scratch")); await mkdir(join(journals, "33333333-3333-4333-8333-333333333333.jsonl"));
   // A parsed header that fails validation is attributable to its handle.
-  const damagedHeader = JSON.parse((await readFile(kept.metadata.path, "utf8")).split("\n")[0]);
+  const damagedHeader = JSON.parse((await readFile(kept.metadata.path, "utf8")).split("\n")[0]!);
   await writeFile(join(journals, "44444444-4444-4444-8444-444444444444.jsonl"), `${JSON.stringify({ ...damagedHeader, id: "fictional-damaged", format: "fictional" })}\n`, { mode: 0o600 });
-  expect((await repo.list()).map((m) => m.id).sort()).toEqual(["fictional-kept", "fictional-retired"]);
-  expect((await repo.catalogue()).unattributed.map((entry) => entry.id ?? null).sort()).toEqual([null, null, null, null]);
-  const reopened = await repo.open((await repo.list()).find((m) => m.id === "fictional-kept")); await reopened.close();
+  expect((await repo.list()).map((m: any) => m.id).sort()).toEqual(["fictional-kept", "fictional-retired"]);
+  expect((await repo.catalogue()).unattributed.map((entry: any) => entry.id ?? null).sort()).toEqual([null, null, null, null]);
+  const reopened = await repo.open((await repo.list()).find((m: any) => m.id === "fictional-kept")); await reopened.close();
   await (await repo.create({ id: "fictional-new" })).close();
   await repo.retireByHandle("fictional-retired"); await repo.retireByHandle("fictional-absent");
   await repo.retireByHandle("fictional-damaged");
   await (await repo.create({ id: "fictional-damaged" })).close();
-  expect((await repo.list()).map((m) => m.id).sort()).toEqual(["fictional-damaged", "fictional-kept", "fictional-new"]);
+  expect((await repo.list()).map((m: any) => m.id).sort()).toEqual(["fictional-damaged", "fictional-kept", "fictional-new"]);
   for (const [name, text] of Object.entries(strays)) expect(await readFile(join(journals, name), "utf8")).toBe(text);
   expect((await stat(join(journals, "scratch"))).isDirectory()).toBe(true);
   expect((await stat(join(journals, "44444444-4444-4444-8444-444444444444.jsonl"))).isFile()).toBe(true);
 });
 
 it("rejects pre-write schema validation without I/O or poison and can close the failed operation", async () => {
-  const store = await new MemorySessionRepo().create(); await store.beginTurn("validation-turn"); await store.openOperation("validation-op", {});
+  const store = await new MemorySessionRepo().create(); await (store.beginTurn as (...args: any[]) => ReturnType<typeof store.beginTurn>)("validation-turn"); await store.openOperation("validation-op", {});
   const messageId = await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Effect", arguments: {} }], stopReason: "toolUse" });
   let appends = 0; store.io = { append: async () => { appends += 1; }, sync: async () => {} };
   const payload = { callId: "call", name: "Effect", messageId, admission: "observed" };
@@ -440,5 +440,5 @@ it("rejects pre-write schema validation without I/O or poison and can close the 
   await expect(store.write("tool_call", payload, { operationId: "validation-op" })).rejects.toThrow("Invalid session journal");
   expect(store.failure).toBeNull(); expect(store.seq).toBe(seq); expect(appends).toBe(1);
   await store.closeOperation("validation-op", "failed"); await store.endTurn("validation-turn", "failed"); await store.sync();
-  await store.beginTurn("next-validation-turn"); await store.endTurn("next-validation-turn", "completed"); await store.close();
+  await (store.beginTurn as (...args: any[]) => ReturnType<typeof store.beginTurn>)("next-validation-turn"); await store.endTurn("next-validation-turn", "completed"); await store.close();
 });

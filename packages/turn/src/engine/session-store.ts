@@ -1,3 +1,5 @@
+import type { HostJournalDeletion } from "./header-authority.js";
+import type { JournalEntry } from "./journal-types.js";
 import { assertSupportedSessionsRoot } from "./sessions-root.js";
 // Mono-agent-owned append-only single-main-branch store. No provider execution here.
 import { constants } from "node:fs";
@@ -19,24 +21,24 @@ import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
 import { canonicalHostJournalAuthority, validateHeaderUpgradeOptions, sameHostJournalAuthority } from "./header-authority.js";
 import { guardedEpochPlan, managedJournalId } from "./managed-journal.js";
 const sessionAuthorities = new WeakMap();
-function acceptHeader(session, header) {
+function acceptHeader(session: any, header: any): void {
   validateJournalHeader(header);
   if (header.hostAuthority !== undefined) sessionAuthorities.set(session, clone(header.hostAuthority));
 }
-function deletionOptions(contextOrOptions, explicitOptions) {
+function deletionOptions(contextOrOptions: any, explicitOptions: any): any {
   const context = contextOrOptions != null && "abortSignal" in Object(contextOrOptions);
-  const authority = contextOrOptions != null && ["disposition", "hostAuthority", "assertOwned"].some((key) => key in Object(contextOrOptions));
+  const authority = contextOrOptions != null && ["disposition", "hostAuthority", "assertOwned"].some((key: string) => key in Object(contextOrOptions));
   if (context && authority || explicitOptions !== undefined && authority) throw new TypeError("Ambiguous native deletion context/authority");
   return explicitOptions !== undefined ? explicitOptions : context ? undefined : contextOrOptions;
 }
 /** Cancellation of a repository lock wait; never of a started mutation. */
-const contextSignal = (contextOrOptions) => contextOrOptions != null && "abortSignal" in Object(contextOrOptions) ? contextOrOptions.abortSignal : undefined;
-function validateDeletionDisposition(options) {
+const contextSignal = (contextOrOptions: any) => contextOrOptions != null && "abortSignal" in Object(contextOrOptions) ? contextOrOptions.abortSignal : undefined;
+function validateDeletionDisposition(options: any): void {
   if (options != null && "disposition" in Object(options) && !["C", "D"].includes(options.disposition)) {
     throw new TypeError("Native deletion requires a C/D disposition when provided");
   }
 }
-async function authorizeGuardedDeletion(header, options) {
+async function authorizeGuardedDeletion(header: any, options: any): Promise<void> {
   validateDeletionDisposition(options);
   if (header.hostAuthority === undefined) return;
   validateHeaderUpgradeOptions(options);
@@ -47,7 +49,7 @@ async function authorizeGuardedDeletion(header, options) {
   // its restartable reset/retention transaction (D).
   await options.assertOwned();
 }
-function checkRecordAuthority(session, record) {
+function checkRecordAuthority(session: any, record: any): void {
   const authority = sessionAuthorities.get(session);
   if (!authority) {
     if (record?.payload?.projectionBinding !== undefined
@@ -59,41 +61,61 @@ function checkRecordAuthority(session, record) {
   if (owner && owner.kind !== "unbound"
     && (owner.kind !== "host" || owner.ownerKey !== authority.ownerKey || owner.historyBucket !== authority.historyBucket)) corruptBinding();
 }
-const clone = (v) => structuredClone(v);
-const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, ordered(v[key])])) : v;
+const clone = (v: any) => structuredClone(v);
+const ordered = (v: any): any => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((key: string) => [key, ordered(v[key])])) : v;
 /** @returns {never} */
-const fail = () => { throw new Error("Invalid mono-agent harness session"); };
+const fail = (): never => { throw new Error("Invalid mono-agent harness session"); };
 const corruptBinding = () => { throw Object.assign(new Error("Invalid mono-agent harness session binding"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
-const safeId = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) && !id.includes("..");
+const safeId = (id: any) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) && !id.includes("..");
 
 export class SessionStore {
-  constructor(metadata, records, io, onClose) {
+  declare metadata: any;
+  declare io: any;
+  declare onClose: any;
+  declare records: any[];
+  declare retired: boolean;
+  declare continuity: string | undefined;
+  declare entries: Map<any, any>;
+  declare outcomes: Map<any, any>;
+  declare interruptions: Map<any, any>;
+  declare interruptedOperations: Set<any>;
+  declare repairCache: Promise<any[]>;
+  declare validator: JournalValidator;
+  declare tip: string;
+  declare seq: number;
+  declare durableSeq: number;
+  declare line: Promise<void>;
+  declare closed: boolean;
+  declare failure: Error | null;
+  declare closePromise: Promise<void> | null;
+
+  constructor(metadata: any, records: any, io: any, onClose: any) {
     this.metadata = metadata;
     this.io = io;
     this.onClose = onClose;
-    this.records = io?.read ? null : [];
+    this.records = io?.read ? null as unknown as any[] : [];
     this.retired = false;
     /** @type {string|undefined} */ this.continuity = undefined;
     this.entries = new Map();
     this.outcomes = new Map();
     this.interruptions = new Map();
-    this.interruptedOperations = new Set(); this.repairCache = null;
+    this.interruptedOperations = new Set(); this.repairCache = null as unknown as Promise<any[]>;
     this.validator = new JournalValidator();
-    this.tip = null;
+    this.tip = null as unknown as string;
     this.seq = 0; this.durableSeq = 0;
     this.line = Promise.resolve();
     this.closed = false;
     /** @type {Error|null} */ this.failure = null;
     /** @type {Promise<void>|null} */ this.closePromise = null;
     if (!io?.read && metadata.hostAuthority !== undefined) acceptHeader(this, metadata);
-    for (const record of records) this.apply(record);
+    for (const record of records) (this.apply as (record: any) => void)(record);
   }
-  validateRecord(record) {
+  validateRecord(record: any): void {
     checkRecordAuthority(this, record);
     if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.validate(record);
   }
-  apply(record, address) {
+  apply(record: any, address: any): void {
     checkRecordAuthority(this, record);
     if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.apply(record);
@@ -110,15 +132,15 @@ export class SessionStore {
       this.interruptions.set(record.id, { ...clone(record.payload), turnId: record.turnId, timestamp: record.timestamp });
       for (const op of p.operationIds.length ? p.operationIds : [null]) this.interruptedOperations.add(`${record.turnId}\0${op ?? ""}`);
     }
-    if (["interruption", "tool_result", "message", "compaction", "rewind", "operation_end"].includes(record.kind)) this.repairCache = null;
+    if (["interruption", "tool_result", "message", "compaction", "rewind", "operation_end"].includes(record.kind)) this.repairCache = null as unknown as Promise<any[]>;
     if (record.kind === "tool_result" && record.payload.phase === "returned") {
       this.outcomes.set(`${record.operationId}\0${record.payload.callId}`, this.io?.read ? { address } : { record: clone(record) });
     }
-    this.tip = this.validator.tip;
+    this.tip = this.validator.tip!;
     this.seq = record.seq;
     this.records?.push(clone(record));
   }
-  enqueue(fn) {
+  enqueue(fn: any): Promise<any> {
     const result = this.line.then(async () => {
       if (this.closed || this.retired) { this.failure ??= new Error("Harness session is closed or retired"); throw this.failure; }
       if (this.failure) throw this.failure;
@@ -128,11 +150,11 @@ export class SessionStore {
     return result;
   }
   /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2, timestamp?:number}} [identity] */
-  write(kind, payload, identity = {}) {
+  write(kind: any, payload: any, identity: { turnId?: string; operationId?: string; id?: string; schemaVersion?: 2; timestamp?: number; } = {}): Promise<any> {
     return this.enqueue(() => this.writeRecord(kind, payload, identity));
   }
   /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2, timestamp?:number}} [identity] */
-  async writeRecord(kind, payload, { turnId = this.activeTurnId(), operationId, id = randomUUID(), schemaVersion = 2, timestamp = Date.now() } = {}) {
+  async writeRecord(kind: any, payload: any, { turnId = this.activeTurnId(), operationId, id = randomUUID(), schemaVersion = 2, timestamp = Date.now() }: { turnId?: string; operationId?: string; id?: string; schemaVersion?: 2; timestamp?: number; } = {}): Promise<any> {
       const record = { schemaVersion, id, parentId: this.validator.parentId,
         seq: this.seq + 1, timestamp, turnId, kind,
         ...(operationId ? { operationId } : {}), payload: typeof payload === "function" ? payload() : clone(payload) };
@@ -145,26 +167,27 @@ export class SessionStore {
       } catch (error) { throw this.poison(error); }
       return persisted;
   }
-  poison(error) { this.failure ??= isJournalStorageError(error) ? error : new JournalStorageError(error); return this.failure; }
-  activeTurnId() { return this.validator.openTurns.values().next().value; }
-  activeOperationId() { return [...this.validator.openOperations].at(-1); }
-  beginTurn(turnId, config = {}, identitySource = "synthetic", binding, projectionBinding = undefined) {
+  poison(error: any): Error { this.failure ??= isJournalStorageError(error) ? error : new JournalStorageError(error); return this.failure; }
+  activeTurnId(): any { return this.validator.openTurns.values().next().value; }
+  activeOperationId(): any { return [...this.validator.openOperations].at(-1); }
+  beginTurn(turnId: any, config: {}, identitySource: string, binding: any, projectionBinding?: any): Promise<any>;
+  beginTurn(turnId: any, config: {} = {}, identitySource: string = "synthetic", binding: any, projectionBinding: any | undefined = undefined): Promise<any> {
     return this.write("turn_start", () => ({ config: clone(config), identitySource, baselineTipId: this.tip,
       ...(binding ? { binding: clone(binding) } : {}), ...(projectionBinding ? { projectionBinding: clone(projectionBinding) } : {}) }),
       { turnId });
   }
-  endTurn(turnId, status, result = null) {
+  endTurn(turnId: any, status: any, result: any = null): Promise<any> {
     return this.write("turn_end", () => ({ status, tipId: this.tip,
       finalOperationId: this.validator.turns.get(turnId)?.finalOperationId ?? null,
       consumedInputIds: [...(this.validator.turns.get(turnId)?.inputs ?? [])],
       ...(this.validator.turns.get(turnId)?.start.payload.binding ? { seal: { version: 1,
-        outcome: ({ completed: "completed", failed: "failed", aborted: "cancelled", interrupted: "interrupted" })[status], result: clone(result) } } : {}) }), { turnId });
+        outcome: ({ completed: "completed", failed: "failed", aborted: "cancelled", interrupted: "interrupted" })[status as "completed" | "failed" | "aborted" | "interrupted"], result: clone(result) } } : {}) }), { turnId });
   }
-  openOperation(operationId, config, type = "prompt", cause = "prompt") {
+  openOperation(operationId: any, config: any, type: string = "prompt", cause: string = "prompt"): Promise<any> {
     return this.write("operation_start", () => ({ config: clone(config), type, cause, baselineTipId: this.tip, parentOperationId: this.activeOperationId() ?? null }), { operationId });
   }
-  closeOperation(operationId, status) { return this.write("operation_end", () => ({ status, tipId: this.tip }), { operationId }); }
-  scopedWrite(fn, cause, before = undefined) {
+  closeOperation(operationId: any, status: any): Promise<any> { return this.write("operation_end", () => ({ status, tipId: this.tip }), { operationId }); }
+  scopedWrite(fn: any, cause: any, before: any | undefined = undefined): Promise<any> {
     return this.enqueue(async () => {
     before?.();
     const synthetic = !this.activeTurnId();
@@ -176,7 +199,7 @@ export class SessionStore {
     });
   }
   /** @param {any} message @param {string} [id] */
-  async appendMessage(message, id = randomUUID(), input = { id: null, complete: true }) {
+  async appendMessage(message: any, id: string = randomUUID(), input: { id: any; complete: boolean; } = { id: null, complete: true }): Promise<any> {
     return this.scopedWrite(async () => {
       const config = this.validator.operations.get(this.activeOperationId())?.start.payload.config;
       const provenance = { provider: message.provider ?? config?.model?.provider ?? "unknown",
@@ -186,12 +209,12 @@ export class SessionStore {
       return record.id;
     }, "seed");
   }
-  async appendCompaction(data, inheritedCoverage = undefined, source = undefined) {
+  async appendCompaction(data: any, inheritedCoverage: any | undefined = undefined, source: any | undefined = undefined): Promise<any> {
     // Prepare outside the admitted write queue; getEntries itself drains it.
-    const branch = await this.getEntries(); const preservedMessageIds = [], derivedMessages = [];
+    const branch = await this.getEntries(); const preservedMessageIds: any[] = [], derivedMessages: any[] = [];
     let cursor = 0;
     for (const message of data.retainedTail ?? []) {
-      const index = branch.findIndex((entry, at) => at >= cursor && entry.type === "message" && JSON.stringify(entry.message) === JSON.stringify(message));
+      const index = branch.findIndex((entry: any, at: any) => at >= cursor && entry.type === "message" && JSON.stringify(entry.message) === JSON.stringify(message));
       if (index >= 0) { preservedMessageIds.push(branch[index].id); cursor = index + 1; }
       else derivedMessages.push(clone(message));
     }
@@ -206,17 +229,17 @@ export class SessionStore {
       if (!source || source.sourceTipId !== this.tip || source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
     } : undefined);
   }
-  async moveTo(tipId) { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }
-  async verifyRead() { try { await this.io?.verify?.(); } catch (error) { throw this.poison(error); } }
-  snapshot() {
+  async moveTo(tipId: any): Promise<any> { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }
+  async verifyRead(): Promise<void> { try { await this.io?.verify?.(); } catch (error) { throw this.poison(error); } }
+  snapshot(): any {
     return clone({ validator: this.validator, entries: this.entries, outcomes: this.outcomes,
       interruptions: this.interruptions, interruptedOperations: this.interruptedOperations,
       tip: this.tip, seq: this.seq, durableSeq: this.durableSeq });
   }
-  restore(snapshot) {
+  restore(snapshot: any): void {
     Object.assign(this, clone(snapshot)); this.validator = Object.assign(new JournalValidator(), this.validator);
   }
-  readQueue(fn) {
+  readQueue(fn: any): Promise<any> {
     const result = this.line.then(async () => {
       if (this.failure) throw this.failure;
       if (this.closed && this.io?.read) throw new Error("Harness session is closed");
@@ -224,7 +247,7 @@ export class SessionStore {
     });
     this.line = result.catch(() => {}); return result;
   }
-  getEntries() {
+  getEntries(): Promise<any> {
     return this.readQueue(async () => {
       await this.verifyRead(); const entries = [];
       for (let id = this.tip; id !== null;) {
@@ -234,8 +257,8 @@ export class SessionStore {
       await this.verifyRead(); return entries.reverse();
     });
   }
-  async getLeafId() { await this.line; if (this.failure) throw this.failure; return this.tip; }
-  async materialize(entry, cached = false) {
+  async getLeafId(): Promise<string> { await this.line; if (this.failure) throw this.failure; return this.tip; }
+  async materialize(entry: any, cached: boolean = false): Promise<any> {
     if (!entry || !this.io?.read) return clone(entry);
     let record;
     try { record = (cached ? this.io.cached?.(entry.address) : undefined) ?? await this.io.read(entry.address); }
@@ -244,32 +267,32 @@ export class SessionStore {
       : { ...record.payload.compaction, type: "compaction" }), id: entry.id, parentId: entry.parentId,
       timestamp: entry.timestamp, seq: entry.seq };
   }
-  getAllEntries() { return this.readQueue(async () => {
-    await this.verifyRead(); const entries = await Promise.all([...this.entries.values()].map((entry) => this.materialize(entry, true)));
+  getAllEntries(): Promise<any> { return this.readQueue(async () => {
+    await this.verifyRead(); const entries = await Promise.all([...this.entries.values()].map((entry: any) => this.materialize(entry, true)));
     await this.verifyRead(); return entries;
   }); }
-  getEntry(id) { return this.readQueue(() => this.materialize(this.entries.get(id))); }
-  async getOpenTurns() { await this.line; return [...this.validator.openTurns].map((id) => clone(this.validator.turns.get(id).start)); }
-  async getOpenOperations() { await this.line; return [...this.validator.openOperations].map((id) => clone(this.validator.operations.get(id).start)); }
-  async getTurn(turnId) { await this.line; return clone(this.validator.turns.get(turnId)?.end); }
-  async getTerminal(operationId) {
+  getEntry(id: any): Promise<any> { return this.readQueue(() => this.materialize(this.entries.get(id))); }
+  async getOpenTurns(): Promise<any[]> { await this.line; return [...this.validator.openTurns].map((id: any) => clone(this.validator.turns.get(id).start)); }
+  async getOpenOperations(): Promise<any[]> { await this.line; return [...this.validator.openOperations].map((id: any) => clone(this.validator.operations.get(id).start)); }
+  async getTurn(turnId: any): Promise<any> { await this.line; return clone(this.validator.turns.get(turnId)?.end); }
+  async getTerminal(operationId: any): Promise<any> {
     await this.line;
     const op = this.validator.operations.get(operationId);
     return op?.end ? { ...clone(op.end), config: clone(op.start.payload.config), fromTipId: op.start.payload.baselineTipId,
       tipId: op.end.payload.tipId, status: op.end.payload.status } : undefined;
   }
-  async getRepairEntries() {
+  async getRepairEntries(): Promise<any> {
     await this.line; if (this.failure) throw this.failure;
     if (!this.interruptions.size) return [];
     if (!this.repairCache) {
       // Branch membership uses indexed ancestry, not a second full payload read.
-      const visible = new Set();
+      const visible = new Set<string>();
       for (let id = this.tip; id !== null; id = this.entries.get(id).parentId) visible.add(id);
       const plan = planRepairEntries({ tip: this.tip, visible, interruptions: this.interruptions.values(),
-        validator: this.validator, timestamp: (id) => this.entries.get(id).timestamp });
-      this.repairCache = Promise.all(plan.repairs.map(async (repair) => ({ ...repair, calls: await Promise.all(repair.calls.map(async (call) => ({
+        validator: this.validator, timestamp: (id: string) => this.entries.get(id).timestamp });
+      this.repairCache = Promise.all(plan.repairs.map(async (repair: any) => ({ ...repair, calls: await Promise.all(repair.calls.map(async (call: any) => ({
         ...call, returned: await this.getReturnedOutcome(call.operationId, call.callId),
-      }))) }))).then(async (repairs) => {
+      }))) }))).then(async (repairs: any[]) => {
         // Preserve original I/O admission order: initial calls in parallel,
         // inferred additions sequentially after them, attached to the last account.
         for (const addition of plan.additions) {
@@ -281,21 +304,21 @@ export class SessionStore {
     }
     return clone(await this.repairCache);
   }
-  getReturnedOutcome(operationId, callId) {
+  getReturnedOutcome(operationId: any, callId: any): Promise<any> {
     return this.readQueue(async () => {
       const outcome = this.outcomes.get(`${operationId}\0${callId}`);
       try { return outcome?.record ? clone(outcome.record.payload.message) : outcome ? (await this.io.read(outcome.address)).payload.message : undefined; }
       catch (error) { throw this.poison(error); }
     });
   }
-  prepareReconciliation() {
+  prepareReconciliation(): Promise<any> {
     return this.enqueue(async () => {
       try { await this.io?.prepareReconciliation?.(); this.durableSeq = this.seq; }
       catch (error) { throw this.poison(error); }
     });
   }
-  sync() { return this.enqueue(async () => { try { await this.io?.sync(); this.durableSeq = this.seq; } catch (error) { throw this.poison(error); } }); }
-  close() {
+  sync(): Promise<any> { return this.enqueue(async () => { try { await this.io?.sync(); this.durableSeq = this.seq; } catch (error) { throw this.poison(error); } }); }
+  close(): Promise<void> {
     this.closePromise ??= (async () => {
       await this.line;
       this.closed = true;
@@ -305,7 +328,7 @@ export class SessionStore {
   }
 }
 
-async function initializeSession(session) {
+async function initializeSession(session: any): Promise<void> {
   const turnId = `synthetic:initialize:${randomUUID()}`;
   await session.beginTurn(turnId, { cause: "initialize" });
   await session.write("owner_binding", { kind: "unbound" });
@@ -314,11 +337,14 @@ async function initializeSession(session) {
 }
 
 export class MemorySessionRepo {
+  declare sessions: Map<any, any>;
+  declare openSessions: Map<any, any>;
+
   #headers = new Map();
   constructor() { this.sessions = new Map(); this.openSessions = new Map(); }
   /** @param {{id?: string, cwd?: string, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] */
-  async create({ id = randomUUID(), cwd = process.cwd(), hostAuthority, assertOwned } = {}) {
-    if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned(); }
+  async create({ id = randomUUID(), cwd = process.cwd(), hostAuthority, assertOwned }: { id?: string; cwd?: string; hostAuthority?: import("./header-authority.js").HostJournalAuthority; assertOwned?: () => Promise<void>; } = {}): Promise<SessionStore> {
+    if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned!(); }
     if (this.sessions.has(id)) throw new Error("Harness session already exists");
     const metadata = { id, cwd, createdAt: Date.now(), journalId: managedJournalId(id), ...(hostAuthority ? {
       format: FORMAT, version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, initialHandle: { id }, hostAuthority: canonicalHostJournalAuthority(hostAuthority),
@@ -332,29 +358,29 @@ export class MemorySessionRepo {
     await initializeSession(session);
     return session;
   }
-  async find(id, context = undefined) { const header = this.#headers.get(id); return header ? this.#publicMetadata(header) : undefined; }
-  async open(metadata, { repair = true } = {}) {
+  async find(id: any, context: any | undefined = undefined): Promise<any> { const header = this.#headers.get(id); return header ? this.#publicMetadata(header) : undefined; }
+  async open(metadata: any, { repair = true }: { repair?: boolean; } = {}): Promise<SessionStore> {
     const id = metadata.id;
     if (this.openSessions.has(id)) throw new Error("Harness session is already open");
     const data = this.sessions.get(id);
     if (!data) throw new Error("Harness session not found");
     const header = this.#headers.get(id);
     validateJournalHeader(header);
-    const session = new SessionStore(this.#publicMetadata(header), data.records, null, (store) => {
+    const session = new SessionStore(this.#publicMetadata(header), data.records, null, (store: any) => {
       data.records = clone(store.records); this.openSessions.delete(id);
     });
     this.openSessions.set(id, session);
     try { if (repair) await repairInterruptedSession(session); return session; }
     catch (error) { await session.close().catch(() => {}); throw error; }
   }
-  #publicMetadata(header) {
+  #publicMetadata(header: any): any {
     return header.hostAuthority === undefined
       ? { id: header.id, cwd: header.cwd, createdAt: header.createdAt, journalId: header.journalId }
       : clone(header);
   }
-  async list() { return [...this.sessions.keys()].map((id) => this.#publicMetadata(this.#headers.get(id))); }
+  async list(): Promise<any[]> { return [...this.sessions.keys()].map((id: any) => this.#publicMetadata(this.#headers.get(id))); }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
-  async delete(metadata, contextOrOptions = undefined, explicitOptions = undefined) {
+  async delete(metadata: any, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
     const options = deletionOptions(contextOrOptions, explicitOptions);
     validateDeletionDisposition(options);
     if (this.openSessions.has(metadata.id)) throw new Error("Harness session is open");
@@ -362,60 +388,72 @@ export class MemorySessionRepo {
     if (stored) await authorizeGuardedDeletion(this.#headers.get(metadata.id), options);
     this.sessions.delete(metadata.id); this.#headers.delete(metadata.id);
   }
-  async close() { for (const session of this.openSessions.values()) await session.close(); }
+  async close(): Promise<void> { for (const session of this.openSessions.values()) await session.close(); }
 }
 
-const syncPath = (path) => syncDir(path, undefined, fail);
+const syncPath = (path: any) => syncDir(path, undefined, fail);
 /** The single journal-directory naming rule shared by every catalogue walk and
  * retention inventory: anything else (`.DS_Store`, temp files, subdirectories)
  * is not a journal and is never read, charged, reclaimed or deleted.
  * @param {string} name */
-export function journalEntrySuffix(name) {
-  return [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((suffix) => name.endsWith(suffix));
+export function journalEntrySuffix(name: string): string;
+export function journalEntrySuffix(name: string): string | undefined {
+  return [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((suffix: string) => name.endsWith(suffix));
 }
-async function absent(path) { try { await lstat(path); return false; } catch (error) { if (error.code === "ENOENT") return true; throw error; } }
+async function absent(path: any): Promise<boolean> { try { await lstat(path); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } }
 export class JsonlSessionRepo {
-  constructor({ sessionsRoot, onImportPhase = async (_phase) => {}, onHeaderUpgradePhase = async (_phase) => {}, onRootPermissionsTightened = () => {} }) {
+  declare root: string;
+  declare directory: string;
+  declare openSessions: Map<any, any>;
+  declare locksPromise: any;
+  declare directoryIdentity: any;
+  declare warm: { metadata: any; identity: any; state: any; cache: Map<any, any>; cacheBytes: number; };
+  declare retiredHandles: Set<any>;
+  declare onImportPhase: (_phase: any) => Promise<void>;
+  declare onHeaderUpgradePhase: (_phase: any) => Promise<void>;
+  declare onRootPermissionsTightened: () => void;
+
+  constructor({ sessionsRoot, onImportPhase = async (_phase: any) => {}, onHeaderUpgradePhase = async (_phase: any) => {}, onRootPermissionsTightened = () => {} }: { sessionsRoot: any; onImportPhase?: (_phase: any) => Promise<void>; onHeaderUpgradePhase?: (_phase: any) => Promise<void>; onRootPermissionsTightened?: () => void; }) {
     this.root = resolve(sessionsRoot);
     assertSupportedSessionsRoot(this.root);
     this.directory = join(this.root, "journals");
     this.openSessions = new Map();
     this.locksPromise = null;
-    this.directoryIdentity = null; this.warm = null;
+    this.directoryIdentity = null; this.warm = null as unknown as typeof this.warm;
     this.retiredHandles = new Set();
     this.onImportPhase = onImportPhase;
     this.onHeaderUpgradePhase = onHeaderUpgradePhase;
     this.onRootPermissionsTightened = onRootPermissionsTightened;
   }
-  async ensureDirectory() {
+  async ensureDirectory(): Promise<any> {
     this.locksPromise ??= JournalLocks.open(this.root, this.onRootPermissionsTightened);
     const locks = await this.locksPromise;
     await locks.assertRoot();
     // Once pinned, a removed journals directory must never be recreated by a late writer.
     if (this.directoryIdentity !== null) { await this.assertDirectory(); return locks; }
     try { await mkdir(this.directory, { mode: 0o700 }); }
-    catch (error) { if (error.code !== "EEXIST") throw error; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     const stat = await lstat(this.directory);
     if (!isOwned(stat, true)) fail();
     this.directoryIdentity ??= stat;
     if (!sameIdentity(stat, this.directoryIdentity)) fail();
     return locks;
   }
-  async assertDirectory() {
+  async assertDirectory(): Promise<void> {
     const locks = await this.locksPromise;
     await locks.assertRoot();
     const current = await lstat(this.directory);
     if (!isOwned(current, true) || !sameIdentity(current, this.directoryIdentity)) fail();
   }
-  checkMetadata(metadata) {
+  checkMetadata(metadata: any): void {
     if (!safeId(metadata.id) || metadata.journalId !== managedJournalId(metadata.id)
       || dirname(resolve(metadata.path)) !== this.directory
       || ![`${metadata.journalId}.jsonl`, `${metadata.journalId}.jsonl.importing`, `${metadata.journalId}.jsonl.creating`].includes(metadata.path.split(/[\\/]/).at(-1))) fail();
   }
   /** @param {{id?: string, cwd?: string, staging?: boolean, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] @param {{abortSignal?:AbortSignal}} [context] cancels only the lock waits */
-  async create({ id = randomUUID(), cwd = process.cwd(), staging = false, hostAuthority, assertOwned } = {}, context = undefined) {
+  async create({ id = randomUUID(), cwd = process.cwd(), staging = false, hostAuthority, assertOwned }: { id?: string; cwd?: string; staging?: boolean; hostAuthority?: import("./header-authority.js").HostJournalAuthority; assertOwned?: () => Promise<void>; } = {}, context: { abortSignal?: AbortSignal; } | undefined = undefined): Promise<SessionStore> {
     const signal = contextSignal(context);
-    if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned(); }
+    if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned!(); }
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
     const locks = await this.ensureDirectory();
@@ -432,10 +470,10 @@ export class JsonlSessionRepo {
         this.assertNotDamaged((await listLegacySessions(this.root, { id })).unattributed, id);
         if (!await absent(`${join(this.directory, `${metadata.journalId}.jsonl`)}.importing`)) this.assertNotDamaged([{ id }], id);
         if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
-        if (hostAuthority !== undefined) await assertOwned();
+        if (hostAuthority !== undefined) await assertOwned!();
         await this.writeImportHeader({ format: FORMAT, version: 2, ownershipSchemaVersion: 1,
           ownership: { kind: "unbound" }, initialHandle: { id }, ...metadata, ...(hostAuthority ? { hostAuthority: canonicalHostJournalAuthority(hostAuthority) } : {}) }, true);
-        if (hostAuthority !== undefined) await assertOwned();
+        if (hostAuthority !== undefined) await assertOwned!();
         published = true;
       }, { signal });
       const session = await this.openLocked(metadata, writer);
@@ -453,10 +491,10 @@ export class JsonlSessionRepo {
       throw error;
     }
   }
-  static guardedEpochPlan(options) { return guardedEpochPlan(options); }
+  static guardedEpochPlan(options: any): { header: { format: string; version: number; ownershipSchemaVersion: number; ownership: { kind: string; }; initialHandle: { id: any; }; id: any; cwd: string; createdAt: any; journalId: string; hostAuthority: { version: any; rootId: any; authorityId: any; ownerKey: any; historyBucket: any; }; }; records: JournalEntry[]; bytes: Buffer<ArrayBuffer>; } { return guardedEpochPlan(options); }
   /** Atomic, idempotent host epoch initialization; ordinary create stays unchanged.
    * @param {any} options */
-  async createGuardedEpoch(options) {
+  async createGuardedEpoch(options: any): Promise<any> {
     validateHeaderUpgradeOptions(options); const plan = guardedEpochPlan(options);
     const metadata = { ...plan.header, path: join(this.directory, `${plan.header.journalId}.jsonl`) };
     await options.assertOwned(); const locks = await this.ensureDirectory();
@@ -464,7 +502,7 @@ export class JsonlSessionRepo {
     const writer = await locks.acquireWriter(metadata.journalId, { wait: false });
     try { return await locks.withCatalog(async () => {
       await options.assertOwned(); await this.assertDirectory();
-      const validate = async (path, prefix) => {
+      const validate = async (path: any, prefix: any) => {
         const reader = await JournalReader.open(path, this.root);
         try {
           const before = await reader.assertIdentity();
@@ -504,7 +542,8 @@ export class JsonlSessionRepo {
   }
   /** Direct current-journal lookup; only a missing path needs legacy/damage discovery.
    * @param {string} id @param {{abortSignal?:AbortSignal}} [context] */
-  async find(id, context = undefined) {
+  find(id: string, context?: { abortSignal?: AbortSignal }): any;
+  async find(id: string, context: { abortSignal?: AbortSignal; } | undefined = undefined): Promise<any> {
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     const journalId = managedJournalId(id), path = join(this.directory, `${journalId}.jsonl`);
     try {
@@ -517,7 +556,7 @@ export class JsonlSessionRepo {
     } catch (error) {
       // A path can disappear between lookup and read. Absence is not damage;
       // creation stages are inspected only under catalogue/writer ownership.
-      if (error?.code !== "ENOENT") this.assertNotDamaged([{ id }], id);
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") this.assertNotDamaged([{ id }], id);
     }
     const locks = await this.ensureDirectory();
     const published = await locks.withCatalog(async () => {
@@ -528,14 +567,14 @@ export class JsonlSessionRepo {
     if (published) return this.find(id, context);
     const legacy = await listLegacySessions(this.root, { id });
     this.assertNotDamaged(legacy.unattributed, id);
-    const matches = legacy.sessions.filter((entry) => entry.id === id);
+    const matches = legacy.sessions.filter((entry: any) => entry.id === id);
     if (matches.length > 1) fail();
     if (matches.length) return matches[0];
     for (const suffix of [".importing", ".upgrading"]) if (!await absent(path + suffix)) this.assertNotDamaged([{ id }], id);
     return undefined;
   }
   /** `signal` cancels only the writer wait, never a started open/repair. */
-  async open(metadata, { repair = true, wait = repair, validateHeader = undefined, signal = undefined } = {}) {
+  async open(metadata: any, { repair = true, wait = repair, validateHeader = undefined, signal = undefined }: { repair?: boolean; wait?: any; validateHeader?: any; signal?: any; } = {}): Promise<SessionStore> {
     if (metadata.legacy) {
       if (!repair) throw new Error("Legacy sources cannot be inspected as bound native turns");
       return this.importLegacy(metadata, signal);
@@ -546,7 +585,7 @@ export class JsonlSessionRepo {
     if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
     const locks = await this.ensureDirectory();
     const writer = await locks.acquireWriter(metadata.journalId, { wait, signal });
-    let session;
+    let session: SessionStore | undefined;
     try {
       if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
       session = await this.openLocked(metadata, writer, { repair, validateHeader });
@@ -557,42 +596,42 @@ export class JsonlSessionRepo {
       throw error;
     }
   }
-  async syncDirectories() {
+  async syncDirectories(): Promise<void> {
     await this.assertDirectory();
     await syncPath(this.directory); await syncPath(this.root);
     await this.assertDirectory();
   }
-  async openLocked(metadata, writer, { repair = true, validateHeader = undefined } = {}) {
+  async openLocked(metadata: any, writer: any, { repair = true, validateHeader = undefined }: { repair?: boolean; validateHeader?: any; } = {}): Promise<SessionStore> {
     if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
     const locks = await this.locksPromise;
     await this.assertDirectory();
     const reader = await JournalReader.open(metadata.path, this.root);
-    let handle;
+    let handle!: Awaited<ReturnType<typeof open>>;
     try {
       handle = await open(metadata.path, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW);
       const identity = await handle.stat();
       if (!sameIdentity(identity, reader.identity)) fail();
-      let expectedSize = identity.size, expectedStat = identity, pendingTornTail = null;
+      let expectedSize = identity.size, expectedStat = identity, pendingTornTail: number | null = null;
       const warm = this.warm?.metadata.id === metadata.id && this.warm.metadata.journalId === metadata.journalId
         && this.warm.metadata.path === metadata.path && unchanged(this.warm.identity, identity) ? this.warm : null;
-      if (!warm) this.warm = null;
+      if (!warm) this.warm = null as unknown as typeof this.warm;
       else { reader.cache = warm.cache; reader.cacheBytes = warm.cacheBytes; }
       const verify = async () => {
         reader.path = storeMetadata.path; const stat = await reader.assertIdentity();
-        if (!unchanged(stat, expectedStat) || stat.size !== expectedSize) { reader.clearCache(); this.warm = null; fail(); }
+        if (!unchanged(stat, expectedStat) || stat.size !== expectedSize) { reader.clearCache(); this.warm = null as unknown as typeof this.warm; fail(); }
       };
       const storeMetadata = { ...metadata };
-      let validatedHeader;
+      let validatedHeader: any;
       const session = new SessionStore(storeMetadata, [], {
-        read: async (address) => { await verify(); return reader.read(address); },
-        cached: (address) => reader.cached(address), remember: (address, record) => { if (address) reader.remember(address, record); },
-        invalidate: () => { reader.clearCache(); this.warm = null; }, verify,
+        read: async (address: any) => { await verify(); return reader.read(address); },
+        cached: (address: any) => reader.cached(address), remember: (address: any, record: any) => { if (address) reader.remember(address, record); },
+        invalidate: () => { reader.clearCache(); this.warm = null as unknown as typeof this.warm; }, verify,
         relocated: async () => {
           reader.path = storeMetadata.path; const stat = await reader.assertIdentity();
           if (!sameIdentity(stat, expectedStat) || stat.size !== expectedSize || stat.mtimeMs !== expectedStat.mtimeMs) fail();
           expectedStat = stat; reader.cacheVersion = stat;
         },
-        prepareReconciliation: async (/** @type {Buffer|undefined} */ expectedTail = undefined) => {
+        prepareReconciliation: async (/** @type {Buffer|undefined} */ expectedTail: Buffer<ArrayBufferLike> | undefined = undefined) => {
           await verify();
           if (pendingTornTail !== null) {
             if (expectedTail !== undefined) {
@@ -604,11 +643,11 @@ export class JsonlSessionRepo {
               await verify();
             }
             await handle.truncate(pendingTornTail); expectedSize = pendingTornTail; expectedStat = await handle.stat();
-            pendingTornTail = null; reader.clearCache(); this.warm = null;
+            pendingTornTail = null; reader.clearCache(); this.warm = null as unknown as typeof this.warm;
           }
           await handle.sync();
         },
-        append: async (text) => {
+        append: async (text: any) => {
           if (pendingTornTail !== null) throw new Error("Native torn tail requires matched reconciliation before mutation");
           reader.path = storeMetadata.path;
           await this.assertDirectory(); await reader.assertIdentity();
@@ -624,7 +663,7 @@ export class JsonlSessionRepo {
           return address;
         },
         sync: async () => { await verify(); await handle.sync(); },
-      }, async (store) => {
+      }, async (store: any) => {
         if (pendingTornTail === null && !store.retired && !store.failure && store.entries.size <= 2048 && store.seq <= 8192 && storeMetadata.path.endsWith(".jsonl")) {
           try {
             await verify(); const closedIdentity = await handle.stat();
@@ -632,8 +671,8 @@ export class JsonlSessionRepo {
             this.warm = { metadata: { ...clone(validatedHeader), path: storeMetadata.path }, identity: closedIdentity,
               state: store.snapshot(), cache: reader.cache, cacheBytes: reader.cacheBytes };
           }
-          catch { this.warm = null; }
-        } else this.warm = null;
+          catch { this.warm = null as unknown as typeof this.warm; }
+        } else this.warm = null as unknown as typeof this.warm;
         this.openSessions.delete(metadata.id);
         this.retiredHandles.delete(metadata.id);
         try { await reader.close(); } finally {
@@ -650,8 +689,8 @@ export class JsonlSessionRepo {
         session.restore(warm.state); Object.assign(storeMetadata, warm.metadata, { path: metadata.path });
         await verify();
       } else {
-        /** @type {any} */ let header;
-        const evidence = await reader.scan((record, address) => {
+        /** @type {any} */ let header: any;
+        const evidence = await reader.scan((record: any, address: { offset: number; length: number; }) => {
           if (!header) { acceptHeader(session, record); header = record; validatedHeader = clone(record); validateHeader?.(clone(validatedHeader)); }
           else session.apply(record, address);
         });
@@ -672,7 +711,7 @@ export class JsonlSessionRepo {
       return session;
     } catch (error) { await reader.close(); await handle?.close(); throw error; }
   }
-  async writeImportHeader(metadata, catalogOwned = false) {
+  async writeImportHeader(metadata: any, catalogOwned: boolean = false): Promise<any> {
     const locks = await this.locksPromise;
     const phases = { created: "stage_created", written: "stage_written", file_synced: "stage_synced", directory_synced: "stage_ready" };
     // The `.creating` inode is ours (O_EXCL + writer + catalogue); a failed write
@@ -681,11 +720,11 @@ export class JsonlSessionRepo {
       await this.assertDirectory();
       await publishAtomic({ path: metadata.path, temporary: join(this.directory, `${metadata.journalId}.jsonl.creating`),
         bytes: Buffer.from(`${JSON.stringify({ ...metadata, path: undefined })}\n`), fail, sync: () => this.syncDirectories(),
-        check: () => this.assertDirectory(), phase: async (step) => { if (step in phases) await this.onImportPhase(phases[step]); } });
+        check: () => this.assertDirectory(), phase: async (step: "created" | "written" | "file_synced" | "renamed" | "directory_synced") => { if (step in phases) await this.onImportPhase(phases[step as keyof typeof phases]); } });
     };
     return catalogOwned ? publish() : locks.withCatalog(publish);
   }
-  async importSealed(session) {
+  async importSealed(session: any): Promise<boolean> {
     const info = session.metadata.import;
     const turnId = `synthetic:legacy-import:${info.importId}`;
     const turn = session.validator.turns.get(turnId);
@@ -701,7 +740,7 @@ export class JsonlSessionRepo {
       || createHash("sha256").update(JSON.stringify(messages)).digest("hex") !== info.contextHash) fail();
     return true;
   }
-  async reconcileImport(session, publicationSynced = false) {
+  async reconcileImport(session: any, publicationSynced: boolean = false): Promise<void> {
     const info = session.metadata.import;
     if (!info) return;
     if (legacyJournalId(importSourceMetadata(info, this.root), this.root) !== session.metadata.journalId
@@ -723,15 +762,15 @@ export class JsonlSessionRepo {
     const locks = await this.locksPromise;
     await locks.withCatalog(async () => {
       await this.assertDirectory();
-      for (const path of this.journalPaths(session.metadata).filter((p) => p !== session.metadata.path)) {
+      for (const path of this.journalPaths(session.metadata).filter((p: string) => p !== session.metadata.path)) {
         if (await absent(path)) continue;
         const reader = await JournalReader.open(path, this.root);
         try {
           const header = await reader.readHeader(); validateJournalHeader(header);
           if (header.id !== session.metadata.id || header.journalId !== session.metadata.journalId || header.import?.importId !== info.importId) fail();
-          const view = new SessionStore(header, [], { read: (address) => reader.read(address) });
+          const view = new (SessionStore as new (metadata: any, records: any, io: any) => SessionStore)(header, [], { read: (address: any) => reader.read(address) });
           let first = true;
-          await reader.scan((record, address) => { if (first) first = false; else view.apply(record, address); });
+          await reader.scan((record: any, address: { offset: number; length: number; }) => { if (first) first = false; else view.apply(record, address); });
           await reader.assertIdentity(); await unlink(path); await this.syncDirectories();
         } finally { await reader.close(); }
       }
@@ -747,7 +786,7 @@ export class JsonlSessionRepo {
       await session.endTurn(completionId, "completed"); await session.sync();
     }
   }
-  async importLegacy(metadata, signal = undefined) {
+  async importLegacy(metadata: any, signal: any | undefined = undefined): Promise<SessionStore> {
     const projected = await readLegacySession(metadata, this.root);
     const info = importDescriptor(metadata, this.root, projected);
     const locks = await this.ensureDirectory();
@@ -760,7 +799,7 @@ export class JsonlSessionRepo {
     const creatingPath = join(this.directory, `${journalId}.jsonl.creating`);
     await locks.withCatalog(() => this.#reclaimCreating({ id: metadata.id, journalId }), { signal });
     const writer = await locks.acquireWriter(journalId, { signal });
-    let session;
+    let session: SessionStore | undefined;
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
@@ -768,8 +807,8 @@ export class JsonlSessionRepo {
         const legacy = await listLegacySessions(this.root, { id: metadata.id });
         this.assertNotDamaged(legacy.unattributed, metadata.id);
         if (!await absent(`${publishedPath}.upgrading`)) this.assertNotDamaged([{ id: metadata.id }], metadata.id);
-        const sources = legacy.sessions.filter((m) => m.id === metadata.id);
-        if (sources.length > 1 || sources.some((m) => m.path !== metadata.path)) fail();
+        const sources = legacy.sessions.filter((m: any) => m.id === metadata.id);
+        if (sources.length > 1 || sources.some((m: any) => m.path !== metadata.path)) fail();
         if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
         if (await absent(publishedPath)) {
           if (sources.length !== 1) fail();
@@ -798,13 +837,13 @@ export class JsonlSessionRepo {
       }
       if (!await absent(stage.path)) {
         const reader = await JournalReader.open(stage.path, this.root);
-        let view;
+        let view: SessionStore;
         try {
           const header = await reader.readHeader(); validateJournalHeader(header);
           if (header.journalId !== journalId || header.id !== metadata.id || header.import?.importId !== info.importId) fail();
-          view = new SessionStore(header, [], { read: (address) => reader.read(address) });
+          view = new (SessionStore as new (metadata: any, records: any, io: any) => SessionStore)(header, [], { read: (address: any) => reader.read(address) });
           let first = true;
-          await reader.scan((record, address) => { if (first) first = false; else view.apply(record, address); });
+          await reader.scan((record: any, address: { offset: number; length: number; }) => { if (first) first = false; else view.apply(record, address); });
           if (!await this.importSealed(view)) {
             // Only unpublished, validated source-bound staging may be rebuilt.
             await locks.withCatalog(async () => {
@@ -820,7 +859,7 @@ export class JsonlSessionRepo {
       if (freshStage) {
         await initializeSession(session);
         const turnId = `synthetic:legacy-import:${info.importId}`;
-        await session.beginTurn(turnId, { cause: "legacy_import", importId: info.importId });
+        await (session.beginTurn as (turnId: string, config: object) => Promise<any>)(turnId, { cause: "legacy_import", importId: info.importId });
         for (const message of projected.messages ?? []) {
           await session.appendMessage(message); await this.onImportPhase("message_written");
         }
@@ -832,7 +871,7 @@ export class JsonlSessionRepo {
         await assertLegacyIdentity(metadata.path, this.root, info.source.identity);
         await this.assertDirectory();
         if (!await absent(publishedPath)) fail();
-        await rename(session.metadata.path, publishedPath); session.metadata.path = publishedPath;
+        await rename(session!.metadata.path, publishedPath); session!.metadata.path = publishedPath;
         await this.onImportPhase("published");
       });
       await session.io.relocated(); await session.sync(); await this.syncDirectories(); await this.onImportPhase("publication_synced");
@@ -850,20 +889,20 @@ export class JsonlSessionRepo {
       } else if (session.closed) writer.release();
     }
   }
-  async listOwned({ wait = true, signal = undefined } = {}) {
+  async listOwned({ wait = true, signal = undefined }: { wait?: boolean; signal?: any; } = {}): Promise<any> {
     if (await absent(this.directory)) return [];
     const locks = await this.ensureDirectory();
     return (await locks.withCatalog(() => this.catalogueUnlocked(), { wait, signal })).owned;
   }
   /** Locked native catalogue whose `unattributed` also carries damaged legacy
    * entries, so a handle's own damaged source is never reported missing. */
-  async catalogue({ wait = true, signal = undefined } = {}) {
+  async catalogue({ wait = true, signal = undefined }: { wait?: boolean; signal?: any; } = {}): Promise<{ owned: any; unattributed: any[]; }> {
     const legacy = await listLegacySessions(this.root);
     const native = await absent(this.directory) ? { owned: [], unattributed: [] }
       : await (await this.ensureDirectory()).withCatalog(() => this.catalogueUnlocked(), { wait, signal });
     return { owned: native.owned, unattributed: [...native.unattributed, ...legacy.unattributed] };
   }
-  async listOwnedUnlocked(includeStaging = false) { return (await this.catalogueUnlocked(includeStaging)).owned; }
+  async listOwnedUnlocked(includeStaging: boolean = false): Promise<any[]> { return (await this.catalogueUnlocked(includeStaging)).owned; }
   /** Catalogue walk shared by list/create/import/retire. Names without a
    * journal suffix (`.DS_Store`, temp files, subdirectories) are not journals
    * and are ignored. A journal-named entry whose header cannot be read or
@@ -872,21 +911,21 @@ export class JsonlSessionRepo {
    * never blocks another handle's valid journal. Callers refuse any handle it
    * is attributable to, exactly as the whole-catalogue failure used to.
    * @returns {Promise<{owned:any[], unattributed:{name:string, id?:string}[]}>} */
-  async catalogueUnlocked(includeStaging = false) {
+  async catalogueUnlocked(includeStaging: boolean = false): Promise<{ owned: any[]; unattributed: { name: string; id?: string; }[]; }> {
     let files;
     try { files = await readdir(this.directory, { withFileTypes: true }); }
-    catch (error) { if (error.code === "ENOENT") return { owned: [], unattributed: [] }; throw error; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { owned: [], unattributed: [] }; throw error; }
     if (this.directoryIdentity) await this.assertDirectory();
-    const owned = [], unattributed = [];
+    const owned: any[] = [], unattributed: {name: string; id?: string}[] = [];
     for (const file of files) {
       const suffix = journalEntrySuffix(file.name), creating = suffix === ".jsonl.creating";
       if (!suffix || suffix === ".jsonl.upgrading" || suffix === ".jsonl.importing" && !includeStaging) continue;
-      const skip = (header) => { unattributed.push({ name: file.name, ...(typeof header?.id === "string" && file.name === `${managedJournalId(header.id)}${suffix}` ? { id: header.id } : {}) }); };
+      const skip = (header?: any) => { unattributed.push({ name: file.name, ...(typeof header?.id === "string" && file.name === `${managedJournalId(header.id)}${suffix}` ? { id: header.id } : {}) }); };
       if (!file.isFile()) { skip(); continue; }
       const path = join(this.directory, file.name);
       let reader;
       try { reader = await JournalReader.open(path, this.root); }
-      catch (error) { if (error?.code !== "ENOENT") skip(); continue; }
+      catch (error) { if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") skip(); continue; }
       let header;
       try {
         try { header = await reader.readHeader({ allowIncomplete: creating }); } catch { skip(); continue; }
@@ -918,11 +957,11 @@ export class JsonlSessionRepo {
   }
   /** Refuse a handle that an unattributed entry names: damaged own evidence is
    * never silently replaced, recreated or treated as retired. */
-  assertNotDamaged(unattributed, id) {
-    if (unattributed.some((entry) => entry.id === id)) throw Object.assign(new Error("Harness session journal is unreadable"), { code: "ERR_HARNESS_JOURNAL_UNREADABLE", sessionId: id });
+  assertNotDamaged(unattributed: any, id: any): void {
+    if (unattributed.some((entry: any) => entry.id === id)) throw Object.assign(new Error("Harness session journal is unreadable"), { code: "ERR_HARNESS_JOURNAL_UNREADABLE", sessionId: id });
   }
   // Exact-path recovery only. Context-bearing, guarded and future stages are preserved.
-  async #reclaimCreating(metadata) {
+  async #reclaimCreating(metadata: any): Promise<void> {
     const path = join(this.directory, `${metadata.journalId}.jsonl.creating`);
     if (await absent(path)) return;
     const reader = await JournalReader.open(path, this.root);
@@ -942,7 +981,7 @@ export class JsonlSessionRepo {
   }
   // Caller holds catalogue: every native creating->rename transaction holds it
   // too. Try the writer, never wait under catalogue or reclaim a live owner.
-  async #reclaimNativeCreation(reader, metadata, validate = async () => {}) {
+  async #reclaimNativeCreation(reader: any, metadata: any, validate: () => Promise<void> = async () => {}): Promise<void> {
     const locks = await this.locksPromise;
     const lockPath = join(locks.directory, `${metadata.journalId}.sqlite`);
     await locks.ensureFile(lockPath);
@@ -958,19 +997,19 @@ export class JsonlSessionRepo {
     } finally { writer.release(); }
   }
   /** @param {unknown} [_filter] @param {{abortSignal?:AbortSignal}} [context] */
-  async list(_filter = undefined, context = undefined) {
+  async list(_filter: unknown | undefined = undefined, context: { abortSignal?: AbortSignal; } | undefined = undefined): Promise<any[]> {
     const owned = await this.listOwned({ signal: contextSignal(context) });
     const { sessions } = await listLegacySessions(this.root);
-    return [...owned, ...sessions.filter((m) => !owned.some((n) => n.id === m.id))];
+    return [...owned, ...sessions.filter((m: any) => !owned.some((n: any) => n.id === m.id))];
   }
-  journalPaths(metadata) {
+  journalPaths(metadata: any): string[] {
     return [join(this.directory, `${metadata.journalId}.jsonl`), join(this.directory, `${metadata.journalId}.jsonl.importing`), join(this.directory, `${metadata.journalId}.jsonl.creating`)];
   }
-  async journalDataGone(metadata) {
+  async journalDataGone(metadata: any): Promise<boolean> {
     await this.assertDirectory();
     for (const path of this.journalPaths(metadata)) if (!await absent(path)) return false;
     const files = await readdir(this.directory);
-    if (files.some((name) => name.startsWith(`${metadata.journalId}.`))) return false;
+    if (files.some((name: string) => name.startsWith(`${metadata.journalId}.`))) return false;
     // P1a emits no aliases. Adding projections must extend this same predicate
     // and removal transaction; unknown future aliases conservatively pin locks.
     const aliases = join(this.root, "aliases");
@@ -981,12 +1020,12 @@ export class JsonlSessionRepo {
     return true;
   }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
-  async removeOwned(metadata, options = undefined) {
+  async removeOwned(metadata: any, options: HostJournalDeletion | undefined = undefined): Promise<void> {
     validateDeletionDisposition(options);
     await this.assertDirectory();
     const paths = this.journalPaths(metadata);
     const files = await readdir(this.directory);
-    if (files.some((name) => name.startsWith(`${metadata.journalId}.`) && !paths.some((path) => path.endsWith(`/${name}`)))) fail();
+    if (files.some((name: string) => name.startsWith(`${metadata.journalId}.`) && !paths.some((path: string) => path.endsWith(`/${name}`)))) fail();
     const aliases = join(this.root, "aliases");
     if (!await absent(aliases) && (!(await lstat(aliases)).isDirectory() || (await readdir(aliases)).length)) fail();
     // Validate all matching evidence before removing either publication phase.
@@ -1009,9 +1048,9 @@ export class JsonlSessionRepo {
     await this.syncDirectories();
     await options?.onPhase?.("native_member_directory_synced");
   }
-  async removeLegacy(metadata) {
+  async removeLegacy(metadata: any): Promise<void> {
     const path = resolve(metadata.path), parent = dirname(path);
-    if (dirname(parent) !== this.root || ["journals", "locks", "aliases"].some((name) => parent === join(this.root, name))) fail();
+    if (dirname(parent) !== this.root || ["journals", "locks", "aliases"].some((name: string) => parent === join(this.root, name))) fail();
     await this.assertDirectory();
     if (await absent(path)) return;
     const reader = await JournalReader.open(path, this.root, { ownerOnly: false });
@@ -1024,7 +1063,7 @@ export class JsonlSessionRepo {
     await syncPath(parent); await syncPath(this.root); await this.assertDirectory();
   }
   /** @param {string} id @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
-  async retireByHandle(id, contextOrOptions = undefined, explicitOptions = undefined) {
+  async retireByHandle(id: string, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
     const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
@@ -1039,24 +1078,24 @@ export class JsonlSessionRepo {
         // legacy candidate) is never treated as retired or unlinked. Damage of
         // unknown ownership is not reclaimable either: it is left untouched.
         this.assertNotDamaged([...unattributed, ...legacy.unattributed], id);
-        return [...owned, ...legacy.sessions].filter((m) => m.id === id);
+        return [...owned, ...legacy.sessions].filter((m: any) => m.id === id);
       }, { signal });
       const local = this.openSessions.get(id);
-      if (local && !matches.some((m) => m.journalId === local.metadata.journalId)) matches.push(local.metadata);
+      if (local && !matches.some((m: any) => m.journalId === local.metadata.journalId)) matches.push(local.metadata);
       for (const metadata of matches) await this.retire(metadata, signal ? { abortSignal: signal } : undefined, options);
       const remaining = await locks.withCatalog(() => this.listOwnedUnlocked(true));
-      if (remaining.some((m) => m.id === id)) fail();
+      if (remaining.some((m: any) => m.id === id)) fail();
     } finally {
       const local = this.openSessions.get(id);
       if (local && !local.retired) this.retiredHandles.delete(id);
       else this.finishRetirement(id);
     }
   }
-  clearWarm(id) { if (this.warm?.metadata.id === id) { this.warm.cache.clear(); this.warm = null; } }
-  retireHandle(id) { this.retiredHandles.add(id); this.clearWarm(id); }
-  finishRetirement(id) { if (!this.openSessions.has(id)) this.retiredHandles.delete(id); }
+  clearWarm(id: any): void { if (this.warm?.metadata.id === id) { this.warm.cache.clear(); this.warm = null as unknown as typeof this.warm; } }
+  retireHandle(id: any): void { this.retiredHandles.add(id); this.clearWarm(id); }
+  finishRetirement(id: any): void { if (!this.openSessions.has(id)) this.retiredHandles.delete(id); }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
-  async retire(metadata, contextOrOptions = undefined, explicitOptions = undefined) {
+  async retire(metadata: any, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
     const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
     const live = this.openSessions.get(metadata.id), authority = live && sessionAuthorities.get(live);
@@ -1067,7 +1106,7 @@ export class JsonlSessionRepo {
     this.checkMetadata(metadata);
     const store = this.openSessions.get(metadata.id);
     if (!store) { try { return await this.delete(metadata, context, options); } finally { this.finishRetirement(metadata.id); } }
-    if (this.warm?.metadata.id === store.metadata.id) this.warm = null;
+    if (this.warm?.metadata.id === store.metadata.id) this.warm = null as unknown as typeof this.warm;
     store.io?.invalidate?.();
     store.retired = true; // reject new admission before draining prior storage I/O
     await store.line;
@@ -1076,7 +1115,7 @@ export class JsonlSessionRepo {
     // Keep its already-held writer lock until the provider's close/unwind.
   }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
-  async delete(metadata, contextOrOptions = undefined, explicitOptions = undefined) {
+  async delete(metadata: any, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
     const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
     this.clearWarm(metadata.id);
@@ -1092,11 +1131,11 @@ export class JsonlSessionRepo {
       try { await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }
     }
   }
-  async sync(metadata) {
+  async sync(metadata: any): Promise<any> {
     const local = this.openSessions.get(metadata.id);
     if (local) return local.sync();
     const session = await this.open(metadata);
     try { await session.sync(); } finally { await session.close(); }
   }
-  async close() { for (const session of this.openSessions.values()) await session.close(); }
+  async close(): Promise<void> { for (const session of this.openSessions.values()) await session.close(); }
 }

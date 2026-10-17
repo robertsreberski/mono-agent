@@ -9,21 +9,21 @@ import { createCompactionSummaryMessage } from "./compaction-kit/messages.js";
 import { projectContext } from "./request-projection.js";
 import { syncDir } from "./owned-fs-impl.js";
 
-const object = (v) => v && typeof v === "object" && !Array.isArray(v);
+const object = (v: any) => v && typeof v === "object" && !Array.isArray(v);
 /** @returns {never} */
-const fail = () => { throw new Error("Invalid legacy session"); };
+const fail = (): never => { throw new Error("Invalid legacy session"); };
 /** Valid legacy sources plus damaged legacy-named entries (unreadable,
  * malformed or of unknown format). Damage is never imported, archived or
  * deleted. Pi names sources `<time>_<id>.jsonl`, which attributes damage to that
  * handle; an entry without that shape (or an unreadable directory) has no owner.
  * @param {string} root @param {{includeArchives?:boolean, id?:string}} [options]
  * @returns {Promise<{sessions:any[], unattributed:{name:string, id?:string}[]}>} */
-export async function listLegacySessions(root, { includeArchives = false, id: requestedId } = {}) {
+export async function listLegacySessions(root: string, { includeArchives = false, id: requestedId }: { includeArchives?: boolean; id?: string; } = {}): Promise<{ sessions: any[]; unattributed: { name: string; id?: string; }[]; }> {
   assertSupportedSessionsRoot(root);
-  const sessions = [], unattributed = [];
+  const sessions: any[] = [], unattributed: {name: string; id?: string}[] = [];
   let dirs;
   try { dirs = await readdir(root, { withFileTypes: true }); }
-  catch (error) { if (error.code === "ENOENT") return { sessions, unattributed }; throw error; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { sessions, unattributed }; throw error; }
   for (const dir of dirs) {
     if (!dir.isDirectory() || ["journals", "locks", "aliases"].includes(dir.name)) continue;
     let files;
@@ -39,7 +39,7 @@ export async function listLegacySessions(root, { includeArchives = false, id: re
       try {
         const reader = await JournalReader.open(path, root, { ownerOnly: false });
         try { h = await reader.readHeader(); } finally { await reader.close(); }
-      } catch (error) { if (error?.code === "ENOENT") continue; }
+      } catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue; }
       if (h?.v === 4 && h.kind === "header" && h.storageVersion === 1) {
         sessions.push({ id: h.id, cwd: h.cwd, createdAt: h.createdAt, path, legacy: true });
       } else if (h?.type === "session" && h.version === 3) {
@@ -52,21 +52,21 @@ export async function listLegacySessions(root, { includeArchives = false, id: re
 
 // Legacy Pi compactions become messages during import, never current-format
 // compaction records. Supply their summary envelope at this conversion boundary.
-function projectLegacyContext(entries) {
-  return projectContext(entries.map((entry) => entry.type === "compaction" ? { ...entry,
+function projectLegacyContext(entries: any): { messages: any[] } {
+  return projectContext(entries.map((entry: any) => entry.type === "compaction" ? { ...entry,
     checkpoint: { summaryMessage: createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp) },
-  } : entry));
+  } : entry)) as { messages: any[] };
 }
 
-export async function readLegacySession(metadata, root) {
+export async function readLegacySession(metadata: any, root: any): Promise<{ status: string; reason: string; evidence: { identity: any; completeBytes: number; torn: boolean; }; messages?: undefined; } | { status: string; messages: any[]; evidence: { identity: any; completeBytes: number; torn: boolean; }; reason?: undefined; }> {
   const reader = await JournalReader.open(metadata.path, root, { ownerOnly: false });
-  let evidence;
-  /** @type {any} */ let header;
-  const records = [];
+  let evidence: Awaited<ReturnType<JournalReader["scan"]>>;
+  /** @type {any} */ let header: any;
+  const records: any[] = [];
   try {
-    evidence = await reader.scan((record) => { if (!header) header = record; else records.push(record); });
+    evidence = await reader.scan((record: any) => { if (!header) header = record; else records.push(record); });
     const identity = await reader.fingerprint();
-    if (!["dev", "ino", "size", "mtimeMs"].every((key) => evidence.identity[key] === identity[key])) fail();
+    if (!["dev", "ino", "size", "mtimeMs"].every((key: string) => evidence.identity[key] === identity[key as keyof typeof identity])) fail();
     evidence.identity = identity;
   } finally { await reader.close(); }
   if (header?.id !== metadata.id) fail();
@@ -138,30 +138,30 @@ export async function readLegacySession(metadata, root) {
   return { status: "import", messages: projectLegacyContext(branch).messages, evidence };
 }
 
-export function legacyJournalId(metadata, root) {
+export function legacyJournalId(metadata: any, root: any): string {
   return managedJournalId(metadata.id);
 }
-export function importDescriptor(metadata, root, projected) {
+export function importDescriptor(metadata: any, root: any, projected: any): { version: number; importId: string; source: { path: string; id: any; identity: any; }; mode: any; messageCount: any; contextHash: string; } {
   const source = { path: relative(resolve(root), resolve(metadata.path)), id: metadata.id, identity: projected.evidence.identity };
   return { version: 1, importId: createHash("sha256").update(JSON.stringify(source)).digest("hex"), source,
     mode: projected.status, messageCount: projected.messages?.length ?? 0,
     contextHash: createHash("sha256").update(JSON.stringify(projected.messages ?? [])).digest("hex") };
 }
-export function importSourceMetadata(info, root) {
+export function importSourceMetadata(info: any, root: any): { id: any; path: string; legacy: boolean; } {
   if (typeof info?.source?.path !== "string" || info.source.path.split(/[\\/]/).length !== 2
-    || info.source.path.split(/[\\/]/).some((part) => !part || part === "." || part === "..")
+    || info.source.path.split(/[\\/]/).some((part: any) => !part || part === "." || part === "..")
     || !info.source.path.endsWith(".jsonl")) fail();
   return { id: info.source.id, path: join(resolve(root), info.source.path), legacy: true };
 }
-export async function assertLegacyIdentity(path, root, identity) {
+export async function assertLegacyIdentity(path: any, root: any, identity: any): Promise<void> {
   const reader = await JournalReader.open(path, root, { ownerOnly: false });
   try {
     const current = await reader.fingerprint();
-    if (!["dev", "ino", "size", "mtimeMs", "sha256"].every((key) => current[key] === identity[key])) fail();
+    if (!["dev", "ino", "size", "mtimeMs", "sha256"].every((key: string) => current[key as keyof typeof current] === identity[key as keyof typeof identity])) fail();
   } finally { await reader.close(); }
 }
-async function exists(path) { try { await lstat(path); return true; } catch (error) { if (error.code === "ENOENT") return false; throw error; } }
-export async function archiveLegacySession(metadata, root, evidence, phase = async (_name) => {}) {
+async function exists(path: any): Promise<boolean> { try { await lstat(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } }
+export async function archiveLegacySession(metadata: any, root: any, evidence: any, phase: (_name: any) => Promise<void> = async (_name: any) => {}): Promise<void> {
   const archive = `${metadata.path}.migrated`;
   const originalExists = await exists(metadata.path), archiveExists = await exists(archive);
   if (originalExists && archiveExists) fail(); // never overwrite an earlier archive

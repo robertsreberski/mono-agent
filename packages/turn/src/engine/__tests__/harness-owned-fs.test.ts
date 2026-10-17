@@ -1,3 +1,4 @@
+import type { Stats } from "node:fs";
 import { ok as assertPresent } from "node:assert";
 import { mkdtemp, mkdir, copyFile, readFile, writeFile, rm, stat, chmod, readdir, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,11 +8,11 @@ import { JournalLocks } from "../journal-lock.js";
 import { JsonlSessionRepo } from "../session-store.js";
 import { listLegacySessions } from "../legacy-import.js";
 import { listOwned, publishAtomic, readOwned } from "../owned-fs.js";
-const roots = [];
-async function root() { const r = await mkdtemp(join(tmpdir(), "harness-owned-")); roots.push(r); return r; }
+const roots: string[] = [];
+async function root(): Promise<string> { const r = await mkdtemp(join(tmpdir(), "harness-owned-")); roots.push(r); return r; }
 afterEach(async () => { vi.restoreAllMocks(); for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true }); });
 const aborted = { name: "AbortError" };
-const fail = () => { throw new Error("fictional identity failure"); };
+const fail = (): never => { throw new Error("fictional identity failure"); };
 
 it("lists only matching names and classifies wrong-mode, hard-linked and non-file entries as charged damage", async () => {
   const r = await root();
@@ -19,7 +20,7 @@ it("lists only matching names and classifies wrong-mode, hard-linked and non-fil
   await writeFile(join(r, "a.json"), "{}", { mode: 0o600 }); await writeFile(join(r, "b.json"), "{}", { mode: 0o644 });
   await writeFile(join(r, "c.json"), "{}", { mode: 0o600 }); await link(join(r, "c.json"), join(r, "c-alias")); await mkdir(join(r, "d.json"), { mode: 0o700 });
   const entries = await listOwned(r, /^[a-d]\.json$/);
-  expect(entries.map(({ name, damaged, bytes }) => ({ name, damaged, bytes: name === "d.json" ? "dir" : bytes })))
+  expect(entries.map(({ name, damaged, bytes }: { name: string; match: RegExpExecArray; stat: Stats; bytes: number; damaged: boolean; }) => ({ name, damaged, bytes: name === "d.json" ? "dir" : bytes })))
     .toEqual([{ name: "a.json", damaged: false, bytes: 2 }, { name: "b.json", damaged: true, bytes: 2 }, { name: "c.json", damaged: true, bytes: 2 }, { name: "d.json", damaged: true, bytes: "dir" }]);
   await expect(readOwned(join(r, "b.json"))).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED", entryName: "b.json" });
   await expect(readOwned(join(r, "missing.json"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -27,8 +28,8 @@ it("lists only matching names and classifies wrong-mode, hard-linked and non-fil
 });
 
 it("publishes atomically and removes only its own temp after a pre-rename failure", async () => {
-  const r = await root(), path = join(r, "final.json"), temporary = join(r, "final.json.tmp"), steps = [];
-  await publishAtomic({ path, temporary, bytes: Buffer.from("{}"), fail, sync: async () => {}, phase: async (step) => { steps.push(step); } });
+  const r = await root(), path = join(r, "final.json"), temporary = join(r, "final.json.tmp"), steps: any[] = [];
+  await publishAtomic({ path, temporary, bytes: Buffer.from("{}"), fail, sync: async () => {}, phase: async (step: "created" | "written" | "file_synced" | "renamed" | "directory_synced") => { steps.push(step); } });
   expect(steps).toEqual(["created", "written", "file_synced", "renamed", "directory_synced"]);
   expect(await readdir(r)).toEqual(["final.json"]); expect((await stat(path)).mode & 0o777).toBe(0o600);
   await expect(publishAtomic({ path: join(r, "other.json"), temporary: join(r, "other.json.tmp"), bytes: Buffer.from("{}"), fail, sync: async () => {},
@@ -46,7 +47,7 @@ it("cancels a catalogue wait, and releases a catalogue acquisition that races ca
   held.release();
   await expect(locks.withCatalog(callback, { signal: AbortSignal.abort() })).rejects.toMatchObject(aborted);
   const race = new AbortController(), tryLock = locks.tryLock.bind(locks);
-  vi.spyOn(locks, "tryLock").mockImplementation(async (path) => { const lock = await tryLock(path); if (lock) race.abort(); return lock; });
+  vi.spyOn(locks, "tryLock").mockImplementation(async (path: any) => { const lock = await tryLock(path); if (lock) race.abort(); return lock; });
   await expect(locks.withCatalog(callback, { signal: race.signal })).rejects.toMatchObject(aborted);
   expect(callback).not.toHaveBeenCalled(); vi.restoreAllMocks();
   expect(await locks.withCatalog(async () => "free", { wait: false })).toBe("free");
@@ -60,7 +61,7 @@ it("cancels a writer wait, and releases a writer acquisition that races cancella
   expect(await locks.withCatalog(async () => "free", { wait: false })).toBe("free");
   held.release();
   const race = new AbortController(), tryLock = locks.tryLock.bind(locks);
-  vi.spyOn(locks, "tryLock").mockImplementation(async (path) => { const lock = await tryLock(path); if (lock && path.endsWith("journal-fictional.sqlite")) race.abort(); return lock; });
+  vi.spyOn(locks, "tryLock").mockImplementation(async (path: any) => { const lock = await tryLock(path); if (lock && path.endsWith("journal-fictional.sqlite")) race.abort(); return lock; });
   await expect(locks.acquireWriter("journal-fictional", { signal: race.signal })).rejects.toMatchObject(aborted);
   vi.restoreAllMocks();
   const next = await locks.acquireWriter("journal-fictional", { wait: false }); next.release();
@@ -83,7 +84,7 @@ it("keeps a stale native stage whose writer lock is insecure, unattributed, with
   const journalId = (await import("../managed-journal.js")).managedJournalId("fictional-insecure-stage"), stage = join(r, "journals", `${journalId}.jsonl.creating`);
   const lock = join(r, "locks", `${journalId}.sqlite`);
   await writeFile(stage, "", { mode: 0o600 }); await writeFile(lock, "", { mode: 0o644 });
-  expect((await repo.list()).map((m) => m.id)).toEqual(["fictional-healthy"]);
+  expect((await repo.list()).map((m: any) => m.id)).toEqual(["fictional-healthy"]);
   expect((await repo.catalogue()).unattributed).toEqual([{ name: `${journalId}.jsonl.creating` }]);
   const reopened = await repo.open((await repo.list())[0]); await reopened.close();
   await (await repo.create({ id: "fictional-new" })).close();
@@ -98,11 +99,11 @@ it("isolates stray and damaged legacy entries to their own handle", async () => 
   for (const [name, text] of Object.entries(damaged)) await writeFile(join(legacy, name), text);
   await mkdir(join(legacy, "t_fictional-dir.jsonl"));
   const listed = await listLegacySessions(r);
-  expect(listed.sessions.map((m) => m.id)).toEqual(["fixture-session"]);
-  expect(listed.unattributed.map((entry) => entry.id ?? null).sort()).toEqual(["fictional-dir", "fictional-empty", "fictional-invalid", null]);
+  expect(listed.sessions.map((m: any) => m.id)).toEqual(["fixture-session"]);
+  expect(listed.unattributed.map((entry: { name: string; id?: string; }) => entry.id ?? null).sort()).toEqual(["fictional-dir", "fictional-empty", "fictional-invalid", null]);
   const repo = new JsonlSessionRepo({ sessionsRoot: r });
-  expect((await repo.list()).map((m) => m.id)).toEqual(["fixture-session"]);
-  expect((await repo.catalogue()).unattributed.some((entry) => entry.id === "fictional-invalid")).toBe(true);
+  expect((await repo.list()).map((m: any) => m.id)).toEqual(["fixture-session"]);
+  expect((await repo.catalogue()).unattributed.some((entry: any) => entry.id === "fictional-invalid")).toBe(true);
   await expect(repo.retireByHandle("fictional-invalid")).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
   const imported = await repo.open((await repo.list())[0]); expect(await imported.getEntries()).toHaveLength(2); await imported.close();
   await repo.retireByHandle("fixture-session"); await repo.retireByHandle("fictional-absent");
@@ -122,13 +123,13 @@ it("cancels open, create and list lock waits from the caller's signal without le
   setTimeout(() => opening.abort(), 30); await expect(open).rejects.toMatchObject(aborted);
   const held = await locks.tryLock(locks.catalogPath);
   try {
-    for (const run of [(signal) => other.create({ id: "fictional-new" }, { abortSignal: signal }), (signal) => other.list(undefined, { abortSignal: signal })]) {
+    for (const run of [(signal: any) => other.create({ id: "fictional-new" }, { abortSignal: signal }), (signal: any) => other.list(undefined, { abortSignal: signal })]) {
       const controller = new AbortController(), waiting = run(controller.signal);
       setTimeout(() => controller.abort(), 30); await expect(waiting).rejects.toMatchObject(aborted);
     }
   } finally { held.release(); }
   await session.close();
-  expect((await other.list()).map((m) => m.id)).toEqual(["fictional-held"]);
+  expect((await other.list()).map((m: any) => m.id)).toEqual(["fictional-held"]);
   expect((await readdir(join(r, "locks"))).sort()).toEqual(["catalog.sqlite", `${session.metadata.journalId}.sqlite`].sort());
   const reopened = await other.open(session.metadata, { signal: new AbortController().signal }); await reopened.close();
 });
@@ -143,18 +144,18 @@ it("refuses creating a handle that a damaged legacy file is attributed to", asyn
 
 it("settles a create cancelled behind the catalogue promptly, releasing its writer and reclaiming the lock later", async () => {
   const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r }), locks = await repo.ensureDirectory();
-  const acquire = locks.acquireWriter.bind(locks); let held;
-  vi.spyOn(locks, "acquireWriter").mockImplementation(async (...args) => {
+  const acquire = locks.acquireWriter.bind(locks); let held: any;
+  vi.spyOn(locks, "acquireWriter").mockImplementation(async (...args: unknown[]) => {
     const writer = await acquire(...args); held = await locks.tryLock(locks.catalogPath); return writer; // another owner takes the catalogue
   });
   const controller = new AbortController(), creating = repo.create({ id: "fictional-cancelled" }, { abortSignal: controller.signal });
   setTimeout(() => controller.abort(), 30);
-  const settled = await Promise.race([creating.then(() => "created", (error) => error.name), new Promise((resolve) => setTimeout(() => resolve("stuck"), 2_000))]);
+  const settled = await Promise.race([creating.then(() => "created", (error: any) => (error as NodeJS.ErrnoException).name), new Promise((resolve: (value: any) => void) => setTimeout(() => resolve("stuck"), 2_000))]);
   try {
     expect(settled).toBe("AbortError"); // settled while the catalogue is still held
   assertPresent(held);
-  } finally { /** @type {any} */ (held)?.release(); vi.restoreAllMocks(); }
-  for (let i = 0; i < 50 && (await readdir(locks.directory)).length > 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  } finally { /** @type {any} */ (((held) as any))?.release(); vi.restoreAllMocks(); }
+  for (let i = 0; i < 50 && (await readdir(locks.directory)).length > 1; i += 1) await new Promise((resolve: (value: any) => void) => setTimeout(resolve, 20));
   expect(await readdir(locks.directory)).toEqual(["catalog.sqlite"]);
   expect(await repo.list()).toEqual([]);
 });

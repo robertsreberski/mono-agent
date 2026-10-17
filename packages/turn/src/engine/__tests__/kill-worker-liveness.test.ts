@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 
 it("kill-worker fixture parking keeps an event-loop handle, not just an unsettled promise", async () => {
-  const root = fileURLToPath(new URL("../../../../../", import.meta.url)), packages = join(root, "packages"), checked = [], inspected = [];
-  async function scan(dir, inTests = false, inFixtures = false) {
+  const root = fileURLToPath(new URL("../../../../../", import.meta.url)), packages = join(root, "packages"), checked: any[] = [], inspected: any[] = [];
+  async function scan(dir: any, inTests: boolean = false, inFixtures: boolean = false): Promise<void> {
     for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) {

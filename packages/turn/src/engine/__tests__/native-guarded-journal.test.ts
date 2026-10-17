@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { JsonlSessionRepo, MemorySessionRepo } from "../session-store.js";
 import { validateJournalHeader } from "../journal-schema.js";
 /** @type {import("../header-authority.js").HostJournalAuthority} */
-const authority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+const authority: import("../header-authority.js").HostJournalAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const upgrade = { hostAuthority: authority, assertOwned: async () => {} };
-const roots = [], repos = [];
-async function root() { const value = await mkdtemp(join(tmpdir(), "mono-native-upgrade-")); roots.push(value); return value; }
-function repo(root, extra = {}) { const value = new JsonlSessionRepo({ sessionsRoot: root, ...extra }); repos.push(value); return value; }
+const roots: string[] = [], repos: any[] = [];
+async function root(): Promise<string> { const value = await mkdtemp(join(tmpdir(), "mono-native-upgrade-")); roots.push(value); return value; }
+function repo(root: any, extra: {} = {}): JsonlSessionRepo { const value = new JsonlSessionRepo({ sessionsRoot: root, ...extra }); repos.push(value); return value; }
 /** A host-owned journal guarded from its first header (switch target or cold epoch). */
-async function fixture(r, content = "Fictional fact", guarded = true) {
+async function fixture(r: any, content: string = "Fictional fact", guarded: boolean = true): Promise<{ repository: JsonlSessionRepo; metadata: any; before: NonSharedBuffer; }> {
   const repository = repo(r), store = await repository.create({ id: "fictional-handle", cwd: "/fictional", ...(guarded ? upgrade : {}) });
   await store.appendMessage({ role: "user", content, timestamp: 17 }, "fictional-message"); await store.sync();
   const metadata = { ...store.metadata }; await store.close();
@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 
-it.each([false, true])("creates coordinated journals guarded from their first header (%s durable)", async (durable) => {
+it.each([false, true])("creates coordinated journals guarded from their first header (%s durable)", async (durable: boolean) => {
   const repository = durable ? repo(await root()) : new MemorySessionRepo();
   const store = await repository.create({ id: "born-guarded", ...upgrade });
   expect(store.metadata.ownershipSchemaVersion).toBe(1);
@@ -43,7 +43,7 @@ it("current guarded writer repairs its own torn record only under held native ow
 
 it("guarded headers reject foreign and instance ownership before native admission", async () => {
   const repository = repo(await root()), store = await repository.create({ id: "bound-guard", ...upgrade });
-  await store.beginTurn("synthetic-owner-test");
+  await (store.beginTurn as (...args: any[]) => ReturnType<typeof store.beginTurn>)("synthetic-owner-test");
   const before = await readFile(store.metadata.path);
   for (const owner of [{ kind: "instance", ownerKey: authority.ownerKey, historyBucket: null }, { kind: "host", ownerKey: "foreign", historyBucket: authority.historyBucket }]) {
     await expect(store.write("owner_binding", owner)).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
@@ -73,22 +73,22 @@ it("guarded deletion refuses stale/uncoordinated/P/U callbacks and requires held
   expect(assertOwned).toHaveBeenCalled(); expect(await repository.list()).toEqual([]);
   // D is the native primitive for a host-authorized reset member.
   const next = await repository.create({ id: "reset-member", ...upgrade }); await next.close();
-  await repository.retireByHandle(next.metadata.id, { ...upgrade, disposition: /** @type {"D"} */ ("D") });
+  await repository.retireByHandle(next.metadata.id, { ...upgrade, disposition: /** @type {"D"} */ ((("D") as "D")) });
   expect(await repository.list()).toEqual([]);
 });
 
-it.each([false, true])("validates every explicit deletion disposition on unguarded journals (durable: %s)", async (durable) => {
+it.each([false, true])("validates every explicit deletion disposition on unguarded journals (durable: %s)", async (durable: boolean) => {
   const repository = durable ? repo(await root()) : new MemorySessionRepo();
   const store = await repository.create({ id: "unguarded-dispositions", cwd: "/fictional" });
   const metadata = { ...store.metadata }; await store.close();
   const actions = [() => repository.delete(metadata, currentOptions)];
-  let currentOptions;
+  let currentOptions: any;
   if (repository instanceof JsonlSessionRepo) actions.push(() => repository.retire(metadata, currentOptions), () => repository.retireByHandle(metadata.id, currentOptions), () => repository.removeOwned(metadata, currentOptions));
   for (const disposition of ["P", "U", "unknown", undefined, null, 17]) {
     currentOptions = { disposition };
     for (const action of actions) {
       await expect(action()).rejects.toThrow("C/D disposition");
-      expect((await repository.list()).map((entry) => entry.id)).toEqual([metadata.id]);
+      expect((await repository.list()).map((entry: any) => entry.id)).toEqual([metadata.id]);
     }
   }
   // @ts-expect-error Unguarded deletion deliberately supplies only the disposition.
@@ -125,8 +125,8 @@ it("memory metadata cannot forge or downgrade its private validated native heade
   reopenedGuard.metadata.hostAuthority.ownerKey = "forged-owner";
   expect((await repository.list())[0].hostAuthority.ownerKey).toBe(authority.ownerKey);
   await reopenedGuard.close();
-  await expect(repository.delete(header, { ...upgrade, disposition: /** @type {"D"} */ ("D"), hostAuthority: { ...authority, ownerKey: "forged-owner" } })).rejects.toThrow("authorized C/D");
-  await repository.delete(header, { ...upgrade, disposition: /** @type {"D"} */ ("D") }); expect(await repository.list()).toEqual([]);
+  await expect(repository.delete(header, { ...upgrade, disposition: /** @type {"D"} */ ((("D") as "D")), hostAuthority: { ...authority, ownerKey: "forged-owner" } })).rejects.toThrow("authorized C/D");
+  await repository.delete(header, { ...upgrade, disposition: /** @type {"D"} */ ((("D") as "D")) }); expect(await repository.list()).toEqual([]);
 });
 
 
@@ -137,7 +137,7 @@ it("keeps cancellation context separate from guarded deletion authority", async 
     const plain = await repository.create({ id: "context-plain" }); await plain.close();
     await repository.delete(plain.metadata, context); expect(await repository.list()).toEqual([]);
     const guard = await repository.create({ id: "context-guard", ...upgrade }); await guard.close();
-    const deletion = { ...upgrade, disposition: /** @type {"D"} */ ("D") };
+    const deletion = { ...upgrade, disposition: /** @type {"D"} */ ((("D") as "D")) };
     await expect(repository.delete(guard.metadata, context)).rejects.toThrow("authority");
     await expect(repository.delete(guard.metadata, { ...context, ...deletion })).rejects.toThrow("Ambiguous");
     await expect(repository.delete(guard.metadata, deletion, deletion)).rejects.toThrow("Ambiguous");
@@ -151,16 +151,16 @@ it("keeps cancellation context separate from guarded deletion authority", async 
 
 
 
-it.each(["projectionBinding", "inheritedCoverage", "artifactRef"])("refuses unguarded journal records carrying %s on open", async (field) => {
+it.each(["projectionBinding", "inheritedCoverage", "artifactRef"])("refuses unguarded journal records carrying %s on open", async (field: string) => {
   const { repository, metadata, before } = await fixture(await root(), "Fictional fact", false);
-  const lines = before.toString().trimEnd().split("\n").map((line) => JSON.parse(line));
+  const lines = before.toString().trimEnd().split("\n").map((line: string) => JSON.parse(line));
   // Put the guarded extension on the first record. The header-aware guard must
   // reject it before ordinary record-shape validation or context application.
   if (field === "inheritedCoverage") lines[1].payload.compaction = { checkpoint: { inheritedCoverage: {} } };
   else lines[1].payload[field] = field === "projectionBinding" ? { version: 1,
     artifact: { id: "3".repeat(64), hash: "4".repeat(64) },
     coverage: { version: 1, sources: [] }, messageDigest: "5".repeat(64) } : {};
-  const bytes = lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
+  const bytes = lines.map((line: any) => JSON.stringify(line)).join("\n") + "\n";
   await writeFile(metadata.path, bytes);
   await expect(repository.open(metadata)).rejects.toThrow("Invalid mono-agent harness session binding");
   expect(await readFile(metadata.path, "utf8")).toBe(bytes);
