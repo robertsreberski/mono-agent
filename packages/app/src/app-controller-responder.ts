@@ -25,10 +25,10 @@ import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent
 import type { createConfiguredMemory } from "./composition/configured-memory.js";
 import {
   adapterSendToolNames,
-  createAdapterSendToolsRuntimeExtension,
   requestSuppressesInteractionTools,
   resolveAdapterSendToolsSettings,
 } from "./adapter-send-tools.js";
+import { createAdapterSendToolsRuntimeExtension } from "./delivery/send-tools/host-extension.js";
 import {
   createSetConversationTitleRuntimeExtension,
   isSetConversationTitleToolAllowed,
