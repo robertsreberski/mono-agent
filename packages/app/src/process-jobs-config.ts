@@ -9,7 +9,7 @@ import {
   conversationStatePurgePlanEntries,
   type ConversationStatePurgePlan,
   resolveConversationStatePurgeRoots,
-} from "./conversation-state-roots.js";
+} from "./conversation-admin/conversation-state-roots.js";
 
 export const PROCESS_JOBS_DEFAULTS = Object.freeze({
   enabled: false,

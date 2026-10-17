@@ -1491,8 +1491,8 @@ path:
 
 | Area | Modules | Purpose |
 | --- | --- | --- |
-| Stable host facade | `app.ts`, `app-controller.ts`, `app-controller-*.ts`, `app-controller-types.ts` | Startup state plus narrow operation ports for status, reload, channel lifecycle, traceability, and teardown. |
-| Configured agent | `configured-agent.ts`, `composition/`, `app-controller-responder.ts` | Ordered harness/responder assembly with explicit runtime/lease, memory, subagent, lazy history, and recorder resource owners. |
+| Stable host facade | `host/app.ts`, `host/app-controller.ts`, `host/app-controller-*.ts`, `host/app-controller-types.ts` | Startup state plus narrow operation ports for status, reload, channel lifecycle, traceability, and teardown. |
+| Configured agent | `composition/configured-agent.ts`, `composition/`, `host/app-controller-responder.ts` | Ordered harness/responder assembly with explicit runtime/lease, memory, subagent, lazy history, and recorder resource owners. |
 | Channel integration | `channels.ts`, `channels/types.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution; erased host contracts do not depend on the registry. |
 | Foundation leaves | `service/start-preflight.ts`, `service/web/health.ts`, `service/background/`, `setup/`, `cli/validate-context.ts` | Reusable preflight, health and source-input readers; setup contracts, no-tool event detection and invocation policy without command backedges. |
 | Durable state | `durable-state/` | Shared private-file I/O, SQLite lease, owner locks, root coordination and activity accounting. Continuation secrets remain continuation-owned; stored names and formats are unchanged. |

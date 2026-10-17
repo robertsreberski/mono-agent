@@ -3,7 +3,7 @@ import { PROVIDER_USAGE_IDS, formatProviderUsageLead, projectProviderUsage, type
 import type { ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
 import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 const SERVER = "mono-agent-provider-usage";
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 /** Consumer-side burn projection; the v1 snapshot transport shape stays byte-identical. */

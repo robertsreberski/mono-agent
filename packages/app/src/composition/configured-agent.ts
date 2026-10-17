@@ -1,10 +1,10 @@
-import { assertSupportedSessionsRoot } from "./sessions-root.js";
+import { assertSupportedSessionsRoot } from "../conversation-admin/sessions-root.js";
 import type { ConversationHistoryTurnInspection } from "@mono-agent/conversation";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
 import { implicitModelRuntimeOptions } from "./request-model-override.js";
-import { effectiveSandboxBoundary } from "./effective-sandbox.js";
-import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
-import { isLiveSubagentInstance } from "./subagent-instances.js";
+import { effectiveSandboxBoundary } from "../effective-sandbox.js";
+import { configuredToolPolicyInput as toolPolicyInput } from "../host/computer-use.js";
+import { isLiveSubagentInstance } from "../subagent-instances.js";
 import {
   createConversationHarness,
   createSessionRuntimeResolver,
@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
 import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, setToolActivityPathRoots } from "@mono-agent/contracts";
-import { processJobWakeContextForRequest } from "./process-jobs-context.js";
+import { processJobWakeContextForRequest } from "../process-jobs-context.js";
 import type { AgentResponder } from "@mono-agent/contracts";
 import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import { monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
@@ -31,30 +31,30 @@ import type {
   RuntimeModelReference,
 } from "@mono-agent/turn/host/types";
 
-import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
-import { createToolOutputArtifactsRuntimeExtension } from "./tool-output-artifacts.js";
+import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
+import { createToolOutputArtifactsRuntimeExtension } from "../artifacts/tool-output-artifacts.js";
 import {
   acquireAgentRootOwnership,
   assertAgentRootLeaseOutsideWorkspace,
   releaseAgentRootOwnershipWhenIdle,
-} from "./durable-state/agent-root-coordinator.js";
-import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
+} from "../durable-state/agent-root-coordinator.js";
+import { resolveMemoryRecallSettings } from "../memory-recall-settings.js";
 import {
   createMemoryJournalRuntimeExtension,
   isMemoryJournalCapableStore,
   isMemoryJournalToolAllowed,
-} from "./memory-journal.js";
-import { createPeerAgentRuntimeExtension } from "./peer-agent.js";
-import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
+} from "../memory-journal.js";
+import { createPeerAgentRuntimeExtension } from "../peer-agent.js";
+import { verifyPeerOperatorHandoff } from "../peer-provenance.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
   MemoryRetrievalService,
-} from "./memory-retrieval.js";
+} from "../memory-retrieval.js";
 import {
   createMemoryRememberRuntimeExtension,
   isRememberCapableStore,
   isRememberToolAllowed,
-} from "./memory-remember.js";
+} from "../memory-remember.js";
 import {
   clearSessionsSandboxPolicy,
   composeRuntimeOptionExtensions,
@@ -67,38 +67,38 @@ import {
 } from "./runtime-routes.js";
 import {
   resolveProcessJobsProtectionPosture,
-} from "./process-jobs-protection.js";
+} from "../process-jobs-protection.js";
 import {
   createProcessJobsRuntimeExtension,
   processJobsAvailableForRequest,
   backgroundSubagentsAvailableForRequest,
-} from "./process-jobs-runtime.js";
+} from "../process-jobs-runtime.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
   loadProcessJobsRootRegistryProtection,
   processJobsProtectionPolicyRoots,
   registerProcessJobsRoot,
-} from "./process-jobs-root-registry.js";
-import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
+} from "../process-jobs-root-registry.js";
+import { activeProjectSkillSelections, isRetiredProjectSkillName } from "../project-skills.js";
 
 import type {
   ConfiguredAgentInternalHooks,
   ConfiguredAgentResponderOptions,
   ConfiguredConversationHarnessOptions,
   ConversationHarnessSessionOptionsWithEvents,
-} from "./composition/configured-agent-options.js";
-import { composeRunRecorder, recorderCompositionDeps } from "./composition/run-recording.js";
-import { lazyConfiguredToolHistory } from "./composition/configured-tool-history.js";
+} from "./configured-agent-options.js";
+import { composeRunRecorder, recorderCompositionDeps } from "./run-recording.js";
+import { lazyConfiguredToolHistory } from "./configured-tool-history.js";
 import {
   configuredSandboxEngine,
   configRuntimeFlags,
   mergeStaticRuntimeOptions,
-} from "./composition/configured-runtime-options.js";
-import { configuredMemoryForHarness, createConfiguredMemoryInternal } from "./composition/configured-memory.js";
-import { buildSubagentsOptions, createSubagentsRuntimeExtension, createConfiguredSubagentRegistry, bindConfiguredManagedSubagents } from "./composition/configured-subagents.js";
-import { createConfiguredAgentRuntimeForApp } from "./composition/configured-runtime.js";
-import { configuredRoutesOnlyPiNative } from "./composition/configured-runtime-routes.js";
-import { harnessWithAgentRootOwnership } from "./composition/runtime-ownership.js";
+} from "./configured-runtime-options.js";
+import { configuredMemoryForHarness, createConfiguredMemoryInternal } from "./configured-memory.js";
+import { buildSubagentsOptions, createSubagentsRuntimeExtension, createConfiguredSubagentRegistry, bindConfiguredManagedSubagents } from "./configured-subagents.js";
+import { createConfiguredAgentRuntimeForApp } from "./configured-runtime.js";
+import { configuredRoutesOnlyPiNative } from "./configured-runtime-routes.js";
+import { harnessWithAgentRootOwnership } from "./runtime-ownership.js";
 
 export async function createConfiguredConversationHarness(options: ConfiguredConversationHarnessOptions): Promise<ConversationHarness> {
   return await createConfiguredConversationHarnessInternal(options);

@@ -1,7 +1,7 @@
 import type { SlackWebApi } from "@mono-agent/channel-slack";
 import type { TelegramMessageSender } from "@mono-agent/channel-telegram";
 
-import type { MonoAgentAppConfigInput } from "../../app-config.js";
+import type { MonoAgentAppConfigInput } from "../../composition/app-config.js";
 import type { FileIdentity } from "./file-identity.js";
 
 export interface SlackSendToolSettings {

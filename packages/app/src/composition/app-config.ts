@@ -1,5 +1,5 @@
 import { packageRenameError } from "@mono-agent/turn/host/config";
-import { assertNoOldSessionsRoot } from "./sessions-root.js";
+import { assertNoOldSessionsRoot } from "../conversation-admin/sessions-root.js";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
@@ -12,8 +12,8 @@ import {
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 
-import { accountHomeDirectory } from "./account-home.js";
-import { assertKnownAppConfigKeys } from "./config-reference.js";
+import { accountHomeDirectory } from "../host/account-home.js";
+import { assertKnownAppConfigKeys } from "../config-reference.js";
 
 // The structural shape moved to @mono-agent/contracts (ChannelConfigInput)
 // so channel drivers can be authored against the neutral contract; this alias

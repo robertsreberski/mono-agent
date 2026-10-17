@@ -17,7 +17,7 @@ import { processJobOriginForRequest } from "./process-jobs-runtime.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import type { ChannelId } from "./channels/types.js";
 import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 
 const PEER_TOOL = "PeerAgent";
 const SERVER = "mono-agent-peer-agent";

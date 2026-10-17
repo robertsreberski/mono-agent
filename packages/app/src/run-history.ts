@@ -16,7 +16,7 @@ import {
 } from "@mono-agent/observability";
 import * as z from "zod/v4";
 
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 import {
   createRequestScopedMcpRuntimeExtension,
   requestScopedConversationMatches,

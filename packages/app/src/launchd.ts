@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import process from "node:process";
 
-import { accountHomeDirectory } from "./account-home.js";
+import { accountHomeDirectory } from "./host/account-home.js";
 import {
   isBackgroundOperationalEnvName,
   MANAGED_BACKGROUND_WORKER_ENV,

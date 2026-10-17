@@ -7,8 +7,8 @@ import type { ArtifactAuditFileIssue, ArtifactAuditReport } from "@mono-agent/ob
 import {
   resolveAppArtifactDir,
   resolveAppTraceStaleAfterMs,
-} from "./app-config.js";
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+} from "./composition/app-config.js";
+import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 
 interface RunAuditRunsArgs {
   readonly configPath?: string;

@@ -10,7 +10,7 @@ import * as search from "@mono-agent/memory/search";
 import * as runtime from "@mono-agent/turn/host";
 import * as retrieval from "../memory-retrieval.js";
 import * as journal from "../memory-journal.js";
-import * as extensions from "../runtime-option-extensions.js";
+import * as extensions from "../composition/runtime-option-extensions.js";
 
 // Non-publishable script modules intentionally have no package exports/declarations.
 const root = fileURLToPath(new URL("../../../../", import.meta.url));

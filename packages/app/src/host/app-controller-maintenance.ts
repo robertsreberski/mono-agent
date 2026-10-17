@@ -1,4 +1,4 @@
-import { inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
+import { inspectEffectiveSandboxBoundary } from "../effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
 import type { MonoRuntimeLike, SandboxEngine } from "@mono-agent/turn/host/types";
@@ -8,22 +8,22 @@ import {
 } from "@mono-agent/memory/bujo";
 import { deliverWebNotification } from "@mono-agent/web";
 
-import { loadAppCoreConfig, resolveAppArtifactDir } from "./app-config.js";
-import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { createConfiguredAgentRuntimeForApp } from "./composition/configured-runtime.js";
-import type { createConfiguredMemory } from "./composition/configured-memory.js";
-import { routeProactiveNotification } from "./proactive-notify.js";
-import type { NotifyDeliveryResult } from "./channels/types.js";
-import { startMemoryRituals } from "./memory-rituals.js";
-import type { RunningRituals } from "./memory-rituals.js";
-import { startArtifactRetentionScheduler } from "./artifact-retention.js";
-import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js";
-import { resolveNotifyDestinations } from "./notify-destinations.js";
-import type { NotifyDestination } from "./notify-destinations.js";
+import { loadAppCoreConfig, resolveAppArtifactDir } from "../composition/app-config.js";
+import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
+import { createConfiguredAgentRuntimeForApp } from "../composition/configured-runtime.js";
+import type { createConfiguredMemory } from "../composition/configured-memory.js";
+import { routeProactiveNotification } from "../proactive-notify.js";
+import type { NotifyDeliveryResult } from "../channels/types.js";
+import { startMemoryRituals } from "../memory-rituals.js";
+import type { RunningRituals } from "../memory-rituals.js";
+import { startArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
+import type { RunningArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
+import { resolveNotifyDestinations } from "../notify-destinations.js";
+import type { NotifyDestination } from "../notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
-import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
-import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
-import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
+import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "../channels/types.js";
+import type { SeenNotifyDestinationCache } from "../seen-conversations.js";
+import type { ProcessJobsProtectionPosture } from "../process-jobs-protection.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -43,7 +43,7 @@ interface DestinationsControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
-  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
+  readonly privateRuntimePaths?: import("../composition/app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly running: Map<ChannelId, RunningChannel>;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;

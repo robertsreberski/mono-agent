@@ -19,14 +19,14 @@ const state = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../app-config.js", () => ({
+vi.mock("../composition/app-config.js", () => ({
   loadAppCoreConfig: async () => {
     if (state.coreFailure) throw new Error("Core access denied.");
     return { runtime: { session: { root: "unused" } }, artifacts: { dir: "/fixture/artifacts" }, tools: { allowedTools: [], disallowedTools: [] } };
   },
   isAppCoreConfigError: () => true,
 }));
-vi.mock("../sessions-root.js", () => ({ assertSupportedSessionsRoot: async () => undefined }));
+vi.mock("../conversation-admin/sessions-root.js", () => ({ assertSupportedSessionsRoot: async () => undefined }));
 vi.mock("@mono-agent/config", async (original) => ({
   ...await original<typeof import("@mono-agent/config")>(),
   readMonoAgentConfigJson: async () => ({ json: {} }),
@@ -53,7 +53,7 @@ vi.mock("../doctor/credentials.js", () => ({ credentialsSection: async () => sta
 vi.mock("../doctor/context.js", () => ({ contextSection: async () => state.section("context") }));
 vi.mock("../doctor/memory.js", () => ({ memorySection: vi.fn(async () => state.section("memory")) }));
 vi.mock("../doctor/tools.js", () => ({ toolsSection: async () => state.section("tools") }));
-vi.mock("../computer-use.js", () => ({ computerUseSection: async () => state.section("computer-use") }));
+vi.mock("../host/computer-use.js", () => ({ computerUseSection: async () => state.section("computer-use") }));
 vi.mock("../doctor-session-history.js", () => ({ sessionToolHistorySection: async () => state.section("session-history") }));
 vi.mock("../doctor/web-tools.js", () => ({ webToolsSection: vi.fn(async () => state.section("web-tools")) }));
 vi.mock("../continuation-config.js", () => ({

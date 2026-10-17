@@ -7,31 +7,31 @@ import {
   isAppCoreConfigError,
   loadAppCoreConfig,
   resolveAppArtifactDir,
-} from "./app-config.js";
-import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type { ChannelDriver, ChannelId, ChannelStartInput, MonoAgentAppLogger, RunningChannel, ChannelStatus } from "./channels/types.js";
-import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
+} from "../composition/app-config.js";
+import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
+import type { ChannelDriver, ChannelId, ChannelStartInput, MonoAgentAppLogger, RunningChannel, ChannelStatus } from "../channels/types.js";
+import { resolvePostedMessageIndexPath } from "../posted-message-index.js";
 import { reasonOf } from "./app-controller-utils.js";
 import type { ConfigApplyResult, TraceabilityStatus } from "./app-controller-types.js";
 import { notifyDestination as notifyDestinationForChannel } from "./app-controller-maintenance.js";
-import type { InteractionBridgeHandle } from "./interaction-bridge.js";
-import type { ContinuationServiceHandle } from "./continuation-service.js";
-import type { NotifyDeliveryResult } from "./channels/types.js";
-import type { NotifyDestination } from "./notify-destinations.js";
-import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
-import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "./provider-auth-observations.js";
-import { createProviderAuthOperator } from "./provider-auth-operator.js";
-import { startAppOwnedTuiChannel } from "./channel-drivers/tui.js";
+import type { InteractionBridgeHandle } from "../interaction-bridge.js";
+import type { ContinuationServiceHandle } from "../continuation-service.js";
+import type { NotifyDeliveryResult } from "../channels/types.js";
+import type { NotifyDestination } from "../notify-destinations.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import { createProviderAuthOperator } from "../provider-auth-operator.js";
+import { startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
 import {
   unsafeProcessJobsProtectionStatus,
   type ProcessJobsProtectionPosture,
-} from "./process-jobs-protection.js";
+} from "../process-jobs-protection.js";
 
 export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
-  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
+  readonly privateRuntimePaths?: import("../composition/app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly drivers: readonly ChannelDriver[];
   readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;

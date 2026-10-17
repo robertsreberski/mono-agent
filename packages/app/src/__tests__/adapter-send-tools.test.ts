@@ -26,7 +26,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
-import { startMonoAgentApp } from "../app.js";
+import { startMonoAgentApp } from "../host/app.js";
 import {
   createAdapterSendProxy,
   safeAdapterSendProxyErrorMessage,
@@ -2896,7 +2896,7 @@ describe("parent-interruption wake interaction suppression", () => {
     await writeFile(configPath, JSON.stringify({ tools: { allowedTools: ["AskUser"] } }));
     const bridge = await startInteractionBridge({ port: 0, askTimeoutMs: null });
     try {
-      const { adapterSendToolsRuntimeOptions } = await import("../app-controller-responder.js");
+      const { adapterSendToolsRuntimeOptions } = await import("../host/app-controller-responder.js");
       const { requestSuppressesInteractionTools } = await import("../adapter-send-tools.js");
       const options = await adapterSendToolsRuntimeOptions({ env: {}, cwd: dir, configReadPath: configPath, interactionBridge: bridge } as never,
         { tools: { allowedTools: ["AskUser"], disallowedTools: [] }, artifacts: { dir: join(dir, "artifacts") } } as never);

@@ -18,7 +18,7 @@ import { openMemoryDb } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveAppTraceRegistryDir } from "../app-config.js";
+import { resolveAppTraceRegistryDir } from "../composition/app-config.js";
 import { parseCliArgs } from "../cli-args.js";
 import { renderHelp, renderHelpTopic } from "../cli-help.js";
 import { runCli } from "../cli.js";

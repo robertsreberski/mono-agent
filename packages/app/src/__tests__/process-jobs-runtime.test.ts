@@ -30,8 +30,8 @@ import {
 import {
   publishProcessJobsHealth,
   stopProcessJobsService,
-} from "../app-controller-process-jobs.js";
-import { traceMetadata } from "../app-controller-traceability.js";
+} from "../host/app-controller-process-jobs.js";
+import { traceMetadata } from "../host/app-controller-traceability.js";
 import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../durable-state/agent-root-coordinator.js";
 import { loadProcessJobsRootRegistryProtection, registerProcessJobsRoot, PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR } from "../process-jobs-root-registry.js";
 

@@ -6,7 +6,7 @@ vi.mock("@mono-agent/web", () => ({
   deliverWebNotification: web.deliver,
 }));
 
-import { notifyDestination } from "../app-controller-maintenance.js";
+import { notifyDestination } from "../host/app-controller-maintenance.js";
 
 function controller() {
   return {

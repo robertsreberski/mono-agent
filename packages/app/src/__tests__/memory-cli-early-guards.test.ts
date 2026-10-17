@@ -5,8 +5,8 @@ vi.mock("../memory-command.js", () => {
   loaded.mutation();
   throw new Error("mutation dispatcher must not load for early refusal");
 });
-vi.mock("../app-config.js", async (original) => ({
-  ...await original<typeof import("../app-config.js")>(),
+vi.mock("../composition/app-config.js", async (original) => ({
+  ...await original<typeof import("../composition/app-config.js")>(),
   loadAppCoreConfig: loaded.config,
 }));
 vi.mock("../cli-args.js", async (original) => ({

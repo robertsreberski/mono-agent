@@ -63,9 +63,9 @@ vi.mock("../process-jobs-service.js", async (importOriginal) => {
   };
 });
 
-const { MonoAgentAppController } = await import("../app-controller.js");
+const { MonoAgentAppController } = await import("../host/app-controller.js");
 const { acquireAgentRootOwnership } = await import("../durable-state/agent-root-coordinator.js");
-const { startMonoAgentApp } = await import("../app.js");
+const { startMonoAgentApp } = await import("../host/app.js");
 
 const temporaryDirectories: string[] = [];
 

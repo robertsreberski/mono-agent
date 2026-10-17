@@ -1,24 +1,24 @@
-import { ProcessJobServiceError } from "./process-jobs/errors.js";
-import type { WorkerActivityTracker } from "./durable-state/worker-activity.js";
-import { loadAppCoreConfig, isAppCoreConfigError } from "./app-config.js";
-import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
+import { ProcessJobServiceError } from "../process-jobs/errors.js";
+import type { WorkerActivityTracker } from "../durable-state/worker-activity.js";
+import { loadAppCoreConfig, isAppCoreConfigError } from "../composition/app-config.js";
+import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "../channels/types.js";
 import {
   routeProcessJobSurfaceUpdate,
   routeProcessJobWake,
-} from "./process-job-channel-routing.js";
-import { loadProcessJobsSettings } from "./process-jobs-config.js";
-import type { ProcessJobsSettings } from "./process-jobs-config.js";
-import { runWithProcessJobWakeContext } from "./process-jobs-context.js";
+} from "../process-job-channel-routing.js";
+import { loadProcessJobsSettings } from "../process-jobs-config.js";
+import type { ProcessJobsSettings } from "../process-jobs-config.js";
+import { runWithProcessJobWakeContext } from "../process-jobs-context.js";
 import {
   openProcessJobsService,
   type ProcessJobsHealth,
   type ProcessJobsServiceHandle,
-} from "./process-jobs-service.js";
+} from "../process-jobs-service.js";
 import { reasonOf } from "./app-controller-utils.js";
 import {
   assertAgentRootLeaseOutsideWorkspace,
   type AgentRootOwnership,
-} from "./durable-state/agent-root-coordinator.js";
+} from "../durable-state/agent-root-coordinator.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
   failedProcessJobsRootRegistryProtection,
@@ -26,19 +26,19 @@ import {
   registerProcessJobsRoot,
   type ProcessJobsRootRegistrationProof,
   type ProcessJobsRootRegistrySnapshot,
-} from "./process-jobs-root-registry.js";
-import { hasExactProcessJobStateMarkers } from "./process-jobs-store.js";
+} from "../process-jobs-root-registry.js";
+import { hasExactProcessJobStateMarkers } from "../process-jobs-store.js";
 import {
   unsafeProcessJobsProtectionStatus,
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
-} from "./process-jobs-protection.js";
+} from "../process-jobs-protection.js";
 
 export interface ProcessJobsControllerPort {
   readonly activityTracker?: WorkerActivityTracker;
   readonly cwd: string;
   readonly configReadPath: string;
-  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
+  readonly privateRuntimePaths?: import("../composition/app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly drivers: readonly ChannelDriver[];

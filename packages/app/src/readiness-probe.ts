@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 
-import { loadAppCoreConfig } from "./app-config.js";
+import { loadAppCoreConfig } from "./composition/app-config.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import {
   isSensitiveEnvironmentName,

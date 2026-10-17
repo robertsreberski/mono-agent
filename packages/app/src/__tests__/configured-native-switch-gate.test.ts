@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import type { ConversationHarness, ConversationHarnessRequest, ConversationHistoryStore } from "@mono-agent/conversation";
-import { serializeNativeSwitchHarness } from "../configured-native-switch.js";
+import { serializeNativeSwitchHarness } from "../composition/configured-native-switch.js";
 
 const store: ConversationHistoryStore = { load: async () => [], append: async () => {} };
 const request = (conversationId = "fictional") => ({ conversationId, userMessage: "Fictional input", abortSignal: new AbortController().signal });

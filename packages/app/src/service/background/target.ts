@@ -7,7 +7,7 @@ import {
   resolveAppTraceRegistryDir,
   resolveAppTraceStaleAfterMs,
   resolveGlobalTraceRegistryDir,
-} from "../../app-config.js";
+} from "../../composition/app-config.js";
 import { defaultPathEnv, deriveLaunchdLabel, launchdPathsFor, MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV } from "../../launchd.js";
 import { MANAGED_BACKGROUND_WORKER_ENV, selectBackgroundOperationalEnvironment } from "../../background-environment.js";
 import { isErrno } from "../../background-lifecycle-utils.js";

@@ -9,7 +9,7 @@ import {
   DEFAULT_ARTIFACT_RETENTION_SWEEP_INTERVAL_MS,
   runArtifactRetentionPass,
   startArtifactRetentionScheduler,
-} from "../artifact-retention.js";
+} from "../artifacts/artifact-retention.js";
 
 /**
  * vi.waitFor defaults to a 1s budget, independent of testTimeout. These sweeps wait on real

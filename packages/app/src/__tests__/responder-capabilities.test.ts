@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createConversationResponder } from "@mono-agent/conversation";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
-import { createConfiguredConversationHarness } from "../configured-agent.js";
+import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
 
 import type { AgentResponder } from "@mono-agent/contracts";
 import { startTuiAdapter } from "@mono-agent/channel-operator";

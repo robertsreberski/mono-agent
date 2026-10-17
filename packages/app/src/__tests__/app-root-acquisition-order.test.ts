@@ -33,8 +33,8 @@ vi.mock("../channels.js", async (importOriginal) => ({
   },
 }));
 
-vi.mock("../app-config.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../app-config.js")>();
+vi.mock("../composition/app-config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../composition/app-config.js")>();
   return {
     ...actual,
     loadAppCoreConfig: async (...args: Parameters<typeof actual.loadAppCoreConfig>) => {
@@ -44,7 +44,7 @@ vi.mock("../app-config.js", async (importOriginal) => {
   };
 });
 
-const { startMonoAgentApp } = await import("../app.js");
+const { startMonoAgentApp } = await import("../host/app.js");
 
 const temporaryDirectories: string[] = [];
 

@@ -1,6 +1,6 @@
 import { createToolHistoryArtifactSink } from "@mono-agent/conversation";
 
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
 /** Attach the configured app's artifact sink after every caller-owned extension. */
 export function createToolOutputArtifactsRuntimeExtension(

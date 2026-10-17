@@ -24,7 +24,7 @@ import {
   createCronOperatorService,
   CronOperatorRegistry,
 } from "../cron-operator-service.js";
-import { findTriggerOverrideIssues } from "../trigger-overrides.js";
+import { findTriggerOverrideIssues } from "../composition/trigger-overrides.js";
 import { deliverNativeCronNotification, inferUniqueNotifyDestination } from "./native-notify.js";
 import { unconfiguredChannelView } from "./shared.js";
 

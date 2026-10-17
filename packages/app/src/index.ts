@@ -1,9 +1,9 @@
-export { resolveAppArtifactDir, resolveAppTraceStaleAfterMs } from "./app-config.js";
-export type { MonoAgentAppConfigInput } from "./app-config.js";
+export { resolveAppArtifactDir, resolveAppTraceStaleAfterMs } from "./composition/app-config.js";
+export type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 export {
   createConfiguredConversationHarness,
   createConfiguredAgentResponder,
-} from "./configured-agent.js";
+} from "./composition/configured-agent.js";
 export { createConfiguredAgentRuntime } from "./composition/configured-runtime.js";
 export { createConfiguredMemory } from "./composition/configured-memory.js";
 export type { ConfiguredConversationHarnessOptions, ConfiguredAgentResponderOptions } from "./composition/configured-agent-options.js";
@@ -22,6 +22,6 @@ export type { OpenAIApiChannelOverrides } from "./channels/types.js";
 export type { SlackChannelOverrides } from "./channels/types.js";
 export type { TelegramChannelOverrides } from "./channels/types.js";
 export type { WebhookChannelOverrides } from "./channels/types.js";
-export { startMonoAgentApp } from "./app.js";
-export type { MonoAgentApp, MonoAgentAppOptions } from "./app.js";
-export { consumerContractNames, validateConsumerContractFixture } from "./consumer-contract.js";
+export { startMonoAgentApp } from "./host/app.js";
+export type { MonoAgentApp, MonoAgentAppOptions } from "./host/app.js";
+export { consumerContractNames, validateConsumerContractFixture } from "./host/consumer-contract.js";

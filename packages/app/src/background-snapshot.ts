@@ -3,8 +3,8 @@ import { constants as fsConstants, lstatSync, type BigIntStats } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { accountHomeDirectory } from "./account-home.js";
-import { loadAppCoreConfig, type PrivateBackgroundRuntimePaths } from "./app-config.js";
+import { accountHomeDirectory } from "./host/account-home.js";
+import { loadAppCoreConfig, type PrivateBackgroundRuntimePaths } from "./composition/app-config.js";
 import {
   loadBackgroundSnapshotKey,
   loadOrCreateBackgroundSnapshotKey,

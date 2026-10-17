@@ -29,7 +29,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (original) => {
 });
 
 import { acquireOwnerPrivateLock, type LegacyLockHolder } from "../durable-state/owner-private-lock.js";
-import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
+import { createHostWebRequestCoordinator } from "../host/web-request-coordinator.js";
 import { openProcessJobStore, type DurableProcessJobRecord } from "../process-jobs-store.js";
 import { isSubagentExecutionOwnership } from "../subagent-execution-ownership.js";
 import { type SubagentExecutionOwnership } from "../subagents/types.js";

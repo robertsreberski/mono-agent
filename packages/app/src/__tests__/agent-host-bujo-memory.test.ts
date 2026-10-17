@@ -23,7 +23,7 @@ import { createConfiguredConversationHarness, createConfiguredMemory } from "../
 import { createConfiguredCurationLlm } from "../composition/configured-memory.js";
 
 const coordinatorHome = vi.hoisted(() => ({ path: "" }));
-vi.mock("../account-home.js", () => ({
+vi.mock("../host/account-home.js", () => ({
   accountHomeDirectory: () => coordinatorHome.path,
 }));
 vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({

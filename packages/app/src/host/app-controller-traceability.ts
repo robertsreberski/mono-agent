@@ -1,4 +1,4 @@
-import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
+import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "../effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   pruneTraceSources,
@@ -19,11 +19,11 @@ import {
   resolveGlobalTraceRegistryDir,
   resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
-} from "./app-config.js";
-import type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
-import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent-options.js";
-import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
-import type { MemoryRetrievalService } from "./memory-retrieval.js";
+} from "../composition/app-config.js";
+import type { AppTraceDefaults, MonoAgentAppConfigInput } from "../composition/app-config.js";
+import type { ConfiguredAgentSessionEvent } from "../composition/configured-agent-options.js";
+import { resolveMemoryRecallSettings } from "../memory-recall-settings.js";
+import type { MemoryRetrievalService } from "../memory-retrieval.js";
 import {
   nextDailyRolloverAt,
   reasonOf,
@@ -34,20 +34,20 @@ import type {
   SessionTraceMetadata,
   TraceabilityStatus,
 } from "./app-controller-types.js";
-import type { BackgroundSnapshot } from "./background-snapshot.js";
-import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "./channels/types.js";
-import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import type { BackgroundSnapshot } from "../background-snapshot.js";
+import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "../channels/types.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import {
   unsafeProcessJobsProtectionStatus,
   type ProcessJobsProtectionPosture,
-} from "./process-jobs-protection.js";
+} from "../process-jobs-protection.js";
 
 interface TraceabilityControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configPath: string;
   readonly configReadPath: string;
-  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
+  readonly privateRuntimePaths?: import("../composition/app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly traceDefaults: AppTraceDefaults | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;

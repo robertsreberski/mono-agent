@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { hasRetiredPiSessionsRoot, MonoAgentConfigError } from "@mono-agent/config";
 import { probeUnsupportedSessionsRoot } from "@mono-agent/turn/engine/sessions.js";
-import { assertNoOldSessionsRoot, assertSupportedSessionsRoot } from "../sessions-root.js";
+import { assertNoOldSessionsRoot, assertSupportedSessionsRoot } from "../conversation-admin/sessions-root.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });

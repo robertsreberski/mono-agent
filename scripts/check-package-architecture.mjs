@@ -212,7 +212,7 @@ const controllerOperationModules = [
   "app-controller-traceability.ts",
 ];
 for (const file of controllerOperationModules) {
-  const relativePath = join("packages", "app", "src", file);
+  const relativePath = join("packages", "app", "src", "host", file);
   const text = readFileSync(join(root, relativePath), "utf8");
   if (/from\s+["']\.\/app-controller\.js["']/u.test(text)) {
     errors.push(`${relativePath} must depend on a narrow controller port, not MonoAgentAppController.`);

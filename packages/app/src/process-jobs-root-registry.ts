@@ -8,7 +8,7 @@ import {
   type AgentRootCoordinator,
   type AgentRootProtectionGeneration,
 } from "./durable-state/agent-root-coordinator.js";
-import { clearSessionsRegistryRoot } from "./conversation-state-roots.js";
+import { clearSessionsRegistryRoot } from "./conversation-admin/conversation-state-roots.js";
 import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import { readVerifiedFile, secureFileReplace } from "./durable-state/secure-file-replace.js";
 import { syncDirectory } from "./durable-state/private-files.js";

@@ -1,6 +1,6 @@
 import { ensureStartable } from "./service/start-preflight.js";
 import { type PreflightResult } from "./service/start-preflight.js";
-import { resolveAppSessionsRoot } from "./app-config.js";
+import { resolveAppSessionsRoot } from "./composition/app-config.js";
 import { WorkerActivityTracker } from "./durable-state/worker-activity.js";
 import { publishWorkerActivity } from "./durable-state/activity-snapshot.js";
 import { readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
@@ -19,9 +19,9 @@ import { resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot, typ
 import { createSupervisedRestartAuthority } from "./supervised-restart-authority.js";
 import { sandboxEffectiveStateWarning } from "@mono-agent/turn/host/sandbox";
 
-import { startMonoAgentApp } from "./app.js";
-import type { MonoAgentApp, SandboxStatus } from "./app.js";
-import { startVerifiedManagedMonoAgentApp } from "./app-controller.js";
+import { startMonoAgentApp } from "./host/app.js";
+import type { MonoAgentApp, SandboxStatus } from "./host/app.js";
+import { startVerifiedManagedMonoAgentApp } from "./host/app-controller.js";
 import {
   forceRestartBackground,
   maintainLaunchdController,
@@ -70,7 +70,7 @@ import type { ParsedCliArgs } from "./cli-args.js";
 import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
 import { readCliConfigSnapshot } from "./service/background/source-inputs.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
-import { purgeConversationState, type PurgeConversationStateResult } from "./sessions.js";
+import { purgeConversationState, type PurgeConversationStateResult } from "./conversation-admin/sessions.js";
 import { deriveLaunchdLabel, launchdManagedWorkerInfo, launchdPathsFor, makeLaunchctlRunner } from "./launchd.js";
 import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";

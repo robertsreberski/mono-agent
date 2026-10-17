@@ -5,7 +5,7 @@ import { modelReferenceKey } from "@mono-agent/turn/host/config";
 import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 
 import { buildProviderModelCatalog } from "./provider-model-catalog.js";
-import { configuredRuntimeModels } from "./runtime-routes.js";
+import { configuredRuntimeModels } from "./composition/runtime-routes.js";
 
 interface ChannelRuntimeEffortOption {
   readonly value: string;

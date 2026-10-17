@@ -1,6 +1,6 @@
-import { WorkerActivityTracker } from "./durable-state/worker-activity.js";
-import { createAgentProviderUsage } from "./provider-usage-scope.js";
-import { createProviderUsageService } from "./provider-usage.js";
+import { WorkerActivityTracker } from "../durable-state/worker-activity.js";
+import { createAgentProviderUsage } from "../provider-usage-scope.js";
+import { createProviderUsageService } from "../provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
 import { resolve } from "node:path";
 
@@ -16,30 +16,30 @@ import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/turn/ho
 import { createSrtSandboxEngine } from "@mono-agent/turn/host/sandbox";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
-import type { AppTraceDefaults, PrivateBackgroundRuntimePaths } from "./app-config.js";
-import type { createConfiguredMemory } from "./composition/configured-memory.js";
-import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent-options.js";
-import { resolveChannelDrivers } from "./channels.js";
-import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
-import type { NotifyDeliveryResult } from "./channels/types.js";
-import type { InteractionBridgeHandle } from "./interaction-bridge.js";
-import type { ContinuationServiceHandle } from "./continuation-service.js";
+import type { AppTraceDefaults, PrivateBackgroundRuntimePaths } from "../composition/app-config.js";
+import type { createConfiguredMemory } from "../composition/configured-memory.js";
+import type { ConfiguredAgentSessionEvent } from "../composition/configured-agent-options.js";
+import { resolveChannelDrivers } from "../channels.js";
+import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "../channels/types.js";
+import type { NotifyDeliveryResult } from "../channels/types.js";
+import type { InteractionBridgeHandle } from "../interaction-bridge.js";
+import type { ContinuationServiceHandle } from "../continuation-service.js";
 import type {
   ContinuationHealthSnapshot,
   ContinuationHistoryRecordResult,
   ContinuationNativeDeliveryResult,
   ContinuationStatusSnapshot,
   ContinuationSynthesisInput,
-} from "./continuations.js";
-import type { RunningRituals } from "./memory-rituals.js";
-import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js";
-import type { MemoryRetrievalService } from "./memory-retrieval.js";
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
-import type { NotifyDestination } from "./notify-destinations.js";
-import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
-import { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
-import type { BackgroundSnapshot } from "./background-snapshot.js";
-import type { ManagedRuntimeLaunchVerification } from "./service/managed-runtime/types.js";
+} from "../continuations.js";
+import type { RunningRituals } from "../memory-rituals.js";
+import type { RunningArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
+import type { MemoryRetrievalService } from "../memory-retrieval.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
+import type { NotifyDestination } from "../notify-destinations.js";
+import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
+import { MemoryHealthWorkerClient } from "../memory-health-worker-client.js";
+import type { BackgroundSnapshot } from "../background-snapshot.js";
+import type { ManagedRuntimeLaunchVerification } from "../service/managed-runtime/types.js";
 import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
 import * as lifecycleOperations from "./app-controller-lifecycle.js";
 import * as traceabilityOperations from "./app-controller-traceability.js";
@@ -50,30 +50,30 @@ import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
 import * as processJobsOperations from "./app-controller-process-jobs.js";
-import { assertUniqueProcessJobChannelSchemes } from "./process-job-channel-routing.js";
-import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import { assertUniqueProcessJobChannelSchemes } from "../process-job-channel-routing.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import {
   acquireAgentRootOwnership,
   releaseAgentRootOwnershipWhenIdle,
   type AgentRootOwnership,
-} from "./durable-state/agent-root-coordinator.js";
+} from "../durable-state/agent-root-coordinator.js";
 import type {
   ProcessJobsRootRegistrationProof,
   ProcessJobsRootRegistrySnapshot,
-} from "./process-jobs-root-registry.js";
-import type { ProcessJobsSettings } from "./process-jobs-config.js";
+} from "../process-jobs-root-registry.js";
+import type { ProcessJobsSettings } from "../process-jobs-config.js";
 import type {
   ProcessJobsProtectionPosture,
   ProcessJobsProtectionStatus,
-} from "./process-jobs-protection.js";
-import { unsafeProcessJobsProtectionStatus } from "./process-jobs-protection.js";
+} from "../process-jobs-protection.js";
+import { unsafeProcessJobsProtectionStatus } from "../process-jobs-protection.js";
 import type {
   ConfigApplyResult,
   SandboxStatus,
   SessionTraceMetadata,
   TraceabilityStatus,
 } from "./app-controller-types.js";
-import { createProviderAuthObservationTracker } from "./provider-auth-observations.js";
+import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
 
 export type {
   ConfigApplyResult,

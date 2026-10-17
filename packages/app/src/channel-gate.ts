@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { readSettingsJson } from "@mono-agent/contracts";
 
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 
 /** What marks a channel as "the operator expressed intent" for the lazy-load gate. */
 export interface ChannelGateSpec {

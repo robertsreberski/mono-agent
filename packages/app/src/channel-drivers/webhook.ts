@@ -7,7 +7,7 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver } from "../channels/types.js";
-import { findTriggerOverrideIssues } from "../trigger-overrides.js";
+import { findTriggerOverrideIssues } from "../composition/trigger-overrides.js";
 import { deliverNativeWebhookNotification, inferUniqueNotifyDestination } from "./native-notify.js";
 import { unconfiguredChannelView } from "./shared.js";
 

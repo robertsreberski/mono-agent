@@ -4,7 +4,7 @@ import { lstat, open } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
-import { accountHomeDirectory } from "./account-home.js";
+import { accountHomeDirectory } from "./host/account-home.js";
 import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-command.js";
 import { decodeManagedRuntimeLaunchProof } from "./managed-runtime-launch-proof.js";
 

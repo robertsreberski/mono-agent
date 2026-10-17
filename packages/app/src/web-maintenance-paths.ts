@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 
-import { accountHomeDirectory } from "./account-home.js";
+import { accountHomeDirectory } from "./host/account-home.js";
 import {
   WEB_LAUNCHD_LABEL,
   WEB_MAINTENANCE_LAUNCHD_LABEL,

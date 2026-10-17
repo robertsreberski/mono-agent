@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { verifyManagedRuntimeClosureForProvenance } from "./background-runtime.js";
 import type { ManagedRuntimeProvenanceVerificationDeps } from "./service/managed-runtime/types.js";
-import { appPackageVersion } from "./package-version.js";
+import { appPackageVersion } from "./host/package-version.js";
 
 const PACKAGE_NAME = "@mono-agent/app";
 // Stable persisted discriminator shared with older managed installations.

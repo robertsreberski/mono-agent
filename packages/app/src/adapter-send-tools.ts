@@ -11,7 +11,7 @@ import type {
   SlackSendToolSettings,
   TelegramSendToolSettings,
 } from "./delivery/send-tools/types.js";
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 import { LEGACY_TOOL_ALIASES } from "./modules/known-tools.js";
 
 /**

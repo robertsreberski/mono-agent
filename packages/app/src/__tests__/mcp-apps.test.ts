@@ -34,7 +34,7 @@ import {
 } from "../mcp-apps.js";
 import {
   replyArtifactStorageBudgetFor,
-} from "../reply-artifacts.js";
+} from "../artifacts/reply-artifacts.js";
 
 const tempDirs: string[] = [];
 const stream: AgentMessageStream = { async append() {} };

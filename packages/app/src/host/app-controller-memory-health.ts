@@ -2,22 +2,22 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TraceSourceMemoryHealth } from "@mono-agent/observability";
 import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 
-import { loadAppCoreConfig } from "./app-config.js";
-import { legacyEmbeddingModelOption } from "./memory-embedding-identity.js";
+import { loadAppCoreConfig } from "../composition/app-config.js";
+import { legacyEmbeddingModelOption } from "../memory-embedding-identity.js";
 import {
   traceMemoryHealthFromBujo,
   unknownBujoMemoryHealth,
   unknownNoMemoryHealth,
 } from "./app-controller-utils.js";
-import type { MonoAgentAppLogger } from "./channels/types.js";
+import type { MonoAgentAppLogger } from "../channels/types.js";
 import type { TraceSourceHandle } from "@mono-agent/observability";
-import type { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
+import type { MemoryHealthWorkerClient } from "../memory-health-worker-client.js";
 
 interface MemoryHealthControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
-  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
+  readonly privateRuntimePaths?: import("../composition/app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   stopped: boolean;
   traceSource: TraceSourceHandle | undefined;

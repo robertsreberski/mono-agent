@@ -2,7 +2,7 @@ import { MonoAgentConfigError, type MonoAgentConfig } from "@mono-agent/config";
 
 import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import type { ProcessJobsRootRegistrySnapshot } from "./process-jobs-root-registry.js";
-import { configuredProcessJobsRoutesOnlyPiNative } from "./runtime-routes.js";
+import { configuredProcessJobsRoutesOnlyPiNative } from "./composition/runtime-routes.js";
 
 export const PROCESS_JOBS_UNSAFE_HOST_WARNING =
   "UNSAFE: ProcessJobs state and operator secret are model-accessible.";

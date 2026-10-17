@@ -47,7 +47,7 @@ vi.mock("@mono-agent/turn/host", async (importOriginal) => {
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
   };
 });
-vi.mock("../account-home.js", () => ({
+vi.mock("../host/account-home.js", () => ({
   accountHomeDirectory: () => coordinatorHome.path,
 }));
 vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({

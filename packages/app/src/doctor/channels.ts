@@ -1,4 +1,4 @@
-import type { MonoAgentAppConfigInput } from "../app-config.js";
+import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
 import type { ChannelDriver } from "../channels/types.js";
 import type { ValidationSection } from "../doctor-types.js";
 

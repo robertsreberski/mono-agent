@@ -1,5 +1,5 @@
 import { inspectLocalWeb, inspectParallelWeb } from "@mono-agent/turn/tools";
-import { inspectWebControl } from "../web-request-coordinator.js";
+import { inspectWebControl } from "../host/web-request-coordinator.js";
 import { inspectCodexSubscriptionSearch } from "@mono-agent/turn/tools";
 import { networkPolicyAllowsUrl } from "@mono-agent/turn/host/sandbox";
 import type { MonoAgentConfig } from "@mono-agent/config";

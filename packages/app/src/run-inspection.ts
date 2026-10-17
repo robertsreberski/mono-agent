@@ -14,8 +14,8 @@ import type {
   RecordedRunListResult,
 } from "@mono-agent/observability";
 
-import { resolveAppArtifactDir } from "./app-config.js";
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { resolveAppArtifactDir } from "./composition/app-config.js";
+import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 import { firstCliPositional } from "./cli-args.js";
 import * as ui from "./ui.js";
 

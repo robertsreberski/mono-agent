@@ -1,9 +1,9 @@
 import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { conversationStatePurgePlanEntries, resolveConversationStatePurgePlan } from "../conversation-state-roots.js";
+import { conversationStatePurgePlanEntries, resolveConversationStatePurgePlan } from "../conversation-admin/conversation-state-roots.js";
 import { formatConversationStatePurgeResult } from "../cli-background-command.js";
-import { purgeConversationState } from "../sessions.js";
+import { purgeConversationState } from "../conversation-admin/sessions.js";
 
 describe("subagent instance purge roots", () => {
   it("attests and purges the configured root with all conversations, even when instances are disabled", async () => {

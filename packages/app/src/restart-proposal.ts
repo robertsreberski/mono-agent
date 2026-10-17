@@ -7,7 +7,7 @@ import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
 import * as z from "zod/v4";
 import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
 import { mergeReplyParts, type ReplyPartBudget } from "./reply-part-budget.js";
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 
 export const PROPOSE_RESTART_SERVER_NAME = "mono-agent-restart-proposal";
 export const PROPOSE_RESTART_TOOL_NAME = "ProposeRestart";

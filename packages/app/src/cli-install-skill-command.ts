@@ -2,7 +2,7 @@ import process from "node:process";
 
 import type { ParsedCliArgs } from "./cli-args.js";
 import { installComposerCompanion } from "./docs-mcp-pairing.js";
-import { appPackageVersion } from "./package-version.js";
+import { appPackageVersion } from "./host/package-version.js";
 import { checkManagedProjectSkills, updateManagedProjectSkills } from "./project-skills.js";
 import * as ui from "./ui.js";
 

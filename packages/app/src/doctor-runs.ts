@@ -1,8 +1,8 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { listRecordedRuns } from "@mono-agent/observability";
 
-import { resolveAppArtifactDir } from "./app-config.js";
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { resolveAppArtifactDir } from "./composition/app-config.js";
+import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 import type { ValidationSection } from "./doctor-types.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 

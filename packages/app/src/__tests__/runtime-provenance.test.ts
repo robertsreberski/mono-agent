@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { defaultManagedBackgroundRuntimeDeps, ensureManagedBackgroundRuntime } from "../background-runtime.js";
 import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../launchd-maintenance-command.js";
-import { appPackageVersion } from "../package-version.js";
+import { appPackageVersion } from "../host/package-version.js";
 import { runtimeProvenanceDetail } from "../runtime-provenance.js";
 
 const UNMANAGED_DETAIL = "Runtime provenance: dev (unmanaged).";

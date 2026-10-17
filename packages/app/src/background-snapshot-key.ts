@@ -5,7 +5,7 @@ import { chmod, lstat, mkdir, open, realpath, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { accountHomeDirectory } from "./account-home.js";
+import { accountHomeDirectory } from "./host/account-home.js";
 import { deriveLaunchdLabel } from "./launchd.js";
 
 const BACKGROUND_SNAPSHOT_KEY_BYTES = 32;

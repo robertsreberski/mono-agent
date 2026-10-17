@@ -25,7 +25,7 @@ import {
   isProcessJobOriginRecord,
   type ProcessJobOriginRecord,
 } from "./process-jobs-store.js";
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 
 interface ProcessJobsRuntimeExtensionOptions {
   readonly next?: RuntimeOptionsExtension;

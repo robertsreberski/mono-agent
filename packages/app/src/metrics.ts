@@ -4,8 +4,8 @@ import process from "node:process";
 import { summarizeRecordedRunMetrics } from "@mono-agent/observability";
 import type { RecordedRunMetricGroupBy, RecordedRunMetricsBucket, RecordedRunMetricsReport } from "@mono-agent/observability";
 
-import { resolveAppArtifactDir } from "./app-config.js";
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { resolveAppArtifactDir } from "./composition/app-config.js";
+import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 
 interface RunMetricsArgs {
   readonly configPath?: string;

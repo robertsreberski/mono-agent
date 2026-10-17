@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { startMonoAgentApp } from "../app.js";
+import { startMonoAgentApp } from "../host/app.js";
 import { collectChannelConfigViews } from "../channel-config-view.js";
 import {
   ChannelPluginConfigError,

@@ -1,10 +1,10 @@
 import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
-import { effectiveSandboxBoundary } from "./effective-sandbox.js";
-import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "./suggest-replies.js";
-import { trackResponderActivity, type WorkerActivityTracker } from "./durable-state/worker-activity.js";
-import { createProviderUsageRuntimeExtension } from "./provider-usage-tool.js";
+import { effectiveSandboxBoundary } from "../effective-sandbox.js";
+import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "../suggest-replies.js";
+import { trackResponderActivity, type WorkerActivityTracker } from "../durable-state/worker-activity.js";
+import { createProviderUsageRuntimeExtension } from "../provider-usage-tool.js";
 import { readJsonSection, readSettingsJson, type ProviderUsageOperator } from "@mono-agent/contracts";
-import { createConsoleProjectsRuntimeExtension } from "./console-projects.js";
+import { createConsoleProjectsRuntimeExtension } from "../console-projects.js";
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -12,78 +12,78 @@ import type { AgentResponder } from "@mono-agent/contracts";
 import { modelReferenceKey } from "@mono-agent/turn/host/config";
 import type { MonoRuntimeLike, RuntimeModelReference, SandboxEngine } from "@mono-agent/turn/host/types";
 
-import type { BackgroundSnapshot } from "./background-snapshot.js";
+import type { BackgroundSnapshot } from "../background-snapshot.js";
 
-import { resolveAppArtifactDir } from "./app-config.js";
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { resolveAppArtifactDir } from "../composition/app-config.js";
+import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
 import {
   createConfiguredAgentResponderForApp,
   DEFAULT_HISTORY_MAX_MESSAGES,
-} from "./configured-agent.js";
-import { createConfiguredAgentRuntimeForApp } from "./composition/configured-runtime.js";
-import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent-options.js";
-import type { createConfiguredMemory } from "./composition/configured-memory.js";
+} from "../composition/configured-agent.js";
+import { createConfiguredAgentRuntimeForApp } from "../composition/configured-runtime.js";
+import type { ConfiguredAgentSessionEvent } from "../composition/configured-agent-options.js";
+import type { createConfiguredMemory } from "../composition/configured-memory.js";
 import {
   adapterSendToolNames,
   requestSuppressesInteractionTools,
   resolveAdapterSendToolsSettings,
-} from "./adapter-send-tools.js";
-import { createAdapterSendToolsRuntimeExtension } from "./delivery/send-tools/host-extension.js";
+} from "../adapter-send-tools.js";
+import { createAdapterSendToolsRuntimeExtension } from "../delivery/send-tools/host-extension.js";
 import {
   createSetConversationTitleRuntimeExtension,
   isSetConversationTitleToolAllowed,
-} from "./conversation-title.js";
-import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "./runtime-option-extensions.js";
-import { createRestartProposalService, isProposeRestartToolAllowed } from "./restart-proposal.js";
+} from "../conversation-title.js";
+import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
+import { createRestartProposalService, isProposeRestartToolAllowed } from "../restart-proposal.js";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
-import { isRetiredProjectSkillName } from "./project-skills.js";
-import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run-history.js";
-import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
+import { isRetiredProjectSkillName } from "../project-skills.js";
+import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "../run-history.js";
+import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "../session-history.js";
 import {
   createReplyArtifactService,
   isPublishReplyFileToolAllowed,
   replyArtifactStorageBudgetFor,
-} from "./reply-artifacts.js";
+} from "../artifacts/reply-artifacts.js";
 import {
   createMcpAppService,
   DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
-} from "./mcp-apps.js";
-import { createReplyPartBudget } from "./reply-part-budget.js";
+} from "../mcp-apps.js";
+import { createReplyPartBudget } from "../reply-part-budget.js";
 import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideRoutesOnlyPiNative,
-} from "./request-model-override.js";
-import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
-import { configuredRuntimeFallbackModels, runtimeUsesFallbackRouter } from "./runtime-routes.js";
-import { isNotifyDestinationConversationId } from "./notify-destinations.js";
-import { createSlackPostedReplyHistory } from "./posted-reply-history.js";
+} from "../composition/request-model-override.js";
+import { resolvePostedMessageIndexPath } from "../posted-message-index.js";
+import { configuredRuntimeFallbackModels, runtimeUsesFallbackRouter } from "../composition/runtime-routes.js";
+import { isNotifyDestinationConversationId } from "../notify-destinations.js";
+import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
 import {
   isInteractionToolName,
   historyToolRouteSupport,
   reasonOf,
   runtimeRouteSupportsMcpApps,
 } from "./app-controller-utils.js";
-import type { ChannelId, MonoAgentAppLogger } from "./channels/types.js";
-import { loadContinuationSettings } from "./continuation-config.js";
-import type { InteractionBridgeHandle } from "./interaction-bridge.js";
-import type { ContinuationServiceHandle } from "./continuation-service.js";
-import type { MemoryRetrievalService } from "./memory-retrieval.js";
-import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
-import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
+import type { ChannelId, MonoAgentAppLogger } from "../channels/types.js";
+import { loadContinuationSettings } from "../continuation-config.js";
+import type { InteractionBridgeHandle } from "../interaction-bridge.js";
+import type { ContinuationServiceHandle } from "../continuation-service.js";
+import type { MemoryRetrievalService } from "../memory-retrieval.js";
+import type { SeenNotifyDestinationCache } from "../seen-conversations.js";
+import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
 
-import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
-import type { AgentRootOwnership } from "./durable-state/agent-root-coordinator.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import type { AgentRootOwnership } from "../durable-state/agent-root-coordinator.js";
 import {
   failedProcessJobsRootRegistryProtection,
   processJobsProtectionPolicyRoots,
   type ProcessJobsRootRegistrySnapshot,
-} from "./process-jobs-root-registry.js";
+} from "../process-jobs-root-registry.js";
 import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
-} from "./process-jobs-protection.js";
-import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
-import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
+} from "../process-jobs-protection.js";
+import type { ProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import { bindProcessJobWakeContextToResponder } from "../process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -93,7 +93,7 @@ export interface ResponderControllerPort {
   readonly cwd: string;
   readonly configPath: string;
   readonly configReadPath: string;
-  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
+  readonly privateRuntimePaths?: import("../composition/app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly runtime: MonoRuntimeLike | undefined;

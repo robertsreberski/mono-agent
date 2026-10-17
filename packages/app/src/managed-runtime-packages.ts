@@ -2,7 +2,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
 import { dirname, resolve } from "node:path";
 
-import { loadAppCoreConfig } from "./app-config.js";
+import { loadAppCoreConfig } from "./composition/app-config.js";
 import { configuredChannelPluginPackageNames } from "./channel-plugins.js";
 import type { ManagedRuntimeAdditionalPackage } from "./service/managed-runtime/types.js";
 

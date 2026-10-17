@@ -1,7 +1,7 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
 import { REMOVED_COMMANDS } from "./cli-args.js";
-import { appPackageVersion } from "./package-version.js";
+import { appPackageVersion } from "./host/package-version.js";
 import { readinessProbeTimeoutDescription } from "./readiness-probe.js";
 import * as ui from "./ui.js";
 

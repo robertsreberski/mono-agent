@@ -21,7 +21,7 @@ import {
   requestScopedCursorDigest,
   splitRequestScopedModelText,
 } from "./request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 import {
   containsKnownSecretValue,
   containsSecretLikeValue,

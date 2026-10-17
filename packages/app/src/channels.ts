@@ -1,6 +1,6 @@
 import type { ChannelDriverOverrides, ChannelDriver } from "./channels/types.js";
 
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 import { createCronChannelDriver } from "./channel-drivers/cron.js";
 import type { CronChannelOverrides } from "./channels/types.js";
 import { createOpenAIApiChannelDriver } from "./channel-drivers/openai-api.js";

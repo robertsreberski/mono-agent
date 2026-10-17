@@ -1,6 +1,6 @@
 import type { NotifyDestination } from "@mono-agent/contracts";
 
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import type { MonoAgentAppConfigInput } from "./composition/app-config.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels/types.js";
 import { channelIdForConversation, isNotifyCapableChannel } from "./proactive-notify.js";
 import { listSeenNotifyDestinations } from "./seen-conversations.js";

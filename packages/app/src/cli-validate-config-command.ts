@@ -14,7 +14,7 @@ import type { ConfigViewSection } from "@mono-agent/config";
 import {
   isAppCoreConfigError,
   loadAppCoreConfig,
-} from "./app-config.js";
+} from "./composition/app-config.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ParsedCliArgs } from "./cli-args.js";

@@ -1,5 +1,5 @@
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
-import type { MonoAgentAppConfigInput } from "../app-config.js";
+import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
 import type { ChannelDriver } from "../channels/types.js";
 
 interface DoctorStatusExecOptions {

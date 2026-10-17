@@ -35,7 +35,7 @@ import {
 } from "./mcp-apps/artifact-store.js";
 import { APP_ID, isSupportedProtocolVersion, record } from "./mcp-apps/content.js";
 import type { McpAppManifest, McpAppState } from "./mcp-apps/types.js";
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 import {
   createReplyPartBudget,
   mergeReplyParts,
@@ -46,7 +46,7 @@ import {
   replyArtifactStorageBudgetFor,
   type ReplyArtifactStorageBudget,
   type ReplyArtifactStorageProtection,
-} from "./reply-artifacts.js";
+} from "./artifacts/reply-artifacts.js";
 
 const MAX_BRIDGE_REQUEST_BYTES = 64 * 1024;
 const MAX_BRIDGE_RESULT_BYTES = 1024 * 1024;

@@ -36,17 +36,17 @@ import {
   type AgentReplyPartFailure,
   type AgentResponder,
 } from "@mono-agent/contracts";
-import { createLoopbackMcpEndpoint } from "./mcp/loopback-transport.js";
+import { createLoopbackMcpEndpoint } from "../mcp/loopback-transport.js";
 import type { ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
 
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import {
   createReplyPartBudget,
   mergeReplyParts,
   type ReplyPartBudget,
-} from "./reply-part-budget.js";
+} from "../reply-part-budget.js";
 
 const PRIVATE_CAPABILITY_URL = Symbol.for("@mono-agent/private-capability-url");
 

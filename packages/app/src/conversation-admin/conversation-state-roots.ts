@@ -4,10 +4,10 @@ import type { BigIntStats } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
-import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { resolveAppArtifactDir, resolveAppSessionsRoot } from "./app-config.js";
-import { acpSessionAuthorizationsRoot } from "./acp-session-store.js";
-import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
+import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
+import { resolveAppArtifactDir, resolveAppSessionsRoot } from "../composition/app-config.js";
+import { acpSessionAuthorizationsRoot } from "../acp-session-store.js";
+import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
 
 /** Every filesystem root removed by `restart --clear-sessions`. */
 export interface ConversationStatePurgeRoots {

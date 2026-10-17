@@ -18,7 +18,7 @@ import { materializeBackgroundRuntimeInputs } from "../background-snapshot.js";
 import type { ParsedCliArgs } from "../cli-args.js";
 
 const state = vi.hoisted(() => ({ home: "", root: "", packages: "none" }));
-vi.mock("../account-home.js", () => ({ accountHomeDirectory: () => state.home }));
+vi.mock("../host/account-home.js", () => ({ accountHomeDirectory: () => state.home }));
 vi.mock("../background-runtime.js", async (original) => ({ ...await original<typeof import("../background-runtime.js")>(),
   verifyManagedRuntimeLaunch: async () => ({ installRoot: state.root, provenanceDetail: "fixture runtime", packageVersion: "0.25.1", cliSha256: "fixture" }),
 }));

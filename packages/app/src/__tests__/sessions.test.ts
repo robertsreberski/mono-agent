@@ -20,7 +20,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
   isProcessIncarnationLive: () => true,
 }));
 
-import { loadAppCoreConfig, resolveAppSessionsRoot } from "../app-config.js";
+import { loadAppCoreConfig, resolveAppSessionsRoot } from "../composition/app-config.js";
 import { acquireAgentRootOwnership, agentRootLeasePath } from "../durable-state/agent-root-coordinator.js";
 import {
   loadProcessJobsRootRegistryProtection,
@@ -31,7 +31,7 @@ import {
   assertClearSessionsRecoveryResolved,
   clearSessionsRegistryRoot,
   purgeConversationState,
-} from "../sessions.js";
+} from "../conversation-admin/sessions.js";
 
 let dir: string;
 const STORAGE_TEST_PERSISTENCE_CEILING_MS = 5_000;

@@ -13,7 +13,7 @@ import {
   prepareProcessJobsProtection,
   stopProcessJobsService,
   type ProcessJobsControllerPort,
-} from "../app-controller-process-jobs.js";
+} from "../host/app-controller-process-jobs.js";
 import {
   agentRootLeasePath,
   acquireAgentRootOwnership,

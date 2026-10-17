@@ -74,7 +74,7 @@ import {
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "../index.js";
-import { createConfiguredAgentResponderForApp } from "../configured-agent.js";
+import { createConfiguredAgentResponderForApp } from "../composition/configured-agent.js";
 import { isNotifyDestinationConversationId } from "../notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
 

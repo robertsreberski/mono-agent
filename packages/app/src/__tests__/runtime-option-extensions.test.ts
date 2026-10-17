@@ -7,7 +7,7 @@ import {
   clearSessionsSandboxPolicy,
   composeRuntimeOptionExtensions,
   createClearSessionsRuntimeExtension,
-} from "../runtime-option-extensions.js";
+} from "../composition/runtime-option-extensions.js";
 
 const INPUT = {
   request: {

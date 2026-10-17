@@ -1,4 +1,4 @@
-import { completionOnlyRuntime } from "../configured-runtime-capabilities.js";
+import { completionOnlyRuntime } from "../composition/configured-runtime-capabilities.js";
 import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

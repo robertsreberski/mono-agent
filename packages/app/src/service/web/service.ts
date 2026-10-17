@@ -14,7 +14,7 @@ import {
   DEFAULT_WEB_PORT,
   DEFAULT_WEB_THEME,
 } from "../../web-service-definition.js";
-import { resolveGlobalTraceRegistryDir } from "../../app-config.js";
+import { resolveGlobalTraceRegistryDir } from "../../composition/app-config.js";
 import { acquireFilesystemLifecycleLock } from "../../launchd-lifecycle-lock.js";
 import { ensureOwnerPrivateLaunchdDirectory } from "../../launchd-private-files.js";
 import { inspectOwnerPrivateLaunchdPlist, readOwnerPrivateLaunchdPlist, writeOwnerPrivateLaunchdFile } from "../launchd/plist-files.js";

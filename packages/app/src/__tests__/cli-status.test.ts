@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RecordedRunListItem } from "@mono-agent/observability";
 
 import { printAppStatus } from "../cli-background-command.js";
-import type { MonoAgentApp, SandboxStatus, TraceabilityStatus } from "../app.js";
+import type { MonoAgentApp, SandboxStatus, TraceabilityStatus } from "../host/app.js";
 import type { ChannelId, ChannelStatus } from "../channels/types.js";
 
 const OFF_SANDBOX_STATUS: SandboxStatus = {

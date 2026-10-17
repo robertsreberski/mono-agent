@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const endpoint = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("../mcp/loopback-transport.js", () => ({ createLoopbackMcpEndpoint: endpoint.create }));
-import { createReplyArtifactService, REPLY_ARTIFACT_MCP_SERVER_NAME } from "../reply-artifacts.js";
+import { createReplyArtifactService, REPLY_ARTIFACT_MCP_SERVER_NAME } from "../artifacts/reply-artifacts.js";
 
 describe("reply publication endpoint policy", () => {
   it("throws startup failure instead of silently omitting publication", async () => {

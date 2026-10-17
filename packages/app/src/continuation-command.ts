@@ -1,7 +1,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { loadAppCoreConfig } from "./app-config.js";
+import { loadAppCoreConfig } from "./composition/app-config.js";
 import { loadContinuationSettings } from "./continuation-config.js";
 import { continuationOperatorToken } from "./continuation-service.js";
 import type { ContinuationHealthSnapshot, ContinuationStatusSnapshot } from "./continuations.js";

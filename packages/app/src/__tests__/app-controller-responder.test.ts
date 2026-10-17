@@ -10,18 +10,18 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { loadAppCoreConfig } from "../app-config.js";
+import { loadAppCoreConfig } from "../composition/app-config.js";
 import {
   buildResponder,
   replyArtifactStorageMaxBytesForMcpApps,
   requestModelOverrideRuntimeOptions as createRequestModelOverrideRuntimeOptions,
   type ResponderControllerPort,
-} from "../app-controller-responder.js";
+} from "../host/app-controller-responder.js";
 import { DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES } from "../mcp-apps.js";
 import {
   PUBLISH_REPLY_FILE_TOOL_NAME,
   REPLY_ARTIFACT_MCP_SERVER_NAME,
-} from "../reply-artifacts.js";
+} from "../artifacts/reply-artifacts.js";
 import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import type { MonoAgentConfig } from "@mono-agent/config";

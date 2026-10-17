@@ -1,5 +1,5 @@
-import { assertSupportedSessionsRoot } from "./sessions-root.js";
-import { computerUseSection } from "./computer-use.js";
+import { assertSupportedSessionsRoot } from "./conversation-admin/sessions-root.js";
+import { computerUseSection } from "./host/computer-use.js";
 import { join } from "node:path";
 import {
   buildMonoAgentConfigView,
@@ -13,7 +13,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   isAppCoreConfigError,
   loadAppCoreConfig,
-} from "./app-config.js";
+} from "./composition/app-config.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import { readSettingsJson } from "@mono-agent/contracts";

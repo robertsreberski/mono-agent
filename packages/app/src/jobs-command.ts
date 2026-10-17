@@ -9,7 +9,7 @@ import {
 } from "@mono-agent/contracts";
 import { listTraceSources, mergeTraceSources, type TraceSourceListItem } from "@mono-agent/observability";
 
-import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
+import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./composition/app-config.js";
 import { readBoundedOwnerOnlyFile } from "./durable-state/private-files.js";
 import { PROCESS_JOB_SECRET_FILE } from "./process-jobs-store.js";
 

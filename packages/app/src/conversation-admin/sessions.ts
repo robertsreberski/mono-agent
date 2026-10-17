@@ -10,7 +10,7 @@ import {
   TOOL_HISTORY_OWNER_DATABASE,
 } from "@mono-agent/conversation";
 
-import type { MonoAgentAppConfigInput } from "./app-config.js";
+import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
 import {
   assertConversationStatePurgePlanUnchanged,
   assertConversationStatePurgeRootUnchanged,
@@ -22,18 +22,18 @@ import {
   resolveConversationStatePurgePlan,
   sameFileSystemIdentity,
 } from "./conversation-state-roots.js";
-import { syncDirectory } from "./durable-state/private-files.js";
+import { syncDirectory } from "../durable-state/private-files.js";
 import {
   assertProcessJobsConfigSnapshotUnchanged,
   loadProcessJobsSettings,
   readProcessJobsConfigSnapshot,
   resolveProcessJobsRegistryWorkspace,
-} from "./process-jobs-config.js";
+} from "../process-jobs-config.js";
 import {
   assertProcessJobsRegistryDisjointFromPaths,
   freezeProcessJobsRootRegistry,
   type ProcessJobsRootRegistryFreeze,
-} from "./process-jobs-root-registry.js";
+} from "../process-jobs-root-registry.js";
 
 export interface PurgeSessionsResult {
   /** The resolved sessions root, or undefined when sessions are in-memory only. */

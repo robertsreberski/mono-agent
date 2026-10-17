@@ -261,7 +261,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
   const { createAdapterSendToolsServer } = await import('../../../../app/src/delivery/send-tools/server.ts');
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
-  const { composeRuntimeOptionExtensions } = await import('../../../../app/src/runtime-option-extensions.ts');
+  const { composeRuntimeOptionExtensions } = await import('../../../../app/src/composition/runtime-option-extensions.ts');
   const { composeHostTurnEnvelope, formatHostCapabilities } = await import('../../../../conversation/src/context/turn-envelope.ts');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const model = { ...fauxProvider({ provider: 'app-wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };

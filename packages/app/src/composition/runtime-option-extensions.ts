@@ -8,7 +8,7 @@ import { type SandboxPolicy } from "@mono-agent/turn/host/types";
 import {
   assertClearSessionsRecoveryResolved,
   clearSessionsRegistryRoot,
-} from "./sessions.js";
+} from "../conversation-admin/sessions.js";
 
 export type RuntimeOptionsExtension = (
   input: ConversationHarnessRuntimeOptionsInput,

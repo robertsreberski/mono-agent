@@ -12,7 +12,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
-import { accountHomeDirectory } from "./account-home.js";
+import { accountHomeDirectory } from "./host/account-home.js";
 import {
   currentProcessIncarnation,
   isProcessIncarnationLive,

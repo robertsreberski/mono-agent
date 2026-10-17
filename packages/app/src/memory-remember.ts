@@ -4,7 +4,7 @@ import { containsVisibleSensitiveText } from "@mono-agent/observability";
 import * as z from "zod/v4";
 
 import { createRequestScopedMcpRuntimeExtension } from "./request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
 import {
   containsKnownSecretValue,
   containsSecretLikeValue,

@@ -28,9 +28,9 @@ import {
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels/types.js";
-import { appPackageVersion } from "../package-version.js";
+import { appPackageVersion } from "../host/package-version.js";
 import { buildProviderModelCatalog } from "../provider-model-catalog.js";
-import { configuredRuntimeModels } from "../runtime-routes.js";
+import { configuredRuntimeModels } from "../composition/runtime-routes.js";
 import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../skill-registry.js";
 import type { CronOperatorRegistry } from "../cron-operator-service.js";
 

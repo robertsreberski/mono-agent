@@ -7,15 +7,15 @@ import { modelReferenceKey } from "@mono-agent/turn/host/config";
 import { mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
 import type { MonoRuntimeLike, OwnedForegroundProcesses, RuntimeModelReference, RuntimeResult, RuntimeRunOptions, SandboxEngine, SandboxPolicy } from "@mono-agent/turn/host/types";
 
-import { configuredToolPolicyInput as toolPolicyInput } from "../computer-use.js";
+import { configuredToolPolicyInput as toolPolicyInput } from "../host/computer-use.js";
 import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "../modules/known-tools.js";
 import { attestProcessJobsRootRegistrySnapshot, loadProcessJobsRootRegistryProtection, processJobsProtectionPolicyRoots, type ProcessJobsRootRegistrySnapshot } from "../process-jobs-root-registry.js";
-import { clearSessionsSandboxPolicy, type ClearSessionsRuntimeBoundaryOptions } from "../runtime-option-extensions.js";
+import { clearSessionsSandboxPolicy, type ClearSessionsRuntimeBoundaryOptions } from "./runtime-option-extensions.js";
 import { isReadSkillDenied } from "../skill-registry.js";
 import { createSubagentInstanceRegistry, persistentSubagentsEnabled, subagentInstancesRoot } from "../subagent-instances.js";
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
 import type { InstanceRegistryHandle } from "../subagents/types.js";
-import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
+import { createHostWebRequestCoordinator } from "../host/web-request-coordinator.js";
 import type { ConfiguredAgentInternalHooks, ConfiguredConversationHarnessOptions, StaticRuntimeOptions } from "./configured-agent-options.js";
 
 /**
