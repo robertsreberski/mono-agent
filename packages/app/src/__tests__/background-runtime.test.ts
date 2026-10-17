@@ -9,19 +9,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attestManagedBackgroundRuntime,
   defaultManagedBackgroundRuntimeDeps,
-  deduplicateSourceReuseProofLinks,
   ensureManagedBackgroundRuntime as ensureManagedBackgroundRuntimeImpl,
   inspectManagedRuntimeSourceIdentity,
-  MANAGED_BACKGROUND_WORKER_ENV,
-  sanitizeManagedBackgroundWorkerEnvironment,
   verifyManagedRuntimeLaunch,
 } from "../background-runtime.js";
-import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput, ManagedRuntimeProgress } from "../background-runtime.js";
+import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput, ManagedRuntimeProgress } from "../service/managed-runtime/types.js";
+import { deduplicateSourceReuseProofLinks } from "../service/managed-runtime/source-closure.js";
+import { MANAGED_BACKGROUND_WORKER_ENV, sanitizeManagedBackgroundWorkerEnvironment } from "../background-environment.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const io = vi.hoisted(() => ({
   beforeCopy: undefined as undefined | ((source: string) => Promise<void>),
   beforeLstat: undefined as undefined | ((path: string) => Promise<void>),
+  beforeRead: undefined as undefined | ((path: string) => Promise<void>),
   beforeRename: undefined as undefined | ((source: string, destination: string) => Promise<void>),
   opened: [] as string[],
   reads: 0,
@@ -62,6 +62,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       io.opened.push(String(args[0]));
       io.reads += 1;
       io.peakReads = Math.max(io.peakReads, io.reads);
+      const read = handle.readFile.bind(handle);
+      handle.readFile = ((...readArgs: Parameters<typeof handle.readFile>) => (async () => {
+        await io.beforeRead?.(String(args[0]));
+        return await read(...readArgs);
+      })()) as typeof handle.readFile;
       const stat = handle.stat.bind(handle);
       handle.stat = ((...args: Parameters<typeof handle.stat>) => trackStat(() => stat(...args))) as typeof handle.stat;
       const close = handle.close.bind(handle);
@@ -99,6 +104,7 @@ function incarnation(bootSessionId: string, processStartId: string): ProcessInca
 afterEach(async () => {
   io.beforeCopy = undefined;
   io.beforeLstat = undefined;
+  io.beforeRead = undefined;
   io.beforeRename = undefined;
   io.opened = [];
   io.peakReads = 0;
@@ -319,6 +325,82 @@ describe("ensureManagedBackgroundRuntime", () => {
     const manifest = JSON.parse(await readFile(join(runtime.installRoot, ".mono-agent-closure.json"), "utf8"));
     const paths = manifest.entries.map((entry: { path: string }) => entry.path);
     expect(paths).toEqual([...paths].sort());
+  });
+
+  it("shares global I/O permits between concurrent preparations while isolating progress owners", async () => {
+    const sources = [await workspaceFixture(), await fixturePackage()];
+    const homes = [await homeFixture(), await homeFixture()];
+    const progress: ManagedRuntimeProgress[][] = [[], []];
+    for (const source of sources) {
+      const root = dirname(dirname(source.cliPath));
+      for (let dir = 0; dir < 4; dir += 1) {
+        const directory = join(root, "dist", `concurrent-${dir}`);
+        await mkdir(directory);
+        await Promise.all(Array.from({ length: 24 }, (_, index) =>
+          writeFile(join(directory, `asset-${index}.txt`), "concurrent bounded bytes")));
+      }
+    }
+    const deferred = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      return { promise, resolve };
+    };
+    const statsReached = deferred();
+    const releaseStats = deferred();
+    const readsReached = deferred();
+    const releaseReads = deferred();
+    let blockedStats = 0;
+    let blockedReads = 0;
+    io.beforeLstat = async (path) => {
+      if (!path.includes("/concurrent-") || !path.endsWith(".txt")) return;
+      blockedStats += 1;
+      if (blockedStats === 64) statsReached.resolve();
+      await releaseStats.promise;
+    };
+    io.beforeRead = async (path) => {
+      if (!path.includes("/concurrent-") || !path.endsWith(".txt")) return;
+      blockedReads += 1;
+      if (blockedReads === 16) readsReached.resolve();
+      await releaseReads.promise;
+    };
+    const preparations = sources.map((source, index) => ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath, nodePath: process.execPath, homeDir: homes[index]!,
+      onProgress: (event) => progress[index]!.push(event),
+    }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Concurrent preparation did not reach the I/O barriers.")), 10_000);
+    });
+    try {
+      await Promise.race([statsReached.promise, timeout]);
+      expect(io.stats).toBe(64);
+      expect(io.peakStats).toBe(64);
+      io.beforeLstat = undefined;
+      releaseStats.resolve();
+      await Promise.race([readsReached.promise, timeout]);
+      expect(io.reads).toBe(16);
+      expect(io.peakReads).toBe(16);
+      io.beforeRead = undefined;
+      releaseReads.resolve();
+      const runtimes = await Promise.all(preparations);
+      expect(runtimes.map((runtime) => runtime.verificationMode)).toEqual(["installed", "installed"]);
+      // The barriers above isolate limiter-owned work. Later lock/marker I/O
+      // also passes through this filesystem mock, outside the traversal pools.
+      for (const [index, events] of progress.entries()) {
+        expect(events.filter((event) => event.phase === "copy").map((event) => event.total))
+          .toEqual([index === 0 ? 2 : 1]);
+        expect(events.at(-1)?.phase).toBe("ready");
+        expect(events.some((event) => event.phase === "waiting")).toBe(false);
+        expect(JSON.stringify(events)).not.toContain(homes[1 - index]);
+      }
+    } finally {
+      clearTimeout(timer);
+      io.beforeLstat = undefined;
+      io.beforeRead = undefined;
+      releaseStats.resolve();
+      releaseReads.resolve();
+      await Promise.allSettled(preparations);
+    }
   });
 
   it.each(["same-size overwrite", "same-size replacement"])("rejects %s after cached source validation", async (mutation) => {

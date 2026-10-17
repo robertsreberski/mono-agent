@@ -5,9 +5,9 @@ import { basename, resolve } from "node:path";
 import process from "node:process";
 import {
   MANAGED_BACKGROUND_WORKER_ENV,
+  SYSTEMD_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
-} from "./background-runtime.js";
-import { SYSTEMD_BACKGROUND_WORKER_ENV } from "./background-environment.js";
+} from "./background-environment.js";
 import { readCliDotenvFile } from "./service/background/source-inputs.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";

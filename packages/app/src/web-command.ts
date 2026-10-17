@@ -1,7 +1,7 @@
 import { type RunWebCommandOptions } from "./service/web/types.js";
 import { webHealthcheck, webHealthStatus } from "./service/web/health.js";
 import { formatManagedRuntimeProgress } from "./managed-runtime-progress.js";
-import type { ManagedBackgroundRuntimeInput } from "./background-runtime.js";
+import type { ManagedBackgroundRuntimeInput } from "./service/managed-runtime/types.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { networkInterfaces } from "node:os";

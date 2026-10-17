@@ -1,4 +1,4 @@
-import type { ManagedBackgroundRuntimeInput } from "../background-runtime.js";
+import type { ManagedBackgroundRuntimeInput } from "../service/managed-runtime/types.js";
 import { createHash } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

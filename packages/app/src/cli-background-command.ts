@@ -55,7 +55,7 @@ import {
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
 import { legacyLockHolderMessage, type LegacyLockHolder } from "./durable-state/owner-private-lock.js";
-import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
+import type { ManagedRuntimeLaunchVerification } from "./service/managed-runtime/types.js";
 import { startManagedLaunchdLogMonitor } from "./background-log-maintenance.js";
 import type {
   ManagedLaunchdLogMonitor,

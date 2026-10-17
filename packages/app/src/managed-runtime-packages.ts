@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 
 import { loadAppCoreConfig } from "./app-config.js";
 import { configuredChannelPluginPackageNames } from "./channel-plugins.js";
-import type { ManagedRuntimeAdditionalPackage } from "./background-runtime.js";
+import type { ManagedRuntimeAdditionalPackage } from "./service/managed-runtime/types.js";
 
 interface ResolveManagedRuntimePackagesInput {
   readonly cwd: string;

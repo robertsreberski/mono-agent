@@ -47,7 +47,7 @@ import type {
   LaunchdManagedWorkerDefinition,
   LaunchdPaths,
 } from "./launchd.js";
-import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
+import { MANAGED_BACKGROUND_WORKER_ENV, selectBackgroundOperationalEnvironment } from "./background-environment.js";
 import {
   beginLaunchdLogMaintenanceIntent,
   clearLaunchdLogMaintenanceIntent,
@@ -62,7 +62,6 @@ import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "./launch
 import {
   ensureManagedBackgroundRuntime,
   inspectManagedRuntimeSourceIdentity,
-  MANAGED_BACKGROUND_WORKER_ENV,
   verifyManagedRuntimeLaunch,
 } from "./background-runtime.js";
 import type {
@@ -71,7 +70,7 @@ import type {
   ManagedRuntimeAdditionalPackage,
   ManagedRuntimeLaunchVerification,
   ManagedRuntimeSourceIdentity,
-} from "./background-runtime.js";
+} from "./service/managed-runtime/types.js";
 import {
   backgroundSnapshotFromMetadata,
   captureBackgroundSnapshot,
