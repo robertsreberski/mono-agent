@@ -49,7 +49,9 @@ import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../
 
 import { randomUUID } from "node:crypto";
 import { createRuntime } from "./create-runtime.js";
-import { isProviderAuthFailureText, retryableProviderFailureInfo } from "../telemetry/failure.js";
+import { fallbackContextFit } from "./context-fit.js";
+import { resolvePiRuntimeModel } from "../providers/pi/models.js";
+import { isProviderLocalToolSchemaFailure, isProviderAuthFailureText, retryableProviderFailureInfo } from "../telemetry/failure.js";
 import { runtimeCapabilities } from "./capabilities.js";
 import { buildTranscriptTailSnapshot, renderResumeSnapshot } from "../agent/transcript.js";
 import { passthroughSandbox } from "../agent/sandbox-seam.js";
@@ -228,6 +230,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       const promptBase = systemPrompt;
       /** @type {*} */
       let pendingSnapshot = null;
+      let contextFailure = null;
+      let lastToolSchemaTokens = 0;
       for (let i = 0; i < entries.length; i += 1) {
         const entry = entries[i];
         const effectiveToolOptions = effectiveRouterToolOptions(host, configuredTools);
@@ -420,6 +424,18 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             }
           }
 
+          if (contextFailure && i > 0) {
+            const fit = fallbackContextFit(entry.model, callOptions, attemptSystemPrompt, lastToolSchemaTokens);
+            if (fit && !fit.fits) {
+              const warning = { warning_kind: "fallback_context_window_skipped", source: "router",
+                model: modelKey(entry.model), ...fit, message: "Fallback context window cannot hold the estimated request." };
+              emit(callOptions, { type: "runtime_warning", ...warning });
+              failoverHistory.push({ model: entry.model, failureKind: "skipped_context_window", retryableSubkind: "context_limit", ...fit });
+              try { await attemptCleanup?.(); } catch { /* skipped route cleanup is additive */ }
+              break;
+            }
+          }
+
           // A same-model retry is not a failover: only the first attempt of a new
           // route announces a transition.
           if (retryIndex === 0 && failoverHistory.length > 0) {
@@ -479,6 +495,15 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             failureKind: result.failureKind,
           });
 
+          let routeApi = callOptions.piResolvedModel?.api;
+          if (!routeApi) { try { routeApi = resolvePiRuntimeModel(entry.model, callOptions).model.api; } catch { /* unknown route metadata */ } }
+          const providerSchemaFailure = isProviderLocalToolSchemaFailure(result.error || "", routeApi);
+          if (providerSchemaFailure) retryability.subkind = "provider_tool_schema_incompatible";
+          if (result.failureKind === "context_limit") {
+            contextFailure = result;
+            lastToolSchemaTokens = Number(result.diagnostics?.context_tool_schema_tokens) || 0;
+          }
+
           const successful = !result.error && !result.failureKind && !result.cancelled;
           if (successful) {
             // Only a genuine route change is a completed failover: succeeding
@@ -524,7 +549,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // Provider auth is terminal for one provider, but chain-retryable: a
           // fallback provider may have working credentials. Other non-retryable
           // provider/request errors remain terminal.
-          const shouldFallback = (retryability.retryable || result.failureKind === "provider_auth")
+          const shouldFallback = (retryability.retryable || result.failureKind === "provider_auth" || providerSchemaFailure)
             && !result.cancelled
             && !isMidTurnSafetyFailure(result.failureKind);
           if (!shouldFallback) {
@@ -536,7 +561,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // context_limit is forced retryable so the chain can reach a model with
           // a bigger window, but it is deterministic against the SAME window:
           // another attempt here is a guaranteed second failure. Advance instead.
-          const sameModelRetryable = retryability.retryable
+          const sameModelRetryable = retryability.retryable && !providerSchemaFailure
             && retryability.subkind !== "context_limit"
             && retryability.subkind !== "subscription_limit"
             && retryIndex + 1 < entry.attempts;
@@ -602,7 +627,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       };
       return {
         ...exhaustedResult,
-        failureKind: lastResult ? "provider_unavailable_exhausted" : exhaustedResult.failureKind,
+        failureKind: contextFailure && lastResult === contextFailure ? "context_limit" : lastResult ? "provider_unavailable_exhausted" : exhaustedResult.failureKind,
         failoverHistory,
       };
       } finally {
@@ -654,7 +679,12 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           await cleanup?.();
         }
       }
-      return runAttemptLoop(systemPrompt, options);
+      const routeWarnings = [];
+      const result = await runAttemptLoop(systemPrompt, { ...options, onEvent: (event) => {
+        if (event.type === "runtime_warning" && event.warning_kind === "fallback_context_window_skipped") routeWarnings.push(event);
+        options.onEvent?.(event);
+      } });
+      return routeWarnings.length ? { ...result, runtimeWarnings: [...(result.runtimeWarnings || []), ...routeWarnings] } : result;
     },
     // Preparation is a primary-only single attempt, never a routed retry or
     // backup. A custom resolver must explicitly certify native ownership.

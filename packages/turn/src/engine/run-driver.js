@@ -1,6 +1,7 @@
 // Own admission/queues/persistence, but depend on Pi's loop and all providers.
 import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
+import { adaptRequestTools } from "./tool-schema-adaptation.js";
 import { randomUUID, createHash } from "node:crypto";
 import { projectContext, projectInheritedContext } from "./request-projection.js";
 import { evidenceDigest } from "./evidence-view.js";
@@ -281,7 +282,8 @@ export function createRunDriver(store, options) {
     const messages = project(await store.getEntries(), { repairs: await store.getRepairEntries() }).messages;
     // The host supplies the current prompt/loadout on every reopen. Rebuild that
     // leading declaration after compaction too, without duplicating old prompts.
-    const declarations = tools.map(toToolDeclaration);
+    const requestTools = adaptRequestTools(tools, options.model.api);
+    const declarations = requestTools.map(toToolDeclaration);
     const normalized = normalizeContext({ systemPrompt: options.systemPrompt,
       tools: declarations, messages: messages.filter((m) => m.role !== "system") });
     if (dispatchBudget) {
@@ -296,7 +298,7 @@ export function createRunDriver(store, options) {
       const fit = checkHandoffDispatch(dispatchRequest, dispatchBudget);
       if (fit.status !== "ready") throw budgetFailure(fit.reason);
     }
-    return { messages: normalized.messages, tools };
+    return { messages: normalized.messages, tools: requestTools };
   }
   async function drive(text, promptOptions) {
     if (closed || running || turnEnding) throw new Error("mono-agent harness is closed, busy or ending its turn");
@@ -358,6 +360,7 @@ export function createRunDriver(store, options) {
               if (estimateHandoffTokens(dispatchRequest) + growth + dispatchBudget.outputReserve
                 + dispatchBudget.safety > dispatchBudget.contextWindow) throw budgetFailure("target_window");
             }
+            options.onPreparedPayload?.(result?.payload ?? payload, model || options.model);
             return result?.payload;
           },
         }, emit, controller.signal, (model, context, streamOptions) => /** @type {any} */ (createRetryStream(

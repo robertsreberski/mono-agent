@@ -735,7 +735,8 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       maxRetries,
       maxRetryDelayMs,
       steeringMode: toolSteeringMode,
-      options,
+      options: { ...options, onEffectiveEffort: (effectiveEffort) => onEvent({ type: "provider_execution_config", sdk: "pi", model: reference,
+        ...(options.effort ? { effort: options.effort } : {}), ...(effectiveEffort ? { effectiveEffort } : {}), timestamp: Date.now() }) },
     });
     if (requestedSessionId) harness.compactionFailureKey = JSON.stringify([options.sessionsRoot || options.cwd || "runtime", requestedSessionId]);
 
@@ -937,19 +938,6 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
     runState.silentTurn.liveInputRefusalReason = liveInputEpoch.silenceRefusalReason;
     const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch, dispatchProgress });
-
-    // Report the live harness value, not a downstream recreation of Pi's
-    // thinking-level normalization. This also captures any future adapter-side
-    // adjustment between construction and the provider request.
-    const providerEffectiveEffort = harness.getThinkingLevel();
-    onEvent({
-      type: "provider_execution_config",
-      sdk: "pi",
-      model: reference,
-      ...(options.effort ? { effort: options.effort } : {}),
-      effectiveEffort: providerEffectiveEffort,
-      timestamp: Date.now(),
-    });
 
     onEvent({
       type: "provider_request_started",
@@ -1247,7 +1235,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       capabilitiesUsed,
       usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
       structuredResult: runState.structuredResult,
-      effectiveEffort: providerEffectiveEffort,
+      effectiveEffort: harness.getEffectiveEffort?.(),
     });
     const finalResult = buildFinalResult();
     await harness.endTurn(runState.externalAbort ? "aborted" : finalResult.error || finalResult.failureKind ? "failed" : "completed", {
@@ -1352,7 +1340,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       runtimeWarnings,
       isRetryable,
       piTransport,
-      effectiveEffort: harness?.getThinkingLevel?.(),
+      effectiveEffort: harness?.getEffectiveEffort?.(),
     });
     if (err?.code === "ERR_NATIVE_SESSION_AUTHORITY" || err?.code === "ERR_HANDOFF_DISPATCH_BUDGET") {
       return { ...failure, failureKind: err.code === "ERR_NATIVE_SESSION_AUTHORITY" ? "safety_native_session_authority" : "safety_handoff_dispatch_budget",

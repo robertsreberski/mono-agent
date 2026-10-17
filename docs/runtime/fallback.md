@@ -371,3 +371,26 @@ asks whether to create the agent.
 - [Execution, effort & permissions](/runtime/execution-effort-permissions/)
 - [Sandbox](/tools/sandbox/)
 - [Sessions & concurrency](/runtime/sessions-concurrency/)
+
+### Context fit and provider schema dialects
+
+After a `context_limit`, each backup is checked against its known window using
+its actual detached replay and resume snapshot, not the failed native transcript.
+The estimate includes system/tool overhead plus 4,096 safety and 1,024 answer
+reserve tokens. Too-small entries are recorded as `skipped_context_window` in
+`failoverHistory` with a `fallback_context_window_skipped` warning. Unknown windows
+stay eligible for normal admission. If no backup fits, the real context overflow
+is preserved rather than hidden as provider unavailability.
+
+OpenAI-completions and Google tool declarations receive a per-request schema
+clone that supplies missing derivable enum/const and structural types. Shared
+MCP definitions, unions, constraints and explicit types are unchanged. This does
+not enable strict sampling or disable the provider's compatibility flags.
+Recognized Moonshot missing-type and Google function-declaration dialect
+rejections can advance to another route, but are never retried on the same
+model. Generic invalid requests remain terminal. Tool/live-input side-effect
+fences still prevent replay, including effects discovered during preparation.
+
+Reported effective effort comes from the final provider-shaped request, including
+provider alias mappings. Budget-only thinking or provider-controlled reasoning
+without an effort label is not reported as the configured effort.

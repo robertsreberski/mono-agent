@@ -304,3 +304,13 @@ export function createStderrTail({ limit = 8 * 1024 } = {}) {
     },
   };
 }
+
+/** Provider dialect rejection, not arbitrary invalid requests or tool execution.
+ * Trusted API gates prevent an error body from declaring its own retry authority. */
+export function isProviderLocalToolSchemaFailure(text = "", api = "") {
+  if (api === "openai-completions") return /tools[.\[\]\w]*function[.\w]*parameters.*not a valid moonshot flavored json schema[\s\S]*type is not defined/i.test(text);
+  if (["google-generative-ai", "google-vertex", "google-gemini-cli"].includes(api)) {
+    return /(?:400|invalid_argument)[\s\S]*function_declarations[\s\S]*parameters(?:JsonSchema)?[\s\S]*(?:missing (?:field[ :]+)?type|type (?:is )?(?:not defined|required)|unsupported (?:keyword|schema keyword))/i.test(text);
+  }
+  return false;
+}

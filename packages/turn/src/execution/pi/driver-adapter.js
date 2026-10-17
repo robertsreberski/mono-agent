@@ -1,6 +1,7 @@
 // @ts-check
 // Runtime integration for the mono-agent engine over the pinned Pi loop.
 
+import { effectivePayloadEffort } from "../../engine/effective-effort.js";
 import { createRunDriver } from "../../engine/run-driver.js";
 
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
@@ -31,11 +32,16 @@ export async function createHarnessAdapter(session, options) {
     },
   }));
   let driver;
+  let effectiveEffort;
   let removeDiagnostics = () => {};
   let currentActiveToolNames = originalTools.map((tool) => tool.name);
   let closed = false;
   try {
-    driver = createRunDriver(session.rawSession, { ...options, tools: adaptedTools, toolExecution });
+    driver = createRunDriver(session.rawSession, { ...options, tools: adaptedTools, toolExecution,
+      onPreparedPayload(payload, model) {
+        effectiveEffort = effectivePayloadEffort(payload, model);
+        options.onEffectiveEffort?.(effectiveEffort);
+      } });
     session.attach(driver);
     if (currentActiveToolNames.includes("FinishSilently") && options.silentTurnState) {
       driver.hooks.on("after_response", (event) => {
@@ -66,6 +72,7 @@ export async function createHarnessAdapter(session, options) {
     getPromptCacheRequest: () => promptCacheRequest(driver),
     getModel: () => options.model,
     getThinkingLevel: () => options.thinkingLevel ?? "off",
+    getEffectiveEffort: () => effectiveEffort,
     getActiveTools: () => originalTools.filter((tool) => currentActiveToolNames.includes(tool.name)),
     async setActiveTools(names) {
       currentActiveToolNames = [...names];

@@ -287,3 +287,13 @@ describe("retryableProviderFailureInfo", () => {
     })).toMatchObject({ retryable: true, subkind: "context_limit" });
   });
 });
+
+it("limits schema chain eligibility to trusted provider dialect errors", async () => {
+  const { isProviderLocalToolSchemaFailure: local } = await import("../../ai/failure.js");
+  const text = "400 tools.function.parameters is not a valid moonshot flavored json schema: type is not defined";
+  expect(local(text, "openai-completions")).toBe(true);
+  expect(local(text, "anthropic-messages")).toBe(false);
+  expect(local("400 invalid json schema", "openai-completions")).toBe(false);
+  expect(local("400 invalid request: missing required messages", "openai-completions")).toBe(false);
+  expect(local("400 INVALID_ARGUMENT function_declarations[0].parameters: missing field type", "google-generative-ai")).toBe(true);
+});

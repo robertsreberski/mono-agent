@@ -1982,3 +1982,44 @@ it("never retries or falls back for an unsupported sessions root", async () => {
   expect(await router.run("sys", {})).toMatchObject({ failureKind: "safety_sessions_root_unsupported", retryable: false });
   expect(executeMock).toHaveBeenCalledTimes(1);
 });
+
+describe("context fit and provider dialect fallbacks", () => {
+  it("skips a smaller known window but dispatches a fitting backup", async () => {
+    executeMock.mockResolvedValueOnce({ error: "context window exceeded", failureKind: "context_limit", events: [] })
+      .mockResolvedValueOnce({ text: "fitting reply", events: [] });
+    const first = modelRef("anthropic", "claude-opus-4-7");
+    const small = modelRef("opencode-go", "kimi-k2.7-code");
+    const large = modelRef("anthropic", "claude-opus-5-5");
+    const router = createRouterRuntime({ chain: [first, small, large] });
+    const result = await router.run("sys", { messages: [{ role: "user", content: "x".repeat(1200000) }] });
+    expect(result.text).toBe("fitting reply");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[1][1].model).toEqual(large);
+    expect(result.failoverHistory).toContainEqual(expect.objectContaining({ failureKind: "skipped_context_window", model: small }));
+    expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "fallback_context_window_skipped" }));
+  });
+  it("preserves the real overflow when all known candidates are too small", async () => {
+    executeMock.mockResolvedValueOnce({ error: "context window exceeded", failureKind: "context_limit", events: [] });
+    const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-5-5"), modelRef("opencode-go", "kimi-k2.7-code")] });
+    const result = await router.run("sys", { messages: [{ role: "user", content: "x".repeat(1200000) }] });
+    expect(result.failureKind).toBe("context_limit");
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+  it("advances after Moonshot missing-type rejection without retrying the same route", async () => {
+    executeMock.mockResolvedValueOnce({ error: "400 tools.function.parameters is not a valid moonshot flavored json schema, details: <At path 'properties.options.items': type is not defined>", failureKind: "provider_unavailable", events: [] })
+      .mockResolvedValueOnce({ text: "recovered", events: [] });
+    const router = createRouterRuntime({ chain: [modelRef("opencode-go", "kimi-k2.7-code"), modelRef("anthropic", "claude-opus-5-5")], retry: { primaryAttempts: 3 } });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("recovered");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.failoverHistory[0].retryableSubkind).toBe("provider_tool_schema_incompatible");
+  });
+});
+
+it("does not replay tools after a provider-local schema rejection", async () => {
+  executeMock.mockResolvedValueOnce({ error: "400 tools.function.parameters is not a valid moonshot flavored json schema: type is not defined", failureKind: "provider_unavailable",
+    events: [{ type: "tool_execution_start", toolName: "FictionalEffect", toolCallId: "effect" }] });
+  const router = createRouterRuntime({ chain: [modelRef("opencode-go", "kimi-k2.7-code"), modelRef("anthropic", "claude-opus-5-5")] });
+  await router.run("sys", { messages: [] });
+  expect(executeMock).toHaveBeenCalledTimes(1);
+});
