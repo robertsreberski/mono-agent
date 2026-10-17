@@ -5,7 +5,7 @@ import {
   createConfiguredMemory,
   createConfiguredMemoryForApp,
 } from "../composition/configured-memory.js";
-import { isSharedRecallStore, MemoryRetrievalService } from "../memory-retrieval.js";
+import { isSharedRecallStore, MemoryRetrievalService } from "../memory/memory-retrieval.js";
 import type { ProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;

@@ -77,7 +77,7 @@ async function auditProbe(root, options) {
   if (!new Set(["lite", "journal", "bujo"]).has(options.mode)) {
     throw new Error("--audit-mode must be lite, journal, or bujo.");
   }
-  const workerUrl = new URL("../packages/app/dist/memory-health-worker.js", import.meta.url);
+  const workerUrl = new URL("../packages/app/dist/memory/memory-health-worker.js", import.meta.url);
   const workerStartedAt = performance.now();
   const worker = new Worker(workerUrl, { stdout: true, stderr: true });
   worker.stdout?.resume();

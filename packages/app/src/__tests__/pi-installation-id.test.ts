@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { getOrCreatePiInstallationId } from "../pi-installation-id.js";
+import { getOrCreatePiInstallationId } from "../providers/pi-installation-id.js";
 
 const dirs: string[] = [];
 const run = promisify(execFile);
@@ -18,7 +18,7 @@ afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { 
 describe.skipIf(process.platform === "win32")("ChatGPT installation identity", () => {
   it("publishes once and survives parallel processes and restarts", async () => {
     const auth = await store();
-    const moduleUrl = new URL("../../dist/pi-installation-id.js", import.meta.url).href;
+    const moduleUrl = new URL("../../dist/providers/pi-installation-id.js", import.meta.url).href;
     const script = `import { getOrCreatePiInstallationId } from ${JSON.stringify(moduleUrl)}; process.stdout.write(await getOrCreatePiInstallationId(process.argv[1]));`;
     const values = await Promise.all(Array.from({ length: 6 }, async () =>
       (await run(process.execPath, ["--input-type=module", "-e", script, auth])).stdout));

@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 
 import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 
-import { probeMemoryEmbeddingSelection } from "./memory-embedding-service.js";
+import { probeMemoryEmbeddingSelection } from "./memory/memory-embedding-service.js";
 import type { WizardPlan } from "./setup/wizard-types.js";
 
 const DEFAULT_MANAGED_MEMORY_DIMENSION = 768;

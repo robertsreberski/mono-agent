@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { textFromMemoryRuntimeResult } from "../memory-llm-result.js";
+import { textFromMemoryRuntimeResult } from "../memory/memory-llm-result.js";
 
 describe("agent-host memory runtime results", () => {
   it("serializes a successful structured result instead of accepting free-form text", () => {

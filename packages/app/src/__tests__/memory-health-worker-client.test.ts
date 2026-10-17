@@ -9,10 +9,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import { openMemoryDb } from "@mono-agent/memory/store";
 
-import { MemoryHealthWorkerClient } from "../memory-health-worker-client.js";
+import { MemoryHealthWorkerClient } from "../memory/memory-health-worker-client.js";
 
 const execFileAsync = promisify(execFile);
-const builtWorkerUrl = new URL("../../dist/memory-health-worker.js", import.meta.url);
+const builtWorkerUrl = new URL("../../dist/memory/memory-health-worker.js", import.meta.url);
 const fixtureUrl = new URL("./fixtures/memory-health-worker-fixture.mjs", import.meta.url);
 const idleProcessUrl = new URL("./fixtures/memory-health-worker-idle-process.mjs", import.meta.url);
 const temporaryRoots: string[] = [];

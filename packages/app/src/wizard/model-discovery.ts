@@ -8,7 +8,7 @@ import { isPiOAuthLoginEnabled } from "@mono-agent/turn/ai";
 import {
   inspectPiAuthStore as inspectDefaultPiAuthStore,
   type PiAuthStoreInspection,
-} from "../pi-auth-store-inspection.js";
+} from "../providers/pi-auth-store-inspection.js";
 import { hasUsablePiOAuthClientId } from "../providers/credential-values.js";
 import { runBoundedProviderCommand } from "../providers/command.js";
 

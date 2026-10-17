@@ -4,10 +4,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { rankDeliberateRecallHits } from "@mono-agent/memory/bujo";
 import type { MemoryDb } from "@mono-agent/memory/store";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatMemoryBackground, formatMemoryProfile } from "../memory-guidance.js";
-import { createMemoryRecallServer } from "../memory-recall.js";
+import { formatMemoryBackground, formatMemoryProfile } from "../memory/memory-guidance.js";
+import { createMemoryRecallServer } from "../memory/memory-recall.js";
 import { type MemoryRecallHit, type RecallCapableStore } from "../memory/recall-contract.js";
-import { createSharedMemoryRecallRuntimeExtension, MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
+import { createSharedMemoryRecallRuntimeExtension, MemoryRetrievalService, type SharedRecallStore } from "../memory/memory-retrieval.js";
 
 type LabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 const date = "2032-06-10"; const now = `${date}T12:00:00.000Z`;

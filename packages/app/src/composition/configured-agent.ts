@@ -38,23 +38,23 @@ import {
   assertAgentRootLeaseOutsideWorkspace,
   releaseAgentRootOwnershipWhenIdle,
 } from "../durable-state/agent-root-coordinator.js";
-import { resolveMemoryRecallSettings } from "../memory-recall-settings.js";
+import { resolveMemoryRecallSettings } from "../memory/memory-recall-settings.js";
 import {
   createMemoryJournalRuntimeExtension,
   isMemoryJournalCapableStore,
   isMemoryJournalToolAllowed,
-} from "../memory-journal.js";
-import { createPeerAgentRuntimeExtension } from "../peer-agent.js";
-import { verifyPeerOperatorHandoff } from "../peer-provenance.js";
+} from "../memory/memory-journal.js";
+import { createPeerAgentRuntimeExtension } from "../peers/peer-agent.js";
+import { verifyPeerOperatorHandoff } from "../peers/peer-provenance.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
   MemoryRetrievalService,
-} from "../memory-retrieval.js";
+} from "../memory/memory-retrieval.js";
 import {
   createMemoryRememberRuntimeExtension,
   isRememberCapableStore,
   isRememberToolAllowed,
-} from "../memory-remember.js";
+} from "../memory/memory-remember.js";
 import {
   clearSessionsSandboxPolicy,
   composeRuntimeOptionExtensions,

@@ -1,4 +1,4 @@
-import { MemoryHealthWorkerClient } from "../../../dist/memory-health-worker-client.js";
+import { MemoryHealthWorkerClient } from "../../../dist/memory/memory-health-worker-client.js";
 
 const client = new MemoryHealthWorkerClient({
   workerUrl: new URL("./memory-health-worker-fixture.mjs", import.meta.url),

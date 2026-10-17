@@ -66,7 +66,7 @@ function limitedFrames(): Transform {
 /** One connection per turn; no response, prompt or child is silently retried. */
 export async function runPeerAcpTurn(options: PeerAcpTurn): Promise<{ sessionId: string; answer: string }> {
   const child: ChildProcessWithoutNullStreams = spawn(options.executable ?? process.execPath,
-    [options.cliPath ?? fileURLToPath(new URL("./cli.js", import.meta.url)), "bridge", "acp", "--source-id", options.sourceId],
+    [options.cliPath ?? fileURLToPath(new URL("../cli.js", import.meta.url)), "bridge", "acp", "--source-id", options.sourceId],
     { stdio: ["pipe", "pipe", "pipe"], ...(options.env ? { env: options.env } : {}) });
   // Drain stderr, but never surface bridge diagnostics (which may mention paths or secrets) to the model.
   child.stderr.resume();

@@ -172,8 +172,8 @@ vi.mock("../wizard/model-discovery.js", async (importOriginal) => {
   return { ...actual, discoverWizardModelCandidates: discoveryMock.discover };
 });
 
-vi.mock("../memory-embedding-service.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../memory-embedding-service.js")>();
+vi.mock("../memory/memory-embedding-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../memory/memory-embedding-service.js")>();
   return {
     ...actual,
     discoverMemoryEmbeddingModels: memoryEmbeddingMock.discover,

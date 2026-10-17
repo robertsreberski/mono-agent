@@ -3,8 +3,8 @@ import type { ProviderAuthStatusSnapshot } from "@mono-agent/contracts";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { describe, expect, it, vi } from "vitest";
 
-import { createProviderAuthCheckManager, type ProviderAuthCheckExecution } from "../provider-auth-checks.js";
-import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import { createProviderAuthCheckManager, type ProviderAuthCheckExecution } from "../providers/provider-auth-checks.js";
+import { createProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
 
 describe("provider auth checks", () => {
   it("reserves preparation synchronously, replays the same key, and rejects a different key", async () => {

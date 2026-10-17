@@ -11,19 +11,19 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, MonoAgentAppLogger } from "../types.js";
-import { runCronPreflight } from "../../cron-preflight.js";
+import { runCronPreflight } from "../../cron/cron-preflight.js";
 import type { NotifyDeliveryResult } from "../types.js";
 import {
   inspectCronControlStore,
   openCronControlStore,
   type CronControlInspection,
   type CronControlStore,
-} from "../../cron-control-store.js";
+} from "../../cron/cron-control-store.js";
 import {
   createCronOperatorDegradationController,
   createCronOperatorService,
   CronOperatorRegistry,
-} from "../../cron-operator-service.js";
+} from "../../cron/cron-operator-service.js";
 import { findTriggerOverrideIssues } from "../../composition/trigger-overrides.js";
 import { deliverNativeCronNotification, inferUniqueNotifyDestination } from "./native-notify.js";
 import { unconfiguredChannelView } from "./shared.js";

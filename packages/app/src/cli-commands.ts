@@ -264,7 +264,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         const { runAcpDiscovery } = await import("./acp-discovery-command.js");
         return await runAcpDiscovery({ env: process.env });
       }
-      const { runAcpBridge } = await import("./acp-bridge.js");
+      const { runAcpBridge } = await import("./acp/acp-bridge.js");
       return await runAcpBridge({
         sourceId: args.sourceId as string,
         ...(args.requireToolEnvironment === true ? { requireToolEnvironment: true } : {}),

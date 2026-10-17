@@ -13,7 +13,7 @@ import { createTuiChannelDriver } from "./drivers/tui.js";
 import { createWebhookChannelDriver } from "./drivers/webhook.js";
 import type { WebhookChannelOverrides } from "./types.js";
 import { resolveConfiguredChannelPlugins } from "./channel-plugins.js";
-import { CronOperatorRegistry } from "../cron-operator-service.js";
+import { CronOperatorRegistry } from "../cron/cron-operator-service.js";
 
 
 /** Built-in channel ids in startup and status-display order. */

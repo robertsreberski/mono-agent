@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryDb } from "@mono-agent/memory/store";
 import { POSSIBLY_RELEVANT_HEADING } from "@mono-agent/memory/bujo";
-import { ageAt, formatMemoryBackground as formatBlock } from "../memory-guidance.js";
+import { ageAt, formatMemoryBackground as formatBlock } from "../memory/memory-guidance.js";
 import { type LabelRecallStore } from "../memory/recall-contract.js";
-import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
-import { readLabelSections } from "../memory-label-sections.js";
+import { MemoryRetrievalService, type SharedRecallStore } from "../memory/memory-retrieval.js";
+import { readLabelSections } from "../memory/memory-label-sections.js";
 type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 const formatMemoryBackground = (...args: Parameters<typeof formatBlock>) => formatBlock(...args)?.content || undefined;
 
@@ -242,7 +242,7 @@ describe("automatic labelled background", () => {
 
 describe("explicit fact sheet rendering", () => {
   it("renders reader-facing keys and value text instead of JSON", async () => {
-    const { readLabelSections } = await import("../memory-label-sections.js");
+    const { readLabelSections } = await import("../memory/memory-label-sections.js");
     const city: MemoryLabelHit = { ...fact("city", "2000-01-01"), text: "Morgan's home city is Thistlemoor.",
       label: { v: 1, kind: "fact", entityId: "person:morgan", key: "other:home-city",
         value: { type: "text", text: "Thistlemoor" }, attribution: "user-stated" } };
@@ -254,7 +254,7 @@ describe("explicit fact sheet rendering", () => {
   });
 
   it("never lets keyless person lines push a structured conflict past the cut", async () => {
-    const { readLabelSections } = await import("../memory-label-sections.js");
+    const { readLabelSections } = await import("../memory/memory-label-sections.js");
     const keyless = Array.from({ length: 14 }, (_, index): MemoryLabelHit => ({ ...fact(`note-${index}`, "2000-01-01"),
       text: `Morgan visited the fictional garden ${index}.`, createdAt: `2026-09-${String(10 + index).padStart(2, "0")}T00:00:00Z`,
       label: { v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" } }));

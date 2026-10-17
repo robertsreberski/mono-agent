@@ -17,8 +17,8 @@ export async function loadMemoryStoreModule(): Promise<typeof import("@mono-agen
   return await import("@mono-agent/memory/store");
 }
 
-export async function loadMemoryRecallModule(): Promise<typeof import("../../../memory-recall.js")> {
-  return await import("../../../memory-recall.js");
+export async function loadMemoryRecallModule(): Promise<typeof import("../../../memory/memory-recall.js")> {
+  return await import("../../../memory/memory-recall.js");
 }
 
 export function isNativeModuleFailure(error: unknown): boolean {

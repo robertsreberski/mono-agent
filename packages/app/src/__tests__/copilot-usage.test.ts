@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseProviderUsageSnapshot } from "@mono-agent/contracts";
-import { mapProviderUsage } from "../provider-usage-mappers.js";
-import { createProviderUsageService, PROVIDER_USAGE_CACHE_MS } from "../provider-usage.js";
+import { mapProviderUsage } from "../providers/provider-usage-mappers.js";
+import { createProviderUsageService, PROVIDER_USAGE_CACHE_MS } from "../providers/provider-usage.js";
 const NOW = Date.parse("2026-09-15T12:00:00Z");
 const paid = { copilot_plan: "individual", quota_reset_date: "2026-10-01", quota_snapshots: {
   premium_interactions: { entitlement: 1500, remaining: 869, percent_remaining: 57.9, credits_used: 630, overage_permitted: true, overage_count: 8 },

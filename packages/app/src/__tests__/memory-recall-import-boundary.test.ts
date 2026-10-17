@@ -17,7 +17,7 @@ vi.mock("@mono-agent/memory/bujo", () => ({
 // Keep the simulated heavyweight failure on the lazy binding access. Throwing
 // from the mock factory replaces it with Vitest's own module-mock wrapper before
 // the command boundary can observe the original failure.
-vi.mock("../memory-recall.js", () => ({
+vi.mock("../memory/memory-recall.js", () => ({
   get createMemoryEmbeddingProvider() {
     throw new Error(sentinels.recallImport);
   },

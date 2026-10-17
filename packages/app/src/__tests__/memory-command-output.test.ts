@@ -10,7 +10,7 @@ const effects = vi.hoisted(() => ({
   writer: vi.fn(() => { throw new Error("unexpected writer acquisition"); }),
 }));
 
-vi.mock("../memory-recall.js", () => ({
+vi.mock("../memory/memory-recall.js", () => ({
   createMemoryEmbeddingProvider: effects.embedding,
   createRecallStore: effects.recall,
 }));

@@ -6,12 +6,12 @@ import { readMonoAgentConfigJson } from "@mono-agent/config";
 import { canonicalBackgroundConfigPath } from "../../service/background/target.js";
 import type { ParsedCliArgs } from "../../cli-args.js";
 import { resolveEffectivePiAuthPath } from "../../first-run-readiness.js";
-import { executeProviderSetupPlan } from "../../provider-setup.js";
+import { executeProviderSetupPlan } from "../../providers/provider-setup.js";
 import {
   isProviderSetupPiApiKeyAction,
   planProviderSetup,
 } from "../../providers/setup-plan.js";
-import { inspectPiAuthStore } from "../../pi-auth-store-inspection.js";
+import { inspectPiAuthStore } from "../../providers/pi-auth-store-inspection.js";
 import { withScopedPreflightCancellation } from "../../setup/cancellation.js";
 import { nonEmptyEnv } from "../../setup/provider-setup-gate.js";
 import { printProviderSetupPlan } from "../../setup/render.js";

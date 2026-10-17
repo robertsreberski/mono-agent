@@ -7,7 +7,7 @@ import type { WebhookAdapterOptions, WebhookAdapterStartResult } from "@mono-age
 import type { discoverLocalProviders } from "@mono-agent/turn/host";
 import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/turn/host/types";
 import type { deliverWebNotification } from "@mono-agent/web";
-import type { inspectCronControlStore, openCronControlStore } from "../cron-control-store.js";
+import type { inspectCronControlStore, openCronControlStore } from "../cron/cron-control-store.js";
 import type { ChannelDriver as ContractChannelDriver, ChannelId as ContractChannelId, ChannelLogger, ChannelStartInput as ContractChannelStartInput } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 export type { ChannelLogger, ChannelStatus, NotifyDeliveryResult, RunningChannel } from "@mono-agent/contracts";

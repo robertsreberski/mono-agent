@@ -1,6 +1,6 @@
 import { WorkerActivityTracker } from "../durable-state/worker-activity.js";
-import { createAgentProviderUsage } from "../provider-usage-scope.js";
-import { createProviderUsageService } from "../provider-usage.js";
+import { createAgentProviderUsage } from "../providers/provider-usage-scope.js";
+import { createProviderUsageService } from "../providers/provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
 import { resolve } from "node:path";
 
@@ -31,13 +31,13 @@ import type {
   ContinuationStatusSnapshot,
   ContinuationSynthesisInput,
 } from "../continuations/continuations.js";
-import type { RunningRituals } from "../memory-rituals.js";
+import type { RunningRituals } from "../memory/memory-rituals.js";
 import type { RunningArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
-import type { MemoryRetrievalService } from "../memory-retrieval.js";
+import type { MemoryRetrievalService } from "../memory/memory-retrieval.js";
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import type { NotifyDestination } from "../delivery/notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
-import { MemoryHealthWorkerClient } from "../memory-health-worker-client.js";
+import { MemoryHealthWorkerClient } from "../memory/memory-health-worker-client.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import type { ManagedRuntimeLaunchVerification } from "../service/managed-runtime/types.js";
 import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
@@ -73,7 +73,7 @@ import type {
   SessionTraceMetadata,
   TraceabilityStatus,
 } from "./app-controller-types.js";
-import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import { createProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
 
 export type {
   ConfigApplyResult,

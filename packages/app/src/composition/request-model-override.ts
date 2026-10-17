@@ -3,7 +3,7 @@ import { supportsPiContext1M } from "@mono-agent/turn/ai";
 import { assertParsedRuntimeModelReference, MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, modelReferenceKey, parseMonoRuntimeModelReference, TurnHostError, runtimeOptionsForLocalProvider, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 import type { LocalProviderDefinition, LocalProviderRuntimeOptions, RuntimeModelReference } from "@mono-agent/turn/host/types";
 
-import { resolveAdvertisedModelEffort } from "../model-effort-capabilities.js";
+import { resolveAdvertisedModelEffort } from "../providers/model-effort-capabilities.js";
 
 /**
  * Per-request runtime-options extension that applies a per-turn model/effort

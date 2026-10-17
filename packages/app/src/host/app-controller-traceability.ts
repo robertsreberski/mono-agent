@@ -22,8 +22,8 @@ import {
 } from "../composition/app-config.js";
 import type { AppTraceDefaults, MonoAgentAppConfigInput } from "../composition/app-config.js";
 import type { ConfiguredAgentSessionEvent } from "../composition/configured-agent-options.js";
-import { resolveMemoryRecallSettings } from "../memory-recall-settings.js";
-import type { MemoryRetrievalService } from "../memory-retrieval.js";
+import { resolveMemoryRecallSettings } from "../memory/memory-recall-settings.js";
+import type { MemoryRetrievalService } from "../memory/memory-retrieval.js";
 import {
   nextDailyRolloverAt,
   reasonOf,

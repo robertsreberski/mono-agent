@@ -29,13 +29,13 @@ vi.mock("@mono-agent/web", async (importOriginal) => ({
   discoverAcpBridgeAgents: mocks.discover,
   discoverOperatorAgents: mocks.operators,
 }));
-vi.mock("../peer-acp-client.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../peer-acp-client.js")>(), runPeerAcpTurn: mocks.run,
+vi.mock("../peers/peer-acp-client.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../peers/peer-acp-client.js")>(), runPeerAcpTurn: mocks.run,
 }));
 
-import { createPeerAgentRuntimeExtension, withoutLocalPaths } from "../peer-agent.js";
-import { PeerSessionGoneError, type PeerAcpTurn } from "../peer-acp-client.js";
-import { makePeerHandoff, stampPeerOperatorHandoff } from "../peer-provenance.js";
+import { createPeerAgentRuntimeExtension, withoutLocalPaths } from "../peers/peer-agent.js";
+import { PeerSessionGoneError, type PeerAcpTurn } from "../peers/peer-acp-client.js";
+import { makePeerHandoff, stampPeerOperatorHandoff } from "../peers/peer-provenance.js";
 import type { InternalProcessJobRequest } from "../process-jobs/process-jobs-internal.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 

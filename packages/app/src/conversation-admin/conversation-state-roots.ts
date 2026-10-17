@@ -6,7 +6,7 @@ import { basename, dirname, resolve } from "node:path";
 
 import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
 import { resolveAppArtifactDir, resolveAppSessionsRoot } from "../composition/app-config.js";
-import { acpSessionAuthorizationsRoot } from "../acp-session-store.js";
+import { acpSessionAuthorizationsRoot } from "../acp/acp-session-store.js";
 import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
 
 /** Every filesystem root removed by `restart --clear-sessions`. */

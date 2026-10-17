@@ -28,7 +28,7 @@ import {
   type CronControlInitializationCheckpoint,
   type CronControlStore,
   type OpenCronControlStoreOptions,
-} from "../cron-control-store.js";
+} from "../cron/cron-control-store.js";
 
 const roots: string[] = [];
 const stores: CronControlStore[] = [];

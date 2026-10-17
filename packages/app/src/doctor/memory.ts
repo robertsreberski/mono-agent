@@ -9,7 +9,7 @@ import { FIRST_RUN_MEMORY_INITIALIZING_MARKER } from "../first-run-managed-memor
 import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   probeMemoryEmbeddingSelection,
-} from "../memory-embedding-service.js";
+} from "../memory/memory-embedding-service.js";
 import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
 import { piModelResolutionIssue } from "./runtime.js";
 import { displayReferenceOf, displayText, displayReason, pathExists } from "./format.js";

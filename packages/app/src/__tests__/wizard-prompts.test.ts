@@ -12,7 +12,7 @@ import {
   rankWizardModelCandidates,
   type WizardModelCandidate,
 } from "../wizard/model-discovery.js";
-import { executeProviderSetupPlan } from "../provider-setup.js";
+import { executeProviderSetupPlan } from "../providers/provider-setup.js";
 import { planProviderSetup, providerSetupActionCommandLine } from "../providers/setup-plan.js";
 import { resolvePiCliPath } from "../providers/oauth-command.js";
 

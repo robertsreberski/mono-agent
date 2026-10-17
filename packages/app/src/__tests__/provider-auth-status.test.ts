@@ -7,8 +7,8 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
-import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
-import { collectUsedProviderReferences, providerAuthStatusSnapshot } from "../provider-auth-status.js";
+import { createProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
+import { collectUsedProviderReferences, providerAuthStatusSnapshot } from "../providers/provider-auth-status.js";
 
 const tempDirs: string[] = [];
 afterEach(async () => await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true }))));

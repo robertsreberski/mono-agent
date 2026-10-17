@@ -15,8 +15,8 @@ import type {
 import type { ChannelStartInput } from "../channels/types.js";
 import type { CronChannelOverrides } from "../channels/types.js";
 import { createCronChannelDriver } from "../channels/channels.js";
-import { openCronControlStore, type CronControlStore } from "../cron-control-store.js";
-import { CronOperatorRegistry } from "../cron-operator-service.js";
+import { openCronControlStore, type CronControlStore } from "../cron/cron-control-store.js";
+import { CronOperatorRegistry } from "../cron/cron-operator-service.js";
 
 const noopResponder: AgentResponder = {
   async respond() {

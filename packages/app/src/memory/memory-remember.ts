@@ -3,14 +3,14 @@ import type { ToolPolicyInput } from "@mono-agent/conversation";
 import { containsVisibleSensitiveText } from "@mono-agent/observability";
 import * as z from "zod/v4";
 
-import { createRequestScopedMcpRuntimeExtension } from "./mcp/request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import {
   containsKnownSecretValue,
   containsSecretLikeValue,
   containsUnsafeReviewControl,
   knownEnvironmentSecretValues,
-} from "./untrusted-text.js";
+} from "../untrusted-text.js";
 
 export const MEMORY_REMEMBER_MCP_SERVER_NAME = "mono-agent-memory-write";
 export const REMEMBER_TOOL_NAME = "Remember";

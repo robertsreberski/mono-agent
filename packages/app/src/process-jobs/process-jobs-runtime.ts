@@ -1,5 +1,5 @@
 import { persistentSubagentsEnabled } from "../subagents/subagent-instances.js";
-import { verifyPeerOperatorHandoff } from "../peer-provenance.js";
+import { verifyPeerOperatorHandoff } from "../peers/peer-provenance.js";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";

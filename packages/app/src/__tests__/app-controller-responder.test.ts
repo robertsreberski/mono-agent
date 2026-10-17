@@ -17,7 +17,7 @@ import {
   requestModelOverrideRuntimeOptions as createRequestModelOverrideRuntimeOptions,
   type ResponderControllerPort,
 } from "../host/app-controller-responder.js";
-import { DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES } from "../mcp-apps.js";
+import { DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES } from "../mcp-apps/mcp-apps.js";
 import {
   PUBLISH_REPLY_FILE_TOOL_NAME,
   REPLY_ARTIFACT_MCP_SERVER_NAME,

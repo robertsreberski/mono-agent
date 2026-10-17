@@ -14,8 +14,8 @@ import { createConfiguredAgentRuntimeForApp } from "../composition/configured-ru
 import type { createConfiguredMemory } from "../composition/configured-memory.js";
 import { routeProactiveNotification } from "../delivery/proactive-notify.js";
 import type { NotifyDeliveryResult } from "../channels/types.js";
-import { startMemoryRituals } from "../memory-rituals.js";
-import type { RunningRituals } from "../memory-rituals.js";
+import { startMemoryRituals } from "../memory/memory-rituals.js";
+import type { RunningRituals } from "../memory/memory-rituals.js";
 import { startArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
 import type { RunningArtifactRetentionScheduler } from "../artifacts/artifact-retention.js";
 import { resolveNotifyDestinations } from "../delivery/notify-destinations.js";

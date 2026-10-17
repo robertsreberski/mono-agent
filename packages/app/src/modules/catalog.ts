@@ -4,7 +4,7 @@ import { validateCronExpression } from "@mono-agent/trigger-cron";
 import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   memoryEmbeddingEndpointProblem,
-} from "../memory-embedding-service.js";
+} from "../memory/memory-embedding-service.js";
 import { DEFAULT_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
 

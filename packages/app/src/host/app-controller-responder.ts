@@ -2,7 +2,7 @@ import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { effectiveSandboxBoundary } from "../effective-sandbox.js";
 import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "../request-tools/suggest-replies.js";
 import { trackResponderActivity, type WorkerActivityTracker } from "../durable-state/worker-activity.js";
-import { createProviderUsageRuntimeExtension } from "../provider-usage-tool.js";
+import { createProviderUsageRuntimeExtension } from "../providers/provider-usage-tool.js";
 import { readJsonSection, readSettingsJson, type ProviderUsageOperator } from "@mono-agent/contracts";
 import { createConsoleProjectsRuntimeExtension } from "../request-tools/console-projects.js";
 import { resolve } from "node:path";
@@ -47,7 +47,7 @@ import {
 import {
   createMcpAppService,
   DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
-} from "../mcp-apps.js";
+} from "../mcp-apps/mcp-apps.js";
 import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
 import {
   createRequestModelOverrideRuntimeExtension,
@@ -67,7 +67,7 @@ import type { ChannelId, MonoAgentAppLogger } from "../channels/types.js";
 import { loadContinuationSettings } from "../continuations/continuation-config.js";
 import type { InteractionBridgeHandle } from "../mcp/interaction-bridge.js";
 import type { ContinuationServiceHandle } from "../continuations/continuation-service.js";
-import type { MemoryRetrievalService } from "../memory-retrieval.js";
+import type { MemoryRetrievalService } from "../memory/memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
 import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
 
@@ -82,7 +82,7 @@ import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
 } from "../process-jobs/process-jobs-protection.js";
-import type { ProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import type { ProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
 import { bindProcessJobWakeContextToResponder } from "../process-jobs/process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;

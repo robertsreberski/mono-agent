@@ -11,7 +11,7 @@ export async function productionModules({ privateEvaluation = false } = {}) {
     import("../../packages/conversation/dist/index.js"), import("../../packages/memory/dist/bujo/index.js"),
     import("../../packages/memory/dist/bujo/capture-intake.js"), import("../../packages/memory/dist/store/index.js"),
     import("../../packages/memory/dist/search/index.js"), import("@mono-agent/turn/host"),
-    import("../../packages/app/dist/memory-retrieval.js"), import("../../packages/app/dist/memory-journal.js"),
+    import("../../packages/app/dist/memory/memory-retrieval.js"), import("../../packages/app/dist/memory/memory-journal.js"),
     import("../../packages/app/dist/composition/runtime-option-extensions.js"),
   ]);
   if (!privateEvaluation) return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions };

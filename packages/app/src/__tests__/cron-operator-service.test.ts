@@ -12,8 +12,8 @@ import {
 } from "@mono-agent/trigger-cron";
 import { MAX_CRON_OPERATOR_RESPONSE_BYTES } from "@mono-agent/channel-operator";
 
-import { openCronControlStore, type CronControlStore } from "../cron-control-store.js";
-import { createCronOperatorService } from "../cron-operator-service.js";
+import { openCronControlStore, type CronControlStore } from "../cron/cron-control-store.js";
+import { createCronOperatorService } from "../cron/cron-operator-service.js";
 
 const roots: string[] = [];
 const stores: CronControlStore[] = [];

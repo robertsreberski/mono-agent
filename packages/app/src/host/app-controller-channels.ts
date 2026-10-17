@@ -19,8 +19,8 @@ import type { ContinuationServiceHandle } from "../continuations/continuation-se
 import type { NotifyDeliveryResult } from "../channels/types.js";
 import type { NotifyDestination } from "../delivery/notify-destinations.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
-import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "../provider-auth-observations.js";
-import { createProviderAuthOperator } from "../provider-auth-operator.js";
+import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
+import { createProviderAuthOperator } from "../providers/provider-auth-operator.js";
 import { startAppOwnedTuiChannel } from "../channels/drivers/tui.js";
 import {
   unsafeProcessJobsProtectionStatus,

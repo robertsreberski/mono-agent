@@ -14,10 +14,10 @@ import {
   syncDirectory,
   syncFile,
   withPiAuthFileLock,
-} from "./providers/auth-store-write.js";
-import { assertOAuthCredential, assertUnchangedSiblingCredentials } from "./providers/credential-values.js";
-import { DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS, positivePreflightTimeout, runHttpAction, runSpawnedCommand } from "./providers/command.js";
-import { isProviderSetupPiApiKeyAction, isProviderSetupPiLoginAction, providerSetupActionCommandLine } from "./providers/setup-plan.js";
+} from "./auth-store-write.js";
+import { assertOAuthCredential, assertUnchangedSiblingCredentials } from "./credential-values.js";
+import { DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS, positivePreflightTimeout, runHttpAction, runSpawnedCommand } from "./command.js";
+import { isProviderSetupPiApiKeyAction, isProviderSetupPiLoginAction, providerSetupActionCommandLine } from "./setup-plan.js";
 import type {
   ExecuteProviderSetupOptions,
   PiAuthPromotionHooks,
@@ -26,7 +26,7 @@ import type {
   ProviderSetupPiLoginAction,
   ProviderSetupPlan,
   ProviderSetupResult,
-} from "./providers/setup-types.js";
+} from "./setup-types.js";
 
 export async function executeProviderSetupPlan(
   plan: ProviderSetupPlan,

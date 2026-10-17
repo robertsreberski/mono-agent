@@ -14,7 +14,7 @@ import {
   memoryEmbeddingEndpointProblem,
   type ManagedMemoryEmbeddingProvider,
   probeMemoryEmbeddingSelection,
-} from "../memory-embedding-service.js";
+} from "../memory/memory-embedding-service.js";
 import { DEFAULT_MODEL } from "../modules/base.js";
 import {
   ADAPTER_SEND_TOOL_NAMES,

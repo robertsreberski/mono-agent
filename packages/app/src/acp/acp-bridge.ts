@@ -35,9 +35,9 @@ import {
   type OperatorInfo,
 } from "@mono-agent/web";
 
-import { appPackageVersion } from "./host/package-version.js";
-import { bridgeStartupExitCode } from "./peer-acp-startup.js";
-import { consumePeerGeneration, PeerSessionExhaustedError, prunePeerGenerationLedger, stampPeerOperatorHandoff, verifyPeerHandoff } from "./peer-provenance.js";
+import { appPackageVersion } from "../host/package-version.js";
+import { bridgeStartupExitCode } from "../peers/peer-acp-startup.js";
+import { consumePeerGeneration, PeerSessionExhaustedError, prunePeerGenerationLedger, stampPeerOperatorHandoff, verifyPeerHandoff } from "../peers/peer-provenance.js";
 import {
   createAcpSessionAuthorization,
   loadAcpSessionAuthorization,

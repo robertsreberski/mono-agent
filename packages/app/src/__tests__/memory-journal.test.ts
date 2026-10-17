@@ -21,8 +21,8 @@ import {
   MEMORY_JOURNAL_TOOL_NAME,
   resolveMemoryJournalRange,
   type MemoryJournalCapableStore,
-} from "../memory-journal.js";
-import { createMemoryRecallServer } from "../memory-recall.js";
+} from "../memory/memory-journal.js";
+import { createMemoryRecallServer } from "../memory/memory-recall.js";
 import { createRunHistoryServer } from "../request-tools/run-history.js";
 import { createSessionHistoryServer } from "../request-tools/session-history.js";
 

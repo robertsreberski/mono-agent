@@ -3,7 +3,7 @@ import type { TraceSourceMemoryHealth } from "@mono-agent/observability";
 import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 
 import { loadAppCoreConfig } from "../composition/app-config.js";
-import { legacyEmbeddingModelOption } from "../memory-embedding-identity.js";
+import { legacyEmbeddingModelOption } from "../memory/memory-embedding-identity.js";
 import {
   traceMemoryHealthFromBujo,
   unknownBujoMemoryHealth,
@@ -11,7 +11,7 @@ import {
 } from "./app-controller-utils.js";
 import type { MonoAgentAppLogger } from "../channels/types.js";
 import type { TraceSourceHandle } from "@mono-agent/observability";
-import type { MemoryHealthWorkerClient } from "../memory-health-worker-client.js";
+import type { MemoryHealthWorkerClient } from "../memory/memory-health-worker-client.js";
 
 interface MemoryHealthControllerPort {
   readonly env: Record<string, string | undefined>;

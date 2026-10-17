@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentResponder, AgentResponse } from "@mono-agent/contracts";
 import { bindProcessJobWakeContextToResponder, consumeSilentProcessJobWake, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../process-jobs/process-jobs-context.js";
-import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
+import { MemoryRetrievalService, type SharedRecallStore } from "../memory/memory-retrieval.js";
 
 const keySymbol = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
 const stream = { append: async () => {}, finish: async () => {} } as never;

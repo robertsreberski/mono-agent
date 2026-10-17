@@ -21,7 +21,7 @@ import {
 } from "@mono-agent/contracts";
 import type { RuntimeMcpAppConnection, RuntimeMcpAppHost, RuntimeMcpAppRegistration } from "@mono-agent/turn/host/types";
 
-import { mcpAppAuditStorageFor } from "./mcp-apps/audit-storage.js";
+import { mcpAppAuditStorageFor } from "./audit-storage.js";
 import {
   MAX_HTML_BYTES,
   MAX_STATE_BYTES,
@@ -32,21 +32,21 @@ import {
   readBoundedText,
   readBoundedJson,
   safeToolName,
-} from "./mcp-apps/artifact-store.js";
-import { APP_ID, isSupportedProtocolVersion, record } from "./mcp-apps/content.js";
-import type { McpAppManifest, McpAppState } from "./mcp-apps/types.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+} from "./artifact-store.js";
+import { APP_ID, isSupportedProtocolVersion, record } from "./content.js";
+import type { McpAppManifest, McpAppState } from "./types.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import {
   createReplyPartBudget,
   mergeReplyParts,
   type ReplyPartBudget,
-} from "./delivery/reply-part-budget.js";
+} from "../delivery/reply-part-budget.js";
 import {
   ReplyArtifactStorageFullError,
   replyArtifactStorageBudgetFor,
   type ReplyArtifactStorageBudget,
   type ReplyArtifactStorageProtection,
-} from "./artifacts/reply-artifacts.js";
+} from "../artifacts/reply-artifacts.js";
 
 const MAX_BRIDGE_REQUEST_BYTES = 64 * 1024;
 const MAX_BRIDGE_RESULT_BYTES = 1024 * 1024;

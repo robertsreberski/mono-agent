@@ -8,8 +8,8 @@ import { createMonoRuntime } from "@mono-agent/turn/host";
 import { modelReferenceKey, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/turn/host/config";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import { textFromMemoryRuntimeResult } from "../memory-llm-result.js";
-import { isSharedRecallStore, MemoryRetrievalService } from "../memory-retrieval.js";
+import { textFromMemoryRuntimeResult } from "../memory/memory-llm-result.js";
+import { isSharedRecallStore, MemoryRetrievalService } from "../memory/memory-retrieval.js";
 import type { ProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
 import type { ConfiguredConversationHarnessOptions, RecorderCompositionDeps, StaticRuntimeOptions } from "./configured-agent-options.js";
 import { configRuntimeFlags, mergeStaticRuntimeOptions, runtimeHostOptionsForConfig } from "./configured-runtime-options.js";

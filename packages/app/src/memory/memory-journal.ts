@@ -20,14 +20,14 @@ import {
   encodeRequestScopedCursor,
   requestScopedCursorDigest,
   splitRequestScopedModelText,
-} from "./mcp/request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "./composition/runtime-option-extensions.js";
+} from "../mcp/request-scoped-mcp.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import {
   containsKnownSecretValue,
   containsSecretLikeValue,
   containsUnsafeReviewControl,
   knownEnvironmentSecretValues,
-} from "./untrusted-text.js";
+} from "../untrusted-text.js";
 
 export const MEMORY_JOURNAL_MCP_SERVER_NAME = "mono-agent-memory-journal";
 export const MEMORY_JOURNAL_TOOL_NAME = "MemoryJournal";

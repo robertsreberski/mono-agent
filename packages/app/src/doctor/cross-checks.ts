@@ -6,7 +6,7 @@ import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
 import { isAdapterSendToolAllowed } from "../delivery/send-tools/adapter-send-tools.js";
 import { isAllowAllTools } from "../modules/known-tools.js";
 import type { ChannelDriver } from "../channels/types.js";
-import { collectUsedProviderReferences } from "../provider-auth-status.js";
+import { collectUsedProviderReferences } from "../providers/provider-auth-status.js";
 import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
 import { piModelResolutionIssue } from "./runtime.js";
 
