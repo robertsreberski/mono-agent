@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 
 import type { LaunchdPaths } from "./launchd.js";
-import { secureFileReplace } from "./secure-file-replace.js";
+import { secureFileReplace } from "./durable-state/secure-file-replace.js";
 
 const MESSAGE = "Managed worker refused the approved startup snapshot. Run `mono-agent validate` then `mono-agent restart` from the agent folder.";
 export const SNAPSHOT_REFUSAL_MESSAGE = MESSAGE;

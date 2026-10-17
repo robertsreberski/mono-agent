@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 
 import { probeMemoryEmbeddingSelection } from "./memory-embedding-service.js";
-import type { WizardPlan } from "./wizard/answers.js";
+import type { WizardPlan } from "./setup/wizard-types.js";
 
 const DEFAULT_MANAGED_MEMORY_DIMENSION = 768;
 const BUJO_REPLAY_AUTHORITY_FILE = ".replay-projection-v1.json";

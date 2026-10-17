@@ -3,13 +3,7 @@ import { readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { canonicalContinuationJson, continuationDigest } from "./continuations.js";
-import {
-  assertOwnerOnlyRegularFile,
-  continuationPathExists,
-  readBoundedOwnerOnlyFile,
-  syncDirectory,
-  writeJsonAtomic,
-} from "./continuation-store-fs.js";
+import { assertOwnerOnlyRegularFile, pathExists, readBoundedOwnerOnlyFile, syncDirectory, writeJsonAtomic } from "./durable-state/private-files.js";
 import {
   assertRecordFitsV3,
   isObject,
@@ -167,7 +161,7 @@ export async function recoverRecordTransaction(
   transactionPath: string,
   expectedSchemaVersion: 2 | typeof CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
 ): Promise<string | undefined> {
-  if (!await continuationPathExists(transactionPath)) return undefined;
+  if (!await pathExists(transactionPath)) return undefined;
   const raw = await readBoundedOwnerOnlyFile(transactionPath, MAX_TRANSACTION_BYTES, "Continuation transaction");
   let value: unknown;
   try {

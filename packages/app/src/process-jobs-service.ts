@@ -2,12 +2,12 @@ import { MAX_WAKE_CERTIFICATES, validWakeToken, type WakeRecovery } from "./proc
 import type { SubagentStopIdentity, SubagentSteerProof, SubagentStopProof } from "./process-jobs-internal.js";
 import { createLiveInputMailbox, type LiveInputMailbox } from "@mono-agent/conversation";
 import type { SubagentVerificationTarget, SubagentVerificationObservation } from "./subagent-verification-observer.js";
-import type { SubagentCommandReceipts } from "./subagent-command-receipts.js";
+import type { SubagentCommandReceipts } from "./subagents/types.js";
 import { boundSubagentCommandReceipts } from "./process-jobs-store.js";
 import { emptySubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt } from "./subagent-command-receipts.js";
 import { createSubagentOwnedCommands } from "./subagent-owned-commands.js";
-import type { ManagedSubagentExecution, ManagedSubagentRegistry, SubagentDisposition, SubagentRegistryPublication } from "./subagent-managed-turn.js";
-import type { InstanceOutcome } from "./subagent-instances.js";
+import type { ManagedSubagentExecution, ManagedSubagentRegistry, SubagentDisposition, SubagentRegistryPublication } from "./subagents/types.js";
+import type { InstanceOutcome } from "./subagents/types.js";
 import type { SubagentSalvage } from "./subagent-salvage.js";
 import { isSubagentUuid, sameSubagentOwner, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "./subagent-registry-ownership.js";
 import { reconcileSubagentExecutionOwnership } from "./subagent-ownership-recovery.js";
@@ -30,11 +30,11 @@ import {
 } from "@mono-agent/contracts";
 import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "@mono-agent/turn/host/types";
 
-import type { NotifyDeliveryResult } from "./channels.js";
+import type { NotifyDeliveryResult } from "./channels/types.js";
 import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
 import { ProcessJobOutputTail } from "./process-job-output-tail.js";
 import { consumeSilentProcessJobWake, offerClaimedProcessJobLiveInput, recordProcessJobWakeAdmission, revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
-import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "./owner-private-lock.js";
+import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import {
   attestProcessJobsRootRegistration,
   type ProcessJobsRootRegistrationProof,
@@ -51,7 +51,7 @@ import {
   isSameProcessIncarnation,
   readProcessIncarnation,
   type ProcessIncarnation,
-} from "./process-incarnation.js";
+} from "@mono-agent/conversation/process-incarnation";
 import {
   isTerminalProcessJobState,
   isProcessJobOriginRecord,

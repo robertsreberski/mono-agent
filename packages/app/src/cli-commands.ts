@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveValidateContext } from "./cli/validate-context.js";
 // Internal command implementation; `cli.ts` remains the stable public/bin facade.
 import { basename, resolve } from "node:path";
 import process from "node:process";
@@ -7,7 +8,7 @@ import {
   sanitizeManagedBackgroundWorkerEnvironment,
 } from "./background-runtime.js";
 import { SYSTEMD_BACKGROUND_WORKER_ENV } from "./background-environment.js";
-import { readCliDotenvFile } from "./first-run-readiness.js";
+import { readCliDotenvFile } from "./service/background/source-inputs.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 
@@ -37,23 +38,6 @@ import { sanitizeManagedWebLogMaintenanceEnvironment } from "./managed-web-maint
 import { runSandboxCommand } from "./cli-sandbox-command.js";
 
 import * as ui from "./ui.js";
-
-interface ValidateContext {
-  readonly cwd: string;
-  readonly configPath: string;
-  readonly envFilePath: string;
-  readonly allowFilesystemWrites: boolean;
-}
-
-function resolveValidateContext(args: ParsedCliArgs, invocationCwd: string): ValidateContext {
-  const cwd = resolve(invocationCwd, args.consumerPath ?? ".");
-  return {
-    cwd,
-    configPath: resolve(cwd, args.configPath ?? "mono-agent.config.json"),
-    envFilePath: resolve(cwd, args.envFile ?? ".env"),
-    allowFilesystemWrites: args.consumerPath === undefined,
-  };
-}
 
 export async function runCli(argv: readonly string[]): Promise<number> {
   let args: ParsedCliArgs;

@@ -29,10 +29,10 @@ import {
   currentProcessIncarnation,
   isProcessIncarnationLive,
   processIncarnationFromJson,
-} from "./process-incarnation.js";
-import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
-import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder } from "./owner-private-lock.js";
-import type { OwnerPrivateLock } from "./owner-private-lock.js";
+} from "@mono-agent/conversation/process-incarnation";
+import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
+import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder } from "./durable-state/owner-private-lock.js";
+import type { OwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import {
   decodeManagedRuntimeLaunchProof,
   encodeManagedRuntimeLaunchProof,

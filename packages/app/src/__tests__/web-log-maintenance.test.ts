@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { LaunchdLogMaintenanceDeps } from "../background-log-maintenance.js";
+import type { LaunchdLogMaintenanceDeps } from "../service/background/log-maintenance-types.js";
 import {
   buildWebMaintenancePlistXml,
   WEB_LAUNCHD_LABEL,

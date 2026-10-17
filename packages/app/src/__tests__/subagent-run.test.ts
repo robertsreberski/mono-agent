@@ -52,8 +52,8 @@ vi.mock("@mono-agent/conversation", async (importOriginal) => {
   return { ...actual, createConversationHarness: (options: unknown) => harnessMock(options as Record<string, unknown>) };
 });
 
-vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+vi.mock("../durable-state/agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../durable-state/agent-root-coordinator.js")>(),
   acquireAgentRootOwnership: async () => ({
     agentRoot: "/repo",
     coordinator: {

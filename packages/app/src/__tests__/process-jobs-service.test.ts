@@ -1,4 +1,4 @@
-import { WorkerActivityTracker } from "../worker-activity.js";
+import { WorkerActivityTracker } from "../durable-state/worker-activity.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationHarness, createConversationResponder, createInMemoryHistoryStore, createLiveInputMailbox, createToolPolicy } from "@mono-agent/conversation";
@@ -16,7 +16,7 @@ import { parseProcessJobProjection, processJobPublicError, type ProcessJobProjec
 import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobStartRequest } from "@mono-agent/turn/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ChannelId, RunningChannel } from "../channels.js";
+import type { ChannelId, RunningChannel } from "../channels/types.js";
 import type { ProcessJobsSettings } from "../process-jobs-config.js";
 import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
 import {
@@ -42,7 +42,7 @@ import {
   type ProcessJobStore,
   type ProcessJobStoreWorkCounter,
 } from "../process-jobs-store.js";
-import type { ProcessIncarnation } from "../process-incarnation.js";
+import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { routeProactiveNotification } from "../proactive-notify.js";
 import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 

@@ -9,7 +9,7 @@ import type { TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/chann
 
 import { startChannel, type ChannelsControllerPort } from "../app-controller-channels.js";
 import { createTuiChannelDriver } from "../channels.js";
-import type { ChannelDriver, ChannelStartInput, ChannelStatus } from "../channels.js";
+import type { ChannelDriver, ChannelStartInput, ChannelStatus } from "../channels/types.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
 
 const fixtures: string[] = [];

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 
-import { ensureStartable } from "../cli-background-command.js";
+import { ensureStartable } from "../service/start-preflight.js";
 import { parseCliArgs } from "../cli-args.js";
 
 let dir: string;

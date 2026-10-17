@@ -16,14 +16,9 @@ import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import { openMemoryDb } from "@mono-agent/memory/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  MEMORY_RECALL_MCP_SERVER_NAME,
-  createMemoryEmbeddingProvider,
-  createMemoryRecallServer,
-  createRecallStore,
-  resolveMemoryRecallSettings,
-} from "../memory-recall.js";
-import type { MemoryRecallBujoSettings, MemoryRecallSettings } from "../memory-recall.js";
+import { MEMORY_RECALL_MCP_SERVER_NAME, createMemoryEmbeddingProvider, createMemoryRecallServer, createRecallStore } from "../memory-recall.js";
+import { resolveMemoryRecallSettings } from "../memory-recall-settings.js";
+import type { MemoryRecallBujoSettings, MemoryRecallSettings } from "../memory-recall-settings.js";
 import { readLabelSections } from "../memory-label-sections.js";
 
 let dir: string;

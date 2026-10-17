@@ -8,7 +8,7 @@ import { createSandboxPolicy, createSrtSandboxEngine } from "@mono-agent/turn/ho
 import { monoSandboxImpl } from "../../../../turn/dist/host/sandbox/implementation.js";
 import { createToolContext } from "../../../../turn/src/tools/shared/tool-context.js";
 import { getPiBuiltinTools } from "../../../../turn/src/tools/pi-tools.js";
-import { acquireAgentRootOwnership } from "../../../dist/agent-root-coordinator.js";
+import { acquireAgentRootOwnership } from "../../../dist/durable-state/agent-root-coordinator.js";
 import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
 import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../../../dist/process-jobs-config.js";

@@ -1,31 +1,11 @@
+import type { SubagentCommandReceipt, SubagentCommandReceipts } from "./subagents/types.js";
 import { isAbsolute, resolve } from "node:path";
 import type { ProcessJobProcessResult } from "@mono-agent/turn/host/types";
 import { isSubagentUuid } from "./subagent-registry-ownership.js";
-import type { SubagentOwnedCommand } from "./subagent-execution-ownership.js";
+import type { SubagentOwnedCommand } from "./subagents/types.js";
 
 const SUBAGENT_COMMAND_RECEIPTS_MAX_COUNT = 32;
 export const SUBAGENT_COMMAND_RECEIPTS_MAX_BYTES = 12 * 1024;
-/** Private host measurements, not a verdict about the intended verification. */
-export interface SubagentCommandReceipt {
-  readonly id: string;
-  readonly tool: "Exec" | "Bash";
-  readonly cwd: string;
-  readonly capturedAt: number;
-  readonly budgetMs: number | null;
-  readonly durationMs: number | null;
-  readonly exitCode: number | null;
-  readonly signal: string | null;
-  readonly timedOut: boolean | null;
-  readonly cancelled: boolean | null;
-  readonly truncated: boolean | null;
-  readonly completion: "observed" | "unobserved";
-  readonly cleanup: "confirmed" | "unknown";
-}
-export interface SubagentCommandReceipts {
-  readonly schemaVersion: 1;
-  commands: SubagentCommandReceipt[];
-  omitted: number;
-}
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: string[]): boolean => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const nonnegative = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;

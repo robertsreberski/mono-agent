@@ -6,24 +6,11 @@ import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { validateMonoAgentFolder, type ValidationReport } from "../doctor.js";
+import { validateMonoAgentFolder } from "../doctor.js";
+import { type ValidationReport } from "../doctor-types.js";
 import { initMonoAgentFolder } from "../init.js";
-import {
-  effectiveFirstRunEnvironment,
-  evaluateFirstRunConfigurationReadiness,
-  evaluateFirstRunReadiness,
-  hasSensitivePersistedEnvironmentValue,
-  piAuthPathBackgroundConflict,
-  readCliConfigSnapshot,
-  readCliDotenvFile,
-  readCliDotenvSnapshot,
-  resolveEffectivePiAuthPath,
-  selectedSecretEnvironmentConflicts,
-  selectedSecretValues,
-  unexpectedPersistedMonoAgentOverrides,
-  validateWizardPlanInStaging,
-  withExactProcessEnvironment,
-} from "../first-run-readiness.js";
+import { effectiveFirstRunEnvironment, evaluateFirstRunConfigurationReadiness, evaluateFirstRunReadiness, hasSensitivePersistedEnvironmentValue, piAuthPathBackgroundConflict, resolveEffectivePiAuthPath, selectedSecretEnvironmentConflicts, selectedSecretValues, unexpectedPersistedMonoAgentOverrides, validateWizardPlanInStaging, withExactProcessEnvironment } from "../first-run-readiness.js";
+import { readCliConfigSnapshot, readCliDotenvFile, readCliDotenvSnapshot } from "../service/background/source-inputs.js";
 import { composeWizardPlan, defaultAnswers, referencedSetupModelRefs } from "../wizard/answers.js";
 import { findPreset, presetAnswers } from "../wizard/presets.js";
 

@@ -5,7 +5,7 @@ import {
   requestLaunchdLogMaintenanceIfNeeded,
   startManagedLaunchdLogMonitor,
 } from "../background-log-maintenance.js";
-import type { BackgroundLifecycleTarget } from "../background.js";
+import type { BackgroundLifecycleTarget } from "../launchd-lifecycle-lock.js";
 import { LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS } from "../launchd-logs.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
 import type { LaunchctlRunner } from "../launchd.js";

@@ -5,9 +5,9 @@ import process from "node:process";
 import { deriveLaunchdMaintenanceLabel } from "./launchd.js";
 import type { LaunchdPaths } from "./launchd.js";
 import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
-import { acquireOwnerPrivateLock, validateOwnerPrivateLockInputs } from "./owner-private-lock.js";
-import { processIncarnationFromJson } from "./process-incarnation.js";
-import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
+import { acquireOwnerPrivateLock, validateOwnerPrivateLockInputs } from "./durable-state/owner-private-lock.js";
+import { processIncarnationFromJson } from "@mono-agent/conversation/process-incarnation";
+import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 export interface BackgroundLifecycleTarget {
   readonly label: string;

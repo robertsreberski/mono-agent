@@ -11,7 +11,7 @@ import {
   configuredChannelPluginPackageNames,
 } from "../channel-plugins.js";
 import { resolveChannelDrivers } from "../channels.js";
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver } from "../channels/types.js";
 import { validateMonoAgentFolder } from "../doctor.js";
 
 let dir: string;

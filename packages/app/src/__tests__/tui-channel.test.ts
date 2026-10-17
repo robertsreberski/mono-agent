@@ -11,7 +11,7 @@ import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterSta
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
 import { WebConsoleError } from "@mono-agent/web";
 
-import type { ChannelDriver, ChannelStartInput } from "../channels.js";
+import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
 import { createTuiChannelDriver } from "../channels.js";
 import { MAX_DISCOVERED_INFO_MODEL_BYTES, startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
 import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER, MAX_CATALOG_ID_BYTES, MAX_PAGE_SIZE } from "../provider-model-catalog.js";

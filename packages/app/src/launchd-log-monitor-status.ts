@@ -1,5 +1,26 @@
-import type { ManagedLaunchdLogMonitorStatus } from "./background-log-maintenance.js";
-import type { BackgroundLifecycleTarget } from "./background.js";
+export type ManagedLaunchdLogMonitorOutcome =
+  | "deferred-busy"
+  | "idle"
+  | "shared-only"
+  | "pending-artifact"
+  | "cooldown"
+  | "stopped"
+  | "helper-unloaded"
+  | "helper-running"
+  | "requested"
+  | "request-failed"
+  | "inspection-failed";
+
+export interface ManagedLaunchdLogMonitorStatus {
+  readonly version: 1;
+  readonly lastInspectionAt: string;
+  readonly wakeCount: number;
+  readonly lastOutcome: ManagedLaunchdLogMonitorOutcome;
+  readonly cooldownDeadline: string;
+}
+
+
+import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import type { LaunchdPaths } from "./launchd.js";
 import { readPrivateLaunchdState, writePrivateLaunchdState, removePrivateLaunchdState } from "./private-launchd-state.js";
 

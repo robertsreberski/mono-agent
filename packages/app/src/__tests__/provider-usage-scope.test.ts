@@ -3,7 +3,7 @@ import { PROVIDER_USAGE_IDS, PROVIDER_USAGE_SCHEMA, type ProviderUsageId } from 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { MonoAgentAppController } from "../app-controller.js";
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver } from "../channels/types.js";
 import { createAgentProviderUsage } from "../provider-usage-scope.js";
 import { createProviderUsageService } from "../provider-usage.js";
 

@@ -13,7 +13,7 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { createConfiguredAgentRuntimeForApp } from "./configured-agent.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
 import { routeProactiveNotification } from "./proactive-notify.js";
-import type { NotifyDeliveryResult } from "./proactive-notify.js";
+import type { NotifyDeliveryResult } from "./channels/types.js";
 import { startMemoryRituals } from "./memory-rituals.js";
 import type { RunningRituals } from "./memory-rituals.js";
 import { startArtifactRetentionScheduler } from "./artifact-retention.js";
@@ -21,7 +21,7 @@ import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js"
 import { resolveNotifyDestinations } from "./notify-destinations.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
-import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 

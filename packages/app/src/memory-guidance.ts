@@ -1,17 +1,11 @@
+import type { LabelRecallStore } from "./memory/recall-contract.js";
 import type { MemoryLoadOptions } from "@mono-agent/contracts";
 import { createHash } from "node:crypto";
 import { automaticIntentEligible, recallLineStatus } from "@mono-agent/memory/bujo";
-import type { EntityRecord, MemoryDb } from "@mono-agent/memory/store";
-import type { MemoryRecallHit } from "./memory-recall.js";
+import type { MemoryDb } from "@mono-agent/memory/store";
+import type { MemoryRecallHit } from "./memory/recall-contract.js";
 
 type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
-export interface LabelRecallStore {
-  labelsForEntity?(id: string, date?: string): readonly MemoryLabelHit[];
-  guidanceForScope?(scope: string): readonly MemoryLabelHit[];
-  findMemoryEntitiesByNames?(names: readonly string[]): readonly EntityRecord[];
-  /** Labels on these memory ids: attribution and deliberate label sections. */
-  labelsForMemories?(memoryIds: readonly string[]): readonly MemoryLabelHit[];
-}
 
 const MAX_BACKGROUND_BYTES = 1024;
 /** Absolute floor for preference/lesson background; the relative rule below does the real work. */

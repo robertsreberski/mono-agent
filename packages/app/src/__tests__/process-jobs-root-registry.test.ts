@@ -30,8 +30,8 @@ const processIdentity = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../process-incarnation.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/conversation/process-incarnation")>(),
   currentProcessIncarnation: async () => processIdentity.current,
   isSameProcessIncarnation: () => true,
 }));
@@ -39,7 +39,7 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
 import {
   acquireAgentRootOwnership,
   agentRootLeasePath,
-} from "../agent-root-coordinator.js";
+} from "../durable-state/agent-root-coordinator.js";
 import {
   PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR,
   PROCESS_JOBS_ROOT_REGISTRY_DIRECTORY,

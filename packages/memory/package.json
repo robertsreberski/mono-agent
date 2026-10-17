@@ -25,6 +25,10 @@
     "./bujo": {
       "types": "./dist/bujo/index.d.ts",
       "import": "./dist/bujo/index.js"
+    },
+    "./health-metadata": {
+      "types": "./dist/health-metadata.d.ts",
+      "import": "./dist/health-metadata.js"
     }
   },
   "files": [

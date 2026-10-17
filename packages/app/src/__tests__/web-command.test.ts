@@ -6,19 +6,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  chooseTailscaleHttpsPort,
-  DEFAULT_WEB_HOST,
-  DEFAULT_WEB_PORT,
-  ensureTailscaleServe,
-  LEGACY_DEFAULT_WEB_HOST,
-  removeOwnedTailscaleServe,
-  runWebCommand,
-  tailscaleProxyTarget,
-  webHealthcheck,
-  webPaths,
-  WEB_LAUNCHD_LABEL,
-} from "../web-command.js";
+import { chooseTailscaleHttpsPort, DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, ensureTailscaleServe, LEGACY_DEFAULT_WEB_HOST, removeOwnedTailscaleServe, runWebCommand, tailscaleProxyTarget, webPaths, WEB_LAUNCHD_LABEL } from "../web-command.js";
+import { webHealthcheck } from "../service/web/health.js";
 import type { CommandRunner, RunWebCommandDeps } from "../web-command.js";
 import {
   buildWebMaintenancePlistXml,

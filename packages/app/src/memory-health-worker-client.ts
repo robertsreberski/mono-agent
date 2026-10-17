@@ -1,3 +1,4 @@
+import { MEMORY_HEALTH_ISSUE_CODES } from "@mono-agent/memory/health-metadata";
 import { Worker } from "node:worker_threads";
 
 import type {
@@ -16,33 +17,7 @@ const HEALTH_STATUSES = new Set<MemoryHealthStatus>([
   "unhealthy",
   "unknown",
 ]);
-const HEALTH_ISSUES = new Set<MemoryHealthIssueCode>([
-  "manifest_missing",
-  "manifest_invalid",
-  "configured_identity_mismatch",
-  "database_missing",
-  "database_unavailable",
-  "native_module_unavailable",
-  "health_check_failed",
-  "sqlite_integrity_failed",
-  "metadata_mismatch",
-  "fts_mismatch",
-  "vector_mismatch",
-  "orphaned_rows",
-  "canonical_mismatch",
-  "canonical_invalid",
-  "mutation_in_progress",
-  "intake_invalid",
-  "intake_pending",
-  "dead_letters",
-  "outbox_invalid",
-  "outbox_pending",
-  "work_stalled",
-  "temporary_artifacts",
-  "runtime_missing",
-  "runtime_stale",
-  "runtime_invalid",
-]);
+const HEALTH_ISSUES = new Set<MemoryHealthIssueCode>(MEMORY_HEALTH_ISSUE_CODES);
 const COUNT_KEYS = [
   "pending",
   "due",

@@ -6,7 +6,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver } from "../channels/types.js";
 import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
 import { collectUsedProviderReferences, providerAuthStatusSnapshot } from "../provider-auth-status.js";
 

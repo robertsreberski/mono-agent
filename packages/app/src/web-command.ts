@@ -1,3 +1,5 @@
+import { type RunWebCommandOptions } from "./service/web/types.js";
+import { webHealthcheck, webHealthStatus } from "./service/web/health.js";
 import { formatManagedRuntimeProgress } from "./managed-runtime-progress.js";
 import type { ManagedBackgroundRuntimeInput } from "./background-runtime.js";
 import { spawn } from "node:child_process";
@@ -18,9 +20,7 @@ import {
   DEFAULT_WEB_THEME,
   decodeManagedWebDefinition,
   invalidWebConsoleName,
-  isWebTheme,
-  LEGACY_DEFAULT_WEB_HOST,
-  WEB_THEMES,
+  isWebTheme, WEB_THEMES
 } from "./web-service-definition.js";
 import type { ManagedWebDefinition } from "./web-service-definition.js";
 
@@ -127,22 +127,6 @@ interface ResetWebStateOptions {
 interface PrepareWebStateOptions {
   readonly stateDir?: string;
   readonly env?: Record<string, string | undefined>;
-}
-
-export interface RunWebCommandOptions {
-  readonly positionals: readonly string[];
-  readonly env: Record<string, string | undefined>;
-  readonly host?: string;
-  readonly port?: number;
-  readonly theme?: string;
-  readonly name?: string;
-  readonly loopback?: boolean;
-  readonly shareTailnet?: boolean;
-  readonly json?: boolean;
-  readonly follow?: boolean;
-  readonly lines?: number;
-  readonly all?: boolean;
-  readonly yes?: boolean;
 }
 
 export interface CommandResult {
@@ -1820,34 +1804,6 @@ async function waitForWebReady(
 function healthUrl(host: string, port: number): string {
   const checkHost = host === "0.0.0.0" || host === "::" || host === "[::]" ? "127.0.0.1" : urlHost(host);
   return `http://${checkHost}:${String(port)}/healthz`;
-}
-
-export async function webHealthcheck(url: string): Promise<boolean> {
-  return (await webHealthStatus(url)) !== "unavailable";
-}
-
-async function webHealthStatus(url: string): Promise<"ok" | "degraded" | "unavailable"> {
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-    if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-      return "unavailable";
-    }
-    const body = await response.json() as unknown;
-    if (!isRecord(body) || body.version !== 1) return "unavailable";
-    if (hasExactKeys(body, ["status", "version", "push"])) {
-      return body.status === "ok" && (body.push === "ok" || body.push === "degraded")
-        ? body.push
-        : "unavailable";
-    }
-    // Accept the pre-push health contract so a newer CLI can still manage an
-    // older installed web service during upgrades.
-    return hasExactKeys(body, ["status", "version"])
-      && (body.status === "ok" || body.status === "degraded")
-      ? body.status
-      : "unavailable";
-  } catch {
-    return "unavailable";
-  }
 }
 
 export async function ensureTailscaleServe(

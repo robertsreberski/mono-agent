@@ -1,4 +1,4 @@
-export type { CapabilityModule, GeneratedFile, ModuleInputValues, ModuleValidateExpectation } from "./types.js";
+export type { CapabilityModule, ModuleInputValues, ModuleValidateExpectation } from "./types.js";
 export { resolveModuleInputs } from "./types.js";
 
 export { baseConfig, DEFAULT_MODEL } from "./base.js";

@@ -1,38 +1,8 @@
-import type { InstanceUsage } from "./subagent-instances.js";
-import type { SubagentDisposition } from "./subagent-managed-turn.js";
+import type { SubagentExecutionOwnership, SubagentOwnedCommand } from "./subagents/types.js";
+import type { InstanceUsage } from "./subagents/types.js";
+import type { SubagentDisposition } from "./subagents/types.js";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import { processIncarnationFromJson, type ProcessIncarnation } from "./process-incarnation.js";
-
-/** App-private, bounded evidence. Reporting terminality never discharges ownership. */
-export interface SubagentExecutionOwnership {
-  schemaVersion: 1;
-  registryRoot?: string;
-  disposition?: SubagentDisposition;
-  usage?: InstanceUsage;
-  instanceIncarnation: string;
-  turnToken: string;
-  owner: { pid: number; incarnation: ProcessIncarnation; settlement: "not_started" | "running" | "settled" | "dead" | "unknown" };
-  revoked: boolean;
-  parentStopRequested?: true;
-  publication: { sequence: number; state: "pending" | "confirmed"; receiptPending?: boolean; receiptRecorded?: number };
-  command?: SubagentOwnedCommand;
-  /** Host-bound attempt/call keys. Never evict keys while the turn can execute. */
-  seenCalls: string[];
-}
-
-export interface SubagentOwnedCommand {
-  id: string;
-  callKey: string;
-  tool: "Exec" | "Bash";
-  state: "preparing" | "attested" | "running" | "terminating" | "cleanup_unknown" | "released";
-  cwd: string;
-  sandboxSettingsPath: string | null;
-  pid: number | null;
-  pgid: number | null;
-  incarnation: ProcessIncarnation | null;
-  deadlineAt: number;
-  budgetMs?: number;
-}
+import { processIncarnationFromJson, type ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const SUBAGENT_OWNERSHIP_MAX_BYTES = 40 * 1024;
 const SUBAGENT_COMMAND_MAX_BYTES = 4 * 1024;

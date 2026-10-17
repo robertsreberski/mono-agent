@@ -2,12 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { CreateMonoRuntimeOptions, MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import {
-  readWorkerData,
-  runReadinessProbeWorker,
-  safeWorkerMessage,
-  toolActionInEvent,
-} from "../readiness-probe-worker.js";
+import { readWorkerData, runReadinessProbeWorker, safeWorkerMessage } from "../readiness-probe-worker.js";
+import { toolActionInEvent } from "../setup/readiness-events.js";
 import type {
   ReadinessWorkerDependencies,
   ReadinessWorkerOutput,

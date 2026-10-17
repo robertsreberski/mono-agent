@@ -29,7 +29,7 @@ import {
   cronActionRequestHash,
   type CronControlStore,
 } from "./cron-control-store.js";
-import type { MonoAgentAppLogger } from "./channels.js";
+import type { MonoAgentAppLogger } from "./channels/types.js";
 
 const CONFIRMATION_TTL_MS = 5 * 60 * 1_000;
 const MAX_CONFIRMATIONS = 128;

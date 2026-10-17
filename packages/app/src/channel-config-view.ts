@@ -3,7 +3,7 @@ import { encodeJsonEnvValue, normalizeOptionalString, readJsonSection, readSetti
 import type { JsonEnvFieldSpec } from "@mono-agent/contracts";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type { ChannelDriver } from "./channels.js";
+import type { ChannelDriver } from "./channels/types.js";
 
 const PLACEHOLDER = "—";
 

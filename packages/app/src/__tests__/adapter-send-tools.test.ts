@@ -25,7 +25,7 @@ import type {
 } from "@mono-agent/channel-telegram";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver } from "../channels/types.js";
 import { startMonoAgentApp } from "../app.js";
 import {
   createAdapterSendProxy,

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 
-import { ensureStartable, prepareSupervisedRestartInputs, verifySupervisedRestartInputs } from "../cli-background-command.js";
+import { ensureStartable } from "../service/start-preflight.js";
+import { prepareSupervisedRestartInputs, verifySupervisedRestartInputs } from "../cli-background-command.js";
 import { captureBackgroundSnapshot, encodeBackgroundSnapshot } from "../background-snapshot.js";
 import { createSupervisedRestartAuthority } from "../supervised-restart-authority.js";
 import { createSupervisedRestartLatch } from "../supervised-restart-latch.js";

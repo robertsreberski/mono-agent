@@ -4,12 +4,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
-import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
+import { acquireOwnerPrivateLock } from "./durable-state/owner-private-lock.js";
 import {
   HISTORY_PROCESS_INCARNATION_SCHEMA, PROCESS_INCARNATION_SCHEMA, currentProcessIncarnation, isProcessIncarnationLive,
   processIncarnationFromJson, type ProcessIncarnation,
-} from "./process-incarnation.js";
-import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
+} from "@mono-agent/conversation/process-incarnation";
+import { readVerifiedFile, secureFileReplace } from "./durable-state/secure-file-replace.js";
 
 type Coordinator = NonNullable<RuntimeRunOptions["webRequestCoordinator"]>;
 // `incarnation` keeps the v1 value older runtimes compare; Darwin adds the stable v2 sibling.

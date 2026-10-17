@@ -1,7 +1,7 @@
-import { isSubagentVerificationTarget, type SubagentVerificationTarget, type SubagentVerificationDeclaration, type SubagentVerificationObservation } from "./subagent-verification-observer.js";
-import type { SubagentCommandReceipts } from "./subagent-command-receipts.js";
+import { EFFORT_LEVELS } from "@mono-agent/config";
+import type { SubagentQuestion, InstanceUsage, SubagentInstance, SubagentRecoverySubject, SubagentRecoveryFacts, SubagentRecoveryInspection, InstanceRoute, InstanceRegistryHandle } from "./subagents/types.js";
+import { isSubagentVerificationTarget, type SubagentVerificationTarget, type SubagentVerificationDeclaration } from "./subagent-verification-observer.js";
 import { newSubagentRecoveryBinding, isSubagentRecoveryBinding, issueRecoveryAcknowledgement, checkRecoveryAcknowledgement, consumeRecoveryAcknowledgement, rebindConsumedAcknowledgement, recoveryToken, type SubagentRecoveryBinding, type SubagentRecoveryAcknowledgement } from "./subagent-recovery-binding.js";
-import type { SubagentRegistryPublication } from "./subagent-managed-turn.js";
 import type { SubagentSalvage } from "./subagent-salvage.js";
 import { boundSubagentSalvage } from "./subagent-salvage.js";
 import type { DurableSessionSalvage } from "@mono-agent/turn/host/types";
@@ -12,50 +12,10 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { type RuntimeModelReference } from "@mono-agent/turn/host/types";
 
-import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
+import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
+import { ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./durable-state/private-files.js";
 
-import { isSubagentUuid, isSubagentTurnIntent, isSubagentRecoveryFence, isSubagentOwnerLink, sameSubagentOwner, SubagentRecoveryError, type SubagentTurnIntent, type SubagentRecoveryFence, type SubagentOwnerLink, type SubagentOwnerIdentity, type SubagentOwnerResolution, type SubagentKnownOwner } from "./subagent-registry-ownership.js";
-
-interface InstanceDefinition {
-  readonly name: string;
-  readonly description: string;
-  readonly systemPrompt: string;
-  readonly model?: RuntimeModelReference;
-  readonly effort?: string;
-  readonly allowedTools?: readonly string[];
-  readonly disallowedTools?: readonly string[];
-  readonly mcpServerNames?: readonly string[];
-  readonly maxTurns?: number;
-  readonly timeoutMs?: number;
-}
-export interface SubagentQuestion { question: string; options?: string[] }
-export interface InstanceUsage { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number }
-export interface SubagentInstance {
-  id: string;
-  conversationId: string;
-  name: string;
-  systemPrompt: string;
-  definition: InstanceDefinition;
-  sessionId: string;
-  sessionsRoot: string;
-  incarnation?: string;
-  activeTurn?: SubagentTurnIntent;
-  recovery?: SubagentRecoveryFence;
-  /** Derived public guidance, never accepted as stored ownership authority. */
-  recoveryBlocked?: boolean;
-  recoveryJobId?: string;
-  /** Derived host-only identity of the last managed publication. */
-  settledTurnToken?: string;
-  reservation?: { token: string };
-  status: "queued" | "idle" | "running" | "awaiting_reply" | "closed" | "expired";
-  pendingQuestion?: SubagentQuestion;
-  turns: number;
-  usage: InstanceUsage;
-  createdAt: number;
-  updatedAt: number;
-  lastStatus?: string;
-  lastAnswerHead?: string;
-}
+import { isSubagentUuid, isSubagentTurnIntent, isSubagentRecoveryFence, isSubagentOwnerLink, sameSubagentOwner, SubagentRecoveryError, type SubagentRecoveryFence, type SubagentOwnerLink, type SubagentOwnerIdentity, type SubagentOwnerResolution, type SubagentKnownOwner } from "./subagent-registry-ownership.js";
 interface PreProviderState {
   turnToken: string;
   model: RuntimeModelReference | null;
@@ -65,61 +25,12 @@ interface PreProviderState {
 }
 interface StoredSubagentInstance extends SubagentInstance { createdForAdmission?: boolean; preProvider?: PreProviderState; verificationTarget?: SubagentVerificationTarget; recoveryBinding?: SubagentRecoveryBinding; ownerLink?: SubagentOwnerLink; ownerReceipt?: { jobId: string; storeRoot: string; turnToken: string; sequence: number; finalized: boolean; acknowledged: boolean } }
 
-export interface SubagentRecoverySubject {
-  readonly conversationId: string;
-  readonly instanceId: string;
-  readonly incarnation?: string;
-  readonly owner?: SubagentOwnerIdentity;
-  readonly verification?: SubagentVerificationTarget;
-}
-export interface SubagentRecoveryFacts {
-  readonly status: SubagentVerificationObservation["status"];
-  readonly commands?: SubagentCommandReceipts;
-  readonly observation?: Omit<SubagentVerificationObservation, "schemaVersion" | "policyRevision">;
-}
-export interface SubagentRecoveryInspection {
-  readonly schema: "mono-agent.subagent-recovery.v1";
-  readonly instanceId: string;
-  readonly incarnation?: string;
-  readonly jobId?: string;
-  readonly recovery?: SubagentRecoveryFence;
-  readonly status: "not_required" | "held" | "ready" | "structured_job_recovery_unavailable" | "observation_policy_unavailable" | "observation_policy_denied" | "observation_unavailable" | "observation_inconsistent" | "observation_truncated";
-  readonly facts?: SubagentRecoveryFacts;
-  /** Derived authorized evidence only; never persisted or proof of continuity. */
-  readonly salvage?: SubagentSalvage;
-  readonly parentVerificationRequired: boolean;
-  readonly resumable?: true;
-  readonly ack?: string;
-}
-export interface InstanceSpec { verification?: SubagentVerificationDeclaration; id?: string; name: string; systemPrompt: string; definition: InstanceDefinition }
-/** A new route for the turn being admitted, persisted on the stored definition so later continuations inherit it. */
-export interface InstanceRoute { model?: RuntimeModelReference; effort?: string }
-export interface InstanceOutcome { status: string; certifiedTimeout?: true; continuity?: { turnToken: string; state: "retained" | "lost" | "unknown" }; closeAfterSuccess?: boolean; failureKind?: "session_continuity_lost"; usage?: Partial<InstanceUsage>; answerHead?: string; question?: SubagentQuestion }
-export interface InstanceRegistryHandle {
-  verifyOwner(identity: SubagentOwnerIdentity): Promise<{ retained: boolean; verification?: SubagentVerificationTarget }>;
-  inspect(id: string, access?: unknown): Promise<SubagentRecoveryInspection>;
-  salvageReleased(identity: SubagentOwnerIdentity): Promise<SubagentSalvage | undefined>;
-  checkAcknowledgement(id: string, acknowledgement: SubagentRecoveryAcknowledgement, access?: unknown): Promise<void>;
-  publishOwned(phase: "intent" | "confirm" | "finalize" | "acknowledge", publication: SubagentRegistryPublication): Promise<void>;
-  list(): Promise<SubagentInstance[]>;
-  get(id: string): Promise<SubagentInstance | undefined>;
-  create(spec: InstanceSpec, access?: unknown): Promise<SubagentInstance>;
-  reserve(id: string, token: string, acknowledgement?: SubagentRecoveryAcknowledgement, access?: unknown, route?: InstanceRoute, createdForAdmission?: boolean): Promise<SubagentInstance>;
-  releaseReservation(id: string, token: string): Promise<void>;
-  begin(id: string, token?: string, acknowledgement?: SubagentRecoveryAcknowledgement, access?: unknown, route?: InstanceRoute): Promise<SubagentInstance>;
-  fence(id: string, outcome: { status: "timeout" | "cancelled" }, turnToken?: string): Promise<void>;
-  markAwaiting(id: string, question: SubagentQuestion): Promise<SubagentInstance>;
-  finish(id: string, outcome: InstanceOutcome, token?: string): Promise<SubagentInstance>;
-  close(id: string, access?: unknown): Promise<SubagentInstance>;
-}
-
 const ID = /^[a-z0-9][a-z0-9-]{0,39}$/u;
 const DAY = 86_400_000;
 export const SUBAGENT_REGISTRY_MAX_BYTES = 16 * 1024 * 1024;
 export const SUBAGENT_TERMINAL_MAX_COUNT = 64;
 const OUTCOMES = ["ok", "failed", "empty", "timeout", "cancelled", "busy", "interrupted", "awaiting_reply"];
-/** Mirrors EFFORT_LEVELS in @mono-agent/config, which this module does not import. */
-const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, allowed: readonly string[]): boolean => Object.keys(value).every((key) => allowed.includes(key));
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
@@ -156,8 +67,8 @@ function validModelReference(value: unknown): value is RuntimeModelReference {
 function applyRoute(record: StoredSubagentInstance, route: InstanceRoute | undefined): void {
   if (!route || (route.model === undefined && route.effort === undefined)) return;
   if (route.model !== undefined && !validModelReference(route.model)) throw new Error("Subagent route model must be a runtime model reference.");
-  if (route.effort !== undefined && (typeof route.effort !== "string" || !EFFORTS.includes(route.effort))) {
-    throw new Error(`Subagent route effort must be one of ${EFFORTS.join(", ")}.`);
+  if (route.effort !== undefined && (typeof route.effort !== "string" || !(EFFORT_LEVELS as readonly string[]).includes(route.effort))) {
+    throw new Error(`Subagent route effort must be one of ${EFFORT_LEVELS.join(", ")}.`);
   }
   record.definition = { ...record.definition,
     ...(route.model === undefined ? {} : { model: structuredClone(route.model) }),
@@ -186,7 +97,7 @@ function validRecord(value: unknown, conversationId: string, sessionsRoot: strin
     || !keys(value.preProvider, ["turnToken", "model", "effort", "recovery", "recoveryBinding"])
     || !isSubagentUuid(value.preProvider.turnToken)
     || value.preProvider.model !== null && !validModelReference(value.preProvider.model)
-    || value.preProvider.effort !== null && (typeof value.preProvider.effort !== "string" || !EFFORTS.includes(value.preProvider.effort))
+    || value.preProvider.effort !== null && (typeof value.preProvider.effort !== "string" || !(EFFORT_LEVELS as readonly string[]).includes(value.preProvider.effort))
     || value.preProvider.recovery !== undefined && !isSubagentRecoveryFence(value.preProvider.recovery)
     || value.preProvider.recoveryBinding !== undefined && !isSubagentRecoveryBinding(value.preProvider.recoveryBinding)
     || !object(value.activeTurn) || value.activeTurn.token !== value.preProvider.turnToken
@@ -226,7 +137,7 @@ function validRecord(value: unknown, conversationId: string, sessionsRoot: strin
     || !object(d) || !keys(d, ["name", "description", "systemPrompt", "model", "effort", "allowedTools", "disallowedTools", "mcpServerNames", "maxTurns", "timeoutMs"])
     || d.name !== value.name || d.systemPrompt !== value.systemPrompt || !text(d.description)) return false;
   if (d.model !== undefined && !validModelReference(d.model)) return false;
-  if (d.effort !== undefined && (typeof d.effort !== "string" || !EFFORTS.includes(d.effort))) return false;
+  if (d.effort !== undefined && (typeof d.effort !== "string" || !(EFFORT_LEVELS as readonly string[]).includes(d.effort))) return false;
   for (const key of ["allowedTools", "disallowedTools", "mcpServerNames"]) if (d[key] !== undefined && !strings(d[key])) return false;
   for (const key of ["allowedTools", "disallowedTools", "mcpServerNames"]) {
     if (Array.isArray(d[key]) && d[key].some((item: string) => !/^[A-Za-z0-9_.*-]+$/u.test(item))) return false;
@@ -300,7 +211,7 @@ export function createSubagentInstanceRegistry(options: {
       const file = resolve(directory, "instances.json");
       const turnPath = (id: string): string => resolve(directory, "turn-locks", id);
       const acquirePrivateLock = async (path: string) => {
-        try { return await acquireContinuationStoreLock(path); }
+        try { return await acquireSqliteLease(path); }
         catch {
           // Admission errors reach native tool results. Filesystem/lock errors
           // include the private registry path; never disclose it to the model.
@@ -456,7 +367,7 @@ export function createSubagentInstanceRegistry(options: {
             }
             if (["queued", "running"].includes(record.status) && !turns.has(turnPath(record.id))) {
               try {
-                const abandoned = await acquireContinuationStoreLock(turnPath(record.id));
+                const abandoned = await acquireSqliteLease(turnPath(record.id));
                 try {
                   if (record.activeTurn?.kind === "detached") {
                     // No OS turn lock alone is not proof of cleanup/publication.

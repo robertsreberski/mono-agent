@@ -1,3 +1,4 @@
+import type { SecretPersistenceOutcome, SecretEnvRefusalCode } from "./setup/types.js";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type BigIntStats, type Stats } from "node:fs";
@@ -9,14 +10,14 @@ import { parseEnv } from "node:util";
 import { writeMonoAgentConfigJson } from "@mono-agent/config";
 
 import { composeWizardPlan, defaultAnswers, humanizeAgentName } from "./wizard/answers.js";
-import type { ComposeContext, WizardAnswers, WizardPlan } from "./wizard/answers.js";
+import type { ComposeContext, WizardAnswers, WizardPlan } from "./setup/wizard-types.js";
 import {
   initializeFirstRunManagedMemory,
   preflightFirstRunManagedMemory,
 } from "./first-run-managed-memory.js";
 import type { FirstRunManagedMemoryHooks } from "./first-run-managed-memory.js";
 import { assertManagedProjectSkillInitSafe } from "./project-skills.js";
-import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
+import { readVerifiedFile, secureFileReplace } from "./durable-state/secure-file-replace.js";
 
 interface InitMonoAgentFolderOptions {
   /** Folder the agent is constructed in. Defaults to process.cwd(). */
@@ -81,31 +82,6 @@ export interface InitFileChange {
   /** Marks a path whose contents must never be printed as part of init reporting. */
   readonly sensitive?: boolean;
 }
-
-export type SecretPersistenceStatus = "not-requested" | "planned" | "persisted" | "refused";
-
-export interface SecretPersistenceOutcome {
-  readonly status: SecretPersistenceStatus;
-  readonly path?: string;
-  /** Whether at least one supplied value would be or was written. */
-  readonly changed: boolean;
-  /** Stable refusal code suitable for programmatic recovery handling. */
-  readonly reason?: SecretEnvRefusalCode;
-  /** Non-secret operator guidance, including an external lock/recovery path when relevant. */
-  readonly detail?: string;
-}
-
-export type SecretEnvRefusalCode =
-  | "git-safety-unavailable"
-  | "invalid-secret-name"
-  | "malformed-env"
-  | "malformed-gitignore"
-  | "owner-only-permissions-unsupported"
-  | "tracked-env"
-  | "unrepresentable-secret-value"
-  | "unsafe-env-path"
-  | "unsafe-gitignore-path"
-  | "unsafe-lock-path";
 
 class SecretEnvPersistenceRefusedError extends Error {
   readonly code: SecretEnvRefusalCode;

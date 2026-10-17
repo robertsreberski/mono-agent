@@ -10,7 +10,7 @@ import type { MemoryRecord } from "@mono-agent/memory/store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createMemoryRecallServer } from "../memory-recall.js";
-import type { MemoryRecallHit, RecallCapableStore } from "../memory-recall.js";
+import type { MemoryRecallHit, RecallCapableStore } from "../memory/recall-contract.js";
 
 /**
  * `composeRecallBlock` renders every automatic hit with a marker encoding type

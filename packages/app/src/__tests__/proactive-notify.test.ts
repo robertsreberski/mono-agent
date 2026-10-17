@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ProcessJobProjection } from "@mono-agent/contracts";
 
-import type { ChannelId, RunningChannel } from "../channels.js";
+import type { ChannelId, RunningChannel } from "../channels/types.js";
 import { channelIdForConversation, routeProactiveNotification } from "../proactive-notify.js";
 
 describe("channelIdForConversation", () => {

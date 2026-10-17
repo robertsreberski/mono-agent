@@ -11,7 +11,7 @@ import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-
 // @ts-expect-error Real native engine; only provider transport is fake.
 import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
-import { acquireContinuationStoreLock } from "../continuation-store-fs.js";
+import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
 import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -41,7 +41,7 @@ it.each(["detached", "foreground", "registry", "read", "write", "parse"])("G11: 
   const subagents = { instances: f.handle, run, backgroundSubagentController: { startInternal } };
   const directory = subagentConversationRoot(f.root, "conversation");
   const lock = ["read", "write"].includes(mode) ? undefined
-    : await acquireContinuationStoreLock(mode === "registry" ? resolve(directory, "registry-lock") : resolve(directory, "turn-locks", spec.id));
+    : await acquireSqliteLease(mode === "registry" ? resolve(directory, "registry-lock") : resolve(directory, "turn-locks", spec.id));
   const backup = `${f.file}.g11-backup`;
   if (mode === "read") { await rename(f.file, backup); await mkdir(f.file); }
   if (mode === "write") await chmod(directory, 0o500);
@@ -213,7 +213,7 @@ it("requires explicit detached acknowledgement and rejects a stale observation w
 it("does not consume a valid acknowledgement while the real turn lock is busy", async () => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
   const request = { ack: inspection.ack!, message: "next", background: true };
-  const lock = await acquireContinuationStoreLock(resolve(subagentConversationRoot(f.root, "conversation"), "turn-locks", spec.id));
+  const lock = await acquireSqliteLease(resolve(subagentConversationRoot(f.root, "conversation"), "turn-locks", spec.id));
   try {
     await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
     expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();

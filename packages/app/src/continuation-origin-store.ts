@@ -7,12 +7,7 @@ import {
   canonicalContinuationJson,
   continuationDigest,
 } from "./continuations.js";
-import {
-  assertOwnerOnlyRegularFile,
-  readBoundedOwnerOnlyFile,
-  readBoundedOwnerOnlyFileWithStats,
-  syncDirectory,
-} from "./continuation-store-fs.js";
+import { assertOwnerOnlyRegularFile, readBoundedOwnerOnlyFile, readBoundedOwnerOnlyFileWithStats, syncDirectory } from "./durable-state/private-files.js";
 import {
   assertRecordFitsV3,
   isMissing,

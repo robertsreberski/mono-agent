@@ -27,17 +27,8 @@ import {
   providerSetupActionCommandLine,
   type ProviderCredentialState,
 } from "../provider-setup.js";
-import {
-  alwaysOnTools,
-  composeWizardPlan,
-  defaultAnswers,
-  effectiveFallbacks,
-  humanizeAgentName,
-  recommendedToolSelection,
-  referencedSetupModelRefs,
-  type WizardAnswers,
-  type WizardPlan,
-} from "./answers.js";
+import { alwaysOnTools, composeWizardPlan, defaultAnswers, effectiveFallbacks, humanizeAgentName, recommendedToolSelection, referencedSetupModelRefs } from "./answers.js";
+import { type WizardAnswers, type WizardPlan } from "../setup/wizard-types.js";
 import { findPreset, presetAnswers } from "./presets.js";
 import {
   assertConcreteWizardModelRef,

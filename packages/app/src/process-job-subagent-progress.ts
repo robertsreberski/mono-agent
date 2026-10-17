@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { isDeepStrictEqual } from "node:util";
 
 import { isProcessJobSubagentRoute, normalizeProcessJobSubagentUsage, type ProcessJobSubagentProgress } from "@mono-agent/contracts";
-import type { InstanceUsage } from "./subagent-instances.js";
+import type { InstanceUsage } from "./subagents/types.js";
 import { redactProcessOutput, redactProcessOutputLine } from "./process-output-redaction.js";
 import { redactSecrets } from "./redact-secrets.js";
 

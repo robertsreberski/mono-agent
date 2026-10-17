@@ -22,7 +22,7 @@ import {
   resolveConversationStatePurgePlan,
   sameFileSystemIdentity,
 } from "./conversation-state-roots.js";
-import { syncDirectory } from "./continuation-store-fs.js";
+import { syncDirectory } from "./durable-state/private-files.js";
 import {
   assertProcessJobsConfigSnapshotUnchanged,
   loadProcessJobsSettings,

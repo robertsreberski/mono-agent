@@ -9,21 +9,14 @@ import {
   resolveAppArtifactDir,
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type {
-  ChannelDriver,
-  ChannelId,
-  ChannelStartInput,
-  MonoAgentAppLogger,
-  RunningChannel,
-  ChannelStatus,
-} from "./channels.js";
+import type { ChannelDriver, ChannelId, ChannelStartInput, MonoAgentAppLogger, RunningChannel, ChannelStatus } from "./channels/types.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { reasonOf } from "./app-controller-utils.js";
 import type { ConfigApplyResult, TraceabilityStatus } from "./app-controller-types.js";
 import { notifyDestination as notifyDestinationForChannel } from "./app-controller-maintenance.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
-import type { NotifyDeliveryResult } from "./proactive-notify.js";
+import type { NotifyDeliveryResult } from "./channels/types.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "./provider-auth-observations.js";

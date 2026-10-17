@@ -1,20 +1,18 @@
+import type { CronChannelOverrides } from "../channels/types.js";
 import type {
-  CronAdapterConfig,
-  CronAdapterOptions,
-  CronAdapterStartResult,
-  CronFiringIdentity,
+  CronAdapterConfig, CronFiringIdentity,
   CronJobConfig,
   CronJobResult,
-  CronPreflightRecord,
+  CronPreflightRecord
 } from "@mono-agent/trigger-cron";
 import type { ChannelConfigViewSection, NotifyDeliveryContext } from "@mono-agent/contracts";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
-import type { ChannelDriver, MonoAgentAppLogger } from "../channels.js";
+import type { ChannelDriver, MonoAgentAppLogger } from "../channels/types.js";
 import { runCronPreflight } from "../cron-preflight.js";
-import type { NotifyDeliveryResult } from "../proactive-notify.js";
+import type { NotifyDeliveryResult } from "../channels/types.js";
 import {
   inspectCronControlStore,
   openCronControlStore,
@@ -51,18 +49,6 @@ const UNCONFIGURED_CRON_CONFIG: CronChannelConfig = {
 const DEFAULT_CRON_MAX_RUN_MS = 20 * 60 * 1000;
 const DEFAULT_CRON_FAILURE_NOTICE_COOLDOWN_HOURS = 6;
 const MAX_CRON_FAILURE_NOTICE_ERROR_CHARS = 180;
-
-export interface CronChannelOverrides {
-  readonly adapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
-  /** Test seam for the owner-private durable control store. */
-  readonly inspectControlStore?: typeof inspectCronControlStore;
-  /** Test seam for opening the owner-private durable control store. */
-  readonly openControlStore?: typeof openCronControlStore;
-  /** Test seam for cooldown decisions; production uses the system clock. */
-  readonly now?: () => Date;
-  /** Maximum wall-clock time before a hung run is aborted and its slot reclaimed. */
-  readonly maxRunMs?: number;
-}
 
 export function createCronChannelDriver(
   overrides: CronChannelOverrides = {},

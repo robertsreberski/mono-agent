@@ -1,46 +1,11 @@
-import type { MemoryLoadOptions } from "@mono-agent/contracts";
+import type { LabelSectionRequest, LabelContext, LabelSections, FactSheetEntry, GuidanceEntry } from "./memory/recall-contract.js";
 import type { MemoryDb } from "@mono-agent/memory/store";
 import { recallLineStatus } from "@mono-agent/memory/bujo";
-import { factKeyLabel, factValueText, guidanceScoreFloor, GUIDANCE_MAX_RANK, memoryGuidanceScopes, resolveMemoryEntities, safeLine, type LabelRecallStore } from "./memory-guidance.js";
-import type { MemoryRecallHit } from "./memory-recall.js";
+import { factKeyLabel, factValueText, guidanceScoreFloor, GUIDANCE_MAX_RANK, memoryGuidanceScopes, resolveMemoryEntities, safeLine } from "./memory-guidance.js";
+import { type LabelRecallStore } from "./memory/recall-contract.js";
+import type { MemoryRecallHit } from "./memory/recall-contract.js";
 
 type LabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
-export type LabelKind = "fact" | "preference" | "lesson";
-export interface LabelSectionRequest {
-  readonly query: string;
-  readonly kind?: LabelKind;
-  readonly about?: string;
-}
-export interface LabelContext extends MemoryLoadOptions { readonly conversationId?: string }
-export interface FactSheetEntry {
-  readonly entityId: string;
-  readonly name: string;
-  readonly key?: string;
-  readonly value?: Extract<LabelHit["label"], { kind: "fact" }>["value"];
-  /** The stored line itself is the only claim carried by a coarse fact. */
-  readonly text?: string;
-  readonly attribution: string;
-  readonly recordedAt: string;
-  readonly current: boolean;
-  readonly conflict: boolean;
-  readonly sourceFile?: string;
-  readonly sourceLine?: number;
-}
-export interface GuidanceEntry {
-  readonly kind: "preference" | "lesson";
-  readonly scope: string;
-  readonly text: string;
-  readonly recordedAt: string;
-  readonly sourceFile?: string;
-  readonly sourceLine?: number;
-}
-export interface LabelSections {
-  readonly factSheet?: readonly FactSheetEntry[];
-  readonly factSheetTruncated?: boolean;
-  readonly preferencesAndLessons?: readonly GuidanceEntry[];
-  readonly preferencesAndLessonsTruncated?: boolean;
-  readonly text: string;
-}
 
 /** Deliberate views retain history and conflicts; guidance uses the effective query's retrieved candidates, with no extra lookup. */
 export function readLabelSections(store: LabelRecallStore, request: LabelSectionRequest, context: LabelContext = {}, candidates: readonly MemoryRecallHit[] = [], intentExpiry = false): LabelSections | undefined {

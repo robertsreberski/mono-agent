@@ -3,11 +3,9 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 
 import { ContinuationHttpRoutes } from "./continuation-http-routes.js";
-import {
-  acquireContinuationStoreLock,
-  loadOrCreateContinuationSecret,
-  openContinuationStore,
-} from "./continuation-store.js";
+import { acquireSqliteLease } from "./durable-state/sqlite-lease.js";
+import { loadOrCreateContinuationSecret } from "./continuation-secret.js";
+import { openContinuationStore } from "./continuation-store.js";
 import {
   clearLease,
   closeContinuationServer,
@@ -52,7 +50,7 @@ export async function startContinuationService(
   }
   validateNamedRoutes(options.namedRoutes ?? {});
   const stateDir = resolve(options.stateDir ?? resolve(options.cwd ?? process.cwd(), ".mono-agent", "continuations"));
-  const lock = await acquireContinuationStoreLock(stateDir);
+  const lock = await acquireSqliteLease(stateDir);
   try {
     const [store, secret] = await Promise.all([
       openContinuationStore(stateDir, {

@@ -9,7 +9,8 @@ import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import type { TelegramAdapterStartOptions } from "@mono-agent/channel-telegram";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createTelegramChannelDriver, type ChannelStartInput } from "../channels.js";
+import { createTelegramChannelDriver } from "../channels.js";
+import { type ChannelStartInput } from "../channels/types.js";
 import { CONSOLE_PROJECT_SCHEMAS, createConsoleProjectsRuntimeExtension } from "../console-projects.js";
 import {
   bindTelegramProjectTurn,

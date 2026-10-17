@@ -9,7 +9,7 @@ import type {
   WebhookInvocationStatus,
 } from "@mono-agent/trigger-webhook";
 
-import type { ChannelStartInput } from "../channels.js";
+import type { ChannelStartInput } from "../channels/types.js";
 import { createWebhookChannelDriver } from "../channels.js";
 
 const noopResponder: AgentResponder = {

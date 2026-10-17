@@ -1,3 +1,4 @@
+import { resolveValidateContext } from "./cli/validate-context.js";
 import { basename, resolve } from "node:path";
 import process from "node:process";
 
@@ -18,11 +19,7 @@ import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 import { validateMonoAgentFolder } from "./doctor.js";
-import type {
-  ValidationReport,
-  ValidationSection,
-  ValidationStatus,
-} from "./doctor.js";
+import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 import type { ModuleValidateExpectation } from "./modules/index.js";
 import { composeWizardPlan } from "./wizard/answers.js";
 import {
@@ -33,23 +30,6 @@ import {
 } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
 import * as ui from "./ui.js";
-
-interface ValidateContext {
-  readonly cwd: string;
-  readonly configPath: string;
-  readonly envFilePath: string;
-  readonly allowFilesystemWrites: boolean;
-}
-
-function resolveValidateContext(args: ParsedCliArgs, invocationCwd: string): ValidateContext {
-  const cwd = resolve(invocationCwd, args.consumerPath ?? ".");
-  return {
-    cwd,
-    configPath: resolve(cwd, args.configPath ?? "mono-agent.config.json"),
-    envFilePath: resolve(cwd, args.envFile ?? ".env"),
-    allowFilesystemWrites: args.consumerPath === undefined,
-  };
-}
 
 export async function runValidate(args: ParsedCliArgs): Promise<number> {
   const context = resolveValidateContext(args, process.cwd());

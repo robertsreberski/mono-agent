@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
-import { writeJsonAtomic } from "../continuation-store-fs.js";
+import { writeJsonAtomic } from "../durable-state/private-files.js";
 import { isSubagentRecoveryFence, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "../subagent-registry-ownership.js";
 
 it("loads old recovery fences and restricts new timeout certificates to retained timeout", () => {

@@ -57,10 +57,10 @@ import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendTools
 import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, renamedToolMessage, renamedToolName, suggestToolName } from "./modules/known-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
-import type { ChannelDriver } from "./channels.js";
+import type { ChannelDriver } from "./channels/types.js";
 import { loadContinuationSettings } from "./continuation-config.js";
 import { applyOriginContextGroupCommit } from "./continuation-origin-store.js";
-import { readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";
+import { readBoundedOwnerOnlyFile } from "./durable-state/private-files.js";
 import { loadLegacyStore, mergeMigrationRecords } from "./continuation-store-records.js";
 import {
   CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
@@ -134,12 +134,12 @@ import {
 } from "./launchd-logs.js";
 import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "./launchd-logs.js";
 import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
-import type { ManagedLaunchdLogMonitorStatus } from "./background-log-maintenance.js";
+import type { ManagedLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { runsSection } from "./doctor-runs.js";
 import { sessionToolHistorySection } from "./doctor-session-history.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 
-export type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
+
 
 const execFile = promisify(execFileCallback);
 

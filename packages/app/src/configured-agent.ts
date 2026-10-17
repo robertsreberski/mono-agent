@@ -8,7 +8,8 @@ import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js"
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/conversation";
 import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
 import type { OwnedForegroundProcesses } from "@mono-agent/turn/host/types";
-import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
+import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
+import { type InstanceRegistryHandle } from "./subagents/types.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
   createConversationHarness,
@@ -65,10 +66,10 @@ import {
   assertAgentRootLeaseOutsideWorkspace,
   releaseAgentRootOwnershipWhenIdle,
   type AgentRootOwnership,
-} from "./agent-root-coordinator.js";
-import type { ChannelId } from "./channels.js";
+} from "./durable-state/agent-root-coordinator.js";
+import type { ChannelId } from "./channels/types.js";
 import { textFromMemoryRuntimeResult } from "./memory-llm-result.js";
-import { resolveMemoryRecallSettings } from "./memory-recall.js";
+import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import {
   createMemoryJournalRuntimeExtension,
   isMemoryJournalCapableStore,

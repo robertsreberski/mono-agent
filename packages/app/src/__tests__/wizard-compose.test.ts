@@ -8,16 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { CAPABILITY_MODULES } from "../modules/catalog.js";
 import { findModule } from "../modules/index.js";
-import {
-  alwaysOnTools,
-  composeWizardPlan,
-  type ComposeContext,
-  defaultAnswers,
-  humanizeAgentName,
-  moduleOverrides,
-  referencedSetupModelRefs,
-  type WizardAnswers,
-} from "../wizard/answers.js";
+import { alwaysOnTools, composeWizardPlan, defaultAnswers, humanizeAgentName, moduleOverrides, referencedSetupModelRefs } from "../wizard/answers.js";
+import { type ComposeContext, type WizardAnswers } from "../setup/wizard-types.js";
 import { PRESET_CATALOG, presetAnswers } from "../wizard/presets.js";
 
 const CTX: ComposeContext = { dirBasename: "smoke", skillsRootExists: false };

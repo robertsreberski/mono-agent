@@ -6,13 +6,11 @@ import {
   inspectOwnerPrivateLaunchdPlist,
   readOwnerPrivateLaunchdPlist,
 } from "./background.js";
-import type { BackgroundLifecycleTarget } from "./background.js";
+import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import {
   maintainLaunchdLogsWithSharedLockOperation,
 } from "./background-log-maintenance.js";
-import type {
-  LaunchdLogMaintenanceDeps,
-} from "./background-log-maintenance.js";
+import type { LaunchdLogMaintenanceDeps } from "./service/background/log-maintenance-types.js";
 import {
   buildWebMaintenancePlistXml,
   launchdWebMaintenanceInfo,

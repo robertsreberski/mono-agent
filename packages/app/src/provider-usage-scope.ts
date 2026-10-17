@@ -4,7 +4,7 @@ import {
 } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type { ChannelDriver } from "./channels.js";
+import type { ChannelDriver } from "./channels/types.js";
 import { collectUsedProviderReferences } from "./provider-auth-status.js";
 
 /** Agent/config scope only: credential identity, backoff and flights belong to the shared service. */

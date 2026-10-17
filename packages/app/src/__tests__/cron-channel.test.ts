@@ -12,7 +12,8 @@ import type {
   CronFiringIdentity,
 } from "@mono-agent/trigger-cron";
 
-import type { ChannelStartInput, CronChannelOverrides } from "../channels.js";
+import type { ChannelStartInput } from "../channels/types.js";
+import type { CronChannelOverrides } from "../channels/types.js";
 import { createCronChannelDriver } from "../channels.js";
 import { openCronControlStore, type CronControlStore } from "../cron-control-store.js";
 import { CronOperatorRegistry } from "../cron-operator-service.js";

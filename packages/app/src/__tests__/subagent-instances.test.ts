@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { writeJsonAtomic } from "../continuation-store-fs.js";
+import { writeJsonAtomic } from "../durable-state/private-files.js";
 import { SUBAGENT_REGISTRY_MAX_BYTES, SUBAGENT_TERMINAL_MAX_COUNT, createSubagentInstanceRegistry, subagentConversationRoot, subagentInstanceSessionId } from "../subagent-instances.js";
 
 const roots: string[] = [];

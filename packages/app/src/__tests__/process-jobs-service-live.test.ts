@@ -12,7 +12,7 @@ import { startPreparedProcess } from "../../../turn/src/tools/commands/process-r
 import { PROCESS_JOBS_DEFAULTS, type ProcessJobsSettings } from "../process-jobs-config.js";
 import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
 import type { ProcessJobOriginRecord } from "../process-jobs-store.js";
-import type { ProcessIncarnation } from "../process-incarnation.js";
+import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const INCARNATION: ProcessIncarnation = {
   schema: "mono-agent.process-incarnation.v1",

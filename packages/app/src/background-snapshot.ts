@@ -16,7 +16,7 @@ import {
   isSystemdBackgroundOperationalEnvName,
   selectBackgroundOperationalEnvironment,
 } from "./background-environment.js";
-import { readCliConfigSnapshot, readCliDotenvSnapshot } from "./first-run-readiness.js";
+import { readCliConfigSnapshot, readCliDotenvSnapshot } from "./service/background/source-inputs.js";
 
 export const BACKGROUND_SNAPSHOT_SCHEMA = "mono-agent.background-snapshot.v1";
 const MAX_ENCODED_BACKGROUND_SNAPSHOT_LENGTH = 32_768;

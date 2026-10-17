@@ -3,11 +3,8 @@ import { lstat, open, opendir, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import process from "node:process";
 
-import type {
-  AdditionalLaunchdLogInspection,
-  AdditionalLaunchdLogMaintenanceResult,
-  ManagedLaunchdLogMonitor,
-} from "./background-log-maintenance.js";
+import type { AdditionalLaunchdLogInspection, AdditionalLaunchdLogMaintenanceResult } from "./service/background/log-maintenance-types.js";
+import type { ManagedLaunchdLogMonitor } from "./background-log-maintenance.js";
 import {
   inspectLaunchdLogs,
   LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS,

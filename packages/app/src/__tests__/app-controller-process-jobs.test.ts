@@ -18,12 +18,9 @@ import {
   agentRootLeasePath,
   acquireAgentRootOwnership,
   type AgentRootOwnership,
-} from "../agent-root-coordinator.js";
-import {
-  createSlackChannelDriver,
-  createTelegramChannelDriver,
-  type ChannelStartInput,
-} from "../channels.js";
+} from "../durable-state/agent-root-coordinator.js";
+import { createSlackChannelDriver, createTelegramChannelDriver } from "../channels.js";
+import { type ChannelStartInput } from "../channels/types.js";
 import type {
   OpenProcessJobsServiceOptions,
   ProcessJobsServiceHandle,
@@ -41,8 +38,8 @@ const processIdentity = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../process-incarnation.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/conversation/process-incarnation")>(),
   currentProcessIncarnation: async () => processIdentity.current,
   isSameProcessIncarnation: () => true,
   isProcessIncarnationLive: () => true,

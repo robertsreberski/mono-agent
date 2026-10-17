@@ -13,7 +13,7 @@ import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/t
 import { type RuntimeModelReference } from "@mono-agent/turn/host/types";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type { ChannelDriver } from "./channels.js";
+import type { ChannelDriver } from "./channels/types.js";
 import { inspectPiAuthStore } from "./pi-auth-store-inspection.js";
 import { hasUsablePiOAuthClientId } from "./provider-setup.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";

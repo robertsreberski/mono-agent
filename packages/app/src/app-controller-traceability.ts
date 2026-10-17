@@ -22,7 +22,7 @@ import {
 } from "./app-config.js";
 import type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
-import { resolveMemoryRecallSettings } from "./memory-recall.js";
+import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import {
   nextDailyRolloverAt,
@@ -35,7 +35,7 @@ import type {
   TraceabilityStatus,
 } from "./app-controller-types.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
-import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "./channels.js";
+import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "./channels/types.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
   unsafeProcessJobsProtectionStatus,

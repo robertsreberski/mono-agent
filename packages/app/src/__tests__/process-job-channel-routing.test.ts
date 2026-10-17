@@ -6,7 +6,7 @@ import {
   routeProcessJobSurfaceUpdate,
   routeProcessJobWake,
 } from "../process-job-channel-routing.js";
-import type { ChannelDriver, RunningChannel } from "../channels.js";
+import type { ChannelDriver, RunningChannel } from "../channels/types.js";
 
 describe("process-job channel routing", () => {
   it("routes one future plugin scheme through its explicit running capability", async () => {

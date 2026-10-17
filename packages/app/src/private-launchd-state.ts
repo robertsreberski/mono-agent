@@ -4,10 +4,10 @@ import { access, lstat, mkdir, open, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 
-import type { BackgroundLifecycleTarget } from "./background.js";
+import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
 import { deriveLaunchdMaintenanceLabel } from "./launchd.js";
 import type { LaunchdPaths } from "./launchd.js";
-import { secureFileReplace } from "./secure-file-replace.js";
+import { secureFileReplace } from "./durable-state/secure-file-replace.js";
 
 const STATUS_MAX_BYTES = 8192;
 const STATUS_TEMPORARY_SUFFIX = ".next";

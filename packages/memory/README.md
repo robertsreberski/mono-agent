@@ -532,6 +532,10 @@ supersede or merge records, rewrite canonical memories, or call a chat model.
 
 ### Start here
 
+`@mono-agent/memory/health-metadata` exports `MEMORY_HEALTH_ISSUE_CODES` and
+`MemoryHealthIssueCode` without loading the store, SQLite, or provider SDKs.
+Use this code-only entry to validate health reports outside the audit worker.
+
 | Subpath | API | Use it for |
 | --- | --- | --- |
 | `@mono-agent/memory/bujo` | `createBujoMemoryStore` | Construct a Lite, Journal, or BuJo store for direct embedding. |
@@ -771,6 +775,13 @@ validateCuratePersonAssociation
 validateCurateProposal
 writeFutureLog
 writeIndex
+```
+
+**`@mono-agent/memory/health-metadata`**
+
+```text
+MEMORY_HEALTH_ISSUE_CODES
+MemoryHealthIssueCode
 ```
 
 **`@mono-agent/memory/search`**

@@ -7,7 +7,7 @@ import type {
   TelegramTopicNameSource,
 } from "@mono-agent/channel-telegram";
 
-import { openOwnedState, type OwnedStateHandle } from "./owned-state-sqlite.js";
+import { openOwnedState, type OwnedStateHandle } from "./durable-state/owned-state-sqlite.js";
 
 /**
  * Owner-private observation ledger behind `telegram.projects`.

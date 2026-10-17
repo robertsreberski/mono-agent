@@ -1,5 +1,5 @@
 import type { MonoRuntimeLike } from "@mono-agent/turn/host/types";
-import type { ChannelDriver, ChannelId, ChannelStatus, RunningChannel } from "./channels.js";
+import type { ChannelDriver, ChannelId, ChannelStatus, RunningChannel } from "./channels/types.js";
 import type { ConfigApplyResult, SandboxStatus, TraceabilityStatus } from "./app-controller-types.js";
 
 interface LifecycleControllerPort {

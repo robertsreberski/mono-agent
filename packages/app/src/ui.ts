@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import type { ValidationStatus } from "./doctor.js";
+import type { ValidationStatus } from "./doctor-types.js";
 
 /**
  * Tiny zero-dependency terminal styling layer for the CLI. Every helper returns

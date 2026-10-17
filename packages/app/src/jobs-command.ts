@@ -10,7 +10,7 @@ import {
 import { listTraceSources, mergeTraceSources, type TraceSourceListItem } from "@mono-agent/observability";
 
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
-import { readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";
+import { readBoundedOwnerOnlyFile } from "./durable-state/private-files.js";
 import { PROCESS_JOB_SECRET_FILE } from "./process-jobs-store.js";
 
 const MAX_PROCESS_JOBS_RESPONSE_BYTES = 16 * 1024 * 1024;

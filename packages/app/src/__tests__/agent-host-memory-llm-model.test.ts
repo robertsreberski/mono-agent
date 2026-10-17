@@ -50,8 +50,8 @@ vi.mock("@mono-agent/turn/host", async (importOriginal) => {
 vi.mock("../account-home.js", () => ({
   accountHomeDirectory: () => coordinatorHome.path,
 }));
-vi.mock("../process-incarnation.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/conversation/process-incarnation")>(),
   currentProcessIncarnation: async () => ({
     schema: "mono-agent.process-incarnation.v1" as const,
     bootSessionId: "test-boot",
@@ -66,7 +66,7 @@ const { createConfiguredMemoryForApp } = await import("../configured-agent.js");
 const {
   acquireAgentRootOwnership,
   releaseAgentRootOwnershipWhenIdle,
-} = await import("../agent-root-coordinator.js");
+} = await import("../durable-state/agent-root-coordinator.js");
 const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,

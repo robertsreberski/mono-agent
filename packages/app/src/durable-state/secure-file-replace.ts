@@ -4,7 +4,7 @@ import { lstat, open, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
 
-import { syncDirectory as syncDirectoryDefault } from "./continuation-store-fs.js";
+import { syncDirectory as syncDirectoryDefault } from "./private-files.js";
 
 type Awaitable<T> = T | Promise<T>;
 type SecureFileIdentity = { readonly dev: bigint; readonly ino: bigint };

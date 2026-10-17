@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { Server } from "node:http";
 
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type {
   MemoryBlock,
   MemoryCompletedTurn,
@@ -10,27 +8,23 @@ import type {
   MemoryLoadOptions,
   MemoryStore,
 } from "@mono-agent/contracts";
+import { createLoopbackMcpEndpoint } from "./mcp/loopback-transport.js";
 import {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
-  formatPossiblyRelevantBlock,
-  POSSIBLY_RELEVANT_HEADING,
-  POSSIBLY_RELEVANT_MAX_BYTES,
+  formatPossiblyRelevantBlock, POSSIBLY_RELEVANT_MAX_BYTES,
   selectPossiblyRelevantRecallHits,
   type JournalBrowseInput,
-  type JournalBrowseSnapshot,
+  type JournalBrowseSnapshot
 } from "@mono-agent/memory/bujo";
 
-import { formatMemoryBackground, formatMemoryProfile, type LabelRecallStore } from "./memory-guidance.js";
+import { formatMemoryBackground, formatMemoryProfile } from "./memory-guidance.js";
+import { type LabelRecallStore } from "./memory/recall-contract.js";
 import { isHostProcessJobWakeRecall } from "./process-jobs-context.js";
-import { readLabelSections, type LabelContext, type LabelSectionRequest } from "./memory-label-sections.js";
-import {
-  createMemoryRecallServer,
-  MEMORY_RECALL_MCP_SERVER_NAME,
-  type MemoryRecallOutcome,
-  type MemoryRecallRuntimeExtension,
-  type RecallCapableStore,
-} from "./memory-recall.js";
+import { readLabelSections } from "./memory-label-sections.js";
+import { type LabelContext, type LabelSectionRequest } from "./memory/recall-contract.js";
+import { createMemoryRecallServer, MEMORY_RECALL_MCP_SERVER_NAME } from "./memory-recall.js";
+import { type MemoryRecallOutcome, type MemoryRecallRuntimeExtension, type RecallCapableStore } from "./memory/recall-contract.js";
 
 export interface SharedRecallStore extends MemoryStore, RecallCapableStore, LabelRecallStore {
   /** Local-tier chronology. External recall backends intentionally omit it. */
@@ -632,7 +626,6 @@ export function createSharedMemoryRecallRuntimeExtension(
   options: SharedMemoryRecallRuntimeExtensionOptions = {},
 ): (input: { readonly runId: string }) => Promise<MemoryRecallRuntimeExtension> {
   return async ({ runId }) => {
-    const path = `/mcp/${randomUUID()}`;
     const graphEnabled = service.supportsGraphExpansion();
     const boundStore: RecallCapableStore = {
       intentExpiryEnabled: () => service.intentExpiryEnabled(),
@@ -662,91 +655,28 @@ export function createSharedMemoryRecallRuntimeExtension(
       recordAccess: (ids: readonly string[]) => service.recordAccessIdsForTurn(runId, ids),
       close: async () => {},
     };
-    let port: number | undefined;
-    const http = createServer((request, response) => {
-      if (request.url !== path || !isLoopbackHost(request.headers.host)) {
-        response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-        response.end("Not found");
-        return;
-      }
-      if (port === undefined) {
-        response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
-        response.end("Memory recall is starting");
-        return;
-      }
-      const boundPort = port;
-      void (async () => {
-        const parsedBody = request.method === "POST" ? await readJsonBody(request) : undefined;
-        const webRequest = nodeRequestAsWebRequest(request);
-        // Stateless server+transport minted per request: the runtime opens a
-        // fresh MCP client (with a new `initialize`) against this same per-run
-        // endpoint on every model-failover attempt, and a long-lived
-        // session-stateful transport rejects that second initialize ("Server
-        // already initialized"), silently dropping the tool for the answering
-        // attempt. The SDK's stateless mode requires a fresh transport per
-        // request, so both are per-request; the bound store stays shared.
-        const requestMcp = createMemoryRecallServer(boundStore);
-        // No sessionIdGenerator: stateless mode (exact-optional forbids an
-        // explicit undefined).
-        const transport = new WebStandardStreamableHTTPServerTransport({
-          enableJsonResponse: true,
-          allowedHosts: [`127.0.0.1:${boundPort}`],
-          enableDnsRebindingProtection: true,
-        });
-        try {
-          // The SDK's Node transport declaration is not exact-optional compatible
-          // with its own base Transport under this repo's compiler settings.
-          await requestMcp.connect(transport as never);
-          const webResponse = await transport.handleRequest(webRequest, { parsedBody });
-          if (webResponse === undefined) throw new Error("MemoryRecall MCP transport is unavailable.");
-          await writeWebResponse(response, webResponse);
-        } finally {
-          await requestMcp.close().catch(() => undefined);
-        }
-      })().catch(() => {
-        if (!response.headersSent) response.writeHead(500);
-        response.end();
-      });
-    });
+    let startupCleanupSucceeded = false;
     try {
-      await (options.listen ?? listenLoopback)(http);
-      const address = http.address() as AddressInfo;
-      port = address.port;
-      let closed = false;
+      const endpoint = await createLoopbackMcpEndpoint({
+        createServer: () => createMemoryRecallServer(boundStore),
+        onStartupFailure: () => { startupCleanupSucceeded = true; },
+        startingResponse: { status: 503, message: "Memory recall is starting" },
+        bodyLimitMessage: "MemoryRecall MCP request exceeds 1 MB.",
+        unavailableTransportMessage: "MemoryRecall MCP transport is unavailable.",
+        ...(options.listen === undefined ? {} : { listen: options.listen }),
+        // An abort-ignoring provider may outlive its concurrency permit. Once
+        // the endpoint closes, no tool can use this turn's cache again.
+        onRelease: () => { service.releaseTurn(runId); },
+      });
       return {
-        runtimeOptions: {
-          mcpServers: {
-            [MEMORY_RECALL_MCP_SERVER_NAME]: {
-              type: "http",
-              url: `http://127.0.0.1:${address.port}${path}`,
-            },
-          },
-        },
-        cleanup: async () => {
-          if (closed) return;
-          closed = true;
-          try {
-            await closeHttpServer(http);
-          } finally {
-            // An abort-ignoring provider may keep the outer logical turn alive
-            // after this endpoint releases its concurrency permit. No tool can
-            // use the cache once the endpoint is closed, so release it here as
-            // well as in the harness's eventual outer finally.
-            service.releaseTurn(runId);
-          }
-        },
+        runtimeOptions: { mcpServers: { [MEMORY_RECALL_MCP_SERVER_NAME]: { type: "http", url: endpoint.url } } },
+        cleanup: endpoint.close,
       };
     } catch (error) {
-      await closeHttpServer(http);
+      if (!startupCleanupSucceeded) throw error;
       service.releaseTurn(runId);
-      try {
-        options.onUnavailable?.(error);
-      } catch {
-        // Diagnostics are best-effort; a logger failure cannot fail the turn.
-      }
-      // Automatic recall already ran through MemoryRetrievalService.load(). A
-      // loopback startup failure therefore omits only the explicit tool and
-      // must not prevent the provider turn from proceeding.
+      try { options.onUnavailable?.(error); } catch { /* diagnostics are best-effort */ }
+      // Automatic recall already ran. Omit only the explicit tool on startup failure.
       return { runtimeOptions: { mcpServers: {} }, cleanup: async () => { service.releaseTurn(runId); } };
     }
   };
@@ -796,70 +726,4 @@ function recallAttributions(store: SharedRecallStore, hits: readonly SharedRecal
     if (only !== undefined) out.set(id, only);
   }
   return out;
-}
-
-function isLoopbackHost(host: string | undefined): boolean {
-  return host !== undefined && /^127\.0\.0\.1:\d+$/u.test(host);
-}
-
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += buffer.byteLength;
-    if (bytes > 1_000_000) throw new Error("MemoryRecall MCP request exceeds 1 MB.");
-    chunks.push(buffer);
-  }
-  if (chunks.length === 0) return undefined;
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-}
-
-function nodeRequestAsWebRequest(request: IncomingMessage): Request {
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(request.headers)) {
-    if (Array.isArray(value)) {
-      for (const item of value) headers.append(name, item);
-    } else if (value !== undefined) {
-      headers.set(name, value);
-    }
-  }
-  return new Request(`http://${String(request.headers.host)}${request.url ?? "/"}`, {
-    method: request.method ?? "GET",
-    headers,
-  });
-}
-
-async function writeWebResponse(response: import("node:http").ServerResponse, webResponse: Response): Promise<void> {
-  const headers: Record<string, string> = {};
-  webResponse.headers.forEach((value, name) => { headers[name] = value; });
-  response.writeHead(webResponse.status, headers);
-  if (webResponse.body === null) {
-    response.end();
-    return;
-  }
-  const reader = webResponse.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    response.write(Buffer.from(value));
-  }
-  response.end();
-}
-
-async function listenLoopback(server: Server): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error): void => reject(error);
-    server.once("error", onError);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", onError);
-      resolve();
-    });
-  });
-}
-
-async function closeHttpServer(server: Server): Promise<void> {
-  server.closeAllConnections?.();
-  if (!server.listening) return;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
 }

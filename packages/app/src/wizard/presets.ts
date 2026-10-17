@@ -1,4 +1,5 @@
-import { defaultAnswers, type WizardAnswers } from "./answers.js";
+import { defaultAnswers } from "./answers.js";
+import { type WizardAnswers } from "../setup/wizard-types.js";
 
 /**
  * A saved answer-set the wizard can start from: the opinionated blueprints that

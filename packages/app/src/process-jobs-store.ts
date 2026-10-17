@@ -1,7 +1,9 @@
 import { validWakeFence, validWakeCertificates, type WakeAttemptFence } from "./process-jobs-wake-fence.js";
 import { isSubagentVerificationTarget, isSubagentVerificationObservation, type SubagentVerificationTarget, type SubagentVerificationObservation } from "./subagent-verification-observer.js";
-import { isSubagentCommandReceipts, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
-import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
+import { isSubagentCommandReceipts } from "./subagent-command-receipts.js";
+import { type SubagentCommandReceipts } from "./subagents/types.js";
+import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership } from "./subagent-execution-ownership.js";
+import { type SubagentExecutionOwnership } from "./subagents/types.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { linkSync, unlinkSync, type Stats } from "node:fs";
 import {
@@ -35,12 +37,9 @@ import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-conf
 import {
   processIncarnationFromJson,
   type ProcessIncarnation,
-} from "./process-incarnation.js";
-import { secureFileReplace } from "./secure-file-replace.js";
-import {
-  readBoundedOwnerOnlyFile,
-  syncDirectory,
-} from "./continuation-store-fs.js";
+} from "@mono-agent/conversation/process-incarnation";
+import { secureFileReplace } from "./durable-state/secure-file-replace.js";
+import { readBoundedOwnerOnlyFile, syncDirectory } from "./durable-state/private-files.js";
 
 export const PROCESS_JOB_RECORD_SCHEMA = 1;
 export const PROCESS_JOB_RECORDS_DIRECTORY = "records-v1";

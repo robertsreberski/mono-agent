@@ -26,27 +26,10 @@ import {
   riskColor,
 } from "./cli-validate-config-command.js";
 import { validateMonoAgentFolder } from "./doctor.js";
-import type { ValidationReport } from "./doctor.js";
-import {
-  effectiveFirstRunEnvironment,
-  evaluateFirstRunConfigurationReadiness,
-  evaluateFirstRunReadiness,
-  hasSensitivePersistedEnvironmentValue,
-  piAuthPathBackgroundConflict,
-  readCliConfigSnapshot,
-  readCliDotenvSnapshot,
-  resolveEffectivePiAuthPath,
-  selectedSecretEnvironmentConflicts,
-  selectedSecretValues,
-  unexpectedPersistedMonoAgentOverrides,
-  validateWizardPlanInStaging,
-  withExactProcessEnvironment,
-} from "./first-run-readiness.js";
-import type {
-  CliConfigSnapshot,
-  CliDotenvSnapshot,
-  CliEnvironment,
-} from "./first-run-readiness.js";
+import type { ValidationReport } from "./doctor-types.js";
+import { effectiveFirstRunEnvironment, evaluateFirstRunConfigurationReadiness, evaluateFirstRunReadiness, hasSensitivePersistedEnvironmentValue, piAuthPathBackgroundConflict, resolveEffectivePiAuthPath, selectedSecretEnvironmentConflicts, selectedSecretValues, unexpectedPersistedMonoAgentOverrides, validateWizardPlanInStaging, withExactProcessEnvironment } from "./first-run-readiness.js";
+import { readCliConfigSnapshot, readCliDotenvSnapshot } from "./service/background/source-inputs.js";
+import type { CliConfigSnapshot, CliDotenvSnapshot, CliEnvironment } from "./service/background/source-inputs.js";
 import {
   initMonoAgentFolder,
   secretEnvConcurrentModificationCause,
@@ -74,11 +57,7 @@ import type {
 } from "./readiness-probe.js";
 import { setupManagedSrt } from "./sandbox-manager.js";
 import { composeWizardPlan, referencedSetupModelRefs } from "./wizard/answers.js";
-import type {
-  SecretChecklistItem,
-  WizardAnswers,
-  WizardPlan,
-} from "./wizard/answers.js";
+import type { SecretChecklistItem, WizardAnswers, WizardPlan } from "./setup/wizard-types.js";
 import { answersFromCli, isWithChannel } from "./wizard/from-flags.js";
 import type { WithChannel } from "./wizard/from-flags.js";
 import { findPreset, presetIds } from "./wizard/presets.js";

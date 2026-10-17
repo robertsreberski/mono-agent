@@ -1,4 +1,4 @@
-import type { WorkerActivityTracker } from "./worker-activity.js";
+import type { WorkerActivityTracker } from "./durable-state/worker-activity.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
 
@@ -26,8 +26,8 @@ import {
   reasonOf,
 } from "./app-controller-utils.js";
 import type { ContinuationRunningChannel } from "./app-controller-utils.js";
-import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
-import type { NotifyDeliveryResult } from "./proactive-notify.js";
+import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
+import type { NotifyDeliveryResult } from "./channels/types.js";
 
 interface ContinuationControllerPort {
   readonly activityTracker?: WorkerActivityTracker;

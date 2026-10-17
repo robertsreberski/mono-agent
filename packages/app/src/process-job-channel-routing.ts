@@ -4,7 +4,7 @@ import type {
   ProcessJobWakeDeliveryResult,
 } from "@mono-agent/contracts";
 
-import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
 
 interface ProcessJobChannelRoutingInput {
   readonly projection: ProcessJobProjection;

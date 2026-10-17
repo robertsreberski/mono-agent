@@ -5,7 +5,8 @@ import { rankDeliberateRecallHits } from "@mono-agent/memory/bujo";
 import type { MemoryDb } from "@mono-agent/memory/store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatMemoryBackground, formatMemoryProfile } from "../memory-guidance.js";
-import { createMemoryRecallServer, type MemoryRecallHit, type RecallCapableStore } from "../memory-recall.js";
+import { createMemoryRecallServer } from "../memory-recall.js";
+import { type MemoryRecallHit, type RecallCapableStore } from "../memory/recall-contract.js";
 import { createSharedMemoryRecallRuntimeExtension, MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 
 type LabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];

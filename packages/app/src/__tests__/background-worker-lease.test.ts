@@ -20,7 +20,7 @@ import {
   acquireBackgroundWorkerLease,
   backgroundWorkerLeasePath,
 } from "../background-worker-lease.js";
-import type { ProcessIncarnation } from "../process-incarnation.js";
+import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const homes: string[] = [];
 const CONFIG = "/work/lease-smoke/mono-agent.config.json";

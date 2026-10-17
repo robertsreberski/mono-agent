@@ -25,8 +25,8 @@ vi.mock("../background-snapshot.js", async (importOriginal) => {
     loadDurableBackgroundEnvironment: mocks.durable,
   };
 });
-vi.mock("../cli-background-command.js", () => ({ ensureStartable: mocks.preflight }));
-vi.mock("../web-command.js", () => ({ webHealthcheck: mocks.health }));
+vi.mock("../service/start-preflight.js", () => ({ ensureStartable: mocks.preflight }));
+vi.mock("../service/web/health.js", () => ({ webHealthcheck: mocks.health }));
 vi.mock("@mono-agent/observability", () => ({ listTraceSources: mocks.traces }));
 
 import { runSystemdAgentCommand, runSystemdWebCommand } from "../systemd-command.js";

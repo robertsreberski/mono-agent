@@ -14,8 +14,8 @@ const processIdentity = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../process-incarnation.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mono-agent/conversation/process-incarnation")>(),
   currentProcessIncarnation: async () => processIdentity.current,
   isSameProcessIncarnation: (pid: number) => processExists(pid),
   isProcessIncarnationLive: (pid: number) => processExists(pid),
@@ -29,7 +29,7 @@ import {
   acquireAgentRootOwnership,
   assertAgentRootLeaseOutsideWorkspace,
   releaseAgentRootOwnershipWhenIdle,
-} from "../agent-root-coordinator.js";
+} from "../durable-state/agent-root-coordinator.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -180,7 +180,7 @@ async function waitForLeaseRelease(root: string, home: string): Promise<void> {
 }
 
 function coordinatorModuleUrl(): string {
-  return pathToFileURL(join(process.cwd(), "dist/agent-root-coordinator.js")).href;
+  return pathToFileURL(join(process.cwd(), "dist/durable-state/agent-root-coordinator.js")).href;
 }
 
 async function childAttempt(root: string, home: string): Promise<"owned" | "conflict"> {
