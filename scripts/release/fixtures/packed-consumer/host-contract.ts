@@ -82,3 +82,4 @@ if (false) {
   // @ts-expect-error host checkpoint evidence stays unknown until narrowed.
   host.prepared.checkpoints[0]!.legacyField.nested = true;
 }
+

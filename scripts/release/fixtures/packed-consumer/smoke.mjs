@@ -39,6 +39,26 @@ if (packageNames.includes("@mono-agent/memory")) {
   assert.equal(count.trim(), "25");
 }
 
+// Exercise pure routing in a fresh process before any SDK entry is loaded.
+if (packageNames.includes("@mono-agent/channel-telegram")) {
+  const targetUrl = import.meta.resolve("@mono-agent/channel-telegram/conversation");
+  execFileSync(process.execPath, ["--input-type=module", "--eval", `
+    import assert from "node:assert/strict";
+    import { registerHooks } from "node:module";
+    const target = ${JSON.stringify(targetUrl)};
+    registerHooks({ load(url, context, next) {
+      if (url !== target) throw new Error("Conversation routing loaded another module: " + url);
+      return next(url, context);
+    } });
+    const routing = await import(target);
+    const topic = routing.parseTelegramConversationId("telegram:-1001:12#bucket");
+    assert.deepEqual(topic, { chatId: -1001, messageThreadId: 12 });
+    assert.equal(routing.formatTelegramConversationTarget(topic), "telegram:-1001:12");
+    assert.equal(routing.telegramConversationId(topic), "telegram:-1001:12");
+    assert.equal(routing.parseTelegramConversationId("telegram:1:0"), undefined);
+  `], { encoding: "utf8" });
+}
+
 for (const specifier of importSpecifiers) {
   if (specifier.endsWith("/package.json")) {
     await import(specifier, { with: { type: "json" } });

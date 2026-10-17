@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add the SDK-free `@mono-agent/channel-telegram/conversation` entry for routing
+  Telegram chat and forum-topic destinations.
+
 - Rename the conversation harness APIs to `ConversationHarness*`,
   `createConversationHarness`, and `createConversationResponder` without aliases.
   Use `ConfiguredConversationHarnessOptions` and

@@ -1,3 +1,4 @@
+import { type TelegramConversationTarget } from "@mono-agent/channel-telegram/conversation";
 import type { TelegramChannelOverrides } from "../channels/types.js";
 import type { AgentResponder, ChannelInteractionSink, NotifyDeliveryResult } from "@mono-agent/contracts";
 import { describeRunFailureKind } from "@mono-agent/observability";
@@ -17,7 +18,7 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
-import { telegramTargetFromConversation, type TelegramDestinationTarget } from "../telegram-destination.js";
+import { telegramTargetFromConversation } from "../telegram-destination.js";
 import {
   bindTelegramProjectTurn,
   createTelegramProjectsService,
@@ -308,7 +309,7 @@ function telegramAttachmentOptions(
  * authorizes anything on its own.
  */
 function isAllowedTelegramChat(
-  target: TelegramDestinationTarget,
+  target: TelegramConversationTarget,
   input: ChannelStartInput<TelegramAdapterConfig>,
 ): boolean {
   return input.config.allowAllChats || input.config.allowedChatIds.includes(String(target.chatId));
@@ -319,7 +320,7 @@ function isAllowedTelegramChat(
  * conversation (so custom starters typed for chat ids keep working) and an
  * explicit chat + topic target for a forum topic.
  */
-function adapterDestination(target: TelegramDestinationTarget): TelegramDestination {
+function adapterDestination(target: TelegramConversationTarget): TelegramDestination {
   return target.messageThreadId === undefined
     ? target.chatId
     : { chatId: target.chatId, messageThreadId: target.messageThreadId };

@@ -183,6 +183,7 @@ export function runPackedConsumerVerification(options = {}) {
       assertPackedReleaseMetadata(pkg, readInstalledManifest(consumerDir, pkg.name));
     }
     verifyPackedHostTypes(consumerDir, options.spawn);
+    verifyPackedTelegramTypes(consumerDir, options.spawn);
     run("npm", ["run", "smoke"], consumerDir, options.spawn);
     runIsolatedPackedConsumers({
       packedPackages,
@@ -230,6 +231,7 @@ function runIsolatedPackedConsumers({
     run("npm", ["install", "--no-audit", "--no-fund", "--package-lock=false"], isolatedDir, spawn);
     assertIsolatedInstallLayout(isolatedDir, pkg.name, reachableNames, allPackageNames);
     if (reachableNames.includes("@mono-agent/turn")) verifyPackedHostTypes(isolatedDir, spawn);
+    if (reachableNames.includes("@mono-agent/channel-telegram")) verifyPackedTelegramTypes(isolatedDir, spawn);
     run("npm", ["run", "smoke", "--", "--target", pkg.name], isolatedDir, spawn);
     fs.rmSync(isolatedDir, { recursive: true, force: true });
   }
@@ -281,6 +283,14 @@ function installedPackageDirectories(modulesDir) {
     }
   }
   return directories;
+}
+
+function verifyPackedTelegramTypes(consumerDir, spawn) {
+  run(process.execPath, [path.join(REPO_ROOT, "node_modules/typescript/bin/tsc"),
+    "telegram-conversation-contract.ts", "--module", "NodeNext", "--moduleResolution", "NodeNext",
+    "--target", "ES2022", "--strict", "--exactOptionalPropertyTypes", "--skipLibCheck",
+    "--types", "node", "--typeRoots", path.join(REPO_ROOT, "node_modules/@types"),
+    "--noEmit"], consumerDir, spawn);
 }
 
 export function verifyPackedHostTypes(consumerDir, spawn) {

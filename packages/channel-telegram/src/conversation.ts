@@ -42,6 +42,11 @@ export function telegramConversationTarget(destination: TelegramDestination): Te
 /** The harness conversation id for a Telegram chat or forum topic. */
 export function telegramConversationId(destination: TelegramDestination): string {
   const target = telegramConversationTarget(destination);
+  return formatTelegramConversationTarget(target);
+}
+
+/** Format an already-selected target without imposing destination validation. */
+export function formatTelegramConversationTarget(target: TelegramConversationTarget): string {
   return target.messageThreadId === undefined
     ? `${CONVERSATION_PREFIX}${String(target.chatId)}`
     : `${CONVERSATION_PREFIX}${String(target.chatId)}:${String(target.messageThreadId)}`;
