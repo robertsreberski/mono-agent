@@ -88,6 +88,14 @@ const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
     message: "`observability.exporters` was removed with first-party Phoenix/OTLP export. Remove the active exporter block before upgrading. Local run artifacts are unchanged and mono-agent does not select a replacement. If a final export is required, perform it before upgrading with the known-good version you already operate.",
     jsonValueIsActive: retiredObservabilityJsonIsActive,
   },
+  {
+    path: "piToolParallelismMode",
+    message: "`piToolParallelismMode` was renamed to `piToolExecutionMode`; use `sequential` instead of `one-at-a-time`, or `safe-parallel` instead of `all`.",
+  },
+  {
+    path: "runtimeOptions.piToolParallelismMode",
+    message: "`runtimeOptions.piToolParallelismMode` was renamed to `runtimeOptions.piToolExecutionMode`; use `sequential` instead of `one-at-a-time`, or `safe-parallel` instead of `all`.",
+  },
 ] as const;
 
 /**

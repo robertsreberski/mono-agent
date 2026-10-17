@@ -1,3 +1,4 @@
+import { assertNoRetiredRunOptions } from "./retired-options.js";
 // Top-level runtime factory.
 //
 // `createRuntime(host)` is the ergonomic entry point for hosts. It binds the
@@ -203,6 +204,7 @@ export function createRuntime(host = {}) {
     if (Object.hasOwn(options, "settings")) {
       throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
     }
+    assertNoRetiredRunOptions(options);
     if (!options.model) throw new Error("createRuntime.run requires options.model");
     const capturedToolContext = prepare ? snapshotNativeDispatchOptions({ toolContext }).toolContext : toolContext;
     const webSearchState = createWebSearchRunState(options.webSearchConfig, options.webSearchState);

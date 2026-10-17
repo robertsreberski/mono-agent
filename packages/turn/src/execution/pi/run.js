@@ -1,3 +1,4 @@
+import { assertNoRetiredRunOptions } from "../../runtime/retired-options.js";
 import { runHarnessPrompt } from "./prompt-operation.js";
 import { canCertifySilentTurn } from "../../runtime/silent-turn.js";
 import { createDispatchProgress, withDispatchProgress } from "./dispatch-progress.js";
@@ -99,6 +100,7 @@ import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDisp
  * call in safe-parallel mode, while the explicit sequential mode covers all calls.
  */
 export function resolvePiToolExecutionMode(options = {}) {
+  assertNoRetiredRunOptions(options);
   const warnings = [];
   const requested = options.piToolExecutionMode;
   let mode = requested === "sequential" || requested === "safe-parallel"
@@ -109,17 +111,6 @@ export function resolvePiToolExecutionMode(options = {}) {
       warning_kind: "invalid_pi_tool_execution_mode",
       message: `Unknown piToolExecutionMode ${JSON.stringify(requested)}; using safe-parallel.`,
     });
-  }
-  if (options.piToolParallelismMode !== undefined) {
-    warnings.push({
-      warning_kind: "deprecated_pi_tool_parallelism_mode",
-      message: "piToolParallelismMode is deprecated; use piToolExecutionMode (sequential or safe-parallel).",
-    });
-    if (mode === null) {
-      mode = options.piToolParallelismMode === "one-at-a-time"
-        ? "sequential"
-        : "safe-parallel";
-    }
   }
   return { mode: mode || "safe-parallel", warnings };
 }
@@ -333,12 +324,14 @@ export async function generateEngineTurnResponse(systemPrompt, options = {}) {
 /** Additive preparation only. No configured host invokes it yet. */
 export function preparePiNativeDispatch(systemPrompt, options = {}, afterSettlement = async () => {}) {
   if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+  assertNoRetiredRunOptions(options);
   const frozen = snapshotNativeDispatchOptions(options);
   return createPreparedDispatchLease((control) => executePiNativeResponse(systemPrompt, frozen, control).finally(afterSettlement), frozen.abortSignal);
 }
 
 async function executePiNativeResponse(systemPrompt, options = {}, control = undefined) {
   if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+  assertNoRetiredRunOptions(options);
   const dispatchProgress = createDispatchProgress();
   try {
     const compactionUsage = createCompactionUsage();

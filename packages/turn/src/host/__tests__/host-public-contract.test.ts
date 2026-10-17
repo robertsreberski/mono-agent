@@ -438,3 +438,17 @@ if (false) {
   checkFullRequest({ model: parseRuntimeModelReference("fictional:fixture"), messages: [], abortSignal: new AbortController().signal });
   checkAttemptResolution({ runtime: createMonoRuntime() });
 }
+
+it("excludes the retired scheduling key from core and host contracts", () => {
+  expectTypeOf<Extract<"piToolParallelismMode", keyof TurnRunOptions>>().toBeNever();
+  expectTypeOf<Extract<"piToolParallelismMode", KnownKeys<RuntimeRunOptions>>>().toBeNever();
+  if (false) {
+    const host = null as unknown as RuntimeRunOptions;
+    // @ts-expect-error the open host record exposes unknown, not an alias type.
+    const oldMode: "all" | "one-at-a-time" | undefined = host.piToolParallelismMode;
+    void oldMode;
+    const core = null as unknown as TurnRunOptions;
+    // @ts-expect-error direct core callers must migrate too.
+    core.piToolParallelismMode = "all";
+  }
+});

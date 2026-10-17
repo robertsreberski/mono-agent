@@ -412,30 +412,16 @@ describe("resolvePiToolExecutionMode", () => {
       .toEqual({ mode: "safe-parallel", warnings: [] });
   });
 
-  it("maps the deprecated one-at-a-time alias to sequential", () => {
-    const resolved = resolvePiToolExecutionMode({ piToolParallelismMode: "one-at-a-time" });
-
-    expect(resolved.mode).toBe("sequential");
-    expect(resolved.warnings).toEqual([
-      expect.objectContaining({ warning_kind: "deprecated_pi_tool_parallelism_mode" }),
-    ]);
+  it.each(["one-at-a-time", "all", "invalid", null, undefined])("rejects retired presence %s even with the new key", (value) => {
+    for (const piToolExecutionMode of [undefined, "safe-parallel", "sequential", "invalid"]) {
+      expect(() => resolvePiToolExecutionMode({ piToolParallelismMode: value, piToolExecutionMode }))
+        .toThrow("piToolParallelismMode was renamed to piToolExecutionMode");
+    }
   });
 
-  it("maps the deprecated all alias to safe parallelism", () => {
-    expect(resolvePiToolExecutionMode({ piToolParallelismMode: "all" })).toMatchObject({
-      mode: "safe-parallel",
-      warnings: [expect.objectContaining({ warning_kind: "deprecated_pi_tool_parallelism_mode" })],
-    });
-  });
-
-  it("lets the current option win while still warning about a supplied alias", () => {
-    expect(resolvePiToolExecutionMode({
-      piToolExecutionMode: "safe-parallel",
-      piToolParallelismMode: "one-at-a-time",
-    })).toMatchObject({
-      mode: "safe-parallel",
-      warnings: [expect.objectContaining({ warning_kind: "deprecated_pi_tool_parallelism_mode" })],
-    });
+  it("does not treat an inherited old field as a supplied option", () => {
+    expect(resolvePiToolExecutionMode(Object.create({ piToolParallelismMode: "all" })))
+      .toEqual({ mode: "safe-parallel", warnings: [] });
   });
 
   it("warns and falls back for an invalid current mode", () => {
