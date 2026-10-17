@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { conversationStatePurgePlanEntries, resolveConversationStatePurgePlan } from "../conversation-admin/conversation-state-roots.js";
-import { formatConversationStatePurgeResult } from "../cli-background-command.js";
+import { formatConversationStatePurgeResult } from "../cli/commands/cli-background-command.js";
 import { purgeConversationState } from "../conversation-admin/sessions.js";
 
 describe("subagent instance purge roots", () => {

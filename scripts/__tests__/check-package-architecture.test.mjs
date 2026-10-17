@@ -252,7 +252,7 @@ describe("extracted log responsibility guard", () => {
     const root = await mkdtemp(join(tmpdir(), "mono-agent-log-architecture-"));
     temporaryRoots.push(root);
     const files = [
-      "packages/app/src/web-command.ts",
+      "packages/app/src/cli/commands/web-command.ts",
       "packages/app/src/background.ts",
       "packages/channel-slack/src/adapter.ts",
       "packages/memory/src/bujo/rebuild.ts",
@@ -265,7 +265,8 @@ describe("extracted log responsibility guard", () => {
       await mkdir(dirname(join(root, file)), { recursive: true });
       await writeFile(join(root, file), "");
     }
-    const targets = files.filter((file) => file.includes(`/service/${family}/`));
+    const targets = files.filter((file) => file.includes(`/service/${family}/`)
+      || file === (family === "web" ? "packages/app/src/cli/commands/web-command.ts" : "packages/app/src/background.ts"));
     for (const file of targets) {
       await writeFile(join(root, file), `function ${declaration}() {}\n`);
       expect(inspect(root)).toEqual([

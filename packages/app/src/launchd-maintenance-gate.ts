@@ -14,7 +14,7 @@ import type {
   BackgroundLockAcquireOptions,
 } from "./launchd-lifecycle-lock.js";
 import { maintenanceErrorMessage } from "./background-lifecycle-utils.js";
-import * as ui from "./ui.js";
+import * as ui from "./cli/ui.js";
 
 const OWNED_MAINTENANCE_LIFECYCLE = Symbol("owned-launchd-maintenance-lifecycle");
 

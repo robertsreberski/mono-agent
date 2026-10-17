@@ -1,7 +1,7 @@
-import { errorLine } from "../ui.js";
+import { errorLine } from "../cli/ui.js";
 import { maintainLaunchdLogsWithLifecycleLockOperation } from "../background-log-maintenance.js";
 import { ensureManagedBackgroundRuntime, defaultManagedBackgroundRuntimeDeps, verifyManagedRuntimeLaunch } from "../background-runtime.js";
-import { runWebCommand } from "../web-command.js";
+import { runWebCommand } from "../cli/commands/web-command.js";
 import { allowUnattendedMaintenanceStop, MAINTENANCE_MAX_DEFERRAL_MS, type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
 import type { WorkerActivityProbe } from "../durable-state/activity-snapshot.js";
 import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
@@ -29,7 +29,7 @@ import { invalidateApprovedBackgroundSnapshots, resolveApprovedBackgroundSnapsho
 import { encodeBackgroundSnapshot } from "../background-snapshot.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
 import { buildLaunchdProgramArguments, deriveLaunchdLabel } from "../launchd.js";
-import { recordManagedSnapshotRefusal } from "../cli-background-command.js";
+import { recordManagedSnapshotRefusal } from "../cli/commands/cli-background-command.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import type { OwnerPrivateLock } from "../durable-state/owner-private-lock.js";

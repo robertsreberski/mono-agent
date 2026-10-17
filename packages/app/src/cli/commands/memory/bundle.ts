@@ -8,7 +8,7 @@ import type {
   MemoryBundleImportErrorCode,
 } from "@mono-agent/memory/bujo";
 
-import * as ui from "../../../ui.js";
+import * as ui from "../../ui.js";
 import { assertNoLiveConfiguredAgent, memoryRegistryDirs, previewRecallSettings } from "./context.js";
 import {
   canonicalProspectivePath,

@@ -22,7 +22,7 @@ import { printWebUrls, urlHost } from "./presentation.js";
 import { readOptionalText, readServiceRecord } from "./record.js";
 import { inspectOwnedTailscaleRoute, readTailscaleOwnership } from "./tailscale.js";
 import type { RunWebCommandDeps, RunWebCommandOptions } from "./types.js";
-import * as ui from "../../ui.js";
+import * as ui from "../../cli/ui.js";
 
 export async function statusWeb(
   options: RunWebCommandOptions,

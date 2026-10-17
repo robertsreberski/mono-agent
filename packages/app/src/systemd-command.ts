@@ -16,7 +16,7 @@ import {
   encodeBackgroundSnapshot,
   loadDurableBackgroundEnvironment,
 } from "./background-snapshot.js";
-import type { ParsedCliArgs } from "./cli-args.js";
+import type { ParsedCliArgs } from "./cli/cli-args.js";
 import { ensureStartable } from "./service/start-preflight.js";
 import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
@@ -25,7 +25,7 @@ import {
 } from "./systemd.js";
 import type { SystemdDefinition, SystemdDeps, SystemdService } from "./systemd.js";
 import type { RunWebCommandOptions } from "./service/web/types.js";
-import * as ui from "./ui.js";
+import * as ui from "./cli/ui.js";
 import {
   DEFAULT_WEB_HOST,
   DEFAULT_WEB_PORT,

@@ -31,7 +31,7 @@ import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../types.
 import { appPackageVersion } from "../../host/package-version.js";
 import { buildProviderModelCatalog } from "../../providers/provider-model-catalog.js";
 import { configuredRuntimeModels } from "../../composition/runtime-routes.js";
-import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../../skill-registry.js";
+import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../../skills/skill-registry.js";
 import type { CronOperatorRegistry } from "../../cron/cron-operator-service.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/channel-operator");

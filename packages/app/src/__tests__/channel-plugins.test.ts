@@ -12,7 +12,7 @@ import {
 } from "../channels/channel-plugins.js";
 import { resolveChannelDrivers } from "../channels/channels.js";
 import type { ChannelDriver } from "../channels/types.js";
-import { validateMonoAgentFolder } from "../doctor.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
 
 let dir: string;
 

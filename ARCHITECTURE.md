@@ -164,7 +164,7 @@ Choose the lowest rung in [`docs/reference/capability-ladder.md`](./docs/referen
 
 ## Agent-app internals
 
-`host/app-controller.ts` owns lifecycle state and delegates operations. Each `host/app-controller-*.ts` module declares the narrow controller port it needs; operation modules must not import the concrete controller. Cross-cutting service logic lives in focused modules such as `background-log-maintenance.ts`, `doctor-runs.ts`, and `managed-web-logs.ts` rather than returning to the CLI/controller entrypoints.
+`host/app-controller.ts` owns lifecycle state and delegates operations. Each `host/app-controller-*.ts` module declares the narrow controller port it needs; operation modules must not import the concrete controller. Cross-cutting service logic lives in focused modules such as `background-log-maintenance.ts`, `doctor/doctor-runs.ts`, and `managed-web-logs.ts` rather than returning to the CLI/controller entrypoints.
 
 The normal lifecycle is:
 

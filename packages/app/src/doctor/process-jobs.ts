@@ -10,7 +10,7 @@ import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
 } from "../process-jobs/process-jobs-protection.js";
-import type { ValidationSection } from "../doctor-types.js";
+import type { ValidationSection } from "./doctor-types.js";
 import type { ValidateMonoAgentFolderOptions } from "./options.js";
 import { displayText } from "./format.js";
 import { continuationReason } from "../diagnostics/inspection-values.js";

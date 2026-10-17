@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 import { loadToolPolicyFromJsonFileSync, type ToolPolicyInput } from "@mono-agent/conversation";
 import { MonoAgentConfigError, type MonoAgentConfig } from "@mono-agent/config";
-import type { ValidationSection } from "../doctor-types.js";
+import type { ValidationSection } from "../doctor/doctor-types.js";
 
 export const COMPUTER_USE_SERVER_NAME = "computer-use";
 type ComputerUseConfig = NonNullable<MonoAgentConfig["tools"]["computerUse"]>;

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { waitForShutdownSignal } from "../cli-background-command.js";
+import { waitForShutdownSignal } from "../cli/commands/cli-background-command.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {

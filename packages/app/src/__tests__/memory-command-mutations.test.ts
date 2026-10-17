@@ -63,7 +63,7 @@ vi.mock("../composition/configured-memory.js", () => {
   throw new Error("model owner must not load for a deterministic pass");
 });
 
-import { runMemoryCommand } from "../memory-command.js";
+import { runMemoryCommand } from "../cli/commands/memory-command.js";
 
 const roots: string[] = [];
 beforeEach(() => {

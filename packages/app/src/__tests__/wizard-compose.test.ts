@@ -6,11 +6,11 @@ import { loadMonoAgentConfig } from "@mono-agent/config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
-import { CAPABILITY_MODULES } from "../modules/catalog.js";
-import { findModule } from "../modules/index.js";
-import { alwaysOnTools, composeWizardPlan, defaultAnswers, humanizeAgentName, moduleOverrides, referencedSetupModelRefs } from "../wizard/answers.js";
+import { CAPABILITY_MODULES } from "../setup/modules/catalog.js";
+import { findModule } from "../setup/modules/index.js";
+import { alwaysOnTools, composeWizardPlan, defaultAnswers, humanizeAgentName, moduleOverrides, referencedSetupModelRefs } from "../setup/wizard/answers.js";
 import { type ComposeContext, type WizardAnswers } from "../setup/wizard-types.js";
-import { PRESET_CATALOG, presetAnswers } from "../wizard/presets.js";
+import { PRESET_CATALOG, presetAnswers } from "../setup/wizard/presets.js";
 
 const CTX: ComposeContext = { dirBasename: "smoke", skillsRootExists: false };
 const SECRET_PATTERN = /xoxb-|xapp-|sk-[A-Za-z0-9]/u;

@@ -9,7 +9,7 @@ import {
 import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "../launchd-logs.js";
 import { readLaunchdLogMonitorStatus } from "../launchd-log-monitor-status.js";
 import type { ManagedLaunchdLogMonitorStatus } from "../launchd-log-monitor-status.js";
-import type { ValidationSection } from "../doctor-types.js";
+import type { ValidationSection } from "./doctor-types.js";
 
 /** Read-only launchd log inventory used by both `validate` and its `doctor` alias. */
 export async function launchdLogsSection(configPath: string): Promise<ValidationSection> {

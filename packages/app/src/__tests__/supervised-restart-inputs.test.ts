@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 
 import { ensureStartable } from "../service/start-preflight.js";
-import { prepareSupervisedRestartInputs, verifySupervisedRestartInputs } from "../cli-background-command.js";
+import { prepareSupervisedRestartInputs, verifySupervisedRestartInputs } from "../cli/commands/cli-background-command.js";
 import { captureBackgroundSnapshot, encodeBackgroundSnapshot } from "../background-snapshot.js";
 import { createSupervisedRestartAuthority } from "../supervised-restart-authority.js";
 import { createSupervisedRestartLatch } from "../supervised-restart-latch.js";
@@ -13,9 +13,9 @@ import { systemdUnitName } from "../systemd.js";
 import { resolveApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
 import { acquireFilesystemLifecycleLock } from "../launchd-lifecycle-lock.js";
 import { launchdPathsFor, deriveLaunchdLabel } from "../launchd.js";
-import { workerApprovalBinding } from "../cli-background-command.js";
+import { workerApprovalBinding } from "../cli/commands/cli-background-command.js";
 import { materializeBackgroundRuntimeInputs } from "../background-snapshot.js";
-import type { ParsedCliArgs } from "../cli-args.js";
+import type { ParsedCliArgs } from "../cli/cli-args.js";
 
 const state = vi.hoisted(() => ({ home: "", root: "", packages: "none" }));
 vi.mock("../host/account-home.js", () => ({ accountHomeDirectory: () => state.home }));

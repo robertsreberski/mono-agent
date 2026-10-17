@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { runContinuationCommand } from "../continuation-command.js";
+import { runContinuationCommand } from "../cli/commands/continuation-command.js";
 import { continuationOperatorToken } from "../continuations/continuation-service.js";
 
 async function commandFixture(config: Record<string, unknown> = { continuations: { port: 4381 } }): Promise<{

@@ -7,11 +7,11 @@ import { readLaunchdLogMonitorStatus } from "../../launchd-log-monitor-status.js
 import { hasCompletedManagedStartup } from "../../managed-startup.js";
 import { launchdServiceInfo } from "../../launchd.js";
 import { readLaunchdSnapshotRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "../../launchd-snapshot-refusal.js";
-import { RUNS_HEALTH_MAX_RUNS } from "../../runs-health.js";
+import { RUNS_HEALTH_MAX_RUNS } from "../../diagnostics/runs-health.js";
 import { canonicalBackgroundConfigPath } from "./target.js";
 import { channelRecords, commandFlags, formatOtherInstance, isPlainRecord, writeInstanceDetail, writeRunsHealthDetail } from "./presentation.js";
 import type { BackgroundDeps, InstanceTarget, StatusBackgroundOptions } from "./types.js";
-import * as ui from "../../ui.js";
+import * as ui from "../../cli/ui.js";
 
 export async function statusBackground(
   target: InstanceTarget,

@@ -12,7 +12,7 @@ import type {
   TelegramSendToolSettings,
 } from "./types.js";
 import type { MonoAgentAppConfigInput } from "../../composition/app-config.js";
-import { LEGACY_TOOL_ALIASES } from "../../modules/known-tools.js";
+import { LEGACY_TOOL_ALIASES } from "../../tools/known-tools.js";
 
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.

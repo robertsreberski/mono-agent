@@ -35,8 +35,8 @@ import {
 } from "../background-environment.js";
 import { managedBackgroundEnvironment, resolveInstanceTarget } from "../service/background/target.js";
 import { loadAppCoreConfig } from "../composition/app-config.js";
-import { effectiveFirstRunEnvironment, resolveEffectivePiAuthPath } from "../first-run-readiness.js";
-import { composeWizardPlan, defaultAnswers } from "../wizard/answers.js";
+import { effectiveFirstRunEnvironment, resolveEffectivePiAuthPath } from "../setup/first-run-readiness.js";
+import { composeWizardPlan, defaultAnswers } from "../setup/wizard/answers.js";
 
 let dir: string;
 

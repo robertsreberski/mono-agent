@@ -27,7 +27,7 @@ import {
   containsSecretLikeValue,
   containsUnsafeReviewControl,
   knownEnvironmentSecretValues,
-} from "../untrusted-text.js";
+} from "../diagnostics/untrusted-text.js";
 
 export const MEMORY_JOURNAL_MCP_SERVER_NAME = "mono-agent-memory-journal";
 export const MEMORY_JOURNAL_TOOL_NAME = "MemoryJournal";

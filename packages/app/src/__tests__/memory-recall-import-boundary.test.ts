@@ -26,7 +26,7 @@ vi.mock("../memory/memory-recall.js", () => ({
   },
 }));
 
-import { runMemoryCommand } from "../memory-command.js";
+import { runMemoryCommand } from "../cli/commands/memory-command.js";
 
 const tempDirs: string[] = [];
 

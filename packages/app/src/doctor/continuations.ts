@@ -1,6 +1,6 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { loadContinuationSettings } from "../continuations/continuation-config.js";
-import type { ValidationSection } from "../doctor-types.js";
+import type { ValidationSection } from "./doctor-types.js";
 import type { ValidateMonoAgentFolderOptions } from "./options.js";
 import { continuationReason } from "../diagnostics/inspection-values.js";
 import { inspectContinuationState } from "../continuations/state-inspection.js";

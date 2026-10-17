@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ManagedLaunchdLogMonitorDependencies } from "../background-log-maintenance.js";
-import { startManagedBackgroundLogMonitorForConfig } from "../cli-background-command.js";
+import { startManagedBackgroundLogMonitorForConfig } from "../cli/commands/cli-background-command.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -28,7 +28,7 @@ describe("managed launchd log driver composition", () => {
     ]));
 
     const source = await readFile(entryPath, "utf8");
-    expect(source).toContain('loadHeavy: async () => await import("./cli-background-command.js")');
+    expect(source).toContain('loadHeavy: async () => await import("./cli/commands/cli-background-command.js")');
     const dispersion = source.indexOf("await deps.sleep(launchdMaintenanceDispersionSeconds(label) * 1_000)");
     const gate = source.indexOf("return await withLaunchdMaintenanceControllerLock");
     const attestation = source.indexOf("await deps.verifyEntrypoint", gate);
@@ -41,7 +41,7 @@ describe("managed launchd log driver composition", () => {
     expect(heavyImport).toBeGreaterThan(attestation);
     expect(ownedHandler).toBeGreaterThan(heavyImport);
 
-    const heavySource = await readFile(new URL("../cli-background-command.ts", import.meta.url), "utf8");
+    const heavySource = await readFile(new URL("../cli/commands/cli-background-command.ts", import.meta.url), "utf8");
     const ownedStart = heavySource.indexOf("export async function runLaunchdLogMaintenanceCommandWithLifecycleLease");
     const ownedEnd = heavySource.indexOf("async function controllerCliAvailable", ownedStart);
     const ownedBody = heavySource.slice(ownedStart, ownedEnd);

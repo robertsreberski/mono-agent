@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   discoverWizardModelCandidates,
   guidedPiProviderProblem,
-} from "../wizard/model-discovery.js";
+} from "../setup/wizard/model-discovery.js";
 
 async function missingAuthStore() {
   return { status: "missing" as const };

@@ -36,7 +36,7 @@ import {
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import { createRestartProposalService, isProposeRestartToolAllowed } from "../restart-proposal.js";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
-import { isRetiredProjectSkillName } from "../project-skills.js";
+import { isRetiredProjectSkillName } from "../skills/project-skills.js";
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "../request-tools/run-history.js";
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "../request-tools/session-history.js";
 import {

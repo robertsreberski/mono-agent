@@ -79,7 +79,7 @@ import {
   processJobsProtectionPolicyRoots,
   registerProcessJobsRoot,
 } from "../process-jobs/process-jobs-root-registry.js";
-import { activeProjectSkillSelections, isRetiredProjectSkillName } from "../project-skills.js";
+import { activeProjectSkillSelections, isRetiredProjectSkillName } from "../skills/project-skills.js";
 
 import type {
   ConfiguredAgentInternalHooks,

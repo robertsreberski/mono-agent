@@ -4,7 +4,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { hasUsablePiOAuthClientId } from "../providers/credential-values.js";
 import { piAuthRecoveryCommand } from "../providers/oauth-command.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "../providers/pi-auth-store-inspection.js";
-import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
+import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
 import { configuredRuntimeRouteChecks } from "./runtime.js";
 import { referenceOf, displayReferenceOf, displayText } from "./format.js";
 

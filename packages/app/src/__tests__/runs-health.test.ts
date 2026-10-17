@@ -7,7 +7,7 @@ import {
   type RunSummaryStatus,
 } from "@mono-agent/observability";
 
-import { buildRunsHealthDisplay } from "../runs-health.js";
+import { buildRunsHealthDisplay } from "../diagnostics/runs-health.js";
 
 const NOW_MS = Date.parse("2026-07-12T12:00:00.000Z");
 

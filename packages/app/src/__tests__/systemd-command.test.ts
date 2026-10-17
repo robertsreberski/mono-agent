@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../background-environment.js";
 import { decodeBackgroundSnapshot } from "../background-snapshot.js";
-import { parseCliArgs } from "../cli-args.js";
+import { parseCliArgs } from "../cli/cli-args.js";
 
 const mocks = vi.hoisted(() => ({
   inspect: vi.fn(), read: vi.fn(), start: vi.fn(), stop: vi.fn(), traces: vi.fn(), preflight: vi.fn(), health: vi.fn(),

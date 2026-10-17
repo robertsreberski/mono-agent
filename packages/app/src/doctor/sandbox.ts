@@ -1,7 +1,7 @@
 import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "../effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { sandboxEffectiveStateWarning } from "@mono-agent/turn/host/sandbox";
-import type { ValidationSection } from "../doctor-types.js";
+import type { ValidationSection } from "./doctor-types.js";
 import type { ValidateMonoAgentFolderOptions } from "./options.js";
 
 export async function sandboxSection(config: MonoAgentConfig, input: ValidateMonoAgentFolderOptions): Promise<ValidationSection> {

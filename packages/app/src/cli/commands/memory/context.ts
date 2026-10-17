@@ -13,7 +13,7 @@ import {
 } from "../../../composition/app-config.js";
 import { resolveMemoryRecallSettings } from "../../../memory/memory-recall-settings.js";
 import type { MemoryRecallSettings } from "../../../memory/memory-recall-settings.js";
-import * as ui from "../../../ui.js";
+import * as ui from "../../ui.js";
 import { writeMemoryForgetFailure } from "./forget-failure.js";
 import { write } from "./render.js";
 import { writeReplayAdoptionCliFailure } from "./replay-failure.js";

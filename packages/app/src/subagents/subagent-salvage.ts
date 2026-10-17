@@ -1,6 +1,6 @@
 import type { DurableSessionSalvage } from "@mono-agent/turn/host/types";
 import { redactProcessOutput } from "../process-jobs/process-output-redaction.js";
-import { redactSecrets } from "../redact-secrets.js";
+import { redactSecrets } from "../diagnostics/redact-secrets.js";
 
 export interface SubagentSalvage {
   readonly completed: readonly { readonly name: string; readonly result: string }[];

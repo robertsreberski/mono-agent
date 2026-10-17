@@ -19,10 +19,10 @@ import { listTraceSources } from "@mono-agent/observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAppTraceRegistryDir } from "../composition/app-config.js";
-import { parseCliArgs } from "../cli-args.js";
-import { renderHelp, renderHelpTopic } from "../cli-help.js";
+import { parseCliArgs } from "../cli/cli-args.js";
+import { renderHelp, renderHelpTopic } from "../cli/cli-help.js";
 import { runCli } from "../cli.js";
-import { runMemoryCommand } from "../memory-command.js";
+import { runMemoryCommand } from "../cli/commands/memory-command.js";
 import { curateRecoveredFailureReason } from "../cli/commands/memory/curate.js";
 
 /** Resolve a help topic to its rendered detail text. */

@@ -22,8 +22,8 @@ const catalogDemoOnlyReadmes = packageCatalog
   .filter((path) => !userDocRoots.includes(path));
 
 const artifactContractSourcePaths = [
-  "packages/app/src/cli-background-command.ts",
-  "packages/app/src/cli-help.ts",
+  "packages/app/src/cli/commands/cli-background-command.ts",
+  "packages/app/src/cli/cli-help.ts",
   "packages/channel-operator/package.json",
   "packages/channel-operator/src/tui/constants.ts",
   "packages/channel-operator/src/tui/server.ts",

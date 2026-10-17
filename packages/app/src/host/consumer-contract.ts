@@ -10,7 +10,7 @@ import type { RunSummaryStatus } from "@mono-agent/observability";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
 import { loadAppCoreConfig } from "../composition/app-config.js";
-import { validateMonoAgentFolder } from "../doctor.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
 
 export const consumerContractNames = ["local-agent-alpha", "local-agent-beta"] as const;
 

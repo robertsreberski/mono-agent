@@ -1,4 +1,4 @@
-import { isSensitiveEnvironmentName } from "../redact-secrets.js";
+import { isSensitiveEnvironmentName } from "../diagnostics/redact-secrets.js";
 
 /** Shared output boundary for model-authored background process jobs. */
 export function redactProcessOutput(

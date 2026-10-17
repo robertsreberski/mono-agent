@@ -4,8 +4,8 @@ import process from "node:process";
 import { readMonoAgentConfigJson } from "@mono-agent/config";
 
 import { canonicalBackgroundConfigPath } from "../../service/background/target.js";
-import type { ParsedCliArgs } from "../../cli-args.js";
-import { resolveEffectivePiAuthPath } from "../../first-run-readiness.js";
+import type { ParsedCliArgs } from "../cli-args.js";
+import { resolveEffectivePiAuthPath } from "../../setup/first-run-readiness.js";
 import { executeProviderSetupPlan } from "../../providers/provider-setup.js";
 import {
   isProviderSetupPiApiKeyAction,
@@ -16,7 +16,7 @@ import { withScopedPreflightCancellation } from "../../setup/cancellation.js";
 import { nonEmptyEnv } from "../../setup/provider-setup-gate.js";
 import { printProviderSetupPlan } from "../../setup/render.js";
 import * as p from "@clack/prompts";
-import * as ui from "../../ui.js";
+import * as ui from "../ui.js";
 
 export async function runAuth(args: ParsedCliArgs): Promise<number> {
   const [subcommand, provider, ...extra] = args.positionals;

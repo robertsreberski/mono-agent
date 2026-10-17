@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 
 const loaded = vi.hoisted(() => ({ mutation: vi.fn(), config: vi.fn(), dotenv: vi.fn() }));
-vi.mock("../memory-command.js", () => {
+vi.mock("../cli/commands/memory-command.js", () => {
   loaded.mutation();
   throw new Error("mutation dispatcher must not load for early refusal");
 });
@@ -9,8 +9,8 @@ vi.mock("../composition/app-config.js", async (original) => ({
   ...await original<typeof import("../composition/app-config.js")>(),
   loadAppCoreConfig: loaded.config,
 }));
-vi.mock("../cli-args.js", async (original) => ({
-  ...await original<typeof import("../cli-args.js")>(),
+vi.mock("../cli/cli-args.js", async (original) => ({
+  ...await original<typeof import("../cli/cli-args.js")>(),
   loadCliEnvFile: loaded.dotenv,
 }));
 

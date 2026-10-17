@@ -84,8 +84,8 @@ vi.mock("@clack/prompts", () => ({
   })),
 }));
 
-vi.mock("../wizard/run.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../wizard/run.js")>();
+vi.mock("../setup/wizard/run.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../setup/wizard/run.js")>();
   return {
     ...actual,
     runInitWizard: mocks.runInitWizard,
@@ -93,8 +93,8 @@ vi.mock("../wizard/run.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../readiness-probe.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../readiness-probe.js")>();
+vi.mock("../setup/readiness-probe.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../setup/readiness-probe.js")>();
   return { ...actual, runAllRouteReadinessProbe: mocks.runAllRouteReadinessProbe };
 });
 
@@ -155,13 +155,13 @@ vi.mock("../sandbox-manager.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../doctor.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../doctor.js")>();
+vi.mock("../doctor/doctor.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../doctor/doctor.js")>();
   return { ...actual, validateMonoAgentFolder: mocks.validateMonoAgentFolder };
 });
 
-vi.mock("../init.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../init.js")>();
+vi.mock("../setup/init.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../setup/init.js")>();
   return {
     ...actual,
     initMonoAgentFolder: async (options: Parameters<typeof actual.initMonoAgentFolder>[0]) => {
@@ -173,9 +173,9 @@ vi.mock("../init.js", async (importOriginal) => {
 
 import { runCli } from "../cli.js";
 import { BROWSER_CONSOLE_HOST, BROWSER_CONSOLE_PORT } from "../setup/render.js";
-import { DEFAULT_MODEL } from "../modules/index.js";
+import { DEFAULT_MODEL } from "../setup/modules/index.js";
 import { DEFAULT_WEB_PORT } from "../web-service-definition.js";
-import { defaultAnswers } from "../wizard/answers.js";
+import { defaultAnswers } from "../setup/wizard/answers.js";
 
 /** Provider id of the route `defaultAnswers()` selects, e.g. `openai-codex`. */
 const DEFAULT_ROUTE_PROVIDER = DEFAULT_MODEL.slice(0, DEFAULT_MODEL.indexOf(":"));

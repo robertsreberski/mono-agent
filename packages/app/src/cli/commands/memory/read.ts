@@ -11,7 +11,7 @@ import type {
   MemoryRecallBujoSettings,
   MemoryRecallSettings,
 } from "../../../memory/memory-recall-settings.js";
-import * as ui from "../../../ui.js";
+import * as ui from "../../ui.js";
 import { previewRecallSettings } from "./context.js";
 import { isUnderDirectory } from "./private-plan.js";
 import {

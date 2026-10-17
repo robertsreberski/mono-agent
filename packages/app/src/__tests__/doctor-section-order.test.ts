@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
-import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
+import type { ValidationSection, ValidationStatus } from "../doctor/doctor-types.js";
 import type { ValidateMonoAgentFolderOptions } from "../doctor/options.js";
 
 const state = vi.hoisted(() => ({
@@ -54,7 +54,7 @@ vi.mock("../doctor/context.js", () => ({ contextSection: async () => state.secti
 vi.mock("../doctor/memory.js", () => ({ memorySection: vi.fn(async () => state.section("memory")) }));
 vi.mock("../doctor/tools.js", () => ({ toolsSection: async () => state.section("tools") }));
 vi.mock("../host/computer-use.js", () => ({ computerUseSection: async () => state.section("computer-use") }));
-vi.mock("../doctor-session-history.js", () => ({ sessionToolHistorySection: async () => state.section("session-history") }));
+vi.mock("../doctor/doctor-session-history.js", () => ({ sessionToolHistorySection: async () => state.section("session-history") }));
 vi.mock("../doctor/web-tools.js", () => ({ webToolsSection: vi.fn(async () => state.section("web-tools")) }));
 vi.mock("../continuations/continuation-config.js", () => ({
   loadContinuationSettings: async () => { state.calls.push("continuations"); throw new Error("Continuation access denied."); },
@@ -64,11 +64,11 @@ vi.mock("../process-jobs/process-jobs-config.js", async (original) => ({
   loadProcessJobsSettings: async () => { state.calls.push("process-jobs"); throw new Error("Job access denied."); },
 }));
 vi.mock("../doctor/sandbox.js", () => ({ sandboxSection: async () => state.section("sandbox") }));
-vi.mock("../doctor-runs.js", () => ({ runsSection: async () => state.section("runs") }));
+vi.mock("../doctor/doctor-runs.js", () => ({ runsSection: async () => state.section("runs") }));
 vi.mock("../doctor/launchd-logs.js", () => ({ launchdLogsSection: async () => state.section("launchd-logs") }));
 vi.mock("../doctor/channels.js", () => ({ channelSection: async () => state.section("channel:fixture") }));
 
-import { validateMonoAgentFolder } from "../doctor.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import { memorySection } from "../doctor/memory.js";
 import { webToolsSection } from "../doctor/web-tools.js";
 

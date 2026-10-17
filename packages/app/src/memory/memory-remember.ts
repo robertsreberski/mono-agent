@@ -10,7 +10,7 @@ import {
   containsSecretLikeValue,
   containsUnsafeReviewControl,
   knownEnvironmentSecretValues,
-} from "../untrusted-text.js";
+} from "../diagnostics/untrusted-text.js";
 
 export const MEMORY_REMEMBER_MCP_SERVER_NAME = "mono-agent-memory-write";
 export const REMEMBER_TOOL_NAME = "Remember";

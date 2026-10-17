@@ -14,7 +14,7 @@ import type {
 } from "../providers/setup-types.js";
 import { inspectPiAuthStore } from "../providers/pi-auth-store-inspection.js";
 import { printProviderSetupPlan } from "./render.js";
-import * as ui from "../ui.js";
+import * as ui from "../cli/ui.js";
 
 export function nonEmptyEnv(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;

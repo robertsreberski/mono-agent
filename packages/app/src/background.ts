@@ -80,7 +80,7 @@ import type {
   LogOptions,
   ReadyPollOptions,
 } from "./service/background/types.js";
-import * as ui from "./ui.js";
+import * as ui from "./cli/ui.js";
 
 const DEFAULT_CONTROL_POLL: PollOptions = { timeoutMs: 18_000, intervalMs: 400 };
 const DEFAULT_READINESS_POLL: PollOptions = { timeoutMs: 60_000, intervalMs: 400 };

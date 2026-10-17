@@ -19,7 +19,7 @@ import {
 } from "./background-lifecycle-utils.js";
 import type { PollOptions } from "./background-lifecycle-utils.js";
 import type { BackgroundLifecycleTarget } from "./launchd-lifecycle-lock.js";
-import * as ui from "./ui.js";
+import * as ui from "./cli/ui.js";
 
 interface ManagedLaunchdLogInspectionDependencies {
   readonly inspectLaunchdLogs: (

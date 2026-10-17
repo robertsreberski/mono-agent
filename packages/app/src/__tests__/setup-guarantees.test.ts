@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, expect, it, vi } from "vitest";
 
-import { parseCliArgs } from "../cli-args.js";
-import { effectiveFirstRunEnvironment } from "../first-run-readiness.js";
+import { parseCliArgs } from "../cli/cli-args.js";
+import { effectiveFirstRunEnvironment } from "../setup/first-run-readiness.js";
 import { runFlagsInit } from "../setup/flags-init.js";
 import { createMonoAgentConfigExclusively } from "../setup/scaffold-files.js";
 import { runProviderSetupBeforeInit } from "../setup/provider-setup-gate.js";

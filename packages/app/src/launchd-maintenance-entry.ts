@@ -63,7 +63,7 @@ export function defaultLaunchdMaintenanceEntryDependencies(): LaunchdMaintenance
     gate: defaultLaunchdMaintenanceGateDependencies(),
     pathsForLabel: (label) => launchdPathsFor(label),
     verifyEntrypoint: verifyManagedRuntimeMaintenanceEntrypoint,
-    loadHeavy: async () => await import("./cli-background-command.js"),
+    loadHeavy: async () => await import("./cli/commands/cli-background-command.js"),
     loadWebHeavy: async () => await import("./web-log-maintenance.js"),
     inspectWebHelper: launchdWebMaintenanceInfo,
     currentEntrypointPath: fileURLToPath(import.meta.url),

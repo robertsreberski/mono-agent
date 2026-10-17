@@ -6,7 +6,7 @@ const source = async (path: string): Promise<string> => readFile(new URL(`../${p
 describe("app foundation dependency direction", () => {
   it("keeps platform commands independent of command-owned probes", async () => {
     const systemd = await source("systemd-command.ts");
-    expect(systemd).not.toMatch(/["']\.\/(?:cli-background-command|web-command)\.js["']/u);
+    expect(systemd).not.toMatch(/["'][^"']*\/(?:cli-background-command|web-command)\.js["']/u);
     expect(systemd).toContain("./service/start-preflight.js");
     expect(systemd).toContain("./service/web/health.js");
     expect(await source("service/web/health.ts")).not.toContain("web-command.js");
@@ -21,7 +21,7 @@ describe("app foundation dependency direction", () => {
     ]) {
       expect(await source(file), file).not.toMatch(/from ["'][^"']*\/(?:background|web-command)\.js["']/u);
     }
-    const dispatcher = await source("web-command.ts");
+    const dispatcher = await source("cli/commands/web-command.ts");
     expect(dispatcher).not.toMatch(/export (?:type )?\{|function webPaths/u);
     expect(await source("service/web/health.ts")).not.toMatch(/service\.js|status\.js|tailscale\.js/u);
   });
@@ -35,8 +35,8 @@ describe("app foundation dependency direction", () => {
   });
 
   it("uses leaf contracts for validation and maintenance", async () => {
-    for (const file of ["ui.ts", "modules/types.ts"]) {
-      expect(await source(file)).not.toMatch(/from ["'](?:\.\.\/|\.\/)doctor\.js["']/u);
+    for (const file of ["cli/ui.ts", "setup/modules/types.ts"]) {
+      expect(await source(file)).not.toMatch(/from ["'][^"']*\/doctor\/doctor\.js["']/u);
     }
     expect(await source("background-log-maintenance.ts")).not.toMatch(/from ["']\.\/background\.js["']/u);
     expect(await source("launchd-log-monitor-status.ts")).not.toContain("background-log-maintenance.js");

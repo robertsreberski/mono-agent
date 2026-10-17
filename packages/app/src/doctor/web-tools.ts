@@ -4,7 +4,7 @@ import { inspectCodexSubscriptionSearch } from "@mono-agent/turn/tools";
 import { networkPolicyAllowsUrl } from "@mono-agent/turn/host/sandbox";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { normalizeOptionalString } from "@mono-agent/contracts";
-import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
+import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
 import type { ValidateMonoAgentFolderOptions } from "./options.js";
 import { LIVENESS_PROBE_TIMEOUT_MS, OLLAMA_WEB_SEARCH_PROBE_MAX_BYTES, defaultDoctorStatusExecFile, DOCTOR_STATUS_TIMEOUT_MS, DOCTOR_STATUS_MAX_BUFFER_BYTES } from "./probe-defaults.js";
 

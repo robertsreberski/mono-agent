@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { runWebCommand } from "../web-command.js";
+import { runWebCommand } from "../cli/commands/web-command.js";
 import { chooseTailscaleHttpsPort, ensureTailscaleServe, removeOwnedTailscaleServe, tailscaleProxyTarget } from "../service/web/tailscale.js";
 import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, LEGACY_DEFAULT_WEB_HOST } from "../web-service-definition.js";
 import { managedWebPaths } from "../web-maintenance-paths.js";

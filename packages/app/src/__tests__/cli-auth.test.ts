@@ -25,7 +25,7 @@ vi.mock("../providers/provider-setup.js", async (importOriginal) => {
   return { ...actual, executeProviderSetupPlan: mocks.executeProviderSetupPlan };
 });
 
-import { parseCliArgs } from "../cli-args.js";
+import { parseCliArgs } from "../cli/cli-args.js";
 import { readApiKeyFromStdin } from "../cli/commands/auth.js";
 import { runCli } from "../cli.js";
 

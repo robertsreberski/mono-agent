@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../cli.js";
-import { runInspection } from "../run-inspection.js";
+import { runInspection } from "../diagnostics/run-inspection.js";
 
 const tempDirs: string[] = [];
 const CREDENTIAL = `sk-${"A".repeat(48)}`;

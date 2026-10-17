@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { badge, channelBadge, computeColorEnabled, healthBadge, keyValue, rule, style } from "../ui.js";
+import { badge, channelBadge, computeColorEnabled, healthBadge, keyValue, rule, style } from "../cli/ui.js";
 
 describe("computeColorEnabled", () => {
   it("disables color when NO_COLOR is set (any value), even with a TTY", () => {

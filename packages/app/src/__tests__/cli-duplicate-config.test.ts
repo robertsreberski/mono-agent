@@ -4,9 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { parseCliArgs } from "../cli-args.js";
-import { runValidate } from "../cli-validate-config-command.js";
-import { validateMonoAgentFolder } from "../doctor.js";
+import { parseCliArgs } from "../cli/cli-args.js";
+import { runValidate } from "../cli/commands/cli-validate-config-command.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
 
 const dirs: string[] = [];
 afterEach(async () => {

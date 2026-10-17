@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { defaultAnswers, composeWizardPlan } from "../wizard/answers.js";
+import { defaultAnswers, composeWizardPlan } from "../setup/wizard/answers.js";
 import {
   readinessProbeEnvironment,
   readinessProbeTimeoutMs,
   runAllRouteReadinessProbe,
-} from "../readiness-probe.js";
-import { trackPiCredentialResolverSecrets } from "../readiness-probe-worker.js";
+} from "../setup/readiness-probe.js";
+import { trackPiCredentialResolverSecrets } from "../setup/readiness-probe-worker.js";
 
 async function syntheticReadinessWorker(): Promise<{ readonly url: URL; readonly cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-readiness-worker-test-"));

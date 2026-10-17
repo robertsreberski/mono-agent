@@ -221,27 +221,27 @@ for (const file of controllerOperationModules) {
 
 const extractedResponsibilityDeclarations = [
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function startManagedWebLogMonitor",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function inspectLegacyManagedWebLogArtifacts",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function maintainLegacyManagedWebLogArtifacts",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function runWebLogMaintenanceCommand",
     owner: "web-log-maintenance.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function writeWebLogMaintenanceStatus",
     owner: "web-log-maintenance-status.ts",
   },
@@ -268,7 +268,7 @@ const extractedResponsibilityDeclarations = [
 ];
 for (const rule of extractedResponsibilityDeclarations) {
   const files = [rule.file];
-  const serviceDirectory = rule.file === join("packages", "app", "src", "web-command.ts")
+  const serviceDirectory = rule.file === join("packages", "app", "src", "cli", "commands", "web-command.ts")
     ? join("packages", "app", "src", "service", "web")
     : rule.file === join("packages", "app", "src", "background.ts")
       ? join("packages", "app", "src", "service", "background")

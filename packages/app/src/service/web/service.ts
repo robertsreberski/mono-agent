@@ -77,7 +77,7 @@ import type {
   WebServerHandle,
   WebServiceRecord,
 } from "./types.js";
-import * as ui from "../../ui.js";
+import * as ui from "../../cli/ui.js";
 // Deliberately outside `com.mono-agent.*`: fleet discovery reserves that prefix
 // for configured agent instances.
 const MANAGED_WEB_WORKER_ENV = "MONO_AGENT_MANAGED_WEB_WORKER";

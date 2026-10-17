@@ -6,7 +6,7 @@ import { loadMonoAgentConfig, type MonoAgentConfig } from "@mono-agent/config";
 import { createToolPolicy } from "@mono-agent/conversation";
 import { parseMcpServers } from "@mono-agent/turn/host/config";
 import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
-import { validateMonoAgentFolder } from "../doctor.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import { computerUseSection, configuredToolPolicyInput, resolveCuaDriverCommand } from "../host/computer-use.js";
 
 let dir: string;

@@ -43,7 +43,7 @@ const forbiddenEffects = () => ({
 
 describe("web platform import and effect isolation", () => {
   it.each(["darwin", "linux"] as const)("validates grammar before loading platform code on %s", async (platform) => {
-    const { runWebCommand } = await import("../web-command.js");
+    const { runWebCommand } = await import("../cli/commands/web-command.js");
     expect(events).toEqual([]);
     expect(await runWebCommand({ positionals: ["unknown"], env: {} }, {
       ...forbiddenEffects(), platform, homeDir: home,
@@ -53,7 +53,7 @@ describe("web platform import and effect isolation", () => {
   });
 
   it("rejects Linux tailnet sharing before loading either platform implementation", async () => {
-    const { runWebCommand } = await import("../web-command.js");
+    const { runWebCommand } = await import("../cli/commands/web-command.js");
     expect(await runWebCommand({ positionals: ["start"], env: {}, shareTailnet: true }, {
       ...forbiddenEffects(), platform: "linux", homeDir: home,
     })).toBe(2);
@@ -62,7 +62,7 @@ describe("web platform import and effect isolation", () => {
   });
 
   it("loads Linux owners only when dispatching, without launchd, Tailscale or publication effects", async () => {
-    const { runWebCommand } = await import("../web-command.js");
+    const { runWebCommand } = await import("../cli/commands/web-command.js");
     expect(events).toEqual([]);
     expect(await runWebCommand({ positionals: ["status"], env: {} }, {
       ...forbiddenEffects(), platform: "linux", homeDir: home,
@@ -72,7 +72,7 @@ describe("web platform import and effect isolation", () => {
   });
 
   it("keeps Darwin status read-only and never loads Linux owners or changes services", async () => {
-    const { runWebCommand } = await import("../web-command.js");
+    const { runWebCommand } = await import("../cli/commands/web-command.js");
     expect(events).toEqual([]);
     expect(await runWebCommand({ positionals: ["status"], env: {} }, {
       ...forbiddenEffects(), platform: "darwin", homeDir: home, getuid: () => 501,

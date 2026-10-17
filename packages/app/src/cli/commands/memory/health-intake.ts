@@ -2,7 +2,7 @@ import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 import type { IndexMetadata, MemoryStoreAudit } from "@mono-agent/memory/store";
 
 import { legacyEmbeddingModelOption } from "../../../memory/memory-embedding-identity.js";
-import * as ui from "../../../ui.js";
+import * as ui from "../../ui.js";
 import { assertNoLiveConfiguredAgent, memoryRegistryDirs, previewRecallSettings } from "./context.js";
 import { collectStoreSize, emptySize } from "./read.js";
 import {

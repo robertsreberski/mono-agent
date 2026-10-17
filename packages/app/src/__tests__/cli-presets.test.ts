@@ -5,16 +5,16 @@ import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseCliArgs } from "../cli-args.js";
-import { presetShowData, renderPresetList, renderPresetShow } from "../cli-validate-config-command.js";
+import { parseCliArgs } from "../cli/cli-args.js";
+import { presetShowData, renderPresetList, renderPresetShow } from "../cli/commands/cli-validate-config-command.js";
 import { resolvePiAuthPathForLogin } from "../cli/commands/auth.js";
-import { shouldRunInitWizard } from "../cli-init-command.js";
+import { shouldRunInitWizard } from "../cli/commands/cli-init-command.js";
 import { runProviderSetupBeforeInit } from "../setup/provider-setup-gate.js";
 import { runCli } from "../cli.js";
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
-import { initMonoAgentFolder } from "../init.js";
-import { answersFromCli } from "../wizard/from-flags.js";
-import { findPreset, presetAnswers, presetIds } from "../wizard/presets.js";
+import { initMonoAgentFolder } from "../setup/init.js";
+import { answersFromCli } from "../setup/wizard/from-flags.js";
+import { findPreset, presetAnswers, presetIds } from "../setup/wizard/presets.js";
 
 /**
  * A pi auth store path that is guaranteed to hold nothing. Provider credential

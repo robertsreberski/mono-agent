@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { discoverAcpBridgeAgents } from "@mono-agent/web";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { runAcpDiscovery } from "../acp-discovery-command.js";
+import { runAcpDiscovery } from "../cli/commands/acp-discovery-command.js";
 
 const cleanup: string[] = [];
 

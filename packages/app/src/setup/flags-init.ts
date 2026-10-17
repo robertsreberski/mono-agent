@@ -1,18 +1,18 @@
 import { basename, resolve } from "node:path";
 import process from "node:process";
 
-import type { ParsedCliArgs } from "../cli-args.js";
-import { effectiveFirstRunEnvironment, resolveEffectivePiAuthPath, withExactProcessEnvironment } from "../first-run-readiness.js";
-import { initMonoAgentFolder } from "../init.js";
-import { composeWizardPlan, referencedSetupModelRefs } from "../wizard/answers.js";
-import { answersFromCli, isWithChannel } from "../wizard/from-flags.js";
-import type { WithChannel } from "../wizard/from-flags.js";
-import { findPreset, presetIds } from "../wizard/presets.js";
+import type { ParsedCliArgs } from "../cli/cli-args.js";
+import { effectiveFirstRunEnvironment, resolveEffectivePiAuthPath, withExactProcessEnvironment } from "./first-run-readiness.js";
+import { initMonoAgentFolder } from "./init.js";
+import { composeWizardPlan, referencedSetupModelRefs } from "./wizard/answers.js";
+import { answersFromCli, isWithChannel } from "./wizard/from-flags.js";
+import type { WithChannel } from "./wizard/from-flags.js";
+import { findPreset, presetIds } from "./wizard/presets.js";
 import { withScopedPreflightCancellation } from "./cancellation.js";
 import { nonEmptyEnv, pathExists, runProviderSetupBeforeInit } from "./provider-setup-gate.js";
 import { printInitResult, printNextSteps, printSecretsChecklist } from "./render.js";
 import type { RunInitEnvironmentContext } from "./types.js";
-import * as ui from "../ui.js";
+import * as ui from "../cli/ui.js";
 
 export async function runFlagsInit(args: ParsedCliArgs, environment: RunInitEnvironmentContext, cwd: string): Promise<number> {
   const presetId = resolveInitPresetId(args);

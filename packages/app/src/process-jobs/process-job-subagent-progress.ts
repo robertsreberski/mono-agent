@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { isProcessJobSubagentRoute, normalizeProcessJobSubagentUsage, type ProcessJobSubagentProgress } from "@mono-agent/contracts";
 import type { InstanceUsage } from "../subagents/types.js";
 import { redactProcessOutput, redactProcessOutputLine } from "./process-output-redaction.js";
-import { redactSecrets } from "../redact-secrets.js";
+import { redactSecrets } from "../diagnostics/redact-secrets.js";
 
 /** Private transient descriptors, never provider events or tool result bodies. */
 export type SubagentProgressEvent =
