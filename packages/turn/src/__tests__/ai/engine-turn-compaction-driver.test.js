@@ -717,3 +717,15 @@ describe("1M overflow ceiling across toggles", () => {
     }
   });
 });
+
+it("does not suppress reactive recovery after a proactive savings veto in the same run", async () => {
+  const fixture = hookHarness();
+  fixture.harness.compactionFailureKey = "fictional-savings-recovery";
+  const policy = { keepRecentTokens: 4000, summaryMaxTokens: 2000, compactionMinSavingsTokens: 500000 };
+  const options = { onEvent: () => {}, runtimeWarnings: [], session: fixture.session, policy };
+  expect((await tryCompact(fixture.harness, { ...options, trigger: "proactive" })).applied).toBe(false);
+  expect(fixture.harness.models.completeSimple).toHaveBeenCalledTimes(1);
+  expect((await tryCompact(fixture.harness, { ...options, trigger: "reactive_overflow" })).applied).toBe(true);
+  expect(fixture.harness.models.completeSimple).toHaveBeenCalledTimes(2);
+  expect(fixture.persistedCount()).toBe(1);
+});

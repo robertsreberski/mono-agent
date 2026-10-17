@@ -386,7 +386,13 @@ export class ConversationHarnessImpl implements ConversationHarness {
       await prepared.commit();
       providerTurn = undefined;
       if (!synced) {
-        if (outcome?.status === "failed" && outcome.accounting && isAgentCompactionAccounting(outcome.accounting)) return outcome;
+        if (outcome?.status === "failed" && outcome.accounting && isAgentCompactionAccounting(outcome.accounting)) return {
+          status: "failed", trigger: "manual", operationId: outcome.operationId,
+          ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+          ...(outcome.tokensBefore === undefined ? {} : { tokensBefore: outcome.tokensBefore }),
+          ...(outcome.tokensAfter === undefined ? {} : { tokensAfter: outcome.tokensAfter }),
+          tokenCountsExact: outcome.tokenCountsExact === true, accounting: outcome.accounting,
+        };
         throw new ConversationHarnessError("compaction_failed", "Context compaction failed; the session was retired safely.");
       }
       // prepareCommit(synced) publishes exactly revision + 1 (durable-history.ts),

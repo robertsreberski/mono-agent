@@ -408,7 +408,7 @@ export function createGuardedCompactionHook({
       decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error };
       return { cancel: true };
     } finally {
-      failureGuard?.settle(decision?.kind === "accepted", accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
+      failureGuard?.settle(decision?.kind, accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
     }
   };
   return { handler, getDecision: () => decision };

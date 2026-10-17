@@ -44,3 +44,23 @@ it("keeps reference, explicit type and heterogeneous union semantics", () => {
   expect(copy.properties.explicit).toEqual(parameters.properties.explicit);
   expect(copy.properties.union.type).toBeUndefined();
 });
+
+it("memoizes serialization clones without changing original validation or coercion", async () => {
+  const { validateToolArguments } = await import("@earendil-works/pi-ai");
+  const { adaptProviderContext } = await import("../../engine/tool-schema-adaptation.js");
+  const original = { name: "FictionalLookup", description: "fictional", parameters: { type: "object", properties: {
+    lookup: { properties: { code: { enum: ["x"] } } }, choice: { enum: [1, 2] } } } };
+  const tools = [original];
+  const args = { lookup: "accepted without an object type", choice: 1 };
+  const call = { type: "toolCall", name: original.name, id: "fictional", arguments: args };
+  const before = validateToolArguments(original, call);
+  const context = normalizeContext({ tools: tools.map(toToolDeclaration), messages: [] });
+  const adapted = adaptProviderContext(context, tools, "openai-completions");
+  expect(adaptRequestTools(tools, "openai-completions")).toBe(adaptRequestTools(tools, "openai-completions"));
+  expect(adaptRequestTools(tools, "google-generative-ai")).not.toBe(adaptRequestTools(tools, "openai-completions"));
+  expect(adapted.messages[0].toolsAdded[0].parameters.properties.lookup.type).toBe("object");
+  expect(context.messages[0].toolsAdded[0].parameters.properties.lookup.type).toBeUndefined();
+  expect(validateToolArguments(original, call)).toEqual(before);
+  expect(args).toEqual({ lookup: "accepted without an object type", choice: 1 });
+  expect(() => validateToolArguments(original, { ...call, arguments: { lookup: "accepted", choice: "1" } })).toThrow();
+});

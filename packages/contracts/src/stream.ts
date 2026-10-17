@@ -76,6 +76,8 @@ export type AgentStreamEvent =
       readonly model?: string;
       /** Cumulative run cost in USD, when the runtime prices the model. */
       readonly cumulativeUsd?: number;
+      /** Context-eligible tokens, excluding off-context work such as summaries. */
+      readonly contextTokens?: number;
       readonly tokens?: {
         readonly input: number;
         readonly output: number;

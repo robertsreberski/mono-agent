@@ -366,6 +366,13 @@ root retains readonly copying and coordinate normalization without a second faca
 
 ## Architecture
 
+Provider schema adaptation occurs only at the serialization boundary; native
+validation/execution keeps original schemas and cached validator identities.
+Shared-cap level-based Gemini and other reasoning families receive bounded
+answer headroom too. Savings vetoes are not failed compactions and do not block
+same-run reactive recovery.
+
+
 Pi results include a monotonic `dispatchProgress` snapshot (version 1), armed
 only after replay seeding: tool admission and yielded live input are distinct
 flags. Ordinary retries/backups stop after tool or live-input progress, with

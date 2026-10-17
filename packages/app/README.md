@@ -1426,6 +1426,10 @@ evidence as interrupted answers.
 
 ## Architecture
 
+ACP occupancy uses context-eligible usage counts when supplied; off-context
+compaction tokens remain in billed totals/cost without inflating context used.
+
+
 BuJo can opt in to default-off `memory.profile.enabled` (deterministic
 owner-stated label profile, at most 600 Unicode code points), only for verified
 owner web/TUI/ACP turns. The configured harness and app controller wire it from

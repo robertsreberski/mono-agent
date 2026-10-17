@@ -672,7 +672,7 @@ async function publishEvent(
   if (event.type !== "usage_update" || event.tokens === undefined) return;
   const tokens = event.tokens;
   const inputTokens = tokens.input + tokens.cacheRead + tokens.cacheCreation;
-  const totalTokens = inputTokens + tokens.output;
+  const totalTokens = event.contextTokens ?? (inputTokens + tokens.output);
   const contextWindow = info.model === undefined
     ? undefined
     : info.modelOptions?.[info.model]?.contextWindow;

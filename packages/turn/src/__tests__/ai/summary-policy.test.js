@@ -67,3 +67,33 @@ it("preserves intentional small split-summary targets when they fit", () => {
   expect(policy.options.maxTokens).toBe(384);
   expect(policy.metadata.minimumAnswerTokens).toBe(384);
 });
+it("gives level-based Gemini bounded answer headroom and no ignored budget controls", () => {
+  const gemini = { ...model, api: "google-generative-ai", id: "gemini-3.1-pro-preview" };
+  const policy = summaryRequestOptions(gemini, { messages: [] }, { maxTokens: 12000 });
+  expect(policy.options.reasoning).toBe("low");
+  expect(policy.options.thinkingBudgets).toBeUndefined();
+  expect(policy.options.maxTokens).toBe(18000);
+  expect(policy.metadata.reasoningAllowance).toBe(6000);
+  expect(policy.canDispatch).toBe(true);
+  expect(summaryRequestOptions({ ...gemini, maxTokens: 6000 }, { messages: [] }, { maxTokens: 12000 }).canDispatch).toBe(false);
+});
+it("sends the enlarged cap with Gemini thinkingLevel, not an ignored thinkingBudget", async () => {
+  const { streamSimple } = await import("@earendil-works/pi-ai/api/google-generative-ai");
+  const gemini = { ...model, id: "gemini-3.1-pro-preview", provider: "google", api: "google-generative-ai", input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+  const policy = summaryRequestOptions(gemini, { messages: [] }, { maxTokens: 12000 });
+  let payload;
+  const stream = streamSimple(gemini, { messages: [{ role: "user", content: "Fictional summary", timestamp: 0 }] }, {
+    ...policy.options, apiKey: "fictional-test-key", onPayload: (value) => { payload = value; throw new Error("Captured before network"); } });
+  expect((await stream.result()).errorMessage).toContain("Captured before network");
+  expect(payload.config.maxOutputTokens).toBe(18000);
+  expect(payload.config.thinkingConfig.thinkingLevel).toBe("LOW");
+  expect(payload.config.thinkingConfig.thinkingBudget).toBeUndefined();
+});
+
+it("reserves shared-cap reasoning room for other always-on reasoning families", () => {
+  const policy = summaryRequestOptions({ ...model, api: "openai-responses" }, { messages: [] }, { maxTokens: 12000 });
+  expect(policy.options.maxTokens).toBe(18000);
+  expect(policy.metadata.reasoningAllowance).toBe(6000);
+  expect(policy.canDispatch).toBe(true);
+});

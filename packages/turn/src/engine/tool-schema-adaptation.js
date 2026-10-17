@@ -1,3 +1,6 @@
+import { toToolDeclaration } from "@earendil-works/pi-ai";
+
+const memo = new WeakMap();
 const APIS = new Set(["openai-completions", "google-generative-ai", "google-vertex", "google-gemini-cli"]);
 const maps = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
 const lists = new Set(["anyOf", "oneOf", "allOf", "prefixItems"]);
@@ -33,8 +36,20 @@ function adapt(schema) {
   return copy;
 }
 
-/** Request-only clone. Execution validation keeps the original tool definition. */
+/** Memoized provider-only declarations; never pass these to the agent loop validator. */
 export function adaptRequestTools(tools, api) {
   if (!APIS.has(api)) return tools;
-  return tools.map((tool) => tool.parameters ? { ...tool, parameters: adapt(structuredClone(tool.parameters)) } : tool);
+  let byApi = memo.get(tools);
+  if (!byApi) { byApi = new Map(); memo.set(tools, byApi); }
+  if (!byApi.has(api)) byApi.set(api, tools.map((tool) => tool.parameters ? { ...tool, parameters: adapt(structuredClone(tool.parameters)) } : tool));
+  return byApi.get(api);
+}
+
+/** Swap only the provider-facing leading transcript declaration, after Pi has
+ * retained the original executable tools for validation and execution. */
+export function adaptProviderContext(context, tools, api) {
+  const adapted = adaptRequestTools(tools, api);
+  if (adapted === tools || tools.length === 0) return context;
+  return { ...context, messages: context.messages.map((message, index) => index === 0 && message.role === "system"
+    ? { ...message, toolsAdded: adapted.map(toToolDeclaration) } : message) };
 }

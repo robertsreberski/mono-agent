@@ -481,3 +481,37 @@ it("rejects unbound steering before and between turns so the next bound prompt p
     ] }).status).toBe("matched");
   } finally { await adapter.close(); await raw.close(); }
 });
+
+it.each([1, "1"])("adapts provider declarations but preserves native validation for %s", async (choice) => {
+  const { getCurrentTools } = await import("@earendil-works/pi-ai");
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "schema-fixture" }] });
+  const transport = createModels(); transport.setProvider(faux.provider);
+  const nativeModel = faux.getModel();
+  const model = { ...nativeModel, api: "openai-completions" };
+  const execute = vi.fn(async (_id, args) => ({ content: [{ type: "text", text: JSON.stringify(args) }] }));
+  const tool = { name: "FictionalLookup", description: "Fictional", parameters: { type: "object", properties: {
+    lookup: { properties: { code: { enum: ["x"] } } }, choice: { enum: [1, 2] } } }, execute };
+  const seen = [];
+  const models = { getModel: () => model, streamSimple: (_model, context, options) => {
+    seen.push(getCurrentTools(context.messages));
+    return transport.streamSimple(nativeModel, context, options);
+  } };
+  faux.setResponses([fauxAssistantMessage([fauxToolCall(tool.name, { lookup: "accepted original string", choice }, "fictional-call")]),
+    fauxAssistantMessage([fauxText("done")])]);
+  const repo = new MemorySessionRepo(); const raw = await repo.create();
+  const adapter = createRunDriver(raw, { models, model, tools: [tool], systemPrompt: "Fictional", thinkingLevel: "off" });
+  const loop = vi.spyOn(agentCore, "runAgentLoop");
+  try {
+    expect((await adapter.prompt("Look up fictional data")).status).toBe("completed");
+    expect(seen).toHaveLength(2);
+    expect(seen[0][0].parameters.properties.lookup.type).toBe("object");
+    expect(tool.parameters.properties.lookup.type).toBeUndefined();
+    const config = loop.mock.calls.at(-1)[2];
+    const first = await config.prepareRequest();
+    const second = await config.prepareRequest();
+    expect(first.context.tools).toBe(second.context.tools);
+    expect(first.context.tools[0].parameters).toBe(tool.parameters);
+    expect(execute).toHaveBeenCalledTimes(choice === 1 ? 1 : 0);
+    if (choice === 1) expect(execute.mock.calls[0][1]).toEqual({ lookup: "accepted original string", choice: 1 });
+  } finally { loop.mockRestore(); await adapter.close(); await raw.close(); }
+});

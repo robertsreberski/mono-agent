@@ -248,10 +248,12 @@ describe("ConversationHarness manual compaction", () => {
   it("returns settled failed manual accounting without reusing the retired session", async () => {
     const accounting = { version: 2 as const, usageIncluded: false as const, requests: [{ requestId: "fictional:1", model: "faux:summary", status: "rejected" as const, input: 100, output: 10, cacheRead: 0, cacheWrite: 0, costUsd: 1.25 }] };
     const { makeHarness, fake } = await manualFixture({ run: async (_prompt, options) => isManual(options)
-      ? { providerSessionId: options.sessionId, error: "Summary rejected", manualCompaction: { status: "failed", trigger: "manual", operationId: "fictional", accounting } } as unknown as RuntimeResult
+      ? { providerSessionId: options.sessionId, error: "Summary rejected", manualCompaction: { status: "failed", trigger: "manual", operationId: "fictional", accounting, unexpected: "untrusted runtime detail" } } as unknown as RuntimeResult
       : { text: "answer", providerSessionId: options.sessionId as string } });
     const harness = makeHarness();
-    await expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "failed", accounting });
+    const outcome = await harness.compactConversation!("manual");
+    expect(outcome).toMatchObject({ status: "failed", accounting });
+    expect(outcome).not.toHaveProperty("unexpected");
     await harness.run(request("manual", "next"));
     expect(fake.calls[1]?.options.sessionId).not.toBe(fake.calls[0]?.options.sessionId);
   });

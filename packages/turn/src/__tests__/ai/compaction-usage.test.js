@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createCompactionUsage, withCompactionUsage, compactionCostEvent } from "../../ai/compaction-usage.js";
+import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../../ai/compaction-usage.js";
 const request = (requestId, costUsd, status = "rejected") => ({ requestId, model: "faux:summary", status,
   input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd });
 it("dedupes lifecycle snapshots and bills rejected and failed summaries exactly once", () => {
@@ -11,7 +11,7 @@ it("dedupes lifecycle snapshots and bills rejected and failed summaries exactly 
   expect(result.usage).toMatchObject({ input_tokens: 210, output_tokens: 42, cost_usd: 2, compaction: { cost_usd: 1.5 } });
   expect(result.usage.compaction.requests).toHaveLength(2);
   expect(withCompactionUsage(result, usage).usage.cost_usd).toBe(2);
-  expect(compactionCostEvent(result).cumulativeUsd).toBe(2);
+  expect(compactionCostEvent(result)).toMatchObject({ cumulativeUsd: 2, contextTokens: 12, tokens: { input: 210, output: 42 } });
 });
 it("keeps missing costs unknown, a measured zero zero and mixed prices partial", () => {
   const unknown = createCompactionUsage();
@@ -23,4 +23,11 @@ it("keeps missing costs unknown, a measured zero zero and mixed prices partial",
   const measured = createCompactionUsage(); measured.add([request("zero:2", 0, "succeeded")]);
   expect(measured.slice()).toMatchObject({ cost_usd: 0 });
   expect(measured.slice()).not.toHaveProperty("cost_partial");
+});
+
+it("preserves non-dispatch evidence in accounting and bounded manual receipts", () => {
+  const collector = createCompactionUsage();
+  collector.add([{ ...request("local:1", 0), providerInvoked: false, input: 0, output: 0 }]);
+  expect(collector.slice().requests[0].providerInvoked).toBe(false);
+  expect(manualCompactionAccounting(collector.slice()).requests[0].providerInvoked).toBe(false);
 });

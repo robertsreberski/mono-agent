@@ -19,10 +19,10 @@ export function compactionFailureGuard({ scope, model, policy, tokens, trigger, 
     retryAfterMs: suppressed ? Math.max(0, cooldown - (now - previous.at)) : 0,
     growthRequiredTokens: growth,
     suppress() { if (previous) previous.warned = true; },
-    settle(success, attempted, reason) {
-      if (success) { failures.delete(key); return; }
+    settle(outcome, attempted, reason) {
+      if (outcome === "accepted") { failures.delete(key); return; }
       // Local headroom rejections are attempts too, but never billing evidence.
-      if (!attempted || suppressed || reason === "aborted") return;
+      if (!["failed", "headroom_unavailable"].includes(outcome) || !attempted || suppressed || reason === "aborted") return;
       failures.delete(key);
       failures.set(key, { at: now, tokens, warned: false });
       for (const [id, value] of failures) if (now - value.at >= 86400000) failures.delete(id);

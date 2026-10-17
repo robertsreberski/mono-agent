@@ -984,12 +984,14 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
         model: "claude-fable-5",
         cumulativeUsd: 0.42,
         tokens: { input: 10, output: 5, cacheReadTokens: 300, cacheCreationTokens: 7 },
+        contextTokens: 22,
       }),
     ).toEqual({
       type: "usage_update",
       model: "claude-fable-5",
       cumulativeUsd: 0.42,
       tokens: { input: 10, output: 5, cacheRead: 300, cacheCreation: 7 },
+      contextTokens: 22,
     });
   });
 

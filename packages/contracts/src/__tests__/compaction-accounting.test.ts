@@ -7,3 +7,8 @@ it("validates bounded metadata-only manual billing receipts", () => {
   expect(isAgentCompactionAccounting({ ...receipt, requests: [{ ...receipt.requests[0], input: -1 }] })).toBe(false);
   expect(isAgentCompactionAccounting({ ...receipt, requests: [{ ...receipt.requests[0], summary: "untrusted prose" }] })).toBe(false);
 });
+
+it("retains bounded non-dispatch evidence without accepting arbitrary values", () => {
+  expect(isAgentCompactionAccounting({ ...receipt, requests: [{ ...receipt.requests[0], providerInvoked: false }] })).toBe(true);
+  expect(isAgentCompactionAccounting({ ...receipt, requests: [{ ...receipt.requests[0], providerInvoked: "no" }] })).toBe(false);
+});

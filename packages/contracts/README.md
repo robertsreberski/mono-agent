@@ -142,6 +142,12 @@ field does not introduce a new capability or change conversation history.
 
 ## Architecture
 
+`usage_update.contextTokens` optionally separates context-eligible occupancy
+from inclusive billed token totals. Manual accounting may retain a bounded
+`providerInvoked` boolean so clients distinguish local non-dispatch from a
+measured free provider response.
+
+
 `AgentManualCompactionResult.accounting` is an optional metadata-only receipt
 validated by `isAgentCompactionAccounting`: at most two summary requests,
 bounded identifiers and numeric/null usage. It contains no summary prose.

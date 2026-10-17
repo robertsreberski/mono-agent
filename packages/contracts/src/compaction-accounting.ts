@@ -5,6 +5,8 @@ export interface AgentCompactionAccounting {
   readonly requests: readonly {
     readonly requestId: string;
     readonly model?: string;
+    /** False proves local rejection before the provider boundary. */
+    readonly providerInvoked?: boolean;
     readonly status: "succeeded" | "rejected" | "failed";
     readonly input: number | null;
     readonly output: number | null;
@@ -24,7 +26,8 @@ export function isAgentCompactionAccounting(value: unknown): value is AgentCompa
   return accounting.requests.every((value: unknown) => {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
     const row = value as Record<string, unknown>;
-    if (Object.keys(row).some((key) => !["requestId", "model", "status", "input", "output", "cacheRead", "cacheWrite", "costUsd"].includes(key))
+    if (Object.keys(row).some((key) => !["requestId", "model", "providerInvoked", "status", "input", "output", "cacheRead", "cacheWrite", "costUsd"].includes(key))
+      || (row.providerInvoked !== undefined && typeof row.providerInvoked !== "boolean")
       || typeof row.requestId !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/u.test(row.requestId) || seen.has(row.requestId)
       || (row.model !== undefined && (typeof row.model !== "string" || row.model.length > 256))
       || !["succeeded", "rejected", "failed"].includes(String(row.status))) return false;

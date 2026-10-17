@@ -8,7 +8,8 @@ export function createCompactionUsage() {
     for (const row of rows) {
       if (typeof row?.requestId !== "string") continue;
       const before = requests.get(row.requestId) ?? {};
-      const next = { requestId: row.requestId, model: row.model ?? before.model, status: row.status ?? before.status };
+      const next = { requestId: row.requestId, model: row.model ?? before.model, status: row.status ?? before.status,
+        ...(typeof (row.providerInvoked ?? before.providerInvoked) === "boolean" ? { providerInvoked: row.providerInvoked ?? before.providerInvoked } : {}) };
       for (const [key, raw] of Object.entries(fields)) next[key] = finite(row[key] ?? row[raw]) ? row[key] ?? row[raw] : before[key] ?? null;
       requests.set(row.requestId, next);
     }
@@ -54,6 +55,9 @@ export function compactionCostEvent(result) {
   return { type: "cost_accumulated", sdk: "pi", model: result.model,
     ...(finite(usage.cost_usd) ? { cumulativeUsd: usage.cost_usd } : {}),
     ...(usage.cost_partial ? { costPartial: true } : {}),
+    // Billing totals remain inclusive; occupancy consumers must not count summaries.
+    contextTokens: Math.min(Number.MAX_SAFE_INTEGER, Object.keys(fields).filter((key) => key !== "cost_usd")
+      .reduce((sum, key) => sum + Math.max(0, (usage[key] ?? 0) - (usage.compaction?.[key] ?? 0)), 0)),
     tokens: { input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0,
       cacheReadTokens: usage.cache_read_tokens ?? 0, cacheCreationTokens: usage.cache_write_tokens ?? 0 } };
 }
@@ -62,7 +66,7 @@ export function compactionCostEvent(result) {
 export function manualCompactionAccounting(slice) {
   if (!slice) return undefined;
   return { version: 2, usageIncluded: false, requests: slice.requests.slice(0, 2).map((row) => ({
-    requestId: row.requestId, ...(row.model ? { model: row.model } : {}), status: row.status,
+    requestId: row.requestId, ...(typeof row.providerInvoked === "boolean" ? { providerInvoked: row.providerInvoked } : {}), ...(row.model ? { model: row.model } : {}), status: row.status,
     input: row.input_tokens, output: row.output_tokens, cacheRead: row.cache_read_tokens,
     cacheWrite: row.cache_write_tokens, costUsd: row.cost_usd,
   })) };
