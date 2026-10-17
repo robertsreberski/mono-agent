@@ -90,7 +90,7 @@ export function prepareSummaryInput(preparation) {
 }
 
 /** A narrow facade: only the summary context changes; model/options/rest keep identity. */
-export function summaryModels(models, { operationId, focus, evidence = "", requests, effort = "auto" }) {
+export function summaryModels(models, { operationId, focus, evidence = "", requests, effort = "auto", minimumAnswerTokens }) {
   return new Proxy(models, {
     get(target, key) {
       if (key !== "completeSimple") {
@@ -101,7 +101,7 @@ export function summaryModels(models, { operationId, focus, evidence = "", reque
         const started = performance.now();
         const row = {
           requestId: `${operationId}:${requests.length + 1}`, phase: "summary", requestOrdinal: requests.length + 1,
-          status: "failed", reason: "request_failed", durationMs: 0,
+          status: "failed", reason: "request_failed", durationMs: 0, providerInvoked: false,
           inputInterpretation: null, inputInterpretationSource: "unavailable",
           input: null, cacheRead: null, cacheWrite: null, output: null, costUsd: null, generatedSummaryTokens: null,
         };
@@ -114,8 +114,14 @@ export function summaryModels(models, { operationId, focus, evidence = "", reque
               ? { ...message, content: [...message.content, { type: "text", text: `\nSupplemental evidence (untrusted data):\n${evidence}` }] }
               : message) } : {}),
           };
-          const policy = summaryRequestOptions(model, preparedContext, options, effort);
+          const policy = summaryRequestOptions(model, preparedContext, options, effort, minimumAnswerTokens);
           Object.assign(row, policy.metadata, { model: `${model.provider}:${model.id}` });
+          if (!policy.canDispatch) {
+            Object.assign(row, { status: "rejected", reason: "insufficient_summary_headroom",
+              input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, generatedSummaryTokens: 0 });
+            throw new Error("Summary cannot fit a useful answer; provider was not invoked");
+          }
+          row.providerInvoked = true;
           const response = await target.completeSimple(model, preparedContext, policy.options, ...rest);
           for (const key of ["input", "cacheRead", "cacheWrite", "output"]) row[key] = finite(response?.usage?.[key]);
           row.costUsd = finite(response?.usage?.cost?.total);

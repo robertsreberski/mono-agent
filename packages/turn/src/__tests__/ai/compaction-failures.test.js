@@ -14,7 +14,7 @@ it("suppresses across reopened controllers, warns once and resets on growth/cool
   expect(compactionFailureGuard({ ...base, policy: { ...base.policy, effort: "low" } }).suppressed).toBe(false);
   expect(compactionFailureGuard({ ...base, now: 900100 }).suppressed).toBe(false);
 });
-it("isolates sessions, ignores unbilled/aborted work, clears success and bypasses manual", () => {
+it("isolates sessions, ignores unattempted/aborted work, clears success and bypasses manual", () => {
   const input = { ...base, scope: "another-session" };
   compactionFailureGuard(input).settle(false, false);
   expect(compactionFailureGuard(input).suppressed).toBe(false);
@@ -28,4 +28,12 @@ it("isolates sessions, ignores unbilled/aborted work, clears success and bypasse
   expect(compactionFailureGuard({ ...input, policy: { failureCooldownMs: 0 } })).toBeNull();
   compactionFailureGuard(input).settle(true, true);
   expect(compactionFailureGuard(input).suppressed).toBe(false);
+});
+
+it("suppresses cheap headroom rejection but permits retry after model ceilings change", () => {
+  const input = { ...base, scope: "fictional-headroom-model", model: { ...base.model, contextWindow: 10000, maxTokens: 512 } };
+  compactionFailureGuard(input).settle(false, true, "insufficient_summary_headroom");
+  expect(compactionFailureGuard(input).suppressed).toBe(true);
+  expect(compactionFailureGuard({ ...input, model: { ...input.model, contextWindow: 200000 } }).suppressed).toBe(false);
+  expect(compactionFailureGuard({ ...input, model: { ...input.model, maxTokens: 4096 } }).suppressed).toBe(false);
 });

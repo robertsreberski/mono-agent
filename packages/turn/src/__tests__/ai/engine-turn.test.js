@@ -2401,7 +2401,7 @@ describe("pi-native auto-compaction", () => {
       return fauxAssistantMessage([fauxText("Fictional reply")]);
     };
     faux.setResponses(Array.from({ length: 12 }, () => respond));
-    const options = runOptions(base, { piResolvedModel: { ...base, contextWindow: 32000 },
+    const options = runOptions(base, { piResolvedModel: { ...base, contextWindow: 200000 }, compaction: { contextWindowOverride: 32000 },
       sessionId: "fictional-suppression", sessionKeepAlive: true, sessionsRoot,
       messages: bigHistory(60, 2000), resolvePiApiKey: async () => "faux-key" });
     const first = await generateEngineTurnResponse("system", options);
@@ -2414,9 +2414,31 @@ describe("pi-native auto-compaction", () => {
     expect(third.runtimeWarnings.some((warning) => warning.warning_kind === "context_compaction_suppressed")).toBe(false);
   });
 
+  it("skips and suppresses doomed low-headroom summaries without invoking a provider", async () => {
+    const base = setup();
+    let summaries = 0;
+    const respond = (context) => {
+      if (JSON.stringify(context.messages[0]).includes("context summarization assistant")) summaries += 1;
+      return fauxAssistantMessage([fauxText("Fictional reply")]);
+    };
+    faux.setResponses(Array.from({ length: 8 }, () => respond));
+    const options = runOptions(base, { piResolvedModel: { ...base, contextWindow: 4000 },
+      sessionId: "fictional-headroom", sessionKeepAlive: true, sessionsRoot,
+      messages: bigHistory(60, 2000), resolvePiApiKey: async () => "faux-key" });
+    const first = await generateEngineTurnResponse("system", options);
+    const second = await generateEngineTurnResponse("system", { ...options, messages: [{ role: "user", content: "Continue" }] });
+    expect(summaries).toBe(0);
+    expect(first.runtimeWarnings.some((warning) => warning.warning_kind === "context_compaction_insufficient_headroom")).toBe(true);
+    expect(first.events.some((event) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom")).toBe(true);
+    expect(first.usage.compaction).toMatchObject({ cost_usd: 0 });
+    expect(first.events.find((event) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom").accounting.requests[0]).toMatchObject({
+      providerInvoked: false, reason: "insufficient_summary_headroom", costUsd: 0 });
+    expect([first, second].flatMap((result) => result.runtimeWarnings).filter((warning) => warning.warning_kind === "context_compaction_suppressed")).toHaveLength(1);
+  });
+
   it("proactively compacts before the turn when near the window", async () => {
     const base = setup();
-    const windowed = { ...base, contextWindow: 4000 };
+    const windowed = { ...base, contextWindow: 200000 };
     let summaryCalled = false;
     faux.setResponses([
       () => { summaryCalled = true; return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]); },
@@ -2424,6 +2446,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
+      compaction: { contextWindowOverride: 4000 },
       model: { provider: "faux", model: "proactive", reference: "faux:proactive" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
@@ -2592,7 +2615,7 @@ describe("pi-native auto-compaction", () => {
 
   it("uses the same OpenCode session headers for compaction and the main turn", async () => {
     const base = setup({ id: "deepseek-v4-pro" }, "opencode-go");
-    const windowed = { ...base, contextWindow: 4000 };
+    const windowed = { ...base, contextWindow: 200000 };
     const dispatchedHeaders = [];
     faux.setResponses([
       (_context, options) => {
@@ -2607,6 +2630,7 @@ describe("pi-native auto-compaction", () => {
 
     const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
+      compaction: { contextWindowOverride: 4000 },
       providerAttributionSessionId: "compaction-epoch",
       messages: bigHistory(60, 2000),
     }));
@@ -2647,8 +2671,8 @@ describe("pi-native auto-compaction", () => {
 
   it("does not re-compact (or loop) when a proactively-compacted turn still overflows", async () => {
     const base = setup();
-    // Small window so the PROACTIVE trigger fires; the turn then still overflows.
-    const windowed = { ...base, contextWindow: 4000 };
+    // Early compaction override triggers before the real provider window is full.
+    const windowed = { ...base, contextWindow: 200000 };
     let providerCalls = 0;
     faux.setResponses([
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); }, // proactive compact
@@ -2657,6 +2681,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
+      compaction: { contextWindowOverride: 4000 },
       model: { provider: "faux", model: "guard", reference: "faux:guard" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",

@@ -10,6 +10,7 @@ import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { compactionFailureGuard } from "./compaction-failures.js";
 import { summaryThinkingLevel } from "./summary-policy.js";
 import { randomUUID } from "node:crypto";
+import { MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 import {
   estimateFixedOverheadTokens,
   isLikelyContextTermination,
@@ -354,7 +355,10 @@ export function createGuardedCompactionHook({
       accounting.preparation = input.metadata;
       const compacted = await compactPreparedContext(
         input.preparation,
-        summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort }),
+        summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort,
+          // Derive the useful minimum before the kit clamps requests to model.maxTokens.
+          // Small explicit split budgets may be shorter than Pi's normal answer minimum.
+          minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, Math.floor(prepared.value.settings.reserveTokens * (prepared.value.isSplitTurn ? 0.5 : 0.8))) }),
         harness.getModel(),
         event.customInstructions,
         summaryThinkingLevel(harness.getModel(), effectivePolicy.effort),
@@ -363,7 +367,7 @@ export function createGuardedCompactionHook({
         event.context || BACKGROUND_CONTEXT,
       );
       if (compacted.ok === false) {
-        decision = { kind: "failed", error: compacted.error };
+        decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error: compacted.error };
         return { cancel: true };
       }
       const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
@@ -401,7 +405,7 @@ export function createGuardedCompactionHook({
       };
       return { compaction: compacted.value };
     } catch (error) {
-      decision = { kind: "failed", error };
+      decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error };
       return { cancel: true };
     } finally {
       failureGuard?.settle(decision?.kind === "accepted", accounting.requests.length > 0, accounting.requests.at(-1)?.reason);
@@ -429,6 +433,12 @@ export function reportGuardedCompactionOutcome({
   runtimeWarnings,
   effectivePolicy,
 }) {
+  if (decision?.kind === "headroom_unavailable") {
+    runtimeWarnings?.push({ warning_kind: "context_compaction_insufficient_headroom", source: "pi", trigger,
+      message: "Summary cannot fit a useful answer within the model/context ceiling; provider was not invoked." });
+    emit(onEvent, { operationId, status: "skipped", trigger, model, reason: "insufficient_summary_headroom" });
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
+  }
   if (decision?.kind === "suppressed") {
     if (decision.warn) runtimeWarnings?.push({ warning_kind: "context_compaction_suppressed", source: "pi", trigger,
       message: "An unchanged failed compaction was suppressed; retry after cooldown, meaningful context growth or a summary-policy change.",

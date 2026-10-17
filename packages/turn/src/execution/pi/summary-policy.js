@@ -1,5 +1,5 @@
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
+import { adjustMaxTokensForThinking, clampMaxTokensToContext, MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 
 /** Resolve summary policy independently of conversation reasoning. */
 export function summaryThinkingLevel(model, effort = "auto") {
@@ -13,23 +13,36 @@ export function summaryThinkingLevel(model, effort = "auto") {
 
 /** The kit supplies the text target (including its existing split-turn division).
  * Adaptive thinking shares that ceiling, unlike Pi's legacy Anthropic adjustment.
+ * Explicit small text targets remain useful; a context/model clamp must not reduce
+ * the answer below that target, or below Pi's minimum for larger targets.
+ * @param {any} model @param {any} context @param {any} options @param {string} effort @param {number|undefined} minimumUsefulAnswer
  */
-/** @param {any} model @param {any} context @param {any} options @param {string} effort */
-export function summaryRequestOptions(model, context, options = {}, effort = "auto") {
+export function summaryRequestOptions(model, context, options = {}, effort = "auto", minimumUsefulAnswer = undefined) {
   const level = summaryThinkingLevel(model, effort);
   const textTargetTokens = options.maxTokens ?? model.maxTokens;
-  const reasoningAllowance = level !== "off" && model.api === "anthropic-messages"
-    && model.compat?.forceAdaptiveThinking === true
-    ? Math.min(8192, Math.max(2048, Math.ceil(textTargetTokens / 2))) : 0;
-  const maxTokens = clampMaxTokensToContext(model, { ...context, messages: context.messages ?? [] },
-    Math.min(model.maxTokens, textTargetTokens + reasoningAllowance));
+  const minimumAnswerTokens = Math.max(minimumUsefulAnswer ?? 0, Math.min(MIN_ANSWER_TOKENS, textTargetTokens));
+  const availableProviderTokens = clampMaxTokensToContext(model, { ...context, messages: context.messages ?? [] }, model.maxTokens);
+  const adaptive = level !== "off" && model.api === "anthropic-messages" && model.compat?.forceAdaptiveThinking === true;
+  const legacy = level !== "off" && model.api === "anthropic-messages" && !adaptive;
+  let reasoningAllowance = adaptive ? Math.min(8192, Math.max(2048, Math.ceil(textTargetTokens / 2))) : 0;
+  if (legacy) reasoningAllowance = adjustMaxTokensForThinking(textTargetTokens, model.maxTokens, level, options.thinkingBudgets).thinkingBudget;
+  // Pi adds legacy thinking itself. Reserve its room, but never add it twice.
+  const maxTokens = legacy
+    ? Math.max(1, Math.min(textTargetTokens, availableProviderTokens - reasoningAllowance))
+    : Math.min(availableProviderTokens, textTargetTokens + reasoningAllowance);
+  const google = ["google-generative-ai", "google-vertex", "google-gemini-cli"].includes(model.api) && level !== "off";
+  const googleBudget = Math.min(2048, Math.max(128, maxTokens - MIN_ANSWER_TOKENS));
+  const providerMaxTokens = legacy
+    ? adjustMaxTokensForThinking(maxTokens, model.maxTokens, level, options.thinkingBudgets).maxTokens : maxTokens;
+  const requiredTokens = minimumAnswerTokens + (google ? googleBudget : reasoningAllowance);
   return {
+    canDispatch: providerMaxTokens >= requiredTokens && providerMaxTokens <= availableProviderTokens
+      && (!legacy || reasoningAllowance >= MIN_ANSWER_TOKENS),
     options: { ...options,
-      ...(["google-generative-ai", "google-vertex", "google-gemini-cli"].includes(model.api) && level !== "off"
-        ? { thinkingBudgets: Object.fromEntries(["minimal", "low", "medium", "high"].map((key) => [key, Math.min(2048, Math.max(128, maxTokens - 1024))])) } : {}),
+      ...(google ? { thinkingBudgets: Object.fromEntries(["minimal", "low", "medium", "high"].map((key) => [key, googleBudget])) } : {}),
       reasoning: level === "off" ? undefined : level, maxTokens,
       transport: "sse", maxRetries: 0 },
     metadata: { requestedEffort: effort, effectiveEffort: level === "off" ? "none" : level,
-      textTargetTokens, reasoningAllowance, providerMaxTokens: maxTokens },
+      textTargetTokens, minimumAnswerTokens, reasoningAllowance, providerMaxTokens, availableProviderTokens },
   };
 }

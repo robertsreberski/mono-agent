@@ -47,3 +47,23 @@ it("bounds shared Google thinking budgets instead of inheriting conversation rea
   expect(options.maxTokens).toBe(2000);
   expect(summaryRequestOptions({ ...model, api: "google-generative-ai" }, context, { maxTokens: 1000 }, "low").options.thinkingBudgets.low).toBe(128);
 });
+it.each([1, 512, 1000])("refuses a model-clamped %i-token answer below the useful minimum", (maxTokens) => {
+  const policy = summaryRequestOptions({ ...model, reasoning: false, maxTokens }, { messages: [] }, { maxTokens: 2000 });
+  expect(policy.canDispatch).toBe(false);
+  expect(policy.metadata.minimumAnswerTokens).toBe(1024);
+});
+it("refuses adaptive thinking when its allowance leaves no useful answer", () => {
+  expect(summaryRequestOptions({ ...model, maxTokens: 2048 }, { messages: [] }, { maxTokens: 12000 }).canDispatch).toBe(false);
+});
+it("fits legacy thinking once inside the actual available context", () => {
+  const policy = summaryRequestOptions({ ...model, compat: {}, contextWindow: 14000 }, { messages: [] }, { maxTokens: 12000 });
+  expect(policy.canDispatch).toBe(true);
+  expect(policy.metadata.providerMaxTokens).toBeLessThanOrEqual(policy.metadata.availableProviderTokens);
+  expect(policy.metadata.providerMaxTokens - policy.options.maxTokens).toBe(2048);
+});
+it("preserves intentional small split-summary targets when they fit", () => {
+  const policy = summaryRequestOptions({ ...model, reasoning: false }, { messages: [] }, { maxTokens: 384 });
+  expect(policy.canDispatch).toBe(true);
+  expect(policy.options.maxTokens).toBe(384);
+  expect(policy.metadata.minimumAnswerTokens).toBe(384);
+});
