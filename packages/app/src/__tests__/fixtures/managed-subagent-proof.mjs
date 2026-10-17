@@ -9,7 +9,7 @@ import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registr
 import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../../../dist/process-jobs-config.js";
 import { createSubagentInstanceRegistry } from "../../../dist/subagent-instances.js";
-import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
+import { buildSubagentsOptions } from "../../../dist/composition/configured-subagents.js";
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { createAgentTool } from "../../../../turn/src/tools/delegation/agent-tool.js";
 import { generateEngineTurnResponse } from "../../../../turn/src/execution/pi/run.js";

@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime, monoRuntimeSupportsLiveInput } from "@mono-agent/turn/host";
-import { buildSubagentsOptions } from "../dist/configured-agent.js";
+import { buildSubagentsOptions } from "../dist/composition/configured-subagents.js";
 import { createSubagentInstanceRegistry } from "../dist/subagent-instances.js";
 import { openProcessJobsService } from "../dist/process-jobs-service.js";
 import { openProcessJobStore } from "../dist/process-jobs-store.js";

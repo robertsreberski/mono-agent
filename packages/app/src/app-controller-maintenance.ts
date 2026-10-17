@@ -11,7 +11,7 @@ import { deliverWebNotification } from "@mono-agent/web";
 import { loadAppCoreConfig, resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { createConfiguredAgentRuntimeForApp } from "./configured-agent.js";
-import type { createConfiguredMemory } from "./configured-agent.js";
+import type { createConfiguredMemory } from "./composition/configured-memory.js";
 import { routeProactiveNotification } from "./proactive-notify.js";
 import type { NotifyDeliveryResult } from "./channels/types.js";
 import { startMemoryRituals } from "./memory-rituals.js";

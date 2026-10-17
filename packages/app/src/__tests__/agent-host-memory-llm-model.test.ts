@@ -62,7 +62,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
 }));
 
 const { createConfiguredMemory } = await import("../index.js");
-const { createConfiguredMemoryForApp } = await import("../configured-agent.js");
+const { createConfiguredMemoryForApp } = await import("../composition/configured-memory.js");
 const {
   acquireAgentRootOwnership,
   releaseAgentRootOwnershipWhenIdle,

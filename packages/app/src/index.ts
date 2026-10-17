@@ -4,8 +4,8 @@ export {
   createConfiguredConversationHarness,
   createConfiguredAgentResponder,
   createConfiguredAgentRuntime,
-  createConfiguredMemory,
 } from "./configured-agent.js";
+export { createConfiguredMemory } from "./composition/configured-memory.js";
 export type { ConfiguredConversationHarnessOptions, ConfiguredAgentResponderOptions } from "./composition/configured-agent-options.js";
 export {
   createCronChannelDriver,

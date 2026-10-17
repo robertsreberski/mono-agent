@@ -2,47 +2,39 @@ import { assertSupportedSessionsRoot } from "./sessions-root.js";
 import type { ConversationHistoryTurnInspection } from "@mono-agent/conversation";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
 import { implicitModelRuntimeOptions } from "./request-model-override.js";
-import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
-import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/conversation";
-import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
-import type { OwnedForegroundProcesses } from "@mono-agent/turn/host/types";
-import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
-import { type InstanceRegistryHandle } from "./subagents/types.js";
-import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
+import { isLiveSubagentInstance } from "./subagent-instances.js";
 import {
   createConversationHarness,
   createSessionRuntimeResolver,
   createConversationResponder,
   createDurableHistoryStore,
   createToolPolicy,
-  renderSkillIndexSection,
 } from "@mono-agent/conversation";
 import type {
   ConversationHarness,
   ConversationHarnessOptions,
   ConversationHarnessRequest,
-  LiveInputMailbox,
-  SkillIndexSummary,
 } from "@mono-agent/conversation";
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
-import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, normalizeOptionalString, setToolActivityPathRoots } from "@mono-agent/contracts";
+import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, setToolActivityPathRoots } from "@mono-agent/contracts";
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
-import { isProviderAuthFailureText } from "@mono-agent/turn/ai";
-import type { AgentResponder, MemoryStore } from "@mono-agent/contracts";
+import type { AgentResponder } from "@mono-agent/contracts";
 import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
-import { createMonoRuntime, describeMonoRuntimeSupport, monoRuntimeSupportsLiveInput, monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
-import { createPiOAuthApiKeyResolver } from "@mono-agent/turn";
+import { createMonoRuntime, monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 import { createSrtSandboxEngine, mergeSandboxPolicies } from "@mono-agent/turn/host/sandbox";
 import { modelReferenceKey, parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/turn/host/config";
-import type { MonoRuntimeFallbackChainEntry, MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
+import type {
+  MonoRuntimeFallbackChainEntry,
+  MonoRuntimeLike,
+  RuntimeModelReference,
+  RuntimeRunOptions,
+} from "@mono-agent/turn/host/types";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
@@ -53,19 +45,16 @@ import {
   releaseAgentRootOwnershipWhenIdle,
   type AgentRootOwnership,
 } from "./durable-state/agent-root-coordinator.js";
-import { textFromMemoryRuntimeResult } from "./memory-llm-result.js";
 import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import {
   createMemoryJournalRuntimeExtension,
   isMemoryJournalCapableStore,
   isMemoryJournalToolAllowed,
 } from "./memory-journal.js";
-import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "./modules/known-tools.js";
 import { createPeerAgentRuntimeExtension } from "./peer-agent.js";
 import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
-  isSharedRecallStore,
   MemoryRetrievalService,
 } from "./memory-retrieval.js";
 import {
@@ -85,7 +74,6 @@ import {
 } from "./runtime-routes.js";
 import {
   resolveProcessJobsProtectionPosture,
-  type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
 import {
   createProcessJobsRuntimeExtension,
@@ -102,18 +90,18 @@ import {
   registerProcessJobsRoot,
 } from "./process-jobs-root-registry.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
-import { isReadSkillDenied } from "./skill-registry.js";
 import type {
   ConfiguredAgentInternalHooks,
   ConfiguredAgentResponderOptions,
   ConfiguredAgentRuntimeOptions,
   ConfiguredConversationHarnessOptions,
   ConversationHarnessSessionOptionsWithEvents,
-  RecorderCompositionDeps,
-  StaticRuntimeOptions,
 } from "./composition/configured-agent-options.js";
 import { composeRunRecorder, recorderCompositionDeps } from "./composition/run-recording.js";
 import { lazyConfiguredToolHistory } from "./composition/configured-tool-history.js";
+import { configuredSandboxEngine, configRuntimeFlags, mergeStaticRuntimeOptions, runtimeHostOptionsForConfig } from "./composition/configured-runtime-options.js";
+import { configuredMemoryForHarness, createConfiguredMemoryInternal } from "./composition/configured-memory.js";
+import { buildSubagentsOptions, createSubagentsRuntimeExtension, createConfiguredSubagentRegistry, bindConfiguredManagedSubagents } from "./composition/configured-subagents.js";
 
 
 export function createConfiguredAgentRuntime(config: MonoAgentConfig): MonoRuntimeLike;
@@ -179,11 +167,6 @@ function createConfiguredAgentRuntimeBase(
   return createMonoRuntime(runtimeOptions);
 }
 
-function configuredSandboxEngine(
-  explicit: SandboxEngine | undefined,
-): SandboxEngine {
-  return explicit ?? createSrtSandboxEngine();
-}
 
 // Explicit ownership boundary: new runtime/prepared methods require disposition.
 const ownedRuntimeKeys = {
@@ -355,378 +338,6 @@ export function wrapOwnedConfiguredRuntime(
   };
 }
 
-/**
- * Narrow the loaded MCP servers to the ones a profile names.
- *
- * An unknown name is a configuration error the loader cannot catch (it does not
- * read mcp.json), and silently dropping it would leave the subagent quietly
- * less capable than its config claims.
- */
-function selectMcpServers(
-  available: Record<string, unknown>,
-  names: readonly string[] | undefined,
-  profile: string,
-): Record<string, unknown> {
-  if (names === undefined || names.length === 0) {
-    return {};
-  }
-  const selected: Record<string, unknown> = {};
-  for (const name of names) {
-    if (!Object.hasOwn(available, name)) {
-      throw new Error(
-        `Subagent "${profile}" references MCP server "${name}", which is not defined in tools.mcpConfigPath or tools.computerUse.`,
-      );
-    }
-    selected[name] = available[name];
-  }
-  return selected;
-}
-
-/** Denied for every subagent regardless of profile. Mirrors the kernel's own list. */
-const SUBAGENT_HARD_DENY = [
-  "Agent",
-  "AgentManage",
-  "AskUser",
-  "SlackSendMessage",
-  "TelegramSendMessage",
-  "TelegramSendFile",
-] as const;
-
-/** Read-only default when a profile does not enumerate its tools. */
-const DEFAULT_SUBAGENT_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const;
-
-/**
- * Cap on the tools the agent may grant a subagent it authors at call time.
- *
- * A subagent's `allowedTools` become its real tool set, so an unbounded list
- * would let the model hand a helper a tool its own policy denies it. An
- * operator-authored profile may legitimately exceed the parent (they wrote it);
- * one the model invents may not. Absent an explicit ceiling, the parent's own
- * effective built-ins are the bound — an authored helper never reaches further
- * than its author.
- */
-function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
-  const configured = config.subagents?.inline?.allowedTools;
-  const parentTools = isAllowAllTools(config.tools.allowedTools)
-    ? [...BUILTIN_TOOL_NAMES]
-    : config.tools.allowedTools.map(canonicalToolName);
-  const denied = new Set([
-    ...SUBAGENT_HARD_DENY as readonly string[],
-    ...config.tools.disallowedTools.map(canonicalToolName),
-  ]);
-  const ceiling = configured ?? parentTools.filter((name) => (BUILTIN_TOOL_NAMES as readonly string[]).includes(name));
-  return ceiling.filter((name) => !denied.has(canonicalToolName(name)));
-}
-
-interface SubagentRunRequest {
-  readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
-  /** Host mailbox for parent steering of this detached turn; used only if this route supports live input. */
-  readonly liveInput?: LiveInputMailbox;
-  readonly detached?: true;
-  readonly turnToken?: string;
-  readonly deadlineAt?: number;
-  readonly instance?: { readonly id: string; readonly sessionId: string; readonly sessionsRoot: string };
-  readonly model?: RuntimeModelReference;
-  readonly effort?: string;
-  readonly systemPrompt: string;
-  readonly prompt: string;
-  readonly definition: {
-    readonly name: string;
-    readonly model?: RuntimeModelReference;
-    readonly effort?: string;
-    readonly allowedTools?: readonly string[];
-    readonly disallowedTools?: readonly string[];
-    readonly mcpServers?: Record<string, unknown>;
-    readonly mcpServerNames?: readonly string[];
-  };
-  readonly maxTurns: number;
-  readonly depth: number;
-  readonly cwd?: string;
-  readonly sandboxPolicy?: unknown;
-  readonly sandboxEngine?: unknown;
-  /** The parent turn's disclosed skills, offered by the `Agent` tool. */
-  readonly skills?: readonly SkillIndexSummary[];
-  readonly skillsRoot?: string;
-  readonly toolEnvironment?: RuntimeRunOptions["toolEnvironment"];
-  readonly abortSignal: AbortSignal;
-  readonly onEvent: (event: unknown) => void;
-}
-
-/**
- * Whether a child on this route can be handed `skills` at all.
- *
- * This is a correctness guard, not an optimization. A non-empty `options.skills`
- * makes `supports_skills` a ROUTING REQUIREMENT (see the router's capability
- * matching), and a chain entry that does not advertise it is skipped — so
- * threading skills onto a child pinned to a runtime without skill support turns
- * a working subagent into `skipped_capability_mismatch`. Direct OpenCode is the
- * live example. The parent's own chain is already validated for this by doctor;
- * a profile that pins its own model is not, which is why the check lives here.
- *
- * Fails closed: an unparseable or incompatible route means no skills, never a
- * throw from what is otherwise a plain forwarding decision.
- */
-function childRuntimeSupportsSkills(
-  model: RuntimeModelReference,
-): boolean {
-  try {
-    const support = describeMonoRuntimeSupport(model);
-    return support.backend?.capabilities.supports_skills !== false;
-  } catch {
-    return false;
-  }
-}
-
-/** Inline prompt, or the contents of promptPath; the loader guarantees exactly one. */
-function resolveSubagentPrompt(definition: { readonly prompt?: string; readonly promptPath?: string }): string {
-  if (definition.prompt !== undefined) {
-    return definition.prompt;
-  }
-  return readFileSync(definition.promptPath as string, "utf8");
-}
-
-/**
- * Build the `subagents` runtime option: the profiles the `Agent` tool offers,
- * its caps, and the callback that runs one child turn.
- *
- * agent-app owns this rather than the harness or the adapter because it alone
- * holds the config, the router runtime, and `runtimeForModel`. Routing a child
- * through the shared router is what gives subagents the configured fallback
- * chain and same-model retries for free.
- */
-export function buildSubagentsOptions(
-  config: MonoAgentConfig,
-  deps: {
-    readonly runtime: MonoRuntimeLike;
-    readonly baseModel: RuntimeModelReference;
-    readonly runtimeForModel?: ConversationHarnessOptions["runtimeForModel"];
-  },
-  scope?: { conversationId: string; runId: string; instances: InstanceRegistryHandle },
-): StaticRuntimeOptions | undefined {
-  const subagents = config.subagents;
-  if (subagents?.enabled !== true) {
-    return undefined;
-  }
-  // Config, schema, doctor, and docs all advertise per-profile MCP servers, so
-  // resolve the named subset here rather than silently handing every child an
-  // empty map. Only the servers a profile names are exposed.
-  const availableMcpServers = (toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>;
-  const definitions = (subagents.definitions ?? []).map((definition) => ({
-    name: definition.name,
-    description: definition.description,
-    systemPrompt: resolveSubagentPrompt(definition),
-    ...(definition.model === undefined ? {} : { model: definition.model }),
-    ...(definition.effort === undefined ? {} : { effort: definition.effort }),
-    allowedTools: definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
-    disallowedTools: [...new Set([...(definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
-    mcpServers: selectMcpServers(availableMcpServers, definition.mcpServers, definition.name),
-    ...(definition.maxTurns === undefined ? {} : { maxTurns: definition.maxTurns }),
-    ...(definition.timeoutMs === undefined ? {} : { timeoutMs: definition.timeoutMs }),
-  }));
-
-  // An operator who denied ReadSkill agent-wide must not get it back through a
-  // child. Both spellings, because pi-bridge's deny gate honors the legacy alias
-  // and a policy that only blocks one of them is not a policy.
-  const skillsDeniedGlobally = isReadSkillDenied(config.tools.disallowedTools);
-
-  const run = async (request: SubagentRunRequest): Promise<RuntimeResult & { subagentContinuity?: { turnToken: string; state: "retained" | "unknown" | "lost" } }> => {
-    // A profile model must go through `runtimeForModel`: the router overrides
-    // `options.model` per chain entry, so handing a different model to the
-    // shared router is silently ignored and the child would run on the chain
-    // primary instead of the model its profile asked for.
-    const childModel = request.definition.model ?? request.model ?? deps.baseModel;
-    const overrides = modelReferenceKey(childModel) !== modelReferenceKey(deps.baseModel);
-    if (request.instance && overrides && deps.runtimeForModel === undefined) {
-      throw new Error(`Persistent subagent route ${childModel.reference} is unavailable; the retained model was not changed.`);
-    }
-    const runtime = overrides && deps.runtimeForModel !== undefined
-      ? deps.runtimeForModel(childModel)
-      : deps.runtime;
-
-    // Whether this child may inherit the parent's skill index. Decided here
-    // because this is the only layer holding all four inputs: the offered
-    // entries, the config's deny list, the profile's, and the child's RESOLVED
-    // route. Undefined means the child runs exactly as it did before — the
-    // prompt is untouched and neither run option is set.
-    const profileDeniesSkills = isReadSkillDenied(request.definition.disallowedTools ?? []);
-    const childSkills = request.skillsRoot !== undefined
-      && (request.skills?.length ?? 0) > 0
-      && !skillsDeniedGlobally
-      && !profileDeniesSkills
-      && childRuntimeSupportsSkills(childModel)
-      ? request.skills
-      : undefined;
-
-    // Appended, not prepended: the parent's own context orders these as
-    // Core -> Identity -> ... -> Skill Index -> user message, and a profile's
-    // systemPrompt IS the child's identity. Putting skills ahead of it is an
-    // order no other surface uses.
-    const childSystemPrompt = childSkills === undefined
-      ? request.systemPrompt
-      : `${request.systemPrompt}\n\n${renderSkillIndexSection(childSkills)}`;
-
-    let subagentQuestion: RuntimeResult["subagentQuestion"];
-    let submitted = false;
-    const currentProfileDenies = subagents.definitions?.find((profile) => profile.name === request.definition.name)?.disallowedTools ?? [];
-    const askParentExposed = Boolean(request.instance) && ![...config.tools.disallowedTools, ...currentProfileDenies, ...(request.definition.disallowedTools ?? [])].includes("AskParent");
-    const askParentController = askParentExposed && scope
-      ? { submit: async (question: NonNullable<RuntimeResult["subagentQuestion"]>): Promise<void> => {
-        if (submitted) throw new Error("AskParent already submitted a question this turn.");
-        submitted = true;
-        try { await scope.instances.markAwaiting(request.instance!.id, question); } catch (error) {
-          submitted = false; // Preserve exclusion while publishing, but permit a retry after rejection.
-          throw error;
-        }
-        subagentQuestion = structuredClone(question);
-      } } : undefined;
-    // Snapshot the command ceiling after child setup/queueing. Detached jobs
-    // retain their job deadline; foreground children reserve settlement time
-    // inside their own timer. Either abort signal can stop a command sooner.
-    const remainingMs = Number.isFinite(request.deadlineAt) ? Math.floor(request.deadlineAt! - Date.now()) : undefined;
-    const settlementMarginMs = remainingMs === undefined || request.detached === true
-      ? 0 : Math.min(15_000, Math.max(1, Math.floor(remainingMs / 10)));
-    const commandTimeoutMs = remainingMs === undefined ? undefined
-      : Math.max(1, Math.min(remainingMs - settlementMarginMs, subagents.commandTimeoutMs ?? 1_800_000));
-    const childCapabilityOptions = {
-      toolExposure: { askParent: askParentExposed, persistentSubagents: false, },
-      ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
-      ...(askParentController === undefined ? {} : { askParentController }),
-    };
-    const recovery = request.instance && request.turnToken && runtime.recoverSession
-      ? { runId: request.turnToken, revision: 0 } : undefined;
-    // Mirrors the harness's main-conversation gate: an unsupported route must
-    // say so through the mailbox, so a parent steer reports unsupported instead
-    // of waiting on a loop that can never read it.
-    let steeringSupported = false;
-    if (request.liveInput !== undefined) {
-      try { steeringSupported = monoRuntimeSupportsLiveInput(); } catch { steeringSupported = false; }
-      if (!steeringSupported) request.liveInput.markUnsupported();
-    }
-    const result = await runtime.run(`${childSystemPrompt}\n\n${HOST_TURN_CONTEXT_GUIDANCE}`, {
-      ...(request.liveInput !== undefined && steeringSupported ? { liveInput: request.liveInput } : {}),
-      ...childCapabilityOptions,
-      ...(recovery ? { sessionRecovery: recovery } : {}),
-      ...(request.instance && request.turnToken ? { sessionTurn: {
-        kind: "instance" as const, ownerKey: request.instance.id, historyBucket: null,
-        turnId: request.turnToken, handleId: request.instance.sessionId, baseRevision: null,
-      } } : {}),
-      ...(config.providers?.piNative?.cacheRetention === undefined ? {} : { cacheRetention: config.providers.piNative.cacheRetention }),
-      ...(config.providers?.piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: config.providers.piNative.promptCacheDiagnostics }),
-      ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
-      ...(askParentController === undefined ? {} : { askParentController }),
-      ...(request.instance === undefined ? {} : {
-        sessionId: request.instance.sessionId,
-        sessionsRoot: request.instance.sessionsRoot,
-        sessionKeepAlive: true,
-        sessionIdleTimeoutMs: subagents.instances?.idleTtlMs ?? 86_400_000,
-        ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
-      }),
-      model: childModel,
-      ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
-      messages: [{ role: "user", content: composeHostTurnEnvelope(formatHostCapabilities(childCapabilityOptions), request.prompt) }],
-      maxTurns: request.maxTurns,
-      ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-      // Monotonic: the child is confined by the same policy as the parent turn.
-      // This runs outside the harness, which is where the policy is normally
-      // attached, so dropping it would leave the child entirely unsandboxed.
-      ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
-      ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
-      ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
-      // Inherited for the same reason as the sandbox policy above: a child runs
-      // outside the harness and builds its OWN web controller, so without these
-      // it gets `searchConfig: undefined` and silently falls back to keyless
-      // search — which rate-limits into a cooldown where every query fails in
-      // milliseconds. The parent keeps working, so the degradation is invisible
-      // until you read the child's activity log.
-      ...(config.tools.web?.search === undefined ? {} : { webSearchConfig: config.tools.web.search }),
-      ...(config.tools.web?.coordination === "host" ? { webRequestCoordinator: createHostWebRequestCoordinator() } : {}),
-      ...(config.tools.web?.fetch === undefined ? {} : { webFetchConfig: config.tools.web.fetch }),
-      // Both keys or neither: pi-bridge builds ReadSkill only when it has the
-      // names AND the root, and a half-set pair fails by silently omitting the
-      // tool rather than erroring.
-      ...(childSkills === undefined
-        ? {}
-        : { skills: childSkills, skillsRoot: request.skillsRoot }),
-      ...((request.definition.effort ?? request.effort) === undefined
-        ? {} : { effort: request.definition.effort ?? request.effort }),
-      allowedTools: [...new Set([...(request.definition.allowedTools ?? DEFAULT_SUBAGENT_TOOLS), ...(askParentExposed ? ["AskParent"] : [])])],
-      disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...config.tools.disallowedTools, ...SUBAGENT_HARD_DENY])],
-      // Only the servers this profile named. A profile that names none gets an
-      // empty map, keeping the app-owned AskUser and channel-send tools
-      // structurally out of reach rather than merely denied by name.
-      mcpServers: request.instance
-        ? selectMcpServers((toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>, request.definition.mcpServerNames ?? [], request.definition.name)
-        : request.definition.mcpServers ?? {},
-      abortSignal: request.abortSignal,
-      ...(request.ownedForegroundProcesses ? { ownedForegroundProcesses: request.ownedForegroundProcesses } : {}),
-      onEvent: request.onEvent,
-      // Depth propagation is the recursion lock the kernel also enforces.
-      subagents: { depth: request.depth },
-    } as unknown as RuntimeRunOptions);
-    // Only the selected runtime can certify its durable tail. A matching id alone
-    // is not recovery evidence; router fallback intentionally drops the receipt.
-    let retained = false;
-    const receipt = result.providerSessionRecovery;
-    if (recovery && receipt && receipt.runId === recovery.runId && receipt.revision === 0
-      && receipt.providerSessionId === request.instance!.sessionId
-      && result.providerSessionId === request.instance!.sessionId
-      && receipt.modelKey === modelReferenceKey(childModel) && typeof receipt.tipId === "string" && receipt.tipId.length > 0) {
-      try { retained = await runtime.recoverSession!(receipt, { appliedInputIds: [] }); } catch { /* Fail closed. */ }
-    }
-    const continuity = request.turnToken ? { subagentContinuity: { turnToken: request.turnToken,
-      state: result.failureKind === "session_continuity_lost" ? "lost" as const : retained ? "retained" as const : "unknown" as const } } : {};
-    // Router retries/backups deliberately withhold session ids. Do not promise
-    // retained child context for an answer that was produced outside this epoch.
-    if (request.instance && !result.error && !result.failureKind && !result.cancelled
-      && result.providerSessionId !== request.instance.sessionId) {
-      return { ...result, ...continuity, ...(request.turnToken ? { subagentContinuity: { turnToken: request.turnToken, state: "lost" as const } } : {}), failureKind: "session_continuity_lost",
-        error: "The child answered outside its persistent session (for example after retry or fallback). This turn was not retained; close the instance and create another with the context it needs." };
-    }
-    return subagentQuestion && !result.error && !result.failureKind && !result.cancelled
-      ? { ...result, ...continuity, subagentQuestion } : { ...result, ...continuity };
-  };
-
-  return {
-    toolExposure: { persistentSubagents: persistentSubagentsEnabled(config) },
-    subagents: {
-      ...(scope === undefined || !persistentSubagentsEnabled(config) ? {} : { instances: scope.instances }),
-      definitions,
-      ...(subagents.models === undefined ? {} : { models: subagents.models.map((choice) => ({
-        name: choice.name ?? modelReferenceKey(choice.model),
-        model: choice.model,
-        key: modelReferenceKey(choice.model),
-      })) }),
-      // Authoring is on unless an operator turns it off; the ceiling is what
-      // keeps that safe, so it is always resolved here rather than left to the
-      // kernel's conservative read-only fallback.
-      ...(config.subagents?.inline?.enabled === false
-        ? {}
-        : { inline: { allowedTools: inlineSubagentCeiling(config) } }),
-      ...(subagents.maxConcurrent === undefined ? {} : { maxConcurrent: subagents.maxConcurrent }),
-      ...(subagents.maxPerTurn === undefined ? {} : { maxPerTurn: subagents.maxPerTurn }),
-      ...(subagents.maxTurns === undefined ? {} : { maxTurns: subagents.maxTurns }),
-      ...(subagents.timeoutMs === undefined ? {} : { timeoutMs: subagents.timeoutMs }),
-      run,
-    },
-  } as unknown as StaticRuntimeOptions;
-}
-
-
-/** Complete options object, constructed once per logical request and reused by router attempts. */
-export function createSubagentsRuntimeExtension(
-  config: MonoAgentConfig,
-  deps: Parameters<typeof buildSubagentsOptions>[1],
-  registry: ReturnType<typeof createSubagentInstanceRegistry>,
-): NonNullable<ConfiguredConversationHarnessOptions["runtimeOptionsForRequest"]> {
-  return async ({ request, runId }) => !persistentSubagentsEnabled(config)
-    ? { runtimeOptions: buildSubagentsOptions(config, deps)! }
-    : ({
-    runtimeOptions: buildSubagentsOptions(config, deps, {
-      conversationId: request.conversationId, runId,
-      instances: await registry.open(request.conversationId),
-    })!,
-  });
-}
 
 
 /**
@@ -818,23 +429,6 @@ function configuredRoutesOnlyPiNative(
   return { ok: true };
 }
 
-/**
- * The SQLite/BuJo stack (better-sqlite3, sqlite-vec) loads lazily only when
- * memory is configured. This keeps memory-less composition lightweight.
- */
-type MemoryBujoModule = typeof import("@mono-agent/memory/bujo");
-type MemorySearchModule = typeof import("@mono-agent/memory/search");
-type ConfiguredEmbeddingProvider = ReturnType<
-  MemorySearchModule["createCircuitBreakerEmbeddingProvider"]
->;
-
-let memoryBujoModule: MemoryBujoModule | undefined;
-let memorySearchModule: MemorySearchModule | undefined;
-
-const loadMemoryBujoModule = async (): Promise<MemoryBujoModule> =>
-  (memoryBujoModule ??= await import("@mono-agent/memory/bujo"));
-const loadMemorySearchModule = async (): Promise<MemorySearchModule> =>
-  (memorySearchModule ??= await import("@mono-agent/memory/search"));
 
 export async function createConfiguredConversationHarness(options: ConfiguredConversationHarnessOptions): Promise<ConversationHarness> {
   return await createConfiguredConversationHarnessInternal(options);
@@ -991,51 +585,11 @@ async function createConfiguredConversationHarnessInternal(
           : { onUnavailable: options.onMemoryRememberUnavailable }),
       });
   const subagentDeps = { runtime, baseModel: model, ...(runtimeForModel === undefined ? {} : { runtimeForModel }) };
-  const subagentRecoveryAccess = createSubagentRecoveryAccess({
-    ...(internalHooks.processJobs?.service ? { service: internalHooks.processJobs.service } : {}),
-    privateRoots: async () => {
-      const loaded = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
-      if (loaded.kind === "failed") throw new Error("Subagent observation policy is unavailable.");
-      const current = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
-      return [...processJobsProtectionPolicyRoots(current), subagentInstancesRoot(config)];
-    },
-    hostAccess: () => ({ workspace: config.runtime.workspace, readableRoots: [...(config.tools.filesystem?.readableRoots ?? [])],
-      sandboxPolicy: mergeSandboxPolicies(harnessSandboxPolicy, clearSessionsSandboxPolicy(clearSessionsBoundaryOptions)), sandboxEngine }),
+  const instanceRegistry = createConfiguredSubagentRegistry({
+    config, runtime, agentRoot, processJobsRegistry, processJobs: internalHooks.processJobs,
+    harnessSandboxPolicy, clearSessionsBoundaryOptions, sandboxEngine,
   });
-  const instanceRegistry = persistentSubagentsEnabled(config)
-    ? createSubagentInstanceRegistry({
-        root: subagentInstancesRoot(config),
-        ...config.subagents?.instances,
-        ...subagentRecoveryAccess,
-        ...(internalHooks.processJobs?.service?.bindManagedSubagents ? {
-          ownerForReservation: (jobId: string) => ({ jobId, storeRoot: internalHooks.processJobs!.service!.settings.stateDir }),
-          resolveOwner: (identity: import("./subagent-registry-ownership.js").SubagentOwnerIdentity) => internalHooks.processJobs!.service!.resolveSubagentOwner!(identity),
-        } : {}),
-        checkOwnerIndex: async (conversationId, known) => {
-          // Only existing registered history is authoritative. Never scan/open an old root here.
-          if (processJobsRegistry.kind === "empty") return "clear";
-          const service = internalHooks.processJobs?.service;
-          if (processJobsRegistry.kind !== "ready" || !service?.checkSubagentOwnerIndex
-            || processJobsRegistry.roots.some((root) => root.canonicalPath !== service.settings.stateDir)) return "unavailable";
-          return await service.checkSubagentOwnerIndex(conversationId, known);
-        },
-        salvageSession: async (id, root) => {
-          if (!runtime.salvageDurableSession) throw new Error("Runtime cannot salvage durable sessions.");
-          return runtime.salvageDurableSession(id, root);
-        },
-        retireSession: async (id, root) => {
-          if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
-          await runtime.retireDurableSession(id, root);
-        },
-      })
-    : undefined;
-  if (instanceRegistry && internalHooks.processJobs?.service?.bindManagedSubagents) {
-    internalHooks.processJobs.service.bindManagedSubagents({ root: subagentInstancesRoot(config),
-      salvage: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).salvageReleased(identity),
-      verify: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
-      publish: async (phase, publication) => await (await instanceRegistry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
-    });
-  }
+  bindConfiguredManagedSubagents(config, instanceRegistry, internalHooks.processJobs);
   const persistentSubagents = instanceRegistry === undefined ? undefined
     : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
   const peerAgent = createPeerAgentRuntimeExtension({
@@ -1382,20 +936,6 @@ function harnessWithAgentRootOwnership(
 }
 
 
-function configuredMemoryForHarness(
-  config: MonoAgentConfig,
-  memory: MemoryStore | undefined,
-): MemoryStore | undefined {
-  if (memory instanceof MemoryRetrievalService || config.memory === undefined || !isSharedRecallStore(memory)) {
-    return memory;
-  }
-  return new MemoryRetrievalService(memory, {
-    maxBytes: config.memory.maxBytes,
-    source: "memory-bujo",
-    profileEnabled: config.memory.mode === "bujo" && config.memory.profile?.enabled === true,
-    intentExpiry: config.memory.mode === "bujo" && config.memory.recall?.intentExpiry === true,
-  });
-}
 
 export async function createConfiguredAgentResponder(options: ConfiguredAgentResponderOptions): Promise<AgentResponder> {
   return await createConfiguredAgentResponderInternal(options);
@@ -1438,703 +978,9 @@ function supportsSessionResume(): boolean {
   }
 }
 
-// Bound embeddings calls so a slow/cold backend cannot stall a turn for the
-// provider default (30s). The harness degrades recall to empty on timeout.
-const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
-
-interface ConfiguredMemoryDependencies {
-  /** Volatile source-clock seam for disposable chronological evaluation. */
-  readonly clock?: () => Date;
-  /** Optional transport seam; private evaluation disables embedding redirects. */
-  readonly embeddingsFetch?: typeof fetch;
-  /** Canonical agent-root authority and folder used to resolve optional plugins. */
-  readonly cwd?: string;
-  /** Managed workers must use the plugin frozen into their app-side runtime closure. */
-  readonly logger?: { warn(message: string): void };
-  /**
-   * Injection seam for the bujo memory LLM's runtime (tests). This runtime MUST
-   * NOT carry the channel runtime's fallback chain: the agent-runtime fallback
-   * router overrides each run's per-call `model` with the chain's primary entry.
-   */
-  readonly memoryRuntime?: MonoRuntimeLike;
-  /** Optional app-owned recording context for memory LLM calls. */
-  readonly observability?: Pick<
-    ConfiguredConversationHarnessOptions,
-    "observabilityContext"
-  >;
-}
-
-export async function createConfiguredMemory(
-  config: MonoAgentConfig,
-  deps: ConfiguredMemoryDependencies = {},
-): Promise<MemoryStore | undefined> {
-  return await createConfiguredMemoryInternal(config, deps);
-}
-
-/** @internal App-only unsafe authority; deliberately absent from the package root. */
-export async function createConfiguredMemoryForApp(
-  config: MonoAgentConfig,
-  deps: ConfiguredMemoryDependencies,
-  protectionPosture: ProcessJobsProtectionPosture,
-): Promise<MemoryStore | undefined> {
-  return await createConfiguredMemoryInternal(config, deps, protectionPosture);
-}
-
-async function createConfiguredMemoryInternal(
-  config: MonoAgentConfig,
-  deps: ConfiguredMemoryDependencies,
-  protectionPosture?: ProcessJobsProtectionPosture,
-): Promise<MemoryStore | undefined> {
-  assertNoRetiredMonoAgentConfig(config);
-  if (config.memory === undefined) {
-    return undefined;
-  }
-  const { mode, path: root, maxBytes, embeddings: embeddingsConfig, llm: llmConfig } = config.memory;
-  const bujo = await loadMemoryBujoModule();
-  if (config.memory.capture !== undefined && (mode !== "bujo" || config.memory.writeMode !== "capture")) {
-    throw new Error("memory.capture requires BuJo mode and capture writeMode.");
-  }
-
-  if (mode === "lite") {
-    if (embeddingsConfig !== undefined || llmConfig !== undefined || config.memory.consolidation !== undefined) {
-      throw new Error("memory.mode 'lite' is lexical-only and rejects embeddings, memory.llm, and consolidation.");
-    }
-    // Lite tier: FTS-only recall, no external deps.
-    return bujo.createBujoMemoryStore({
-      root,
-      tier: "lite",
-      ...(maxBytes !== undefined && { maxBytes }),
-      ...(deps.logger !== undefined && { logger: deps.logger }),
-    });
-  }
-
-  // journal and bujo tiers both need embeddings for hybrid recall. A bounded
-  // timeout keeps a slow backend (e.g. Ollama loading the model) from stalling
-  // the request, and the circuit breaker fast-fails after repeated failures so
-  // a sustained outage stops blocking recall entirely. The harness degrades
-  // recall to empty (with a memory_degraded warning) when this errors.
-  const search = await loadMemorySearchModule();
-  // The loader carries only the credential name; the value is resolved here at
-  // use. A declared name stays authoritative (an inline literal never stands in
-  // for it), matching the loader's former behavior.
-  const embeddingsApiKey = embeddingsConfig?.apiKeyEnv !== undefined
-    ? normalizeOptionalString(process.env[embeddingsConfig.apiKeyEnv])
-    : embeddingsConfig?.apiKey;
-  if (embeddingsConfig?.apiKeyEnv !== undefined && embeddingsApiKey === undefined) {
-    throw new Error(
-      `memory.embeddings.apiKeyEnv ${embeddingsConfig.apiKeyEnv} is declared but has no resolved value; ` +
-      `set ${embeddingsConfig.apiKeyEnv} before starting managed memory.`,
-    );
-  }
-  const embeddings = wrapOwnedDirectEmbeddingProvider(
-    search.createCircuitBreakerEmbeddingProvider(
-      search.createEmbeddingProvider({
-        provider: embeddingsConfig?.provider ?? "ollama",
-        model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
-        ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
-        ...(embeddingsApiKey !== undefined && { apiKey: embeddingsApiKey }),
-        timeoutMs: embeddingsConfig?.timeoutMs ?? DEFAULT_EMBEDDINGS_TIMEOUT_MS,
-        ...(embeddingsConfig?.instructions === undefined ? {} : { instructions: embeddingsConfig.instructions }),
-      }, deps.embeddingsFetch),
-      {
-        ...(embeddingsConfig?.circuitBreaker?.failureThreshold !== undefined && {
-          failureThreshold: embeddingsConfig.circuitBreaker.failureThreshold,
-        }),
-        ...(embeddingsConfig?.circuitBreaker?.cooldownMs !== undefined && {
-          cooldownMs: embeddingsConfig.circuitBreaker.cooldownMs,
-        }),
-      },
-    ),
-    config,
-    deps.cwd ?? process.cwd(),
-  );
-  const dim = embeddingsConfig?.dim ?? 768;
-
-  if (mode === "journal") {
-    if (embeddingsConfig === undefined) {
-      throw new Error("memory.mode 'journal' requires memory.embeddings; configuration must not downshift tiers.");
-    }
-    if (llmConfig !== undefined || config.memory.consolidation !== undefined) {
-      throw new Error("memory.mode 'journal' rejects memory.llm and consolidation; select bujo for curated capture.");
-    }
-    // Journal tier: hybrid recall + static, non-decaying salience; no chat LLM.
-    return bujo.createBujoMemoryStore({
-      root,
-      tier: "journal",
-      embeddings,
-      dim,
-      ...(maxBytes !== undefined && { maxBytes }),
-      ...(deps.logger !== undefined && { logger: deps.logger }),
-    });
-  }
-
-  // BuJo is a strict full-stack tier. The config loader enforces both
-  // prerequisites; keep the composition boundary defensive for programmatic
-  // callers that may construct MonoAgentConfig directly.
-  if (embeddingsConfig === undefined || llmConfig === undefined) {
-    throw new Error("memory.mode 'bujo' requires memory.embeddings and memory.llm; configuration must not downshift tiers.");
-  }
-  const recording =
-    deps.observability === undefined
-      ? undefined
-      : await recorderCompositionDeps(config, {
-          ...deps.observability,
-
-        });
-  const llm = configuredMemoryLlm(
-    bujo,
-    config,
-    llmConfig,
-    deps.memoryRuntime,
-    recording,
-    deps.cwd ?? process.cwd(),
-    protectionPosture,
-  );
-  if (llm === undefined) {
-    throw new Error("memory.mode 'bujo' could not construct the required memory.llm.");
-  }
-  const reconcileModel = config.memory.capture?.reconcileModel;
-  const classifier = reconcileModel === undefined ? undefined : configuredMemoryLlm(
-    bujo, config,
-    { provider: "agent-host", model: reconcileModel,
-      ...(llmConfig.provider === "agent-host" && llmConfig.trace !== undefined ? { trace: llmConfig.trace } : {}),
-      ...(llmConfig.provider === "agent-host" && llmConfig.timeoutMs !== undefined ? { timeoutMs: llmConfig.timeoutMs } : {}),
-    },
-    deps.memoryRuntime, recording, deps.cwd ?? process.cwd(), protectionPosture,
-  );
-  if (reconcileModel !== undefined && classifier === undefined) throw new Error("memory.capture.reconcileModel could not construct a classifier LLM.");
-  const captureLlm = classifier === undefined ? llm : {
-    id: llm.id,
-    complete(prompt: string, options?: Parameters<typeof llm.complete>[1]) {
-      return (options?.label === "capture:reconcile-batch" || options?.label === "capture:reconcile"
-        ? classifier : llm).complete(prompt, options);
-    },
-  };
-  const { focus, only } = config.memory.capture ?? {};
-  return bujo.createBujoMemoryStore({
-    root,
-    tier: "bujo",
-    embeddings,
-    dim,
-    ...(maxBytes !== undefined && { maxBytes }),
-    llm: captureLlm,
-    ...(config.memory.recall === undefined ? {} : { recall: config.memory.recall }),
-    ...(deps.clock === undefined ? {} : { clock: deps.clock }),
-    ...(config.memory.capture === undefined ? {} : { capture: { ...(focus === undefined ? {} : { focus }), ...(only === undefined ? {} : { only }), ...(config.memory.capture.intentLifecycle === undefined ? {} : { intentLifecycle: config.memory.capture.intentLifecycle }) } }),
-    ...(deps.logger !== undefined && { logger: deps.logger }),
-  });
-}
-
-function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof createMonoRuntime>[0] {
-  return {
-    workspace: config.runtime.workspace,
-    ...(config.tools.filesystem === undefined
-      ? {}
-      : {
-          additionalReadRoots: config.tools.filesystem.readableRoots,
-          additionalWriteRoots: config.tools.filesystem.writableRoots,
-        }),
-    qaOutputDir: config.artifacts.dir,
-    ...(config.providers?.piAuthPath === undefined
-      ? {}
-      : { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: config.providers.piAuthPath }) }),
-  };
-}
-
-/** An operator-only, fallback-free memory LLM; does not start or write an agent store. */
-export async function createConfiguredCurationLlm(
-  config: MonoAgentConfig,
-  modelOverride: string | undefined,
-  memoryRuntime?: MonoRuntimeLike,
-): Promise<LlmComplete> {
-  const bujo = await import("@mono-agent/memory/bujo");
-  const configured = config.memory?.llm;
-  if (configured === undefined && modelOverride === undefined) throw new Error("memory-curate: memory.llm is not configured");
-  const llmConfig = modelOverride === undefined ? configured! : {
-    provider: modelOverride.startsWith("ollama:") ? "ollama" as const : "agent-host" as const,
-    model: modelOverride.startsWith("ollama:") ? modelOverride.slice(7) : modelOverride,
-    ...(modelOverride.startsWith("ollama:") && configured?.provider === "ollama" && configured.endpoint !== undefined
-      ? { endpoint: configured.endpoint } : {}),
-  };
-  // Do not route operator-only completion through configuredMemoryLlm: that
-  // path deliberately takes a root lease for in-process memory maintenance.
-  // Curation has no tools, MCP or process jobs; it reads only the prompt passed
-  // by the CLI. Protected-root tool sandboxing is unnecessary for a tool-less
-  // completion, so it must not acquire a live agent's exclusive root lease.
-  // Keeping the runtime private also lets us dispose its sessions
-  // after each completion so the CLI does not retain provider handles.
-  if (llmConfig.provider === "ollama") {
-    return bujo.createOllamaLlm({ model: llmConfig.model,
-      ...(llmConfig.endpoint === undefined ? {} : { endpoint: llmConfig.endpoint }) });
-  }
-  const model = parseMonoRuntimeModelReference(llmConfig.model);
-  const runtime = memoryRuntime ?? createMonoRuntime(runtimeHostOptionsForConfig(config));
-  const llm = createAgentHostMemoryLlm({ runtime, model, cwd: config.runtime.workspace,
-    runtimeOptions: mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(model, config.providers?.local), configRuntimeFlags(config)),
-    ...("timeoutMs" in llmConfig && llmConfig.timeoutMs !== undefined ? { timeoutMs: llmConfig.timeoutMs } : {}) });
-  return { ...llm, async complete(prompt, options) {
-    try { return await llm.complete(prompt, options); }
-    catch (error) {
-      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-      if (code === "provider_auth" || error instanceof Error && isProviderAuthFailureText(error.message)) {
-        throw Object.assign(new Error("memory-curate: provider authentication failed", { cause: error }),
-          { code: "provider_auth" });
-      }
-      throw error;
-    }
-    // Session cleanup is best-effort: a close failure cannot replace the model
-    // result or conceal the operator's real authentication/transport failure.
-    finally { await runtime.disposeAllSessions?.().catch(() => undefined); }
-  } };
-}
-
-function configuredMemoryLlm(
-  bujo: MemoryBujoModule,
-  config: MonoAgentConfig,
-  llmConfig: NonNullable<MonoAgentConfig["memory"]>["llm"],
-  // Explicit memory-LLM runtime (tests). MUST be fallback-chain-free — see the
-  // `memoryRuntime` doc on createConfiguredMemory. When undefined the memory LLM
-  // builds its own fallback-free runtime so the per-call memory model is primary.
-  memoryRuntimeOverride: MonoRuntimeLike | undefined,
-  recording: RecorderCompositionDeps | undefined,
-  agentRoot: string | undefined,
-  protectionPosture: ProcessJobsProtectionPosture | undefined,
-): LlmComplete | undefined {
-  if (llmConfig === undefined) {
-    return undefined;
-  }
-  if (llmConfig.provider === "ollama") {
-    // The ollama memory LLM does not ride `runtime.run`, so it is not recorded.
-    return wrapOwnedDirectMemoryLlm(bujo.createOllamaLlm({
-      model: llmConfig.model,
-      ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
-    }), config, agentRoot);
-  }
-  const model = parseMonoRuntimeModelReference(llmConfig.model);
-  // NOTE: createMonoRuntime is called WITHOUT a fallbackChain here on purpose, so
-  // the per-call `model: config.memory.llm.model` is the sole/primary model. The
-  // channel runtime (which carries the fallback chain whose primary is
-  // `config.runtime.model`) is intentionally NOT reused — see the `memoryRuntime`
-  // doc on createConfiguredMemory.
-  const runtime = wrapPerRunOwnedConfiguredRuntime(
-    memoryRuntimeOverride ?? createMonoRuntime(runtimeHostOptionsForConfig(config)),
-    config,
-    agentRoot,
-    protectionPosture,
-  );
-  return createAgentHostMemoryLlm({
-    runtime,
-    model,
-    cwd: config.runtime.workspace,
-    runtimeOptions: mergeStaticRuntimeOptions(
-      runtimeOptionsForLocalProvider(model, config.providers?.local),
-      configRuntimeFlags(config),
-    ),
-    // Per-call timeout; default 60s. Configurable so a slow local model can be
-    // given room on the heavier reconcile/entities steps.
-    ...(llmConfig.timeoutMs === undefined ? {} : { timeoutMs: llmConfig.timeoutMs }),
-    // `memory.llm.trace` (default on) gates recording; it only takes effect when
-    // the app threaded observability deps into createConfiguredMemory.
-    ...(recording !== undefined && llmConfig.trace !== false
-      ? { recording: { deps: recording, baseConversationId: MEMORY_CONVERSATION_ID } }
-      : {}),
-  });
-}
-
-/**
- * Memory completion is a model-running surface even when no channel harness is
- * present. Acquire the canonical-root owner and protection generation for the
- * exact duration of the provider call; release follows actual runtime
- * settlement, never its abort signal.
- */
-function wrapPerRunOwnedConfiguredRuntime(
-  runtime: MonoRuntimeLike,
-  config: MonoAgentConfig,
-  agentRoot: string | undefined,
-  protectionPosture: ProcessJobsProtectionPosture | undefined,
-): MonoRuntimeLike {
-  // Memory completion has no storage-settlement caller. Do not advertise
-  // inherited recovery methods that would bypass this per-run ownership lease.
-  const completionRuntime = completionOnlyRuntime(runtime);
-  return {
-    ...completionRuntime,
-    async run(systemPrompt, runOptions) {
-      const ownership = await acquireAgentRootOwnership(agentRoot);
-      let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;
-      try {
-        assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
-        const loaded = await loadProcessJobsRootRegistryProtection(
-          ownership.agentRoot,
-          config.runtime.workspace,
-        );
-        ownership.coordinator.synchronizeGeneration(loaded.generation);
-        const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
-        requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
-        const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        const protectedRoots = processJobsProtectionPolicyRoots(attested);
-        let effectiveOptions = runOptions;
-        if (protectedRoots.length > 0) {
-          if (protectionPosture?.suppressSyntheticSandbox !== true) {
-            const sandboxEngine = runOptions.sandboxEngine ?? createSrtSandboxEngine();
-            if (!await sandboxEngine.isAvailable().catch(() => false)) {
-              throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-            }
-            const sandboxPolicy = mergeSandboxPolicies(
-              runOptions.sandboxPolicy,
-              processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
-            );
-            if (sandboxPolicy === undefined) {
-              throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-            }
-            effectiveOptions = {
-              ...runOptions,
-              sandboxPolicy,
-              sandboxEngine,
-            };
-          }
-        }
-        return await runtime.run(systemPrompt, effectiveOptions);
-      } finally {
-        requestLease?.releaseAfterSettlement();
-        await releaseAgentRootOwnershipWhenIdle(ownership);
-      }
-    },
-  };
-}
-
-/**
- * The direct (non-agent-host) memory LLM executes outside the channel harness.
- * Hold the same canonical-root owner and generation lease through the true
- * complete() settlement so an out-of-harness provider call cannot outlive the
- * protection generation it started under.
- *
- * A retained process-job root does NOT reject this provider. SRT confines the
- * MODEL'S TOOL LOOP; the host process is already unconfined and already reads
- * the private state dir. `LlmComplete` is a single `complete(prompt) => string`
- * over HTTP with no tools and no filesystem access, so there is nothing here
- * for confinement to protect — while rejecting it made `processJobs.enabled`
- * mutually exclusive with the bujo/journal memory tiers (mono-agent#664). The
- * lease, not the sandbox, is this seam's control.
- */
-function wrapOwnedDirectMemoryLlm(
-  llm: LlmComplete,
-  config: MonoAgentConfig,
-  agentRoot: string | undefined,
-): LlmComplete {
-  return {
-    ...llm,
-    async complete(prompt, options) {
-      const ownership = await acquireAgentRootOwnership(agentRoot);
-      let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;
-      try {
-        assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
-        const loaded = await loadProcessJobsRootRegistryProtection(
-          ownership.agentRoot,
-          config.runtime.workspace,
-        );
-        ownership.coordinator.synchronizeGeneration(loaded.generation);
-        const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
-        requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
-        await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        return await llm.complete(prompt, options);
-      } finally {
-        requestLease?.releaseAfterSettlement();
-        await releaseAgentRootOwnershipWhenIdle(ownership);
-      }
-    },
-  };
-}
-
-/**
- * Configured embedding providers execute outside the channel harness. Hold the
- * same canonical-root owner and generation lease through the true embed()
- * settlement so an out-of-harness provider call cannot outlive the protection
- * generation it started under.
- *
- * A retained process-job root does NOT reject this provider — see the sibling
- * `wrapOwnedDirectMemoryLlm` doc for the reasoning. `embed(texts) =>
- * number[][]` is one method with no model-steerable surface, and the bujo and
- * journal tiers REQUIRE it, so rejecting it disabled memory outright under the
- * safe posture (mono-agent#664).
- */
-function wrapOwnedDirectEmbeddingProvider(
-  provider: ConfiguredEmbeddingProvider,
-  config: MonoAgentConfig,
-  agentRoot: string | undefined,
-): ConfiguredEmbeddingProvider {
-  return {
-    ...provider,
-    async embed(texts) {
-      const ownership = await acquireAgentRootOwnership(agentRoot);
-      let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;
-      try {
-        assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
-        const loaded = await loadProcessJobsRootRegistryProtection(
-          ownership.agentRoot,
-          config.runtime.workspace,
-        );
-        ownership.coordinator.synchronizeGeneration(loaded.generation);
-        const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
-        requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
-        await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        return await provider.embed(texts);
-      } finally {
-        requestLease?.releaseAfterSettlement();
-        await releaseAgentRootOwnershipWhenIdle(ownership);
-      }
-    },
-  };
-}
-
-const MEMORY_LLM_SYSTEM_PROMPT = [
-  "You are the private memory maintenance LLM for mono-agent.",
-  "Return only the requested JSON or plain text.",
-  "Do not use tools, inspect files, or perform external actions.",
-].join(" ");
-
-/** Fallback conversation id for recorded memory LLM runs that carry no ritual label. */
-const MEMORY_CONVERSATION_ID = "memory:bujo";
-
-function createAgentHostMemoryLlm(options: {
-  readonly runtime: MonoRuntimeLike;
-  readonly model: RuntimeModelReference;
-  readonly cwd: string;
-  readonly runtimeOptions?: StaticRuntimeOptions;
-  readonly timeoutMs?: number;
-  /**
-   * When set, each `complete()` is recorded as one run through the shared
-   * local JSONL pipeline. The per-call `label` (e.g. "capture:extract")
-   * selects the run's conversation id and id slug. Omitted → bare, unrecorded run.
-   */
-  readonly recording?: {
-    readonly deps: RecorderCompositionDeps;
-    readonly baseConversationId?: string;
-  };
-}): LlmComplete {
-  const timeoutMs = options.timeoutMs ?? 60_000;
-  return {
-    id: `agent-host:${referenceOf(options.model)}`,
-    async complete(prompt: string, opts?: LlmCompleteOptions): Promise<string> {
-      const ctrl = new AbortController();
-      const abort = (): void => ctrl.abort(opts?.abortSignal?.reason);
-      if (opts?.abortSignal?.aborted === true) abort();
-      else opts?.abortSignal?.addEventListener("abort", abort, { once: true });
-      // Track whether OUR timeout fired vs an external abort. A provider that is slow or
-      // misconfigured (e.g. a dead OAuth token whose refresh hangs) trips this timeout and the
-      // runtime reports `cancelled` — without this flag the failure is mislabeled as a generic
-      // "run was cancelled", which is exactly what made a 10-day memory outage hard to diagnose.
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        if (ctrl.signal.aborted) return;
-        timedOut = true;
-        ctrl.abort();
-      }, timeoutMs);
-      const memoryOperation = memoryOperationFromLabel(opts?.label);
-      const recorder =
-        options.recording === undefined
-          ? undefined
-          : composeRunRecorder(options.recording.deps, {
-              runId: createMemoryRunId(opts?.label),
-              conversationId: memoryConversationId(options.recording.baseConversationId, opts?.label),
-              userInput: prompt,
-              systemPrompt: MEMORY_LLM_SYSTEM_PROMPT,
-              runKind: "memory",
-              source: "memory",
-              ...(memoryOperation === undefined ? {} : { memoryOperation }),
-              ...(memoryOperation === undefined ? {} : { sourceDetail: memoryOperation }),
-            });
-      try {
-        await safeRecorderCall(() => recorder?.start?.());
-        let result: RuntimeResult;
-        try {
-          result = await options.runtime.run(MEMORY_LLM_SYSTEM_PROMPT, {
-            ...options.runtimeOptions,
-            model: options.model,
-            messages: [{ role: "user", content: prompt }],
-            abortSignal: ctrl.signal,
-            cwd: options.cwd,
-            // StructuredOutput is a tool call that requires a follow-up finalization
-            // turn in Pi-native. One turn rejects a successful tool submission as
-            // "max turns reached" before its structured result can be returned.
-            maxTurns: opts?.outputSchema === undefined ? 1 : 3,
-            allowedTools: [],
-            disallowedTools: [],
-            mcpServers: {},
-            ...(opts?.outputSchema === undefined ? {} : { outputSchema: opts.outputSchema }),
-            ...(recorder === undefined ? {} : { onEvent: (event) => { recorder.onEvent(event); } }),
-          } satisfies RuntimeRunOptions);
-        } catch (error) {
-          // `runtime.run` itself threw (e.g. the abort/timeout above) — record the
-          // failure, then surface a timeout distinctly from an external abort.
-          await safeRecorderCall(() => recorder?.fail(error));
-          if (timedOut) {
-            throw new Error(`agent-host memory LLM timed out after ${timeoutMs}ms (provider too slow or unavailable).`);
-          }
-          throw error;
-        }
-        // Record with the real outcome BEFORE textFromMemoryRuntimeResult, which throws
-        // on failureKind/error; recorder.finish() classifies failed/succeeded/cancelled itself.
-        await safeRecorderCall(() => recorder?.finish(result));
-        return textFromMemoryRuntimeResult(result, {
-          timedOut,
-          timeoutMs,
-          structuredOutputRequested: opts?.outputSchema !== undefined,
-          ...(opts?.structuredResultKey === undefined ? {} : { structuredResultKey: opts.structuredResultKey }),
-        });
-      } finally {
-        clearTimeout(timer);
-        opts?.abortSignal?.removeEventListener("abort", abort);
-      }
-    },
-  };
-}
-
-/**
- * Run a recorder lifecycle call best-effort. Recording is additive: a recorder
- * or artifact-write failure must never mask the memory LLM's real result or error.
- */
-async function safeRecorderCall(fn: () => Promise<unknown> | undefined): Promise<void> {
-  try {
-    await fn();
-  } catch {
-    // Swallow: recording failures are non-fatal by design.
-  }
-}
-
-/** Build a `mem-`-prefixed run id (distinct from channel `run-` ids) with the ritual slug. */
-function createMemoryRunId(label: string | undefined): string {
-  return `mem-${memorySlug(label)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/** Conversation id for a recorded memory run: `memory:<label>` (per-ritual), else the base. */
-function memoryConversationId(base: string | undefined, label: string | undefined): string {
-  if (label !== undefined && label.length > 0) {
-    return `memory:${label}`;
-  }
-  return base ?? MEMORY_CONVERSATION_ID;
-}
-
-function memorySlug(label: string | undefined): string {
-  const slug = (label ?? "bujo")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "-")
-    .replace(/^-+|-+$/gu, "");
-  return slug.length > 0 ? slug : "bujo";
-}
-
-/**
- * Memory sub-operation for the `mono.agent.memory.operation` trace attribute.
- * The capture ritual labels are `capture:extract` / `capture:reconcile-batch`
- * (take the part after the colon) and the bare `reflect` / `migrate` (verbatim).
- */
-function memoryOperationFromLabel(label: string | undefined): string | undefined {
-  if (label === undefined || label.length === 0) {
-    return undefined;
-  }
-  const op = label.includes(":") ? label.slice(label.indexOf(":") + 1) : label;
-  return op.length > 0 ? op : undefined;
-}
-
-function referenceOf(model: RuntimeModelReference): string {
-  return modelReferenceKey(model);
-}
-
-function mergeStaticRuntimeOptions(
-  ...optionsList: readonly (StaticRuntimeOptions | undefined)[]
-): StaticRuntimeOptions {
-  const merged: Record<string, unknown> = {};
-  for (const options of optionsList) {
-    if (options === undefined) {
-      continue;
-    }
-    for (const [key, value] of Object.entries(options)) {
-      if (value === undefined) {
-        continue;
-      }
-      if (key === "allowedTools" || key === "disallowedTools") {
-        merged[key] = mergeStringLists(merged[key], value);
-        continue;
-      }
-      if (key === "mcpServers" || key === "toolExposure" || key === "hostCapabilities") {
-        merged[key] = {
-          ...(isRecord(merged[key]) ? merged[key] : {}),
-          ...(isRecord(value) ? value : {}),
-        };
-        continue;
-      }
-      merged[key] = value;
-    }
-  }
-  return merged;
-}
-
-function mergeStringLists(current: unknown, next: unknown): readonly string[] {
-  const out: string[] = [];
-  for (const value of [...stringList(current), ...stringList(next)]) {
-    if (!out.includes(value)) {
-      out.push(value);
-    }
-  }
-  return out;
-}
-
-function stringList(value: unknown): readonly string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 
-function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
-  const { compaction } = config.runtime;
-  // NOTE: there is intentionally no reasoning-summary runtime option. The sole pi
-  // runtime (pi-native) derives reasoning from `effort` and does not consume an
-  // explicit summary level, and the codex/claude CLIs emit summaries
-  // unconditionally — so the former `piReasoningSummary` runtime option was dead
-  // plumbing and the `runtime.reasoningSummary` config field was removed.
-  const piNative = config.providers?.piNative;
-  // Typed MCP limits override runtime defaults only when explicitly configured.
-  const { mcpCallTimeoutMs, mcpCallMaxTotalTimeoutMs } = config.tools;
-  const webSearchConfig = config.tools.web?.search;
-  const webFetchConfig = config.tools.web?.fetch;
-  const toolLimits = mcpCallTimeoutMs === undefined && mcpCallMaxTotalTimeoutMs === undefined
-    ? undefined
-    : {
-        ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
-        ...(mcpCallMaxTotalTimeoutMs === undefined
-          ? {}
-          : { mcpCallMaxTotalTimeoutMs }),
-      };
-  if (
-    piNative?.transport === undefined
-    && piNative?.cacheRetention === undefined
-    && piNative?.promptCacheDiagnostics === undefined
-    && piNative?.piMaxRetries === undefined
-    && piNative?.maxRetryDelayMs === undefined
-    && compaction === undefined
-    && config.runtime.context1MModels === undefined
-    && toolLimits === undefined
-    && webSearchConfig === undefined
-    && webFetchConfig === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
-    ...(piNative?.cacheRetention === undefined ? {} : { cacheRetention: piNative.cacheRetention }),
-    ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
-    ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
-    ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
-    ...(compaction === undefined ? {} : { compaction }),
-    ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
-    ...(toolLimits === undefined ? {} : { toolLimits }),
-    ...(webSearchConfig === undefined ? {} : { webSearchConfig }),
-    ...(webFetchConfig === undefined ? {} : { webFetchConfig }),
-    ...(config.tools.web?.coordination === "host" ? { webRequestCoordinator: createHostWebRequestCoordinator() } : {}),
-  };
-}
+
 
 function isRuntimeOptions(value: MonoAgentConfig | ConfiguredAgentRuntimeOptions): value is ConfiguredAgentRuntimeOptions {
   return "config" in value;

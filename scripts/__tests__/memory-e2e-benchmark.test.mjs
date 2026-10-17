@@ -858,7 +858,7 @@ describe("memory E2E benchmark contracts (not model quality)", () => {
     const llm = captureLlm({ run }, { model: { reference: "fixture:model" }, workspace: "workspace", sessionsRoot: "sessions", budget, tag: {} });
     await llm.complete("STRICT_PROMPT", { label: "capture:extract" });
     expect(run.mock.calls[0][1]).toMatchObject({ messages: [{ role: "user", content: "STRICT_PROMPT" }], allowedTools: [], mcpServers: {}, maxTurns: 1, providerCheckMaxTokens: 2048, compaction: { enabled: false }, piTransport: "sse", piMaxRetries: 0 });
-    const production = await readFile(new URL("../../packages/app/src/configured-agent.ts", import.meta.url), "utf8");
+    const production = await readFile(new URL("../../packages/app/src/composition/configured-memory.ts", import.meta.url), "utf8");
     for (const phrase of run.mock.calls[0][0].split(/(?<=\.) /u)) expect(production).toContain(phrase);
     await expect(meteredRuntime({ run: async () => ({ error: "secret error", text: "" }) }, { budget, stage: "reader", tag: {} }).run("s", { messages: [], abortSignal: new AbortController().signal })).rejects.toThrow("provider_failed");
   });

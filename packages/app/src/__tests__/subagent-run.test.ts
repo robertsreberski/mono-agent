@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
+import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../composition/configured-subagents.js";
 // @ts-expect-error Private runtime seam.
 import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";

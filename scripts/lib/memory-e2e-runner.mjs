@@ -16,7 +16,7 @@ export async function productionModules({ privateEvaluation = false } = {}) {
   ]);
   if (!privateEvaluation) return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions };
   const [config, app, controllerMemory, grammar, graph, providerAuth, providerFailures, runtimeConfig, runtimeAuth] = await Promise.all([
-    import("../../packages/config/dist/index.js"), import("../../packages/app/dist/configured-agent.js"),
+    import("../../packages/config/dist/index.js"), import("../../packages/app/dist/composition/configured-memory.js"),
     import("../../packages/app/dist/app-controller-memory.js"), import("../../packages/memory/dist/bujo/grammar.js"), import("../../packages/memory/dist/bujo/graph.js"),
     import("@mono-agent/turn/ai"), import("@mono-agent/turn/ai"),
     import("@mono-agent/turn/host/config"), import("@mono-agent/turn"),
