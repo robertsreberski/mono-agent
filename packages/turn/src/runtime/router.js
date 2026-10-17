@@ -49,7 +49,7 @@ import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../
 
 import { randomUUID } from "node:crypto";
 import { createRuntime } from "./create-runtime.js";
-import { createCompactionUsage, withCompactionUsage, compactionCostEvent } from "../ai/compaction-usage.js";
+import { createCompactionUsage, withCompactionUsage, compactionCostEvent } from "../telemetry/compaction-usage.js";
 import { fallbackContextFit } from "./context-fit.js";
 import { resolvePiRuntimeModel } from "../providers/pi/models.js";
 import { isProviderLocalToolSchemaFailure, isProviderAuthFailureText, retryableProviderFailureInfo } from "../telemetry/failure.js";
@@ -695,7 +695,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         options.onEvent?.(event);
         result.events = [...(result.events || []), event];
       }
-      return routeWarnings.length ? { ...result, runtimeWarnings: [...(result.runtimeWarnings || []), ...routeWarnings] } : result;
+      return routeWarnings.length ? { ...result, runtimeWarnings: [.../** @type {any[]} */ (result.runtimeWarnings || []), ...routeWarnings] } : result;
     },
     // Preparation is a primary-only single attempt, never a routed retry or
     // backup. A custom resolver must explicitly certify native ownership.

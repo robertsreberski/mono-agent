@@ -324,7 +324,7 @@ function splitUserContent(content) {
   return { text: texts.join("\n"), images };
 }
 
-import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../compaction-usage.js";
+import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
 
 export async function generateEngineTurnResponse(systemPrompt, options = {}) {
   return await executePiNativeResponse(systemPrompt, options);

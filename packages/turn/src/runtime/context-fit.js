@@ -1,6 +1,6 @@
-import { resolvePiRuntimeModel } from "../providers/pi-models.js";
-import { estimateTokens } from "../../engine/compaction-kit/compaction.js";
-import { estimateFixedOverheadTokens } from "../../agent/compaction.js";
+import { resolvePiRuntimeModel } from "../providers/pi/models.js";
+import { estimateTokens } from "../engine/compaction-kit/compaction.js";
+import { estimateFixedOverheadTokens } from "../agent/compaction.js";
 import { MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 
 /** Minimum useful fit, not a promise of full max-output capacity. Unknown models

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../../ai/compaction-usage.js";
+import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
 const request = (requestId, costUsd, status = "rejected") => ({ requestId, model: "faux:summary", status,
   input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd });
 it("dedupes lifecycle snapshots and bills rejected and failed summaries exactly once", () => {

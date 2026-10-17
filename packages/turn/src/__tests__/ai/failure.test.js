@@ -289,7 +289,7 @@ describe("retryableProviderFailureInfo", () => {
 });
 
 it("limits schema chain eligibility to trusted provider dialect errors", async () => {
-  const { isProviderLocalToolSchemaFailure: local } = await import("../../ai/failure.js");
+  const { isProviderLocalToolSchemaFailure: local } = await import("../../telemetry/failure.js");
   const text = "400 tools.function.parameters is not a valid moonshot flavored json schema: type is not defined";
   expect(local(text, "openai-completions")).toBe(true);
   expect(local(text, "anthropic-messages")).toBe(false);

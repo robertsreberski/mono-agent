@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { compactionFailureGuard } from "../../ai/providers/engine-turn/compaction-failures.js";
+import { compactionFailureGuard } from "../../execution/pi/compaction/compaction-failures.js";
 const base = { scope: "fictional-session", model: { provider: "faux", id: "model", api: "faux" },
   policy: { effort: "auto", summaryMaxTokens: 12000, failureCooldownMs: 900000 }, tokens: 500000, trigger: "proactive", now: 100 };
 it("suppresses across reopened controllers, warns once and resets on growth/cooldown/config", () => {

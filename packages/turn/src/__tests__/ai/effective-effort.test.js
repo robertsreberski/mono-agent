@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { effectivePayloadEffort } from "../../engine/effective-effort.js";
+import { effectivePayloadEffort } from "../../providers/pi/effective-effort.js";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { normalizeContext } from "@earendil-works/pi-ai";
 it("reports serialized max to high mapping, not configured max", async () => {

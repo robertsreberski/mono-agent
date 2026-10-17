@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import { summaryRequestOptions, summaryThinkingLevel } from "../../ai/providers/engine-turn/summary-policy.js";
-import { summaryModels } from "../../ai/providers/engine-turn/compaction-summary.js";
+import { summaryRequestOptions, summaryThinkingLevel } from "../../execution/pi/compaction/summary-policy.js";
+import { summaryModels } from "../../execution/pi/compaction/compaction-summary.js";
 import { compact } from "../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT } from "../../engine/context.js";
 

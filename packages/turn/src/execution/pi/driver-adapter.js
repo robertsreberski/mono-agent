@@ -1,7 +1,7 @@
 // @ts-check
 // Runtime integration for the mono-agent engine over the pinned Pi loop.
 
-import { effectivePayloadEffort } from "../../engine/effective-effort.js";
+import { effectivePayloadEffort } from "../../providers/pi/effective-effort.js";
 import { createRunDriver } from "../../engine/run-driver.js";
 
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
