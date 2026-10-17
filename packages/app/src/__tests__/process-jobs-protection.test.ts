@@ -1,4 +1,4 @@
-import { effectiveSandboxBoundary, effectiveSandboxReport } from "../effective-sandbox.js";
+import { effectiveSandboxBoundary, effectiveSandboxReport } from "../service/sandbox/effective-sandbox.js";
 import { describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";

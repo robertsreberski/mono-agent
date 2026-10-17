@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   acquireBackgroundWorkerLease,
   backgroundWorkerLeasePath,
-} from "../background-worker-lease.js";
+} from "../service/background/background-worker-lease.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const homes: string[] = [];

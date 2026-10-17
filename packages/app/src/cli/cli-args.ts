@@ -10,8 +10,8 @@ import type { InstallSkillTarget } from "../setup/install-skill.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
-} from "../launchd.js";
-import { parseWebLogMaintenanceArguments } from "../web-log-maintenance-command.js";
+} from "../service/launchd/launchd.js";
+import { parseWebLogMaintenanceArguments } from "../service/web/web-log-maintenance-command.js";
 
 const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
 

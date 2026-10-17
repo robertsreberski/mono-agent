@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ManagedLaunchdLogMonitorDependencies } from "../background-log-maintenance.js";
+import type { ManagedLaunchdLogMonitorDependencies } from "../service/launchd/background-log-maintenance.js";
 import { startManagedBackgroundLogMonitorForConfig } from "../cli/commands/cli-background-command.js";
 
 afterEach(() => {
@@ -52,7 +52,7 @@ describe("managed launchd log driver composition", () => {
     expect(ownedBody).toContain("return await maintainLaunchdController(target, deps, {");
     expect(ownedBody).toContain("}, ownership);");
 
-    const controllerSource = await readFile(new URL("../background.ts", import.meta.url), "utf8");
+    const controllerSource = await readFile(new URL("../service/background/background.ts", import.meta.url), "utf8");
     const controllerStart = controllerSource.indexOf("export async function maintainLaunchdController(");
     const controllerEnd = controllerSource.indexOf("function managedWorkerDefinitionMatchesTarget", controllerStart);
     const controllerBody = controllerSource.slice(controllerStart, controllerEnd);

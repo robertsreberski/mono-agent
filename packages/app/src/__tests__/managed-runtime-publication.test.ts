@@ -8,7 +8,7 @@ import {
   acquireManagedRuntimePublicationBarrier,
   managedRuntimePublicationBarrierPath,
   waitForManagedRuntimePublication,
-} from "../managed-runtime-publication.js";
+} from "../service/managed-runtime/managed-runtime-publication.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const roots: string[] = [];

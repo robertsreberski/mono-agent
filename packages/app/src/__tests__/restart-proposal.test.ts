@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { describe, expect, it, vi } from "vitest";
-import { createRestartProposalService, isProposeRestartToolAllowed, PROPOSE_RESTART_SERVER_NAME, PROPOSE_RESTART_TOOL_NAME } from "../restart-proposal.js";
+import { createRestartProposalService, isProposeRestartToolAllowed, PROPOSE_RESTART_SERVER_NAME, PROPOSE_RESTART_TOOL_NAME } from "../service/restart/restart-proposal.js";
 import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
 
 function request(metadata: Record<string, unknown> = { source: "web", web: { threadId: "one", turnId: "turn-1" } }): ConversationHarnessRuntimeOptionsInput {

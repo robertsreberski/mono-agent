@@ -11,7 +11,7 @@ import { resolvePiAuthPathForLogin } from "../cli/commands/auth.js";
 import { shouldRunInitWizard } from "../cli/commands/cli-init-command.js";
 import { runProviderSetupBeforeInit } from "../setup/provider-setup-gate.js";
 import { runCli } from "../cli.js";
-import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
+import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference/config-reference.js";
 import { initMonoAgentFolder } from "../setup/init.js";
 import { answersFromCli } from "../setup/wizard/from-flags.js";
 import { findPreset, presetAnswers, presetIds } from "../setup/wizard/presets.js";

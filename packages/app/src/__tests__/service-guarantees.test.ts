@@ -9,7 +9,7 @@ import { canonicalBackgroundConfigPath } from "../service/background/target.js";
 import { readOwnerPrivateLaunchdPlist } from "../service/launchd/plist-files.js";
 import { ensureTailscaleServe } from "../service/web/tailscale.js";
 import type { CommandRunner } from "../service/web/types.js";
-import { managedWebPaths } from "../web-maintenance-paths.js";
+import { managedWebPaths } from "../service/web/web-maintenance-paths.js";
 
 const roots: string[] = [];
 afterEach(async () => {

@@ -38,7 +38,7 @@ import type { RuntimeOptionsExtension } from "../composition/runtime-option-exte
 import type { NotifyDestination } from "../delivery/notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
 import { MemoryHealthWorkerClient } from "../memory/memory-health-worker-client.js";
-import type { BackgroundSnapshot } from "../background-snapshot.js";
+import type { BackgroundSnapshot } from "../service/background/background-snapshot.js";
 import type { ManagedRuntimeLaunchVerification } from "../service/managed-runtime/types.js";
 import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
 import * as lifecycleOperations from "./app-controller-lifecycle.js";

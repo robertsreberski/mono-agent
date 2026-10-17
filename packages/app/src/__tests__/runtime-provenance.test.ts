@@ -6,10 +6,10 @@ import process from "node:process";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { defaultManagedBackgroundRuntimeDeps, ensureManagedBackgroundRuntime } from "../background-runtime.js";
-import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../launchd-maintenance-command.js";
+import { defaultManagedBackgroundRuntimeDeps, ensureManagedBackgroundRuntime } from "../service/managed-runtime/background-runtime.js";
+import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../service/launchd/launchd-maintenance-command.js";
 import { appPackageVersion } from "../host/package-version.js";
-import { runtimeProvenanceDetail } from "../runtime-provenance.js";
+import { runtimeProvenanceDetail } from "../provenance/runtime-provenance.js";
 
 const UNMANAGED_DETAIL = "Runtime provenance: dev (unmanaged).";
 const INSTALLED_AT = "2026-07-16T12:34:56.000Z";

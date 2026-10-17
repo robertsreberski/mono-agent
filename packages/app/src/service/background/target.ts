@@ -8,9 +8,9 @@ import {
   resolveAppTraceStaleAfterMs,
   resolveGlobalTraceRegistryDir,
 } from "../../composition/app-config.js";
-import { defaultPathEnv, deriveLaunchdLabel, launchdPathsFor, MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV } from "../../launchd.js";
-import { MANAGED_BACKGROUND_WORKER_ENV, selectBackgroundOperationalEnvironment } from "../../background-environment.js";
-import { isErrno } from "../../background-lifecycle-utils.js";
+import { defaultPathEnv, deriveLaunchdLabel, launchdPathsFor, MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV } from "../launchd/launchd.js";
+import { MANAGED_BACKGROUND_WORKER_ENV, selectBackgroundOperationalEnvironment } from "./background-environment.js";
+import { isErrno } from "./background-lifecycle-utils.js";
 import type { InstanceTarget, ResolveInstanceTargetInput } from "./types.js";
 
 /** Exact non-secret environment materialised into a managed LaunchAgent. */

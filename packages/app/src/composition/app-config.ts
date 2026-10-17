@@ -13,7 +13,7 @@ import {
 import type { MonoAgentConfig } from "@mono-agent/config";
 
 import { accountHomeDirectory } from "../host/account-home.js";
-import { assertKnownAppConfigKeys } from "../config-reference.js";
+import { assertKnownAppConfigKeys } from "../config-reference/config-reference.js";
 
 // The structural shape moved to @mono-agent/contracts (ChannelConfigInput)
 // so channel drivers can be authored against the neutral contract; this alias

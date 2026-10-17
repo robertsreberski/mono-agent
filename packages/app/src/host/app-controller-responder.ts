@@ -1,5 +1,5 @@
 import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
-import { effectiveSandboxBoundary } from "../effective-sandbox.js";
+import { effectiveSandboxBoundary } from "../service/sandbox/effective-sandbox.js";
 import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "../request-tools/suggest-replies.js";
 import { trackResponderActivity, type WorkerActivityTracker } from "../durable-state/worker-activity.js";
 import { createProviderUsageRuntimeExtension } from "../providers/provider-usage-tool.js";
@@ -12,7 +12,7 @@ import type { AgentResponder } from "@mono-agent/contracts";
 import { modelReferenceKey } from "@mono-agent/turn/host/config";
 import type { MonoRuntimeLike, RuntimeModelReference, SandboxEngine } from "@mono-agent/turn/host/types";
 
-import type { BackgroundSnapshot } from "../background-snapshot.js";
+import type { BackgroundSnapshot } from "../service/background/background-snapshot.js";
 
 import { resolveAppArtifactDir } from "../composition/app-config.js";
 import type { MonoAgentAppConfigInput } from "../composition/app-config.js";
@@ -34,7 +34,7 @@ import {
   isSetConversationTitleToolAllowed,
 } from "../request-tools/conversation-title.js";
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
-import { createRestartProposalService, isProposeRestartToolAllowed } from "../restart-proposal.js";
+import { createRestartProposalService, isProposeRestartToolAllowed } from "../service/restart/restart-proposal.js";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
 import { isRetiredProjectSkillName } from "../skills/project-skills.js";
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "../request-tools/run-history.js";

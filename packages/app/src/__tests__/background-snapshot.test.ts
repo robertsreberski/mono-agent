@@ -5,8 +5,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../background-snapshot-key.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../background-snapshot-key.js")>();
+vi.mock("../service/background/background-snapshot-key.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/background-snapshot-key.js")>();
   const key = Buffer.alloc(32, 0x42);
   return {
     ...actual,
@@ -26,13 +26,13 @@ import {
   materializeBackgroundRuntimeInputs,
   sameBackgroundRegularFileVersion,
   sameBackgroundSnapshot,
-} from "../background-snapshot.js";
+} from "../service/background/background-snapshot.js";
 import {
   fingerprintBackgroundOperationalEnvironment,
   fingerprintSystemdBackgroundOperationalEnvironment,
   selectBackgroundOperationalEnvironment,
   selectSystemdBackgroundOperationalEnvironment,
-} from "../background-environment.js";
+} from "../service/background/background-environment.js";
 import { managedBackgroundEnvironment, resolveInstanceTarget } from "../service/background/target.js";
 import { loadAppCoreConfig } from "../composition/app-config.js";
 import { effectiveFirstRunEnvironment, resolveEffectivePiAuthPath } from "../setup/first-run-readiness.js";

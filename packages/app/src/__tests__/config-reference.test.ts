@@ -15,8 +15,8 @@ import {
   findUnknownAppConfigPaths,
   MONO_AGENT_CONFIG_SCHEMA_URL,
   schemaForField,
-} from "../config-reference.js";
-import type { ConfigReferenceType } from "../config-reference.js";
+} from "../config-reference/config-reference.js";
+import type { ConfigReferenceType } from "../config-reference/config-reference.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 

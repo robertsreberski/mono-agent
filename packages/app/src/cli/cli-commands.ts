@@ -7,7 +7,7 @@ import {
   MANAGED_BACKGROUND_WORKER_ENV,
   SYSTEMD_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
-} from "../background-environment.js";
+} from "../service/background/background-environment.js";
 import { readCliDotenvFile } from "../service/background/source-inputs.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
@@ -33,9 +33,9 @@ import {
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   MANAGED_WEB_LOG_MAINTENANCE_ENV,
-} from "../launchd.js";
-import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "../managed-launchd-maintenance-environment.js";
-import { sanitizeManagedWebLogMaintenanceEnvironment } from "../managed-web-maintenance-environment.js";
+} from "../service/launchd/launchd.js";
+import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "../service/launchd/managed-launchd-maintenance-environment.js";
+import { sanitizeManagedWebLogMaintenanceEnvironment } from "../service/launchd/managed-web-maintenance-environment.js";
 import { runSandboxCommand } from "./commands/cli-sandbox-command.js";
 
 import * as ui from "./ui.js";
@@ -81,7 +81,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 2;
     }
     sanitizeManagedWebLogMaintenanceEnvironment(process.env);
-    const { runWebLogMaintenanceCommand } = await import("../web-log-maintenance.js");
+    const { runWebLogMaintenanceCommand } = await import("../service/web/web-log-maintenance.js");
     return await runWebLogMaintenanceCommand({
       expectedManagedRuntimeLaunch: args.expectedManagedRuntimeLaunch,
       expectedWebPlistIdentity: args.expectedWebPlistIdentity,

@@ -9,7 +9,7 @@ import {
   readWebLogMonitorStatus,
   writeWebLogMaintenanceStatus,
   writeWebLogMonitorStatus,
-} from "../web-log-maintenance-status.js";
+} from "../service/web/web-log-maintenance-status.js";
 
 const tempDirs: string[] = [];
 

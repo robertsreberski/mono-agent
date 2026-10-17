@@ -1,4 +1,4 @@
-import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "../effective-sandbox.js";
+import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "../service/sandbox/effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   pruneTraceSources,
@@ -34,7 +34,7 @@ import type {
   SessionTraceMetadata,
   TraceabilityStatus,
 } from "./app-controller-types.js";
-import type { BackgroundSnapshot } from "../background-snapshot.js";
+import type { BackgroundSnapshot } from "../service/background/background-snapshot.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "../channels/types.js";
 import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 import {

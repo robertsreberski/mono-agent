@@ -3,7 +3,7 @@ import { type PreflightResult } from "../../service/start-preflight.js";
 import { resolveAppSessionsRoot } from "../../composition/app-config.js";
 import { WorkerActivityTracker } from "../../durable-state/worker-activity.js";
 import { publishWorkerActivity } from "../../durable-state/activity-snapshot.js";
-import { readLaunchdMaintenanceActivityStatus } from "../../launchd-maintenance-activity.js";
+import { readLaunchdMaintenanceActivityStatus } from "../../service/launchd/launchd-maintenance-activity.js";
 import { stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
@@ -11,12 +11,12 @@ import { fileURLToPath } from "node:url";
 
 import { listRecordedRuns } from "@mono-agent/observability";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
-import { createSupervisedRestartLatch, type SupervisedRestartLatch } from "../../supervised-restart-latch.js";
-import type { PreparedSupervisedRestartInputs } from "../../supervised-restart.js";
-import { acquireFilesystemLifecycleLock } from "../../launchd-lifecycle-lock.js";
-import { resolveConfiguredManagedRuntimePackages } from "../../managed-runtime-packages.js";
-import { resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot, type ApprovedBackgroundSnapshotBinding } from "../../approved-background-snapshot.js";
-import { createSupervisedRestartAuthority } from "../../supervised-restart-authority.js";
+import { createSupervisedRestartLatch, type SupervisedRestartLatch } from "../../service/restart/supervised-restart-latch.js";
+import type { PreparedSupervisedRestartInputs } from "../../service/restart/supervised-restart.js";
+import { acquireFilesystemLifecycleLock } from "../../service/launchd/launchd-lifecycle-lock.js";
+import { resolveConfiguredManagedRuntimePackages } from "../../service/managed-runtime/managed-runtime-packages.js";
+import { resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot, type ApprovedBackgroundSnapshotBinding } from "../../service/background/approved-background-snapshot.js";
+import { createSupervisedRestartAuthority } from "../../service/restart/supervised-restart-authority.js";
 import { sandboxEffectiveStateWarning } from "@mono-agent/turn/host/sandbox";
 
 import { startMonoAgentApp } from "../../host/app.js";
@@ -29,18 +29,18 @@ import {
   startBackground,
   stopBackground,
   tailLogs,
-} from "../../background.js";
-import { acquireBackgroundWorkerLease } from "../../background-worker-lease.js";
+} from "../../service/background/background.js";
+import { acquireBackgroundWorkerLease } from "../../service/background/background-worker-lease.js";
 import { canonicalBackgroundConfigPath, managedBackgroundEnvironment, resolveInstanceTarget } from "../../service/background/target.js";
 import { defaultBackgroundDeps } from "../../service/background/deps.js";
 import { statusBackground } from "../../service/background/status.js";
 import type { BackgroundDeps, InstanceTarget } from "../../service/background/types.js";
-import type { LaunchdMaintenanceCommandArgs } from "../../launchd-maintenance-command.js";
+import type { LaunchdMaintenanceCommandArgs } from "../../service/launchd/launchd-maintenance-command.js";
 import {
   assertLaunchdMaintenanceLifecycleLease,
   withLaunchdMaintenanceControllerLock,
-} from "../../launchd-maintenance-gate.js";
-import type { LaunchdMaintenanceLifecycleLease } from "../../launchd-maintenance-gate.js";
+} from "../../service/launchd/launchd-maintenance-gate.js";
+import type { LaunchdMaintenanceLifecycleLease } from "../../service/launchd/launchd-maintenance-gate.js";
 import {
   captureBackgroundSnapshot,
   captureDurableBackgroundInputs,
@@ -49,19 +49,19 @@ import {
   loadDurableBackgroundEnvironment,
   materializeBackgroundRuntimeInputs,
   sameBackgroundSnapshot,
-} from "../../background-snapshot.js";
-import type { BackgroundSnapshot } from "../../background-snapshot.js";
-import { verifyManagedRuntimeLaunch } from "../../background-runtime.js";
+} from "../../service/background/background-snapshot.js";
+import type { BackgroundSnapshot } from "../../service/background/background-snapshot.js";
+import { verifyManagedRuntimeLaunch } from "../../service/managed-runtime/background-runtime.js";
 import { legacyLockHolderMessage, type LegacyLockHolder } from "../../durable-state/owner-private-lock.js";
 import type { ManagedRuntimeLaunchVerification } from "../../service/managed-runtime/types.js";
-import { startManagedLaunchdLogMonitor } from "../../background-log-maintenance.js";
+import { startManagedLaunchdLogMonitor } from "../../service/launchd/background-log-maintenance.js";
 import type {
   ManagedLaunchdLogMonitor,
   ManagedLaunchdLogMonitorDependencies,
-} from "../../background-log-maintenance.js";
-import { writeLaunchdLogMonitorStatus } from "../../launchd-log-monitor-status.js";
-import { clearLaunchdSnapshotRefusal, writeLaunchdSnapshotRefusal } from "../../launchd-snapshot-refusal.js";
-import { selectBackgroundOperationalEnvironment, selectSystemdBackgroundOperationalEnvironment } from "../../background-environment.js";
+} from "../../service/launchd/background-log-maintenance.js";
+import { writeLaunchdLogMonitorStatus } from "../../service/launchd/launchd-log-monitor-status.js";
+import { clearLaunchdSnapshotRefusal, writeLaunchdSnapshotRefusal } from "../../service/launchd/launchd-snapshot-refusal.js";
+import { selectBackgroundOperationalEnvironment, selectSystemdBackgroundOperationalEnvironment } from "../../service/background/background-environment.js";
 import { formatChannelFactValue } from "../../channels/channel-fact-format.js";
 import { formatHumanChannelSections } from "../../channels/channel-status-display.js";
 import type { ChannelStatus } from "../../channels/types.js";
@@ -71,8 +71,8 @@ import type { ValidationSection, ValidationStatus } from "../../doctor/doctor-ty
 import { readCliConfigSnapshot } from "../../service/background/source-inputs.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "../../diagnostics/runs-health.js";
 import { purgeConversationState, type PurgeConversationStateResult } from "../../conversation-admin/sessions.js";
-import { deriveLaunchdLabel, launchdManagedWorkerInfo, launchdPathsFor, makeLaunchctlRunner } from "../../launchd.js";
-import { waitForManagedRuntimePublication } from "../../managed-runtime-publication.js";
+import { deriveLaunchdLabel, launchdManagedWorkerInfo, launchdPathsFor, makeLaunchctlRunner } from "../../service/launchd/launchd.js";
+import { waitForManagedRuntimePublication } from "../../service/managed-runtime/managed-runtime-publication.js";
 import * as ui from "../ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -546,7 +546,7 @@ export async function runBackgroundCommand(
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
   if (process.platform === "linux") {
-    const { runSystemdAgentCommand } = await import("../../systemd-command.js");
+    const { runSystemdAgentCommand } = await import("../../service/systemd/systemd-command.js");
     return await runSystemdAgentCommand(args, command, env);
   }
   const guard = requireDarwin(command);

@@ -26,7 +26,7 @@ import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/typ
 
 import { startMonoAgentApp } from "../host/app.js";
 import { MonoAgentAppController } from "../host/app-controller.js";
-import type { BackgroundSnapshot } from "../background-snapshot.js";
+import type { BackgroundSnapshot } from "../service/background/background-snapshot.js";
 import { loadAppCoreConfig, resolveAppTraceSourceId } from "../composition/app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../delivery/send-tools/child-config.js";
 import {

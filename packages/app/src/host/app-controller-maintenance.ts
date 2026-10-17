@@ -1,4 +1,4 @@
-import { inspectEffectiveSandboxBoundary } from "../effective-sandbox.js";
+import { inspectEffectiveSandboxBoundary } from "../service/sandbox/effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/contracts";
 import type { MonoRuntimeLike, SandboxEngine } from "@mono-agent/turn/host/types";

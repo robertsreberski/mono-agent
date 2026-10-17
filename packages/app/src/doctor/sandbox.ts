@@ -1,4 +1,4 @@
-import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "../effective-sandbox.js";
+import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "../service/sandbox/effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { sandboxEffectiveStateWarning } from "@mono-agent/turn/host/sandbox";
 import type { ValidationSection } from "./doctor-types.js";

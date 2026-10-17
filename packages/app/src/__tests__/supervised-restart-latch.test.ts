@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { waitForShutdownSignal } from "../cli/commands/cli-background-command.js";
-import { AGENT_RESTART_EXIT_CODE, AGENT_RESTART_EXIT_FALLBACK_MS, createSupervisedRestartLatch } from "../supervised-restart-latch.js";
+import { AGENT_RESTART_EXIT_CODE, AGENT_RESTART_EXIT_FALLBACK_MS, createSupervisedRestartLatch } from "../service/restart/supervised-restart-latch.js";
 
 const verified = { supported: true } as const;
 afterEach(() => {

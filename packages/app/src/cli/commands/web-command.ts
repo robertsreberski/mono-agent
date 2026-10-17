@@ -1,7 +1,7 @@
 import { type RunWebCommandOptions, type RunWebCommandDeps } from "../../service/web/types.js";
 import process from "node:process";
 
-import { invalidWebConsoleName, isWebTheme, WEB_THEMES } from "../../web-service-definition.js";
+import { invalidWebConsoleName, isWebTheme, WEB_THEMES } from "../../service/web/web-service-definition.js";
 import { errorMessage, renderWebHelp } from "../../service/web/presentation.js";
 import { resetWeb, runWebForeground, startWebBackground, stopWebBackground, tailWebLogs } from "../../service/web/service.js";
 import { statusWeb } from "../../service/web/status.js";
@@ -39,8 +39,8 @@ export async function runWebCommand(
 
   if ((deps.platform ?? process.platform) === "linux" && action !== "run" && action !== "reset") {
     if (action === undefined) stdout.write(renderWebHelp());
-    const { runSystemdWebCommand } = await import("../../systemd-command.js");
-    const { isSystemdUserManagerUnavailable } = await import("../../systemd.js");
+    const { runSystemdWebCommand } = await import("../../service/systemd/systemd-command.js");
+    const { isSystemdUserManagerUnavailable } = await import("../../service/systemd/systemd.js");
     try {
       return await runSystemdWebCommand(options, {
         ...deps.systemd,
@@ -58,7 +58,7 @@ export async function runWebCommand(
   }
 
   if ((deps.platform ?? process.platform) === "linux" && action === "reset") {
-    const { withSystemdLock, SYSTEMD_WEB_IDENTITY } = await import("../../systemd.js");
+    const { withSystemdLock, SYSTEMD_WEB_IDENTITY } = await import("../../service/systemd/systemd.js");
     try {
       return await withSystemdLock(SYSTEMD_WEB_IDENTITY, {
         ...deps.systemd, ...(deps.homeDir === undefined ? {} : { homeDir: deps.homeDir }),

@@ -48,7 +48,7 @@ import {
   processOutputSecrets,
   redactProcessOutput as redactOutput,
 } from "./process-output-redaction.js";
-import { cleanupPersistedSandboxSettings } from "../sandbox-settings-cleanup.js";
+import { cleanupPersistedSandboxSettings } from "../service/sandbox/sandbox-settings-cleanup.js";
 import {
   currentProcessIncarnation,
   isSameProcessIncarnation,

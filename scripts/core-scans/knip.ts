@@ -282,7 +282,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/app/src/config-reference.ts",
+    "file": "packages/app/src/config-reference/config-reference.ts",
     "names": [
       "buildGeneratedConfigReferenceMarkdown"
     ],
@@ -293,7 +293,7 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/app/src/background-runtime.ts",
+    "file": "packages/app/src/service/managed-runtime/background-runtime.ts",
     "names": [
       "attestManagedBackgroundRuntime"
     ],

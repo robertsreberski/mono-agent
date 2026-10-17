@@ -5,7 +5,7 @@ import { parseEnv } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
+import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference/config-reference.js";
 import { initMonoAgentFolder } from "../setup/init.js";
 import { mergeSecretEnvFile } from "../setup/secret-env.js";
 import { defaultAnswers } from "../setup/wizard/answers.js";

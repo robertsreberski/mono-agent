@@ -13,10 +13,10 @@ import {
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   MANAGED_WEB_LOG_MAINTENANCE_ENV,
   webMaintenanceDispersionSeconds,
-} from "../launchd.js";
+} from "../service/launchd/launchd.js";
 import {
   acquireFilesystemLifecycleLock,
-} from "../launchd-lifecycle-lock.js";
+} from "../service/launchd/launchd-lifecycle-lock.js";
 import {
   runLaunchdMaintenanceEntry,
 } from "../launchd-maintenance-entry.js";

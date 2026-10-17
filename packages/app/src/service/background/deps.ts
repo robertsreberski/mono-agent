@@ -5,9 +5,9 @@ import process from "node:process";
 
 import { listRecordedRuns, listTraceSources } from "@mono-agent/observability";
 
-import { resolveApprovedBackgroundSnapshot, invalidateApprovedBackgroundSnapshots } from "../../approved-background-snapshot.js";
-import { clearMaintenanceDeferral, allowUnattendedMaintenanceStop } from "../../launchd-maintenance-activity.js";
-import { makeLaunchctlRunner } from "../../launchd.js";
+import { resolveApprovedBackgroundSnapshot, invalidateApprovedBackgroundSnapshots } from "./approved-background-snapshot.js";
+import { clearMaintenanceDeferral, allowUnattendedMaintenanceStop } from "../launchd/launchd-maintenance-activity.js";
+import { makeLaunchctlRunner } from "../launchd/launchd.js";
 import {
   beginLaunchdLogMaintenanceIntent,
   clearLaunchdLogMaintenanceIntent,
@@ -17,18 +17,18 @@ import {
   markLaunchdLogMaintenanceStopping,
   readLaunchdLogMaintenanceIntent,
   rotateStoppedLaunchdLogs,
-} from "../../launchd-logs.js";
+} from "../launchd/launchd-logs.js";
 import {
   ensureManagedBackgroundRuntime,
   inspectManagedRuntimeSourceIdentity,
   verifyManagedRuntimeLaunch,
-} from "../../background-runtime.js";
-import { resolveConfiguredManagedRuntimePackages } from "../../managed-runtime-packages.js";
-import { removeLaunchdLogMonitorStatus } from "../../launchd-log-monitor-status.js";
-import { acquireManagedRuntimePublicationBarrier } from "../../managed-runtime-publication.js";
-import { ensureOwnerPrivateLaunchdDirectory } from "../../launchd-private-files.js";
-import { acquireFilesystemLifecycleLock } from "../../launchd-lifecycle-lock.js";
-import { isErrno } from "../../background-lifecycle-utils.js";
+} from "../managed-runtime/background-runtime.js";
+import { resolveConfiguredManagedRuntimePackages } from "../managed-runtime/managed-runtime-packages.js";
+import { removeLaunchdLogMonitorStatus } from "../launchd/launchd-log-monitor-status.js";
+import { acquireManagedRuntimePublicationBarrier } from "../managed-runtime/managed-runtime-publication.js";
+import { ensureOwnerPrivateLaunchdDirectory } from "../launchd/launchd-private-files.js";
+import { acquireFilesystemLifecycleLock } from "../launchd/launchd-lifecycle-lock.js";
+import { isErrno } from "./background-lifecycle-utils.js";
 import { inspectOwnerPrivateLaunchdPlist, writeOwnerPrivateLaunchdFile } from "../launchd/plist-files.js";
 import type { BackgroundDeps } from "./types.js";
 

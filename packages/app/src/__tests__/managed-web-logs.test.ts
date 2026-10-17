@@ -17,9 +17,9 @@ import {
   inspectLegacyManagedWebLogArtifacts,
   maintainLegacyManagedWebLogArtifacts,
   startManagedWebLogMonitor,
-} from "../managed-web-logs.js";
-import type { LaunchdLogInspection } from "../launchd-logs.js";
-import { managedWebPaths } from "../web-maintenance-paths.js";
+} from "../service/web/managed-web-logs.js";
+import type { LaunchdLogInspection } from "../service/launchd/launchd-logs.js";
+import { managedWebPaths } from "../service/web/web-maintenance-paths.js";
 
 const tempDirs: string[] = [];
 const UUIDS = [

@@ -9,9 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { runWebCommand } from "../cli/commands/web-command.js";
 import { chooseTailscaleHttpsPort, ensureTailscaleServe, removeOwnedTailscaleServe, tailscaleProxyTarget } from "../service/web/tailscale.js";
-import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, LEGACY_DEFAULT_WEB_HOST } from "../web-service-definition.js";
-import { managedWebPaths } from "../web-maintenance-paths.js";
-import { WEB_LAUNCHD_LABEL } from "../launchd.js";
+import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, LEGACY_DEFAULT_WEB_HOST } from "../service/web/web-service-definition.js";
+import { managedWebPaths } from "../service/web/web-maintenance-paths.js";
+import { WEB_LAUNCHD_LABEL } from "../service/launchd/launchd.js";
 import { webHealthcheck } from "../service/web/health.js";
 import type { CommandRunner, RunWebCommandDeps } from "../service/web/types.js";
 import {
@@ -19,15 +19,15 @@ import {
   buildWebPlistXml,
   WEB_MAINTENANCE_LAUNCHD_LABEL,
   webMaintenanceCalendarMinute,
-} from "../launchd.js";
+} from "../service/launchd/launchd.js";
 import {
   beginLaunchdLogMaintenanceIntent,
   LAUNCHD_LOG_MAX_BYTES,
   markLaunchdLogMaintenanceRestoring,
   markLaunchdLogMaintenanceStopped,
   readLaunchdLogMaintenanceIntent,
-} from "../launchd-logs.js";
-import { managedWebLogMaintenanceEnvironment } from "../managed-web-maintenance-environment.js";
+} from "../service/launchd/launchd-logs.js";
+import { managedWebLogMaintenanceEnvironment } from "../service/launchd/managed-web-maintenance-environment.js";
 
 let dir: string | undefined;
 

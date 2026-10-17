@@ -5,10 +5,10 @@ const source = async (path: string): Promise<string> => readFile(new URL(`../${p
 
 describe("app foundation dependency direction", () => {
   it("keeps platform commands independent of command-owned probes", async () => {
-    const systemd = await source("systemd-command.ts");
+    const systemd = await source("service/systemd/systemd-command.ts");
     expect(systemd).not.toMatch(/["'][^"']*\/(?:cli-background-command|web-command)\.js["']/u);
-    expect(systemd).toContain("./service/start-preflight.js");
-    expect(systemd).toContain("./service/web/health.js");
+    expect(systemd).toContain("../start-preflight.js");
+    expect(systemd).toContain("../web/health.js");
     expect(await source("service/web/health.ts")).not.toContain("web-command.js");
   });
 
@@ -27,7 +27,7 @@ describe("app foundation dependency direction", () => {
   });
 
   it("keeps durable source readers independent of first-run orchestration", async () => {
-    expect(await source("background-snapshot.ts")).not.toContain("first-run-readiness.js");
+    expect(await source("service/background/background-snapshot.ts")).not.toContain("first-run-readiness.js");
     const inputs = await source("service/background/source-inputs.ts");
     expect(inputs).not.toMatch(/doctor|wizard|provider-setup|first-run/u);
     expect(inputs).toContain("O_NOFOLLOW");
@@ -38,8 +38,8 @@ describe("app foundation dependency direction", () => {
     for (const file of ["cli/ui.ts", "setup/modules/types.ts"]) {
       expect(await source(file)).not.toMatch(/from ["'][^"']*\/doctor\/doctor\.js["']/u);
     }
-    expect(await source("background-log-maintenance.ts")).not.toMatch(/from ["']\.\/background\.js["']/u);
-    expect(await source("launchd-log-monitor-status.ts")).not.toContain("background-log-maintenance.js");
+    expect(await source("service/launchd/background-log-maintenance.ts")).not.toMatch(/from ["'][^"']*\/background\.js["']/u);
+    expect(await source("service/launchd/launchd-log-monitor-status.ts")).not.toContain("background-log-maintenance.js");
   });
 });
 

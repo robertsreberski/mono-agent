@@ -1,21 +1,21 @@
 import process from "node:process";
 
-import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, DEFAULT_WEB_THEME } from "../../web-service-definition.js";
+import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, DEFAULT_WEB_THEME } from "./web-service-definition.js";
 import {
   launchdServiceInfo,
   launchdWebMaintenanceInfo,
   makeLaunchctlRunner,
   WEB_LAUNCHD_LABEL,
-} from "../../launchd.js";
-import type { LaunchdServiceInfo, LaunchdWebMaintenanceInfo } from "../../launchd.js";
+} from "../launchd/launchd.js";
+import type { LaunchdServiceInfo, LaunchdWebMaintenanceInfo } from "../launchd/launchd.js";
 import { inspectOwnerPrivateLaunchdPlist } from "../launchd/plist-files.js";
-import { inspectLaunchdLogs, readLaunchdLogMaintenanceIntent } from "../../launchd-logs.js";
-import { inspectLegacyManagedWebLogArtifacts } from "../../managed-web-logs.js";
-import { managedWebPaths } from "../../web-maintenance-paths.js";
+import { inspectLaunchdLogs, readLaunchdLogMaintenanceIntent } from "../launchd/launchd-logs.js";
+import { inspectLegacyManagedWebLogArtifacts } from "./managed-web-logs.js";
+import { managedWebPaths } from "./web-maintenance-paths.js";
 import {
   readWebLogMaintenanceStatus,
   readWebLogMonitorStatus,
-} from "../../web-log-maintenance-status.js";
+} from "./web-log-maintenance-status.js";
 import { webHealthStatus } from "./health.js";
 import { healthUrl, inspectInstalledWebMaintenanceHelper, installedWebDefinition, requiredUid } from "./inspection.js";
 import { printWebUrls, urlHost } from "./presentation.js";

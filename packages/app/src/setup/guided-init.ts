@@ -5,12 +5,12 @@ import { fileURLToPath } from "node:url";
 
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
-import { ensureBackgroundReady } from "../background.js";
+import { ensureBackgroundReady } from "../service/background/background.js";
 import { defaultBackgroundDeps } from "../service/background/deps.js";
 import { managedBackgroundEnvironment, resolveInstanceTarget } from "../service/background/target.js";
 import type { BackgroundLaunchResult } from "../service/background/types.js";
-import { captureDurableBackgroundInputs } from "../background-snapshot.js";
-import type { BackgroundSnapshot } from "../background-snapshot.js";
+import { captureDurableBackgroundInputs } from "../service/background/background-snapshot.js";
+import type { BackgroundSnapshot } from "../service/background/background-snapshot.js";
 import type { ParsedCliArgs } from "../cli/cli-args.js";
 import { isAbortLike } from "../cli/cli-cancellation.js";
 import {
@@ -39,7 +39,7 @@ import type {
   ReadinessProbeResult,
   ReadinessRouteResult,
 } from "./readiness-probe.js";
-import { setupManagedSrt } from "../sandbox-manager.js";
+import { setupManagedSrt } from "../service/sandbox/sandbox-manager.js";
 import { composeWizardPlan, referencedSetupModelRefs } from "./wizard/answers.js";
 import type { WizardAnswers, WizardPlan } from "./wizard-types.js";
 import { runInitWizard, runSetupRepairWizard } from "./wizard/run.js";

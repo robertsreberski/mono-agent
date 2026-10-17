@@ -1,8 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 
-import { deriveLaunchdLabel, launchdPathsFor } from "../../launchd.js";
-import { acquireFilesystemLifecycleLock } from "../../launchd-lifecycle-lock.js";
+import { deriveLaunchdLabel, launchdPathsFor } from "../../service/launchd/launchd.js";
+import { acquireFilesystemLifecycleLock } from "../../service/launchd/launchd-lifecycle-lock.js";
 import { runLaunchdMaintenanceEntry } from "../../launchd-maintenance-entry.js";
 
 const [configPath, homeDir, sentinelPath] = process.argv.slice(2);

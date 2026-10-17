@@ -13,7 +13,7 @@ import {
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { getPiBuiltinModel } from "@mono-agent/turn/ai";
-import { runtimeProvenanceDetail } from "../runtime-provenance.js";
+import { runtimeProvenanceDetail } from "../provenance/runtime-provenance.js";
 import { resolveAdvertisedModelEffort } from "../providers/model-effort-capabilities.js";
 import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
 import { displayReferenceOf, displayReason, displayText } from "./format.js";

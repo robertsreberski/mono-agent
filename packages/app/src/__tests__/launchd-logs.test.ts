@@ -30,9 +30,9 @@ import {
   markLaunchdLogMaintenanceStopping,
   readLaunchdLogMaintenanceIntent,
   rotateStoppedLaunchdLogs,
-} from "../launchd-logs.js";
-import type { LaunchdLogDependencies, LaunchdLogPolicy } from "../launchd-logs.js";
-import type { LaunchdPaths } from "../launchd.js";
+} from "../service/launchd/launchd-logs.js";
+import type { LaunchdLogDependencies, LaunchdLogPolicy } from "../service/launchd/launchd-logs.js";
+import type { LaunchdPaths } from "../service/launchd/launchd.js";
 
 const POLICY: LaunchdLogPolicy = { maxBytes: 8, rotationCount: 3 };
 const tempDirs: string[] = [];
@@ -378,7 +378,7 @@ describe("inspectLaunchdLogs", () => {
   });
 
   it("keeps every shared-directory repair caller in the lock inventory", async () => {
-    const source = await readFile(new URL("../launchd-logs.ts", import.meta.url), "utf8");
+    const source = await readFile(new URL("../service/launchd/launchd-logs.ts", import.meta.url), "utf8");
     const markers = [...source.matchAll(/SHARED_LAUNCHD_LOG_LOCK_REQUIRED: ([A-Za-z0-9_]+)/gu)]
       .map((match) => match[1]);
     const mutationCalls = [...source.matchAll(/await secureDirectory\(/gu)];

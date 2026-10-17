@@ -2,7 +2,7 @@ import { assertSupportedSessionsRoot } from "../conversation-admin/sessions-root
 import type { ConversationHistoryTurnInspection } from "@mono-agent/conversation";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
 import { implicitModelRuntimeOptions } from "./request-model-override.js";
-import { effectiveSandboxBoundary } from "../effective-sandbox.js";
+import { effectiveSandboxBoundary } from "../service/sandbox/effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "../host/computer-use.js";
 import { isLiveSubagentInstance } from "../subagents/subagent-instances.js";
 import {

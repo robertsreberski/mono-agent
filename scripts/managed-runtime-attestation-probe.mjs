@@ -46,12 +46,12 @@ export async function runManagedRuntimeAttestationProbe(
   try {
     const dist = join(repo, "packages", "app", "dist");
     const [runtimeModule, snapshotModule, snapshotKeyModule, packagesModule, approvalModule, launchdModule] = await Promise.all([
-      import(pathToFileURL(join(dist, "background-runtime.js")).href),
-      import(pathToFileURL(join(dist, "background-snapshot.js")).href),
-      import(pathToFileURL(join(dist, "background-snapshot-key.js")).href),
-      import(pathToFileURL(join(dist, "managed-runtime-packages.js")).href),
-      import(pathToFileURL(join(dist, "approved-background-snapshot.js")).href),
-      import(pathToFileURL(join(dist, "launchd.js")).href),
+      import(pathToFileURL(join(dist, "service/managed-runtime/background-runtime.js")).href),
+      import(pathToFileURL(join(dist, "service/background/background-snapshot.js")).href),
+      import(pathToFileURL(join(dist, "service/background/background-snapshot-key.js")).href),
+      import(pathToFileURL(join(dist, "service/managed-runtime/managed-runtime-packages.js")).href),
+      import(pathToFileURL(join(dist, "service/background/approved-background-snapshot.js")).href),
+      import(pathToFileURL(join(dist, "service/launchd/launchd.js")).href),
     ]);
     const proofKey = await snapshotKeyModule.loadBackgroundSnapshotKey(configPath);
     const durableInputs = await snapshotModule.captureDurableBackgroundInputs({

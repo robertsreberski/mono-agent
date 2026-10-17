@@ -8,8 +8,8 @@ const mocks = vi.hoisted(() => ({
   waitForManagedRuntimePublication: vi.fn(async () => undefined),
 }));
 
-vi.mock("../managed-runtime-publication.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../managed-runtime-publication.js")>();
+vi.mock("../service/managed-runtime/managed-runtime-publication.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/managed-runtime/managed-runtime-publication.js")>();
   return { ...actual, waitForManagedRuntimePublication: mocks.waitForManagedRuntimePublication };
 });
 
@@ -28,15 +28,15 @@ function helpTopicText(topic: string): string {
   }
   return result.text;
 }
-import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../background-environment.js";
-import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-environment.js";
-import { encodeBackgroundSnapshot } from "../background-snapshot.js";
+import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../service/background/background-environment.js";
+import { MANAGED_BACKGROUND_WORKER_ENV } from "../service/background/background-environment.js";
+import { encodeBackgroundSnapshot } from "../service/background/background-snapshot.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   MANAGED_WEB_LOG_MAINTENANCE_ENV,
-} from "../launchd.js";
+} from "../service/launchd/launchd.js";
 
 const tempDirs: string[] = [];
 

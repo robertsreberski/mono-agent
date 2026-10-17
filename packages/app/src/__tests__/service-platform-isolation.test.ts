@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const events = vi.hoisted(() => [] as string[]);
-vi.mock("../systemd-command.js", () => {
+vi.mock("../service/systemd/systemd-command.js", () => {
   events.push("load:systemd-command");
   return {
     runSystemdWebCommand: async () => {
@@ -14,7 +14,7 @@ vi.mock("../systemd-command.js", () => {
     },
   };
 });
-vi.mock("../systemd.js", () => {
+vi.mock("../service/systemd/systemd.js", () => {
   events.push("load:systemd");
   return { isSystemdUserManagerUnavailable: () => false };
 });

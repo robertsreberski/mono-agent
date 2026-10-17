@@ -6,23 +6,23 @@ import { startTuiAdapter } from "@mono-agent/channel-operator";
 
 import { ensureStartable } from "../service/start-preflight.js";
 import { prepareSupervisedRestartInputs, verifySupervisedRestartInputs } from "../cli/commands/cli-background-command.js";
-import { captureBackgroundSnapshot, encodeBackgroundSnapshot } from "../background-snapshot.js";
-import { createSupervisedRestartAuthority } from "../supervised-restart-authority.js";
-import { createSupervisedRestartLatch } from "../supervised-restart-latch.js";
-import { systemdUnitName } from "../systemd.js";
-import { resolveApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
-import { acquireFilesystemLifecycleLock } from "../launchd-lifecycle-lock.js";
-import { launchdPathsFor, deriveLaunchdLabel } from "../launchd.js";
+import { captureBackgroundSnapshot, encodeBackgroundSnapshot } from "../service/background/background-snapshot.js";
+import { createSupervisedRestartAuthority } from "../service/restart/supervised-restart-authority.js";
+import { createSupervisedRestartLatch } from "../service/restart/supervised-restart-latch.js";
+import { systemdUnitName } from "../service/systemd/systemd.js";
+import { resolveApprovedBackgroundSnapshot } from "../service/background/approved-background-snapshot.js";
+import { acquireFilesystemLifecycleLock } from "../service/launchd/launchd-lifecycle-lock.js";
+import { launchdPathsFor, deriveLaunchdLabel } from "../service/launchd/launchd.js";
 import { workerApprovalBinding } from "../cli/commands/cli-background-command.js";
-import { materializeBackgroundRuntimeInputs } from "../background-snapshot.js";
+import { materializeBackgroundRuntimeInputs } from "../service/background/background-snapshot.js";
 import type { ParsedCliArgs } from "../cli/cli-args.js";
 
 const state = vi.hoisted(() => ({ home: "", root: "", packages: "none" }));
 vi.mock("../host/account-home.js", () => ({ accountHomeDirectory: () => state.home }));
-vi.mock("../background-runtime.js", async (original) => ({ ...await original<typeof import("../background-runtime.js")>(),
+vi.mock("../service/managed-runtime/background-runtime.js", async (original) => ({ ...await original<typeof import("../service/managed-runtime/background-runtime.js")>(),
   verifyManagedRuntimeLaunch: async () => ({ installRoot: state.root, provenanceDetail: "fixture runtime", packageVersion: "0.25.1", cliSha256: "fixture" }),
 }));
-vi.mock("../managed-runtime-packages.js", () => ({ resolveConfiguredManagedRuntimePackages: async () => {
+vi.mock("../service/managed-runtime/managed-runtime-packages.js", () => ({ resolveConfiguredManagedRuntimePackages: async () => {
   if (state.packages === "missing") throw new Error("fixture package unavailable");
   if (state.packages === "outside") return [{ packageName: "@example/channel", packageSource: "/outside/package" }];
   if (state.packages === "available") return [{ packageName: "@example/channel", packageSource: `${state.root}/node_modules/@example/channel` }];

@@ -6,12 +6,12 @@ import {
   checkSandboxRuntime,
   sandboxRuntimeStatus,
   setupManagedSrt,
-} from "../../sandbox-manager.js";
+} from "../../service/sandbox/sandbox-manager.js";
 import type {
   ManagedSrtSetupResult,
   SandboxCheckResult,
   SandboxRuntimeStatus,
-} from "../../sandbox-manager.js";
+} from "../../service/sandbox/sandbox-manager.js";
 import * as ui from "../ui.js";
 
 function reasonOf(error: unknown): string {

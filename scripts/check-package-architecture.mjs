@@ -246,12 +246,12 @@ const extractedResponsibilityDeclarations = [
     owner: "web-log-maintenance-status.ts",
   },
   {
-    file: join("packages", "app", "src", "background.ts"),
+    file: join("packages", "app", "src", "service", "background", "background.ts"),
     declaration: "function maintainLaunchdLogsWithSharedLockOperation",
     owner: "background-log-maintenance.ts",
   },
   {
-    file: join("packages", "app", "src", "background.ts"),
+    file: join("packages", "app", "src", "service", "background", "background.ts"),
     declaration: "function maintainLaunchdLogsOperation",
     owner: "background-log-maintenance.ts",
   },
@@ -270,13 +270,16 @@ for (const rule of extractedResponsibilityDeclarations) {
   const files = [rule.file];
   const serviceDirectory = rule.file === join("packages", "app", "src", "cli", "commands", "web-command.ts")
     ? join("packages", "app", "src", "service", "web")
-    : rule.file === join("packages", "app", "src", "background.ts")
+    : rule.file === join("packages", "app", "src", "service", "background", "background.ts")
       ? join("packages", "app", "src", "service", "background")
       : undefined;
   if (serviceDirectory) {
+    const ownerFile = rule.file === join("packages", "app", "src", "cli", "commands", "web-command.ts")
+      ? join(serviceDirectory, rule.owner) : undefined;
     files.push(...readdirSync(join(root, serviceDirectory), { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
-      .map((entry) => join(serviceDirectory, entry.name)));
+      .map((entry) => join(serviceDirectory, entry.name))
+      .filter((file) => file !== rule.file && file !== ownerFile));
   }
   for (const file of files) {
     const text = readFileSync(join(root, file), "utf8");

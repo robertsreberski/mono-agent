@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { ValidationReport } from "../doctor/doctor-types.js";
 import { validateMonoAgentFolder } from "../doctor/doctor.js";
-import { selectBackgroundOperationalEnvironment } from "../background-environment.js";
+import { selectBackgroundOperationalEnvironment } from "../service/background/background-environment.js";
 import { initializeFirstRunManagedMemory } from "./first-run-managed-memory.js";
 import type { SecretPersistenceOutcome } from "./types.js";
 import { piAuthPathForSetup } from "../providers/oauth-command.js";

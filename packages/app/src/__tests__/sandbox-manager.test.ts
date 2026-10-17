@@ -39,7 +39,7 @@ import {
   setupManagedSrt,
   type ManagedSrtHooks,
   type SandboxManagerOptions,
-} from "../sandbox-manager.js";
+} from "../service/sandbox/sandbox-manager.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const resourceRoot = fileURLToPath(new URL("../../resources/srt", import.meta.url));

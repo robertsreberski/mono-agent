@@ -2,11 +2,11 @@ import process from "node:process";
 
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
-import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "../../launchd-maintenance-activity.js";
-import { readLaunchdLogMonitorStatus } from "../../launchd-log-monitor-status.js";
-import { hasCompletedManagedStartup } from "../../managed-startup.js";
-import { launchdServiceInfo } from "../../launchd.js";
-import { readLaunchdSnapshotRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "../../launchd-snapshot-refusal.js";
+import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "../launchd/launchd-maintenance-activity.js";
+import { readLaunchdLogMonitorStatus } from "../launchd/launchd-log-monitor-status.js";
+import { hasCompletedManagedStartup } from "../managed-runtime/managed-startup.js";
+import { launchdServiceInfo } from "../launchd/launchd.js";
+import { readLaunchdSnapshotRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "../launchd/launchd-snapshot-refusal.js";
 import { RUNS_HEALTH_MAX_RUNS } from "../../diagnostics/runs-health.js";
 import { canonicalBackgroundConfigPath } from "./target.js";
 import { channelRecords, commandFlags, formatOtherInstance, isPlainRecord, writeInstanceDetail, writeRunsHealthDetail } from "./presentation.js";

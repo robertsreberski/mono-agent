@@ -98,8 +98,8 @@ vi.mock("../setup/readiness-probe.js", async (importOriginal) => {
   return { ...actual, runAllRouteReadinessProbe: mocks.runAllRouteReadinessProbe };
 });
 
-vi.mock("../background-snapshot-key.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../background-snapshot-key.js")>();
+vi.mock("../service/background/background-snapshot-key.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/background-snapshot-key.js")>();
   const key = Buffer.alloc(32, 0x44);
   return {
     ...actual,
@@ -108,8 +108,8 @@ vi.mock("../background-snapshot-key.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../background.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../background.js")>();
+vi.mock("../service/background/background.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/background.js")>();
   return {
     ...actual,
     ensureBackgroundReady: mocks.ensureBackgroundReady,
@@ -145,8 +145,8 @@ vi.mock("../providers/credential-state.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../sandbox-manager.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../sandbox-manager.js")>();
+vi.mock("../service/sandbox/sandbox-manager.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/sandbox/sandbox-manager.js")>();
   return {
     ...actual,
     sandboxRuntimeStatus: mocks.sandboxRuntimeStatus,
@@ -174,7 +174,7 @@ vi.mock("../setup/init.js", async (importOriginal) => {
 import { runCli } from "../cli.js";
 import { BROWSER_CONSOLE_HOST, BROWSER_CONSOLE_PORT } from "../setup/render.js";
 import { DEFAULT_MODEL } from "../setup/modules/index.js";
-import { DEFAULT_WEB_PORT } from "../web-service-definition.js";
+import { DEFAULT_WEB_PORT } from "../service/web/web-service-definition.js";
 import { defaultAnswers } from "../setup/wizard/answers.js";
 
 /** Provider id of the route `defaultAnswers()` selects, e.g. `openai-codex`. */

@@ -1,6 +1,6 @@
 import { networkInterfaces } from "node:os";
 
-import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, DEFAULT_WEB_THEME, WEB_THEMES } from "../../web-service-definition.js";
+import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, DEFAULT_WEB_THEME, WEB_THEMES } from "./web-service-definition.js";
 import type { CommandResult, TailscaleServeResult } from "./types.js";
 import * as ui from "../../cli/ui.js";
 
