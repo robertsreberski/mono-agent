@@ -1,4 +1,4 @@
-import { probeUnsupportedSessionsRoot } from "@mono-agent/turn/host";
+import { probeUnsupportedSessionsRoot } from "@mono-agent/turn/engine/sessions.js";
 import { hasRetiredPiSessionsRoot, MonoAgentConfigError } from "@mono-agent/config";
 
 /** Raw-config readers must reject the rename before any lifecycle mutation. */

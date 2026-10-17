@@ -735,7 +735,6 @@ discoverLocalProviders
 monoRuntimeSupportsLiveInput
 monoRuntimeSupportsMcpApps
 monoRuntimeSupportsSessionResume
-probeUnsupportedSessionsRoot
 ```
 
 **`@mono-agent/turn/host/config`**

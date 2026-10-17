@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { hasRetiredPiSessionsRoot, MonoAgentConfigError } from "@mono-agent/config";
-import { probeUnsupportedSessionsRoot } from "@mono-agent/turn/host";
+import { probeUnsupportedSessionsRoot } from "@mono-agent/turn/engine/sessions.js";
 import { assertNoOldSessionsRoot, assertSupportedSessionsRoot } from "../sessions-root.js";
 
 const roots: string[] = [];
