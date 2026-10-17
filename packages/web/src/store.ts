@@ -3235,7 +3235,9 @@ export class WebStore {
           const parsed = messageUsageRollup({ parts: parseParts(partsJson),
             ...(row.executed_model === null ? {} : { attribution: { executed: { model: row.executed_model } } }),
           });
-          rollup = Object.freeze({ main: Object.freeze(parsed.main),
+          rollup = Object.freeze({ ...parsed, main: Object.freeze(parsed.main),
+            ...(parsed.compaction ? { compaction: Object.freeze(parsed.compaction) } : {}),
+            ...(parsed.compactionByModel ? { compactionByModel: Object.freeze(parsed.compactionByModel.map((slice) => Object.freeze(slice))) } : {}),
             subagents: Object.freeze(parsed.subagents.map((child) => Object.freeze(child))),
           });
         }

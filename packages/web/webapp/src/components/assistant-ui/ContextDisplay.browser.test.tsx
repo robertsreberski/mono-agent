@@ -145,3 +145,17 @@ describe("Context usage layout", () => {
     expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
   });
 });
+
+it.each([[390, 844], [1280, 900]])("renders compaction-inclusive cost at %i × %i", async (width, height) => {
+  await page.viewport(width, height);
+  const fictional: WebThreadUsage = { total: { costUsd: 1.75, tokens: { input: 12000, output: 800, cacheRead: 2000, cacheWrite: 0 } },
+    compaction: { requests: 1, requestsWithUsage: 1, costUsd: 1.25 }, byModel: [{ model: "faux:summary", costUsd: 1.75 }], computedAt: "2026-01-01T00:00:00Z" };
+  render(<div style={{ position: "fixed", bottom: 24, right: 16 }}><ContextDisplay context={context} totals={fictional} /></div>);
+  fireEvent.click(screen.getByRole("button", { name: /^Context usage:/ }));
+  const dialog = await screen.findByRole("dialog", { name: "Context usage" });
+  expect(within(dialog).getByText("Compaction").parentElement).toHaveTextContent("$1.25");
+  expect(dialog.querySelector(".context-display-cost-total")).toHaveTextContent("$1.75");
+  expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
+  const shots = import.meta.env.VITE_COMPACTION_COST_SHOTS as string | undefined;
+  if (shots) await page.screenshot({ path: `${shots}/compaction-cost-${width}.png` });
+});

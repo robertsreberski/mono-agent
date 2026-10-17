@@ -896,6 +896,8 @@ export interface WebUsageSlice {
 
 export interface WebThreadUsage {
   readonly total: WebUsageSlice;
+  /** Included subset of total; never an additional surcharge. */
+  readonly compaction?: WebUsageSlice & { readonly requests: number; readonly requestsWithUsage?: number };
   readonly subagents?: WebUsageSlice & { readonly runs: number; readonly runsWithTokens?: number };
   /** Costs are additive. Tokens are main-run and detached tokens only: synchronous
    * child tokens are folded into their parent's model, not added to child rows. */

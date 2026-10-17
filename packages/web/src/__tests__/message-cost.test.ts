@@ -214,3 +214,33 @@ describe("model-reference attribution", () => {
     expect(sumThreadUsage([failed]).byModel).toEqual([{ model, costUsd: 0.5 }]);
   });
 });
+
+describe("compaction spend", () => {
+  const summary = (version = 2, included = true, cost: number | null = 1.25) => ({ type: "telemetry", event: "context_compaction", data: {
+    model: "faux:summary", accounting: { version, usageIncluded: included, requests: [{ requestId: "fictional:1", model: "faux:summary", status: "rejected", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd: cost }] },
+  } });
+  const aggregate = (cost = 1.75) => ({ type: "telemetry", event: "usage_update", data: { cumulativeUsd: cost, model: "faux:main", tokens: { input: 110, output: 22, cacheRead: 0, cacheCreation: 0 } } });
+  it("treats included compaction as a subset and dedupes lifecycle rows", async () => {
+    const { messageUsageRollup } = await import("../message-cost.js");
+    const { sumThreadUsage } = await import("../thread-usage.js");
+    const parts = [summary(), summary(), aggregate()];
+    expect(latestMessageCostUsd(parts)).toBe(1.75);
+    const rollup = messageUsageRollup({ parts });
+    expect(rollup.compaction).toMatchObject({ requests: 1, costUsd: 1.25 });
+    const total = sumThreadUsage([rollup]);
+    expect(total.total.costUsd).toBe(1.75);
+    expect(total.compaction?.costUsd).toBe(1.25);
+    expect(total.byModel.find((row) => row.model === "faux:main")?.costUsd).toBe(0.5);
+    expect(total.byModel.find((row) => row.model === "faux:summary")?.costUsd).toBe(1.25);
+  });
+  it("adds legacy and later manual receipts to the prior aggregate", () => {
+    expect(latestMessageCostUsd([aggregate(0.5), summary(1, false)])).toBe(1.75);
+    expect(latestMessageCostUsd([aggregate(0.5), summary(2, false)])).toBe(1.75);
+  });
+  it("preserves unknown and measured-zero compaction costs", async () => {
+    const { messageUsageRollup } = await import("../message-cost.js");
+    expect(latestMessageCostUsd([summary(2, false, null)])).toBeUndefined();
+    expect(messageUsageRollup({ parts: [summary(2, false, null)] }).compaction).toMatchObject({ costPartial: true });
+    expect(latestMessageCostUsd([summary(2, false, 0)])).toBe(0);
+  });
+});

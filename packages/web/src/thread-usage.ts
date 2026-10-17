@@ -25,6 +25,7 @@ function add(target: MutableSlice, source: MessageUsageSlice) {
 /** Fold per-message rollups without ever adding synchronous spend twice. */
 export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedAt = new Date().toISOString(), settledAssistantTurns?: number): WebThreadUsage {
   const total: MutableSlice = {};
+  const compaction: MutableSlice & { requests: number; requestsWithUsage: number } = { requests: 0, requestsWithUsage: 0 };
   const subagents: MutableSlice & { runs: number; runsWithTokens: number } = { runs: 0, runsWithTokens: 0 };
   const byModel = new Map<string | undefined, MutableSlice>();
   const modelSlice = (model: string | undefined): MutableSlice => {
@@ -34,10 +35,20 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
   };
   for (const rollup of rollups) {
     const syncCost = rollup.subagents.reduce((sum, child) => sum + (!child.detached ? child.costUsd ?? 0 : 0), 0);
-    const ownCost = rollup.main.costUsd === undefined ? undefined : Math.max(0, rollup.main.costUsd - syncCost);
+    const ownCost = rollup.main.costUsd === undefined ? undefined : Math.max(0, rollup.main.costUsd - syncCost - (rollup.compaction?.costUsd ?? 0));
     add(total, rollup.main);
     const main = modelSlice(rollup.main.model);
-    add(main, { ...rollup.main, ...(ownCost === undefined ? {} : { costUsd: ownCost }) });
+    const ownTokens = rollup.main.tokens === undefined ? undefined : Object.fromEntries(
+      (["input", "cacheRead", "cacheWrite", "output"] as const).map((key) => [key, Math.max(0, rollup.main.tokens![key] - (rollup.compaction?.tokens?.[key] ?? 0))])) as unknown as WebUsageTokens;
+    const { costUsd: _inclusiveCost, tokens: _inclusiveTokens, ...mainMetadata } = rollup.main;
+    add(main, { ...mainMetadata, ...(ownCost === undefined || (ownCost === 0 && rollup.main.costPartial) ? {} : { costUsd: ownCost }),
+      ...(ownTokens === undefined ? {} : { tokens: ownTokens }) });
+    if (rollup.compaction) {
+      add(compaction, rollup.compaction);
+      compaction.requests += rollup.compaction.requests;
+      compaction.requestsWithUsage += rollup.compaction.requestsWithUsage;
+      for (const row of rollup.compactionByModel ?? []) add(modelSlice(row.model), row);
+    }
     if (rollup.main.costUsd !== undefined && rollup.main.tokens === undefined) total.tokensPartial = true;
     for (const child of rollup.subagents) {
       subagents.runs += 1;
@@ -62,6 +73,7 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
   });
   return {
     total: clean(total),
+    ...(compaction.requests ? { compaction: { ...clean(compaction), requests: compaction.requests, requestsWithUsage: compaction.requestsWithUsage } } : {}),
     ...(subagents.runs === 0 ? {} : { subagents: { ...clean(subagents), runs: subagents.runs, runsWithTokens: subagents.runsWithTokens } }),
     byModel: [...byModel.entries()].filter(([, slice]) => slice.costUsd !== undefined)
       .sort((a, b) => (b[1].costUsd ?? 0) - (a[1].costUsd ?? 0))

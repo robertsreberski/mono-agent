@@ -7139,6 +7139,30 @@ describe("durable conversation markers", () => {
 });
 
 describe("thread usage aggregation", () => {
+  it("retains manual compaction slices through memoization and sequence invalidation", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      raw.prepare(`INSERT INTO messages (id, thread_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`).run("fictional-answer", thread.id,
+        JSON.stringify([{ type: "telemetry", event: "usage_update", data: { cumulativeUsd: 0.5 } }]), "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(0.5);
+      const receipt = { status: "failed" as const, trigger: "manual" as const, operationId: "fictional-summary", accounting: {
+        version: 2 as const, usageIncluded: false as const, requests: [{ requestId: "fictional-summary:1", model: "faux:summary", status: "rejected" as const,
+          input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd: 1.25 }] } };
+      store.recordManualCompaction(thread.id, receipt);
+      store.recordManualCompaction(thread.id, receipt);
+      for (let i = 0; i < 2; i += 1) {
+        const usage = await store.threadUsage(thread.id);
+        expect(usage.total.costUsd).toBe(1.75);
+        expect(usage.compaction).toMatchObject({ requests: 1, costUsd: 1.25 });
+      }
+    } finally { raw.close(); store.close(); }
+  });
+
   it("loads persisted subagent parts with extended or malformed optional usage", async () => {
     const root = await temporaryRoot(); cleanup.push(root);
     const store = await WebStore.open({ stateDir: join(root, "state") });
