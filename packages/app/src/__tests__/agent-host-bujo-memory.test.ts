@@ -20,7 +20,7 @@ import type { RunSummary } from "@mono-agent/observability";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
 import { createConfiguredConversationHarness, createConfiguredMemory } from "../index.js";
-import { createConfiguredCurationLlm } from "../configured-agent.js";
+import { createConfiguredCurationLlm } from "../composition/configured-memory.js";
 
 const coordinatorHome = vi.hoisted(() => ({ path: "" }));
 vi.mock("../account-home.js", () => ({

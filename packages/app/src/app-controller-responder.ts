@@ -18,16 +18,17 @@ import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import {
   createConfiguredAgentResponderForApp,
-  createConfiguredAgentRuntimeForApp,
   DEFAULT_HISTORY_MAX_MESSAGES,
 } from "./configured-agent.js";
-import type { ConfiguredAgentSessionEvent, createConfiguredMemory } from "./configured-agent.js";
+import { createConfiguredAgentRuntimeForApp } from "./composition/configured-runtime.js";
+import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent-options.js";
+import type { createConfiguredMemory } from "./composition/configured-memory.js";
 import {
   adapterSendToolNames,
-  createAdapterSendToolsRuntimeExtension,
   requestSuppressesInteractionTools,
   resolveAdapterSendToolsSettings,
 } from "./adapter-send-tools.js";
+import { createAdapterSendToolsRuntimeExtension } from "./delivery/send-tools/host-extension.js";
 import {
   createSetConversationTitleRuntimeExtension,
   isSetConversationTitleToolAllowed,

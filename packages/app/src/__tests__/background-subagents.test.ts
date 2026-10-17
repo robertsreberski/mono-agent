@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
-import { buildSubagentsOptions } from "../configured-agent.js";
+import { buildSubagentsOptions } from "../composition/configured-subagents.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
 import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
 import { randomUUID } from "node:crypto";

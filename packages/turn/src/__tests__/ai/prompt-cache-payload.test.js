@@ -258,7 +258,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
   const { createSetConversationTitleRuntimeExtension } = await import('../../../../app/src/conversation-title.ts');
   const { createConsoleProjectsRuntimeExtension } = await import('../../../../app/src/console-projects.ts');
   const { createMemoryRememberRuntimeExtension } = await import('../../../../app/src/memory-remember.ts');
-  const { createAdapterSendToolsServer } = await import('../../../../app/src/adapter-send-tools.ts');
+  const { createAdapterSendToolsServer } = await import('../../../../app/src/delivery/send-tools/server.ts');
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
   const { composeRuntimeOptionExtensions } = await import('../../../../app/src/runtime-option-extensions.ts');

@@ -3172,7 +3172,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       }
       process.stderr.write(estimateText);
       const suggested = modelPass ? await bujo.proposeCurate(snapshot, input.curateLlm
-        ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model), curateOptions)
+        ?? await (await import("./composition/configured-memory.js")).createConfiguredCurationLlm(context.config, input.model), curateOptions)
         : { proposals: [], discarded: [] };
       const proposals: CurateProposal[] = [];
       const discarded: CurateDiscard[] = [...suggested.discarded];

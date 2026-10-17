@@ -7,7 +7,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { createMonoRuntime } from "@mono-agent/turn/host";
-import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../../../dist/configured-agent.js";
+import { createConfiguredAgentResponderForApp } from "../../../dist/configured-agent.js";
+import { wrapOwnedConfiguredRuntime } from "../../../dist/composition/runtime-ownership.js";
 import { createRequestModelOverrideRuntimeExtension } from "../../../dist/request-model-override.js";
 import { loadAppCoreConfig } from "../../../dist/app-config.js";
 

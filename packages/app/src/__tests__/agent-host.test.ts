@@ -2113,3 +2113,25 @@ it("retires configured override history through the cached owning runtime", asyn
   expect(factory).toHaveBeenCalledTimes(2); // Once per recreated configured harness lifetime.
   await next.dispose?.();
 });
+
+it.each(["mcp", "prompt", "memory"] as const)("releases acquired composition ownership after a %s construction failure", async (kind) => {
+  const dir = await tempDir();
+  const identityPath = join(dir, "IDENTITY.md");
+  await writeFile(identityPath, "Fictional composition identity.");
+  const original = monoConfig({ dir, identityPath, artifactDir: join(dir, "artifacts") });
+  const config: MonoAgentConfig = kind === "memory"
+    ? { ...original, memory: { mode: "lite", path: join(dir, "memory"), maxBytes: 64000,
+        writeMode: "disabled", llm: { provider: "ollama", model: "fixture" } } }
+    : { ...original, subagents: { enabled: true, definitions: [{ name: "fixture", description: "Fictional helper",
+        ...(kind === "prompt" ? { promptPath: join(dir, "missing-prompt.md") } : { prompt: "Fictional prompt", mcpServers: ["missing-server"] }) }] } };
+  const release = vi.fn();
+  const acquire = agentRootOwnershipSpies.acquire.getMockImplementation()!;
+  agentRootOwnershipSpies.acquire.mockImplementationOnce(async (root) => ({ ...await acquire(root), release }));
+  const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+  await expect(createConfiguredConversationHarness({ config, cwd: dir, runtime: fake.runtime }))
+    .rejects.toThrow(kind === "mcp" ? 'references MCP server "missing-server"' : kind === "prompt" ? "ENOENT" : "lexical-only");
+  expect(release).toHaveBeenCalledOnce();
+  expect(fake.calls).toEqual([]);
+  const recovered = await createConfiguredConversationHarness({ config: original, cwd: dir, runtime: fake.runtime });
+  await recovered.dispose?.();
+});

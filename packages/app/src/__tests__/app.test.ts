@@ -28,7 +28,7 @@ import { startMonoAgentApp } from "../app.js";
 import { MonoAgentAppController } from "../app-controller.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import { loadAppCoreConfig, resolveAppTraceSourceId } from "../app-config.js";
-import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
+import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../delivery/send-tools/child-config.js";
 import {
   createSlackChannelDriver,
   createTelegramChannelDriver,

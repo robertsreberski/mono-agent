@@ -1492,12 +1492,12 @@ path:
 | Area | Modules | Purpose |
 | --- | --- | --- |
 | Stable host facade | `app.ts`, `app-controller.ts`, `app-controller-*.ts`, `app-controller-types.ts` | Startup state plus narrow operation ports for status, reload, channel lifecycle, traceability, and teardown. |
-| Configured agent | `configured-agent.ts`, `app-controller-responder.ts` | Runtime, harness, memory, history, tools, and recorder composition. |
+| Configured agent | `configured-agent.ts`, `composition/`, `app-controller-responder.ts` | Ordered harness/responder assembly with explicit runtime/lease, memory, subagent, lazy history, and recorder resource owners. |
 | Channel integration | `channels.ts`, `channels/types.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution; erased host contracts do not depend on the registry. |
 | Foundation leaves | `service/start-preflight.ts`, `service/web/health.ts`, `service/background/`, `setup/`, `cli/validate-context.ts` | Reusable preflight, health and source-input readers; setup contracts, no-tool event detection and invocation policy without command backedges. |
 | Durable state | `durable-state/` | Shared private-file I/O, SQLite lease, owner locks, root coordination and activity accounting. Continuation secrets remain continuation-owned; stored names and formats are unchanged. |
 | Domain contracts and transport | `memory/recall-contract.ts`, `subagents/types.ts`, `mcp/loopback-transport.ts` | Erased recall/subagent contracts and one stateless loopback transport; callers retain endpoint policy and lifetime release hooks. |
-| Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
+| Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts`, `delivery/send-tools/` | Structured interaction state and settings/policy facade; separate host extension, child env/client/server, tool registration, delivery history, and pinned file/output owners. The compiled child stays at `dist/adapter-send-tools-main.js`. |
 | Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-runs.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
 | Host services | `run-history.ts`, `session-history.ts`, `conversation-title.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, bounded local memory chronology, automatic web conversation titles, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
 

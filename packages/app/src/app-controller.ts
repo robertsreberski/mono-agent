@@ -17,8 +17,8 @@ import { createSrtSandboxEngine } from "@mono-agent/turn/host/sandbox";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
 import type { AppTraceDefaults, PrivateBackgroundRuntimePaths } from "./app-config.js";
-import type { createConfiguredMemory } from "./configured-agent.js";
-import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
+import type { createConfiguredMemory } from "./composition/configured-memory.js";
+import type { ConfiguredAgentSessionEvent } from "./composition/configured-agent-options.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels/types.js";
 import type { NotifyDeliveryResult } from "./channels/types.js";

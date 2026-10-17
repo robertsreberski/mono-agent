@@ -4,7 +4,7 @@ import type { ChannelLogger } from "@mono-agent/contracts";
 import {
   createConfiguredMemory,
   createConfiguredMemoryForApp,
-} from "./configured-agent.js";
+} from "./composition/configured-memory.js";
 import { isSharedRecallStore, MemoryRetrievalService } from "./memory-retrieval.js";
 import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 

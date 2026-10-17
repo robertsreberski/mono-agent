@@ -6,7 +6,7 @@ import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
-import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
+import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../composition/configured-subagents.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 // @ts-expect-error Private kernel test seam; no new public tool export.
 import { createAgentTool } from "../../../turn/src/tools/delegation/agent-tool.js";
