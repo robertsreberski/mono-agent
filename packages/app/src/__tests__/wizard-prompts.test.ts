@@ -12,7 +12,9 @@ import {
   rankWizardModelCandidates,
   type WizardModelCandidate,
 } from "../wizard/model-discovery.js";
-import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine, resolvePiCliPath } from "../provider-setup.js";
+import { executeProviderSetupPlan } from "../provider-setup.js";
+import { planProviderSetup, providerSetupActionCommandLine } from "../providers/setup-plan.js";
+import { resolvePiCliPath } from "../providers/oauth-command.js";
 
 function modelCandidate(
   candidate: Pick<WizardModelCandidate, "value" | "label" | "source">

@@ -1,7 +1,8 @@
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { hasUsablePiOAuthClientId, piAuthRecoveryCommand } from "../provider-setup.js";
+import { hasUsablePiOAuthClientId } from "../providers/credential-values.js";
+import { piAuthRecoveryCommand } from "../providers/oauth-command.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "../pi-auth-store-inspection.js";
 import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
 import { configuredRuntimeRouteChecks } from "./runtime.js";

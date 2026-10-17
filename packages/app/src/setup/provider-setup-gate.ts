@@ -1,17 +1,17 @@
 import { stat } from "node:fs/promises";
 import process from "node:process";
 
+import { detectProviderCredentialStates } from "../providers/credential-state.js";
+import { executeProviderSetupPlan } from "../provider-setup.js";
 import {
-  detectProviderCredentialStates,
-  executeProviderSetupPlan,
   isProviderSetupPiApiKeyAction,
   planProviderSetup,
-} from "../provider-setup.js";
+} from "../providers/setup-plan.js";
 import type {
   ProviderCredentialState,
   ProviderSetupPlan,
   ProviderSetupResult,
-} from "../provider-setup.js";
+} from "../providers/setup-types.js";
 import { inspectPiAuthStore } from "../pi-auth-store-inspection.js";
 import { printProviderSetupPlan } from "./render.js";
 import * as ui from "../ui.js";

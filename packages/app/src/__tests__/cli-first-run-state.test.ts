@@ -122,11 +122,18 @@ vi.mock("../provider-setup.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../provider-setup.js")>();
   return {
     ...actual,
+    executeProviderSetupPlan: mocks.executeProviderSetupPlan,
+  };
+});
+
+vi.mock("../providers/credential-state.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/credential-state.js")>();
+  return {
+    ...actual,
     detectProviderCredentialStates: (...args: unknown[]) =>
       mocks.detectProviderCredentialStatesOverride?.(...args) ?? actual.detectProviderCredentialStates(
         args[0] as Parameters<typeof actual.detectProviderCredentialStates>[0],
       ),
-    executeProviderSetupPlan: mocks.executeProviderSetupPlan,
   };
 });
 

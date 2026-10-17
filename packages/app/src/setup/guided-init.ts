@@ -32,11 +32,11 @@ import {
 } from "./secret-env.js";
 import type { InitMonoAgentFolderResult } from "./scaffold-types.js";
 import {
-  detectProviderCredentialStates,
   isProviderSetupPiApiKeyAction,
   planProviderSetup,
-} from "../provider-setup.js";
-import type { ProviderSetupPlan } from "../provider-setup.js";
+} from "../providers/setup-plan.js";
+import { detectProviderCredentialStates } from "../providers/credential-state.js";
+import type { ProviderSetupPlan } from "../providers/setup-types.js";
 import { readinessProbeTimeoutMs, runAllRouteReadinessProbe } from "../readiness-probe.js";
 import type {
   ReadinessProbeResult,

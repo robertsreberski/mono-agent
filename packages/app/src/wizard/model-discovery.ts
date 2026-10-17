@@ -9,7 +9,8 @@ import {
   inspectPiAuthStore as inspectDefaultPiAuthStore,
   type PiAuthStoreInspection,
 } from "../pi-auth-store-inspection.js";
-import { hasUsablePiOAuthClientId, runBoundedProviderCommand } from "../provider-setup.js";
+import { hasUsablePiOAuthClientId } from "../providers/credential-values.js";
+import { runBoundedProviderCommand } from "../providers/command.js";
 
 export type WizardModelSource = "pi" | "ollama" | "lmstudio" | "custom";
 export type WizardModelAvailability = "catalog_available";

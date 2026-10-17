@@ -16,7 +16,7 @@ import {
 } from "@mono-agent/contracts";
 import { loginPiProviderAuth } from "@mono-agent/turn/ai";
 
-import { persistPiProviderCredential } from "./provider-setup.js";
+import { persistPiProviderCredential } from "./providers/auth-store-write.js";
 import { getOrCreatePiInstallationId, PiInstallationIdError } from "./pi-installation-id.js";
 import {
   createProviderAuthCheckManager,
