@@ -26,6 +26,9 @@
 - Add `@mono-agent/memory/health-metadata` for ordered health issue codes
   without loading SQLite, the memory store, or provider SDKs.
 
+- Fix repeated long-context summary failures with independent compaction effort,
+  adaptive reasoning headroom, and configurable unchanged-failure suppression.
+
 - Remove unused public exports and dead helpers from `@mono-agent/contracts`,
   `@mono-agent/config`, `@mono-agent/turn`, `@mono-agent/conversation`, and
   `@mono-agent/app` without compatibility aliases. Keep documented extension

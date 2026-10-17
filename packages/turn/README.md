@@ -1484,6 +1484,21 @@ guidance only says complete instructions may remain visible.
 
 ### Context compaction
 
+Summary requests resolve `compaction.effort` independently of conversation effort.
+The default `auto` disables reasoning when supported, otherwise chooses low (or
+the lowest supported level). The combined `summaryMaxTokens` text target retains
+its normal/split-turn division. Adaptive Anthropic requests add 2,048–8,192 tokens
+of bounded output allowance per summary for shared-ceiling thinking, limited by
+the model and remaining context. Legacy budget-based Anthropic keeps Pi’s native
+answer-room adjustment. Low adaptive effort is not a hard hidden-token cap.
+
+Unchanged paid summary failures are suppressed for `failureCooldownMs` (default
+900,000; zero disables). A 10% input increase (at least 8,192 tokens), summary
+policy/model change, successful compaction or new session permits another attempt.
+Manual actions bypass suppression. The bounded process-local cache clears on
+restart; one suppression warning explains why automatic compaction was skipped.
+Overflow remains a real failure and may continue through the fallback chain.
+
 Summary preparation preserves labelled heads and tails of text tool results within
 Pi's 2,000-character serializer allowance. Copies retain tool identities and
 arguments; live results remain unchanged. Confirmed `Read`/`Write`/`Edit` results

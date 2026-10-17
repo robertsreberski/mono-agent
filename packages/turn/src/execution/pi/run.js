@@ -737,6 +737,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       steeringMode: toolSteeringMode,
       options,
     });
+    if (requestedSessionId) harness.compactionFailureKey = JSON.stringify([options.sessionsRoot || options.cwd || "runtime", requestedSessionId]);
 
     if (options.nativeSessionProjection) {
       runState.session.setInheritedProjection(options.nativeSessionProjection.inherited);

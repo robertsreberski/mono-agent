@@ -1,0 +1,31 @@
+import { expect, it } from "vitest";
+import { compactionFailureGuard } from "../../ai/providers/engine-turn/compaction-failures.js";
+const base = { scope: "fictional-session", model: { provider: "faux", id: "model", api: "faux" },
+  policy: { effort: "auto", summaryMaxTokens: 12000, failureCooldownMs: 900000 }, tokens: 500000, trigger: "proactive", now: 100 };
+it("suppresses across reopened controllers, warns once and resets on growth/cooldown/config", () => {
+  compactionFailureGuard(base).settle(false, true, "output_truncated");
+  const repeated = compactionFailureGuard({ ...base, now: 200 });
+  expect(repeated).toMatchObject({ suppressed: true, warn: true, growthRequiredTokens: 50000 });
+  repeated.suppress();
+  expect(compactionFailureGuard({ ...base, trigger: "reactive_overflow", now: 300 })).toMatchObject({ suppressed: true, warn: false });
+  expect(compactionFailureGuard({ ...base, tokens: 549999 }).suppressed).toBe(true);
+  expect(compactionFailureGuard({ ...base, tokens: 550000 }).suppressed).toBe(false);
+  compactionFailureGuard(base).settle(false, true, "empty_summary");
+  expect(compactionFailureGuard({ ...base, policy: { ...base.policy, effort: "low" } }).suppressed).toBe(false);
+  expect(compactionFailureGuard({ ...base, now: 900100 }).suppressed).toBe(false);
+});
+it("isolates sessions, ignores unbilled/aborted work, clears success and bypasses manual", () => {
+  const input = { ...base, scope: "another-session" };
+  compactionFailureGuard(input).settle(false, false);
+  expect(compactionFailureGuard(input).suppressed).toBe(false);
+  compactionFailureGuard(input).settle(false, true, "aborted");
+  expect(compactionFailureGuard(input).suppressed).toBe(false);
+  compactionFailureGuard(input).settle(false, true, "provider_error");
+  expect(compactionFailureGuard(input).suppressed).toBe(true);
+  expect(compactionFailureGuard({ ...input, scope: "new-epoch" }).suppressed).toBe(false);
+  expect(compactionFailureGuard({ ...input, trigger: "manual" })).toBeNull();
+  expect(compactionFailureGuard({ ...input, scope: null })).toBeNull();
+  expect(compactionFailureGuard({ ...input, policy: { failureCooldownMs: 0 } })).toBeNull();
+  compactionFailureGuard(input).settle(true, true);
+  expect(compactionFailureGuard(input).suppressed).toBe(false);
+});

@@ -219,6 +219,8 @@ export function readRuntimeCompactionConfig(
     { min: 32_000, max: 10_000_000 },
   );
   return {
+    effort: jsonChoice(compaction.effort, "runtime.compaction.effort", ["auto", ...EFFORT_LEVELS], "auto"),
+    failureCooldownMs: jsonInteger(compaction.failureCooldownMs, "runtime.compaction.failureCooldownMs", 900000, { min: 0, max: 86400000 }),
     enabled: jsonBoolean(
       compaction.enabled,
       "runtime.compaction.enabled",
