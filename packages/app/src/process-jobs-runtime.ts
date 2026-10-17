@@ -2,7 +2,7 @@ import { persistentSubagentsEnabled } from "./subagent-instances.js";
 import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { failClosedSandboxPolicy, mergeSandboxPolicies, protectSandboxRoots } from "@mono-agent/turn/host/sandbox";
 import { type RuntimeModelReference, type SandboxEngine, type SandboxPolicy } from "@mono-agent/turn/host/types";
@@ -262,7 +262,7 @@ async function sandboxEngineAvailable(engine: SandboxEngine | undefined): Promis
 
 /** Strict host-origin classifier. Unsupported trigger surfaces never receive a controller. */
 export function processJobOriginForRequest(
-  input: Pick<AgentHarnessRuntimeOptionsInput, "request" | "runId">,
+  input: Pick<ConversationHarnessRuntimeOptionsInput, "request" | "runId">,
   channelId: ChannelId | undefined,
   conversationScheme?: string,
 ): ProcessJobOriginRecord | undefined {
@@ -326,7 +326,7 @@ interface ProcessJobsAvailabilityOptions {
  * telling the model it can background a command it cannot is the worse failure.
  */
 export function processJobsAvailableForRequest(
-  input: Pick<AgentHarnessRuntimeOptionsInput, "request" | "runId">,
+  input: Pick<ConversationHarnessRuntimeOptionsInput, "request" | "runId">,
   options: ProcessJobsAvailabilityOptions,
 ): boolean {
   if (options.service === undefined) return false;
@@ -357,7 +357,7 @@ function normalizeReplyTarget(conversationId: string): string {
 
 /** Same exact-origin/lineage gate used by schema composition and Session guidance. */
 export function backgroundSubagentsAvailableForRequest(
-  input: Pick<AgentHarnessRuntimeOptionsInput, "request" | "runId">,
+  input: Pick<ConversationHarnessRuntimeOptionsInput, "request" | "runId">,
   options: ProcessJobsAvailabilityOptions,
 ): boolean {
   if (!persistentSubagentsEnabled(options.coreConfig) || !options.service

@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { createAgentResponder } from "@mono-agent/conversation";
+import { createConversationResponder } from "@mono-agent/conversation";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
-import { createConfiguredAgentHarness } from "../configured-agent.js";
+import { createConfiguredConversationHarness } from "../configured-agent.js";
 
 import type { AgentResponder } from "@mono-agent/contracts";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
@@ -100,13 +100,13 @@ it("advertises and executes manual compaction from a configured harness through 
     async invalidateSession() { return true; },
     async disposeSession() { return true; },
   };
-  let harness: Awaited<ReturnType<typeof createConfiguredAgentHarness>> | undefined;
+  let harness: Awaited<ReturnType<typeof createConfiguredConversationHarness>> | undefined;
   let operator: Awaited<ReturnType<typeof startTuiAdapter>> | undefined;
   try {
-    harness = await createConfiguredAgentHarness({ config, cwd: dir, runtime });
+    harness = await createConfiguredConversationHarness({ config, cwd: dir, runtime });
     const postedReplyHistory = createSlackPostedReplyHistory({ maxMessages: 64 });
     const responder = bindProcessJobWakeContextToResponder(postedReplyHistory.wrapResponder(
-      createAgentResponder({ harness }),
+      createConversationResponder({ harness }),
     ));
     expect(typeof responder.compactConversation).toBe("function");
     operator = await startTuiAdapter({ host: "127.0.0.1", port: 0, responder });

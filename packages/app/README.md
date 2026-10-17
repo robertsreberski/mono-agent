@@ -1523,7 +1523,7 @@ removing proof fields. Existing ProcessJobs retention/reset boundaries apply.
 | Need | Primary API |
 | --- | --- |
 | Start or stop a config-first host | `startMonoAgentApp`, `MonoAgentApp`, `MonoAgentAppOptions` |
-| Build only the configured execution stack | `createConfiguredAgentResponder`, `createConfiguredAgentHarness`, `createConfiguredAgentRuntime`, `createConfiguredMemory` |
+| Build only the configured execution stack | `createConfiguredAgentResponder`, `createConfiguredConversationHarness`, `createConfiguredAgentRuntime`, `createConfiguredMemory` |
 | Embed selected built-in channels | `defaultChannelDrivers`, `resolveChannelDrivers`, `createTelegramChannelDriver`, `createSlackChannelDriver`, `createWebhookChannelDriver`, `createOpenAIApiChannelDriver`, `createCronChannelDriver` |
 
 Folder setup and validation, prior-run/tool-history/memory tools, and service
@@ -1543,8 +1543,8 @@ ChannelDriverOverrides
 ChannelId
 ChannelStartInput
 ChannelStatus
-ConfiguredAgentHarnessOptions
 ConfiguredAgentResponderOptions
+ConfiguredConversationHarnessOptions
 CronChannelOverrides
 MonoAgentApp
 MonoAgentAppConfigInput
@@ -1556,9 +1556,9 @@ SlackChannelOverrides
 TelegramChannelOverrides
 WebhookChannelOverrides
 consumerContractNames
-createConfiguredAgentHarness
 createConfiguredAgentResponder
 createConfiguredAgentRuntime
+createConfiguredConversationHarness
 createConfiguredMemory
 createCronChannelDriver
 createOpenAIApiChannelDriver

@@ -8,12 +8,8 @@ import type {
 import type { RuntimeResult } from "@mono-agent/turn/host/types";
 
 import type { BuiltAgentContext } from "../context/index.js";
-import type {
-  AgentHarnessFailure,
-  AgentHarnessRequest,
-  AgentHarnessResponse,
-} from "../types.js";
-import { AgentHarnessError } from "./error.js";
+import type { ConversationHarnessFailure, ConversationHarnessRequest, ConversationHarnessResponse } from "./contracts.js";
+import { ConversationHarnessError } from "./error.js";
 import { externalResponseSummary } from "./external-summary.js";
 import { errorToDetails, isRecord } from "./value-utils.js";
 
@@ -48,7 +44,7 @@ function failureKindFromUnknown(value: unknown): string {
   return "";
 }
 
-export function failureFromRuntimeResult(result: RuntimeResult): AgentHarnessFailure | undefined {
+export function failureFromRuntimeResult(result: RuntimeResult): ConversationHarnessFailure | undefined {
   if (result.cancelled === true) {
     return {
       kind: "cancelled",
@@ -73,11 +69,11 @@ export function failureFromRuntimeResult(result: RuntimeResult): AgentHarnessFai
   return undefined;
 }
 
-export function failureFromThrownError(error: unknown, wasAborted: boolean): AgentHarnessFailure {
+export function failureFromThrownError(error: unknown, wasAborted: boolean): ConversationHarnessFailure {
   if (wasAborted) {
     return { kind: "cancelled", message: "Agent request was cancelled.", details: errorToDetails(error) };
   }
-  if (error instanceof AgentHarnessError) {
+  if (error instanceof ConversationHarnessError) {
     return { kind: error.failureKind, message: error.message, details: error.details };
   }
   if (error instanceof Error) {
@@ -145,11 +141,11 @@ export function normalizeAssistantText(text: unknown): string | undefined {
 
 export function responseMetadata(
   runId: string,
-  request: AgentHarnessRequest,
+  request: ConversationHarnessRequest,
   context: BuiltAgentContext | undefined,
   summary: RunSummary | undefined,
   runtimeResult?: RuntimeResult,
-): AgentHarnessResponse["metadata"] {
+): ConversationHarnessResponse["metadata"] {
   const externalSummary = summary === undefined ? undefined : externalResponseSummary(summary);
   const disposition = runtimeResult?.turnDisposition === "silent"
     && ((summary !== undefined && summary.status !== "succeeded") || runtimeResult.cancelled === true || !!runtimeResult.error)
@@ -183,11 +179,11 @@ function runtimeMetadata(result: RuntimeResult): Record<string, unknown> {
 
 export function failureResponse(input: {
   readonly runId: string;
-  readonly request: AgentHarnessRequest;
+  readonly request: ConversationHarnessRequest;
   readonly summary: RunSummary;
   readonly kind: string;
   readonly message: string;
-}): AgentHarnessResponse {
+}): ConversationHarnessResponse {
   return {
     metadata: responseMetadata(input.runId, input.request, undefined, input.summary),
     failure: {

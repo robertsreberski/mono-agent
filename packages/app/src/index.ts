@@ -1,12 +1,12 @@
 export { resolveAppArtifactDir, resolveAppTraceStaleAfterMs } from "./app-config.js";
 export type { MonoAgentAppConfigInput } from "./app-config.js";
 export {
-  createConfiguredAgentHarness,
+  createConfiguredConversationHarness,
   createConfiguredAgentResponder,
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "./configured-agent.js";
-export type { ConfiguredAgentHarnessOptions, ConfiguredAgentResponderOptions } from "./configured-agent.js";
+export type { ConfiguredConversationHarnessOptions, ConfiguredAgentResponderOptions } from "./configured-agent.js";
 export {
   createCronChannelDriver,
   createOpenAIApiChannelDriver,

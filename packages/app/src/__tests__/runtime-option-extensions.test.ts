@@ -1,4 +1,4 @@
-import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { describe, expect, it, vi } from "vitest";
 
 import { failClosedSandboxPolicy, protectSandboxRoots } from "@mono-agent/turn/host/sandbox";
@@ -17,7 +17,7 @@ const INPUT = {
   },
   runId: "run-1",
   context: {},
-} as unknown as AgentHarnessRuntimeOptionsInput;
+} as unknown as ConversationHarnessRuntimeOptionsInput;
 
 describe("composeRuntimeOptionExtensions", () => {
   it("chains user-message decorators in extension order and omits the hook when none is set", async () => {

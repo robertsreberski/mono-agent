@@ -1,10 +1,10 @@
 import type { RuntimeHandoffProducerRequest, RuntimeHandoffProducerResult, RuntimeHandoffFit, RuntimeNativeDispatchSnapshot, RuntimeNativeEvidenceView, RuntimeNativePreparationStorage, RuntimeHandoffOptions, RuntimeHandoffBudget, RuntimeResult } from "@mono-agent/turn/host/types";
-import type { ManagedProviderSessionPreparation, ManagedModelSwitchStorageLease } from "../durable-history.js";
-import type { ModelSwitchState, ModelSwitchReservation, CanonicalJournalDescriptor, HandoffReference } from "../durable-model-switch-contract.js";
-import { switchDigest, switchCoverageDigest, validateModelSwitchState, validateFrozenHandoffBudget } from "../durable-model-switch-contract.js";
-import { createModelSwitchState } from "../model-switch-billing.js";
+import type { ManagedProviderSessionPreparation, ManagedModelSwitchStorageLease } from "../history/contracts.js";
+import type { ModelSwitchState, ModelSwitchReservation, CanonicalJournalDescriptor, HandoffReference } from "../history/model-switch/contract.js";
+import { switchDigest, switchCoverageDigest, validateModelSwitchState, validateFrozenHandoffBudget } from "../history/model-switch/contract.js";
+import { createModelSwitchState } from "../history/model-switch/billing.js";
 import type { PreparedHarnessRuntime, HarnessPreparedBinding } from "./runtime-execution.js";
-import type { ProviderSessionTurnBinding } from "../types.js";
+import type { ProviderSessionTurnBinding } from "../history/contracts.js";
 import { resolve } from "node:path";
 
 /** Internal before-P2 orchestration only. No configured caller or opt-in yet. */

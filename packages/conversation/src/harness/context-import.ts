@@ -6,9 +6,10 @@ import {
   type AgentContextImportResult,
 } from "@mono-agent/contracts";
 
-import type { AgentHarnessOptions, ConversationHistoryContextImport } from "../types.js";
+import type { ConversationHarnessOptions } from "./contracts.js";
+import type { ConversationHistoryContextImport } from "../history/contracts.js";
 
-export function eligibleContextImport(options: AgentHarnessOptions): ConversationHistoryContextImport | undefined {
+export function eligibleContextImport(options: ConversationHarnessOptions): ConversationHistoryContextImport | undefined {
   const support = options.historyStore?.contextImport;
   if (
     support?.version !== 1
@@ -26,7 +27,7 @@ export function eligibleContextImport(options: AgentHarnessOptions): Conversatio
 }
 
 export async function importHarnessContext(
-  options: AgentHarnessOptions,
+  options: ConversationHarnessOptions,
   conversationId: string,
   request: AgentContextImportRequest,
   timestamp: string,

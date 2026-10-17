@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { AGENT_LIVE_INPUT_MAX_CHARACTERS } from "@mono-agent/contracts";
 
-import { bindProcessJobLiveInput, createLiveInputMailbox } from "../live-input.js";
+import { bindProcessJobLiveInput, createLiveInputMailbox } from "../sessions/live-input.js";
 
 const request = (id: string, text = id) => ({
   conversationId: "conversation",

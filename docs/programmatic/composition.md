@@ -13,7 +13,7 @@ This page covers the three programmatic entry points that the `mono-agent` CLI i
 | --- | --- | --- | --- |
 | `startMonoAgentApp` | `@mono-agent/app` | Config load + responder + every configured channel + traceability + exporters | You want a CLI-equivalent host, optionally with extra channel drivers or a shared runtime |
 | `createConfiguredAgentResponder` | `@mono-agent/app` | A transport-free `AgentResponder` with config-driven runtime, harness, memory, per-run JSONL recording, and configured exporters | You embed the responder in your own server, test harness, or custom transport |
-| `createAgentHarness` / `createAgentResponder` | `@mono-agent/conversation` | Full manual control of identity, skills, memory, history, recorder, runtime | Config-driven composition is not enough and you assemble every dependency yourself |
+| `createConversationHarness` / `createConversationResponder` | `@mono-agent/conversation` | Full manual control of identity, skills, memory, history, recorder, runtime | Config-driven composition is not enough and you assemble every dependency yourself |
 
 The layering is strict: `app` owns config-driven composition and delegates turn execution to `conversation`. Drop down only one level at a time. See [package map](/programmatic/) and the [programmatic index](/programmatic/) for the broader package set.
 
@@ -60,7 +60,7 @@ For building the driver itself, see [Write your own channel adapter](/programmat
 
 ## The bare responder: `createConfiguredAgentResponder`
 
-When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It starts no channel, trace-registry, service, retention, or consolidation-scheduler lifecycle, but each turn still uses the configured JSONL recorder and per-run exporters. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): local memory modules are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack.
+When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It starts no channel, trace-registry, service, retention, or consolidation-scheduler lifecycle, but each turn still uses the configured JSONL recorder and per-run exporters. It is **async** (as is `createConfiguredConversationHarness`/`createConfiguredMemory`): local memory modules are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack.
 
 ```ts
 import { loadMonoAgentConfig } from "@mono-agent/config";
@@ -77,7 +77,7 @@ const responder = await createConfiguredAgentResponder({
 });
 ```
 
-`ConfiguredAgentResponderOptions` (a superset of `ConfiguredAgentHarnessOptions`) lets you override the dependencies the config would otherwise build:
+`ConfiguredAgentResponderOptions` (a superset of `ConfiguredConversationHarnessOptions`) lets you override the dependencies the config would otherwise build:
 
 | Option | Type | Purpose |
 | --- | --- | --- |
@@ -87,11 +87,11 @@ const responder = await createConfiguredAgentResponder({
 | `model` | `RuntimeModelReference` | Override the config's primary model |
 | `memory` | `MemoryStore` | Supply a memory store instead of provisioning from `config.memory` |
 | `historyStore` | `ConversationHistoryStore` | Replace the configured app's owner-only disk-backed 64-message history store with a custom implementation |
-| `turnHistoryEnricher` | `AgentHarnessTurnHistoryEnricher` | App-owned hook for adding run-scoped interaction evidence only to replay history; outward responses and memory capture keep the original assistant text |
+| `turnHistoryEnricher` | `ConversationHarnessTurnHistoryEnricher` | App-owned hook for adding run-scoped interaction evidence only to replay history; outward responses and memory capture keep the original assistant text |
 | `runtimeOptions` | static run options | Extra runtime options merged for every run (no `model`/`messages`/`abortSignal`/`onEvent`) |
 | `runtimeOptionsForRequest` | `(input) => extension` | Per-request run options (see below) |
 
-`createConfiguredAgentHarness(options)` is also exported if you want the harness
+`createConfiguredConversationHarness(options)` is also exported if you want the harness
 without the responder wrapper. For a raw runtime, use
 `createConfiguredAgentRuntime({ config, cwd: agentRoot })`. Its owner and
 registry are acquired lazily on the first `run()` and retained until
@@ -169,15 +169,15 @@ The injected store wins over anything `config.memory` would otherwise build, and
 ```ts
 import { createConfiguredAgentResponder } from "@mono-agent/app";
 import type {
-  AgentHarnessRuntimeOptionsInput,
-  AgentHarnessRuntimeOptionsExtension,
+  ConversationHarnessRuntimeOptionsInput,
+  ConversationHarnessRuntimeOptionsExtension,
 } from "@mono-agent/conversation";
 
 const responder = await createConfiguredAgentResponder({
   config,
   runtimeOptionsForRequest: async (
-    input: AgentHarnessRuntimeOptionsInput,
-  ): Promise<AgentHarnessRuntimeOptionsExtension> => {
+    input: ConversationHarnessRuntimeOptionsInput,
+  ): Promise<ConversationHarnessRuntimeOptionsExtension> => {
     // input: { request, runId, context }
     return {
       runtimeOptions: { /* per-run options, e.g. extra MCP servers */ },

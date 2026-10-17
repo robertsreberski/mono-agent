@@ -404,7 +404,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
           let historicalAssistant = "";
           let admitted = 0;
           let admissionStarted = 0;
-          ingest = modules.harness.createAgentHarness({
+          ingest = modules.harness.createConversationHarness({
             ...base, runtime: { async run() { return { text: historicalAssistant }; } },
             memoryWriteMode: arm === "bujo" ? "capture" : "append-host-summary",
             memory: {
@@ -461,7 +461,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
         ]) : undefined;
         const toolStarts = new Map();
         const metered = meteredRuntime(providers.reader, { budget, stage: "reader", tag });
-        reader = modules.harness.createAgentHarness({
+        reader = modules.harness.createConversationHarness({
           ...base, historyStore: history, memory: service, memoryWriteMode: "disabled",
           toolPolicy: modules.harness.createToolPolicy({ allowedTools: memoryArm ? ["MemoryRecall", "MemoryJournal"] : [] }),
           runtimeOptionsForRequest: extension,
@@ -654,7 +654,7 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
             historicalAssistant = turn.assistant;
             admissionStarted = 0;
             admission = null;
-            ingest = ingest ?? modules.harness.createAgentHarness({
+            ingest = ingest ?? modules.harness.createConversationHarness({
               ...base, runtime: { async run() { return { text: historicalAssistant }; } },
               memoryWriteMode: "capture",
               memory: {
@@ -814,7 +814,7 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
             ]) : undefined;
             const toolStarts = new Map();
             const metered = meteredRuntime(providers.reader, { budget, stage: "reader", tag });
-            reader = modules.harness.createAgentHarness({
+            reader = modules.harness.createConversationHarness({
               ...base, historyStore: history, memory: service, memoryWriteMode: "disabled",
               toolPolicy: modules.harness.createToolPolicy({ allowedTools: arm === "bujo" ? ["MemoryRecall", "MemoryJournal"] : [] }),
               runtimeOptionsForRequest: extension,

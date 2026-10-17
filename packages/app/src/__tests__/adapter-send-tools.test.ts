@@ -7,7 +7,7 @@ import { once } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AgentResponder } from "@mono-agent/contracts";
-import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore } from "@mono-agent/conversation";
+import { createConversationHarness, createConversationResponder, createInMemoryHistoryStore } from "@mono-agent/conversation";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { SlackAdapter } from "@mono-agent/channel-slack";
 import type {
@@ -1761,14 +1761,14 @@ describe("adapter send tool posted-message indexing", () => {
     ]);
     const fake = createFakeRuntime(async () => ({ text: "reply handled" }));
     const postedReplyHistory = createSlackPostedReplyHistory({ maxMessages: 64, rollover: "none" });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath: join(dir, "IDENTITY.md"),
       runtime: fake.runtime,
       model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" },
       cwd: dir,
       historyStore: postedReplyHistory.wrapHistoryStore(historyStore),
     });
-    const responder = postedReplyHistory.wrapResponder(createAgentResponder({ harness }));
+    const responder = postedReplyHistory.wrapResponder(createConversationResponder({ harness }));
     const historyBridge = await startInteractionBridge({
       host: "127.0.0.1",
       port: 0,

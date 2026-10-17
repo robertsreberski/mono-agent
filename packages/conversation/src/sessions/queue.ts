@@ -1,6 +1,6 @@
 import { AgentResponseCancelledError } from "@mono-agent/contracts";
 
-import type { AgentHarnessRequest, AgentHarnessResponse } from "./types.js";
+import type { ConversationHarnessRequest, ConversationHarnessResponse } from "../harness/contracts.js";
 
 /**
  * Serializes turns per conversation while letting different conversations run
@@ -10,13 +10,13 @@ import type { AgentHarnessRequest, AgentHarnessResponse } from "./types.js";
  *
  * The queue is deliberately decoupled from provider-session lifetime: it owns
  * only turn ordering. Whether a turn resumes a warm provider session or replays
- * history is decided by the runner (`MonoAgentHarness.run`) on each turn, so a
+ * history is decided by the runner (`ConversationHarnessImpl.run`) on each turn, so a
  * session that dies/evicts mid-queue simply demotes the next turn to a fresh
  * run — queued follow-ups are never silently dropped.
  */
 export interface LiveSessionManager {
   /** Enqueue a turn; resolves when *this* turn completes (after any ahead of it). */
-  enqueue(conversationId: string, request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  enqueue(conversationId: string, request: ConversationHarnessRequest): Promise<ConversationHarnessResponse>;
   /** Abort an uncommitted in-flight turn and reject every queued turn for the conversation. */
   cancel(conversationId: string, reason?: unknown): void;
   /** Number of turns queued behind the active one. */
@@ -29,8 +29,8 @@ export interface LiveSessionManager {
 }
 
 interface LiveSessionManagerOptions {
-  /** Executes a single turn — typically `MonoAgentHarness.run`. */
-  readonly run: (request: AgentHarnessRequest, lifecycle: LiveSessionRunLifecycle) => Promise<AgentHarnessResponse>;
+  /** Executes a single turn — typically `ConversationHarnessImpl.run`. */
+  readonly run: (request: ConversationHarnessRequest, lifecycle: LiveSessionRunLifecycle) => Promise<ConversationHarnessResponse>;
   /**
    * Max turns queued behind the active one per conversation. Beyond this, new
    * enqueues are rejected (cancelled) so a stuck active turn cannot retain
@@ -54,8 +54,8 @@ function agentShutdownCancelReason(): Error & { readonly cancelInitiator: "coord
 }
 
 interface QueuedTurn {
-  readonly request: AgentHarnessRequest;
-  readonly resolve: (response: AgentHarnessResponse) => void;
+  readonly request: ConversationHarnessRequest;
+  readonly resolve: (response: ConversationHarnessResponse) => void;
   readonly reject: (error: unknown) => void;
   /** Removes the while-queued abort listener (no-op once detached). */
   detachAbort: () => void;
@@ -171,7 +171,7 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
   }
 
   return {
-    enqueue(conversationId: string, request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
+    enqueue(conversationId: string, request: ConversationHarnessRequest): Promise<ConversationHarnessResponse> {
       if (disposed) {
         return Promise.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
       }
@@ -192,7 +192,7 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
           new AgentResponseCancelledError(`Per-conversation queue is full (max ${maxPending} pending turns).`),
         );
       }
-      const promise = new Promise<AgentHarnessResponse>((resolve, reject) => {
+      const promise = new Promise<ConversationHarnessResponse>((resolve, reject) => {
         const turn: QueuedTurn = { request, resolve, reject, detachAbort: () => {} };
         // While this turn is still queued (not yet active), an abort on its own
         // signal unlinks it and rejects immediately so a disconnected follow-up

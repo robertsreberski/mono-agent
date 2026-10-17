@@ -9,10 +9,10 @@ import {
   type AgentStreamEvent,
 } from "@mono-agent/contracts";
 
-import { assistantTextFromRuntimeEvent, bucketConversationId, createAgentResponder, streamEventFromRuntimeEvent } from "../responder.js";
-import type { AgentHarness, AgentHarnessRequest, AgentHarnessResponse } from "../types.js";
+import { assistantTextFromRuntimeEvent, bucketConversationId, createConversationResponder, streamEventFromRuntimeEvent } from "../responder.js";
+import type { ConversationHarness, ConversationHarnessRequest, ConversationHarnessResponse } from "../harness/contracts.js";
 
-function okResponse(conversationId: string): AgentHarnessResponse {
+function okResponse(conversationId: string): ConversationHarnessResponse {
   return {
     text: "ok",
     metadata: { runId: "r", conversationId, contextSources: [], contextSectionIds: [] },
@@ -27,14 +27,20 @@ function baseRequest(conversationId = "c1") {
   return { conversationId, text: "hi", abortSignal: new AbortController().signal };
 }
 
-describe("createAgentResponder", () => {
+describe("createConversationResponder", () => {
+  it("names the public factory in the exact invalid-harness diagnostic", () => {
+    expect(() => createConversationResponder({ harness: {} as ConversationHarness })).toThrowError(
+      new TypeError("createConversationResponder requires a harness with run()."),
+    );
+  });
+
   it("rejects manual compaction during an active or queued turn and fences concurrent clicks", async () => {
     let finishTurn!: () => void;
     let finishCompact!: () => void;
     const turnGate = new Promise<void>((resolve) => { finishTurn = resolve; });
     const compactGate = new Promise<void>((resolve) => { finishCompact = resolve; });
     const seen: string[] = [];
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       rollover: "daily", rolloverTimezone: "UTC", now: () => new Date("2026-09-08T10:00:00.000Z"),
       harness: {
         run: async (request) => { await turnGate; return okResponse(request.conversationId); },
@@ -60,7 +66,7 @@ describe("createAgentResponder", () => {
     let finishCompact!: () => void;
     const compactGate = new Promise<void>((resolve) => { finishCompact = resolve; });
     const order: string[] = [];
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness: {
         run: async (request) => { order.push("turn"); return okResponse(request.conversationId); },
         compactConversation: async (_id, compactionOptions) => {
@@ -84,7 +90,7 @@ describe("createAgentResponder", () => {
     const cleanup = new Promise<void>((resolve) => { release = resolve; });
     let seen: AbortSignal | undefined;
     const order: string[] = [];
-    const responder = createAgentResponder({ harness: {
+    const responder = createConversationResponder({ harness: {
       run: async (request) => { order.push("turn"); return okResponse(request.conversationId); },
       compactConversation: async (_id, _options, signal) => {
         seen = signal;
@@ -107,7 +113,7 @@ describe("createAgentResponder", () => {
 
   it("positively exposes context import and serializes it onto the responder bucket", async () => {
     const calls: Array<[string, string, string]> = [];
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness: {
         run: async (request) => okResponse(request.conversationId),
         importContext: async (conversationId, request) => {
@@ -123,14 +129,14 @@ describe("createAgentResponder", () => {
       .resolves.toEqual({ status: "appended" });
     expect(calls).toEqual([["telegram:42#2026-09-08", "snapshot", "run:1"]]);
 
-    const legacy = createAgentResponder({ harness: { run: async (request) => okResponse(request.conversationId) } });
+    const legacy = createConversationResponder({ harness: { run: async (request) => okResponse(request.conversationId) } });
     expect(legacy.importContext).toBeUndefined();
     expect(legacy.deliverVerbatim).toBeTypeOf("function");
   });
 
   it("advertises harness ownership and forwards the host-only observer", async () => {
     const seen: Array<{ status: string; runId?: string; reason?: string }> = [];
-    const harness: AgentHarness = {
+    const harness: ConversationHarness = {
       liveInputOwnership: { version: 1 },
       async run(request) {
         request.onLiveInputOwnership?.({ status: "ready", runId: "run-owned" });
@@ -138,7 +144,7 @@ describe("createAgentResponder", () => {
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     expect(responder.liveInputOwnership).toEqual({ version: 1 });
     await responder.respond({
@@ -154,10 +160,10 @@ describe("createAgentResponder", () => {
   it("maps live input onto the exact active daily bucket and closes the mapping after the turn", async () => {
     let start!: () => void;
     const started = new Promise<void>((resolve) => { start = resolve; });
-    let finish!: (response: AgentHarnessResponse) => void;
-    const finished = new Promise<AgentHarnessResponse>((resolve) => { finish = resolve; });
+    let finish!: (response: ConversationHarnessResponse) => void;
+    const finished = new Promise<ConversationHarnessResponse>((resolve) => { finish = resolve; });
     let offered: AgentLiveInputRequest | undefined;
-    const harness: AgentHarness = {
+    const harness: ConversationHarness = {
       async run() {
         start();
         return finished;
@@ -167,7 +173,7 @@ describe("createAgentResponder", () => {
         return { status: "unavailable", reason: "inactive" };
       },
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -197,14 +203,14 @@ describe("createAgentResponder", () => {
   });
 
   it("emits one completed synthetic Steered tool activity only after live input is applied", async () => {
-    let activeRequest: AgentHarnessRequest | undefined;
+    let activeRequest: ConversationHarnessRequest | undefined;
     let markStarted!: () => void;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     let finishRun!: () => void;
     const finished = new Promise<void>((resolve) => { finishRun = resolve; });
     let settle!: (value: { status: "applied"; runId: string }) => void;
     const settled = new Promise<{ status: "applied"; runId: string }>((resolve) => { settle = resolve; });
-    const harness: AgentHarness = {
+    const harness: ConversationHarness = {
       async run(request) {
         activeRequest = request;
         markStarted();
@@ -216,7 +222,7 @@ describe("createAgentResponder", () => {
       },
     };
     const events: AgentStreamEvent[] = [];
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
     const response = responder.respond(baseRequest(), {
       append: async () => {},
       event: async (event) => { events.push(event); },
@@ -270,14 +276,14 @@ describe("createAgentResponder", () => {
   });
 
   it("does not emit steering activity for a requeued live-input offer", async () => {
-    let activeRequest: AgentHarnessRequest | undefined;
+    let activeRequest: ConversationHarnessRequest | undefined;
     let markStarted!: () => void;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     let finishRun!: () => void;
     const finished = new Promise<void>((resolve) => { finishRun = resolve; });
     let settle!: (value: { status: "requeue"; reason: "closed" }) => void;
     const settled = new Promise<{ status: "requeue"; reason: "closed" }>((resolve) => { settle = resolve; });
-    const harness: AgentHarness = {
+    const harness: ConversationHarness = {
       async run(request) {
         activeRequest = request;
         markStarted();
@@ -289,7 +295,7 @@ describe("createAgentResponder", () => {
       },
     };
     const events: AgentStreamEvent[] = [];
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
     const response = responder.respond(baseRequest(), {
       append: async () => {},
       event: async (event) => { events.push(event); },
@@ -313,17 +319,17 @@ describe("createAgentResponder", () => {
 
   it("routes respond() through harness.submit when available (queue-after-turn)", async () => {
     const calls: string[] = [];
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => {
         calls.push("run");
         return okResponse(request.conversationId);
       },
-      submit: async (request: AgentHarnessRequest) => {
+      submit: async (request: ConversationHarnessRequest) => {
         calls.push("submit");
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     await responder.respond(baseRequest(), noopStream());
 
@@ -331,14 +337,14 @@ describe("createAgentResponder", () => {
   });
 
   it("forwards host-only reply and continuation controls without changing the session bucket", async () => {
-    let seen: AgentHarnessRequest | undefined;
-    const harness: AgentHarness = {
+    let seen: ConversationHarnessRequest | undefined;
+    const harness: ConversationHarness = {
       run: async (request) => {
         seen = request;
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -363,8 +369,8 @@ describe("createAgentResponder", () => {
   });
 
   it("forwards speaker identity and collapses an empty preceding list to undefined", async () => {
-    const seen: AgentHarnessRequest[] = [];
-    const responder = createAgentResponder({
+    const seen: ConversationHarnessRequest[] = [];
+    const responder = createConversationResponder({
       harness: {
         run: async (request) => {
           seen.push(request);
@@ -393,8 +399,8 @@ describe("createAgentResponder", () => {
   });
 
   it("preserves an explicit prior-day origin bucket for continuation synthesis", async () => {
-    let seen: AgentHarnessRequest | undefined;
-    const responder = createAgentResponder({
+    let seen: ConversationHarnessRequest | undefined;
+    const responder = createConversationResponder({
       harness: {
         run: async (request) => {
           seen = request;
@@ -423,13 +429,13 @@ describe("createAgentResponder", () => {
 
   it("falls back to harness.run when submit is absent", async () => {
     const calls: string[] = [];
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => {
         calls.push("run");
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     await responder.respond(baseRequest(), noopStream());
 
@@ -438,13 +444,13 @@ describe("createAgentResponder", () => {
 
   it("deliverVerbatim delegates to harness.appendVerbatimTurn under the same bucketed id as respond()", async () => {
     const verbatim: Array<[string, string, string | undefined]> = [];
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
       appendVerbatimTurn: async (conversationId: string, text: string, options) => {
         verbatim.push([conversationId, text, options?.idempotencyKey]);
       },
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -464,15 +470,15 @@ describe("createAgentResponder", () => {
         appended.push(delta);
       },
     };
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => {
         request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "Hel" }] } });
         request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "lo" }] } });
         request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "!" }] } });
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     await responder.respond(baseRequest(), stream);
 
@@ -480,13 +486,13 @@ describe("createAgentResponder", () => {
   });
 
   it("returns response text without trimming trailing formatting", async () => {
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => ({
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => ({
         ...okResponse(request.conversationId),
         text: "ok\n\n",
       }),
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     const response = await responder.respond(baseRequest(), noopStream());
 
@@ -495,13 +501,13 @@ describe("createAgentResponder", () => {
 
   it("cancel(conversationId) delegates to the harness", async () => {
     const cancelled: string[] = [];
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
       cancel: (conversationId: string) => {
         cancelled.push(conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     responder.cancel?.("conv-7");
 
@@ -510,7 +516,7 @@ describe("createAgentResponder", () => {
 
   it("starts a new session under the same rollover bucket after cancelling earlier work", async () => {
     const calls: string[] = [];
-    const harness: AgentHarness = {
+    const harness: ConversationHarness = {
       run: async (request) => okResponse(request.conversationId),
       cancel: (conversationId) => {
         calls.push(`cancel:${conversationId}`);
@@ -519,7 +525,7 @@ describe("createAgentResponder", () => {
         calls.push(`reset:${conversationId}`);
       },
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -540,9 +546,9 @@ describe("createAgentResponder", () => {
     const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
     const started = new Promise<void>((resolve) => { firstStarted = resolve; });
     const submitted: string[] = [];
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
-      submit: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
+      submit: async (request: ConversationHarnessRequest) => {
         submitted.push(request.userMessage);
         if (submitted.length === 1) {
           firstStarted();
@@ -552,7 +558,7 @@ describe("createAgentResponder", () => {
       },
       cancel: () => undefined,
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
     const first = responder.respond({ ...baseRequest(), text: "first" }, noopStream());
     await started;
     const queued = responder.respond({ ...baseRequest(), text: "queued" }, noopStream());
@@ -574,9 +580,9 @@ describe("createAgentResponder", () => {
 
   it("applies a daily bucket to respond() and cancel() with the same key", async () => {
     const seen: { submitted?: string; cancelled?: string } = {};
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
-      submit: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
+      submit: async (request: ConversationHarnessRequest) => {
         seen.submitted = request.conversationId;
         return okResponse(request.conversationId);
       },
@@ -584,7 +590,7 @@ describe("createAgentResponder", () => {
         seen.cancelled = conversationId;
       },
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -607,9 +613,9 @@ describe("createAgentResponder", () => {
     const turnStarted = new Promise<void>((resolve) => { started = resolve; });
     const submitted: string[] = [];
     const cancelled: string[] = [];
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
-      submit: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
+      submit: async (request: ConversationHarnessRequest) => {
         submitted.push(request.conversationId);
         started();
         await releaseTurn;
@@ -617,7 +623,7 @@ describe("createAgentResponder", () => {
       },
       cancel: (conversationId) => { cancelled.push(conversationId); },
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -646,19 +652,19 @@ describe("createAgentResponder", () => {
 
   it("passes a rollover session_boundary only on the first turn of a new bucket", async () => {
     let now = new Date("2026-06-19T23:30:00Z");
-    const seen: AgentHarnessRequest[] = [];
+    const seen: ConversationHarnessRequest[] = [];
     const streamed: AgentStreamEvent[] = [];
-    const harness: AgentHarness = {
-      submit: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      submit: async (request: ConversationHarnessRequest) => {
         seen.push(request);
         if (request.sessionBoundary !== undefined) {
           request.onEvent?.({ ...request.sessionBoundary });
         }
         return okResponse(request.conversationId);
       },
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -707,14 +713,14 @@ describe("createAgentResponder", () => {
     let now = new Date("2026-06-19T23:30:00Z");
     const verbatim: Array<[string, string]> = [];
     const appended: string[] = [];
-    const harness: AgentHarness = {
-      submit: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+    const harness: ConversationHarness = {
+      submit: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
       appendVerbatimTurn: async (conversationId, text) => {
         verbatim.push([conversationId, text]);
       },
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -743,8 +749,8 @@ describe("createAgentResponder", () => {
     const routedHarness = (
       events: readonly Record<string, unknown>[],
       text: string | undefined = "the answer",
-    ): AgentHarness => ({
-      run: async (request: AgentHarnessRequest) => {
+    ): ConversationHarness => ({
+      run: async (request: ConversationHarnessRequest) => {
         for (const event of events) {
           request.onEvent?.(event);
         }
@@ -764,7 +770,7 @@ describe("createAgentResponder", () => {
     ];
 
     it("names the answering route when the run left its configured primary", async () => {
-      const responder = createAgentResponder({ harness: routedHarness(FAILED_OVER) });
+      const responder = createConversationResponder({ harness: routedHarness(FAILED_OVER) });
 
       const response = await responder.respond(baseRequest(), noopStream());
 
@@ -775,7 +781,7 @@ describe("createAgentResponder", () => {
     });
 
     it("reports the first configured route across a multi-hop chain", async () => {
-      const responder = createAgentResponder({
+      const responder = createConversationResponder({
         harness: routedHarness([
           { type: "provider_failover_started", from: "a", to: "b", attemptIndex: 1, reason: "overloaded" },
           { type: "provider_failover_started", from: "b", to: "c", attemptIndex: 2, reason: "provider_auth" },
@@ -791,13 +797,13 @@ describe("createAgentResponder", () => {
     });
 
     it("says nothing on a clean run", async () => {
-      const responder = createAgentResponder({ harness: routedHarness([]) });
+      const responder = createConversationResponder({ harness: routedHarness([]) });
 
       expect((await responder.respond(baseRequest(), noopStream())).text).toBe("the answer");
     });
 
     it("says nothing when a same-model retry recovered on the configured primary", async () => {
-      const responder = createAgentResponder({
+      const responder = createConversationResponder({
         harness: routedHarness([
           {
             type: "provider_retry_started",
@@ -815,7 +821,7 @@ describe("createAgentResponder", () => {
     });
 
     it("omits the cause when the router could not classify it", async () => {
-      const responder = createAgentResponder({
+      const responder = createConversationResponder({
         harness: routedHarness([
           { type: "provider_failover_started", from: "a", to: "b", attemptIndex: 1, reason: null },
           { type: "provider_failover_completed", attemptIndex: 1, model: "b" },
@@ -827,7 +833,7 @@ describe("createAgentResponder", () => {
     });
 
     it("leaves a NOTHING_TO_REPORT turn suppressible", async () => {
-      const responder = createAgentResponder({
+      const responder = createConversationResponder({
         harness: routedHarness(FAILED_OVER, "NOTHING_TO_REPORT"),
       });
 
@@ -841,7 +847,7 @@ describe("createAgentResponder", () => {
 
     it("composes with the rollover notice rather than replacing it", async () => {
       let now = new Date("2026-06-19T23:30:00Z");
-      const responder = createAgentResponder({
+      const responder = createConversationResponder({
         harness: routedHarness(FAILED_OVER),
         rollover: "daily",
         rolloverTimezone: "UTC",
@@ -871,9 +877,9 @@ describe("createAgentResponder", () => {
     const firstNewRelease = new Promise<void>((resolve) => {
       releaseFirstNew = resolve;
     });
-    const seen: AgentHarnessRequest[] = [];
-    const harness: AgentHarness = {
-      submit: async (request: AgentHarnessRequest) => {
+    const seen: ConversationHarnessRequest[] = [];
+    const harness: ConversationHarness = {
+      submit: async (request: ConversationHarnessRequest) => {
         seen.push(request);
         if (seen.length === 2) {
           firstNewStarted();
@@ -881,9 +887,9 @@ describe("createAgentResponder", () => {
         }
         return okResponse(request.conversationId);
       },
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
     };
-    const responder = createAgentResponder({
+    const responder = createConversationResponder({
       harness,
       rollover: "daily",
       rolloverTimezone: "UTC",
@@ -913,14 +919,14 @@ describe("createAgentResponder", () => {
 
   it("does not bucket the conversationId when rollover is off (default)", async () => {
     let submitted = "";
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
-      submit: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
+      submit: async (request: ConversationHarnessRequest) => {
         submitted = request.conversationId;
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     await responder.respond(baseRequest("cron:scan"), noopStream());
 
@@ -933,17 +939,17 @@ describe("createAgentResponder", () => {
       releaseFirst = resolve;
     });
     const started: string[] = [];
-    const harness: AgentHarness = {
-      submit: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      submit: async (request: ConversationHarnessRequest) => {
         started.push(request.conversationId);
         if (started.length === 1) {
           await firstRelease;
         }
         return okResponse(request.conversationId);
       },
-      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+      run: async (request: ConversationHarnessRequest) => okResponse(request.conversationId),
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     const first = responder.respond(baseRequest("thread#2026-06-19"), noopStream());
     await Promise.resolve();
@@ -1797,8 +1803,8 @@ describe("respond() end-to-end event forwarding", () => {
         events.push(event);
       },
     };
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => {
         const emit = request.onEvent!;
         emit({ type: "provider_request_started", sdk: "pi", model: "m1", runtime: "pi", timestamp: 1 });
         emit({ type: "assistant", message: { content: [{ type: "thinking", text: "hmm" }] } });
@@ -1810,7 +1816,7 @@ describe("respond() end-to-end event forwarding", () => {
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     await responder.respond(baseRequest(), stream);
 
@@ -1839,8 +1845,8 @@ describe("respond() end-to-end event forwarding", () => {
         statuses.push(text);
       },
     };
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => {
         const emit = request.onEvent!;
         emit({ type: "assistant", message: { content: [{ type: "text", text: "inspecting glob results", phase: "commentary" }] } });
         emit({ type: "assistant", message: { content: [{ type: "thinking", text: "actual reasoning" }] } });
@@ -1848,7 +1854,7 @@ describe("respond() end-to-end event forwarding", () => {
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     await responder.respond(baseRequest(), stream);
 
@@ -1871,13 +1877,13 @@ describe("respond() end-to-end event forwarding", () => {
         events.push(event);
       },
     };
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => {
         request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "inspecting glob results", phase: "commentary" }] } });
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     await responder.respond(baseRequest(), stream);
 
@@ -1896,8 +1902,8 @@ describe("respond() end-to-end event forwarding", () => {
       },
     };
     let turn = 0;
-    const harness: AgentHarness = {
-      run: async (request: AgentHarnessRequest) => {
+    const harness: ConversationHarness = {
+      run: async (request: ConversationHarnessRequest) => {
         turn += 1;
         if (turn === 1) {
           // Timing recorded but the tool never completes this turn.
@@ -1908,7 +1914,7 @@ describe("respond() end-to-end event forwarding", () => {
         return okResponse(request.conversationId);
       },
     };
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
 
     await responder.respond(baseRequest(), stream);
     await responder.respond(baseRequest(), stream);

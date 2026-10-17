@@ -49,7 +49,7 @@ vi.mock("@mono-agent/turn/host", async (importOriginal) => {
 });
 vi.mock("@mono-agent/conversation", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/conversation")>();
-  return { ...actual, createAgentHarness: (options: unknown) => harnessMock(options as Record<string, unknown>) };
+  return { ...actual, createConversationHarness: (options: unknown) => harnessMock(options as Record<string, unknown>) };
 });
 
 vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
@@ -87,7 +87,7 @@ vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
   attestProcessJobsRootRegistrySnapshot: async (snapshot: unknown) => snapshot,
 }));
 
-const { createConfiguredAgentHarness } = await import("../index.js");
+const { createConfiguredConversationHarness } = await import("../index.js");
 const { createConfiguredAgentResponderForApp } = await import("../configured-agent.js");
 
 const PRIMARY = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
@@ -126,7 +126,7 @@ const RESEARCHER = {
 async function buildSubagents(config: MonoAgentConfig, extra: Record<string, unknown> = {}) {
   harnessMock.mockClear();
   const runtime = { run: vi.fn(async (_prompt: string, _options: Record<string, unknown>) => ({ text: "child answer", events: [] })) };
-  await createConfiguredAgentHarness({ config, runtime: runtime as never, ...extra } as never);
+  await createConfiguredConversationHarness({ config, runtime: runtime as never, ...extra } as never);
   const options = harnessMock.mock.calls[0]?.[0] as { runtimeOptions?: Record<string, unknown> };
   return { runtime, subagents: options.runtimeOptions?.subagents as Record<string, unknown> | undefined };
 }
@@ -516,7 +516,7 @@ describe("in-flight subagent ceiling", () => {
 
 it("G11: configured registry callback through actual harness Session context excludes private canaries from runtime input", async () => {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.session-privacy-"));
-  let harness: ReturnType<typeof import("@mono-agent/conversation")["createAgentHarness"]> | undefined;
+  let harness: ReturnType<typeof import("@mono-agent/conversation")["createConversationHarness"]> | undefined;
   try {
     const registryRoot = resolve(root, "PRIVATE-REGISTRY-CANARY"); const key = "beef".repeat(16);
     const observationPath = resolve(root, "PRIVATE-OBSERVATION-CANARY"); const reportBody = "PRIVATE-REPORT-BODY-CANARY";
@@ -535,7 +535,7 @@ it("G11: configured registry callback through actual harness Session context exc
     await writeFile(file, JSON.stringify(disk));
     const options = harnessMock.mock.calls[0]![0];
     const actual = await vi.importActual<typeof import("@mono-agent/conversation")>("@mono-agent/conversation");
-    harness = actual.createAgentHarness(options as never);
+    harness = actual.createConversationHarness(options as never);
     await harness.run({ conversationId: "one", userMessage: "Describe available recovery without replaying.", abortSignal: new AbortController().signal });
     expect(runtime.run).toHaveBeenCalledOnce();
     const [prompt, runtimeOptions] = runtime.run.mock.calls[0]!;

@@ -1,10 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 
-vi.mock("../history-process-incarnation.js", () => ({
+vi.mock("../history/canonical/process-incarnation.js", () => ({
   readHistoryProcessIncarnation: vi.fn(), historyProcessIncarnationFromJson: vi.fn(),
 }));
-import { readHistoryProcessIncarnation } from "../history-process-incarnation.js";
-import { isProcessAlive } from "../history-process-liveness.js";
+import { readHistoryProcessIncarnation } from "../history/canonical/process-incarnation.js";
+import { isProcessAlive } from "../history/canonical/process-liveness.js";
 
 afterEach(() => vi.restoreAllMocks());
 it.each(["EPERM", "EACCES", "EIO", undefined])("keeps an owner on inconclusive kill(0) error %s", (code) => {
@@ -20,7 +20,7 @@ it("retries unavailable self identity after a monotonic cooldown, coalescing pro
   const identity = { schema: "mono-agent.process-incarnation.v2" as const, bootSessionId: "fictional-boot", processStartId: "123" };
   let now = 1000; vi.spyOn(performance, "now").mockImplementation(() => now);
   vi.mocked(readHistoryProcessIncarnation).mockResolvedValueOnce(undefined).mockResolvedValue(identity);
-  const { currentHistoryProcessIncarnation } = await import("../history-process-liveness.js");
+  const { currentHistoryProcessIncarnation } = await import("../history/canonical/process-liveness.js");
   const first = currentHistoryProcessIncarnation();
   expect(currentHistoryProcessIncarnation()).toBe(first);
   expect(await first).toBeUndefined();
@@ -36,7 +36,7 @@ it("retries unavailable self identity after a monotonic cooldown, coalescing pro
 it("bounds persistent unavailable identity to one probe per 30 seconds", async () => {
   vi.resetModules(); vi.mocked(readHistoryProcessIncarnation).mockReset().mockResolvedValue(undefined);
   let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
-  const { currentHistoryProcessIncarnation } = await import("../history-process-liveness.js");
+  const { currentHistoryProcessIncarnation } = await import("../history/canonical/process-liveness.js");
   expect(await currentHistoryProcessIncarnation()).toBeUndefined();
   for (let index = 0; index < 10; index += 1) expect(await currentHistoryProcessIncarnation()).toBeUndefined();
   expect(readHistoryProcessIncarnation).toHaveBeenCalledTimes(1);

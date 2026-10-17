@@ -2,30 +2,18 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { createDurableHistoryStore } from "../durable-history.js";
-import {
-  acquireToolHistoryWriter,
-  assertToolHistoryWorkerBuildFresh,
-  ToolHistoryReader,
-  ToolHistoryWriter,
-  TOOL_HISTORY_DATABASE,
-  TOOL_HISTORY_DIRECTORY,
-  TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS,
-  TOOL_HISTORY_OWNER_DATABASE,
-  TOOL_HISTORY_PERSISTENCE_CEILING_MS,
-  TOOL_HISTORY_USER_VERSION,
-  toolHistoryRecordId,
-  type ToolHistoryRunBinding,
-  type ToolHistoryWriterOptions,
-} from "../tool-history-store.js";
-import { buildToolHistoryProjection } from "../tool-history-projection.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { acquireToolHistoryWriter, assertToolHistoryWorkerBuildFresh, ToolHistoryWriter } from "../tool-history/writer.js";
+import { ToolHistoryReader } from "../tool-history/reader.js";
+import { TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_PERSISTENCE_CEILING_MS, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRunBinding, type ToolHistoryWriterOptions } from "../tool-history/contracts.js";
+import { buildToolHistoryProjection } from "../tool-history/projection.js";
 
 const tempDirs: string[] = [];
 const children = new Set<ChildProcess>();
@@ -71,24 +59,30 @@ beforeAll(async () => {
     symlink(fileURLToPath(new URL("../../../turn", import.meta.url)), join(fixtureScope, "turn"), "dir"),
   ]);
   const sourceNames = [
+    "history/conversation-id",
     "process-incarnation",
-    "history-process-incarnation",
-    "history-process-liveness",
-    "tool-history-artifacts",
-    "tool-history-busy-wait",
-    "tool-history-persistence-coordinator",
-    "tool-history-store",
-    "tool-history-payload",
-    "tool-history-worker-queue",
-    "tool-history-writer-worker",
+    "history/canonical/process-incarnation",
+    "history/canonical/process-liveness",
+    "tool-history/artifacts",
+    "tool-history/busy-wait",
+    "tool-history/persistence-coordinator",
+    "tool-history/contracts",
+    "tool-history/reader",
+    "tool-history/writer",
+    "tool-history/paths",
+    "tool-history/errors",
+    "tool-history/payload",
+    "tool-history/worker-queue",
+    "tool-history/writer-worker",
   ] as const;
   await Promise.all(sourceNames.map(async (name) => {
     const source = await readFile(new URL(`../${name}.ts`, import.meta.url), "utf8");
     const compiled = transpileModule(source, { compilerOptions }).outputText;
+    await mkdir(dirname(join(sourceFixtureRoot, `${name}.js`)), { recursive: true });
     await writeFile(join(sourceFixtureRoot, `${name}.js`), compiled);
   }));
   await writeFile(join(sourceFixtureRoot, "package.json"), '{"type":"module"}\n');
-  sourceFixtureModuleUrl = pathToFileURL(join(sourceFixtureRoot, "tool-history-store.js")).href;
+  sourceFixtureModuleUrl = pathToFileURL(join(sourceFixtureRoot, "tool-history/writer.js")).href;
 });
 
 afterAll(async () => {

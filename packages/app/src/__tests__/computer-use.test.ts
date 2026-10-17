@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadMonoAgentConfig, type MonoAgentConfig } from "@mono-agent/config";
 import { createToolPolicy } from "@mono-agent/conversation";
 import { parseMcpServers } from "@mono-agent/turn/host/config";
-import { createConfiguredAgentHarness } from "../configured-agent.js";
+import { createConfiguredConversationHarness } from "../configured-agent.js";
 import { validateMonoAgentFolder } from "../doctor.js";
 import { computerUseSection, configuredToolPolicyInput, resolveCuaDriverCommand } from "../computer-use.js";
 
@@ -64,7 +64,7 @@ describe("computer-use MCP integration", () => {
     await writeFile(join(dir, "IDENTITY.md"), "A fictional local automation agent.");
     const unavailable = configWithTools({ ...config.tools, computerUse: { backend: "cua-driver", command: join(dir, "missing") } });
     const warn = vi.fn();
-    const harness = await createConfiguredAgentHarness({
+    const harness = await createConfiguredConversationHarness({
       config: unavailable, cwd: dir,
       runtime: { async run() { throw new Error("No provider call expected during construction"); } },
       onComputerUseWarning: warn,

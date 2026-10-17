@@ -32,22 +32,22 @@ pnpm add @mono-agent/conversation @mono-agent/turn
 
 ```ts
 import {
-  createAgentHarness,
-  createAgentResponder,
+  createConversationHarness,
+  createConversationResponder,
   createToolPolicy,
 } from "@mono-agent/conversation";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
 const model = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
-const harness = createAgentHarness({
+const harness = createConversationHarness({
   identityPath: new URL("./IDENTITY.md", import.meta.url).pathname,
   runtime: createMonoRuntime({ workspace: process.cwd() }),
   model,
   cwd: process.cwd(),
   toolPolicy: createToolPolicy({ allowedTools: ["Read"] }),
 });
-const responder = createAgentResponder({ harness });
+const responder = createConversationResponder({ harness });
 
 const response = await responder.respond(
   {
@@ -73,7 +73,7 @@ user text. With `skillDisclosure: "index"`, it lists names and descriptions
 without filesystem paths and directs the agent to load applicable instructions
 through `ReadSkill`; full disclosure does not emit guidance for that tool.
 
-`createAgentResponder()` exposes `offerLiveInput()` for an ordinary active turn.
+`createConversationResponder()` exposes `offerLiveInput()` for an ordinary active turn.
 Its bounded mailbox delivers follow-ups only when the selected backend supports
 native steering. Native queue acceptance and exact owned-operation transcript
 consumption are separate. Applied human follow-ups and ProcessJob wakes are
@@ -433,15 +433,17 @@ The harness is the request-to-runtime composition boundary:
 
 | Source area | Responsibility |
 | --- | --- |
-| `src/harness.ts` / `src/harness/` | Turn orchestration, validation, runtime invocation, persistence, and cleanup |
+| `src/harness/index.ts` / `src/harness/` | Turn orchestration, validation, runtime invocation, persistence, and cleanup |
 | `src/context/` / `src/skills/` | Deterministic context assembly and selected-skill loading |
 | `src/tool-policy/` | Tool and MCP normalization with a fail-closed default |
 | `src/responder.ts` | Structural request/stream adapter, applied-live-input activity correlation, cancellation, and session rollover |
-| `src/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, native acceptance/consumption callbacks, safe failover replay, and uncertain settlement |
-| `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
-| `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
-| `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
-| `src/durable-model-switch-contract.ts` / `src/model-switch-billing.ts` / `src/model-switch-payloads.ts` | Private additive switch wire, artifact and summary-admission storage; not managed-history migration or enabled host switching |
+| `src/sessions/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, native acceptance/consumption callbacks, safe failover replay, and uncertain settlement |
+| `src/sessions/queue.ts` / `src/sessions/warm-store.ts` | Queue-after-turn coordination and provider-session lifecycle |
+| `src/history/memory-store.ts` / `src/history/canonical/store.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
+| `src/tool-history/` | Shared protocol/identity contracts, authoritative reader, process-shared writer client, SQLite worker, incremental persistence, and cold projection |
+| `src/history/contracts.ts` / `src/history/conversation-id.ts` | Storage/preparation contracts and shared daily-bucket syntax, without harness or rollover policy |
+| `src/history/canonical/` | Canonical transaction coordinator, pure codec, acquired claims, private file checks, native-root enrollment, and conservative process liveness |
+| `src/history/model-switch/contract.ts` / `src/history/model-switch/billing.ts` / `src/history/model-switch/payloads.ts` | Private additive switch wire, artifact and summary-admission storage; not managed-history migration or enabled host switching |
 
 ### Internal model-switch storage foundation
 
@@ -742,8 +744,8 @@ permission to erase oversized evidence or cold-fallback after switch intent.
 
 | API | Use it for |
 | --- | --- |
-| `createAgentHarness()` | Compose context, runtime, history, memory, policy, recording, and session behavior for one host |
-| `createAgentResponder()` | Expose a harness through the shared `AgentResponder` request/stream contract |
+| `createConversationHarness()` | Compose context, runtime, history, memory, policy, recording, and session behavior for one host |
+| `createConversationResponder()` | Expose a harness through the shared `AgentResponder` request/stream contract |
 | `createLiveInputMailbox()` | Build the provider-facing mailbox used to settle active-turn follow-ups without loss |
 | `createToolPolicy()` / `failClosedToolPolicy()` | Declare exactly which built-in and MCP tools may reach the runtime |
 | `createDurableHistoryStore()` | Persist canonical conversation history, coordinate provider-session retirement, and conditionally expose atomic v1 context import when a complete two-message batch fits |
@@ -774,18 +776,18 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/conversation`**
 
 ```text
-AgentHarness
-AgentHarnessError
-AgentHarnessFailureError
-AgentHarnessOptions
-AgentHarnessRequest
-AgentHarnessResponse
-AgentHarnessRuntimeOptionsExtension
-AgentHarnessRuntimeOptionsInput
-AgentHarnessToolHistoryOptions
-AgentHarnessTurnHistoryEnricher
 BuiltAgentContext
 CONVERSATION_HISTORY_VERSION_MAX_BYTES
+ConversationHarness
+ConversationHarnessError
+ConversationHarnessFailureError
+ConversationHarnessOptions
+ConversationHarnessRequest
+ConversationHarnessResponse
+ConversationHarnessRuntimeOptionsExtension
+ConversationHarnessRuntimeOptionsInput
+ConversationHarnessToolHistoryOptions
+ConversationHarnessTurnHistoryEnricher
 ConversationHistoryExclusiveTurn
 ConversationHistoryStore
 ConversationHistoryTurnInspection
@@ -818,8 +820,8 @@ acquireToolHistoryWriter
 bindProcessJobLiveInput
 classifyContinuationMcpServerTransport
 composeHostTurnEnvelope
-createAgentHarness
-createAgentResponder
+createConversationHarness
+createConversationResponder
 createDurableHistoryStore
 createInMemoryHistoryStore
 createLiveInputMailbox

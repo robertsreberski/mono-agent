@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore } from "@mono-agent/conversation";
+import { createConversationHarness, createConversationResponder, createInMemoryHistoryStore } from "@mono-agent/conversation";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { createTelegramBot } from "@mono-agent/channel-telegram";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,7 +21,7 @@ describe("Telegram native reply history", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const runtimeCalls: Array<{ readonly prompt: string; readonly options: RuntimeRunOptions }> = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       model: {
         provider: "openai-codex",
@@ -39,7 +39,7 @@ describe("Telegram native reply history", () => {
     const controller = createTelegramBot({
       botToken: "test-token",
       allowAllChats: true,
-      responder: createAgentResponder({ harness }),
+      responder: createConversationResponder({ harness }),
       reactions: { working: false, done: false, error: false },
       stream: { editDebounceMs: 0 },
     });

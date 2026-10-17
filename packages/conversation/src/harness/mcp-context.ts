@@ -10,14 +10,8 @@ import { isValidMcpServerName } from "@mono-agent/turn/host/config";
 
 import type { HistoryMessage } from "../context/index.js";
 import { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "../mcp-server-transport.js";
-import type {
-  AgentHarnessContinuationClaimCapability,
-  AgentHarnessContinuationContextOptions,
-  AgentHarnessMcpRequestContextOptions,
-  AgentHarnessProgressCapability,
-  AgentHarnessRequest,
-} from "../types.js";
-import { AgentHarnessError } from "./error.js";
+import type { ConversationHarnessContinuationClaimCapability, ConversationHarnessContinuationContextOptions, ConversationHarnessMcpRequestContextOptions, ConversationHarnessProgressCapability, ConversationHarnessRequest } from "./contracts.js";
+import { ConversationHarnessError } from "./error.js";
 import {
   fileIdentity,
   removeOwnedDirectory,
@@ -52,7 +46,7 @@ const MCP_CONTINUATION_RESERVED_HEADERS = {
 } as const;
 
 export async function injectMcpRequestContext(input: {
-  readonly options: AgentHarnessMcpRequestContextOptions | undefined;
+  readonly options: ConversationHarnessMcpRequestContextOptions | undefined;
   readonly mcpServers: unknown;
   readonly conversationId: string;
   readonly runId: string;
@@ -61,7 +55,7 @@ export async function injectMcpRequestContext(input: {
   readonly allowedAttachmentIdentities: readonly AttachmentFileIdentity[];
 }): Promise<{
   readonly mcpServers: Record<string, unknown>;
-  readonly progressCapability?: AgentHarnessProgressCapability;
+  readonly progressCapability?: ConversationHarnessProgressCapability;
   readonly cleanup: () => Promise<void>;
 } | undefined> {
   if (input.options === undefined || input.options.serverNames.length === 0 || !isRecord(input.mcpServers)) {
@@ -76,7 +70,7 @@ export async function injectMcpRequestContext(input: {
     return undefined;
   }
   if (!SAFE_RUN_OUTPUT_SEGMENT.test(input.runId)) {
-    throw new AgentHarnessError(
+    throw new ConversationHarnessError(
       "invalid_run_id",
       "The run id is not safe for request-scoped MCP output isolation.",
       { runId: input.runId },
@@ -93,7 +87,7 @@ export async function injectMcpRequestContext(input: {
     }
     const existing = await lstat(runOutputDir);
     if (!existing.isDirectory() || existing.isSymbolicLink()) {
-      throw new AgentHarnessError(
+      throw new ConversationHarnessError(
         "unsafe_run_output",
         "The request-scoped MCP output path is not a real directory.",
         { runOutputDir },
@@ -105,7 +99,7 @@ export async function injectMcpRequestContext(input: {
   const cleanup = async (): Promise<void> => {
     await removeOwnedDirectory(runOutputDir, runOutputIdentity);
   };
-  let progressCapability: AgentHarnessProgressCapability | undefined;
+  let progressCapability: ConversationHarnessProgressCapability | undefined;
   try {
     progressCapability = input.options.progressCapabilityIssuer === undefined
       ? undefined
@@ -150,14 +144,14 @@ export async function injectMcpRequestContext(input: {
 }
 
 export async function injectMcpContinuationContext(input: {
-  readonly options: AgentHarnessContinuationContextOptions | undefined;
+  readonly options: ConversationHarnessContinuationContextOptions | undefined;
   readonly mcpServers: unknown;
   readonly conversationId: string;
-  readonly replyTo: AgentHarnessRequest["replyTo"];
+  readonly replyTo: ConversationHarnessRequest["replyTo"];
   readonly runId: string;
 }): Promise<{
   readonly mcpServers: Record<string, unknown>;
-  readonly capabilities: readonly AgentHarnessContinuationClaimCapability[];
+  readonly capabilities: readonly ConversationHarnessContinuationClaimCapability[];
 } | undefined> {
   if (input.options === undefined || input.options.serverNames.length === 0 || !isRecord(input.mcpServers)) {
     return undefined;
@@ -169,7 +163,7 @@ export async function injectMcpContinuationContext(input: {
     return undefined;
   }
 
-  const capabilities: AgentHarnessContinuationClaimCapability[] = [];
+  const capabilities: ConversationHarnessContinuationClaimCapability[] = [];
   const mcpServers: Record<string, unknown> = { ...input.mcpServers };
   try {
     for (const [serverName, rawSpec] of entries) {
@@ -214,8 +208,8 @@ export async function injectMcpContinuationContext(input: {
   return { mcpServers, capabilities };
 }
 
-function unsupportedContinuationServer(serverName: string): AgentHarnessError {
-  return new AgentHarnessError(
+function unsupportedContinuationServer(serverName: string): ConversationHarnessError {
+  return new ConversationHarnessError(
     "unsupported_continuation_server",
     `Continuation server ${serverName} must use stdio or loopback HTTP.`,
     { serverName },
@@ -223,11 +217,11 @@ function unsupportedContinuationServer(serverName: string): AgentHarnessError {
 }
 
 function validateContinuationCapability(
-  capability: AgentHarnessContinuationClaimCapability,
+  capability: ConversationHarnessContinuationClaimCapability,
   serverName: string,
 ): void {
   if (typeof capability.url !== "string" || !isLoopbackUrl(capability.url)) {
-    throw new AgentHarnessError(
+    throw new ConversationHarnessError(
       "invalid_continuation_capability",
       "Continuation claim capabilities must use a loopback HTTP URL.",
       { serverName },
@@ -236,14 +230,14 @@ function validateContinuationCapability(
   if (typeof capability.token !== "string" || capability.token.trim().length === 0
     || typeof capability.fingerprint !== "string" || capability.fingerprint.trim().length === 0
     || !(["reply", "notify_if_actionable", "silent", "capture"] as const).includes(capability.mode)) {
-    throw new AgentHarnessError(
+    throw new ConversationHarnessError(
       "invalid_continuation_capability",
       "Continuation claim capabilities must include a token, fingerprint, and supported mode.",
       { serverName },
     );
   }
   if (typeof capability.release !== "function") {
-    throw new AgentHarnessError(
+    throw new ConversationHarnessError(
       "invalid_continuation_capability",
       "Continuation claim capabilities must provide release().",
       { serverName },
@@ -253,7 +247,7 @@ function validateContinuationCapability(
     || typeof capability.requiresOriginContext !== "function"
     || typeof capability.activateOriginContext !== "function"
     || typeof capability.abandonOriginContext !== "function") {
-    throw new AgentHarnessError(
+    throw new ConversationHarnessError(
       "invalid_continuation_capability",
       "Continuation claim capabilities must provide durable origin-context finalization.",
       { serverName },
@@ -262,8 +256,8 @@ function validateContinuationCapability(
 }
 
 export async function continuationCapabilitiesRequiringOriginContext(
-  capabilities: readonly AgentHarnessContinuationClaimCapability[],
-): Promise<AgentHarnessContinuationClaimCapability[]> {
+  capabilities: readonly ConversationHarnessContinuationClaimCapability[],
+): Promise<ConversationHarnessContinuationClaimCapability[]> {
   const required = await Promise.all(capabilities.map(async (capability) => ({
     capability,
     required: await capability.requiresOriginContext(),
@@ -272,7 +266,7 @@ export async function continuationCapabilitiesRequiringOriginContext(
 }
 
 export async function activateContinuationOriginContexts(
-  capabilities: readonly AgentHarnessContinuationClaimCapability[],
+  capabilities: readonly ConversationHarnessContinuationClaimCapability[],
 ): Promise<void> {
   await Promise.all(capabilities.map(async (capability) => {
     await capability.activateOriginContext();
@@ -280,7 +274,7 @@ export async function activateContinuationOriginContexts(
 }
 
 export async function finalizeContinuationOriginContexts(
-  capabilities: readonly AgentHarnessContinuationClaimCapability[],
+  capabilities: readonly ConversationHarnessContinuationClaimCapability[],
   snapshot: AgentContinuationOriginContext,
 ): Promise<void> {
   // One origin run may expose more than one continuation-capable MCP server.
@@ -397,7 +391,7 @@ function isLoopbackUrl(value: string): boolean {
 
 function cloneHttpMcpServerWithContinuationHeaders(
   spec: Record<string, unknown>,
-  capability: AgentHarnessContinuationClaimCapability | undefined,
+  capability: ConversationHarnessContinuationClaimCapability | undefined,
 ): Record<string, unknown> {
   const reserved = new Set<string>(Object.values(MCP_CONTINUATION_RESERVED_HEADERS));
   const configuredHeaders = isRecord(spec.headers)

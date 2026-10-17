@@ -11,7 +11,7 @@ import {
   runWithinToolHistoryBusyDeadline,
   TOOL_HISTORY_BUSY_RETRY_DELAYS_MS,
   type ToolHistoryBusyWaitClock,
-} from "../tool-history-busy-wait.js";
+} from "../tool-history/busy-wait.js";
 
 function busyError(): Error {
   return Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });

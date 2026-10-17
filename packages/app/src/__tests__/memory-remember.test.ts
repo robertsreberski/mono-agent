@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { appendGraphBatch, createBujoMemoryStore, dailyFilePath } from "@mono-agent/memory/bujo";
 import { MemoryRetrievalService } from "../memory-retrieval.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -64,7 +64,7 @@ async function callRemember(
   }
 }
 
-function request(): AgentHarnessRuntimeOptionsInput {
+function request(): ConversationHarnessRuntimeOptionsInput {
   return {
     request: {
       conversationId: "web:thread-one",

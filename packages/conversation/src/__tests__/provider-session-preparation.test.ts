@@ -4,10 +4,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { validateFrozenHandoffBudget } from "../durable-model-switch-contract.js";
+import { validateFrozenHandoffBudget } from "../history/model-switch/contract.js";
 function frozenBudget(f: Awaited<ReturnType<typeof fixture>>) { validateFrozenHandoffBudget(f.budget); return f.budget; }
-import { createPendingInitialInput } from "../durable-turn-contract.js";
-import { createDurableHistoryStore } from "../durable-history.js";
+import { createPendingInitialInput } from "../history/pending-turn/contract.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { fixture, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 
 const roots: string[] = [];

@@ -6,7 +6,7 @@ import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createInMemoryHistoryStore } from "@mono-agent/conversation";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { describe, expect, it } from "vitest";
-import { createConfiguredAgentHarness } from "../configured-agent.js";
+import { createConfiguredConversationHarness } from "../configured-agent.js";
 import { ensureSharedMemoryRetrieval, type MemoryControllerPort } from "../app-controller-memory.js";
 import { formatMemoryProfile, type LabelRecallStore } from "../memory-guidance.js";
 import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
@@ -318,7 +318,7 @@ it("flows config-only arms through configured harness and shared-controller wiri
       const calls: RuntimeRunOptions[] = [];
       const events: unknown[] = [];
       const history = createInMemoryHistoryStore();
-      const harness = await createConfiguredAgentHarness({ config, cwd, memory: f.store, historyStore: history,
+      const harness = await createConfiguredConversationHarness({ config, cwd, memory: f.store, historyStore: history,
         runtime: { async run(_prompt, options) { calls.push(options); return { text: "Fictional response.", providerSessionId: "fictional-session" }; } },
       });
       try {
@@ -352,7 +352,7 @@ it("preserves shared warm profile receipts across isolated cron", async () => {
     const config = { ...base, runtime: { ...base.runtime, session: { ...base.runtime.session, isolateProactive: true } },
       memory: { ...base.memory!, profile: { enabled: true } } };
     const calls: RuntimeRunOptions[] = [];
-    const harness = await createConfiguredAgentHarness({ config, cwd, memory: f.store, historyStore: createInMemoryHistoryStore(),
+    const harness = await createConfiguredConversationHarness({ config, cwd, memory: f.store, historyStore: createInMemoryHistoryStore(),
       runtime: { async run(_prompt, options) { calls.push(options); return { text: "Fictional response.",
         providerSessionId: options.sessionKeepAlive ? "shared-fictional-session" : "isolated-fictional-session" }; } },
     });
@@ -387,7 +387,7 @@ it.each([false, true])("uses attachment evidence only for the current query with
     await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional test assistant.");
     const f = storeFixture();
     const calls: RuntimeRunOptions[] = [];
-    const harness = await createConfiguredAgentHarness({ config: configFor(cwd, enabled), cwd, memory: f.store,
+    const harness = await createConfiguredConversationHarness({ config: configFor(cwd, enabled), cwd, memory: f.store,
       runtime: { async run(_prompt, options) { calls.push(options); return { text: "Fictional response.", providerSessionId: "fictional-session" }; } },
     });
     try {
@@ -413,7 +413,7 @@ it("skips memory on host continuation synthesis without losing warm profile rece
     await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional test assistant.");
     const f = storeFixture();
     const calls: RuntimeRunOptions[] = [];
-    const harness = await createConfiguredAgentHarness({ config: configFor(cwd, true), cwd, memory: f.store, historyStore: createInMemoryHistoryStore(),
+    const harness = await createConfiguredConversationHarness({ config: configFor(cwd, true), cwd, memory: f.store, historyStore: createInMemoryHistoryStore(),
       runtime: { async run(_prompt, options) { calls.push(options); return { text: "Fictional response.",
         providerSessionId: options.sessionKeepAlive ? "shared-fictional-session" : "synthesis-fictional-session" }; } },
     });

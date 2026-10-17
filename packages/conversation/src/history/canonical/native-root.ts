@@ -2,7 +2,7 @@ import { lstat, readdir, rm } from "node:fs/promises";
 import { assertIdentity, isOwned, publishAtomic, readOwned, syncDir } from "@mono-agent/turn/engine/owned-fs.js";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
-import { boundedSwitchBytes, switchDigest, switchHash, switchKeys, switchObject } from "./durable-model-switch-contract.js";
+import { boundedSwitchBytes, switchDigest, switchHash, switchKeys, switchObject } from "../model-switch/contract.js";
 import type { RuntimeNativeJournalAuthority } from "@mono-agent/turn/host/types";
 
 export const NATIVE_HISTORY_ROOT_FILE = ".native-history-root.json";

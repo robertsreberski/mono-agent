@@ -8,10 +8,10 @@ import { JsonlSessionRepo } from "@mono-agent/turn/engine";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/turn/host/types";
-import type { DurableHistoryStoreOptions } from "../durable-history.js";
-import type { ConversationHistoryTurnInspection } from "../types.js";
-import { PendingTurnPayloadStore } from "../durable-turn-payloads.js";
-import { createPendingTurnPayload, createPendingInitialInput, createPendingLiveInput } from "../durable-turn-contract.js";
+import type { DurableHistoryStoreOptions } from "../history/canonical/store.js";
+import type { ConversationHistoryTurnInspection } from "../history/contracts.js";
+import { PendingTurnPayloadStore } from "../history/pending-turn/payloads.js";
+import { createPendingTurnPayload, createPendingInitialInput, createPendingLiveInput } from "../history/pending-turn/contract.js";
 const fault = vi.hoisted(() => ({ unlinkFence: false, beforePendingSync: undefined as ((path: string) => Promise<void>) | undefined }));
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
@@ -27,8 +27,8 @@ vi.mock("node:fs/promises", async (original) => {
     return await actual.rm(...args);
   } };
 });
-const { createDurableHistoryStore } = await import("../durable-history.js");
-const { createAgentHarness } = await import("../harness.js");
+const { createDurableHistoryStore } = await import("../history/canonical/store.js");
+const { createConversationHarness } = await import("../harness/index.js");
 const dirs: string[] = [], timestamp = "2026-01-01T00:00:00.000Z", modelKey = "openai:fictional-model", bucket = "fictional-bucket";
 function evidence(request: ConversationHistoryTurnInspection, outcome: "completed" | "failed" | "cancelled" | "interrupted" = "completed"): RuntimeSessionTurnReconciliationResult {
   const { descriptor } = request;
@@ -175,7 +175,7 @@ it.each(["failed", "aborted"] as const)("recovers a legacy completed compaction 
   let calls = 0;
   faux.setResponses([() => { calls += 1; return fauxAssistantMessage([fauxText("Fictional next answer.")]); }]);
   const identityPath = join(f.root, "IDENTITY.md"); await writeFile(identityPath, "You are a fictional fixture.");
-  const harness = createAgentHarness({ identityPath, cwd: f.root, historyStore: f.store,
+  const harness = createConversationHarness({ identityPath, cwd: f.root, historyStore: f.store,
     model: parseMonoRuntimeModelReference("faux:next-turn"), runtime, sessionsRoot,
     session: { mode: "continuous", idleTimeoutMs: 60_000 },
     runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", compaction: { enabled: false } } });
@@ -274,7 +274,7 @@ it.each([
   let calls = 0;
   faux.setResponses([() => { calls += 1; return fauxAssistantMessage([fauxText("Fictional next answer.")]); }]);
   const identityPath = join(f.root, "IDENTITY.md"); await writeFile(identityPath, "You are a fictional fixture.");
-  const harness = createAgentHarness({ identityPath, cwd: f.root, historyStore: f.store,
+  const harness = createConversationHarness({ identityPath, cwd: f.root, historyStore: f.store,
     model: parseMonoRuntimeModelReference("faux:next-turn"), runtime, sessionsRoot,
     session: { mode: "continuous", idleTimeoutMs: 60_000 },
     runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", compaction: { enabled: false } } });
@@ -673,7 +673,7 @@ it("keeps native accepted acknowledgement behind durable live payload and fence 
     return { ...result, consumedInputIds: request.expectedInputs.map((input) => input.id),
       inputs: request.expectedInputs.map((input) => ({ ...input, messageId: `fictional-envelope:${input.id}`, complete: true })) };
   });
-  const harness = createAgentHarness({ identityPath, cwd: workspace, model: parseMonoRuntimeModelReference(modelKey),
+  const harness = createConversationHarness({ identityPath, cwd: workspace, model: parseMonoRuntimeModelReference(modelKey),
     historyStore: f.store, createRunId: () => "fictional-turn", sessionsRoot: join(workspace, "pi"),
     session: { mode: "continuous", idleTimeoutMs: 60_000 }, runtime: {
       sessionTurnReconciliation: "v1", async reconcileSessionTurn() { return { status: "absent" }; },

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
-  createAgentHarness,
+  createConversationHarness,
   createDurableHistoryStore,
 } from "../packages/conversation/dist/index.js";
 
@@ -52,7 +52,7 @@ try {
   }
   await recovered.append.commit();
 
-  const harness = createAgentHarness({
+  const harness = createConversationHarness({
     identityPath,
     cwd: root,
     model: { provider: "fixture", model: "fixture", reference: "fixture:fixture" },

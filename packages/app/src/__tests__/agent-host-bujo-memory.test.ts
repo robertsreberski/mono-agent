@@ -19,7 +19,7 @@ import { createBujoMemoryStore, inspectCompletedTurnIntake } from "@mono-agent/m
 import type { RunSummary } from "@mono-agent/observability";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
+import { createConfiguredConversationHarness, createConfiguredMemory } from "../index.js";
 import { createConfiguredCurationLlm } from "../configured-agent.js";
 
 const coordinatorHome = vi.hoisted(() => ({ path: "" }));
@@ -70,7 +70,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
 
     const fakeRuntime = { async run() { return { text: "ok" }; } };
-    await expect(createConfiguredAgentHarness({
+    await expect(createConfiguredConversationHarness({
       config: bujoConfig({ dir, identityPath, memoryRoot: join(dir, "bujo-memory") }),
       runtime: fakeRuntime as never,
     })).rejects.toThrow(/requires memory\.embeddings and memory\.llm/i);

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixture, ready, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
-import { createAgentHarness } from "../harness.js";
+import { createConversationHarness } from "../harness/index.js";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 const roots: string[] = [];
@@ -21,7 +21,7 @@ it("manual compactConversation on a real v5 conversation fails guarded dispatch 
   const transport = vi.spyOn(faux.provider, "streamSimple"), runtime = createMonoRuntime({ workspace: f.base, resolvePiApiKey: async () => undefined });
   const run = runtime.run.bind(runtime); runtime.run = (prompt, options) => run(prompt, { ...options, piResolvedModel: faux.getModel("B"), piResolvedModels: models });
   const invalidation = vi.spyOn(runtime, "invalidateSession"), retirement = vi.spyOn(runtime, "retireDurableSession"), execution = vi.spyOn(runtime, "run");
-  const harness = createAgentHarness({ identityPath, runtime, model: { provider: "faux", model: "B", reference: "faux:B" }, historyStore: f.store,
+  const harness = createConversationHarness({ identityPath, runtime, model: { provider: "faux", model: "B", reference: "faux:B" }, historyStore: f.store,
     sessionsRoot: join(f.base, "native"), session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true }, runtimeOptions: { allowedTools: [], disallowedTools: [] } });
   try {
     await expect(harness.compactConversation!(bucket)).rejects.toMatchObject({ failureKind: "compaction_failed" });

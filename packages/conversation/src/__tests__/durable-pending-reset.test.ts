@@ -4,8 +4,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile, lstat, rename } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { PendingTurnPayloadStore, pendingCoordinates } from "../durable-turn-payloads.js";
-import { createPendingTurnPayload, serializeDurableTurnFence } from "../durable-turn-contract.js";
+import { PendingTurnPayloadStore, pendingCoordinates } from "../history/pending-turn/payloads.js";
+import { createPendingTurnPayload, serializeDurableTurnFence } from "../history/pending-turn/contract.js";
 
 const fault = vi.hoisted(() => ({ removePath: "", syncPath: "" }));
 vi.mock("node:fs/promises", async (original) => {
@@ -25,7 +25,7 @@ vi.mock("node:fs/promises", async (original) => {
     },
   };
 });
-const { createDurableHistoryStore } = await import("../durable-history.js");
+const { createDurableHistoryStore } = await import("../history/canonical/store.js");
 const dirs: string[] = [];
 const hash = "a".repeat(64), modelKey = "openai:fictional-model";
 async function fixture() {

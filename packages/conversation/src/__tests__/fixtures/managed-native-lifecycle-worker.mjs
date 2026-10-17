@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { openStore, bucket as defaultBucket } from "./managed-native-switch-fixture.mjs";
-import { switchConversationKey } from "../../../dist/durable-model-switch-contract.js";
+import { switchConversationKey } from "../../../dist/history/model-switch/contract.js";
 const [base, stop] = process.argv.slice(2);
 const phase = async (name) => { if (name === stop) { process.send?.({ name }); await new Promise(() => { setInterval(() => {}, 1_000); }); } };
 const { operation, bucket = defaultBucket, winner = "fictional-retention-winner", recoveryBuckets, nativeHandles = [] } = JSON.parse(await readFile(join(base, "lifecycle-proof.json"), "utf8"));

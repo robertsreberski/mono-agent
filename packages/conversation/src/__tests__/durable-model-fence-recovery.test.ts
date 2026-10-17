@@ -14,7 +14,7 @@ vi.mock("node:fs/promises", async (original) => {
     throw new Error("injected fence cleanup failure");
   } };
 });
-const { createDurableHistoryStore } = await import("../durable-history.js");
+const { createDurableHistoryStore } = await import("../history/canonical/store.js");
 const dirs: string[] = [];
 afterEach(async () => { fault.path = ""; await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 

@@ -1,6 +1,6 @@
 import type {
-  AgentHarnessRuntimeOptionsExtension,
-  AgentHarnessRuntimeOptionsInput,
+  ConversationHarnessRuntimeOptionsExtension,
+  ConversationHarnessRuntimeOptionsInput,
 } from "@mono-agent/conversation";
 import { mergeSandboxPolicies, protectSandboxRoots } from "@mono-agent/turn/host/sandbox";
 import { type SandboxPolicy } from "@mono-agent/turn/host/types";
@@ -11,8 +11,8 @@ import {
 } from "./sessions.js";
 
 export type RuntimeOptionsExtension = (
-  input: AgentHarnessRuntimeOptionsInput,
-) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  input: ConversationHarnessRuntimeOptionsInput,
+) => ConversationHarnessRuntimeOptionsExtension | Promise<ConversationHarnessRuntimeOptionsExtension>;
 
 export interface RuntimeOptionsCompositionOptions {
   /**
@@ -91,10 +91,10 @@ export function composeRuntimeOptionExtensions(
       throw failures[0]!.reason;
     }
 
-    const results = settled.map((result) => (result as PromiseFulfilledResult<AgentHarnessRuntimeOptionsExtension>).value);
+    const results = settled.map((result) => (result as PromiseFulfilledResult<ConversationHarnessRuntimeOptionsExtension>).value);
     const runtimeOptions: Record<string, unknown> = {};
     for (const result of results) mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
-    let toolPolicyOverride: AgentHarnessRuntimeOptionsExtension["toolPolicyOverride"];
+    let toolPolicyOverride: ConversationHarnessRuntimeOptionsExtension["toolPolicyOverride"];
     for (const result of results) {
       if (result.toolPolicyOverride !== undefined) toolPolicyOverride = result.toolPolicyOverride;
     }
@@ -137,7 +137,7 @@ export function composeRuntimeOptionExtensions(
 
 function mergeRuntimeOptions(
   target: Record<string, unknown>,
-  next: AgentHarnessRuntimeOptionsExtension["runtimeOptions"],
+  next: ConversationHarnessRuntimeOptionsExtension["runtimeOptions"],
 ): void {
   if (next === undefined) return;
   for (const [key, value] of Object.entries(next)) {

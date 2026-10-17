@@ -7,10 +7,10 @@ import { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type MonoRuntimeLike } from "@mono-agent/turn/host/types";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
-import { MonoAgentHarness } from "../harness.js";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { switchConversationKey } from "../durable-model-switch-contract.js";
-import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
+import { ConversationHarnessImpl } from "../harness/index.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { switchConversationKey } from "../history/model-switch/contract.js";
+import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
 
 const closes: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
@@ -38,16 +38,16 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
     runtime.prepareNativeDispatch = (prompt, options) => { prepareCalls.push({ id, options }); return prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models }); };
     runtimes.push(runtime); return runtime;
   };
-  const makeHarness = (model = "A", enabled = false, options: Partial<AgentHarnessOptions> = {}, inheritModel = false) => {
+  const makeHarness = (model = "A", enabled = false, options: Partial<ConversationHarnessOptions> = {}, inheritModel = false) => {
     const primary = runtimeFor(model);
-    const harness = new MonoAgentHarness({ runtime: primary, identityPath, cwd: base, sessionsRoot: nativeRoot, historyStore: store, session: { mode: "continuous", idleTimeoutMs: 600000 },
+    const harness = new ConversationHarnessImpl({ runtime: primary, identityPath, cwd: base, sessionsRoot: nativeRoot, historyStore: store, session: { mode: "continuous", idleTimeoutMs: 600000 },
       model: { provider: "faux", model, reference: `faux:${model}` }, runtimeForModel: (ref) => runtimeFor(ref.model), runtimeOptionsForRequest: async ({ request }) => ({ runtimeOptions: typeof (request.metadata?.web as {model?: string})?.model === "string" ? { model: parseMonoRuntimeModelReference((request.metadata!.web as {model: string}).model) } : {} }), runtimeOptions: { piResolvedModels: models, allowedTools: [], compaction: { enabled: false } }, ...options },
     { ...(enabled ? { nativeModelSwitch: { native, sessionsRoot: nativeRoot,
-        deliveryId: (request: AgentHarnessRequest) => request.metadata?.delivery as string | undefined,
-        ...(inheritModel ? { implicitModel: async (_request: AgentHarnessRequest, key: string) => ({ model: parseMonoRuntimeModelReference(key), runtimeOptions: {} }) } : {}) } } : {}) });
+        deliveryId: (request: ConversationHarnessRequest) => request.metadata?.delivery as string | undefined,
+        ...(inheritModel ? { implicitModel: async (_request: ConversationHarnessRequest, key: string) => ({ model: parseMonoRuntimeModelReference(key), runtimeOptions: {} }) } : {}) } } : {}) });
     closes.push(() => harness.dispose()); return harness;
   };
-  const request = (delivery: string, message = "Fictional current input", extra: Partial<AgentHarnessRequest> = {}) => ({ conversationId: "fictional", userMessage: message,
+  const request = (delivery: string, message = "Fictional current input", extra: Partial<ConversationHarnessRequest> = {}) => ({ conversationId: "fictional", userMessage: message,
     abortSignal: new AbortController().signal, ...extra, metadata: { delivery, ...extra.metadata } });
   const canonicalBytes = async (id = "fictional") => await readFile(join(historyRoot, `${switchConversationKey(id)}.history.json`));
   const canonical = async (id = "fictional") => JSON.parse(await readFile(join(historyRoot, `${switchConversationKey(id)}.history.json`), "utf8"));
@@ -476,7 +476,7 @@ it("keyless native inheritance overrides a late sticky extension without copying
   f.faux.setResponses([text(summary), text("Fictional switched B answer")]);
   await f.makeHarness("B", true).run(f.request("fictional-switch-id"));
   const before = await f.canonical(), cleanup = vi.fn(async () => {});
-  const extension = vi.fn(async (_input: Parameters<NonNullable<AgentHarnessOptions["runtimeOptionsForRequest"]>>[0]) => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("faux:A"), effort: "xhigh", context1MModels: { "faux:A": true } }, cleanup }));
+  const extension = vi.fn(async (_input: Parameters<NonNullable<ConversationHarnessOptions["runtimeOptionsForRequest"]>>[0]) => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("faux:A"), effort: "xhigh", context1MModels: { "faux:A": true } }, cleanup }));
   const wake = { ...f.request("not-a-host-delivery"), metadata: { source: "web", web: { model: "faux:A", context1M: true } } };
   f.faux.setResponses([text("Fictional inherited B answer")]);
   const result = await f.makeHarness("A", true, { runtimeOptionsForRequest: extension }, true).run(wake);

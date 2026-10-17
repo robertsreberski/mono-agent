@@ -1,5 +1,5 @@
 import { lstat } from "node:fs/promises";
-import { PendingTurnPayloadStore, pendingCoordinates } from "../../../dist/durable-turn-payloads.js";
+import { PendingTurnPayloadStore, pendingCoordinates } from "../../../dist/history/pending-turn/payloads.js";
 const root = process.argv[2];
 const store = new PendingTurnPayloadStore(root, await lstat(root));
 const owner = { assertOwned: async () => {}, reserve: async () => {} };

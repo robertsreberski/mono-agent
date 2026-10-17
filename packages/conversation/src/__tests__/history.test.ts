@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createInMemoryHistoryStore } from "../history.js";
+import { createInMemoryHistoryStore } from "../history/memory-store.js";
 
 describe("InMemoryConversationHistoryStore", () => {
   it("preserves the explicit public maxMessages zero semantics", async () => {

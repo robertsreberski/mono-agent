@@ -11,12 +11,12 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createChannelUserCancelReason } from "@mono-agent/contracts";
-import { createDurableHistoryStore, type AgentHarness } from "@mono-agent/conversation";
+import { createDurableHistoryStore, type ConversationHarness } from "@mono-agent/conversation";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type MonoRuntimeLike, type RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import { createConfiguredAgentHarness } from "../index.js";
+import { createConfiguredConversationHarness } from "../index.js";
 
 const tempDirs: string[] = [];
 
@@ -191,11 +191,11 @@ describe("configured durable session history", () => {
       },
     ]);
 
-    let firstHarness: AgentHarness | undefined;
-    let resumedHarness: AgentHarness | undefined;
+    let firstHarness: ConversationHarness | undefined;
+    let resumedHarness: ConversationHarness | undefined;
     try {
       const firstRuntime = observeRuntime(createMonoRuntime());
-      firstHarness = await createConfiguredAgentHarness({
+      firstHarness = await createConfiguredConversationHarness({
         config,
         cwd: dir,
         runtime: firstRuntime.runtime,
@@ -282,7 +282,7 @@ describe("configured durable session history", () => {
       firstHarness = undefined;
 
       const resumedRuntime = observeRuntime(createMonoRuntime());
-      resumedHarness = await createConfiguredAgentHarness({
+      resumedHarness = await createConfiguredConversationHarness({
         config,
         cwd: dir,
         runtime: resumedRuntime.runtime,
@@ -339,7 +339,7 @@ describe("configured durable session history", () => {
       resumedHarness = undefined;
 
       const afterFailureRuntime = observeRuntime(createMonoRuntime());
-      resumedHarness = await createConfiguredAgentHarness({
+      resumedHarness = await createConfiguredConversationHarness({
         config,
         cwd: dir,
         runtime: afterFailureRuntime.runtime,

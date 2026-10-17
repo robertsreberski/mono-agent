@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { continueToolHistoryOperationTail } from "../tool-history-worker-queue.js";
+import { continueToolHistoryOperationTail } from "../tool-history/worker-queue.js";
 
 describe("tool-history worker operation queue", () => {
   it("fulfills the tail after a response failure so later operations still run", async () => {

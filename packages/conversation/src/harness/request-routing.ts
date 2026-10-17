@@ -2,8 +2,8 @@ import { deriveRunSource } from "@mono-agent/observability";
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 
-import { sessionModelKey } from "../session-runtime.js";
-import type { AgentHarnessRequest } from "../types.js";
+import { sessionModelKey } from "../sessions/model-key.js";
+import type { ConversationHarnessRequest } from "./contracts.js";
 import { isRecord } from "./value-utils.js";
 
 type ModelOverrideOrigin = "webhook" | "cron" | "web" | "tui" | "telegram" | "slack";
@@ -32,7 +32,7 @@ export function createDefaultRunId(): string {
  * unexpected shape (e.g. `cron` not itself a record) just falls through.
  */
 export function runSourceFromRequest(
-  request: Pick<AgentHarnessRequest, "conversationId" | "metadata">,
+  request: Pick<ConversationHarnessRequest, "conversationId" | "metadata">,
 ): { readonly source?: string; readonly sourceDetail?: string } {
   const metadata = request.metadata;
   if (isRecord(metadata)) {
@@ -68,7 +68,7 @@ export function runSourceFromRequest(
  * scheduler when it fires a job). Used to scope the proactive-session-isolation
  * opt-in to scheduled runs without touching interactive turns.
  */
-export function isCronRequest(request: AgentHarnessRequest): boolean {
+export function isCronRequest(request: ConversationHarnessRequest): boolean {
   return isRecord(request.metadata) && request.metadata.cron !== undefined;
 }
 
@@ -77,7 +77,7 @@ export function isCronRequest(request: AgentHarnessRequest): boolean {
  * its metadata precedence must match agent-app readOverride so the declared
  * binding and executed model agree.
  */
-export function requestSessionModel(request: AgentHarnessRequest, defaultModel: RuntimeModelReference): RuntimeModelReference {
+export function requestSessionModel(request: ConversationHarnessRequest, defaultModel: RuntimeModelReference): RuntimeModelReference {
   const declaration = modelOverrideDeclaration(request.metadata);
   const model = declaration?.value.model;
   if (typeof model !== "string" || model.trim().length === 0) return parseMonoRuntimeModelReference(sessionModelKey(defaultModel));
@@ -89,11 +89,11 @@ export function requestSessionModel(request: AgentHarnessRequest, defaultModel: 
   }
 }
 
-export function requestOverridesModel(request: AgentHarnessRequest, defaultModel: RuntimeModelReference): boolean {
+export function requestOverridesModel(request: ConversationHarnessRequest, defaultModel: RuntimeModelReference): boolean {
   return modelReferenceKey(requestSessionModel(request, defaultModel)) !== sessionModelKey(defaultModel);
 }
 
-function modelOverrideDeclaration(metadata: AgentHarnessRequest["metadata"]): ModelOverrideDeclaration | undefined {
+function modelOverrideDeclaration(metadata: ConversationHarnessRequest["metadata"]): ModelOverrideDeclaration | undefined {
   if (!isRecord(metadata)) return undefined;
   return isRecord(metadata.webhook)
     ? { origin: "webhook", value: metadata.webhook }

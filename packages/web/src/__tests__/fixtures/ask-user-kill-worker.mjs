@@ -7,7 +7,7 @@ import { createTurnBinding } from "../../../../turn/src/engine/turn-evidence.js"
 import { JsonlSessionRepo } from "../../../../turn/src/engine/session-store.js";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
-import { createAgentHarness, createDurableHistoryStore } from "../../../../conversation/dist/index.js";
+import { createConversationHarness, createDurableHistoryStore } from "../../../../conversation/dist/index.js";
 import { startInteractionBridge } from "../../../../app/dist/interaction-bridge.js";
 import { WebStore } from "../../../dist/store.js";
 
@@ -66,7 +66,7 @@ if (mode === "produce") {
   const recovery = { history, message, activeAsks: bridge.pendingAskCount(), oldAsk: bridge.getAsk(coordinates.interactionId) ?? null, staleReply, providers, tools, inspections };
   if (mode === "continue") {
     await writeFile(join(root, "IDENTITY.md"), "Fictional stable instructions.");
-    const harness = createAgentHarness({ identityPath: join(root, "IDENTITY.md"), cwd: root, historyStore: host,
+    const harness = createConversationHarness({ identityPath: join(root, "IDENTITY.md"), cwd: root, historyStore: host,
       createRunId: () => "fictional-explicit-next", model: parseMonoRuntimeModelReference("openai:fictional-model"),
       runtime: { async run() { providers++; return { text: "Fictional new reply." }; } } });
     const next = web.beginTurn({ threadId: coordinates.threadId, text: "Fictional explicit new answer.", attachmentIds: [] });

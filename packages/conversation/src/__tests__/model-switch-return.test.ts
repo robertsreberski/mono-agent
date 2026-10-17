@@ -11,8 +11,8 @@ import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type RuntimeNativePreparationStorage } from "@mono-agent/turn/host/types";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { fixture, ready, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
-import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
-import { createDurableHistoryStore } from "../durable-history.js";
+import { ModelSwitchPayloadStore } from "../history/model-switch/payloads.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch } from "../harness/model-switch-preparation.js";
 import type { PreparedHarnessRuntime, HarnessPreparedBinding } from "../harness/runtime-execution.js";
 

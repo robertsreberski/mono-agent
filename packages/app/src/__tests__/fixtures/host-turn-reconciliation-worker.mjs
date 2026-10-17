@@ -3,7 +3,7 @@ import { readFile, writeFile, readdir, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxThinking, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { createConfiguredAgentHarness, createConfiguredAgentRuntime } from "@mono-agent/app";
+import { createConfiguredConversationHarness, createConfiguredAgentRuntime } from "@mono-agent/app";
 import { createDurableHistoryStore } from "@mono-agent/conversation";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
@@ -50,7 +50,7 @@ process.once("message", async ({ mode, crash }) => {
       return;
     }
     const base = createMonoRuntime({ workspace: root });
-    harness = await createConfiguredAgentHarness({ cwd: root, config, sandboxEngine,
+    harness = await createConfiguredConversationHarness({ cwd: root, config, sandboxEngine,
       runtime: { ...base, async reconcileSessionTurn(request) { nativeInspections += 1; return base.reconcileSessionTurn(request); }, async run(prompt, options) {
         runtimeCalls += 1;
         if (liveCase && options.liveInput) {

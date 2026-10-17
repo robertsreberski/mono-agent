@@ -16,6 +16,6 @@ fs.open = async (...args) => {
   return handle;
 };
 syncBuiltinESMExports();
-const { createDurableHistoryStore } = await import("../../../dist/durable-history.js");
+const { createDurableHistoryStore } = await import("../../../dist/history/canonical/store.js");
 await createDurableHistoryStore({ root }).beginProviderSessionTurn(owner, "fictional-interrupted-write", { modelKey: "openai:fictional-model" });
 throw new Error("Writer did not reach the requested coordination barrier");

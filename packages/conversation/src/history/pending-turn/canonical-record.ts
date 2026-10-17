@@ -1,7 +1,7 @@
-import { assertSessionModelKey } from "./session-runtime.js";
-import type { HistoryMessage } from "./context/index.js";
-import { validateDurableTurnReceipt } from "./durable-turn-contract.js";
-import type { DurableTurnReceipt } from "./durable-turn-contract.js";
+import { assertSessionModelKey } from "../../sessions/model-key.js";
+import type { HistoryMessage } from "../../context/index.js";
+import { validateDurableTurnReceipt } from "./contract.js";
+import type { DurableTurnReceipt } from "./contract.js";
 
 /** Canonical P2b replacement; old v1/v2 readers reject the version explicitly. */
 export interface TurnHistoryV3 {

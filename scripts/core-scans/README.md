@@ -77,7 +77,7 @@ below. There are no package-wide, all-types, or public-barrel ignores.
 | `packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs` | By-path proof tool; regeneration workflow in [PROJECTION-GOLDENS.md](../../packages/turn/src/engine/__tests__/fixtures/PROJECTION-GOLDENS.md). Non-production entry. |
 | `packages/turn/src/host/sandbox/srt-embed-runner.mjs` | Worker loaded with `new URL` in `src/host/sandbox/index.ts`; production entry. |
 | `packages/turn/package.json`: `@vscode/ripgrep` | String-resolved dependency in `src/tools/shared/ripgrep.js` via `createRequire().resolve`; exact dependency exception, not an unused package. |
-| `packages/conversation/src/tool-history-writer-worker.ts` | Worker loaded with `new URL` in `src/tool-history-store.ts`; production entry. |
+| `packages/conversation/src/tool-history/writer-worker.ts` | Worker loaded with `new URL` in `src/tool-history/writer.ts`; production entry. |
 | `packages/conversation/src/__tests__/fixtures/canonical-v5-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; non-production entry, with only declaration exports exempted (they describe JS, not independent runtime values). |
 | `packages/conversation/src/__tests__/fixtures/managed-native-switch-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; same narrow treatment. |
 | `packages/app/scripts/smoke-subagent-stop.mjs` | By-path proof program; non-production entry. Purpose and invocation in the [app smoke index](../../packages/app/scripts/README.md). |

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { AgentHarnessFailureError, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/conversation";
+import { ConversationHarnessFailureError, type ConversationHarness, type ConversationHarnessRequest, type ConversationHistoryStore } from "@mono-agent/conversation";
 import type { AgentRequestBase, AgentResponder, AgentStreamEvent } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
@@ -165,7 +165,7 @@ it("Web retry/reopen never authorize a new billed generation", async () => {
   vi.spyOn(f.native, "buildHandoff").mockReturnValue({ status: "budget_failure", reason: "fixture-forced-summary" });
   const request = { ...f.request("fictional-persisted-user-message", "faux:B"), text: "Fictional blocked input must never replay" };
   f.faux.setResponses([reply("Fictional invalid structured summary")]);
-  await expect(h.respond(request, { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  await expect(h.respond(request, { append: async () => {} })).rejects.toBeInstanceOf(ConversationHarnessFailureError);
   const inspect = async () => { const owner = await f.getStore().beginProviderSessionPreparation!(request.conversationId, "fictional-inspection"); try { return (await owner.read()).pending!; } finally { await owner.abort(); } };
   const first = await inspect(); expect(first.phase).toBe("pending"); expect(first.authorizationGeneration).toBe(0); expect(first.attempts).toHaveLength(2);
   const calls = f.transport.mock.calls.length;
@@ -280,7 +280,7 @@ it("conversation gate serializes siblings and mutations before claims, drains ty
   const store: ConversationHistoryStore = { load: async () => [], append: async () => {}, drainPendingProviderSessionTurns: drain };
   const a = serializeNativeSwitchHarness({ run: firstRun }, "fictional-canonical-root", store);
   const b = serializeNativeSwitchHarness({ run: nextRun, resetConversation: reset }, "fictional-canonical-root", store);
-  const request: AgentHarnessRequest = { conversationId: "fictional", userMessage: "Fictional input", abortSignal: new AbortController().signal };
+  const request: ConversationHarnessRequest = { conversationId: "fictional", userMessage: "Fictional input", abortSignal: new AbortController().signal };
   const first = a.run(request); await started; const next = b.run(request), mutation = b.resetConversation!("fictional"); await Promise.resolve();
   expect(nextRun).not.toHaveBeenCalled(); expect(reset).not.toHaveBeenCalled(); release();
   expect((await first).failure?.kind).toBe("native_switch_busy"); await next; await mutation;
@@ -293,7 +293,7 @@ it("queued cancellation/disposal settles while a foreign conversation gate remai
   const store: ConversationHistoryStore = { load: async () => [], append: async () => {} };
   const active = serializeNativeSwitchHarness({ run: async () => { entered(); await gate; return result; } }, "fictional-queue-root", store);
   const run = vi.fn(async () => result), queued = serializeNativeSwitchHarness({ run }, "fictional-queue-root", store);
-  const request: AgentHarnessRequest = { conversationId: "fictional", userMessage: "Fictional input", abortSignal: new AbortController().signal };
+  const request: ConversationHarnessRequest = { conversationId: "fictional", userMessage: "Fictional input", abortSignal: new AbortController().signal };
   const first = active.run(request); await started; const next = queued.run(request); const rejected = expect(next).rejects.toMatchObject({ name: "AgentResponseCancelledError" });
   queued.cancel!("fictional", "Fictional cancellation"); await rejected; await queued.dispose!(); expect(run).not.toHaveBeenCalled();
   release(); await first;
@@ -301,7 +301,7 @@ it("queued cancellation/disposal settles while a foreign conversation gate remai
 });
 
 it("identity seam requires a host-stamped Web source and excludes background authorization", () => {
-  const request: AgentHarnessRequest = { conversationId: "web:fictional-thread", userMessage: "Fictional input", abortSignal: new AbortController().signal, metadata: { source: "web", web: { turnId: "fictional-turn", userMessageId: "fictional-message" }, tui: { requestId: randomUUID() } } };
+  const request: ConversationHarnessRequest = { conversationId: "web:fictional-thread", userMessage: "Fictional input", abortSignal: new AbortController().signal, metadata: { source: "web", web: { turnId: "fictional-turn", userMessageId: "fictional-message" }, tui: { requestId: randomUUID() } } };
   expect(persistedWebDeliveryId(request)).toBe("fictional-message");
   expect(persistedWebDeliveryId({ ...request, metadata: { web: { turnId: "fictional-turn" }, tui: { requestId: randomUUID() } } })).toBeUndefined();
   for (const metadata of [{ cron: {} }, { webhook: {} }, { processJob: {} }, { source: "tui" }, { source: "acp" }, { source: undefined }]) expect(persistedWebDeliveryId({ ...request, metadata: { ...request.metadata, ...metadata } })).toBeUndefined();
@@ -488,7 +488,7 @@ it("post-switch host publication failure keeps the current journal and never del
     return preparation;
   });
   f.faux.setResponses([reply("Fictional uncommitted answer")]);
-  await expect(h.respond(f.request("fictional-publication-failure", "faux:B"), { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  await expect(h.respond(f.request("fictional-publication-failure", "faux:B"), { append: async () => {} })).rejects.toBeInstanceOf(ConversationHarnessFailureError);
   expect(f.transport).toHaveBeenCalledTimes(calls + 1);
   for (const callback of destructive) expect(callback).not.toHaveBeenCalled();
   expect(await nativeFiles(f.nativeRoot)).toEqual(current);
@@ -563,8 +563,8 @@ it("guarded pending unknown billing is never bypassed by typed capture capacity"
   const { f, h } = await switchedToB(), before = await f.record();
   const prep = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-unknown-billing-owner");
   const source = await prep.read(); if (source.source.status !== "supported") throw new Error("Expected source");
-  const captured = await prep.captureNativeEvidence(), { createModelSwitchState } = await import("../../../conversation/dist/model-switch-billing.js");
-  const { switchDigest } = await import("../../../conversation/dist/durable-model-switch-contract.js");
+  const captured = await prep.captureNativeEvidence(), { createModelSwitchState } = await import("../../../conversation/dist/history/model-switch/billing.js");
+  const { switchDigest } = await import("../../../conversation/dist/history/model-switch/contract.js");
   const budget = { policy: "mono-handoff-v1" as const, contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const state = createModelSwitchState({ ownerKey: source.source.ownerKey, historyBucket: "web:fictional-thread",
     sourceCanonicalDigest: source.source.sourceCanonicalDigest, sourceRevision: source.source.sourceRevision, sourceEpoch: source.source.sourceEpoch, source: captured.source,
@@ -576,7 +576,7 @@ it("guarded pending unknown billing is never bypassed by typed capture capacity"
   const { NativeEvidenceCapacityError } = await import("@mono-agent/turn/ai");
   vi.spyOn(f.native, "captureEvidence").mockRejectedValueOnce(new NativeEvidenceCapacityError());
   const deletion = vi.spyOn(f.native, "deleteJournals"), calls = f.transport.mock.calls.length;
-  await expect(h.respond(f.request(await persistedId(f.root), "faux:A"), { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  await expect(h.respond(f.request(await persistedId(f.root), "faux:A"), { append: async () => {} })).rejects.toBeInstanceOf(ConversationHarnessFailureError);
   expect(f.transport).toHaveBeenCalledTimes(calls); expect(deletion).not.toHaveBeenCalled(); expect(await f.record()).toEqual(before);
   const inspection = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-unknown-inspection");
   try { const pending = (await inspection.read()).pending!; expect(pending.attempts).toHaveLength(1); expect(pending.attempts[0]?.outcome).toBe("started"); }
@@ -602,7 +602,7 @@ it("damaged pending billing refuses reset and redelivery without paid work until
   const f = await fixture(true); await f.seed(); const h = await f.make(true), request = f.request("fictional-billed-message", "faux:B");
   vi.spyOn(f.native, "buildHandoff").mockReturnValue({ status: "budget_failure", reason: "fixture-forced-summary" });
   f.faux.setResponses([reply("Fictional invalid outgoing summary"), reply("Fictional invalid incoming summary")]);
-  await expect(h.respond(request, { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  await expect(h.respond(request, { append: async () => {} })).rejects.toBeInstanceOf(ConversationHarnessFailureError);
   const directory = join(f.root, "history", ".model-switches"), names = await readdir(directory), fenceName = names.find((name) => name.endsWith(".fence.json"))!;
   const fence = JSON.parse(await readFile(join(directory, fenceName), "utf8")), damagedName = `${fence.conversationKey}.${fence.switchId}.${fence.payload.generation}.state.json`;
   const original = JSON.parse(await readFile(join(directory, damagedName), "utf8"));
@@ -617,7 +617,7 @@ it("damaged pending billing refuses reset and redelivery without paid work until
   const before = await snapshot(), calls = f.transport.mock.calls.length;
   await expect(f.getStore().reset!(request.conversationId)).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(damagedName) });
   expect(await snapshot()).toEqual(before);
-  for (const next of [request, f.request("fictional-new-message", "faux:B")]) await expect(h.respond(next, { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  for (const next of [request, f.request("fictional-new-message", "faux:B")]) await expect(h.respond(next, { append: async () => {} })).rejects.toBeInstanceOf(ConversationHarnessFailureError);
   expect(f.transport).toHaveBeenCalledTimes(calls); expect(await snapshot()).toEqual(before);
   await f.dispose(h); // All fixture writers are stopped before operator repair.
   for (const name of names) if (name.startsWith(`${fence.conversationKey}.`)) await rename(join(directory, name), join(directory, `${name}.damaged-1`));

@@ -1,4 +1,4 @@
-import { HISTORY_PROCESS_INCARNATION_SCHEMA, readProcessIncarnation, type ProcessIncarnation } from "./process-incarnation.js";
+import { HISTORY_PROCESS_INCARNATION_SCHEMA, readProcessIncarnation, type ProcessIncarnation } from "../../process-incarnation.js";
 
 export interface HistoryProcessIncarnation extends Omit<ProcessIncarnation, "schema"> {
   readonly schema: typeof HISTORY_PROCESS_INCARNATION_SCHEMA;

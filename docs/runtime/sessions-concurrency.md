@@ -603,9 +603,9 @@ the conversation id, the previous outcome, and the elapsed milliseconds; the
 warning never changes the wait. Resetting the conversation after a failed
 publication discards the unpublished account and clears the barrier once the
 reset itself succeeds. Hosts may override the window with
-`AgentHarnessOptions.session.terminalRecoverySettlementMs`, a positive safe integer,
+`ConversationHarnessOptions.session.terminalRecoverySettlementMs`, a positive safe integer,
 or the top-level `terminalRecoverySettlementMs` option of
-`createConfiguredAgentHarness`. Tests may use a longer window; this is not a
+`createConfiguredConversationHarness`. Tests may use a longer window; this is not a
 configuration-file setting.
 
 The ordinary successful-turn boundary remains atomic. Once success claims that

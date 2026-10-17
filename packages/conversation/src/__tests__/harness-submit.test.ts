@@ -6,12 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../types.js";
+import { createConversationHarness } from "../index.js";
+import type { ConversationHarnessSessionOptions } from "../harness/contracts.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
-const continuous: AgentHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
+const continuous: ConversationHarnessSessionOptions = { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true };
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -53,7 +53,7 @@ async function waitForCalls(calls: readonly unknown[], count: number): Promise<v
   }
 }
 
-describe("AgentHarness.submit (queue-after-turn)", () => {
+describe("ConversationHarness.submit (queue-after-turn)", () => {
   it("serializes same-conversation turns so the second resumes the first's provider session", async () => {
     const identityPath = await identityFixture();
     let releaseFirst: (() => void) | undefined;
@@ -66,7 +66,7 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
       }
       return { text: `answer-${call}`, providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session: continuous });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, session: continuous });
 
     const p1 = harness.submit?.(request("conv-1", "first"));
     const p2 = harness.submit?.(request("conv-1", "second"));
@@ -97,7 +97,7 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
       concurrent -= 1;
       return { text: "ok", providerSessionId: "ps" };
     });
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -125,7 +125,7 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
   it("falls back to run() (no queue) when not in continuous mode", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,

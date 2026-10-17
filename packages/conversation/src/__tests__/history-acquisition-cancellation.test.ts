@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { createDurableHistoryStore } from "../durable-history.js";
-import { MonoAgentHarness } from "../harness.js";
-import { createInMemoryHistoryStore } from "../history.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { ConversationHarnessImpl } from "../harness/index.js";
+import { createInMemoryHistoryStore } from "../history/memory-store.js";
 
 vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof fs>() }));
 type Identity = { dev: number; ino: number };
@@ -16,9 +16,11 @@ type Owner = { release(): Promise<void> };
 type Internals = {
   ensureRoot(): Promise<Identity>;
   acquireRootTransaction(identity: Identity, signal?: AbortSignal): Promise<() => Promise<void>>;
+  claims: {
   acquireLogicalConversation(id: string, tryOnly?: boolean, signal?: AbortSignal): Promise<Owner>;
   acquireExactConversationClaim(id: string, tryOnly?: boolean, signal?: AbortSignal): Promise<Owner>;
   createActiveMarker(...args: unknown[]): Promise<unknown>;
+  };
 };
 const roots: string[] = [], children: ChildProcess[] = [], id = "fictional-cancel-owner";
 const hash = createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");
@@ -68,22 +70,22 @@ it.each(["turn", "preparation", "exclusive"])("pre-aborted %s does not create hi
   expect(f.inspect).not.toHaveBeenCalled(); expect(f.retire).not.toHaveBeenCalled();
 });
 it("cancelled tail preserves its predecessor, then a later tryOnly owner is not busy", async () => {
-  const f = await fixture(), holder = await f.internal.acquireLogicalConversation(id), controller = new AbortController();
-  const waiter = f.internal.acquireLogicalConversation(id, false, controller.signal);
+  const f = await fixture(), holder = await f.internal.claims.acquireLogicalConversation(id), controller = new AbortController();
+  const waiter = f.internal.claims.acquireLogicalConversation(id, false, controller.signal);
   controller.abort(); controller.abort();
   await expect(waiter).rejects.toMatchObject({ name: "AbortError" });
-  await expect(f.internal.acquireLogicalConversation(id, true)).rejects.toMatchObject({ code: "ERR_HARNESS_WRITER_BUSY", retryable: true });
+  await expect(f.internal.claims.acquireLogicalConversation(id, true)).rejects.toMatchObject({ code: "ERR_HARNESS_WRITER_BUSY", retryable: true });
   await holder.release();
   // Queue-tail promises settle asynchronously after the predecessor releases.
   await new Promise((resolve) => setImmediate(resolve));
-  const successor = await f.internal.acquireLogicalConversation(id, true); await successor.release();
+  const successor = await f.internal.claims.acquireLogicalConversation(id, true); await successor.release();
   expect(await claims(f.root)).toBe(0);
 });
 it("a cancelled middle waiter never lets its successor bypass the live predecessor", async () => {
-  const f = await fixture(), holder = await f.internal.acquireLogicalConversation(id), controller = new AbortController();
-  const middle = f.internal.acquireLogicalConversation(id, false, controller.signal);
+  const f = await fixture(), holder = await f.internal.claims.acquireLogicalConversation(id), controller = new AbortController();
+  const middle = f.internal.claims.acquireLogicalConversation(id, false, controller.signal);
   let acquired = false;
-  const successor = f.internal.acquireLogicalConversation(id).then((owner) => { acquired = true; return owner; });
+  const successor = f.internal.claims.acquireLogicalConversation(id).then((owner) => { acquired = true; return owner; });
   controller.abort(); await expect(middle).rejects.toMatchObject({ name: "AbortError" });
   await new Promise((resolve) => setImmediate(resolve)); expect(acquired).toBe(false);
   await holder.release(); await (await successor).release(); expect(await claims(f.root)).toBe(0);
@@ -107,7 +109,7 @@ for (const mode of ["root", "logical", "exact", "legacy", "shard"]) {
       vi.spyOn(process, "kill").mockImplementation((pid, signal) => { if (pid === holder.pid && signal === 0) seen.resolve(); return kill(pid, signal); });
       polled = seen.promise;
     } else polled = observeBusySqlite();
-    waiting = mode === "exact" ? f.internal.acquireExactConversationClaim(id, false, controller.signal)
+    waiting = mode === "exact" ? f.internal.claims.acquireExactConversationClaim(id, false, controller.signal)
       : f.store.beginProviderSessionPreparation(id, "fictional-wait", controller.signal);
     const rejected = expect(waiting).rejects.toMatchObject({ name: "AbortError" });
     await polled; controller.abort(); await rejected;
@@ -133,7 +135,7 @@ it("releases a newly committed claim when abort races its commit", async () => {
 it("releases an acquired root lock when abort races its return, before creating a marker", async () => {
   const f = await fixture(), controller = new AbortController(), acquire = f.internal.acquireRootTransaction.bind(f.internal);
   vi.spyOn(f.internal, "acquireRootTransaction").mockImplementation(async (...args) => { const release = await acquire(...args); controller.abort(); return release; });
-  const marker = vi.spyOn(f.internal, "createActiveMarker");
+  const marker = vi.spyOn(f.internal.claims, "createActiveMarker");
   await expect(f.store.beginProviderSessionPreparation(id, "fictional-race", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   expect(marker).not.toHaveBeenCalled(); expect(await claims(f.root)).toBe(0);
   const next = await f.store.beginProviderSessionPreparation(id, "fictional-next"); await next.abort();
@@ -174,7 +176,7 @@ it.each(["provider", "exclusive", "compaction"])("harness %s acquisition cancell
   if (mode === "compaction") await f.store.append(id, [{ role: "user", content: "Fictional seed" }]);
   const before = await f.store.load(id), holder = await f.store.beginProviderSessionPreparation(id, "fictional-holder"), controller = new AbortController();
   const run = vi.fn(async () => ({ text: "Fictional response" })), syncSession = vi.fn(async () => true);
-  const harness = new MonoAgentHarness({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
+  const harness = new ConversationHarnessImpl({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
     historyStore: f.store, session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
     ...(mode === "exclusive" ? {} : { sessionsRoot: join(f.root, "..", "native") }),
     runtime: { run, syncSession, refreshSession: async () => {}, disposeSession: async () => true, disposeAllSessions: async () => {} } });
@@ -203,8 +205,8 @@ it("closes an acquired SQLite connection when cancellation races BEGIN IMMEDIATE
 });
 
 it("finishes started marker publication and allows uncancellable cleanup after a late abort", async () => {
-  const f = await fixture(), controller = new AbortController(), create = f.internal.createActiveMarker.bind(f.internal);
-  vi.spyOn(f.internal, "createActiveMarker").mockImplementation(async (...args) => { const marker = await create(...args); controller.abort(); return marker; });
+  const f = await fixture(), controller = new AbortController(), create = f.internal.claims.createActiveMarker.bind(f.internal.claims);
+  vi.spyOn(f.internal.claims, "createActiveMarker").mockImplementation(async (...args) => { const marker = await create(...args); controller.abort(); return marker; });
   const owner = await f.store.beginProviderSessionPreparation(id, "fictional-published", controller.signal);
   expect(controller.signal.aborted).toBe(true); expect((await markers(f.root)).length).toBe(1);
   await owner.abort(); expect(await claims(f.root)).toBe(0); expect(await markers(f.root)).toEqual([]);
@@ -217,7 +219,7 @@ it.each(["provider", "exclusive"])("cancellation during attachment preflight bef
   vi.spyOn(fs, "mkdir").mockImplementation(async (...args) => { if (args[0] === attachmentsDir) controller.abort(); return mkdir(...args); });
   const append = vi.spyOn(f.store, "prepareAppend"), provider = vi.spyOn(f.store, "beginProviderSessionTurn"), exclusive = vi.spyOn(f.store.contextImport!, "beginExclusiveTurn");
   const run = vi.fn(async () => ({ text: "Fictional response" }));
-  const harness = new MonoAgentHarness({ identityPath, attachmentsDir, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
+  const harness = new ConversationHarnessImpl({ identityPath, attachmentsDir, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
     historyStore: f.store, session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
     ...(mode === "provider" ? { sessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
   let settled = false;
@@ -249,7 +251,7 @@ it.each(["provider", "synchronous-provider", "exclusive", "uncoordinated"])("an 
     vi.spyOn(f.store.contextImport!, "beginExclusiveTurn").mockImplementation(async (...args) => { const turn = await begin(...args); controller.abort(); return turn; });
   }
   const run = vi.fn(async () => { controller.abort(); return { text: "Fictional late response" }; });
-  const harness = new MonoAgentHarness({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" }, historyStore: store,
+  const harness = new ConversationHarnessImpl({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" }, historyStore: store,
     session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode.endsWith("provider") ? { sessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
   try {
     expect((await harness.run({ conversationId: id, userMessage: "Fictional admitted input", abortSignal: controller.signal })).failure?.kind).toBe("cancelled");
@@ -275,7 +277,7 @@ it("an uncoordinated store cancelled inside load before provider start keeps its
   const store = createInMemoryHistoryStore({ maxMessages: 64 }), before = [{ role: "user" as const, content: "Fictional earlier input" }]; await store.append(id, before);
   const load = store.load.bind(store), run = vi.fn(async () => ({ text: "Must not execute" }));
   vi.spyOn(store, "load").mockImplementationOnce(async (...args) => { controller.abort(); return await load(...args); });
-  const harness = new MonoAgentHarness({ identityPath, historyStore: store, runtime: { run }, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" } });
+  const harness = new ConversationHarnessImpl({ identityPath, historyStore: store, runtime: { run }, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" } });
   try {
     expect((await harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal })).failure?.kind).toBe("cancelled");
     expect(run).not.toHaveBeenCalled(); expect(await store.load(id)).toEqual(before);

@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -13,7 +13,7 @@ import {
 function request(overrides: {
   readonly conversationId?: string;
   readonly metadata?: Record<string, unknown>;
-} = {}): AgentHarnessRuntimeOptionsInput {
+} = {}): ConversationHarnessRuntimeOptionsInput {
   return {
     request: {
       conversationId: overrides.conversationId ?? "web:thread-one",

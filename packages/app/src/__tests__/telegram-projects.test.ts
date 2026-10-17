@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore, type AgentHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
+import { createConversationHarness, createConversationResponder, createInMemoryHistoryStore, type ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import type { TelegramAdapterStartOptions } from "@mono-agent/channel-telegram";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -221,7 +221,7 @@ describe("telegram projects service", () => {
   });
 });
 
-function telegramRequest(metadata: Record<string, unknown> = { telegram: {} }): AgentHarnessRuntimeOptionsInput {
+function telegramRequest(metadata: Record<string, unknown> = { telegram: {} }): ConversationHarnessRuntimeOptionsInput {
   return {
     request: { conversationId: "telegram:-1001:77", userMessage: "book it", abortSignal: new AbortController().signal, metadata },
     runId: "run-00000009", context: {} as never,
@@ -301,7 +301,7 @@ describe("console project tools on Telegram turns", () => {
 
   it("keeps web turns and the ListProjects schema unchanged when the feature is off", async () => {
     const createClient = vi.fn().mockResolvedValue(vi.fn());
-    const web: AgentHarnessRuntimeOptionsInput = {
+    const web: ConversationHarnessRuntimeOptionsInput = {
       request: { conversationId: "web:thread", userMessage: "x", abortSignal: new AbortController().signal,
         metadata: { source: "web", web: { threadId: "thread", turnId: "turn", consoleProjects: { schema: 1 } } } },
       runId: "run", context: {} as never,
@@ -397,7 +397,7 @@ describe("project context end to end", () => {
     service.observe(topic("Flights"));
     const prompts: RuntimeRunOptions[] = [];
     const historyStore = createInMemoryHistoryStore();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath: join(cwd, "IDENTITY.md"),
       runtime: { async run(_prompt: string, options: RuntimeRunOptions) { prompts.push(options); return { text: "Booked." }; } },
       model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" },
@@ -405,7 +405,7 @@ describe("project context end to end", () => {
       historyStore,
       runtimeOptionsForRequest: createConsoleProjectsRuntimeExtension({ sourceId: "agent-one", policy: { allowedTools: [], disallowedTools: [] } }),
     });
-    const responder = createAgentResponder({ harness });
+    const responder = createConversationResponder({ harness });
     // Exactly what the channel driver does for each Telegram request.
     const metadata = { telegram: { chat: { id: -1001 }, message: { id: 5 } } };
     bindTelegramProjectTurn(metadata, { service, conversationId: "telegram:-1001:77", human: true });

@@ -11,9 +11,9 @@ import type { OwnedForegroundProcesses } from "@mono-agent/turn/host/types";
 import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
-  createAgentHarness,
+  createConversationHarness,
   createSessionRuntimeResolver,
-  createAgentResponder,
+  createConversationResponder,
   acquireToolHistoryWriter,
   createDurableHistoryStore,
   createToolPolicy,
@@ -22,12 +22,12 @@ import {
   toolHistoryLogicalConversationId,
 } from "@mono-agent/conversation";
 import type {
-  AgentHarness,
-  AgentHarnessOptions,
-  AgentHarnessRequest,
-  AgentHarnessRuntimeOptionsExtension,
-  AgentHarnessRuntimeOptionsInput,
-  AgentHarnessToolHistoryOptions,
+  ConversationHarness,
+  ConversationHarnessOptions,
+  ConversationHarnessRequest,
+  ConversationHarnessRuntimeOptionsExtension,
+  ConversationHarnessRuntimeOptionsInput,
+  ConversationHarnessToolHistoryOptions,
   ConversationHistoryStore,
   LiveInputMailbox,
   SkillIndexSummary,
@@ -121,7 +121,7 @@ import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
 import { isReadSkillDenied } from "./skill-registry.js";
 
-type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
+type StaticRuntimeOptions = NonNullable<ConversationHarnessOptions["runtimeOptions"]>;
 
 export interface ConfiguredAgentRuntimeOptions {
   readonly config: MonoAgentConfig;
@@ -155,11 +155,11 @@ export interface ConfiguredAgentSessionEvent {
 }
 
 type ConfiguredAgentSessionEventHandler = (event: ConfiguredAgentSessionEvent) => void | Promise<void>;
-type AgentHarnessSessionOptionsWithEvents = NonNullable<AgentHarnessOptions["session"]> & {
+type ConversationHarnessSessionOptionsWithEvents = NonNullable<ConversationHarnessOptions["session"]> & {
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
 };
 
-export interface ConfiguredAgentHarnessOptions {
+export interface ConfiguredConversationHarnessOptions {
   /** Managed workers resolve optional exporters only from their immutable app closure. */
   readonly config: MonoAgentConfig;
   /**
@@ -179,19 +179,19 @@ export interface ConfiguredAgentHarnessOptions {
   readonly env?: Record<string, string | undefined>;
   readonly historyStore?: ConversationHistoryStore;
   /** App-owned run-scoped interaction details to add only to replay history. */
-  readonly turnHistoryEnricher?: AgentHarnessOptions["turnHistoryEnricher"];
+  readonly turnHistoryEnricher?: ConversationHarnessOptions["turnHistoryEnricher"];
   /** App-owned issuer for request-scoped project-MCP progress credentials. */
-  readonly progressCapabilityIssuer?: NonNullable<AgentHarnessOptions["mcpRequestContext"]>["progressCapabilityIssuer"];
+  readonly progressCapabilityIssuer?: NonNullable<ConversationHarnessOptions["mcpRequestContext"]>["progressCapabilityIssuer"];
   /** App-owned issuer for destination-bound asynchronous continuation claims. */
-  readonly continuationCapabilityIssuer?: NonNullable<AgentHarnessOptions["continuationContext"]>["capabilityIssuer"];
-  readonly createRunId?: AgentHarnessOptions["createRunId"];
-  readonly now?: AgentHarnessOptions["now"];
-  readonly runtimeOptions?: AgentHarnessOptions["runtimeOptions"];
+  readonly continuationCapabilityIssuer?: NonNullable<ConversationHarnessOptions["continuationContext"]>["capabilityIssuer"];
+  readonly createRunId?: ConversationHarnessOptions["createRunId"];
+  readonly now?: ConversationHarnessOptions["now"];
+  readonly runtimeOptions?: ConversationHarnessOptions["runtimeOptions"];
   readonly sandboxEngine?: SandboxEngine;
   readonly runtimeOptionsForRequest?: (
-    input: AgentHarnessRuntimeOptionsInput,
-  ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
-  readonly runtimeOptionsForManualCompaction?: AgentHarnessOptions["runtimeOptionsForManualCompaction"];
+    input: ConversationHarnessRuntimeOptionsInput,
+  ) => ConversationHarnessRuntimeOptionsExtension | Promise<ConversationHarnessRuntimeOptionsExtension>;
+  readonly runtimeOptionsForManualCompaction?: ConversationHarnessOptions["runtimeOptionsForManualCompaction"];
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
   /** Best-effort diagnostic when the chronological MemoryJournal endpoint cannot start. */
@@ -212,7 +212,7 @@ export interface ConfiguredAgentHarnessOptions {
    * per-trigger model). Wired by the app so override runtimes share the
    * configured fallback chain and participate in config-reload disposal.
    */
-  readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
+  readonly runtimeForModel?: ConversationHarnessOptions["runtimeForModel"];
   /**
    * App-owned trace-source identity and config-path context retained for local
    * recording callers and host correlation.
@@ -224,7 +224,7 @@ export interface ConfiguredAgentHarnessOptions {
   };
 }
 
-export interface ConfiguredAgentResponderOptions extends ConfiguredAgentHarnessOptions {}
+export interface ConfiguredAgentResponderOptions extends ConfiguredConversationHarnessOptions {}
 
 interface RunArtifactCommitEvent {
   readonly phase: "started" | "finished";
@@ -280,7 +280,7 @@ interface ConfiguredAgentInternalHooks {
  */
 interface RecorderCompositionDeps {
   readonly artifactDir: string;
-  readonly observabilityContext?: ConfiguredAgentHarnessOptions["observabilityContext"];
+  readonly observabilityContext?: ConfiguredConversationHarnessOptions["observabilityContext"];
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
 }
 
@@ -390,7 +390,7 @@ function withArtifactCommitHook(
 /** Collect the recorder-composition deps from the host config + harness options. */
 async function recorderCompositionDeps(
   config: MonoAgentConfig,
-  options: Pick<ConfiguredAgentHarnessOptions, "observabilityContext">,
+  options: Pick<ConfiguredConversationHarnessOptions, "observabilityContext">,
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<RecorderCompositionDeps> {
   const sourceLabel = options.observabilityContext?.sourceLabel ?? config.agent?.name;
@@ -792,7 +792,7 @@ export function buildSubagentsOptions(
   deps: {
     readonly runtime: MonoRuntimeLike;
     readonly baseModel: RuntimeModelReference;
-    readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
+    readonly runtimeForModel?: ConversationHarnessOptions["runtimeForModel"];
   },
   scope?: { conversationId: string; runId: string; instances: InstanceRegistryHandle },
 ): StaticRuntimeOptions | undefined {
@@ -1010,7 +1010,7 @@ export function createSubagentsRuntimeExtension(
   config: MonoAgentConfig,
   deps: Parameters<typeof buildSubagentsOptions>[1],
   registry: ReturnType<typeof createSubagentInstanceRegistry>,
-): NonNullable<ConfiguredAgentHarnessOptions["runtimeOptionsForRequest"]> {
+): NonNullable<ConfiguredConversationHarnessOptions["runtimeOptionsForRequest"]> {
   return async ({ request, runId }) => !persistentSubagentsEnabled(config)
     ? { runtimeOptions: buildSubagentsOptions(config, deps)! }
     : ({
@@ -1129,14 +1129,14 @@ const loadMemoryBujoModule = async (): Promise<MemoryBujoModule> =>
 const loadMemorySearchModule = async (): Promise<MemorySearchModule> =>
   (memorySearchModule ??= await import("@mono-agent/memory/search"));
 
-export async function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): Promise<AgentHarness> {
-  return await createConfiguredAgentHarnessInternal(options);
+export async function createConfiguredConversationHarness(options: ConfiguredConversationHarnessOptions): Promise<ConversationHarness> {
+  return await createConfiguredConversationHarnessInternal(options);
 }
 
-async function createConfiguredAgentHarnessInternal(
-  options: ConfiguredAgentHarnessOptions,
+async function createConfiguredConversationHarnessInternal(
+  options: ConfiguredConversationHarnessOptions,
   internalHooks: ConfiguredAgentInternalHooks = {},
-): Promise<AgentHarness> {
+): Promise<ConversationHarness> {
   const config = options.config;
   assertNoRetiredMonoAgentConfig(config);
   await assertSupportedSessionsRoot(config.runtime.session.root);
@@ -1398,7 +1398,7 @@ async function createConfiguredAgentHarnessInternal(
     subagents,
     options.runtimeOptions,
   );
-  const sessionOptions: AgentHarnessSessionOptionsWithEvents = {
+  const sessionOptions: ConversationHarnessSessionOptionsWithEvents = {
     mode: config.runtime.session.mode,
     idleTimeoutMs: config.runtime.session.idleTimeoutMs,
     // Continuous sessions belong to the primary's first attempt. The router
@@ -1463,7 +1463,7 @@ async function createConfiguredAgentHarnessInternal(
   });
 
   try {
-    const harnessOptions: AgentHarnessOptions = {
+    const harnessOptions: ConversationHarnessOptions = {
     identityPath: config.context.identityPath,
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
@@ -1503,7 +1503,7 @@ async function createConfiguredAgentHarnessInternal(
           },
         }),
     runtimeOptions,
-    ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: AgentHarnessRequest }) =>
+    ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: ConversationHarnessRequest }) =>
       (await (await instanceRegistry.open(request.conversationId)).list()).filter(isLiveSubagentInstance).slice(0, 12).map((record) => ({
         id: record.id, name: record.name, status: record.status, turns: record.turns,
         ...(record.reservation || record.recoveryJobId ? { jobId: record.reservation?.token ?? record.recoveryJobId } : {}),
@@ -1592,8 +1592,8 @@ async function createConfiguredAgentHarnessInternal(
     ...(options.now === undefined ? {} : { now: options.now }),
     };
     const harness = nativeModelSwitch === undefined
-      ? createAgentHarness(harnessOptions)
-      : createAgentHarness(harnessOptions, {
+      ? createConversationHarness(harnessOptions)
+      : createConversationHarness(harnessOptions, {
       nativeModelSwitch: {
         ...nativeModelSwitch,
         sessionsRoot: sessionsRoot ?? "",
@@ -1635,13 +1635,13 @@ const ownedHarnessKeys = {
   appendVerbatimTurn: true,
   importContext: true,
   dispose: true,
-} satisfies Record<keyof AgentHarness, true>;
+} satisfies Record<keyof ConversationHarness, true>;
 void ownedHarnessKeys;
 
 function harnessWithAgentRootOwnership(
-  harness: AgentHarness,
+  harness: ConversationHarness,
   ownership: AgentRootOwnership,
-): AgentHarness {
+): ConversationHarness {
   let disposePromise: Promise<void> | undefined;
   return {
     ...(harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: harness.liveInputOwnership }),
@@ -1709,7 +1709,7 @@ const TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
 
 export function lazyConfiguredToolHistory(
   options: LazyConfiguredToolHistoryOptions,
-): AgentHarnessToolHistoryOptions {
+): ConversationHarnessToolHistoryOptions {
   const failureBackoffMs = options.acquisitionFailureBackoffMs
     ?? TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS;
   if (!Number.isSafeInteger(failureBackoffMs) || failureBackoffMs < 1) {
@@ -1867,7 +1867,7 @@ export function lazyConfiguredToolHistory(
     }
     return handle;
   };
-  const writer: AgentHarnessToolHistoryOptions["writer"] = {
+  const writer: ConversationHarnessToolHistoryOptions["writer"] = {
     createSink(binding) {
       const state = stateFor(binding.conversationId, binding.runId);
       return async (event) => {
@@ -2035,8 +2035,8 @@ async function createConfiguredAgentResponderInternal(
 ): Promise<AgentResponder> {
   const session = options.config.runtime.session;
   const rollover = internalHooks.sessionRollover ?? session.rollover;
-  return createAgentResponder({
-    harness: await createConfiguredAgentHarnessInternal(options, internalHooks),
+  return createConversationResponder({
+    harness: await createConfiguredConversationHarnessInternal(options, internalHooks),
     ...(rollover === undefined ? {} : { rollover }),
     ...(session.rolloverTimezone === undefined ? {} : { rolloverTimezone: session.rolloverTimezone }),
     ...(session.rolloverNotice === undefined ? {} : { rolloverNotice: session.rolloverNotice }),
@@ -2076,7 +2076,7 @@ interface ConfiguredMemoryDependencies {
   readonly memoryRuntime?: MonoRuntimeLike;
   /** Optional app-owned recording context for memory LLM calls. */
   readonly observability?: Pick<
-    ConfiguredAgentHarnessOptions,
+    ConfiguredConversationHarnessOptions,
     "observabilityContext"
   >;
 }

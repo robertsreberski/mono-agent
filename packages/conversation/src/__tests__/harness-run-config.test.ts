@@ -9,10 +9,10 @@ import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/typ
 
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
-import { createAgentHarness } from "../index.js";
-import { requestOverridesModel, runSourceFromRequest } from "../harness.js";
+import { createConversationHarness } from "../index.js";
+import { requestOverridesModel, runSourceFromRequest } from "../harness/index.js";
 import { requestSessionModel } from "../harness/request-routing.js";
-import type { AgentHarnessRecorderFactoryInput, AgentHarnessRequest } from "../types.js";
+import type { ConversationHarnessRecorderFactoryInput, ConversationHarnessRequest } from "../harness/contracts.js";
 
 const tempDirs: string[] = [];
 const model = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
@@ -63,7 +63,7 @@ class SpyRecorder implements RunRecorder {
 }
 
 describe("runSourceFromRequest", () => {
-  function req(metadata?: Record<string, unknown>, conversationId = "other-conv"): Pick<AgentHarnessRequest, "conversationId" | "metadata"> {
+  function req(metadata?: Record<string, unknown>, conversationId = "other-conv"): Pick<ConversationHarnessRequest, "conversationId" | "metadata"> {
     return { conversationId, ...(metadata === undefined ? {} : { metadata }) };
   }
 
@@ -117,8 +117,8 @@ describe("runSourceFromRequest", () => {
 
 describe("requestOverridesModel", () => {
   const defaultModel = parseMonoRuntimeModelReference("anthropic:claude-fable-5");
-  function req(metadata?: Record<string, unknown>): AgentHarnessRequest {
-    return { conversationId: "c", text: "hi", ...(metadata === undefined ? {} : { metadata }) } as unknown as AgentHarnessRequest;
+  function req(metadata?: Record<string, unknown>): ConversationHarnessRequest {
+    return { conversationId: "c", text: "hi", ...(metadata === undefined ? {} : { metadata }) } as unknown as ConversationHarnessRequest;
   }
 
   it("returns true for a tui model override that differs from the default", () => {
@@ -184,12 +184,12 @@ describe("requestSessionModel", () => {
   });
 });
 
-describe("AgentHarness recorderFactory source/sourceDetail plumbing", () => {
+describe("ConversationHarness recorderFactory source/sourceDetail plumbing", () => {
   it("passes source 'cron' + sourceDetail (jobId) for a cron-metadata request", async () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
-    const factoryInputs: AgentHarnessRecorderFactoryInput[] = [];
-    const harness = createAgentHarness({
+    const factoryInputs: ConversationHarnessRecorderFactoryInput[] = [];
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -213,8 +213,8 @@ describe("AgentHarness recorderFactory source/sourceDetail plumbing", () => {
   it("passes source 'webhook' + sourceDetail (endpointName) for a webhook-metadata request", async () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
-    const factoryInputs: AgentHarnessRecorderFactoryInput[] = [];
-    const harness = createAgentHarness({
+    const factoryInputs: ConversationHarnessRecorderFactoryInput[] = [];
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -238,8 +238,8 @@ describe("AgentHarness recorderFactory source/sourceDetail plumbing", () => {
   it("passes source 'tui' with no sourceDetail for a tui-metadata request", async () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
-    const factoryInputs: AgentHarnessRecorderFactoryInput[] = [];
-    const harness = createAgentHarness({
+    const factoryInputs: ConversationHarnessRecorderFactoryInput[] = [];
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -263,8 +263,8 @@ describe("AgentHarness recorderFactory source/sourceDetail plumbing", () => {
   it("falls back to conversationId-prefix derivation for undefined/other metadata", async () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
-    const factoryInputs: AgentHarnessRecorderFactoryInput[] = [];
-    const harness = createAgentHarness({
+    const factoryInputs: ConversationHarnessRecorderFactoryInput[] = [];
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -285,12 +285,12 @@ describe("AgentHarness recorderFactory source/sourceDetail plumbing", () => {
   });
 });
 
-describe("AgentHarness run_config synthetic event", () => {
+describe("ConversationHarness run_config synthetic event", () => {
   it("emits run_config to both recorder.onEvent and the host onEvent with resolved model/effort, overridden:false", async () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -324,7 +324,7 @@ describe("AgentHarness run_config synthetic event", () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -352,7 +352,7 @@ describe("AgentHarness run_config synthetic event", () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -377,7 +377,7 @@ describe("AgentHarness run_config synthetic event", () => {
 it("strips detached-turn acknowledgement authority supplied by static or request runtime extensions", async () => {
   const fake = createFakeRuntime(); let invoked = false;
   const injection = { maxTokens: 64, onSessionTurnDetached: async () => { invoked = true; } };
-  const harness = createAgentHarness({ identityPath: await identityFixture(), runtime: fake.runtime, model,
+  const harness = createConversationHarness({ identityPath: await identityFixture(), runtime: fake.runtime, model,
     runtimeOptions: injection, runtimeOptionsForRequest: () => ({ runtimeOptions: injection }) });
   const result = await harness.run({ conversationId: "fictional-protected-hook", userMessage: "Fictional request.", abortSignal: new AbortController().signal });
   expect(result.failure).toBeUndefined(); expect(result.text).toBe("ok"); expect(fake.calls).toHaveLength(1); expect(fake.calls[0]!.options.onSessionTurnDetached).toBeUndefined(); expect(invoked).toBe(false);

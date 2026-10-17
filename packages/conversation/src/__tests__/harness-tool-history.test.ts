@@ -8,7 +8,7 @@ import type { RuntimeRunOptions, RuntimeResult, RuntimeToolLifecyclePersistence 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  createAgentHarness,
+  createConversationHarness,
   createDurableHistoryStore,
   createInMemoryHistoryStore,
   ToolHistoryReader,
@@ -19,9 +19,9 @@ import {
   toolHistoryLogicalConversationId,
   type ToolHistoryRunBinding,
 } from "../index.js";
-import { MonoAgentHarness } from "../harness.js";
+import { ConversationHarnessImpl } from "../harness/index.js";
 import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
-import { buildToolHistoryProjection } from "../tool-history-projection.js";
+import { buildToolHistoryProjection } from "../tool-history/projection.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -52,7 +52,7 @@ function request(conversationId: string, abortSignal = new AbortController().sig
   return { conversationId, userMessage: "run tools", abortSignal };
 }
 
-describe("AgentHarness durable tool lifecycle integration", () => {
+describe("ConversationHarness durable tool lifecycle integration", () => {
   it("degrades a corrupt automatic projection to a structured warning while explicit reads fail closed", async () => {
     const { identityPath, root } = await fixture();
     const initialized = await ToolHistoryWriter.open({ root });
@@ -72,7 +72,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       },
     };
     const events: Array<Record<string, unknown>> = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -142,7 +142,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       },
     };
     let run = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -202,7 +202,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
         throw new Error("provider interrupted after tool start");
       },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -272,7 +272,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
         return { failureKind: "provider_unavailable", error: "terminated" };
       },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -329,7 +329,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
         return { text: "must not commit", providerSessionId: "provider-cancelled-race" };
       },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -402,7 +402,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     };
     let runId = 0;
     let releaseCount = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -497,7 +497,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       },
     };
     let runId = 0;
-    const harness = new MonoAgentHarness({
+    const harness = new ConversationHarnessImpl({
       identityPath,
       runtime,
       model,
@@ -565,7 +565,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       async disposeAllSessions(): Promise<void> {},
     };
     let run = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -635,7 +635,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       async disposeAllSessions(): Promise<void> {},
     };
     let run = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -714,7 +714,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       async disposeAllSessions(): Promise<void> {},
     };
     let run = 0;
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -779,7 +779,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       async syncSession(): Promise<boolean> { return true; },
       async disposeAllSessions(): Promise<void> {},
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -828,7 +828,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
         return { text: "isolated answer" };
       },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,

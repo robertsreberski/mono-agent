@@ -1,7 +1,7 @@
-import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "./durable-history.js";
-import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "./durable-turn-contract.js";
-import { senderLabel as canonicalSenderLabel } from "./harness/speaker-context.js";
-import { terminalFailureCanRecover, waitForTerminalSettlement, type TerminalRecoverySkipReason } from "./harness/session-recovery.js";
+import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "../history/canonical/store.js";
+import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "../history/pending-turn/contract.js";
+import { senderLabel as canonicalSenderLabel } from "./speaker-context.js";
+import { terminalFailureCanRecover, waitForTerminalSettlement, type TerminalRecoverySkipReason } from "./session-recovery.js";
 import type { RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type {
   AgentContextImportRequest,
@@ -16,36 +16,26 @@ import { monoRuntimeSupportsSessionResume } from "@mono-agent/turn/host";
 import { modelReferenceKey } from "@mono-agent/turn/host/config";
 import { type RuntimeResult } from "@mono-agent/turn/host/types";
 
-import type { BuiltAgentContext } from "./context/index.js";
+import type { BuiltAgentContext } from "../context/index.js";
 import { NoopRunRecorder } from "@mono-agent/observability";
-import { createLiveSessionManager } from "./live-session.js";
-import type { LiveSessionManager, LiveSessionRunLifecycle } from "./live-session.js";
-import { createLiveInputMailbox } from "./live-input.js";
-import type { LiveInputMailbox } from "./live-input.js";
-import { createSemaphore } from "./semaphore.js";
-import type { Semaphore } from "./semaphore.js";
-import { createRuntimeSessionStore } from "./sessions.js";
+import { createLiveSessionManager } from "../sessions/queue.js";
+import type { LiveSessionManager, LiveSessionRunLifecycle } from "../sessions/queue.js";
+import { createLiveInputMailbox } from "../sessions/live-input.js";
+import type { LiveInputMailbox } from "../sessions/live-input.js";
+import { createSemaphore } from "../semaphore.js";
+import type { Semaphore } from "../semaphore.js";
+import { createRuntimeSessionStore } from "../sessions/warm-store.js";
 import type {
   RuntimeSessionRecord,
   RuntimeSessionSnapshot,
   RuntimeSessionStore,
-} from "./sessions.js";
-import type {
-  AgentHarness,
-  AgentHarnessFailure,
-  AgentHarnessOptions,
-  AgentHarnessRequest,
-  AgentHarnessResponse,
-  AgentHarnessSessionEvent,
-  ConversationHistoryProviderSessionTurn,
-  ConversationHistoryTurnReconciliation,
-  ConversationHistoryExclusiveTurn,
-  PreparedHistoryAppend,
-} from "./types.js";
-import type { AgentHarnessContinuationClaimCapability } from "./types.js";
-import { createSkillsCache } from "./skills/index.js";
-import type { SkillsCache } from "./skills/index.js";
-import { applyHarnessAttachments } from "./harness/attachments.js";
+} from "../sessions/warm-store.js";
+import type { ConversationHarness, ConversationHarnessFailure, ConversationHarnessOptions, ConversationHarnessRequest, ConversationHarnessResponse, ConversationHarnessSessionEvent } from "./contracts.js";
+import type { ConversationHistoryProviderSessionTurn, ConversationHistoryTurnReconciliation, ConversationHistoryExclusiveTurn, PreparedHistoryAppend } from "../history/contracts.js";
+import type { ConversationHarnessContinuationClaimCapability } from "./contracts.js";
+import { createSkillsCache } from "../skills/index.js";
+import type { SkillsCache } from "../skills/index.js";
+import { applyHarnessAttachments } from "./attachments.js";
 import {
   UncommittedTurnCollector,
   cancelledTurnReason,
@@ -54,23 +44,23 @@ import {
   type CancelledTurnReason,
   type FailedTurnReason,
   type TurnContinuityOutcome,
-} from "./harness/turn-continuity.js";
-import { loadHarnessHistory, loadToolHistoryProjection, prepareHarnessContext } from "./harness/context-preparation.js";
-import { AgentHarnessError } from "./harness/error.js";
+} from "./turn-continuity.js";
+import { loadHarnessHistory, loadToolHistoryProjection, prepareHarnessContext } from "./context-preparation.js";
+import { ConversationHarnessError } from "./error.js";
 import {
   activateContinuationOriginContexts,
   buildContinuationOriginContext,
   continuationCapabilitiesRequiringOriginContext,
   finalizeContinuationOriginContexts,
-} from "./harness/mcp-context.js";
-import { buildSuccessfulTurn, persistSuccessfulMemory } from "./harness/memory-persistence.js";
+} from "./mcp-context.js";
+import { buildSuccessfulTurn, persistSuccessfulMemory } from "./memory-persistence.js";
 import {
   createDefaultRunId,
   requestSessionModel,
   isCronRequest,
   requestOverridesModel,
   runSourceFromRequest,
-} from "./harness/request-routing.js";
+} from "./request-routing.js";
 import {
   cancellationFailureKind,
   commitRecorderFinish,
@@ -84,20 +74,21 @@ import {
   safeRecorderFail,
   shouldRetrySessionResumeError,
   shouldRetryWithoutSession,
-} from "./harness/run-results.js";
-import { prepareConfiguredModelSwitch, type InternalNativeSwitchPolicy, type ConfiguredPreparedTurn } from "./harness/configured-model-switch.js";
-import { coldReplayMessages, runHarnessRuntime } from "./harness/runtime-execution.js";
-import { mergeRuntimeOptions } from "./harness/runtime-options.js";
-import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./harness/session-events.js";
-import { createSessionRuntimeResolver, ProviderSessionModelChangedError, sessionModelKey, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
-import { retireRunResultSession } from "./harness/session-retirement.js";
-import { validateOptions, validateRequest } from "./harness/validation.js";
-import { errorToDetails } from "./harness/value-utils.js";
-import { appendVerbatimHistoryTurn } from "./harness/verbatim-history.js";
-import { eligibleContextImport, importHarnessContext } from "./harness/context-import.js";
-import { assertConversationHistoryVersion } from "./sessions.js";
+} from "./run-results.js";
+import { prepareConfiguredModelSwitch, type InternalNativeSwitchPolicy, type ConfiguredPreparedTurn } from "./configured-model-switch.js";
+import { coldReplayMessages, runHarnessRuntime } from "./runtime-execution.js";
+import { mergeRuntimeOptions } from "./runtime-options.js";
+import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./session-events.js";
+import { createSessionRuntimeResolver, ProviderSessionModelChangedError, type ProviderSessionHandle, type SessionRuntimeResolver } from "../sessions/runtime-owner.js";
+import { sessionModelKey } from "../sessions/model-key.js";
+import { retireRunResultSession } from "./session-retirement.js";
+import { validateOptions, validateRequest } from "./validation.js";
+import { errorToDetails } from "./value-utils.js";
+import { appendVerbatimHistoryTurn } from "./verbatim-history.js";
+import { eligibleContextImport, importHarnessContext } from "./context-import.js";
+import { assertConversationHistoryVersion } from "../sessions/warm-store.js";
 
-export { AgentHarnessError };
+export { ConversationHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
@@ -114,11 +105,11 @@ const TURN_CONTINUITY_PUBLICATION_WAIT_TIMEOUT_MS = 30_000;
 
 // Distinguish an in-flight publication from a rejected one: reset may discard
 // the latter, but must never race the former's eventual history mutation.
-class TurnContinuityPublicationTimeoutError extends AgentHarnessError {}
+class TurnContinuityPublicationTimeoutError extends ConversationHarnessError {}
 const SHUTDOWN_DRAIN_WARNING =
   "Agent shutdown timed out while draining active runs; provider sessions and tool-history persistence were forcibly released.";
 
-interface MonoAgentHarnessInternalOptions {
+interface ConversationHarnessInternalOptions {
   /** @internal
    * @unstable Staging capability; only the private APP seam passes it. No config opt-in. */
   readonly nativeModelSwitch?: InternalNativeSwitchPolicy;
@@ -136,9 +127,9 @@ interface TurnContinuityPublicationBarrier {
   republishPromise: Promise<void> | undefined;
 }
 
-export class MonoAgentHarness implements AgentHarness {
+export class ConversationHarnessImpl implements ConversationHarness {
   readonly liveInputOwnership = { version: 1 } as const;
-  private readonly options: AgentHarnessOptions;
+  private readonly options: ConversationHarnessOptions;
   private readonly nativeModelSwitch: InternalNativeSwitchPolicy | undefined;
   private readonly runtimeForSession: SessionRuntimeResolver;
   private readonly sessionStore: RuntimeSessionStore | undefined;
@@ -152,7 +143,7 @@ export class MonoAgentHarness implements AgentHarness {
   // context prep, then waiting for a provider slot). It gates BEFORE that work
   // so over-capacity requests fail fast. This is deliberately NOT the runLimiter
   // semaphore, whose waiter queue is unbounded — see the concurrency JSDoc on
-  // AgentHarnessOptions.
+  // ConversationHarnessOptions.
   private readonly maxPendingRuns: number | undefined;
   private pendingRuns = 0;
   private supportsResumeCache: boolean | undefined;
@@ -167,7 +158,7 @@ export class MonoAgentHarness implements AgentHarness {
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
 
-  constructor(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}) {
+  constructor(options: ConversationHarnessOptions, internalOptions: ConversationHarnessInternalOptions = {}) {
     if (Object.hasOwn(options, "piSessionsRoot") || (options.runtimeOptions && Object.hasOwn(options.runtimeOptions, "piSessionsRoot"))) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
     validateOptions(options);
     if ((options.memoryWriteMode === "append-host-summary" || options.memoryWriteMode === "capture")
@@ -223,14 +214,14 @@ export class MonoAgentHarness implements AgentHarness {
   ): Promise<AgentManualCompactionResult> {
     this.assertAcceptingRuns();
     if (typeof conversationId !== "string" || conversationId.trim().length === 0) {
-      throw new AgentHarnessError("invalid_conversation", "Conversation id is required.");
+      throw new ConversationHarnessError("invalid_conversation", "Conversation id is required.");
     }
     const historyStore = this.options.historyStore;
     const beginProviderSessionTurn = historyStore?.beginProviderSessionTurn?.bind(historyStore);
     if (!this.sessionsEnabled() || this.options.sessionsRoot === undefined
       || historyStore?.providerSessionRetirement !== "fail-closed"
       || beginProviderSessionTurn === undefined) {
-      throw new AgentHarnessError("compaction_unsupported", "Manual compaction needs a durable session.");
+      throw new ConversationHarnessError("compaction_unsupported", "Manual compaction needs a durable session.");
     }
     // Resolve the conversation's model exactly as a turn carrying the same
     // selection would (invalid selections fall back to the host default).
@@ -245,11 +236,11 @@ export class MonoAgentHarness implements AgentHarness {
       // model-only resolver (the ordinary turn extension owns this block).
       || (this.options.runtimeOptions as Record<string, unknown> | undefined)?.customProvider !== undefined
         && this.options.runtimeOptionsForManualCompaction === undefined)) {
-      throw new AgentHarnessError("compaction_unsupported", "Manual compaction is unavailable for this conversation's model.");
+      throw new ConversationHarnessError("compaction_unsupported", "Manual compaction is unavailable for this conversation's model.");
     }
     const runtime = this.runtimeForSession(modelKey);
     if (runtime.syncSession === undefined || runtime.refreshSession === undefined) {
-      throw new AgentHarnessError("compaction_unsupported", "The runtime cannot compact a durable session.");
+      throw new ConversationHarnessError("compaction_unsupported", "The runtime cannot compact a durable session.");
     }
     // Synchronous admission: every check and the local lease below happen
     // before the first await, so no turn or second compaction can interleave.
@@ -258,7 +249,7 @@ export class MonoAgentHarness implements AgentHarness {
       || this.activeLiveInputs.has(conversationId)
       || this.turnContinuityPublicationBarriers.has(conversationId)
       || this.sessionStore?.list?.().some((entry) => entry.conversationId === conversationId && entry.busy) === true) {
-      throw new AgentHarnessError("compaction_busy", "This conversation is already running.");
+      throw new ConversationHarnessError("compaction_busy", "This conversation is already running.");
     }
     this.activeCompactions.add(conversationId);
     // Shutdown-owned: dispose() aborts it so a hung summary cannot hold the
@@ -279,18 +270,18 @@ export class MonoAgentHarness implements AgentHarness {
         true, conversationId, record, cleanupMode, ...handles);
     };
     try {
-      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+      if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       if ((await historyStore.load(conversationId)).length === 0) {
-        if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+        if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
         return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "nothing_to_compact" };
       }
-      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+      if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       if (bound) {
         // A turn under this model would rotate a session bound to another
         // (or a legacy unbound) model. Compaction must not: decline untouched.
         const binding = await historyStore.readProviderSessionBinding!(conversationId);
         if (binding?.native) cleanupMode = "preserve";
-        if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+        if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
         if (binding !== undefined && (binding.modelKey === undefined ? binding.revision > 0 : binding.modelKey !== modelKey)) {
           return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "model_changed" };
         }
@@ -310,9 +301,9 @@ export class MonoAgentHarness implements AgentHarness {
         }
         throw error;
       }
-      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+      if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       if (bound && providerTurn.modelKey !== modelKey) {
-        throw new AgentHarnessError("provider_session_model_binding_mismatch",
+        throw new ConversationHarnessError("provider_session_model_binding_mismatch",
           "Durable history did not acknowledge the requested session model binding.");
       }
       const sessionId = providerTurn.providerSessionId;
@@ -344,7 +335,7 @@ export class MonoAgentHarness implements AgentHarness {
       // A later turn supplies its real prompt as usual.
       const endpoint = modelKey === sessionModelKey(this.options.model) && compactionOptions?.context1M === undefined
         ? undefined : await this.options.runtimeOptionsForManualCompaction?.(modelKey, compactionOptions?.context1M);
-      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+      if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       const manualRuntimeOptions = mergeRuntimeOptions(this.options.runtimeOptions, endpoint);
       delete manualRuntimeOptions.onSessionTurnDetached;
       delete manualRuntimeOptions.sessionRecovery;
@@ -387,13 +378,13 @@ export class MonoAgentHarness implements AgentHarness {
       // An unsynced or failed attempt may already have written a summary into
       // the live handle: retire it before the durable record rotates the epoch.
       if (!synced && providerTurn.reconciliation === undefined) await retire({ providerSessionId: sessionId, modelKey });
-      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+      if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       prepared = await providerTurn.prepareCommit([], { providerSessionSynced: synced });
       if (providerTurn.reconciliation !== undefined) synced = providerTurn.reconciliation.settlement?.nativeReusable === true;
-      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+      if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       await prepared.commit();
       providerTurn = undefined;
-      if (!synced) throw new AgentHarnessError("compaction_failed", "Context compaction failed; the session was retired safely.");
+      if (!synced) throw new ConversationHarnessError("compaction_failed", "Context compaction failed; the session was retired safely.");
       // prepareCommit(synced) publishes exactly revision + 1 (durable-history.ts),
       // matching the turn path's saveSession.
       this.saveSession(conversationId, sessionId, record, revision + 1, undefined, modelKey);
@@ -419,9 +410,9 @@ export class MonoAgentHarness implements AgentHarness {
         }
         if (providerTurn.reconciliation === undefined) await retire({ providerSessionId: providerTurn.providerSessionId, modelKey });
       }
-      throw error instanceof AgentHarnessError && error.failureKind.startsWith("compaction_")
+      throw error instanceof ConversationHarnessError && error.failureKind.startsWith("compaction_")
         ? error
-        : new AgentHarnessError("compaction_failed", "Context compaction failed; the conversation history is unchanged.");
+        : new ConversationHarnessError("compaction_failed", "Context compaction failed; the conversation history is unchanged.");
     } finally {
       signal?.removeEventListener("abort", onExternalAbort);
       this.compactionControllers.delete(controller);
@@ -436,7 +427,7 @@ export class MonoAgentHarness implements AgentHarness {
     }
   }
 
-  async submit(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
+  async submit(request: ConversationHarnessRequest): Promise<ConversationHarnessResponse> {
     this.assertAcceptingRuns();
     if (this.liveSessionManager !== undefined) {
       return this.liveSessionManager.enqueue(request.conversationId, request);
@@ -539,11 +530,11 @@ export class MonoAgentHarness implements AgentHarness {
     }
   }
 
-  async run(request: AgentHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<AgentHarnessResponse> {
+  async run(request: ConversationHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<ConversationHarnessResponse> {
     this.assertAcceptingRuns();
     this.activeRuns += 1;
     let closed = false;
-    const observe: NonNullable<AgentHarnessRequest["onLiveInputOwnership"]> = (event) => {
+    const observe: NonNullable<ConversationHarnessRequest["onLiveInputOwnership"]> = (event) => {
       if (closed) return;
       if (event.status === "closed") {
         closed = true;
@@ -572,9 +563,9 @@ export class MonoAgentHarness implements AgentHarness {
   }
 
   private async runActive(
-    request: AgentHarnessRequest,
+    request: ConversationHarnessRequest,
     lifecycle?: LiveSessionRunLifecycle,
-  ): Promise<AgentHarnessResponse> {
+  ): Promise<ConversationHarnessResponse> {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
     const runSource = runSourceFromRequest(request);
@@ -638,7 +629,7 @@ export class MonoAgentHarness implements AgentHarness {
     // — it left "pending" the moment its provider call started.)
     if (this.maxPendingRuns !== undefined && this.pendingRuns >= this.maxPendingRuns) {
       try {
-        throw new AgentHarnessError(
+        throw new ConversationHarnessError(
           "capacity_exceeded",
           `Agent is at capacity (max ${this.maxPendingRuns} pending runs).`,
           { maxPendingRuns: this.maxPendingRuns },
@@ -689,7 +680,7 @@ export class MonoAgentHarness implements AgentHarness {
     admitted = true;
     let left = false;
     let conversationCommitStarted = false;
-    const continuationCapabilities: AgentHarnessContinuationClaimCapability[] = [];
+    const continuationCapabilities: ConversationHarnessContinuationClaimCapability[] = [];
     let continuationOriginSettled = false;
     let preparedHistoryAppend: PreparedHistoryAppend | undefined;
     let providerHistoryTurn: ConversationHistoryProviderSessionTurn | undefined;
@@ -698,7 +689,7 @@ export class MonoAgentHarness implements AgentHarness {
     let nativePreparationActive = false;
     let deferredNativeContinuity: ContinuityClaim | undefined;
     let exclusiveHistoryTurn: ConversationHistoryExclusiveTurn | undefined;
-    let exclusiveCapturedHistory: readonly import("./context/index.js").HistoryMessage[] | undefined;
+    let exclusiveCapturedHistory: readonly import("../context/index.js").HistoryMessage[] | undefined;
     let exclusiveHistoryRequired = false;
     let committedHistoryVersion: string | undefined;
     let coordinatedProviderSessionId: string | undefined;
@@ -749,7 +740,7 @@ export class MonoAgentHarness implements AgentHarness {
     let continuityPromise: Promise<void> | undefined;
     // The already-built terminal account, retained so a later waiter can
     // republish it exactly once if the first publication attempt fails.
-    let continuityMessages: readonly import("./context/index.js").HistoryMessage[] | undefined;
+    let continuityMessages: readonly import("../context/index.js").HistoryMessage[] | undefined;
     // Set immediately after the account commit/append succeeds. A republish
     // with this flag must never append again — only redo retirement/reseed.
     let accountCommitted = false;
@@ -1091,7 +1082,7 @@ export class MonoAgentHarness implements AgentHarness {
         ),
       });
     };
-    const continuityResponse = async (failure: AgentHarnessFailure): Promise<AgentHarnessResponse> => {
+    const continuityResponse = async (failure: ConversationHarnessFailure): Promise<ConversationHarnessResponse> => {
       try {
         await continuityPromise;
       } catch {
@@ -1105,7 +1096,7 @@ export class MonoAgentHarness implements AgentHarness {
         failure,
       };
     };
-    const cancellationResponse = async (): Promise<AgentHarnessResponse> => await continuityResponse({
+    const cancellationResponse = async (): Promise<ConversationHarnessResponse> => await continuityResponse({
       kind: "cancelled",
       message: "Agent request was cancelled during the turn.",
       ...(runtimeResult === undefined ? {} : { details: runtimeResult }),
@@ -1127,7 +1118,7 @@ export class MonoAgentHarness implements AgentHarness {
         const binding = await this.options.historyStore?.readProviderSessionBinding?.(request.conversationId);
         nativeCurrent = binding?.native === true;
         if (nativeCurrent && binding?.modelKey !== requestedModelKey && this.nativeModelSwitch.implicitModel) {
-          if (!binding?.modelKey) throw new AgentHarnessError("native_cold_model_change_unavailable", "Native conversation has no current model binding.");
+          if (!binding?.modelKey) throw new ConversationHarnessError("native_cold_model_change_unavailable", "Native conversation has no current model binding.");
           const implicit = await this.nativeModelSwitch.implicitModel(request, binding.modelKey);
           if (implicit) {
             requestedModelKey = modelReferenceKey(implicit.model);
@@ -1233,14 +1224,14 @@ export class MonoAgentHarness implements AgentHarness {
                 initial: { persistText: persistUserMessage, timestamp: this.nowIso(),
                   ...(canonicalSenderLabel(request.sender) === undefined ? {} : { senderLabel: canonicalSenderLabel(request.sender)! }) } } } : {}) } : undefined, request.abortSignal);
           p2Turn = providerHistoryTurn.reconciliation;
-          if (reconcileTurn && p2Turn === undefined) throw new AgentHarnessError(
+          if (reconcileTurn && p2Turn === undefined) throw new ConversationHarnessError(
             "provider_session_reconciliation_mismatch", "Durable history did not acknowledge protected native turn admission.");
           if (providerHistoryTurn.recovery?.status === "interrupted") emit({ type: "runtime_warning", warning_kind: "interrupted_turn_recovered",
             message: "The previous turn was interrupted and accounted without replay; this explicit new message starts a new turn." });
           if (providerHistoryTurn.historySetAside) emit({ type: "runtime_warning", warning_kind: "conversation_history_set_aside",
             message: "This conversation's history could not be read and was set aside unchanged; the conversation continues from empty history." });
           if (historyStore?.readProviderSessionBinding !== undefined && providerHistoryTurn.modelKey !== requestedModelKey) {
-            throw new AgentHarnessError("provider_session_model_binding_mismatch",
+            throw new ConversationHarnessError("provider_session_model_binding_mismatch",
               "Durable history did not acknowledge the requested session model binding.");
           }
         })();
@@ -1327,7 +1318,7 @@ export class MonoAgentHarness implements AgentHarness {
           if (sessionRecord?.providerSessionId === providerHistoryTurn.providerSessionId) {
             this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
           }
-          throw new AgentHarnessError(
+          throw new ConversationHarnessError(
             "provider_session_refresh_unavailable",
             "A durable provider session cannot be cold-reopened safely by this runtime.",
           );
@@ -1620,7 +1611,7 @@ export class MonoAgentHarness implements AgentHarness {
       }
       const text = silentTurn ? "" : normalizeAssistantText(runtimeResult.text);
       if (text === undefined) {
-        const failure: AgentHarnessFailure = {
+        const failure: ConversationHarnessFailure = {
           kind: "empty_response",
           message: "Runtime completed without assistant text.",
           details: runtimeResult,
@@ -1913,9 +1904,9 @@ export class MonoAgentHarness implements AgentHarness {
         metadata: responseMetadata(runId, request, context, summary, runtimeResult),
       };
     } catch (error) {
-      if (error instanceof OrdinaryNativeDispatchUnavailableError) error = new AgentHarnessError("native_cold_model_change_unavailable", error.message);
-      if (error instanceof ModelSwitchPendingError) error = new AgentHarnessError("handoff_pending", "Model handoff is pending. This message was not admitted or queued; send another explicit Web message to authorize further summary work.");
-      if ((nativePreparationActive || error instanceof AgentHarnessError && (error.failureKind === "native_cold_model_change_unavailable" || error.failureKind === "handoff_pending"))
+      if (error instanceof OrdinaryNativeDispatchUnavailableError) error = new ConversationHarnessError("native_cold_model_change_unavailable", error.message);
+      if (error instanceof ModelSwitchPendingError) error = new ConversationHarnessError("handoff_pending", "Model handoff is pending. This message was not admitted or queued; send another explicit Web message to authorize further summary work.");
+      if ((nativePreparationActive || error instanceof ConversationHarnessError && (error.failureKind === "native_cold_model_change_unavailable" || error.failureKind === "handoff_pending"))
         && providerHistoryTurn === undefined && p2Turn === undefined && !providerHistoryOwnershipTransferred) {
         if (sessionRecord) this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
         const summary = request.abortSignal.aborted ? await safeRecorderCancel(recorder, cancellationFailureKind(request.abortSignal), cancelledTurnReason(request.abortSignal.reason, cancellationFailureKind(request.abortSignal)), context?.systemPrompt)
@@ -2097,11 +2088,11 @@ export class MonoAgentHarness implements AgentHarness {
     return attempt;
   }
 
-  private turnContinuityUnavailableError(outcome: TurnContinuityOutcome, cause: unknown, timedOut = false): AgentHarnessError {
+  private turnContinuityUnavailableError(outcome: TurnContinuityOutcome, cause: unknown, timedOut = false): ConversationHarnessError {
     // Redaction-safe cause: only the error name/message cross into the
     // response, never raw credentials or full store payloads.
     const details = { cause: errorToDetails(cause) };
-    const ContinuityError = timedOut ? TurnContinuityPublicationTimeoutError : AgentHarnessError;
+    const ContinuityError = timedOut ? TurnContinuityPublicationTimeoutError : ConversationHarnessError;
     if (outcome === "cancelled") {
       return new ContinuityError(
         "cancellation_continuity_unavailable",
@@ -2119,7 +2110,7 @@ export class MonoAgentHarness implements AgentHarness {
   private async awaitAbortablePublication(
     publication: Promise<void>,
     deadline: number,
-    timeoutError: AgentHarnessError,
+    timeoutError: ConversationHarnessError,
     abortSignal?: AbortSignal,
   ): Promise<void> {
     if (abortSignal?.aborted) return;
@@ -2245,7 +2236,7 @@ export class MonoAgentHarness implements AgentHarness {
     catch {
       // Optional memory cleanup cannot prevent unrelated resources being freed.
       // Retain only a stable diagnostic, never the custom hook's exception.
-      cleanupErrors.push(new AgentHarnessError("memory_context_reset_unavailable", "memory_context_reset_unavailable"));
+      cleanupErrors.push(new ConversationHarnessError("memory_context_reset_unavailable", "memory_context_reset_unavailable"));
     }
     if (drained) {
       try {
@@ -2299,7 +2290,7 @@ export class MonoAgentHarness implements AgentHarness {
 
   private assertAcceptingRuns(): void {
     if (this.disposed) {
-      throw new AgentHarnessError("harness_disposed", "Agent harness has been disposed and cannot accept new runs.");
+      throw new ConversationHarnessError("harness_disposed", "Agent harness has been disposed and cannot accept new runs.");
     }
   }
 
@@ -2309,7 +2300,7 @@ export class MonoAgentHarness implements AgentHarness {
    * request (it carries `metadata.cron`, set by the cron scheduler). When false,
    * the run uses the shared continuous-session machinery exactly as before.
    */
-  private isProactiveIsolated(request: AgentHarnessRequest): boolean {
+  private isProactiveIsolated(request: ConversationHarnessRequest): boolean {
     return this.options.session?.isolateProactive === true && isCronRequest(request);
   }
 
@@ -2359,7 +2350,7 @@ export class MonoAgentHarness implements AgentHarness {
     return this.options.now?.().toISOString() ?? new Date().toISOString();
   }
 
-  private publishSessionEvent(event: AgentHarnessSessionEvent): void {
+  private publishSessionEvent(event: ConversationHarnessSessionEvent): void {
     try {
       const result = this.options.session?.onSessionEvent?.(event);
       if (result !== undefined) {
@@ -2377,10 +2368,10 @@ export class MonoAgentHarness implements AgentHarness {
 
 /** Settle with `work`, or reject as soon as `signal` aborts. */
 async function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
+  if (signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
   let onAbort!: () => void;
   const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(new AgentHarnessError("compaction_failed", "Context compaction was cancelled."));
+    onAbort = () => reject(new ConversationHarnessError("compaction_failed", "Context compaction was cancelled."));
     signal.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -2391,8 +2382,8 @@ async function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /** @param internalOptions @internal Unstable APP composition seam; no public config opt-in. */
-export function createAgentHarness(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}): AgentHarness {
-  const harness = new MonoAgentHarness(options, internalOptions);
+export function createConversationHarness(options: ConversationHarnessOptions, internalOptions: ConversationHarnessInternalOptions = {}): ConversationHarness {
+  const harness = new ConversationHarnessImpl(options, internalOptions);
   if (eligibleContextImport(options) === undefined) return harness;
   return Object.assign(harness, {
     importContext: async (

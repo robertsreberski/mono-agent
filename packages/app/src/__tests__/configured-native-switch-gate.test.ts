@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import type { AgentHarness, AgentHarnessRequest, ConversationHistoryStore } from "@mono-agent/conversation";
+import type { ConversationHarness, ConversationHarnessRequest, ConversationHistoryStore } from "@mono-agent/conversation";
 import { serializeNativeSwitchHarness } from "../configured-native-switch.js";
 
 const store: ConversationHistoryStore = { load: async () => [], append: async () => {} };
@@ -50,7 +50,7 @@ it("a held conversation does not gate another conversation on the same root", as
 it("nested same-root append/import complete for other conversations and refuse same-conversation self-waits", async () => {
   const append = vi.fn(async () => {}), importContext = vi.fn(async () => ({ status: "appended" as const }));
   const nested = serializeNativeSwitchHarness({ run: async () => response, appendVerbatimTurn: append, importContext }, "fictional-nested-root", store);
-  const raw: AgentHarness = { run: async () => response, submit: async () => {
+  const raw: ConversationHarness = { run: async () => response, submit: async () => {
     await nested.appendVerbatimTurn!("fictional-B", "Fictional delivered text");
     await nested.importContext!("fictional-C", { text: "Fictional context", idempotencyKey: "fictional-import" });
     await expect(nested.appendVerbatimTurn!("fictional-A", "Must not wait"))
@@ -65,7 +65,7 @@ it("nested same-root append/import complete for other conversations and refuse s
 });
 
 it("nested return to an active ancestor conversation refuses before another claim", async () => {
-  let first!: AgentHarness;
+  let first!: ConversationHarness;
   const second = serializeNativeSwitchHarness({ run: async () => {
     await expect(first.run(request("fictional-A"))).rejects.toMatchObject({ failureKind: "native_switch_busy" }); return response;
   } }, "fictional-ancestor-root", store);
@@ -87,7 +87,7 @@ it("trimmed daily buckets share the durable logical fence even without rollover"
 it("invalid mutation IDs reject through the promised API instead of throwing synchronously", async () => {
   const append = vi.fn(async () => {}), importContext = vi.fn(async () => ({ status: "appended" as const }));
   const harness = serializeNativeSwitchHarness({ run: async () => response, appendVerbatimTurn: append, importContext }, "fictional-invalid-id-root", store);
-  let appended!: Promise<void>, imported!: ReturnType<NonNullable<AgentHarness["importContext"]>>;
+  let appended!: Promise<void>, imported!: ReturnType<NonNullable<ConversationHarness["importContext"]>>;
   expect(() => { appended = harness.appendVerbatimTurn!("", "Fictional text"); }).not.toThrow();
   expect(() => { imported = harness.importContext!("", { text: "Fictional context", idempotencyKey: "fictional-key" }); }).not.toThrow();
   await expect(appended).rejects.toThrow(); await expect(imported).rejects.toThrow();

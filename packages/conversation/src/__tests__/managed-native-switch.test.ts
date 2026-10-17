@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture, ready, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
-import { createModelSwitchState } from "../model-switch-billing.js";
+import { createModelSwitchState } from "../history/model-switch/billing.js";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function setup() { const root = await mkdtemp(join(tmpdir(), "mono-managed-native-")); roots.push(root); return fixture(root); }

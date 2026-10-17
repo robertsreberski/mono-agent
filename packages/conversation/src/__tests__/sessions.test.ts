@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createRuntimeSessionStore } from "../sessions.js";
+import { createRuntimeSessionStore } from "../sessions/warm-store.js";
 import { sessionEventFromRecord } from "../harness/session-events.js";
 
 describe("createRuntimeSessionStore", () => {

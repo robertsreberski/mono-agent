@@ -96,7 +96,7 @@ When the new package is a channel driver, or adds a new `ChannelId`:
 - **Interactive-channel harness classification.** If the channel produces
   interactive (human-attended) conversations, confirm the harness's per-turn
   model-facing framing recognizes it — `sessionContextBlock` in
-  `packages/conversation/src/harness.ts`, plus any sibling logic keyed off the
+  `packages/conversation/src/harness/index.ts`, plus any sibling logic keyed off the
   `conversationId` shape. Do not assume a hardcoded string-prefix allowlist
   elsewhere already covers the new id.
 

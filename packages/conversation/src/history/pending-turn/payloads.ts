@@ -5,8 +5,8 @@ import { OwnedFileDamagedError, assertIdentity, isOwned, listOwned, publishAtomi
 import {
   MAX_PENDING_TURN_BYTES, PENDING_TURN_DIRECTORY,
   parsePendingTurnPayload, pendingPayloadName, serializePendingTurnPayload, sha256, validateTurnPointer,
-} from "./durable-turn-contract.js";
-import type { PendingTurnIdentity, PendingTurnPayload, PendingTurnPointer } from "./durable-turn-contract.js";
+} from "./contract.js";
+import type { PendingTurnIdentity, PendingTurnPayload, PendingTurnPointer } from "./contract.js";
 
 interface PendingDirectoryIdentity { readonly dev: number; readonly ino: number }
 interface PendingPayloadCoordinates { readonly conversationKey: string; readonly runIdDigest: string }

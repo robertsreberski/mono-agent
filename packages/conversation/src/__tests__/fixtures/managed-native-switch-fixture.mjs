@@ -2,9 +2,9 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { JsonlSessionRepo } from "../../../../turn/src/engine/session-store.js";
 import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
-import { createDurableHistoryStore } from "../../../dist/durable-history.js";
-import { createModelSwitchState } from "../../../dist/model-switch-billing.js";
-import { switchDigest, switchConversationKey } from "../../../dist/durable-model-switch-contract.js";
+import { createDurableHistoryStore } from "../../../dist/history/canonical/store.js";
+import { createModelSwitchState } from "../../../dist/history/model-switch/billing.js";
+import { switchDigest, switchConversationKey } from "../../../dist/history/model-switch/contract.js";
 export const bucket = "fictional-native-conversation";
 export function openStore(base, nativePhase = async () => {}, limits = {}) {
   const native = createManagedNativeJournalStorage({ sessionsRoot: join(base, "native"), onPhase: nativePhase });

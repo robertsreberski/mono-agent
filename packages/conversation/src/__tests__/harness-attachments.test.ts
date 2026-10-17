@@ -9,7 +9,7 @@ import type { MemoryBlock, MemoryStore } from "@mono-agent/contracts";
 import type { HistoryMessage } from "../context/index.js";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
 
-import { createAgentHarness } from "../index.js";
+import { createConversationHarness } from "../index.js";
 import type { ConversationHistoryStore } from "../index.js";
 
 const tempDirs: string[] = [];
@@ -95,7 +95,7 @@ function createSpyMemoryStore() {
   return { hostSummaries, captures, store };
 }
 
-describe("AgentHarness attachments", () => {
+describe("ConversationHarness attachments", () => {
   it("injects only successfully persisted current-request attachment paths into opted stdio MCPs", async () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();
@@ -111,7 +111,7 @@ describe("AgentHarness attachments", () => {
         MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES: '[{"path":"/spoofed/old","dev":1,"ino":2}]',
       },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -185,7 +185,7 @@ describe("AgentHarness attachments", () => {
       const olderOtherChat = join(canonicalRoot, "run-other-chat-0-private.m4a");
       await writeFile(olderOtherChat, "other chat private audio", "utf8");
       const fake = createCapturingRuntime();
-      const harness = createAgentHarness({
+      const harness = createConversationHarness({
         identityPath,
         runtime: fake.runtime,
         model,
@@ -248,7 +248,7 @@ describe("AgentHarness attachments", () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();
     const fake = createCapturingRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
 
     const bytes = Buffer.from("\x89PNG\r\n fake image bytes");
     await harness.run({
@@ -277,7 +277,7 @@ describe("AgentHarness attachments", () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();
     const fake = createCapturingRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
 
     const bytes = Buffer.from("OggS fake opus voice bytes");
     await harness.run({
@@ -300,7 +300,7 @@ describe("AgentHarness attachments", () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();
     const fake = createCapturingRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
 
     await harness.run({
       conversationId: "c1",
@@ -318,7 +318,7 @@ describe("AgentHarness attachments", () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();
     const fake = createCapturingRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
 
     await harness.run({ conversationId: "c1", userMessage: "plain message", abortSignal: new AbortController().signal });
 
@@ -330,7 +330,7 @@ describe("AgentHarness attachments", () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();
     const fake = createCapturingRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -360,7 +360,7 @@ describe("AgentHarness attachments", () => {
   it("emits a provider_bridge_latency event around the provider call", async () => {
     const identityPath = await identityFixture();
     const fake = createCapturingRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model });
 
     const events: Array<{ type?: string; durationMs?: number }> = [];
     await harness.run({
@@ -379,7 +379,7 @@ describe("AgentHarness attachments", () => {
   it("does not pass sessionsRoot without a crash-safe history coordinator", async () => {
     const identityPath = await identityFixture();
     const fake = createCapturingRuntime();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,
@@ -395,7 +395,7 @@ describe("AgentHarness attachments", () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();
     const fake = createCapturingRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
+    const harness = createConversationHarness({ identityPath, runtime: fake.runtime, model, attachmentsDir });
 
     const response = await harness.run({
       conversationId: "c1",
@@ -432,7 +432,7 @@ describe("AgentHarness attachments", () => {
     };
     const allocations: string[] = [];
     const cleanups: string[] = [];
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -486,7 +486,7 @@ describe("AgentHarness attachments", () => {
       async disposeSession(): Promise<boolean> { return true; },
       async disposeAllSessions(): Promise<void> {},
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -546,7 +546,7 @@ describe("AgentHarness attachments", () => {
         return { text: "ok" };
       },
     };
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime,
       model,
@@ -601,7 +601,7 @@ describe("AgentHarness attachments", () => {
     const fake = createCapturingRuntime();
     const history = createSpyHistoryStore();
     const memory = createSpyMemoryStore();
-    const harness = createAgentHarness({
+    const harness = createConversationHarness({
       identityPath,
       runtime: fake.runtime,
       model,

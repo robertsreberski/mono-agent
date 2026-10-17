@@ -1,5 +1,5 @@
-import type { PendingTurnInput } from "./durable-turn-contract.js";
-import { createPendingLiveInput } from "./durable-turn-contract.js";
+import type { PendingTurnInput } from "../history/pending-turn/contract.js";
+import { createPendingLiveInput } from "../history/pending-turn/contract.js";
 import type { RuntimePromptOverrides } from "@mono-agent/turn/host/types";
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
