@@ -348,6 +348,9 @@ storage-only repair; it neither creates a session nor dispatches a model/tool.
 No existing
 configuration enables this path; configured switching remains separate work.
 
+Managed SRT pins, cache paths and readonly marker identity are owned by
+`@mono-agent/turn/host/sandbox`; app owns installation and repair.
+
 Typed hosts can use the built-in sandbox and process protection directly:
 
 ```ts
@@ -754,7 +757,13 @@ validateProviderDefinition
 **`@mono-agent/turn/host/sandbox`**
 
 ```text
+MANAGED_SRT_LOCK_SHA256
+MANAGED_SRT_MARKER
+MANAGED_SRT_PACKAGE
+MANAGED_SRT_TREE_EXCLUSIONS
 MANAGED_SRT_TREE_SHA256
+MANAGED_SRT_VERSION
+ManagedSrtMarker
 PreparedSandboxCommand
 SANDBOX_FALLBACKS
 SANDBOX_MODES
@@ -775,6 +784,8 @@ createSandboxPolicy
 createSrtSandboxEngine
 describeSandboxEffectiveState
 failClosedSandboxPolicy
+managedSrtCacheRoot
+managedSrtInstallRoot
 mergeSandboxPolicies
 networkPolicyAllowsUrl
 prepareSandboxedCommand
