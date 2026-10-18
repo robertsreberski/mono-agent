@@ -1,3 +1,9 @@
+import type { PiDriver, PiHarness, PiSession, PiTool } from "../../execution/pi/types.js";
+import type { Message } from "@earendil-works/pi-ai";
+type TestRepo = Omit<MemorySessionRepo, "create" | "open" | "close"> & { create(input?: Parameters<MemorySessionRepo["create"]>[0], context?: unknown): ReturnType<MemorySessionRepo["create"]>; open(metadata: unknown, context?: unknown): ReturnType<MemorySessionRepo["open"]>; close(context?: unknown): Promise<void> };
+type TestSession = Omit<PiSession, "attach" | "buildContext"> & { attach(driver: PiDriver, lane?: unknown): void; buildContext(): Promise<{ messages: Message[] }> };
+type TestHarness = Omit<PiHarness, "prompt"> & { prompt(text: string, options?: unknown): ReturnType<PiHarness["prompt"]> };
+type TestGate = Omit<ReturnType<typeof createToolExecutionGate>, "acquire"> & { acquire(shared: boolean, signal?: AbortSignal): Promise<() => void> };
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { MemorySessionRepo } from "../../engine/session-store.js";
 import { describe, expect, it, vi } from "vitest";
@@ -8,13 +14,13 @@ import { shouldRetryStructuredOutputFinalization } from "../../execution/pi/stru
 import { createToolExecutionGate, isSharedTool } from "../../execution/pi/tool-execution-gate.js";
 
 function deferred() {
-  let resolve;
-  const promise = new Promise((done) => { resolve = done; });
+  let resolve!: (value?: unknown) => void;
+  const promise = new Promise<unknown>((done) => { resolve = done; });
   return { promise, resolve };
 }
 
-async function batch(names, { mode = "safe-parallel", question = false } = {}) {
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "gate-test" }], tokensPerSecond: undefined });
+async function batch(names: string[], { mode = "safe-parallel", question = false } = {}) {
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "gate-test" }], tokensPerSecond: undefined! });
   const model = faux.getModel();
   const models = createModels();
   models.setProvider(faux.provider);
@@ -22,27 +28,27 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
     fauxAssistantMessage(names.map((name, index) => fauxToolCall(name, {}, { id: `call-${index}` }))),
     fauxAssistantMessage([fauxText("done")]),
   ]);
-  const repo = new MemorySessionRepo();
+  const repo = new MemorySessionRepo() as TestRepo;
   const rawSession = await repo.create({ id: `gate-${Math.random()}` }, ENGINE_CONTEXT);
-  const session = createPiSessionAdapter(rawSession);
-  let driver;
+  const session = createPiSessionAdapter(rawSession) as TestSession;
+  let driver!: PiDriver;
   const originalAttach = session.attach.bind(session);
   session.attach = (harness, nextLane) => {
     originalAttach(harness, nextLane);
     driver = harness;
   };
-  const events = [];
-  const signals = new Map();
+  const events: string[] = [];
+  const signals = new Map<string, AbortSignal | undefined>();
   const blockers = names.map(() => deferred());
-  const tools = [...new Set([...names, "Bash"])].map((name) => ({
+  const tools: PiTool[] = [...new Set([...names, "Bash"])].map((name) => ({
     name, label: name, description: name,
     parameters: { type: "object", properties: {} },
     ...(["Agent", "Read", "AgentManage", "Monitor", "Unknown"].includes(name)
       ? {} : { executionMode: "sequential" }),
-    async execute(id, _args, signal) {
+    async execute(id: string, _args: unknown, signal: AbortSignal | undefined) {
       signals.set(id, signal);
       events.push(`enter:${id}`);
-      await blockers[Number(id.slice(5))].promise;
+      await blockers[Number(id.slice(5))]!.promise;
       events.push(`exit:${id}`);
       return { content: [{ type: "text", text: id }],
         ...(name === "AskParent" && question ? { details: { tool: "AskParent" }, terminate: true } : {}) };
@@ -52,7 +58,7 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
     models, model, thinkingLevel: "off", systemPrompt: "system", tools,
     toolExecutionMode: mode, streamOptions: { transport: "auto", maxRetries: 0, maxRetryDelayMs: 1 },
     steeringMode: "one-at-a-time", followUpMode: "one-at-a-time",
-  });
+  }) as TestHarness;
   const run = harness.prompt("run");
   const finish = async () => {
     blockers.forEach((blocker) => blocker.resolve());
@@ -61,9 +67,9 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
   return { events, blockers, run, finish, harness, session, driver, signals };
 }
 
-const enter = (i) => `enter:call-${i}`;
-const exit = (i) => `exit:call-${i}`;
-const wait = (fn) => vi.waitFor(fn, { timeout: 5000 });
+const enter = (i: number) => `enter:call-${i}`;
+const exit = (i: number) => `exit:call-${i}`;
+const wait = (fn: () => unknown) => vi.waitFor(fn, { timeout: 5000 });
 
 describe("mono-agent harness invoked-call admission", () => {
   it.each([["Agent", "Agent"], ["Read", "Agent"]])("overlaps %s and %s with Bash offered", async (a, b) => {
@@ -71,15 +77,15 @@ describe("mono-agent harness invoked-call admission", () => {
     try {
       await wait(() => expect(state.events).toContain(enter(1)));
       expect(state.events).not.toContain(exit(0));
-      state.blockers[1].resolve();
-      state.blockers[0].resolve();
+      state.blockers[1]!.resolve();
+      state.blockers[0]!.resolve();
       const result = await state.run;
       expect(result.status).toBe("completed");
       // Pi materializes provider-visible results in call order even when the
       // second call exits first. The original call IDs stay associated.
-      const messages = (await state.session.buildContext()).messages;
-      expect(messages.filter((message) => message.role === "toolResult")
-        .map((message) => message.toolCallId)).toEqual(["call-0", "call-1"]);
+      const messages = (await state.session.buildContext()).messages as Message[];
+      expect(messages.filter((message: Message) => message.role === "toolResult")
+        .map((message: import("@earendil-works/pi-ai").ToolResultMessage) => message.toolCallId)).toEqual(["call-0", "call-1"]);
       expect(state.events).toContain(exit(1));
     } finally { await state.finish(); }
   });
@@ -92,7 +98,7 @@ describe("mono-agent harness invoked-call admission", () => {
           await wait(() => expect(state.events).toContain(enter(0)));
           await new Promise((resolve) => setTimeout(resolve, 15));
           expect(state.events).not.toContain(enter(1));
-          state.blockers[0].resolve();
+          state.blockers[0]!.resolve();
           await wait(() => expect(state.events).toContain(enter(1)));
         } finally { await state.finish(); }
       }
@@ -106,10 +112,10 @@ describe("mono-agent harness invoked-call admission", () => {
       await new Promise((resolve) => setTimeout(resolve, 15));
       expect(state.events).not.toContain(enter(1));
       expect(state.events).not.toContain(enter(2));
-      state.blockers[0].resolve();
+      state.blockers[0]!.resolve();
       await wait(() => expect(state.events).toContain(enter(1)));
       expect(state.events).not.toContain(enter(2));
-      state.blockers[1].resolve();
+      state.blockers[1]!.resolve();
       await wait(() => expect(state.events).toContain(enter(2)));
       expect(state.events.indexOf(exit(0))).toBeLessThan(state.events.indexOf(enter(1)));
       expect(state.events.indexOf(exit(1))).toBeLessThan(state.events.indexOf(enter(2)));
@@ -121,34 +127,34 @@ describe("mono-agent harness invoked-call admission", () => {
     try {
       await wait(() => expect(state.events).toContain(enter(0)));
       expect(state.events).not.toContain(enter(1));
-      state.blockers[0].resolve();
+      state.blockers[0]!.resolve();
       await wait(() => expect(state.events).toContain(enter(1)));
     } finally { await state.finish(); }
   });
 
   it("overrides persisted sequential settings on the next restored run", async () => {
-    const faux = fauxProvider({ provider: "faux", models: [{ id: "restored-gate" }], tokensPerSecond: undefined });
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "restored-gate" }], tokensPerSecond: undefined! });
     const model = faux.getModel();
     const models = createModels();
     models.setProvider(faux.provider);
-    const repo = new MemorySessionRepo();
+    const repo = new MemorySessionRepo() as TestRepo;
     const raw = await repo.create({ id: "restored-gate" }, ENGINE_CONTEXT);
     const metadata = raw.metadata;
     const blocks = [deferred(), deferred()];
-    const entries = [];
-    const tools = ["Agent", "Bash"].map((name) => ({
+    const entries: string[] = [];
+    const tools: PiTool[] = ["Agent", "Bash"].map((name) => ({
       name, label: name, description: name, parameters: { type: "object", properties: {} },
       ...(name === "Bash" ? { executionMode: "sequential" } : {}),
-      async execute(id) {
+      async execute(id: string) {
         entries.push(id);
-        if (id.startsWith("parallel-")) await blocks[Number(id.at(-1))].promise;
+        if (id.startsWith("parallel-")) await blocks[Number(id.at(-1))]!.promise;
         return { content: [{ type: "text", text: id }] };
       },
     }));
-    const make = (session, toolExecutionMode) => createHarnessAdapter(session, {
+    const make = (session: PiSession, toolExecutionMode: string) => createHarnessAdapter(session, {
       models, model, thinkingLevel: "off", systemPrompt: "system", tools, toolExecutionMode,
       streamOptions: { transport: "auto", maxRetries: 0, maxRetryDelayMs: 1 },
-    });
+    }) as Promise<TestHarness>;
     try {
       faux.setResponses([fauxAssistantMessage([fauxToolCall("Agent", {}, { id: "first" })]), fauxAssistantMessage([fauxText("done")])]);
       const first = await make(createPiSessionAdapter(raw), "sequential");
@@ -183,10 +189,10 @@ describe("mono-agent harness invoked-call admission", () => {
       await wait(() => expect(state.events).toContain(enter(0)));
       const cancelling = state.harness.abort();
       await abortReachedDriver.promise;
-      state.blockers[0].resolve();
+      state.blockers[0]!.resolve();
       await wait(() => expect(state.events).toContain(exit(0)));
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(state.signals.get("call-0").aborted).toBe(false);
+      expect(state.signals.get("call-0")!.aborted).toBe(false);
       expect(state.events).not.toContain(enter(1));
       pendingAbort.resolve();
       await cancelling;
@@ -204,7 +210,7 @@ describe("mono-agent harness invoked-call admission", () => {
       await wait(() => expect(state.events).toContain(enter(0)));
       const cancelling = state.harness.abort();
       await new Promise((resolve) => setTimeout(resolve, 20));
-      state.blockers[0].resolve();
+      state.blockers[0]!.resolve();
       await cancelling;
       await state.run;
       expect(state.events).not.toContain(enter(1));
@@ -215,11 +221,11 @@ describe("mono-agent harness invoked-call admission", () => {
     const state = await batch(["AskParent", "Agent"], { question: true });
     try {
       await wait(() => expect(state.events).toContain(enter(0)));
-      state.blockers[0].resolve();
+      state.blockers[0]!.resolve();
       await state.run;
       expect(state.events).not.toContain(enter(1));
-      const results = (await state.session.buildContext()).messages.filter((message) => message.role === "toolResult");
-      expect(results.find((message) => message.toolCallId === "call-1")).toMatchObject({
+      const results = (await state.session.buildContext()).messages.filter((message: Message) => message.role === "toolResult");
+      expect(results.find((message: import("@earendil-works/pi-ai").ToolResultMessage) => message.toolCallId === "call-1")).toMatchObject({
         isError: true,
         content: [{ type: "text", text: "Child turn ended awaiting a parent reply." }],
       });
@@ -239,7 +245,7 @@ describe("run-local gate cancellation and hand-off", () => {
   });
 
   it("rejects every queued waiter on stop even without Pi aborting its signal", async () => {
-    const gate = createToolExecutionGate();
+    const gate = createToolExecutionGate() as TestGate;
     const release = await gate.acquire(false);
     const pending = [gate.acquire(true), gate.acquire(false)];
     gate.stop();
@@ -252,7 +258,7 @@ describe("run-local gate cancellation and hand-off", () => {
   });
 
   it("removes aborted waiters and releases a failed or timed-out execution", async () => {
-    const gate = createToolExecutionGate();
+    const gate = createToolExecutionGate() as TestGate;
     const release = await gate.acquire(false);
     const controller = new AbortController();
     const aborted = gate.acquire(true, controller.signal);
@@ -275,7 +281,7 @@ describe("run-local gate cancellation and hand-off", () => {
   });
 
   it("releases on background process and detached Agent receipts, not child lifetime", async () => {
-    const gate = createToolExecutionGate();
+    const gate = createToolExecutionGate() as TestGate;
     for (const name of ["Bash", "Exec", "Agent"]) {
       const receipt = deferred();
       const running = (async () => {
@@ -292,21 +298,21 @@ describe("run-local gate cancellation and hand-off", () => {
 });
 
 it("does not execute structured finalization retry after a durable AskParent", async () => {
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "question-finalization" }], tokensPerSecond: undefined });
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "question-finalization" }], tokensPerSecond: undefined! });
   const models = createModels(); models.setProvider(faux.provider);
   faux.setResponses([fauxAssistantMessage([fauxToolCall("AskParent", {})]), fauxAssistantMessage([fauxToolCall("StructuredOutput", {})])]);
-  const repo = new MemorySessionRepo(); const session = createPiSessionAdapter(await repo.create());
+  const repo = new MemorySessionRepo() as TestRepo; const session = createPiSessionAdapter(await repo.create());
   const submit = vi.fn(async () => ({ content: [] })); const schema = { type: "object", properties: {} };
   const harness = await createHarnessAdapter(session, { models, model: faux.getModel(), systemPrompt: "Fictional question.", outputSchema: schema, tools: [
     { name: "AskParent", description: "Ask", parameters: schema, execute: async () => ({ content: [], details: { tool: "AskParent" } }) },
     { name: "StructuredOutput", description: "Submit", parameters: schema, execute: submit },
-  ], retry: { maxRetries: 0 } });
+  ], retry: { maxRetries: 0 } }) as TestHarness;
   try {
     await harness.prompt("Ask a fictional question.");
     expect(shouldRetryStructuredOutputFinalization({ outputSchema: schema, structuredResult: null, finalText: "", stopReason: "toolUse", externalAbort: false, maxTurnsHit: false })).toBe(true);
     await harness.prompt("Finalize the structured object.");
     expect(submit).not.toHaveBeenCalled();
-    const results = (await session.buildContext()).messages.filter((message) => message.role === "toolResult");
-    expect(results.at(-1).isError).toBe(true); expect(JSON.stringify(results.at(-1))).toContain("awaiting a parent reply");
+    const results = (await session.buildContext()).messages.filter((message: Message) => message.role === "toolResult");
+    expect(results.at(-1)!.isError).toBe(true); expect(JSON.stringify(results.at(-1))).toContain("awaiting a parent reply");
   } finally { await harness.close(); await repo.close(); }
 });

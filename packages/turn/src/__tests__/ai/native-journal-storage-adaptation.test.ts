@@ -13,29 +13,29 @@ import { createManagedNativeJournalStorage } from "../../execution/pi/storage-ca
 it("keeps one storage factory with readonly copies and exact coordinate normalization", async () => {
   const storage = createManagedNativeJournalStorage({ sessionsRoot: "/fictional/sessions" });
   const journals = Object.freeze([{ handleId: "fixture", journalId: "journal" }]);
-  await storage.deletionBlocked(journals, {});
-  await storage.deleteJournals(journals, {});
+  await storage.deletionBlocked(journals, {} as never);
+  await storage.deleteJournals(journals, {} as never);
   for (const method of [native.deletionBlocked, native.deleteJournals]) {
-    expect(method.mock.calls[0][0]).toEqual(journals);
-    expect(method.mock.calls[0][0]).not.toBe(journals);
+    expect(method.mock.calls[0]![0]).toEqual(journals);
+    expect(method.mock.calls[0]![0]).not.toBe(journals);
   }
   const ids = Object.freeze(["journal"]), owners = Object.freeze({ rootId: "root", conversationKeys: Object.freeze(["conversation"]) });
   await storage.inventory(ids, owners);
-  expect(native.inventory.mock.calls[0]).toEqual([ids, owners]);
-  expect(native.inventory.mock.calls[0][0]).not.toBe(ids);
-  expect(native.inventory.mock.calls[0][1]).not.toBe(owners);
-  expect(native.inventory.mock.calls[0][1].conversationKeys).not.toBe(owners.conversationKeys);
+  expect(native.inventory.mock.calls[0]!).toEqual([ids, owners]);
+  expect(native.inventory.mock.calls[0]![0]).not.toBe(ids);
+  expect(native.inventory.mock.calls[0]![1]).not.toBe(owners);
+  expect(native.inventory.mock.calls[0]![1].conversationKeys).not.toBe(owners.conversationKeys);
   await storage.inventory();
   expect(native.inventory).toHaveBeenLastCalledWith(undefined, undefined);
-  await storage.inspectCurrentJournal({ handleId: "fixture", journalId: undefined, extra: "discard" });
+  await storage.inspectCurrentJournal({ handleId: "fixture", journalId: undefined, extra: "discard" } as unknown as Parameters<typeof storage.inspectCurrentJournal>[0]);
   expect(native.inspectCurrentJournal).toHaveBeenLastCalledWith({ handleId: "fixture" });
   await storage.inspectCurrentJournal({ handleId: "fixture", journalId: "journal" });
   expect(native.inspectCurrentJournal).toHaveBeenLastCalledWith({ handleId: "fixture", journalId: "journal" });
   const messages = Object.freeze([{ role: "user", content: "fictional" }]);
-  await storage.checkInheritedPrefix(messages, {}, {}, 10);
-  expect(inherited.mock.calls[0][0]).toEqual(messages);
-  expect(inherited.mock.calls[0][0]).not.toBe(messages);
-  for (const method of ["captureEvidence", "createBudget", "prepareHandoff", "buildHandoff", "createEpoch", "freeze"]) {
+  await storage.checkInheritedPrefix(messages, {} as never, {}, 10);
+  expect(inherited.mock.calls[0]![0]).toEqual(messages);
+  expect(inherited.mock.calls[0]![0]).not.toBe(messages);
+  for (const method of ["captureEvidence", "createBudget", "prepareHandoff", "buildHandoff", "createEpoch", "freeze"] as const) {
     expect(storage[method]).toBe(native[method]);
   }
 });

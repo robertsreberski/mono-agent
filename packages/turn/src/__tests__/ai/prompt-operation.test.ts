@@ -3,7 +3,7 @@ import { runHarnessPrompt } from "../../execution/pi/prompt-operation.js";
 
 describe("prompt operation", () => {
   it("omits empty options and always waits for idle", async () => {
-    const order = [];
+    const order: string[] = [];
     const harness = {
       prompt: vi.fn(async () => { order.push("prompt"); }),
       waitForIdle: vi.fn(async () => { order.push("idle"); }),
@@ -36,10 +36,10 @@ describe("prompt operation", () => {
       prompt: vi.fn(async () => { throw thrown; }),
       waitForIdle: vi.fn(async () => {}),
     };
-    expect(await runHarnessPrompt(harness, "hello", undefined)).toEqual({ runError: thrown });
+    expect(await runHarnessPrompt(harness, "hello", undefined!)).toEqual({ runError: thrown });
     expect(harness.waitForIdle).toHaveBeenCalledOnce();
     const idleError = new Error("fixture idle failure");
     harness.waitForIdle.mockRejectedValueOnce(idleError);
-    await expect(runHarnessPrompt(harness, "hello", undefined)).rejects.toBe(idleError);
+    await expect(runHarnessPrompt(harness, "hello", undefined!)).rejects.toBe(idleError);
   });
 });

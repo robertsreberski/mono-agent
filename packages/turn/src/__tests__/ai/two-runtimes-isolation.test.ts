@@ -1,3 +1,6 @@
+import type { SandboxPolicy, PrepareSandboxedCommandInput } from "../../agent/sandbox-seam.js";
+import type { RuntimeEvent } from "../../contracts/events.js";
+import type { RuntimeRunOptions } from "../../contracts/runtime.js";
 // Two createRuntime instances in one process must not cross-contaminate.
 //
 // Before the per-instance ToolContext (tool-context.js), createRuntime mutated a
@@ -40,7 +43,7 @@ import { cachedRgPath } from "../../tools/shared/ripgrep.js";
 
 // A fresh faux provider + Models per run (each runtime resolves its own model).
 function makeFaux() {
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model", reasoning: false }], tokensPerSecond: undefined });
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model", reasoning: false }], tokensPerSecond: undefined! });
   const models = createModels();
   models.setProvider(faux.provider);
   return { faux, models, model: faux.getModel() };
@@ -50,19 +53,19 @@ function makeFaux() {
 // and the (policy, url) every networkAllowsUrl checks, then behaves as an
 // identity (no real enforcement) so a Bash call proceeds with a harmless command.
 function recordingSandbox() {
-  const prepareCalls = [];
-  const merges = [];
+  const prepareCalls: Array<{ policy: SandboxPolicy | undefined; cwd: string | undefined }> = [];
+  const merges: Array<{ configured: SandboxPolicy | null | undefined; request: SandboxPolicy | null | undefined }> = [];
   return {
     prepareCalls,
     merges,
     impl: {
-      mergePolicies(configured, request) {
+      mergePolicies(configured: SandboxPolicy | null | undefined, request: SandboxPolicy | null | undefined) {
         merges.push({ configured, request });
         // Identity-ish: the configured (host) policy wins, matching how a real
         // merge keeps the host policy when there's no tightening request.
         return configured ?? request;
       },
-      async prepareCommand({ policy, command }) {
+      async prepareCommand({ policy, command }: PrepareSandboxedCommandInput) {
         prepareCalls.push({ policy, cwd: command?.cwd });
         return { ...command, args: command?.args ?? [], cwd: command?.cwd ?? process.cwd(), sandboxed: false };
       },
@@ -71,8 +74,8 @@ function recordingSandbox() {
   };
 }
 
-let workspaces = [];
-let priorRgCache;
+let workspaces: string[] = [];
+let priorRgCache: typeof cachedRgPath.value;
 
 beforeEach(() => {
   workspaces = [];
@@ -88,7 +91,7 @@ afterEach(() => {
   cachedRgPath.value = priorRgCache;
 });
 
-function makeWorkspace(prefix) {
+function makeWorkspace(prefix: string) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   workspaces.push(dir);
   return dir;
@@ -96,7 +99,7 @@ function makeWorkspace(prefix) {
 
 // One faux turn: Bash (observes cwd + sandbox policy), then Grep (observes brand
 // via the rg-missing message), then a final text so the run completes.
-function threeStepResponses(faux, workspace) {
+function threeStepResponses(faux: ReturnType<typeof fauxProvider>, workspace: string) {
   faux.setResponses([
     fauxAssistantMessage([fauxToolCall("Bash", { command: "echo hi" }, { id: "b1" })]),
     fauxAssistantMessage([fauxToolCall("Grep", { pattern: "needle", path: workspace }, { id: "g1" })]),
@@ -104,10 +107,10 @@ function threeStepResponses(faux, workspace) {
   ]);
 }
 
-function collectToolResults(events) {
-  const out = [];
+function collectToolResults(events: RuntimeEvent[]) {
+  const out: string[] = [];
   return {
-    onEvent: (event) => {
+    onEvent: (event: RuntimeEvent) => {
       if (event?.type === "user") {
         for (const block of event.message?.content || []) {
           if (block?.type === "tool_result") out.push(JSON.stringify(block.content));
@@ -119,9 +122,9 @@ function collectToolResults(events) {
   };
 }
 
-function nativePolicy(marker, workspace) {
+function nativePolicy(marker: string, workspace: string) {
   return {
-    mode: "native",
+    mode: "native" as const,
     marker,
     readableRoots: [workspace],
     writableRoots: [workspace],
@@ -155,12 +158,12 @@ describe("two createRuntime instances in one process — no cross-contamination"
     threeStepResponses(fauxA.faux, workspaceA);
     threeStepResponses(fauxB.faux, workspaceB);
 
-    const eventsA = [];
-    const eventsB = [];
+    const eventsA: RuntimeEvent[] = [];
+    const eventsB: RuntimeEvent[] = [];
     const capA = collectToolResults(eventsA);
     const capB = collectToolResults(eventsB);
 
-    const model = (m) => ({ provider: "faux", model: "faux-model", reference: "faux:faux-model", _m: m });
+    const model = (m: string) => ({ provider: "faux", model: "faux-model", reference: "faux:faux-model", _m: m });
 
     // Interleaved: both turns in flight concurrently.
     const [resultA, resultB] = await Promise.all([
@@ -172,7 +175,7 @@ describe("two createRuntime instances in one process — no cross-contamination"
         allowedTools: ["Bash", "Grep"],
         messages: [{ role: "user", content: "go A" }],
         onEvent: capA.onEvent,
-      }),
+      } as unknown as RuntimeRunOptions),
       runtimeB.run("system", {
         model: model("B"),
         piResolvedModel: fauxB.model,
@@ -181,7 +184,7 @@ describe("two createRuntime instances in one process — no cross-contamination"
         allowedTools: ["Bash", "Grep"],
         messages: [{ role: "user", content: "go B" }],
         onEvent: capB.onEvent,
-      }),
+      } as unknown as RuntimeRunOptions),
     ]);
 
     expect(resultA.error).toBeNull();
@@ -197,8 +200,8 @@ describe("two createRuntime instances in one process — no cross-contamination"
     expect(sandboxB.prepareCalls.some((c) => c.policy?.marker === "A")).toBe(false);
 
     // (2) Tool path / cwd isolation: each runtime's Bash ran in ITS workspace.
-    expect(sandboxA.prepareCalls.every((c) => resolve(c.cwd) === resolve(workspaceA))).toBe(true);
-    expect(sandboxB.prepareCalls.every((c) => resolve(c.cwd) === resolve(workspaceB))).toBe(true);
+    expect(sandboxA.prepareCalls.every((c) => resolve(c.cwd!) === resolve(workspaceA))).toBe(true);
+    expect(sandboxB.prepareCalls.every((c) => resolve(c.cwd!) === resolve(workspaceB))).toBe(true);
 
     // (3) Brand isolation (observed in-turn): each Grep returned its OWN brand's
     // doctorCommand, never the other's.
@@ -245,20 +248,20 @@ describe("two createRuntime instances in one process — no cross-contamination"
         piResolvedModel: fauxA.model,
         piResolvedModels: fauxA.models,
         messages: [{ role: "user", content: "go A" }],
-      }),
+      } as unknown as RuntimeRunOptions),
       runtimeB.run("system", {
         ...base,
         model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
         piResolvedModel: fauxB.model,
         piResolvedModels: fauxB.models,
         messages: [{ role: "user", content: "go B" }],
-      }),
+      } as unknown as RuntimeRunOptions),
     ]);
 
     expect(rA.error).toBeNull();
     expect(rB.error).toBeNull();
     // A's reconfigured workspace + policy took effect; B kept its own.
-    expect(sandboxA.prepareCalls.every((c) => c.policy?.marker === "A2" && resolve(c.cwd) === resolve(workspaceA2))).toBe(true);
-    expect(sandboxB.prepareCalls.every((c) => c.policy?.marker === "B" && resolve(c.cwd) === resolve(workspaceB))).toBe(true);
+    expect(sandboxA.prepareCalls.every((c) => c.policy?.marker === "A2" && resolve(c.cwd!) === resolve(workspaceA2))).toBe(true);
+    expect(sandboxB.prepareCalls.every((c) => c.policy?.marker === "B" && resolve(c.cwd!) === resolve(workspaceB))).toBe(true);
   });
 });

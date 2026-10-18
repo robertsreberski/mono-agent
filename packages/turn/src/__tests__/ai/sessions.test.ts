@@ -279,7 +279,7 @@ describe("invalidateProviderSession", () => {
 
   it("keeps a busy placeholder visible until destructive cleanup completes", async () => {
     let releaseCleanup;
-    const cleanupGate = new Promise((resolve) => { releaseCleanup = resolve; });
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
     const registry = createSessionRegistry({
       idleTimeoutMs: 60_000,
       onEvict: () => cleanupGate,
@@ -292,7 +292,7 @@ describe("invalidateProviderSession", () => {
     expect(registry.set("unlink-race", { name: "replacement", busy: false })).toBe(false);
     expect(registry.get("unlink-race")).toMatchObject({ busy: true });
 
-    releaseCleanup();
+    releaseCleanup!();
     await expect(pending).resolves.toBe(true);
     expect(registry.get("unlink-race")).toBeUndefined();
   });

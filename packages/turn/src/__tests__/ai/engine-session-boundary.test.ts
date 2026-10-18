@@ -1,3 +1,6 @@
+import type { MockedFunction } from "vitest";
+import type { RuntimeEvent } from "../../contracts/events.js";
+import type { PiWarning } from "../../execution/pi/types.js";
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("@mono-agent/turn/engine/sessions.js", { spy: true });
 import * as storage from "@mono-agent/turn/engine/sessions.js";
@@ -14,7 +17,7 @@ it.each([
 ])("keeps the legacy unavailable result byte-equivalent for %s", async (failureKind, code, message) => {
   vi.spyOn(Date, "now").mockReturnValue(1000);
   vi.spyOn(storage, "resolveSession").mockResolvedValue({ status: "unavailable", unavailable: { sessionId: "fictional", failureKind, code, message } });
-  const events = [], runtimeWarnings = [];
+  const events: RuntimeEvent[] = [], runtimeWarnings: PiWarning[] = [];
   const actual = await resolveSession({}, { requestedSessionId: "fictional", providerSessionId: "fictional", resolved: { reference: "faux:fixture" },
     options: { effort: "none" }, events, runtimeWarnings, start: 993, piTransport: "auto" });
   const expected = { done: true, result: { text: null, events, usage: {}, durationMs: 7, numTurns: 0, model: "faux:fixture", effort: "none", sdk: "pi", cancelled: false,
@@ -27,7 +30,7 @@ it("builds the same persistence warning in runtime and preserves receipt transla
   const onEvent = vi.fn();
   expect(await commitSession({}, { options: { sessionKeepAlive: true }, onEvent, errorMessage: "failure", externalAbort: false })).toBeUndefined();
   expect(onEvent.mock.calls).toEqual([[{ type: "runtime_warning", warning_kind: "pi_session_persist_failed", message: "Fictional persistence failure" }]]);
-  expect(storage.commitSession.mock.calls[0][1]).toMatchObject({ keepAlive: true, failed: true, externalAbort: false });
+  expect((storage.commitSession as MockedFunction<typeof storage.commitSession>).mock.calls[0]![1]).toMatchObject({ keepAlive: true, failed: true, externalAbort: false });
   const receipt = { runId: "run", revision: 1, providerSessionId: "fictional", modelKey: "faux:fixture", tipId: "tip" };
   vi.spyOn(storage, "captureSessionRecovery").mockResolvedValue({ status: "captured", receipt });
   expect(await captureSessionRecovery({}, { options: { sessionRecovery: { runId: "run", revision: 1 } }, providerSessionId: "fictional", modelKey: "faux:fixture" })).toBe(receipt);
@@ -49,13 +52,13 @@ it("always supplies runtime prefix preflight through the published factory", asy
   const native = createManagedNativeJournalStorage({ sessionsRoot: "/fictional/native" });
   const producer = await import("../../execution/pi/handoff-producer.js");
   const fit = { status: "ready" };
-  vi.spyOn(producer, "checkNativeInheritedPrefix").mockResolvedValue(fit);
+  vi.spyOn(producer, "checkNativeInheritedPrefix").mockResolvedValue(fit as never);
   const messages = Object.freeze([{ role: "user", content: "Fictional input." }]);
   const model = { provider: "faux", id: "fixture", api: "faux", contextWindow: 32000, maxTokens: 4096 };
   const compaction = { enabled: true };
   expect(await native.checkInheritedPrefix(messages, model, compaction, 10)).toBe(fit);
   expect(checkNativeInheritedPrefix).toHaveBeenCalledOnce();
-  const [copiedMessages, actualModel, actualCompaction, prefixTokenCap] = checkNativeInheritedPrefix.mock.calls[0];
+  const [copiedMessages, actualModel, actualCompaction, prefixTokenCap] = (checkNativeInheritedPrefix as MockedFunction<typeof checkNativeInheritedPrefix>).mock.calls[0]!;
   expect(copiedMessages).toEqual(messages);
   expect(copiedMessages).not.toBe(messages);
   expect(actualModel).toBe(model);

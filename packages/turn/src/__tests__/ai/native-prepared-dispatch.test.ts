@@ -1,3 +1,8 @@
+import type { NativePreparedDispatch, NativeHandoffProducerRequest, RuntimeRunOptions, AgentRuntimeInstance } from "../../contracts/runtime.js";
+import type { PiOptions } from "../../execution/pi/types.js";
+import type { TranscriptContext, SimpleStreamOptions, Model, StreamFunction, OAuthCredential, Credential } from "@earendil-works/pi-ai";
+type FullLease = NativePreparedDispatch & Required<Pick<NativePreparedDispatch, "produceHandoffSummary" | "checkHandoffSummary" | "assertReady">>;
+type WireContext = TranscriptContext & { messages: Array<TranscriptContext["messages"][number] & { toolsRemoved?: string[]; toolsAdded: NonNullable<import("@earendil-works/pi-ai").SystemMessage["toolsAdded"]> }> };
 import { afterEach, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -14,18 +19,18 @@ import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, fre
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { Type } from "@earendil-works/pi-ai";
 
-const cleanups = [];
+const cleanups: Array<() => unknown> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
-async function fixture(provider = "faux", api) {
+async function fixture(provider = "faux", api?: string) {
   const root = await mkdtemp(join(tmpdir(), "native-prepared-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const faux = fauxProvider({ provider, ...(api ? { api } : {}), models: [{ id: "fixture", ...(api ? { api } : {}), contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined });
+  const faux = fauxProvider({ provider, ...(api ? { api } : {}), models: [{ id: "fixture", ...(api ? { api } : {}), contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined! });
   const models = createModels(); models.setProvider(faux.provider);
-  const options = { model: { provider, model: "fixture", reference: `${provider}:fixture` }, piResolvedModel: faux.getModel(), piResolvedModels: models,
+  const options: PiOptions & { model: NonNullable<PiOptions["model"]>; messages: Array<{ role: string; content: string }>; allowedTools: string[] } = { model: { provider, model: "fixture", reference: `${provider}:fixture` }, piResolvedModel: faux.getModel(), piResolvedModels: models,
     messages: [{ role: "user", content: "Current fictional input" }], sessionsRoot: root, allowedTools: [], effort: "none", compaction: { enabled: false } };
   return { root, faux, models, options };
 }
 async function mcp() {
-  const methods = [], calls = [];
+  const methods: string[] = [], calls: Record<string, unknown>[] = [];
   const server = createServer(async (req, res) => {
     if (req.method !== "POST") { res.writeHead(405).end(); return; }
     let body = ""; for await (const chunk of req) body += chunk;
@@ -41,18 +46,18 @@ async function mcp() {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
   cleanups.push(() => new Promise((resolve) => { server.closeAllConnections(); server.close(() => resolve(undefined)); }));
-  return { url: `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (server.address()).port}/mcp`, methods, calls };
+  return { url: `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ ((server.address()) as import("node:net").AddressInfo).port}/mcp`, methods, calls };
 }
 /** @returns {Promise<import("../../contracts/runtime.js").NativePreparedDispatch & Required<Pick<import("../../contracts/runtime.js").NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>>} */
-async function prepare(f, extra = {}, runtime) {
-  const lease = await (runtime ? runtime.prepareNativeDispatch("Fictional rules", { ...f.options, ...extra }) : preparePiNativeDispatch("Fictional rules", { ...f.options, ...extra }));
+async function prepare(f: Awaited<ReturnType<typeof fixture>>, extra: Record<string, unknown> = {}, runtime?: AgentRuntimeInstance): Promise<FullLease> {
+  const lease = await (runtime ? runtime.prepareNativeDispatch!("Fictional rules", { ...f.options, ...extra } as unknown as RuntimeRunOptions) : preparePiNativeDispatch("Fictional rules", { ...f.options, ...extra } as unknown as RuntimeRunOptions));
   cleanups.push(() => lease.close());
   if (!lease.produceHandoffSummary || !lease.checkHandoffSummary || !lease.assertReady) throw new Error("Expected prepared producer");
-  return /** @type {import("../../contracts/runtime.js").NativePreparedDispatch & Required<Pick<import("../../contracts/runtime.js").NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>} */ (lease);
+  return /** @type {import("../../contracts/runtime.js").NativePreparedDispatch & Required<Pick<import("../../contracts/runtime.js").NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>} */ ((lease) as FullLease);
 }
 
 it("resolves actual built-in/MCP/StructuredOutput declarations before opening any session and reuses MCP once", async () => {
-  const f = await fixture(), endpoint = await mcp(), requests = [];
+  const f = await fixture(), endpoint = await mcp(), requests: Array<WireContext> = [];
   const instruction = vi.fn((prompt) => `${prompt}\nFictional StructuredOutput instructions`);
   const lease = await prepare(f, { allowedTools: ["Read"], mcpServers: { fictional: { type: "http", url: endpoint.url } },
     prompts: { structuredOutputInstruction: instruction },
@@ -63,31 +68,31 @@ it("resolves actual built-in/MCP/StructuredOutput declarations before opening an
   expect(lease.snapshot.tools.find((tool) => tool.name === "Lookup")).toMatchObject({ description: "Actual resolved fictional declaration",
     parameters: { properties: { color: { enum: ["amber", "blue"] } }, required: ["color"] } });
   expect(lease.snapshot.systemPrompt).toContain("StructuredOutput");
-  f.faux.setResponses([(context) => { requests.push(context); return fauxAssistantMessage([fauxToolCall("Lookup", { color: "amber" })]); },
+  f.faux.setResponses([(context) => { requests.push(context as WireContext); return fauxAssistantMessage([fauxToolCall("Lookup", { color: "amber" })]); },
     fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: "Fictional result" })])]);
   const result = await lease.run(); expect(result.error).toBeNull(); expect(result.structuredResult).toEqual({ answer: "Fictional result" });
   expect(endpoint.methods.filter((method) => method === "initialize")).toHaveLength(1);
   expect(endpoint.methods.filter((method) => method === "tools/list")).toHaveLength(1); expect(endpoint.calls).toHaveLength(1);
-  expect(requests[0].messages[0].content).toBe(lease.snapshot.systemPrompt); expect(instruction).toHaveBeenCalledTimes(1);
-  expect(requests[0].messages[0].toolsAdded.map(({ name, description, parameters }) => ({ name, description, parameters }))).toEqual(lease.snapshot.tools);
+  expect(requests[0]!.messages[0]!.content).toBe(lease.snapshot.systemPrompt); expect(instruction).toHaveBeenCalledTimes(1);
+  expect(requests[0]!.messages[0]!.toolsAdded.map(({ name, description, parameters }) => ({ name, description, parameters }))).toEqual(lease.snapshot.tools);
   await expect(lease.run()).rejects.toThrow("no longer available"); await lease.close(); await lease.close();
 });
 
 it("freezes request data synchronously and retains tool-context configuration at preparation time", async () => {
-  const f = await fixture(), runtime = createRuntime({ workspace: f.root }), requests = [];
+  const f = await fixture(), runtime = createRuntime({ workspace: f.root }), requests: Array<WireContext> = [];
   await writeFile(join(f.root, "evidence.txt"), "Fictional retained workspace");
   f.options.allowedTools = ["Read"];
-  const pending = runtime.prepareNativeDispatch("Fictional rules", f.options);
-  f.options.messages[0].content = "Caller mutation"; f.options.allowedTools.push("Write");
+  const pending = runtime.prepareNativeDispatch!("Fictional rules", f.options as unknown as RuntimeRunOptions);
+  f.options.messages[0]!.content = "Caller mutation"; f.options.allowedTools.push("Write");
   runtime.configureTools({ workspace: "/fictional/changed" });
   const lease = await pending; cleanups.push(() => lease.close());
-  expect(lease.snapshot.messages[0].content).toBe("Current fictional input"); expect(lease.snapshot.tools.map((tool) => tool.name)).toEqual(["Read"]);
-  expect(Object.isFrozen(lease.snapshot.messages[0])).toBe(true);
+  expect(lease.snapshot.messages[0]!.content).toBe("Current fictional input"); expect(lease.snapshot.tools.map((tool) => tool.name)).toEqual(["Read"]);
+  expect(Object.isFrozen(lease.snapshot.messages[0]!)).toBe(true);
   expect(() => { lease.snapshot.model.contextWindow = 1; }).toThrow();
   // @ts-expect-error Intentionally rejected binding shape.
   await expect(lease.run({ model: f.options.model })).rejects.toThrow("only host session binding");
-  f.faux.setResponses([(context) => { requests.push(context); return fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" })]); },
-    (context) => { requests.push(context); return fauxAssistantMessage([fauxText("Accepted")]); }]);
+  f.faux.setResponses([(context) => { requests.push(context as WireContext); return fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" })]); },
+    (context) => { requests.push(context as WireContext); return fauxAssistantMessage([fauxText("Accepted")]); }]);
   const running = lease.run(); const duplicate = lease.run();
   await expect(duplicate).rejects.toThrow("no longer available"); expect((await running).text).toBe("Accepted");
   expect(JSON.stringify(requests)).toContain("Current fictional input"); expect(JSON.stringify(requests)).not.toContain("Caller mutation");
@@ -115,17 +120,17 @@ it.each(["missing-provider", "missing-auth", "auth-error", "missing-model", "can
   await expect(prepare(f)).rejects.toThrow(); expect(await readdir(f.root)).toEqual([]);
 });
 
-const token = (account, generation) => `fixture.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account }, generation })).toString("base64url")}.fixture`;
+const token = (account: string, generation: number) => `fixture.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account }, generation })).toString("base64url")}.fixture`;
 it.each([false, true])("prepared requests use ordinary OAuth resolution, refreshing expiry=%s", async (expired) => {
-  const f = await fixture("openai-codex", "openai-codex-responses"), requests = [];
+  const f = await fixture("openai-codex", "openai-codex-responses"), requests: Array<string | undefined> = [];
   /** @type {import("@earendil-works/pi-ai").OAuthCredential} */
-  let credential = { type: /** @type {const} */ ("oauth"), refresh: "fictional-refresh", access: token("fictional-account", 1), expires: Date.now() + 3600000 };
-  const refresh = vi.fn(async (..._args) => ({ ...credential, access: token("fictional-other", 2), expires: Date.now() + 3600000 }));
-  const store = { read: vi.fn(async () => credential), modify: vi.fn(async (_id, update) => { credential = await update(credential) ?? credential; return credential; }),
+  let credential: OAuthCredential = { type: /** @type {const} */ ("oauth") as const, refresh: "fictional-refresh", access: token("fictional-account", 1), expires: Date.now() + 3600000 };
+  const refresh = vi.fn(async (..._args: unknown[]) => ({ ...credential, access: token("fictional-other", 2), expires: Date.now() + 3600000 }));
+  const store = { read: vi.fn(async () => credential), modify: vi.fn(async (_id: string, update: (current: Credential | undefined) => Credential | undefined | Promise<Credential | undefined>) => { credential = await update(credential) as OAuthCredential ?? credential; return credential; }),
     delete: vi.fn(), list: async () => [] };
   const models = createModels({ credentials: store });
   models.setProvider({ ...f.faux.provider, auth: { oauth: { name: "Fictional OAuth", refresh, login: async () => credential, toAuth: async (value) => ({ apiKey: value.access }) } },
-    streamSimple(model, context, options) { requests.push(options.apiKey); return f.faux.provider.streamSimple(model, context, options); } });
+    streamSimple(model, context, options) { requests.push(options!.apiKey); return f.faux.provider.streamSimple(model, context, options); } });
   const lease = await prepare(f, { piResolvedModels: models });
   credential = { ...credential, access: token("fictional-other", 3), expires: expired ? 0 : Date.now() + 3600000 };
   f.faux.setResponses([fauxAssistantMessage([fauxText("Ordinary OAuth")])]);
@@ -136,20 +141,20 @@ it.each([false, true])("prepared requests use ordinary OAuth resolution, refresh
 });
 
 it("resolves ordinary API-key auth again at dispatch without capturing secrets", async () => {
-  const f = await fixture(), requests = [];
+  const f = await fixture(), requests: Array<{ model: Model<string>; options: SimpleStreamOptions }> = [];
   let apiKey = "fictional-before";
-  const resolve = vi.fn(async (..._args) => ({ auth: { apiKey, baseUrl: "https://example.invalid/ordinary" } }));
+  const resolve = vi.fn(async (..._args: unknown[]) => ({ auth: { apiKey, baseUrl: "https://example.invalid/ordinary" } }));
   f.models.setProvider({ ...f.faux.provider, auth: { apiKey: { name: "Fictional key", resolve } }, streamSimple(model, context, options) {
-    requests.push({ model, options }); return f.faux.provider.streamSimple(model, context, options); } });
+    requests.push({ model, options } as { model: Model<string>; options: SimpleStreamOptions }); return f.faux.provider.streamSimple(model, context, options); } });
   const lease = await prepare(f); expect(resolve).toHaveBeenCalledTimes(1);
   apiKey = "fictional-current"; f.faux.setResponses([fauxAssistantMessage([fauxText("Ordinary API key")])]);
   expect((await lease.run()).text).toBe("Ordinary API key"); expect(resolve).toHaveBeenCalledTimes(2);
-  expect(requests[0].model.baseUrl).toBe("https://example.invalid/ordinary"); expect(requests[0].options.apiKey).toBe(apiKey);
+  expect(requests[0]!.model.baseUrl).toBe("https://example.invalid/ordinary"); expect(requests[0]!.options!.apiKey).toBe(apiKey);
   expect(JSON.stringify(lease.snapshot)).not.toContain("fictional-before"); expect(JSON.stringify(lease.snapshot)).not.toContain(apiKey);
 });
 
 it("opens only the late-bound current handle, preserving the frozen root and protected authority", async () => {
-  const f = await fixture(), handle = "a".repeat(64), assertCurrent = vi.fn(async (..._args) => {});
+  const f = await fixture(), handle = "a".repeat(64), assertCurrent = vi.fn(async (..._args: [{ handleId: string; sessionsRoot: string }]) => {});
   cleanups.push(() => refreshProviderSession(handle));
   const lease = await prepare(f);
   expect(assertCurrent).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([]);
@@ -164,7 +169,7 @@ it("opens only the late-bound current handle, preserving the frozen root and pro
 });
 
 it("prepares the certified router primary once, keeps resolver resources until settlement and never retries/backups", async () => {
-  const f = await fixture(), cleanup = vi.fn(), resolveAttempt = vi.fn(async (..._args) => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models }, cleanup }));
+  const f = await fixture(), cleanup = vi.fn(), resolveAttempt = vi.fn(async (..._args: unknown[]) => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models }, cleanup }));
   const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }, { model: { provider: "faux", model: "backup", reference: "faux:backup" } }],
     resolveAttempt, sessionTurnReconciliation: "v1" });
   expect(router.prepareNativeDispatch).toBeTypeOf("function"); const lease = await prepare(f, {}, router);
@@ -177,14 +182,14 @@ it("prepares the certified router primary once, keeps resolver resources until s
 it("does not certify an arbitrary router resolver from method presence", async () => {
   const f = await fixture(), resolveAttempt = vi.fn();
   const router = createRouterRuntime({ chain: [{ model: f.options.model }], resolveAttempt });
-  await expect(router.prepareNativeDispatch("Rules", f.options)).rejects.toThrow("does not support"); expect(resolveAttempt).not.toHaveBeenCalled();
+  await expect(router.prepareNativeDispatch!("Rules", f.options as unknown as RuntimeRunOptions)).rejects.toThrow("does not support"); expect(resolveAttempt).not.toHaveBeenCalled();
 });
 
 
 it("aborts during auth preparation and cleans already-resolved MCP resources before rejecting", async () => {
   const f = await fixture(), endpoint = await mcp(), controller = new AbortController(), closed = vi.spyOn(Client.prototype, "close");
-  let entered; /** @type {(value?: any) => void} */ let release = () => {};
-  const started = new Promise((resolve) => { entered = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
+  let entered: () => void; /** @type {(value?: any) => void} */ let release = () => {};
+  const started = new Promise<void>((resolve) => { entered = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
   f.models.setProvider({ ...f.faux.provider, auth: { apiKey: { name: "Fictional key", resolve: async () => { entered(); await gate; return { auth: {} }; } } } });
   const pending = prepare(f, { abortSignal: controller.signal, mcpServers: { fictional: { type: "http", url: endpoint.url } } });
   await started; controller.abort(new Error("Fictional setup cancellation")); release?.();
@@ -193,8 +198,8 @@ it("aborts during auth preparation and cleans already-resolved MCP resources bef
 
 it("close during a running dispatch waits without prematurely closing its MCP client", async () => {
   const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close");
-  let entered; /** @type {(value?: any) => void} */ let release = () => {};
-  const started = new Promise((resolve) => { entered = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
+  let entered: () => void; /** @type {(value?: any) => void} */ let release = () => {};
+  const started = new Promise<void>((resolve) => { entered = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
   f.faux.setResponses([async () => { entered(); await gate; return fauxAssistantMessage([fauxText("Completed once")]); }]);
   const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
   const running = lease.run(); await started;
@@ -243,14 +248,14 @@ it.each([false, true])("invalid binding retains the direct/routed lease and reso
 });
 
 it("routed prepared failure normalizes authentication and records one attempt without failover", async () => {
-  const f = await fixture(), close = vi.fn(), run = vi.fn(async (..._args) => ({ error: "401 Unauthorized: invalid API key", failureKind: "provider_unavailable",
+  const f = await fixture(), close = vi.fn(), run = vi.fn(async (..._args: unknown[]) => ({ error: "401 Unauthorized: invalid API key", failureKind: "provider_unavailable",
     text: null, events: [], usage: {}, cancelled: false }));
-  const resolveAttempt = vi.fn(async (..._args) => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), nativePreparedDispatch: "v1",
+  const resolveAttempt = vi.fn(async (..._args: unknown[]) => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), nativePreparedDispatch: "v1",
     prepareNativeDispatch: async () => ({ snapshot: {}, run, close }) } }));
   const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }, { model: { provider: "faux", model: "backup", reference: "faux:backup" } }],
     // @ts-expect-error Deliberately partial rejecting runtime double.
     resolveAttempt, sessionTurnReconciliation: "v1" });
-  const lease = await router.prepareNativeDispatch("Rules", f.options), result = await lease.run();
+  const lease = await router.prepareNativeDispatch!("Rules", f.options as unknown as RuntimeRunOptions), result = await lease.run();
   expect(result.failureKind).toBe("provider_auth");
   expect(result.failoverHistory).toMatchObject([{ model: f.options.model, failureKind: "provider_auth" }]);
   expect(run).toHaveBeenCalledOnce(); expect(resolveAttempt).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
@@ -259,9 +264,8 @@ it("routed prepared failure normalizes authentication and records one attempt wi
 it.each([false, true])("close settles rather than rethrowing a consumed run's rejection: routed=%s", async (routed) => {
   const direct = await createPreparedDispatchLease(async ({ ready }) => { await ready({}); throw new Error("Fictional execution rejection"); }, undefined);
   const f = await fixture(), router = createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
-  // @ts-expect-error Deliberately partial runtime double.
     resolveAttempt: async () => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), prepareNativeDispatch: async () => direct } }) });
-  const lease = routed ? await router.prepareNativeDispatch("Fictional rules", f.options) : direct;
+  const lease = routed ? await router.prepareNativeDispatch!("Fictional rules", f.options as never) : direct;
   await expect(lease.run()).rejects.toThrow("Fictional execution rejection");
   await expect(lease.close()).resolves.toBeUndefined(); await expect(lease.close()).resolves.toBeUndefined();
 });
@@ -283,8 +287,8 @@ it("preserves prototype methods and their original private-field receiver", asyn
     get auth() { return this.#delegate.auth; }
     getModels() { return this.#delegate.getModels(); }
     get name() { return this.#delegate.name; }
-    stream(model, context, options) { return this.#delegate.stream(model, context, options); }
-    streamSimple(model, context, options) { return this.#delegate.streamSimple(model, context, options); }
+    stream(model: Parameters<import("@earendil-works/pi-ai").Provider["stream"]>[0], context: Parameters<import("@earendil-works/pi-ai").Provider["stream"]>[1], options: Parameters<import("@earendil-works/pi-ai").Provider["stream"]>[2]) { return this.#delegate.stream(model, context, options as import("@earendil-works/pi-ai").StreamOptions & Record<string, unknown>); }
+    streamSimple(model: Parameters<StreamFunction<string, SimpleStreamOptions>>[0], context: Parameters<StreamFunction<string, SimpleStreamOptions>>[1], options: Parameters<StreamFunction<string, SimpleStreamOptions>>[2]) { return this.#delegate.streamSimple(model, context, options); }
   }
   const models = createModels(); models.setProvider(new Provider());
   const pin = await prepareDispatchAuth(models, f.faux.getModel(), undefined);
@@ -297,12 +301,12 @@ it("preserves prototype methods and their original private-field receiver", asyn
 
 it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations without mutation", async () => {
   const provider = openaiCodexProvider(), model = provider.getModels()[0], schema = Type.Object({ answer: Type.String() }, { additionalProperties: false });
-  const legacyKind = Symbol.for("TypeBox.Kind"), declaration = Type.Unsafe(schema);
+  const legacyKind = Symbol.for("TypeBox.Kind"), declaration = Type.Unsafe(schema) as unknown as { properties: { answer: Record<PropertyKey, unknown> }; [key: symbol]: string };
   declaration[legacyKind] = "Object"; /** @type {any} */ (declaration).properties.answer[legacyKind] = "String";
   const parameters = freezeDispatchData(copyDispatchData(declaration));
   expect(parameters[legacyKind]).toBe("Object"); expect(parameters.properties.answer[legacyKind]).toBe("String");
   expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String");
-  const credential = { type: /** @type {const} */ ("oauth"), access: token("fictional-account", 1), expires: Date.now() + 3600000, refresh: "fictional-refresh" };
+  const credential = { type: /** @type {const} */ ("oauth") as const, access: token("fictional-account", 1), expires: Date.now() + 3600000, refresh: "fictional-refresh" };
   const models = createModels({ credentials: { read: async () => credential, list: async () => [], delete: vi.fn(), modify: vi.fn() } }); models.setProvider(provider);
   const pin = await prepareDispatchAuth(models, model, undefined), payload = vi.fn();
   const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Fictional transport refusal", { status: 400 }));
@@ -310,27 +314,27 @@ it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations 
     toolsAdded: [{ name: "StructuredOutput", description: "Fictional structure", parameters }] }, { role: "user", content: "Fictional input", timestamp: 0 }] },
     { transport: "sse", maxRetries: 0, onPayload: payload });
   expect(result.errorMessage).toContain("Fictional transport refusal"); expect(fetch).toHaveBeenCalledOnce();
-  expect(payload).toHaveBeenCalledOnce(); expect(payload.mock.calls[0][0].tools[0].parameters).toMatchObject({ type: "object", required: ["answer"] });
+  expect(payload).toHaveBeenCalledOnce(); expect(payload.mock.calls[0]![0].tools[0].parameters).toMatchObject({ type: "object", required: ["answer"] });
   expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String"); expect(Object.isFrozen(parameters.properties.answer)).toBe(true);
 });
 
 /** @returns {import("../../contracts/runtime.js").NativeHandoffProducerRequest} */
-const producerInput = () => ({ prepared: { status: "prepared", checkpoints: [], ledger: [{ kind: "tool", outcome: "unknown" }],
+const producerInput = (): NativeHandoffProducerRequest => ({ prepared: { status: "prepared", checkpoints: [], ledger: [{ kind: "tool", outcome: "unknown" }],
   recent: [], older: [], coverage: [] }, outputReserve: 256 });
 const summaryText = () => JSON.stringify(Object.fromEntries(["intent", "constraints", "decisions", "completedWork", "failures", "openWork", "nextActions", "references"]
   .map((key) => [key, key === "intent" ? ["Fictional pending work"] : []])));
 it.each([false, true])("one typed prepared producer uses ordinary auth, no tools/session/retry and leaves dispatch reusable: routed=%s", async (routed) => {
-  const f = await fixture(), requests = [], resolve = vi.fn(async (..._args) => ({ auth: { apiKey: "fictional-ordinary-producer" } }));
+  const f = await fixture(), requests: Array<{ model: Model<string>; context: WireContext; options: SimpleStreamOptions }> = [], resolve = vi.fn(async (..._args: unknown[]) => ({ auth: { apiKey: "fictional-ordinary-producer" } }));
   f.models.setProvider({ ...f.faux.provider, auth: { apiKey: { name: "Fictional key", resolve } }, streamSimple(model, context, options) {
-    requests.push({ model, context, options }); return f.faux.provider.streamSimple(model, context, options); } });
+    requests.push({ model, context, options } as { model: Model<string>; context: WireContext; options: SimpleStreamOptions }); return f.faux.provider.streamSimple(model, context, options); } });
   const router = routed ? createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }], sessionTurnReconciliation: "v1",
     resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models } }) }) : undefined;
   const lease = await prepare(f, { allowedTools: ["Read"], piTransport: "auto" }, router), input = producerInput();
   expect(lease.checkHandoffSummary(input)).toEqual({ status: "ready" }); expect(await readdir(f.root)).toEqual([]);
   f.faux.setResponses([fauxAssistantMessage([fauxText(summaryText())]), fauxAssistantMessage([fauxText("Incoming dispatch")])]);
   const result = await lease.produceHandoffSummary(input); expect(result.status).toBe("ready");
-  expect(requests[0].context.messages[0].toolsAdded ?? []).toEqual([]); expect(requests[0].options.maxRetries).toBe(0); expect(requests[0].options.transport).toBe("sse");
-  expect(requests[0].options.apiKey).toBe("fictional-ordinary-producer"); expect(resolve).toHaveBeenCalledTimes(2);
+  expect(requests[0]!.context.messages[0]!.toolsAdded ?? []).toEqual([]); expect(requests[0]!.options.maxRetries).toBe(0); expect(requests[0]!.options.transport).toBe("sse");
+  expect(requests[0]!.options!.apiKey).toBe("fictional-ordinary-producer"); expect(resolve).toHaveBeenCalledTimes(2);
   expect(await readdir(f.root)).toEqual([]); await expect(lease.produceHandoffSummary(input)).rejects.toThrow("no longer available");
   expect((await lease.run()).text).toBe("Incoming dispatch"); expect(requests).toHaveLength(2); expect(resolve).toHaveBeenCalledTimes(3);
 });
@@ -352,7 +356,7 @@ it.each(["malformed", "truncated", "error"])("producer rejects %s without automa
 });
 it("close waits for an active producer before closing native/MCP resources; run rejects without consumption", async () => {
   const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close");
-  let enter; /** @type {(value?: any) => void} */ let release = () => {}; const entered = new Promise((resolve) => { enter = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
+  let enter: () => void; /** @type {(value?: any) => void} */ let release = () => {}; const entered = new Promise<void>((resolve) => { enter = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
   f.faux.setResponses([async () => { enter(); await gate; return fauxAssistantMessage([fauxText(summaryText())]); }]);
   const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
   const production = lease.produceHandoffSummary(producerInput()); await entered;
@@ -364,9 +368,9 @@ it("close waits for an active producer before closing native/MCP resources; run 
 
 it("idle native leases have no expiry timer and close MCP/runState exactly once", async () => {
   const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close"), provider = vi.spyOn(f.faux.provider, "streamSimple");
-  const observed = [];
+  const observed: Array<ReturnType<typeof setTimeout>> = [];
   const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, ms, ...args) => {
-    const actual = originalTimer(callback, ms, ...args); if (ms > 290000 && ms <= 300000) observed.push(actual); return actual;
+    const actual = originalTimer(callback, ms, ...args); if (ms! > 290000 && ms! <= 300000) observed.push(actual); return actual;
   });
   const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
   expect(observed).toHaveLength(0); expect(closed).not.toHaveBeenCalled();
@@ -392,40 +396,40 @@ it("installed pi-ai Codex oauth.refresh returns a complete typed OAuth credentia
   const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access_token: access,
     refresh_token: "fictional-rotated", expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } }));
   // @ts-expect-error The installed provider accepts an omitted refresh signal.
-  const refreshed = await provider.auth.oauth.refresh({ type: /** @type {const} */ ("oauth"), accountId: "fictional-stock-account", access: token("fictional-stock-account", 1), refresh: "fictional-old", expires: 0 });
-  expect(refreshed).toMatchObject({ type: /** @type {const} */ ("oauth"), access, refresh: "fictional-rotated", accountId: "fictional-stock-account" });
+  const refreshed = await provider.auth.oauth.refresh({ type: /** @type {const} */ ("oauth") as const, accountId: "fictional-stock-account", access: token("fictional-stock-account", 1), refresh: "fictional-old", expires: 0 });
+  expect(refreshed).toMatchObject({ type: /** @type {const} */ ("oauth") as const, access, refresh: "fictional-rotated", accountId: "fictional-stock-account" });
   expect(refreshed.expires).toBeGreaterThan(Date.now() + 3500000); expect(fetch).toHaveBeenCalledOnce();
 });
 
 it.each([false, true])("recovers one empty reply on the prepared path without tools or router failover: routed=%s", async (routed) => {
-  const f = await fixture("anthropic"), requests = [];
+  const f = await fixture("anthropic"), requests: Array<WireContext> = [];
   const runtime = routed ? createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 },
     { model: { provider: "openai", model: "backup", reference: "openai:backup" } }] }) : createRuntime();
   f.faux.setResponses([
-    (context) => { requests.push(context); return fauxAssistantMessage([]); },
-    (context) => { requests.push(context); return fauxAssistantMessage([fauxText("Fictional recovered reply")]); },
+    (context) => { requests.push(context as WireContext); return fauxAssistantMessage([]); },
+    (context) => { requests.push(context as WireContext); return fauxAssistantMessage([fauxText("Fictional recovered reply")]); },
   ]);
   const lease = await prepare(f, { allowedTools: ["Read"], prompts: { emptyReplyFinalization: () => "Fictional final reply nudge" } }, runtime);
   const result = await lease.run();
   expect(result.error).toBeNull(); expect(result.text).toBe("Fictional recovered reply"); expect(requests).toHaveLength(2);
-  expect(requests[0].messages[0].toolsAdded.map((tool) => tool.name)).toEqual(["Read"]);
-  const activeTools = new Set();
-  for (const message of requests[1].messages) {
+  expect(requests[0]!.messages[0]!.toolsAdded.map((tool) => tool.name)).toEqual(["Read"]);
+  const activeTools = new Set<string>();
+  for (const message of requests[1]!.messages) {
     for (const tool of message.toolsAdded ?? []) activeTools.add(tool.name);
     for (const tool of message.toolsRemoved ?? []) activeTools.delete(tool);
   }
   expect([...activeTools]).toEqual([]);
-  expect(JSON.stringify(requests[1].messages)).toContain("Fictional final reply nudge");
-  expect(result.events.some((event) => event.type === "user" && JSON.stringify(event).includes("Fictional final reply nudge"))).toBe(false);
+  expect(JSON.stringify(requests[1]!.messages)).toContain("Fictional final reply nudge");
+  expect(result.events!.some((event: { type: string }) => event.type === "user" && JSON.stringify(event).includes("Fictional final reply nudge"))).toBe(false);
   expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "empty_reply_retry", outcome: "text" }));
   if (routed) expect(result.failoverHistory).toEqual([]);
 });
 
 
 it("prepared OpenCode requests attribute the bound id rather than the preparation id", async () => {
-  const f = await fixture("opencode-go"), headers = [];
+  const f = await fixture("opencode-go"), headers: Array<SimpleStreamOptions["headers"]> = [];
   f.models.setProvider({ ...f.faux.provider, streamSimple(model, context, options) {
-    headers.push(options.headers); return f.faux.provider.streamSimple(model, context, options);
+    headers.push(options!.headers); return f.faux.provider.streamSimple(model, context, options);
   } });
   const lease = await prepare(f, { providerAttributionSessionId: "fictional-preparation-id" });
   f.faux.setResponses([fauxAssistantMessage([fauxText("Fictional bound reply")])]);

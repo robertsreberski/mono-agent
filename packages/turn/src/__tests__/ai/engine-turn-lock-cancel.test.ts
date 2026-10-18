@@ -12,9 +12,9 @@ import { disposeProviderSession } from "../../runtime/session-fanout.js";
 
 it("cancels a run waiting behind another process's native writer lock", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-native-lock-cancel-"));
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined });
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined! });
   const models = createModels(); models.setProvider(faux.provider);
-  const options = (overrides) => ({ model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" }, piResolvedModel: faux.getModel(),
+  const options = (overrides: Record<string, unknown>) => ({ model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" }, piResolvedModel: faux.getModel(),
     piResolvedModels: models, effort: "none", allowedTools: [], sessionsRoot: root, sessionKeepAlive: true, ...overrides });
   let holder, sessionId;
   try {
@@ -45,9 +45,9 @@ it("cancels a run waiting behind another process's native writer lock", async ()
 
 it("refuses create-on-miss for a handle whose damaged legacy file is attributed to it", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-native-legacy-damage-"));
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined });
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined! });
   const models = createModels(); models.setProvider(faux.provider);
-  const options = (overrides) => ({ model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" }, piResolvedModel: faux.getModel(),
+  const options = (overrides: Record<string, unknown>) => ({ model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" }, piResolvedModel: faux.getModel(),
     piResolvedModels: models, effort: "none", allowedTools: [], sessionsRoot: root, sessionKeepAlive: true, ...overrides });
   try {
     mkdirSync(join(root, "legacy"), { recursive: true });

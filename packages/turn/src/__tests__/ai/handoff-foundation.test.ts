@@ -1,3 +1,4 @@
+import type { RuntimeRunOptions } from "../../contracts/runtime.js";
 import { SessionStore } from "../../engine/session-store.js";
 import { createTurnBinding } from "../../engine/turn-evidence.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
@@ -14,13 +15,13 @@ const prepared = { status: "prepared", older: [], recent: [], ledger: [{ outcome
 const model = { provider: "fictional", id: "summary", api: "fictional-api", contextWindow: 100000 };
 const response = (content = JSON.stringify(summary), stopReason = "stop") => ({ content: [{ type: "text", text: content }], stopReason, usage: { input: 20, output: 10, cost: { total: 0 } } });
 it("uses exactly one selected no-tools completion and returns accounting without retry/fallback", async () => {
-  const completeSimple = vi.fn(async (..._args) => response());
+  const completeSimple = vi.fn(async (..._args: [unknown?, { tools: unknown[] }?, Record<string, unknown>?]) => response());
   expect(await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000, completionOptions: { transport: "websocket", maxRetries: 9 } })).toMatchObject({ status: "ready", summary, usage: { input: 20, output: 10 } });
   expect(completeSimple).toHaveBeenCalledTimes(1);
-  expect(completeSimple.mock.calls[0][0]).toBe(model);
-  expect(completeSimple.mock.calls[0][1].tools).toEqual([]);
-  expect(completeSimple.mock.calls[0][2].maxTokens).toBe(1000);
-  expect(completeSimple.mock.calls[0][2]).toMatchObject({ transport: "sse", maxRetries: 0 });
+  expect(completeSimple.mock.calls[0]![0]).toBe(model);
+  expect(completeSimple.mock.calls[0]![1]!.tools).toEqual([]);
+  expect(completeSimple.mock.calls[0]![2]!.maxTokens).toBe(1000);
+  expect(completeSimple.mock.calls[0]![2]).toMatchObject({ transport: "sse", maxRetries: 0 });
 });
 it.each([["", "stop"], ["{}", "stop"], [JSON.stringify(summary), "length"], [JSON.stringify(summary), "aborted"], [JSON.stringify(summary), "error"]])("rejects malformed/empty/truncated/aborted/error summaries without repeat (%s, %s)", async (content, stopReason) => {
   const completeSimple = vi.fn(async () => response(content, stopReason));
@@ -39,7 +40,7 @@ it("reports request-outcome-unknown with no retry or leaked provider exception",
   const result = await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000 });
   expect(result).toMatchObject({ reason: "request_outcome_unknown" }); expect(JSON.stringify(result)).not.toContain("sensitive"); expect(completeSimple).toHaveBeenCalledTimes(1);
 });
-const roots = []; afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+const roots: string[] = []; afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it("preserving detach leaves exact journal bytes, missing-current detach never deletes ancestors, retirement remains destructive", async () => {
   const root = await mkdtemp(join(tmpdir(), "native-preserve-fixture-")); roots.push(root);
   const repo = resolveDurableNativeSessionRepo(root); const session = await repo.create({ id: "fictional-predecessor" });
@@ -53,7 +54,7 @@ it("preserving detach leaves exact journal bytes, missing-current detach never d
 
 it("refuses preserving detach during real native dispatch, then detaches the idle registry without changing bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "native-detach-busy-fixture-")); roots.push(root);
-  const faux = fauxProvider({ provider: "detach-fixture", models: [{ id: "fixture" }] }); const models = createModels(); /** @type {Promise<any>} */ let attempt;
+  const faux = fauxProvider({ provider: "detach-fixture", models: [{ id: "fixture" }] }); const models = createModels(); /** @type {Promise<any>} */ let attempt: Promise<{ result?: unknown; error?: { code: string } }>;
   models.setProvider({ ...faux.provider, streamSimple(selected, context, options) {
     attempt = detachDurableNativeSession("busy-fixture", root).then((result) => ({ result }), (error) => ({ error }));
     return faux.provider.streamSimple(selected, context, options);
@@ -62,24 +63,24 @@ it("refuses preserving detach during real native dispatch, then detaches the idl
   const result = await generateEngineTurnResponse("Fictional rules", { model: { provider: "detach-fixture", model: "fixture", reference: "detach-fixture:fixture" },
     piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "busy-fixture", sessionsRoot: root,
     sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
-  expect(result.error).toBeNull(); expect(/** @type {any} */ (await attempt).error.code).toBe("ERR_HARNESS_WRITER_BUSY");
+  expect(result.error).toBeNull(); expect(/** @type {any} */ (await attempt!).error!.code).toBe("ERR_HARNESS_WRITER_BUSY");
   const metadata = (await resolveDurableNativeSessionRepo(root).list())[0]; const before = await readFile(metadata.path);
   await detachDurableNativeSession("busy-fixture", root); expect(await readFile(metadata.path)).toEqual(before);
 });
 
 it("accepts a successful non-truncated summary even when bytes/3 exceeds the completion token reserve", async () => {
   const large = { ...summary, intent: ["Fictional words ".repeat(250)] };
-  const completeSimple = vi.fn(async (..._args) => response(JSON.stringify(large)));
+  const completeSimple = vi.fn(async (..._args: [unknown?, { tools: unknown[] }?, Record<string, unknown>?]) => response(JSON.stringify(large)));
   const result = await produceNativeHandoffSummary({ completeSimple, model, prepared, outputReserve: 1000 });
   expect(result).toMatchObject({ status: "ready", summary: large });
-  expect(completeSimple.mock.calls[0][2]).toMatchObject({ maxTokens: 1000, transport: "sse", maxRetries: 0 });
+  expect(completeSimple.mock.calls[0]![2]).toMatchObject({ maxTokens: 1000, transport: "sse", maxRetries: 0 });
 });
 it.each(["find", "create"])("refuses detach during in-flight cold %s before an idle handle exists", async (phase) => {
   const root = await mkdtemp(join(tmpdir(), "native-detach-cold-fixture-")); roots.push(root);
   const repo = resolveDurableNativeSessionRepo(root);
   if (phase === "find") { const raw = await repo.create({ id: "cold-fixture" }); await raw.close(); }
-  let reached; let release = () => {};
-  const waiting = new Promise((resolve) => { reached = resolve; });
+  let reached: () => void; let release = () => {};
+  const waiting = new Promise<void>((resolve) => { reached = resolve; });
   const gate = new Promise((resolve) => { release = () => resolve(undefined); });
   const original = repo[phase].bind(repo);
   const spy = vi.spyOn(repo, phase).mockImplementationOnce(async (...args) => { reached(); await gate; return original(...args); });
@@ -100,7 +101,7 @@ it("turn_advanced reconciliation rejects synchronously without reading context e
   const root = await mkdtemp(join(tmpdir(), "native-advanced-no-context-fixture-")); roots.push(root);
   const repo = resolveDurableNativeSessionRepo(root); const raw = await repo.create({ id: "advanced-fixture" });
   const expectedModel = { provider: "fictional", id: "fixture", api: "fictional-api" };
-  const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "first-turn", handleId: "advanced-fixture", baseRevision: 0,
+  const descriptor: NonNullable<RuntimeRunOptions["sessionTurn"]> = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "first-turn", handleId: "advanced-fixture", baseRevision: 0,
     reconciliation: { version: 1, purpose: "compaction", fenceDigest: "a".repeat(64), initialInputId: null } };
   await raw.beginTurn("first-turn", { model: expectedModel }, "synthetic", createTurnBinding(descriptor, expectedModel));
   await raw.openOperation("first-operation", { model: expectedModel }, "compaction", "manual"); await raw.closeOperation("first-operation", "completed"); await raw.endTurn("first-turn", "completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "stop" });

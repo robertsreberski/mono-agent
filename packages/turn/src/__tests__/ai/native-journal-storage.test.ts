@@ -1,3 +1,4 @@
+import type { RuntimeNativeJournalAuthority } from "../../contracts/native-storage.js";
 import { MAX_CAPTURE_BYTES } from "../../engine/native-journal-storage.js";
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
@@ -12,8 +13,8 @@ import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
 import { createManagedNativeJournalStorage } from "../../execution/pi/storage-capability.js";
 import { NativeEvidenceCapacityError } from "../../engine/native-journal-storage.js";
-const roots = [], repos = [];
-const authority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+const roots: string[] = [], repos: Array<{ close(): Promise<void> }> = [];
+const authority: RuntimeNativeJournalAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const from = { provider: "openai", api: "responses", model: "gpt-5.5", account: null };
 // One deterministic guarded epoch: a switch target or a same-model cold rotation.
 const context = { hostAuthority: authority, assertOwned: async () => {}, timestamp: 17, targetHandleId: "4".repeat(64) };
@@ -37,14 +38,14 @@ afterEach(async () => { for (const repo of repos.splice(0)) await repo.close(); 
 async function lifecycleFixture(extra = {}) {
   const f = await fixture();
   await f.bridge.createEpoch(context);
-  const target = (await f.repo.listOwned()).find((m) => m.id === context.targetHandleId);
+  const target = (await f.repo.listOwned()).find((m: { id: string; [key: string]: any }) => m.id === context.targetHandleId);
   const bridge = createManagedNativeJournalStorage({ sessionsRoot: f.root, ...extra });
   return { ...f, bridge, target, journals: { source: { handleId: f.metadata.id, journalId: f.metadata.journalId }, target: { handleId: target.id, journalId: target.journalId } },
-    deletion: { hostAuthority: authority, assertOwned: context.assertOwned, disposition: "C" } };
+    deletion: { hostAuthority: authority, assertOwned: context.assertOwned, disposition: "C" as const } };
 }
 it("creates the exact initialized guarded epoch idempotently, without copied context or touching the source", async () => {
   const f = await fixture();
-  await f.bridge.createEpoch(context); const target = (await f.repo.listOwned()).find((m) => m.id === context.targetHandleId);
+  await f.bridge.createEpoch(context); const target = (await f.repo.listOwned()).find((m: { id: string; [key: string]: any }) => m.id === context.targetHandleId);
   const bytes = await readFile(target.path); await f.bridge.createEpoch(context); expect(await readFile(target.path)).toEqual(bytes);
   const rows = bytes.toString().trim().split("\n").map((line) => JSON.parse(line));
   expect(rows[0]).toMatchObject({ ownershipSchemaVersion: 1, hostAuthority: authority }); expect(rows.slice(1)).toHaveLength(4);
@@ -62,7 +63,7 @@ it("rejects lost authority before any epoch publication", async () => {
 it.each(["epoch_stage_created", "epoch_stage_synced", "epoch_renamed", "epoch_directory_synced"])("replays atomic epoch publication after an ordinary interruption at %s", async (boundary) => {
   const f = await fixture(); let thrown = false;
   const options = { id: context.targetHandleId, timestamp: context.timestamp, hostAuthority: authority, assertOwned: context.assertOwned,
-    onPhase: async (phase) => { if (!thrown && phase === boundary) { thrown = true; throw new Error("Interrupted publication"); } } };
+    onPhase: async (phase: string) => { if (!thrown && phase === boundary) { thrown = true; throw new Error("Interrupted publication"); } } };
   await expect(f.repo.createGuardedEpoch(options)).rejects.toThrow("Interrupted publication");
   const published = await f.repo.createGuardedEpoch(options), before = await readFile(published.path);
   expect(await f.repo.createGuardedEpoch(options)).toEqual(published); expect(await readFile(published.path)).toEqual(before);
@@ -74,7 +75,7 @@ it("preserves a foreign deterministic epoch stage and charges its bytes", async 
   const stage = join(f.repo.directory, `${plan.header.journalId}.jsonl.creating`);
   // Use the real creator to establish owner-private metadata then poison only its own test stage.
   await expect(f.repo.createGuardedEpoch({ id: context.targetHandleId, timestamp: 17, hostAuthority: authority, assertOwned: context.assertOwned,
-    onPhase: async (phase) => { if (phase === "epoch_stage_created") throw new Error("Interrupted"); } })).rejects.toThrow();
+    onPhase: async (phase: string) => { if (phase === "epoch_stage_created") throw new Error("Interrupted"); } })).rejects.toThrow();
   await appendFile(stage, "foreign evidence"); const before = await readFile(stage);
   await expect(f.repo.createGuardedEpoch({ id: context.targetHandleId, timestamp: 17, hostAuthority: authority, assertOwned: context.assertOwned })).rejects.toThrow();
   expect(await readFile(stage)).toEqual(before); expect((await f.bridge.inventory([plan.header.journalId])).bytes).toBe(before.length);
@@ -83,7 +84,7 @@ it("preserves a foreign deterministic epoch stage and charges its bytes", async 
 it("charges prototype-shaped native stems without prototype-key ledger credits", async () => {
   const f = await fixture(); await writeFile(join(f.repo.directory, "constructor.jsonl"), "opaque preserved evidence", { mode: 0o600 });
   expect((await f.bridge.inventory()).bytes).toBe(0);
-  const inventory = await f.bridge.inventory(["constructor"]); expect(inventory.journals.constructor.retainedBytes).toBe(Buffer.byteLength("opaque preserved evidence"));
+  const inventory = await f.bridge.inventory(["constructor"]) as unknown as { journals: { constructor: { retainedBytes: number } }; bytes: number }; expect(inventory.journals.constructor.retainedBytes).toBe(Buffer.byteLength("opaque preserved evidence"));
   expect(inventory.bytes).toBe(Buffer.byteLength("opaque preserved evidence"));
 });
 
@@ -107,7 +108,7 @@ it.each([
     await store.writeRecord("handle_binding", { handleId: store.metadata.id, baseRevision: 0, authoritative: true, model: { provider: from.provider, id: from.model, api: from.api } });
   }, "bind");
   for (const [index, account] of accounts.entries()) {
-    await store.beginTurn(`fictional-turn-${index}`, undefined, undefined, undefined);
+    await store.beginTurn(`fictional-turn-${index}`, undefined!, undefined!, undefined!);
     await store.openOperation(`fictional-op-${index}`, { model: { provider: from.provider, api: from.api, id: from.model },
       ...(account === undefined ? {} : { nativeProvenance: { ...from, account } }) });
     await store.appendMessage({ role: "user", content: `Fictional fact ${index}`, timestamp: 17 });
@@ -150,7 +151,7 @@ it("charges an enrolled hard-linked or unopenable journal as owner damage withou
   await rm(join(outside, "alias.jsonl")); await chmod(f.metadata.path, 0o644);
   const insecure = await f.bridge.inventory(ids);
   expect(insecure.journals[f.metadata.journalId]).toEqual({ retainedBytes: f.before.length, stagedBytes: 0, damaged: true });
-  expect(insecure.journals[f.target.journalId].damaged).toBeUndefined();
+  expect(insecure.journals[f.target.journalId]!.damaged).toBeUndefined();
   expect(await f.bridge.inspectCurrentJournal({ handleId: f.target.id, journalId: f.target.journalId })).toEqual({ status: "present" });
   expect(await readFile(f.metadata.path)).toEqual(f.before);
 });
@@ -166,7 +167,7 @@ const worker = fileURLToPath(new URL("./fixtures/native-journal-storage-worker.m
 it.skipIf(process.platform === "win32").each(["epoch_stage_created", "epoch_stage_synced", "epoch_renamed", "epoch_directory_synced"])("recovers epoch creation twice in fresh processes after SIGKILL at %s", async (phase) => {
   const f = await fixture(); await writeFile(join(f.root, "native-proof.json"), JSON.stringify({ context }), { mode: 0o600 });
   const child = fork(worker, [f.root, phase], { silent: true }); let error = "";
-  child.stderr.on("data", (bytes) => { error += bytes; });
+  child.stderr!.on("data", (bytes) => { error += bytes; });
   const exited = once(child, "exit");
   try {
     await Promise.race([once(child, "message"), exited.then(() => { throw new Error(`Proof owner exited before boundary: ${error}`); }),
@@ -177,7 +178,7 @@ it.skipIf(process.platform === "win32").each(["epoch_stage_created", "epoch_stag
   const first = JSON.parse((await run(process.execPath, [worker, f.root], { timeout: 30_000 })).stdout);
   const second = JSON.parse((await run(process.execPath, [worker, f.root], { timeout: 30_000 })).stdout);
   expect(second).toEqual(first); expect(second.inventory.stagedBytes).toBe(0);
-  expect((await f.repo.listOwned()).map((row) => row.id).sort()).toEqual([f.metadata.id, context.targetHandleId].sort());
+  expect((await f.repo.listOwned()).map((row: { id: string }) => row.id).sort()).toEqual([f.metadata.id, context.targetHandleId].sort());
   expect(await readFile(f.metadata.path)).toEqual(f.before);
 }, 60_000);
 
@@ -223,7 +224,7 @@ it.skipIf(process.platform === "win32").each([
   await writeFile(join(f.root, "lifecycle-proof.json"), JSON.stringify({ current: f.journals.target, cold,
     deletion: { ...f.deletion, disposition: operation === "delete" ? "D" : "C" }, operation }), { mode: 0o600 });
   const child = fork(lifecycleWorker, [f.root, phase], { silent: true }); let error = "";
-  child.stderr.on("data", (bytes) => { error += bytes; }); const exited = once(child, "exit"); let timer;
+  child.stderr!.on("data", (bytes) => { error += bytes; }); const exited = once(child, "exit"); let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([once(child, "message"), exited.then(() => { throw new Error(`Proof owner exited before boundary: ${error}`); }),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Boundary timeout")), 15000); })]);
@@ -234,7 +235,7 @@ it.skipIf(process.platform === "win32").each([
   const second = JSON.parse((await run(process.execPath, [lifecycleWorker, f.root], { timeout: 30000 })).stdout);
   expect(second).toEqual(first); expect(second.inventory.stagedBytes).toBe(0);
   const names = (await readdir(f.repo.directory)).sort();
-  if (operation === "cold") expect(names).toEqual([`${f.metadata.journalId}.jsonl`, `${(await f.repo.listOwned()).find((m) => m.id === cold.targetHandleId).journalId}.jsonl`].sort());
+  if (operation === "cold") expect(names).toEqual([`${f.metadata.journalId}.jsonl`, `${(await f.repo.listOwned()).find((m: { id: string; [key: string]: any }) => m.id === cold.targetHandleId).journalId}.jsonl`].sort());
   else expect(names).toEqual([`${f.metadata.journalId}.jsonl`]);
 }, 60000);
 it("does not create a writer lock for an absent-journal deletion probe", async () => {
@@ -250,7 +251,7 @@ it("shares runtime repository identity with the bridge for a trailing-slash sess
   const f = await fixture(), runtime = resolveDurableNativeSessionRepo(`${f.root}/`); repos.push(runtime);
   expect(resolveDurableNativeSessionRepo(f.root)).toBe(runtime);
   await createManagedNativeJournalStorage({ sessionsRoot: `${f.root}/` }).createEpoch(context);
-  expect(runtime.root).toBe(f.root); expect((await runtime.listOwned()).map((row) => row.id).sort()).toEqual([f.metadata.id, context.targetHandleId].sort());
+  expect(runtime.root).toBe(f.root); expect((await runtime.listOwned()).map((row: { id: string }) => row.id).sort()).toEqual([f.metadata.id, context.targetHandleId].sort());
 });
 it("charges guarded unreadable-owner evidence only in the pinned root and exact bucket", async () => {
   const f = await lifecycleFixture(), retained = (await f.bridge.inventory()).bytes;
@@ -268,7 +269,7 @@ it("charges guarded unreadable-owner evidence only in the pinned root and exact 
 it("captures exactly one current journal, or canonical gaps when it is missing, and throws the typed capacity error", async () => {
   const f = await fixture(), owner = { assertOwned: async () => {}, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket };
   const view = await f.bridge.captureEvidence(f.source, owner);
-  expect(view.segments).toHaveLength(1); expect(view.segments[0].descriptor).not.toHaveProperty("epoch"); expect(view.prior).toBeNull();
+  expect(view.segments).toHaveLength(1); expect(view.segments[0]!.descriptor).not.toHaveProperty("epoch"); expect(view.prior).toBeNull();
   const gap = { reference: "canonical:fixture", reason: "journal_missing", afterJournalId: null, messages: [{ role: "user", content: "Fictional canonical fact" }] };
   const missing = await f.bridge.captureEvidence(null, { ...owner, gaps: [gap] });
   expect(missing.segments).toEqual([]); expect(missing.gaps).toEqual([gap]);

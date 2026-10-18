@@ -1,3 +1,5 @@
+import type { Model, TranscriptContext } from "@earendil-works/pi-ai";
+import type { RuntimeEvent } from "../../contracts/events.js";
 // Pi-native abort-at-every-await-point sweep.
 //
 // Fires an external cancel so it lands at each stage of the session lifecycle —
@@ -59,24 +61,24 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { generateEngineTurnResponse } from "../../execution/pi/run.js";
 import { disposeProviderSession } from "../../runtime/session-fanout.js";
 
-let faux = null;
-let fauxModels = null;
+let faux: ReturnType<typeof fauxProvider> | null = null;
+let fauxModels: ReturnType<typeof createModels> | null = null;
 
 function setup() {
   faux = fauxProvider({
     provider: "faux",
     models: [{ id: "faux-model", reasoning: false }],
-    tokensPerSecond: undefined,
+    tokensPerSecond: undefined!,
   });
   fauxModels = createModels();
-  fauxModels.setProvider(faux.provider);
-  return faux.getModel();
+  fauxModels!.setProvider(faux!.provider);
+  return faux!.getModel();
 }
 
 beforeEach(() => { faux = null; fauxModels = null; });
 afterEach(() => { faux = null; fauxModels = null; });
 
-function runOptions(model, overrides = {}) {
+function runOptions(model: Model<string>, overrides: Record<string, unknown> & { onEvent?: (event: RuntimeEvent) => void } = {}): Record<string, any> & { model: any } {
   return {
     model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
     piResolvedModel: model,
@@ -87,7 +89,7 @@ function runOptions(model, overrides = {}) {
   };
 }
 
-function transcriptOf(context) {
+function transcriptOf(context: TranscriptContext | null | undefined) {
   return (context?.messages || [])
     .filter((message) => message?.role === "user" || message?.role === "assistant")
     .map((message) => {
@@ -101,7 +103,7 @@ function transcriptOf(context) {
     });
 }
 
-function countJsonlFiles(root) {
+function countJsonlFiles(root: string) {
   let count = 0;
   for (const dirent of readdirSync(root, { withFileTypes: true })) {
     const full = join(root, dirent.name);
@@ -122,7 +124,7 @@ function makeSignal() {
   let reads = 0;
   let tripAtRead = Infinity;
   let addCount = 0; // total handler registrations (never decremented on remove)
-  const handlers = new Set();
+  const handlers = new Set<() => void>();
   return {
     signal: {
       get aborted() {
@@ -131,11 +133,11 @@ function makeSignal() {
         return aborted;
       },
       reason: undefined,
-      addEventListener(type, handler) { if (type === "abort") { handlers.add(handler); addCount += 1; } },
-      removeEventListener(type, handler) { handlers.delete(handler); },
+      addEventListener(type: string, handler: () => void) { if (type === "abort") { handlers.add(handler); addCount += 1; } },
+      removeEventListener(type: string, handler: () => void) { handlers.delete(handler); },
     },
     fire() { aborted = true; for (const handler of [...handlers]) handler(); },
-    tripAt(n) { tripAtRead = n; },
+    tripAt(n: number) { tripAtRead = n; },
     abortNow() { aborted = true; },
     get reads() { return reads; },
     // Total registrations seen (the finally removes the handler, so `handlers`
@@ -146,8 +148,8 @@ function makeSignal() {
 
 // Establish a durable keep-alive session (turn-1, no abort) under `root`, then
 // return its id so a later turn-2 can resume it.
-async function establishResumeSession(model, root) {
-  faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+async function establishResumeSession(model: Model<string>, root: string) {
+  faux!.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
   const first = await generateEngineTurnResponse("system", runOptions(model, {
     messages: [{ role: "user", content: "turn-1" }],
     sessionKeepAlive: true,
@@ -161,10 +163,10 @@ async function establishResumeSession(model, root) {
 // Assert a resumed session survived a cancelled turn-2: exactly one durable
 // transcript (no leak), no busy wedge, and a clean turn-3 resume that does NOT
 // replay the cancelled turn-2.
-async function assertResumeUnwedgedAndClean(model, root, sessionId) {
+async function assertResumeUnwedgedAndClean(model: Model<string>, root: string, sessionId: string) {
   expect(countJsonlFiles(root)).toBe(1);
-  let retryContext = null;
-  faux.setResponses([
+  let retryContext: TranscriptContext | null = null;
+  faux!.setResponses([
     (context) => { retryContext = context; return fauxAssistantMessage([fauxText("reply-3")]); },
   ]);
   const third = await generateEngineTurnResponse("system", runOptions(model, {
@@ -183,10 +185,10 @@ async function assertResumeUnwedgedAndClean(model, root, sessionId) {
 // Assert a create-on-miss id is not wedged after a cancelled first turn: no
 // leaked jsonl, and a fresh (non-aborted) first turn create-on-misses again and
 // sees ONLY its own turn — never the cancelled turn's transcript.
-async function assertCreateOnMissUnwedged(model, root, derivedId) {
+async function assertCreateOnMissUnwedged(model: Model<string>, root: string, derivedId: string) {
   expect(countJsonlFiles(root)).toBe(0);
-  let nextContext = null;
-  faux.setResponses([
+  let nextContext: TranscriptContext | null = null;
+  faux!.setResponses([
     (context) => { nextContext = context; return fauxAssistantMessage([fauxText("reply-after")]); },
   ]);
   const next = await generateEngineTurnResponse("system", runOptions(model, {
@@ -202,7 +204,7 @@ async function assertCreateOnMissUnwedged(model, root, derivedId) {
   expect(countJsonlFiles(root)).toBe(1);
 }
 
-function withRoot(prefix, fn) {
+function withRoot(prefix: string, fn: (root: string) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), prefix));
   return Promise.resolve(fn(root)).finally(() => rmSync(root, { recursive: true, force: true }));
 }
@@ -215,7 +217,7 @@ describe("pi-native abort sweep — entry (OP0, before any session work)", () =>
       const sig = makeSignal();
       sig.abortNow();
       let invoked = false;
-      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      faux!.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
       const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
@@ -235,7 +237,7 @@ describe("pi-native abort sweep — entry (OP0, before any session work)", () =>
       const sig = makeSignal();
       sig.abortNow();
       let invoked = false;
-      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      faux!.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
       const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
@@ -262,7 +264,7 @@ describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP8)", () =>
       const sig = makeSignal();
       sig.tripAt(2);
       let invoked = false;
-      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      faux!.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
       const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
@@ -283,7 +285,7 @@ describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP8)", () =>
       const sig = makeSignal();
       sig.tripAt(2);
       let invoked = false;
-      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      faux!.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
       const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
@@ -312,7 +314,7 @@ describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP8)", () =>
         const sig = makeSignal();
         sig.tripAt(3);
         let invoked = false;
-        faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+        faux!.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
         const aborted = await generateEngineTurnResponse("system", runOptions(model, {
           messages: [{ role: "user", content: sessionKind === "resume" ? "turn-2" : "turn-1" }],
           sessionKeepAlive: true,
@@ -339,7 +341,7 @@ describe("pi-native abort sweep — during the provider request (AP11, handler-d
     await withRoot("pi-abort-prompt-resume-", async (root) => {
       const sessionId = await establishResumeSession(model, root);
       const sig = makeSignal();
-      faux.setResponses([() => { sig.fire(); return fauxAssistantMessage([fauxText("reply-2")]); }]);
+      faux!.setResponses([() => { sig.fire(); return fauxAssistantMessage([fauxText("reply-2")]); }]);
       const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
@@ -356,7 +358,7 @@ describe("pi-native abort sweep — during the provider request (AP11, handler-d
     const model = setup();
     await withRoot("pi-abort-prompt-onmiss-", async (root) => {
       const sig = makeSignal();
-      faux.setResponses([() => { sig.fire(); return fauxAssistantMessage([fauxText("reply-1")]); }]);
+      faux!.setResponses([() => { sig.fire(); return fauxAssistantMessage([fauxText("reply-1")]); }]);
       const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
@@ -379,7 +381,7 @@ describe("pi-native abort sweep — post-run TOCTOU (OP3, commitSession decision
     await withRoot("pi-abort-toctou-resume-", async (root) => {
       const sessionId = await establishResumeSession(model, root);
       const sig = makeSignal();
-      faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
+      faux!.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
       const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
@@ -398,7 +400,7 @@ describe("pi-native abort sweep — post-run TOCTOU (OP3, commitSession decision
     const model = setup();
     await withRoot("pi-abort-toctou-onmiss-", async (root) => {
       const sig = makeSignal();
-      faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+      faux!.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
       const aborted = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
@@ -428,7 +430,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
       // read on the success path is the I10 guard.
       const probeId = await establishResumeSession(model, root);
       const probe = makeSignal();
-      faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
+      faux!.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
       await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
@@ -444,7 +446,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
         const sessionId = await establishResumeSession(model, realRoot);
         const sig = makeSignal();
         sig.tripAt(lastRead);
-        faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
+        faux!.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
         const aborted = await generateEngineTurnResponse("system", runOptions(model, {
           messages: [{ role: "user", content: "turn-2" }],
           sessionKeepAlive: true,
@@ -455,7 +457,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
         expect(aborted.cancelled).toBe(true);
         // No SECOND transcript leaked, and the id is not wedged busy.
         expect(countJsonlFiles(realRoot)).toBe(1);
-        faux.setResponses([fauxAssistantMessage([fauxText("reply-3")])]);
+        faux!.setResponses([fauxAssistantMessage([fauxText("reply-3")])]);
         const third = await generateEngineTurnResponse("system", runOptions(model, {
           messages: [{ role: "user", content: "turn-3" }],
           sessionKeepAlive: true,
@@ -472,7 +474,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
     await withRoot("pi-abort-i10-onmiss-probe-", async (probeRoot) => {
       // Learn the clean read count on a create-on-miss success path.
       const probe = makeSignal();
-      faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+      faux!.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
       await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
@@ -485,7 +487,7 @@ describe("pi-native abort sweep — final abort guard (AP17, I10)", () => {
       await withRoot("pi-abort-i10-onmiss-real-", async (realRoot) => {
         const sig = makeSignal();
         sig.tripAt(lastRead);
-        faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+        faux!.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
         const aborted = await generateEngineTurnResponse("system", runOptions(model, {
           messages: [{ role: "user", content: "turn-1" }],
           sessionKeepAlive: true,
@@ -508,7 +510,7 @@ describe("pi-native abort sweep — throw funnel (outer catch, cleanupSessionOnT
   it("create-on-miss: a throw during setup releases the reservation and leaves no jsonl", async () => {
     const model = setup();
     await withRoot("pi-throw-onmiss-", async (root) => {
-      faux.setResponses([fauxAssistantMessage([fauxText("never reached")])]);
+      faux!.setResponses([fauxAssistantMessage([fauxText("never reached")])]);
       const failed = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-1" }],
         sessionKeepAlive: true,
@@ -526,7 +528,7 @@ describe("pi-native abort sweep — throw funnel (outer catch, cleanupSessionOnT
     const model = setup();
     await withRoot("pi-throw-resume-", async (root) => {
       const sessionId = await establishResumeSession(model, root);
-      faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
+      faux!.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
       const failed = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionKeepAlive: true,
