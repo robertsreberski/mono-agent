@@ -85,6 +85,67 @@ describe("createRouterRuntime — basic", () => {
 });
 
 describe("createRouterRuntime — fallback on retryable", () => {
+  it.each([
+    { name: "without messages", messages: undefined },
+    { name: "with messages", messages: [
+      { role: "user", content: "Old input" },
+      { role: "user", content: "Current input" },
+    ] },
+  ])("falls back with detached replay $name", async ({ messages }) => {
+    const primary = modelRef("anthropic", "claude-opus-4-7");
+    const backup = modelRef("anthropic", "claude-sonnet-4-6");
+    const replay = [
+      { role: "user", content: "Earlier question" },
+      { role: "assistant", content: "Earlier answer" },
+    ];
+    const detachedContext = vi.fn(async () => replay);
+    executeMock
+      .mockResolvedValueOnce({ text: null, error: "Connection error.",
+        failureKind: "provider_unavailable", events: [], cancelled: false })
+      .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
+    const router = createRouterRuntime({ chain: [primary, backup] });
+
+    const result = await router.run("sys", {
+      detachedContext,
+      ...(messages === undefined ? {} : { messages }),
+    });
+
+    expect(result.text).toBe("recovered");
+    expect(result.error).toBeFalsy();
+    expect(result.failoverHistory).toEqual([{
+      model: primary,
+      failureKind: "provider_unavailable",
+      requestId: null,
+      retryableSubkind: "network",
+    }]);
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls.map((call) => call[1].model)).toEqual([primary, backup]);
+    expect(executeMock.mock.calls[1]![1].messages).toEqual([
+      ...replay, ...(messages ?? []).slice(-1),
+    ]);
+    expect(detachedContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns structured exhaustion after detached replay without messages", async () => {
+    const primary = modelRef("anthropic", "claude-opus-4-7");
+    const backup = modelRef("anthropic", "claude-sonnet-4-6");
+    const replay = [{ role: "user", content: "Earlier question" }];
+    executeMock.mockResolvedValue({ text: null, error: "Connection error.",
+      failureKind: "provider_unavailable", events: [], cancelled: false });
+    const router = createRouterRuntime({ chain: [primary, backup] });
+
+    const result = await router.run("sys", { detachedContext: async () => replay });
+
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+    expect(result.error).toBeTruthy();
+    expect(result.failoverHistory.map(({ model, failureKind }) => ({ model, failureKind }))).toEqual([
+      { model: primary, failureKind: "provider_unavailable" },
+      { model: backup, failureKind: "provider_unavailable" },
+    ]);
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[1]![1].messages).toEqual(replay);
+  });
+
   it("falls back to the next chain entry on a retryable provider error", async () => {
     executeMock
       .mockResolvedValueOnce({

@@ -332,7 +332,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               // Opaque host warnings already pass through as iterables; narrowing would change failure behavior.
               return { ...failure, runtimeWarnings: [... ((failure.runtimeWarnings || []) as readonly unknown[]), warning], failoverHistory };
             }
-            callOptions.messages = [...detachedMessages, ...options.messages!.slice(-1)];
+            callOptions.messages = [...detachedMessages, ...(options.messages ?? []).slice(-1)];
           }
           admission = checkedAdmission();
           if (admission) return admission;
