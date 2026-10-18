@@ -340,7 +340,7 @@ function readSkillTool(skillNames: any[] = [], { skillsRoot, dataDir, skills = [
   };
 }
 
-export function createStructuredOutputTool(outputSchema: any, onStructuredOutput: any): { name: string; label: string; description: string; parameters: Type.TUnsafe<unknown>; executionMode: string; execute(_toolCallId: any, params: any): Promise<{ content: { type: string; text: string; }[]; details: any; terminate: boolean; }>; };
+
 export function createStructuredOutputTool(outputSchema: any, onStructuredOutput: any): { name: string; label: string; description: string; parameters: Type.TUnsafe<unknown>; executionMode: string; execute(_toolCallId: any, params: any): Promise<{ content: { type: string; text: string }[]; details: any; terminate: boolean }> } | null {
   if (!outputSchema) return null;
   return {

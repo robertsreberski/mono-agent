@@ -161,16 +161,7 @@ export function parseActionableEnvelope(text: unknown): any | null {
  * re-querying. Returns the refreshed JSON text, or null when the cached text
  * is not a search envelope (legacy or corrupt entries fall back to a miss).
  */
-export function refreshCachedSearchEnvelope(text: unknown, budget: {
-    requestsUsed?: number;
-    requestsThisCall?: number;
-    requestsRemaining?: number;
-    maxRequestsPerRun?: number;
-    dispatchesUsed?: number;
-    maxDispatches?: number;
-    dispatchesRemaining?: number;
-    retryInRun?: boolean;
-}, requestedQuery: unknown): string;
+
 export function refreshCachedSearchEnvelope(text: unknown, budget: { requestsUsed?: number; requestsThisCall?: number; requestsRemaining?: number; maxRequestsPerRun?: number; dispatchesUsed?: number; maxDispatches?: number; dispatchesRemaining?: number; retryInRun?: boolean }, requestedQuery: unknown): string | null {
   const parsed = parseActionableEnvelope(text);
   if (!parsed || parsed.tool !== "WebSearch" || !parsed.coverage || typeof parsed.coverage !== "object") return null;

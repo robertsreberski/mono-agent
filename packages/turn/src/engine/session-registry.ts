@@ -13,13 +13,13 @@ export function createSessionRegistry({
   onSync,
   now = Date.now,
   isBusy,
-}: { idleTimeoutMs?: number; onEvict?: (value: any, reason: string) => (void | Promise<void>); onSync?: (value: any) => (void | Promise<void>); now?: () => number; isBusy?: (value: any) => boolean; } = {}): {
+}: { idleTimeoutMs?: number | undefined; onEvict?: (value: any, reason: string) => (void | Promise<void>); onSync?: (value: any) => (void | Promise<void>); now?: () => number; isBusy?: (value: any) => boolean; } = {}): {
     get(id: any): any;
     set(id: any, value: any, options?: {
-        idleTimeoutMs?: number;
+        idleTimeoutMs?: number | undefined;
     }): boolean;
     touch(id: any, options?: {
-        idleTimeoutMs?: number;
+        idleTimeoutMs?: number | undefined;
     }): void;
     has(id: any): boolean;
     /** Remove without running onEvict — for callers that already cleaned up. */
@@ -202,7 +202,7 @@ export function createSessionRegistry({
       }
       return entry.value;
     },
-    set(id: any, value: any, { idleTimeoutMs: entryTtl }: { idleTimeoutMs?: number; } = {}): boolean {
+    set(id: any, value: any, { idleTimeoutMs: entryTtl }: { idleTimeoutMs?: number | undefined; } = {}): boolean {
       const previous = entries.get(id);
       // Never overwrite an in-flight/failed durability operation. The marker
       // deliberately owns this id until sync recovers or invalidation removes
@@ -221,7 +221,7 @@ export function createSessionRegistry({
       armTimer(id, entry);
       return true;
     },
-    touch(id: any, { idleTimeoutMs: entryTtl }: { idleTimeoutMs?: number; } = {}): void {
+    touch(id: any, { idleTimeoutMs: entryTtl }: { idleTimeoutMs?: number | undefined; } = {}): void {
       const entry = entries.get(id);
       if (!entry) return;
       if (entry.state !== "active") return;

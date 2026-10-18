@@ -21,7 +21,7 @@ function freshRunState(): StreamSubscriberState {
     toolFailureThisTurn: false,
     structuredOutputCompletedThisTurn: false,
     structuredResult: null,
-  } as unknown as StreamSubscriberState;
+  };
 }
 
 function harnessDouble(): { calls: { aborts: number }; abort: () => void; getModel: () => { contextWindow: number }; getPromptCacheRequest?: () => { requestId: string; phase: string } } {

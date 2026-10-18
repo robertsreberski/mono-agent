@@ -184,10 +184,10 @@ export function prepareHandoff(view: any, options: any): {
     checkpoint: any;
     recent: any;
     ledger: any;
-  };
+  } | null;
   coverage: any;
 };
-export function prepareHandoff(view: any, options: any): ReturnType<typeof prepareHandoff> | (Omit<PreparedHandoff, "prior"> & { prior: PreparedHandoff["prior"] | null }) {
+export function prepareHandoff(view: any, options: any): ReturnType<typeof prepareHandoff> {
   assertEvidenceView(view);
   const ledger = buildOpenWorkLedger(view);
   const turns = logicalHandoffTurns(view);
@@ -241,7 +241,7 @@ export function buildHandoff(view: any, options: any): {
     checkpoint: any;
     recent: any;
     ledger: any;
-  };
+  } | null;
   coverage: any;
 } | {
   status: string;
@@ -274,7 +274,7 @@ export function buildHandoff(view: any, options: any): {
       checkpoint: any;
       recent: any;
       ledger: any;
-    };
+    } | null;
     coverage: any;
   };
   artifact?: undefined;
@@ -292,7 +292,7 @@ export function buildHandoff(view: any, options: any): {
       summary: any;
       ledger: any;
       suffix: any[];
-    };
+    } | null;
     recent: any;
     ledger: any;
     retainedIds: any;
@@ -313,7 +313,7 @@ export function buildHandoff(view: any, options: any): {
   coverage: any;
   prepared?: undefined;
 };
-export function buildHandoff(view: any, options: any): ReturnType<typeof buildHandoff> | (Omit<BuiltHandoff, "artifact"> & { artifact: Omit<BuiltHandoff["artifact"], "checkpoint"> & { checkpoint: BuiltHandoff["artifact"]["checkpoint"] | null } }) {
+export function buildHandoff(view: any, options: any): ReturnType<typeof buildHandoff> {
   const prepared = prepareHandoff(view, options) as Extract<ReturnType<typeof prepareHandoff>, { recent: unknown }>; if (prepared.status !== "prepared") return prepared;
   let summary = null, checkpoint = null, recent = prepared.recent;
   if (options.summary !== undefined) {
@@ -340,6 +340,3 @@ export function buildHandoff(view: any, options: any): ReturnType<typeof buildHa
   if (fit.status !== "ready") return fit;
   return { status: "ready", artifact, contentHash: evidenceDigest(artifact), messages, coverage: prepared.coverage };
 }
-
-type PreparedHandoff = Extract<ReturnType<typeof prepareHandoff>, { recent: unknown }>;
-type BuiltHandoff = Extract<ReturnType<typeof buildHandoff>, { artifact: unknown }>;

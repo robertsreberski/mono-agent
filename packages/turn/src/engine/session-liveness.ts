@@ -56,7 +56,7 @@ export function createSessionLiveness(registry: SessionRegistryLike): SessionLiv
     reserve(id: string, seed: any, ttl: number | undefined): { ok: true; id: string; release: () => void; commit: (entry: any) => void; } | { ok: false; entry: any; } {
       const concurrent = registry.get(id);
       if (concurrent) return { ok: false, entry: concurrent };
-      registry.set(id, seed, { idleTimeoutMs: ttl! });
+      registry.set(id, seed, { idleTimeoutMs: ttl });
       return {
         ok: true,
         id,
@@ -65,7 +65,7 @@ export function createSessionLiveness(registry: SessionRegistryLike): SessionLiv
         release: () => { registry.delete(id); },
         // Overwrite the placeholder with the finalized entry on the keep-alive
         // success path (same id, same ttl).
-        commit: (entry: any) => { registry.set(id, entry, { idleTimeoutMs: ttl! }); },
+        commit: (entry: any) => { registry.set(id, entry, { idleTimeoutMs: ttl }); },
       };
     },
 
@@ -82,7 +82,7 @@ export function createSessionLiveness(registry: SessionRegistryLike): SessionLiv
 export type SessionRegistryLike = {
     get: (id: string) => any;
     set: (id: string, value: any, opts?: {
-        idleTimeoutMs?: number;
+        idleTimeoutMs?: number | undefined;
     }) => void;
     delete: (id: string) => boolean;
 };

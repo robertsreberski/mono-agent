@@ -113,15 +113,15 @@ function retryableProviderSubkind(text: string) {
 }
 
 export function retryableProviderFailureInfo({ errorText, stderrTail, failureKind, }?: {
-  errorText?: string;
-  stderrTail?: string;
-  failureKind?: string | null;
+  errorText?: string | null | undefined;
+  stderrTail?: string | null | undefined;
+  failureKind?: string | null | undefined;
 }): RetryableProviderFailureInfo;
 export function retryableProviderFailureInfo({
   errorText = "",
   stderrTail = "",
   failureKind = null,
-}: { errorText?: string | undefined; stderrTail?: string | undefined; failureKind?: string | null | undefined; } | undefined = {}): RetryableProviderFailureInfo {
+}: { errorText?: string | null | undefined; stderrTail?: string | null | undefined; failureKind?: string | null | undefined; } | undefined = {}): RetryableProviderFailureInfo {
   const haystack = `${errorText || ""}\n${stderrTail || ""}`.trim();
   if (haystack.includes("subscription_sharing_usage_limit_exceeded")) {
     return { retryable: true, subkind: "subscription_limit", requestId: requestIdFromText(haystack) };
@@ -161,18 +161,18 @@ export function retryableProviderFailureInfo({
  * @returns One of FAILURE_KINDS, or null for a clean exit.
  */
 export function classifyFailure({ exitCode, signal, errorText, stderrTail, timedOut, cancelRequested, cancelInitiator, resultParseError, mcpInitFailed, budgetExceeded, childFailed, hint, }?: {
-  exitCode?: number | null;
-  signal?: string | null;
-  errorText?: string;
-  stderrTail?: string;
-  timedOut?: boolean;
-  cancelRequested?: boolean;
-  cancelInitiator?: string | null;
-  resultParseError?: boolean;
-  mcpInitFailed?: boolean;
-  budgetExceeded?: boolean;
-  childFailed?: boolean;
-  hint?: string | null;
+  exitCode?: number | null | undefined;
+  signal?: string | null | undefined;
+  errorText?: string | null | undefined;
+  stderrTail?: string | null | undefined;
+  timedOut?: boolean | undefined;
+  cancelRequested?: boolean | undefined;
+  cancelInitiator?: string | null | undefined;
+  resultParseError?: boolean | undefined;
+  mcpInitFailed?: boolean | undefined;
+  budgetExceeded?: boolean | undefined;
+  childFailed?: boolean | undefined;
+  hint?: string | null | undefined;
 }): FailureKind | null;
 /**
  * @returns One of FAILURE_KINDS, or null for a clean exit.
@@ -190,7 +190,7 @@ export function classifyFailure({
   budgetExceeded = false,
   childFailed = false,
   hint = null,
-}: { exitCode?: number | null | undefined; signal?: string | null | undefined; errorText?: string | undefined; stderrTail?: string | undefined; timedOut?: boolean | undefined; cancelRequested?: boolean | undefined; cancelInitiator?: string | null | undefined; resultParseError?: boolean | undefined; mcpInitFailed?: boolean | undefined; budgetExceeded?: boolean | undefined; childFailed?: boolean | undefined; hint?: string | null | undefined; } | undefined = {}): FailureKind | null {
+}: { exitCode?: number | null | undefined; signal?: string | null | undefined; errorText?: string | null | undefined; stderrTail?: string | null | undefined; timedOut?: boolean | undefined; cancelRequested?: boolean | undefined; cancelInitiator?: string | null | undefined; resultParseError?: boolean | undefined; mcpInitFailed?: boolean | undefined; budgetExceeded?: boolean | undefined; childFailed?: boolean | undefined; hint?: string | null | undefined; } | undefined = {}): FailureKind | null {
   if (budgetExceeded) return "budget_exceeded";
   if (childFailed) return "child_failed";
   if (resultParseError) return "invalid_result";

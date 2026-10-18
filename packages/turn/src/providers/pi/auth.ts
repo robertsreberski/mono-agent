@@ -37,7 +37,7 @@ const authFileChains = new Map<string, Promise<unknown>>();
 
 export function createPiOAuthApiKeyResolver(options: {
     path?: string;
-} = {}): PiApiKeyResolver {
+} = {}): PiApiKeyResolver & Required<Pick<PiApiKeyResolver, "readCredential" | "modifyCredential" | "deleteCredential">> {
   const configuredAuthPath = typeof options.path === "string" && options.path.trim().length > 0
     ? options.path
     : undefined;

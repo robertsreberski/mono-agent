@@ -9,7 +9,7 @@ export function boundedInt(value: any, fallback: any, { min = 1, max = Number.MA
   return Math.min(Math.max(Math.floor(n), min), max);
 }
 
-export function safeStat(path: any): import("fs").Stats;
+
 export function safeStat(path: any): import("fs").Stats | null {
   try { return statSync(path); } catch { return null; }
 }

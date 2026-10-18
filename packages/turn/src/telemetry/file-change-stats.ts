@@ -170,11 +170,12 @@ export function statsForCompletedChange(change: any, before: any, after: any): {
   added_lines: number;
   removed_lines: number;
   changed_lines: number;
+  hunks?: Array<{ start: number; end: number }>;
 } | {
   before_lines: any;
   after_lines: any;
   unavailable_reason: any;
-};
+} | null;
 export function statsForCompletedChange(change: { kind?: string } | null | undefined, before: FileSnapshot | null | undefined, after: FileSnapshot | null | undefined): LineStats | null {
   const kind = change?.kind || "change";
   if (before?.unavailable_reason || after?.unavailable_reason) {
@@ -213,7 +214,7 @@ export function fileChangeSummary(changes: any): {
   removed_lines: any;
   changed_lines: any;
   unavailable_count: any;
-};
+} | null;
 export function fileChangeSummary(changes: Array<{ path?: string; kind?: string; line_stats?: LineStats | null }>): {
   files: number;
   added_lines: number;

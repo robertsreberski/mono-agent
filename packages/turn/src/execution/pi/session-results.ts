@@ -61,7 +61,7 @@ export async function commitSession(state: import("./types.js").PiRunState, { op
     keepAlive: options.sessionKeepAlive, externalAbort, failed: !!errorMessage } as Parameters<typeof storage.commitSession>[1]);
   if (persistFailure) onEvent({ type: "runtime_warning", warning_kind: "pi_session_persist_failed", message: persistFailure.message });
 }
-export function captureSessionRecovery(state: any, { options, providerSessionId, modelKey, model, pending }: any): Promise<{ runId: string; revision: number; providerSessionId: string; modelKey: string; tipId: string }>;
+
 export async function captureSessionRecovery(state: any, { options, providerSessionId, modelKey, model, pending }: any) {
   const outcome = await storage.captureSessionRecovery(state, { identity: { runId: options.sessionRecovery.runId, revision: options.sessionRecovery.revision, providerSessionId, modelKey },
     model, pending, abortSignal: options.abortSignal });

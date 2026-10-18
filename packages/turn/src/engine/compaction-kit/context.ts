@@ -18,7 +18,7 @@ function isContextMessage(message: any) {
     return (message.role !== "assistant" ||
         (message.stopReason !== "error" && message.stopReason !== "aborted" && message.stopReason !== "deferred"));
 }
-export function sessionEntryToContextMessages(entry: any): any[];
+
 export function sessionEntryToContextMessages(entry: any): any[] | undefined {
     switch (entry.type) {
         case "message":

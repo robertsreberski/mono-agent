@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 /** One cache/path identity for runtime and administrative native storage. */
-export function normalizeDurableSessionsRoot(value: any): string;
+
 export function normalizeDurableSessionsRoot(value: any): string | null {
   return typeof value === "string" && value.trim() ? resolve(value.trim()) : null;
 }

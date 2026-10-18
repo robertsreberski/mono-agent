@@ -634,7 +634,7 @@ export type RuntimeResult = {
   cancelled?: boolean;
   error?: string | null;
   errorDetails?: any | null;
-  failureKind?: string | null;
+  failureKind?: string | null | undefined;
   /**
    * Explicit terminal safety rejection overrides route retryability.
    */
@@ -946,7 +946,7 @@ export type AgentRuntimeInstance = {
   /**
    * Explicit native evidence ownership capability.
    */
-  sessionTurnReconciliation?: "v1";
+  sessionTurnReconciliation?: "v1" | undefined;
   /**
    * Storage-only protected native reconciliation.
    */

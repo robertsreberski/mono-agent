@@ -24,7 +24,7 @@ it("excludes a second process and kernel ownership releases after SIGKILL", asyn
     const path = join(locks.directory, "journal-fictional.sqlite");
     expect(await locks.withCatalog(() => locks.tryLock(path))).toBeNull();
     const exit = once(worker, "exit"); worker.kill("SIGKILL"); await exit;
-    const next = await locks.acquireWriter("journal-fictional"); await (locks.releaseWriter as (...args: any[]) => ReturnType<typeof locks.releaseWriter>)(next);
+    const next = await locks.acquireWriter("journal-fictional"); await (locks.releaseWriter)(next);
     expect((await lstat(path)).mode & 0o777).toBe(0o600);
   } finally { if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL"); }
 }, 10000);

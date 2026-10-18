@@ -89,13 +89,15 @@ class ResolverProtectedOptionError extends Error {
   }
 }
 
-export function createRouterRuntime(options?: RouterOptions): AgentRuntimeInstance & {
+export function createRouterRuntime(options?: RouterOptions): Omit<AgentRuntimeInstance, "run"> & {
+    run(systemPrompt: string, options?: Omit<Parameters<AgentRuntimeInstance["run"]>[1], "model"> & { model?: RuntimeModelRef | undefined }): ReturnType<AgentRuntimeInstance["run"]>;
     chain: () => Array<RouterChainEntry>;
 };
 
 export function createRouterRuntime(options: HostRouterOptions): HostRouterRuntime;
 
-export function createRouterRuntime(options?: RouterOptions): AgentRuntimeInstance & {
+export function createRouterRuntime(options?: RouterOptions): Omit<AgentRuntimeInstance, "run"> & {
+    run(systemPrompt: string, options?: Omit<Parameters<AgentRuntimeInstance["run"]>[1], "model"> & { model?: RuntimeModelRef | undefined }): ReturnType<AgentRuntimeInstance["run"]>;
     chain: () => Array<RouterChainEntry>;
 };
 export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry, sessionTurnReconciliation }: HostRouterOptions = {}): HostRouterRuntime {
@@ -420,7 +422,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           const retryability = retryableProviderFailureInfo({
             errorText: result.error || "",
             stderrTail: result.stderrTail || "",
-            failureKind: result.failureKind!,
+            failureKind: result.failureKind,
           });
 
           let routeApi = callOptions.piResolvedModel?.api;
@@ -515,7 +517,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // instead of nesting a new <resume_context> block per transition.
           pendingSnapshot = mergeResumeSnapshots(
             pendingSnapshot,
-            buildTranscriptTailSnapshot(result.events!, { runtimeBrand }),
+            buildTranscriptTailSnapshot(result.events, { runtimeBrand }),
           );
 
           if (!sameModelRetryable) break;
@@ -555,7 +557,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       };
       return {
         ...exhaustedResult,
-        failureKind: contextFailure && lastResult === contextFailure ? "context_limit" : lastResult ? "provider_unavailable_exhausted" : exhaustedResult.failureKind!,
+        failureKind: contextFailure && lastResult === contextFailure ? "context_limit" : lastResult ? "provider_unavailable_exhausted" : exhaustedResult.failureKind,
         failoverHistory,
       };
       } finally {
@@ -659,7 +661,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             available = false;
             try {
               const result = normalizeProviderAuthFailure(await lease.run(binding));
-              const retryability = retryableProviderFailureInfo({ errorText: result.error || "", stderrTail: result.stderrTail || "", failureKind: result.failureKind! });
+              const retryability = retryableProviderFailureInfo({ errorText: result.error || "", stderrTail: result.stderrTail || "", failureKind: result.failureKind });
               return { ...result, failoverHistory: result.error || result.failureKind || result.cancelled ? [{ model: primary.model,
                 failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
                 requestId: retryability.requestId, retryableSubkind: retryability.subkind }] : [] };
@@ -673,7 +675,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       configuredTools = { ...(configuredTools || {}), ...next };
       inner.configureTools?.(next);
     },
-    sessionTurnReconciliation: resolveAttempt === undefined ? inner.sessionTurnReconciliation! : sessionTurnReconciliation!,
+    sessionTurnReconciliation: resolveAttempt === undefined ? inner.sessionTurnReconciliation : sessionTurnReconciliation,
     async reconcileSessionTurn(request: { sessionsRoot: string; descriptor: any; purpose: "execution" | "compaction"; expectedModel: { provider: string; id: string; api?: string; }; expectedInputs: ReadonlyArray<{ id: string; requestDigest: string; placement: "initial" | "live"; }>; expectedBaseTip?: string | null; }) {
       if (!inner.reconcileSessionTurn) throw new Error("Native turn reconciliation unavailable");
       return inner.reconcileSessionTurn(request);
@@ -1177,7 +1179,7 @@ export type HostRouterOptions = Omit<RouterOptions, "resolveAttempt"> & {
     }) => (HostRouterAttemptResolution | undefined | Promise<HostRouterAttemptResolution | undefined>);
 };
 export type HostRouterRuntime = Omit<AgentRuntimeInstance, "run" | "prepareNativeDispatch"> & {
-    run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
+    run(systemPrompt: string, options?: Omit<RuntimeRunOptions, "model"> & { model?: RuntimeModelRef | undefined }): Promise<RuntimeResult>;
     prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<import("../contracts/runtime.js").RuntimeAttemptPreparedDispatch>;
     chain(): Array<RouterChainEntry>;
 };

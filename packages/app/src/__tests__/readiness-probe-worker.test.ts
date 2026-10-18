@@ -60,7 +60,11 @@ class CloneCheckingPort implements ReadinessWorkerPort {
 }
 
 const noPiResolver: ReadinessWorkerDependencies["createPiApiKeyResolver"] = () =>
-  async () => undefined;
+  Object.assign(async () => undefined, {
+    readCredential: async () => undefined,
+    modifyCredential: async () => undefined,
+    deleteCredential: async () => {},
+  });
 
 function dependenciesWith(
   runtime: MonoRuntimeLike,
@@ -466,7 +470,11 @@ describe("runReadinessProbeWorker", () => {
 
   it("tracks a Pi credential resolved during the probe and redacts it before IPC", async () => {
     const port = new CloneCheckingPort();
-    const resolver = vi.fn(async () => SYNTHETIC_SECRET);
+    const resolver = Object.assign(vi.fn(async () => SYNTHETIC_SECRET), {
+      readCredential: async () => undefined,
+      modifyCredential: async () => undefined,
+      deleteCredential: async () => {},
+    });
     const createPiApiKeyResolver = vi.fn(() => resolver);
     let createOptions: CreateMonoRuntimeOptions | undefined;
     const runtime: MonoRuntimeLike = {

@@ -35,7 +35,7 @@ async function turn(raw: any, faux: any, models: any): Promise<void> {
       expect([...raw.validator.calls.values()].at(-1).admission).toBe("started"); expect(meter.journal).toBe(5);
       effects += 1; return { content: [{ type: "text", text: "Fictional observation." }] };
     } }] });
-  expect((await (driver.prompt as (...args: any[]) => ReturnType<typeof driver.prompt>)("Fictional tool turn.")).status).toBe("completed"); expect(effects).toBe(1); await driver.close();
+  expect((await (driver.prompt)("Fictional tool turn.")).status).toBe("completed"); expect(effects).toBe(1); await driver.close();
 }
 it("keeps all nine tool-turn file barriers but zero repeated directory fsyncs or parsed-envelope reads", async () => {
   const { repo, raw, faux, models } = await fixture(); reset();

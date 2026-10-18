@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, it, expect, vi } from "vitest";
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -18,7 +19,7 @@ const text = (value: any) => ({ role: "user", content: value, timestamp: 1 });
 const summary = { intent: ["Fictional goal"], constraints: ["No deployment approval"], decisions: [], completedWork: [], failures: [], openWork: ["Inspect result"], nextActions: ["Wait"], references: [] };
 async function segment(id: string, messages: any[] = [text(id)], guarded: any = false) {
   const repo = new MemorySessionRepo(); const store = await repo.create({ id, cwd: "/fictional", ...(guarded ? { hostAuthority, assertOwned: async () => {} } : {}) });
-  await (store as FixtureStore).beginTurn(`turn-${id}`);
+  await store.beginTurn(`turn-${id}`);
   await store.openOperation(`op-${id}`, { model: { provider: provenance.provider, api: provenance.api, id }, nativeProvenance: provenance });
   for (let i = 0; i < messages.length; i++) await store.appendMessage(messages[i]!, `${id}-message-${i}`);
   await store.closeOperation(`op-${id}`, "completed");
@@ -64,10 +65,11 @@ it("persists opt-in composed coverage of the inherited prior handoff and never r
   const prior = await priorHandoff("Inherited B fact");
   const inheritedCoverage = { version: 1, sources: prior!.coverage.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }: any) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) };
   const c = await segment("C", [text("C")], true);
-  await (c.store as FixtureStore).beginTurn("composed-turn");
+  await c.store.beginTurn("composed-turn");
   await c.store.openOperation("composed-op", { model: { provider: provenance.provider, api: provenance.api, id: "C" }, nativeProvenance: provenance }, "compaction");
   await c.store.appendCompaction({ summary: "Prior and C checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, inheritedCoverage, { sourceTipId: c.store.tip, sourceSeq: c.store.seq });
   await c.store.closeOperation("composed-op", "completed"); await c.store.endTurn("composed-turn", "completed");
+  assert.ok(c.store.records);
   expect(c.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(2);
   const result = (buildHandoff(view([refreshed(c)], { prior }), options) as Extract<ReturnType<typeof buildHandoff>, { artifact: unknown }>);
   expect(result.status).toBe("ready"); expect(JSON.stringify(result.artifact!.checkpoint!.suffix)).toContain("Prior and C checkpoint");
@@ -80,7 +82,7 @@ it("drops a covered free-checkpoint suffix after composed compaction and stays r
   expect(prior!.summary).toBeNull(); expect(JSON.stringify(prior!.checkpoint!.suffix)).toContain("Fictional covered B suffix");
   const inheritedCoverage = { version: 1, sources: prior!.coverage.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }: any) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) };
   const c = await segment("composed-C", [text("Fictional C suffix")], true);
-  await (c.store as FixtureStore).beginTurn("composed-C-turn");
+  await c.store.beginTurn("composed-C-turn");
   await c.store.openOperation("composed-C-op", { model: { provider: provenance.provider, api: provenance.api, id: "C" }, nativeProvenance: provenance }, "compaction");
   await c.store.appendCompaction({ summary: "Fictional exact composed checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, inheritedCoverage, { sourceTipId: c.store.tip, sourceSeq: c.store.seq });
   await c.store.closeOperation("composed-C-op", "completed"); await c.store.endTurn("composed-C-turn", "completed");
@@ -91,13 +93,14 @@ it("drops a covered free-checkpoint suffix after composed compaction and stays r
   const d = await segment("reuse-D", [text("Fictional D suffix")]);
   const reused = (buildHandoff(view([d], { prior: result.artifact! }), options) as Extract<ReturnType<typeof buildHandoff>, { artifact: unknown }>);
   expect(reused.status).toBe("ready"); expect(reused.artifact!.checkpoint!.summary).toEqual(prior!.checkpoint!.summary);
+  assert.ok(c.store.records);
   const checkpointId = c.store.records.find((record) => record.kind === "compaction").id;
   expect(reused.artifact!.checkpoint!.suffix.filter((entry: any) => entry.id === checkpointId)).toHaveLength(1);
   expect(JSON.stringify(reused.artifact!.checkpoint!.suffix)).toContain("Fictional D suffix");
 });
 it("keeps whole latest turns, visible text verbatim and historical calls as neutral data", async () => {
   const a = await segment("turn0", [text("verbatim-0")]);
-  for (let i = 1; i < 5; i++) { await (a.store as FixtureStore).beginTurn(`turn${i}`); await a.store.appendMessage(text(`verbatim-${i}`)); await a.store.endTurn(`turn${i}`, "completed"); }
+  for (let i = 1; i < 5; i++) { await a.store.beginTurn(`turn${i}`); await a.store.appendMessage(text(`verbatim-${i}`)); await a.store.endTurn(`turn${i}`, "completed"); }
   const evidence = view([refreshed(a)]); const prepared = (prepareHandoff(evidence, options) as Extract<ReturnType<typeof prepareHandoff>, { recent: unknown }>);
   expect(prepared.recent).toHaveLength(3); expect(prepared.older).toHaveLength(2);
   const result = (buildHandoff(evidence, { ...options, summary }) as Extract<ReturnType<typeof buildHandoff>, { artifact: unknown }>); expect(result.status).toBe("ready");
@@ -108,7 +111,7 @@ it("keeps whole latest turns, visible text verbatim and historical calls as neut
 });
 it("accounts for started unknown effects, returned-but-unplaced results, interruption and unconsumed input without replay", async () => {
   const s = await segment("ledger"); const store = s.store;
-  await (store as FixtureStore).beginTurn("pending"); await store.openOperation("op", { model: { provider: "fictional", api: "fictional-api", id: "A" } });
+  await store.beginTurn("pending"); await store.openOperation("op", { model: { provider: "fictional", api: "fictional-api", id: "A" } });
   await store.appendMessage({ role: "assistant", provider: "fictional", api: "fictional-api", model: "A", content: [{ type: "toolCall", id: "unknown", name: "Write", arguments: { file_path: "/fictional/unknown" } }, { type: "toolCall", id: "returned", name: "Read", arguments: { file_path: "/fictional/result" } }], stopReason: "toolUse", timestamp: 1 }, "calls");
   for (const [callId, name] of [["unknown", "Write"], ["returned", "Read"]]) for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId, name, messageId: "calls", admission }, { operationId: "op" });
   await store.write("tool_result", { callId: "returned", name: "Read", phase: "returned", messageId: null, outcome: "success", message: { role: "toolResult", toolCallId: "returned", toolName: "Read", isError: false, content: [{ type: "text", text: "Confirmed fixture result" }], timestamp: 2 } }, { operationId: "op" });
@@ -123,7 +126,7 @@ it("accounts for started unknown effects, returned-but-unplaced results, interru
 it("checkpoint route = exact prior validated structured summary + complete suffix after the last checkpoint; a suffix alone is text-only replay", async () => {
   const b = await segment("B");
   await b.store.appendCompaction({ summary: "exact fixture compaction", tokensBefore: 50, retainedTail: [] });
-  for (let i = 0; i < 4; i++) { await (b.store as FixtureStore).beginTurn(`suffix${i}`); await b.store.appendMessage(text(`suffix-${i}`), `suffix-message-${i}`); await b.store.endTurn(`suffix${i}`, "completed"); }
+  for (let i = 0; i < 4; i++) { await b.store.beginTurn(`suffix${i}`); await b.store.appendMessage(text(`suffix-${i}`), `suffix-message-${i}`); await b.store.endTurn(`suffix${i}`, "completed"); }
   // No prior structured summary: a compaction checkpoint or the whole suffix is not a handoff.
   expect((buildHandoff(view([refreshed(b)]), options) as Extract<ReturnType<typeof buildHandoff>, { artifact: unknown }>)).toMatchObject({ status: "summary_required" });
   expect((buildHandoff(view([refreshed(b)], { prior: await priorHandoff("text-only prior", false) }), options) as Extract<ReturnType<typeof buildHandoff>, { artifact: unknown }>)).toMatchObject({ status: "summary_required" });
@@ -186,7 +189,7 @@ it("groups cold-boundary seeded user/call/result/reply scopes as whole logical t
     { role: "assistant", stopReason: "stop", timestamp: 1, content: [{ type: "text", text: "seed final one" }] }, text("seed user two"),
     { role: "assistant", stopReason: "stop", timestamp: 1, content: [{ type: "text", text: "seed final two" }] }];
   for (let i = 0; i < messages.length; i++) await a.store.appendMessage(messages[i]!, `seed-${i}`);
-  await (a.store as FixtureStore).beginTurn("native-latest"); await a.store.appendMessage(text("native latest"), "native-latest-message"); await a.store.endTurn("native-latest", "completed");
+  await a.store.beginTurn("native-latest"); await a.store.appendMessage(text("native latest"), "native-latest-message"); await a.store.endTurn("native-latest", "completed");
   const prepared = (prepareHandoff(view([refreshed(a)]), options) as Extract<ReturnType<typeof prepareHandoff>, { recent: unknown }>);
   expect(prepared.recent.map((t: any) => t.messages.map((m: any) => m.id))).toEqual([["seed-0", "seed-1", "seed-2", "seed-3"], ["seed-4", "seed-5"], ["native-latest-message"]]);
   expect(prepared.recent[0]!.sourceTurnIds).toHaveLength(4);
@@ -203,7 +206,7 @@ it("keeps a seeded tool result with its call even when a user boundary intervene
 });
 it("never drops authoritative recent turns after summary production to force a fit", async () => {
   const a = await segment("frozen-recent", [text("earlier".repeat(600))]);
-  for (let i = 0; i < 3; i++) { await (a.store as FixtureStore).beginTurn(`retained-${i}`); await a.store.appendMessage(text(`${i}`.repeat(4000))); await a.store.endTurn(`retained-${i}`, "completed"); }
+  for (let i = 0; i < 3; i++) { await a.store.beginTurn(`retained-${i}`); await a.store.appendMessage(text(`${i}`.repeat(4000))); await a.store.endTurn(`retained-${i}`, "completed"); }
   const local = { ...options, budget: createHandoffBudget({ contextWindow: 30256, outputReserve: 1000, inputTokens: 0, hostContext }) };
   const evidence = view([refreshed(a)]); const prepared = (prepareHandoff(evidence, local) as Extract<ReturnType<typeof prepareHandoff>, { recent: unknown }>);
   expect(prepared.recent).toHaveLength(3);
@@ -212,7 +215,7 @@ it("never drops authoritative recent turns after summary production to force a f
 });
 it("retains started rewound effects and their arguments in the unknown ledger", async () => {
   const a = await segment("rewound-effect"); const baseline = a.store.tip;
-  await (a.store as FixtureStore).beginTurn("rewound-turn"); await a.store.openOperation("rewound-op", {});
+  await a.store.beginTurn("rewound-turn"); await a.store.openOperation("rewound-op", {});
   await a.store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "rewound-write", name: "Write", arguments: { file_path: "/fictional/effect", content: "fictional" } }], stopReason: "toolUse", timestamp: 1 }, "rewound-call-message");
   for (const admission of ["observed", "admitted", "started"]) await a.store.write("tool_call", { callId: "rewound-write", name: "Write", messageId: "rewound-call-message", admission }, { operationId: "rewound-op" });
   await a.store.write("interruption", { cause: "user_interrupted", operationIds: ["rewound-op"], tipId: a.store.tip, calls: [] });
@@ -223,7 +226,7 @@ it("retains started rewound effects and their arguments in the unknown ledger", 
 it("keeps only unresolved work in the ledger: earlier seen failures drop, far-back outcome-unknown calls never do", async () => {
   const a = await segment("bounded-ledger"); const store = a.store;
   const call = async (turnId: any, callId: any, outcome: any) => {
-    await (store as FixtureStore).beginTurn(turnId); await store.openOperation(`${turnId}-op`, {});
+    await store.beginTurn(turnId); await store.openOperation(`${turnId}-op`, {});
     await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: callId, name: "Write", arguments: { file_path: `/fictional/${callId}` } }], stopReason: "toolUse", timestamp: 1 }, `${callId}-message`);
     for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId, name: "Write", messageId: `${callId}-message`, admission }, { operationId: `${turnId}-op` });
     if (outcome === "error") {
@@ -233,7 +236,7 @@ it("keeps only unresolved work in the ledger: earlier seen failures drop, far-ba
     await store.closeOperation(`${turnId}-op`, outcome === "error" ? "completed" : "interrupted"); await store.endTurn(turnId, outcome === "error" ? "failed" : "interrupted");
   };
   await call("far-unknown-turn", "far-unknown", "unknown"); await call("seen-failure-turn", "seen-failure", "error");
-  await (store as FixtureStore).beginTurn("completed-turn"); await store.openOperation("completed-op", {}); await store.appendMessage(text("Fictional completed reply"), "completed-message");
+  await store.beginTurn("completed-turn"); await store.openOperation("completed-op", {}); await store.appendMessage(text("Fictional completed reply"), "completed-message");
   await store.closeOperation("completed-op", "completed"); await store.endTurn("completed-turn", "completed");
   await call("recent-failure-turn", "recent-failure", "error");
   const ledger = buildOpenWorkLedger(view([refreshed(a)]));
@@ -260,7 +263,7 @@ it("source enforcement catches JS/TS imports and re-exports in other packages an
 
 it("keeps observed successful outcomes from rewound calls as ledger evidence, not active receipts", async () => {
   const a = await segment("rewound-return"); const baseline = a.store.tip;
-  await (a.store as FixtureStore).beginTurn("returned-turn"); await a.store.openOperation("returned-op", {});
+  await a.store.beginTurn("returned-turn"); await a.store.openOperation("returned-op", {});
   await a.store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "known-return", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1 }, "known-call-message");
   for (const admission of ["observed", "admitted", "started"]) await a.store.write("tool_call", { callId: "known-return", name: "Read", messageId: "known-call-message", admission }, { operationId: "returned-op" });
   const returned = { role: "toolResult", toolCallId: "known-return", toolName: "Read", content: [{ type: "text", text: "Fictional observed result" }], isError: false, timestamp: 1 };
@@ -281,7 +284,7 @@ it("does not project a guarded journal under a contradictory host owner", async 
 
 it("A -> B -> C keeps A's outcome-unknown Write in the deterministic ledger on paid-summary routes, once, and refuses rather than dropping it", async () => {
   const a = await segment("A-unknown"); const store = a.store;
-  await (store as FixtureStore).beginTurn("unknown-turn"); await store.openOperation("unknown-op", { model: { provider: "fictional", api: "fictional-api", id: "A" } });
+  await store.beginTurn("unknown-turn"); await store.openOperation("unknown-op", { model: { provider: "fictional", api: "fictional-api", id: "A" } });
   await store.appendMessage({ role: "assistant", provider: "fictional", api: "fictional-api", model: "A", content: [{ type: "toolCall", id: "write-call", name: "Write", arguments: { file_path: "/fictional/unknown" } }], stopReason: "toolUse", timestamp: 1 }, "write-message");
   for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId: "write-call", name: "Write", messageId: "write-message", admission }, { operationId: "unknown-op" });
   await store.write("interruption", { cause: "crashed", operationIds: ["unknown-op"], tipId: store.tip, calls: [] });
@@ -318,12 +321,10 @@ it("A -> B paid, B -> C free, C -> D free composes every prior suffix within one
 
 it("streams many small ancestry records in order without losing unresolved effects", async () => {
   const s = await segment("long-ancestry");
-  await (s.store as FixtureStore).beginTurn("fictional-many-records");
+  await s.store.beginTurn("fictional-many-records");
   for (let i = 0; i < 2000; i++) await s.store.appendMessage(text(`fictional-${i}`), `small-${i}`);
   await s.store.endTurn("fictional-many-records", "interrupted");
   const evidence = view([refreshed(s)]);
   expect(evidence.segments[0]!.entries.slice(-2000).map((entry: any) => entry.id)).toEqual(Array.from({ length: 2000 }, (_, i) => `small-${i}`));
   expect(buildOpenWorkLedger(evidence)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "turn", turnId: "fictional-many-records" })]));
 });
-
-type FixtureStore = Omit<Awaited<ReturnType<import("../session-store.js").MemorySessionRepo["create"]>>, "beginTurn"> & { beginTurn(turnId: string, config?: object, identitySource?: string, binding?: unknown, projectionBinding?: unknown): Promise<unknown> };

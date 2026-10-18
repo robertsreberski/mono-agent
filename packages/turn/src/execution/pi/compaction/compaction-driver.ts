@@ -44,7 +44,7 @@ function liveModelContextWindow(harness: any, runtime: any) {
   return win > 0 ? win : 0;
 }
 
-export function effectiveContextWindow(harness: any, runtime: any, resolved: any, contextWindowOverride: any): any {
+export function effectiveContextWindow(harness: any, runtime: any, resolved: any, contextWindowOverride?: number): any {
   const override = Number(contextWindowOverride);
   const declared = Number.isFinite(override) && override > 0
     ? override
@@ -285,38 +285,7 @@ export function createCompactionEmitter(accounting: any, started: number): (obse
  * sees Pi's preparation, so a caller can decline a cut that cannot save enough
  * without paying a model call for the proof. The idle path does not use either.
  */
-export function createGuardedCompactionHook({ harness, trigger, operationId, effectivePolicy, compactionSettings, accounting, fixedOverheadTokens, beforeAttempt, beforeSummary, }: any): {
-    handler: (event: any) => Promise<{
-        cancel: boolean;
-        compaction?: undefined;
-    } | {
-        compaction: {
-            summary: string;
-            tokensBefore: any;
-            usage: any;
-            retainedTail: any;
-            details: {
-                readFiles: any[];
-                modifiedFiles: any[];
-            };
-        };
-        cancel?: undefined;
-    }>;
-    getDecision: () => {
-        kind: string;
-        reason?: string;
-        tokensBefore?: number | null;
-        tokensAfter?: number | null;
-        savings?: number | null;
-        firstKeptEntryId?: string | null;
-        retainedTailLength?: number;
-        compaction?: any;
-        error?: any;
-        warn?: boolean;
-        retryAfterMs?: number;
-        growthRequiredTokens?: number;
-    };
-};
+
 export function createGuardedCompactionHook({
   harness,
   trigger,
@@ -327,7 +296,7 @@ export function createGuardedCompactionHook({
   fixedOverheadTokens = null,
   beforeAttempt = null,
   beforeSummary = null,
-}: any):unknown {
+}: any) {
   let decision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; retainedTailLength?: number; compaction?: any; error?: any; warn?: boolean; retryAfterMs?: number; growthRequiredTokens?: number; } | null = null;
   const handler = async (event: any) => {
     decision = null;
@@ -588,23 +557,7 @@ export function reportGuardedCompactionOutcome({
 // waitForIdle first). Never throws — classifies engine compaction errors into a warning
 // and reports back whether anything was compacted. Fires onCompactionRecorded on
 // success so a host can persist the compaction row.
-export function tryCompact(harness: any, { trigger, onEvent, runtimeWarnings, onCompactionRecorded, runId, model, session, policy, fixedOverheadTokens, }: {
-    trigger: any;
-    onEvent: any;
-    runtimeWarnings: any;
-    onCompactionRecorded: any;
-    runId: any;
-    model: any;
-    session: any;
-    policy: any;
-    fixedOverheadTokens?: any;
-}): Promise<{
-    applied: boolean;
-    tokensBefore: number;
-    tokensAfter: any;
-    reduced: boolean;
-    nothingToCompact: boolean;
-}>;
+
 export async function tryCompact(harness: any, {
   trigger,
   onEvent,
@@ -619,13 +572,13 @@ export async function tryCompact(harness: any, {
     trigger: any;
     onEvent: any;
     runtimeWarnings: any;
-    onCompactionRecorded: any;
-    runId: any;
-    model: any;
-    session: any;
-    policy: any;
+    onCompactionRecorded?: any;
+    runId?: any;
+    model?: any;
+    session?: any;
+    policy?: any;
     fixedOverheadTokens?: any;
-}):Promise<unknown> {
+}) {
   const operationId = randomUUID();
   const started = performance.now();
   const accounting = createCompactionAccounting();
@@ -804,7 +757,7 @@ export function resolveLiveCompactionPolicy({ harness, runtime, resolved, toolLi
     resolved: any;
     toolLimits?: any;
     compaction?: any;
-    contextWindowOverride?: number;
+    contextWindowOverride?: number | undefined;
 }): import("../../../agent/compaction.js").AgentCompactionPolicy {
   const contextWindow = effectiveContextWindow(harness, runtime, resolved, contextWindowOverride);
   return resolveAgentCompactionPolicy({ toolLimits, compaction }, { contextWindow });

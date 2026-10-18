@@ -23,7 +23,7 @@ export function isOpenCodeModel(model: {
     provider?: string;
     baseUrl?: string;
 }): boolean {
-  if (OPENCODE_PROVIDERS.has(model?.provider!)) return true;
+  if (typeof model?.provider === "string" && OPENCODE_PROVIDERS.has(model.provider)) return true;
   if (typeof model?.baseUrl !== "string") return false;
   try {
     return new URL(model.baseUrl).hostname === OPENCODE_HOST;

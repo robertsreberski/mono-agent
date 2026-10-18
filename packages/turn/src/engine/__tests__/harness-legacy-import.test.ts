@@ -173,7 +173,7 @@ it.each([["import", false], ["import", true], ["clean_break", false], ["clean_br
   const repo = new JsonlSessionRepo({ sessionsRoot: root }); const raw = await repo.open((await repo.list())[0]); const metadata = raw.metadata;
   expect(metadata.import.mode).toBe(mode);
   const turnId = "synthetic:publication-upgrade", operationId = "publication-last";
-  await (raw.beginTurn as (...args: any[]) => ReturnType<typeof raw.beginTurn>)(turnId); await raw.openOperation(operationId, {});
+  await (raw.beginTurn)(turnId); await raw.openOperation(operationId, {});
   const messageId = await raw.appendMessage({ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "fictional-call", name: "Read", arguments: {} }] });
   for (const admission of ["observed", "admitted", "started"]) await raw.write("tool_call", { callId: "fictional-call", name: "Read", messageId, admission }, { operationId });
   if (lastClosed) await raw.closeOperation(operationId, "failed");

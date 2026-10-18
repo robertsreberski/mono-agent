@@ -324,7 +324,7 @@ export function reasoningLevelsForPiModel(model: PiBuiltinModelSnapshot): PiReas
 export async function resolvePiOAuthApiKey(providerId: string, credentials: {
     [x: string]: PiOAuthCredentialsSnapshot;
 }): Promise<{
-    apiKey: string;
+    apiKey: string | undefined;
     newCredentials: PiOAuthCredentialsSnapshot;
 } | null> {
   const result = await resolveOAuthApiKey(
@@ -333,7 +333,7 @@ export async function resolvePiOAuthApiKey(providerId: string, credentials: {
   );
   if (!result) return null;
   return {
-    apiKey: result.apiKey!,
+    apiKey: result.apiKey,
     newCredentials: cloneInteropValue(result.newCredentials) as PiOAuthCredentialsSnapshot,
   };
 }

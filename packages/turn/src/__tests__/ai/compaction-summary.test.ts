@@ -20,7 +20,7 @@ describe("summary preparation", () => {
     const requests: Array<{ costUsd: number | null; requestId: string }> = [];
     const contexts: Context[] = [];
     const models = { completeSimple: vi.fn(async (_model: unknown, context: Context) => { contexts.push(context); return answer(); }) };
-    const out = await compact(input.preparation, summaryModels(models, { operationId: "op", focus: input.focus, evidence: input.evidence, requests } as Parameters<typeof summaryModels>[1]), model, undefined, undefined, undefined, undefined, BACKGROUND_CONTEXT);
+    const out = await compact(input.preparation, summaryModels(models, { operationId: "op", focus: input.focus, evidence: input.evidence, requests }), model, undefined, undefined, undefined, undefined, BACKGROUND_CONTEXT);
     expect(out.ok).toBe(true);
     expect(contexts).toHaveLength(split ? 2 : 1);
     for (const context of contexts) {
@@ -80,7 +80,7 @@ describe("summary preparation", () => {
   it("keeps update evidence and explicitly demotes superseded instructions", async () => {
     const input = prepareSummaryInput(prep([user("Tests are now done. Prior request to deploy is superseded: do not deploy.")], { previousSummary: "Tests pending. Deploy next." }));
     const models = { completeSimple: vi.fn(async () => answer("Tests done; do not deploy.")) };
-    await compact(input.preparation, summaryModels(models, { operationId: "op", focus: input.focus, evidence: input.evidence, requests: [] } as Parameters<typeof summaryModels>[1]), model, undefined, undefined, undefined, undefined, BACKGROUND_CONTEXT);
+    await compact(input.preparation, summaryModels(models, { operationId: "op", focus: input.focus, evidence: input.evidence, requests: [] }), model, undefined, undefined, undefined, undefined, BACKGROUND_CONTEXT);
     const context = (models.completeSimple.mock.calls as unknown as [unknown, Context][])[0]![1];
     expect(context.systemPrompt).toContain("without resurrecting superseded instructions");
     expect(JSON.stringify(context.messages)).toContain("Tests are now done");
@@ -92,7 +92,7 @@ describe("summary request accounting", () => {
   it.each(["length", "toolUse", "empty", "malformed"])("rejects %s without losing reported spend", async (kind) => {
     const response = kind === "malformed" ? null : { ...answer(kind === "empty" ? "  " : "private summary"), stopReason: ["empty"].includes(kind) ? "stop" : kind };
     const requests: Array<{ costUsd: number | null; requestId: string }> = [];
-    const facade = summaryModels({ completeSimple: async () => response }, { operationId: "op", focus: SUMMARY_FOCUS, requests } as Parameters<typeof summaryModels>[1]);
+    const facade = summaryModels({ completeSimple: async () => response }, { operationId: "op", focus: SUMMARY_FOCUS, requests });
     await expect(facade.completeSimple(model, { systemPrompt: "base", messages: [] }, {})).rejects.toThrow("Compaction summary request failed");
     expect(requests[0]).toMatchObject({ status: "rejected", costUsd: kind === "malformed" ? null : 0.11 });
     expect(JSON.stringify(requests)).not.toContain("private summary");
@@ -108,7 +108,7 @@ describe("summary request accounting", () => {
       expect(context.messages).toBe(originalContext.messages);
       return { ...answer(), usage: undefined };
     }), other() { return this.marker; } };
-    const facade = summaryModels(models, { operationId: "op", focus: SUMMARY_FOCUS, requests } as Parameters<typeof summaryModels>[1]);
+    const facade = summaryModels(models, { operationId: "op", focus: SUMMARY_FOCUS, requests });
     await facade.completeSimple(model, originalContext, options, requestContext);
     expect(facade.other()).toBe("bound");
     expect(originalContext.systemPrompt).toBe("original");
@@ -118,14 +118,14 @@ describe("summary request accounting", () => {
   it.each(["error", "aborted"])("forwards %s to Pi with separately retained spend", async (stopReason) => {
     const response = { ...answer(), stopReason };
     const requests: Array<{ costUsd: number | null; requestId: string }> = [];
-    const facade = summaryModels({ completeSimple: async () => response }, { operationId: "op", focus: SUMMARY_FOCUS, requests } as Parameters<typeof summaryModels>[1]);
+    const facade = summaryModels({ completeSimple: async () => response }, { operationId: "op", focus: SUMMARY_FOCUS, requests });
     expect(await facade.completeSimple(model, {})).toBe(response);
     expect(requests[0]).toMatchObject({ status: "failed", costUsd: 0.11 });
   });
 
   it("sanitizes thrown provider errors and retains terminal accounting", async () => {
     const requests: Array<{ costUsd: number | null; requestId: string }> = [];
-    const facade = summaryModels({ completeSimple: async () => { throw new Error("SECRET /private/path"); } }, { operationId: "op", focus: SUMMARY_FOCUS, requests } as Parameters<typeof summaryModels>[1]);
+    const facade = summaryModels({ completeSimple: async () => { throw new Error("SECRET /private/path"); } }, { operationId: "op", focus: SUMMARY_FOCUS, requests });
     await expect(facade.completeSimple(model, {})).rejects.toThrow("request_failed");
     expect(requests[0]).toMatchObject({ status: "failed", reason: "request_failed", costUsd: null });
     expect(JSON.stringify(requests)).not.toMatch(/SECRET|private/u);
@@ -134,7 +134,7 @@ describe("summary request accounting", () => {
 it.each(["context", "model"])("rejects %s-clamped doomed summaries before invoking the provider", async (limit) => {
   const requests: Array<{ costUsd: number | null; requestId: string }> = [];
   const target = { completeSimple: vi.fn(async () => answer()) };
-  const facade = summaryModels(target, { operationId: `fictional-low-${limit}`, focus: SUMMARY_FOCUS, requests } as Parameters<typeof summaryModels>[1]);
+  const facade = summaryModels(target, { operationId: `fictional-low-${limit}`, focus: SUMMARY_FOCUS, requests });
   const cramped = { ...model, maxTokens: limit === "model" ? 512 : 4000, contextWindow: limit === "context" ? 1000 : 200000 };
   await expect(facade.completeSimple(cramped, { messages: [user("Fictional input")] }, { maxTokens: 2000 })).rejects.toThrow("insufficient_summary_headroom");
   expect(target.completeSimple).not.toHaveBeenCalled();

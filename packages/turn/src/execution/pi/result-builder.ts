@@ -100,7 +100,7 @@ export function withSubagentUsage(usage: {
     output: number;
     cacheRead: number;
     cacheWrite: number;
-}, estimatedCost: number): {
+}, estimatedCost: number | null): {
     input: number;
     output: number;
     cacheRead: number;
@@ -131,7 +131,8 @@ export function withSubagentUsage(usage: {
     output: usage.output + delegated.output,
     cacheRead: usage.cacheRead + delegated.cacheRead,
     cacheWrite: usage.cacheWrite + delegated.cacheWrite,
-    cost: delegated.costUsd > 0 ? (usage.cost || estimatedCost)! + delegated.costUsd : usage.cost,
+    // When own cost is unknown, this total excludes it and contains only delegated spend.
+    cost: delegated.costUsd > 0 ? ((usage.cost || estimatedCost) ?? 0) + delegated.costUsd : usage.cost,
   };
 }
 
@@ -194,7 +195,7 @@ export function emitUsageCostEvents({ onEvent, reference, usage, estimatedCost, 
         cacheWrite: number;
         cost: number;
     };
-    estimatedCost: number;
+    estimatedCost: number | null;
     start: number;
     externalAbort: boolean;
 }): void;
@@ -322,35 +323,7 @@ export function abortedResult({ resolved, options, events, runtimeWarnings, star
  * The verbatim success-path result object (also carries a run-level error when
  * a turn ended in an error/max-turns/abort without throwing). Pure assembly.
  */
-export function buildSuccessResult(params: object): {
-    structuredResult: any;
-    structuredResultSource: string;
-    text: any;
-    thinking: any;
-    events: any;
-    usage: {
-        input_tokens: any;
-        output_tokens: any;
-        cache_read_tokens: any;
-        cache_creation_tokens: any;
-        cache_write_tokens: any;
-        cost_usd: any;
-    };
-    durationMs: number;
-    numTurns: any;
-    model: any;
-    effort: any;
-    effectiveEffort: any;
-    sdk: string;
-    cancelled: any;
-    error: any;
-    errorDetails: any;
-    failureKind: string;
-    providerSessionId: any;
-    runtimeWarnings: any;
-    diagnostics: any;
-    capabilitiesUsed: any;
-};
+
 export function buildSuccessResult(params: object) {
   const {
     finalText,
@@ -412,42 +385,7 @@ export function buildSuccessResult(params: object) {
 /**
  * The verbatim outer-catch error result. Pure assembly.
  */
-export function buildErrorResult(params: object): {
-    text: any;
-    events: any;
-    usage: {};
-    durationMs: number;
-    numTurns: any;
-    model: any;
-    effort: any;
-    effectiveEffort: any;
-    sdk: string;
-    cancelled: any;
-    error: any;
-    errorDetails: {
-        pi_stop_reason: string;
-        last_tool_name: any;
-        tool_results_seen: any;
-        turn_count: any;
-        max_turns_hit: any;
-        provider_session_id: any;
-        pi_engine: string;
-        pi_transport_requested: any;
-        pi_error_retryable: any;
-    };
-    failureKind: string;
-    providerSessionId: any;
-    runtimeWarnings: any;
-    diagnostics: {
-        provider_session_id: any;
-        pi_stop_reason: string;
-        pi_engine: string;
-        pi_transport_requested: any;
-        max_turns_hit: any;
-        turn_count: any;
-        external_abort: any;
-    };
-};
+
 export function buildErrorResult(params: object) {
   const {
     assistantTexts,

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fix `@mono-agent/turn` declarations to include absent pricing, metrics,
+  transcript, filesystem-change and session values, and accept supported
+  omitted/defaulted arguments. Strict TypeScript callers may need new null or
+  undefined checks. Results and tool contexts can carry explicit `undefined`
+  (including `RuntimeResult.failureKind`, `ToolContext.workspace`,
+  `toolEnvironment`, `persistArtifact` and router `sessionTurnReconciliation`);
+  exact-optional assignment targets must admit it. `createPiOAuthApiKeyResolver`
+  now guarantees `readCredential`, `modifyCredential` and `deleteCredential`;
+  doubles typed as this factory must return all three methods too.
+
 - Fix model-router fallback with detached conversation history and no `messages`,
   allowing backup models to use the replay instead of crashing.
 

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import { JournalValidator, validateJournalHeader } from "../journal-schema.js";
 import { JOURNAL_KINDS } from "../journal-types.js";
@@ -91,7 +92,7 @@ describe("mono-agent harness journal v2", () => {
   });
   it("keeps unique prompt/compaction/re-prompt operations within one logical turn", async () => {
     const repo = new MemorySessionRepo(); const store = await repo.create({ id: "fixture-handle" });
-    await (store as FixtureStore).beginTurn("host-run", {}, "host");
+    await store.beginTurn("host-run", {}, "host");
     await store.openOperation("overflow", {}, "prompt");
     const messageId = await store.appendMessage({ role: "user", content: "Fictional request." }, "user-envelope", { id: "logical-input", complete: true });
     await store.write("input_consumed", { inputId: "logical-input", messageId }, { operationId: "overflow" });
@@ -101,7 +102,9 @@ describe("mono-agent harness journal v2", () => {
     await store.openOperation("retry", {}, "prompt", "re_prompt");
     await store.closeOperation("retry", "completed"); await store.endTurn("host-run", "completed");
     expect((await store.getTurn("host-run")).payload).toMatchObject({ finalOperationId: "retry", status: "completed", consumedInputIds: ["logical-input"] });
+    assert.ok(store.records);
     expect(store.records.filter((r) => r.kind === "operation_start").map((r) => r.operationId)).toEqual(["overflow", "compact", "retry"]);
+    assert.ok(store.records);
     expect(new Set(store.records.filter((r) => r.kind === "operation_start").map((r) => r.turnId))).toEqual(new Set(["host-run"]));
     await store.close();
   });
@@ -138,7 +141,7 @@ it("rejects concurrent nested compactions and closing their prompt before the ch
 
 it("keeps call identities operation-scoped while rejecting duplicate results", async () => {
   const store = await new MemorySessionRepo().create();
-  await (store as FixtureStore).beginTurn("synthetic:scoped-calls");
+  await store.beginTurn("synthetic:scoped-calls");
   for (const operationId of ["one", "two"]) {
     await store.openOperation(operationId, {});
     const messageId = await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "same-provider-id", name: "Read", arguments: {} }] });
@@ -177,5 +180,3 @@ it("rejects current-format compactions without a checkpoint without advancing th
     contextParentId: null, preservedMessageIds: [], derivedMessages: [], coverageVersion: 1 })).toThrow("Invalid");
   expect(validator.seq).toBe(seq); expect(validator.tip).toBe(tip);
 });
-
-type FixtureStore = Omit<Awaited<ReturnType<import("../session-store.js").MemorySessionRepo["create"]>>, "beginTurn"> & { beginTurn(turnId: string, config?: object, identitySource?: string, binding?: unknown, projectionBinding?: unknown): Promise<unknown> };

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import type { ProcessJobWakeInput } from "../process-jobs/types.js";
@@ -64,7 +65,7 @@ async function fixture(overrides = {}, retireSession: (id: string, root: string)
 function tools(f: Awaited<ReturnType<typeof fixture>>, run: (request: any) => Promise<any>, extra = {}) {
   const options = { instances: f.instances, run, backgroundSubagentController: f.service.internalController(origin, 0), ...extra };
   const context = { recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } };
-  return { options, agent: createAgentTool(options, context), send: createAgentManageTool(options, context) };
+  return { options, agent: createAgentTool(options, context), send: presentTool(createAgentManageTool(options, context)) };
 }
 const done = async (service: ProcessJobsServiceHandle, id: string) => {
   await vi.waitFor(async () => expect((await service.get(id))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
@@ -454,7 +455,7 @@ describe("parent stop", () => {
     } };
     let observedProof: Awaited<ReturnType<NonNullable<typeof controller.stop>>> | undefined;
     let completionOrder = 0; let proofObservedAt = 0;
-    const send = createAgentManageTool({ ...options, instances, backgroundSubagentController: { ...controller,
+    const send = presentTool(createAgentManageTool({ ...options, instances, backgroundSubagentController: { ...controller,
       stop: async (identity: any) => {
         reached.resolve();
         try {
@@ -463,7 +464,7 @@ describe("parent stop", () => {
           proofObservedAt = ++completionOrder;
           return observedProof;
         } finally { controllerDrained.resolve(); }
-      } } });
+      } } }));
     let stopping: ReturnType<typeof send.execute> | undefined;
     try {
       stopping = send.execute("stop", { id: "helper", stop: true }); await reached.promise;
@@ -2188,7 +2189,7 @@ it.each(["cooperative", "late"])("certified %s detached child timeout resumes re
     });
     const access = { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) };
     const agent = createAgentTool(subagents, { model: config.runtime.model, recoveryAccess: access });
-    const send = createAgentManageTool(subagents, { model: config.runtime.model, recoveryAccess: access });
+    const send = presentTool(createAgentManageTool(subagents, { model: config.runtime.model, recoveryAccess: access }));
     faux.setResponses([async (_context: any, options: any) => {
       await new Promise<void>((resolve) => options.signal.addEventListener("abort", () => resolve(), { once: true }));
       return fauxAssistantMessage([fauxText("unfinished native work")], { stopReason: "aborted" });
@@ -2253,7 +2254,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
     subagents.backgroundSubagentController = f.service.internalController(origin, 0);
     const agent = createAgentTool(subagents, { model: config.runtime.model, cwd: f.root });
-    const send = createAgentManageTool(subagents, { model: config.runtime.model, cwd: f.root });
+    const send = presentTool(createAgentManageTool(subagents, { model: config.runtime.model, cwd: f.root }));
     for (let turn = 0; turn < 2; turn++) {
       const entered = deferred<void>();
       faux.setResponses([
@@ -2313,7 +2314,7 @@ it("G08: retained failure acknowledgement resumes the exact session JSONL after 
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
     subagents.backgroundSubagentController = f.service.internalController(origin, 0);
     const context = { model: config.runtime.model, recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } };
-    const agent = createAgentTool(subagents, context); const send = createAgentManageTool(subagents, context);
+    const agent = createAgentTool(subagents, context); const send = presentTool(createAgentManageTool(subagents, context));
     f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
       verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => {
@@ -2395,13 +2396,13 @@ it.each([false, true])("real Pi fake transport: detached AskParent and backgroun
     await owner.disposeSession!(record.sessionId);
     let input: any;
     faux.setResponses([(context: any) => { input = context; return fauxAssistantMessage([fauxText("Small scope answer")]); }]);
-    const second = await createAgentManageTool(subagents).execute("second", { id: "helper", message: "Small", background: true });
+    const second = await presentTool(createAgentManageTool(subagents)).execute("second", { id: "helper", message: "Small", background: true });
     expect((await done(f.service, second.details.jobId)).state).toBe("succeeded");
     expect(JSON.stringify(input.messages)).toContain("first task"); expect(JSON.stringify(input.messages)).toContain("Which scope?");
     expect(await transcripts()).toEqual(files);
     expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 2 });
     faux.setResponses([fauxAssistantMessage([fauxText("Closed successfully")])]);
-    const third = await createAgentManageTool(subagents).execute("third", { id: "helper", message: "Finish", background: true, close: true });
+    const third = await presentTool(createAgentManageTool(subagents)).execute("third", { id: "helper", message: "Finish", background: true, close: true });
     await done(f.service, third.details.jobId);
     expect((await f.instances.get("helper"))?.status).toBe("closed");
     expect(await transcripts()).toEqual([]); expect(f.wake).toHaveBeenCalledTimes(3);
@@ -2899,3 +2900,8 @@ it("counts actual detached execution after its reporting cancellation grace, not
   } finally { finish.resolve(); }
   await vi.waitFor(() => expect(f.service.activeExecutionCount()).toBe(0), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
 }, 30_000);
+
+function presentTool(value: ReturnType<typeof createAgentManageTool>) {
+  assert.ok(value);
+  return value;
+}

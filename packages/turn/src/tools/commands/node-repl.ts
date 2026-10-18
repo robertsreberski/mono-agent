@@ -462,20 +462,18 @@ export function createNodeReplController({
         resolve: resolveResult,
         reject: rejectResult,
         signal,
-        onAbort: null as unknown as () => void,
-        timeoutTimer: null as unknown as ReturnType<typeof setTimeout>,
+        onAbort: () => {
+          void resetForFailure(record, pending, "Node REPL execution aborted.", "aborted");
+        },
+        timeoutTimer: setTimeout(() => {
+          void resetForFailure(
+            record,
+            pending,
+            `Node REPL execution timed out after ${DEFAULT_NODE_REPL_TIMEOUT_MS}ms.`,
+            "timeout",
+          );
+        }, DEFAULT_NODE_REPL_TIMEOUT_MS),
       };
-      pending.onAbort = () => {
-        void resetForFailure(record, pending, "Node REPL execution aborted.", "aborted");
-      };
-      pending.timeoutTimer = setTimeout(() => {
-        void resetForFailure(
-          record,
-          pending,
-          `Node REPL execution timed out after ${DEFAULT_NODE_REPL_TIMEOUT_MS}ms.`,
-          "timeout",
-        );
-      }, DEFAULT_NODE_REPL_TIMEOUT_MS);
       pending.timeoutTimer.unref?.();
       record.pending = pending;
       signal?.addEventListener?.("abort", pending.onAbort, { once: true });

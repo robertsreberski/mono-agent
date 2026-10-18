@@ -71,16 +71,16 @@ export class SessionStore {
   declare metadata: any;
   declare io: any;
   declare onClose: any;
-  declare records: any[];
+  declare records: any[] | null;
   declare retired: boolean;
   declare continuity: string | undefined;
   declare entries: Map<any, any>;
   declare outcomes: Map<any, any>;
   declare interruptions: Map<any, any>;
   declare interruptedOperations: Set<any>;
-  declare repairCache: Promise<any[]>;
+  declare repairCache: Promise<any[]> | null;
   declare validator: JournalValidator;
-  declare tip: string;
+  declare tip: string | null;
   declare seq: number;
   declare durableSeq: number;
   declare line: Promise<void>;
@@ -92,29 +92,29 @@ export class SessionStore {
     this.metadata = metadata;
     this.io = io;
     this.onClose = onClose;
-    this.records = io?.read ? null as unknown as any[] : [];
+    this.records = io?.read ? null : [];
     this.retired = false;
  this.continuity = undefined;
     this.entries = new Map();
     this.outcomes = new Map();
     this.interruptions = new Map();
-    this.interruptedOperations = new Set(); this.repairCache = null as unknown as Promise<any[]>;
+    this.interruptedOperations = new Set(); this.repairCache = null;
     this.validator = new JournalValidator();
-    this.tip = null as unknown as string;
+    this.tip = null;
     this.seq = 0; this.durableSeq = 0;
     this.line = Promise.resolve();
     this.closed = false;
  this.failure = null;
  this.closePromise = null;
     if (!io?.read && metadata.hostAuthority !== undefined) acceptHeader(this, metadata);
-    for (const record of records) (this.apply as (record: any) => void)(record);
+    for (const record of records) this.apply(record);
   }
   validateRecord(record: any): void {
     checkRecordAuthority(this, record);
     if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.validate(record);
   }
-  apply(record: any, address: any): void {
+  apply(record: any, address?: any): void {
     checkRecordAuthority(this, record);
     if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.apply(record);
@@ -131,11 +131,11 @@ export class SessionStore {
       this.interruptions.set(record.id, { ...clone(record.payload), turnId: record.turnId, timestamp: record.timestamp });
       for (const op of p.operationIds.length ? p.operationIds : [null]) this.interruptedOperations.add(`${record.turnId}\0${op ?? ""}`);
     }
-    if (["interruption", "tool_result", "message", "compaction", "rewind", "operation_end"].includes(record.kind)) this.repairCache = null as unknown as Promise<any[]>;
+    if (["interruption", "tool_result", "message", "compaction", "rewind", "operation_end"].includes(record.kind)) this.repairCache = null;
     if (record.kind === "tool_result" && record.payload.phase === "returned") {
       this.outcomes.set(`${record.operationId}\0${record.payload.callId}`, this.io?.read ? { address } : { record: clone(record) });
     }
-    this.tip = this.validator.tip!;
+    this.tip = this.validator.tip;
     this.seq = record.seq;
     this.records?.push(clone(record));
   }
@@ -167,8 +167,8 @@ export class SessionStore {
   poison(error: any): Error { this.failure ??= isJournalStorageError(error) ? error : new JournalStorageError(error); return this.failure; }
   activeTurnId(): any { return this.validator.openTurns.values().next().value; }
   activeOperationId(): any { return [...this.validator.openOperations].at(-1); }
-  beginTurn(turnId: any, config: {}, identitySource: string, binding: any, projectionBinding?: any): Promise<any>;
-  beginTurn(turnId: any, config: {} = {}, identitySource: string = "synthetic", binding: any, projectionBinding: any | undefined = undefined): Promise<any> {
+
+  beginTurn(turnId: any, config: {} = {}, identitySource: string = "synthetic", binding?: any, projectionBinding: any | undefined = undefined): Promise<any> {
     return this.write("turn_start", () => ({ config: clone(config), identitySource, baselineTipId: this.tip,
       ...(binding ? { binding: clone(binding) } : {}), ...(projectionBinding ? { projectionBinding: clone(projectionBinding) } : {}) }),
       { turnId });
@@ -253,7 +253,7 @@ export class SessionStore {
       await this.verifyRead(); return entries.reverse();
     });
   }
-  async getLeafId(): Promise<string> { await this.line; if (this.failure) throw this.failure; return this.tip; }
+  async getLeafId(): Promise<string | null> { await this.line; if (this.failure) throw this.failure; return this.tip; }
   async materialize(entry: any, cached: boolean = false): Promise<any> {
     if (!entry || !this.io?.read) return clone(entry);
     let record;
@@ -391,7 +391,7 @@ const syncPath = (path: any) => syncDir(path, undefined, fail);
  * retention inventory: anything else (`.DS_Store`, temp files, subdirectories)
  * is not a journal and is never read, charged, reclaimed or deleted.
  */
-export function journalEntrySuffix(name: string): string;
+
 export function journalEntrySuffix(name: string): string | undefined {
   return [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((suffix: string) => name.endsWith(suffix));
 }
@@ -402,7 +402,7 @@ export class JsonlSessionRepo {
   declare openSessions: Map<any, any>;
   declare locksPromise: any;
   declare directoryIdentity: any;
-  declare warm: { metadata: any; identity: any; state: any; cache: Map<any, any>; cacheBytes: number; };
+  declare warm: { metadata: any; identity: any; state: any; cache: Map<any, any>; cacheBytes: number; } | null;
   declare retiredHandles: Set<any>;
   declare onImportPhase: (_phase: any) => Promise<void>;
   declare onHeaderUpgradePhase: (_phase: any) => Promise<void>;
@@ -414,7 +414,7 @@ export class JsonlSessionRepo {
     this.directory = join(this.root, "journals");
     this.openSessions = new Map();
     this.locksPromise = null;
-    this.directoryIdentity = null; this.warm = null as unknown as typeof this.warm;
+    this.directoryIdentity = null; this.warm = null;
     this.retiredHandles = new Set();
     this.onImportPhase = onImportPhase;
     this.onHeaderUpgradePhase = onHeaderUpgradePhase;
@@ -611,20 +611,20 @@ export class JsonlSessionRepo {
       const identity = await handle.stat();
       if (!sameIdentity(identity, reader.identity)) fail();
       let expectedSize = identity.size, expectedStat = identity, pendingTornTail: number | null = null;
-      const warm = this.warm?.metadata.id === metadata.id && this.warm.metadata.journalId === metadata.journalId
+      const warm = this.warm && this.warm.metadata.id === metadata.id && this.warm.metadata.journalId === metadata.journalId
         && this.warm.metadata.path === metadata.path && unchanged(this.warm.identity, identity) ? this.warm : null;
-      if (!warm) this.warm = null as unknown as typeof this.warm;
+      if (!warm) this.warm = null;
       else { reader.cache = warm.cache; reader.cacheBytes = warm.cacheBytes; }
       const verify = async () => {
         reader.path = storeMetadata.path; const stat = await reader.assertIdentity();
-        if (!unchanged(stat, expectedStat) || stat.size !== expectedSize) { reader.clearCache(); this.warm = null as unknown as typeof this.warm; fail(); }
+        if (!unchanged(stat, expectedStat) || stat.size !== expectedSize) { reader.clearCache(); this.warm = null; fail(); }
       };
       const storeMetadata = { ...metadata };
       let validatedHeader: any;
       const session = new SessionStore(storeMetadata, [], {
         read: async (address: any) => { await verify(); return reader.read(address); },
         cached: (address: any) => reader.cached(address), remember: (address: any, record: any) => { if (address) reader.remember(address, record); },
-        invalidate: () => { reader.clearCache(); this.warm = null as unknown as typeof this.warm; }, verify,
+        invalidate: () => { reader.clearCache(); this.warm = null; }, verify,
         relocated: async () => {
           reader.path = storeMetadata.path; const stat = await reader.assertIdentity();
           if (!sameIdentity(stat, expectedStat) || stat.size !== expectedSize || stat.mtimeMs !== expectedStat.mtimeMs) fail();
@@ -642,7 +642,7 @@ export class JsonlSessionRepo {
               await verify();
             }
             await handle.truncate(pendingTornTail); expectedSize = pendingTornTail; expectedStat = await handle.stat();
-            pendingTornTail = null; reader.clearCache(); this.warm = null as unknown as typeof this.warm;
+            pendingTornTail = null; reader.clearCache(); this.warm = null;
           }
           await handle.sync();
         },
@@ -670,8 +670,8 @@ export class JsonlSessionRepo {
             this.warm = { metadata: { ...clone(validatedHeader), path: storeMetadata.path }, identity: closedIdentity,
               state: store.snapshot(), cache: reader.cache, cacheBytes: reader.cacheBytes };
           }
-          catch { this.warm = null as unknown as typeof this.warm; }
-        } else this.warm = null as unknown as typeof this.warm;
+          catch { this.warm = null; }
+        } else this.warm = null;
         this.openSessions.delete(metadata.id);
         this.retiredHandles.delete(metadata.id);
         try { await reader.close(); } finally {
@@ -858,7 +858,7 @@ export class JsonlSessionRepo {
       if (freshStage) {
         await initializeSession(session);
         const turnId = `synthetic:legacy-import:${info.importId}`;
-        await (session.beginTurn as (turnId: string, config: object) => Promise<any>)(turnId, { cause: "legacy_import", importId: info.importId });
+        await session.beginTurn(turnId, { cause: "legacy_import", importId: info.importId });
         for (const message of projected.messages ?? []) {
           await session.appendMessage(message); await this.onImportPhase("message_written");
         }
@@ -1088,7 +1088,7 @@ export class JsonlSessionRepo {
       else this.finishRetirement(id);
     }
   }
-  clearWarm(id: any): void { if (this.warm?.metadata.id === id) { this.warm.cache.clear(); this.warm = null as unknown as typeof this.warm; } }
+  clearWarm(id: any): void { if (this.warm && this.warm.metadata.id === id) { this.warm.cache.clear(); this.warm = null; } }
   retireHandle(id: any): void { this.retiredHandles.add(id); this.clearWarm(id); }
   finishRetirement(id: any): void { if (!this.openSessions.has(id)) this.retiredHandles.delete(id); }
   async retire(metadata: any, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
@@ -1102,7 +1102,7 @@ export class JsonlSessionRepo {
     this.checkMetadata(metadata);
     const store = this.openSessions.get(metadata.id);
     if (!store) { try { return await this.delete(metadata, context, options); } finally { this.finishRetirement(metadata.id); } }
-    if (this.warm?.metadata.id === store.metadata.id) this.warm = null as unknown as typeof this.warm;
+    if (this.warm?.metadata.id === store.metadata.id) this.warm = null;
     store.io?.invalidate?.();
     store.retired = true; // reject new admission before draining prior storage I/O
     await store.line;

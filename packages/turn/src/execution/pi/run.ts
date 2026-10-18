@@ -600,12 +600,13 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
         apiKeys: new Map(),
       }
       : resolvePiRuntimeModel(resolved, options) as PiRuntime;
-    if (Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens! > 0) {
+    const providerCheckMaxTokens = options.providerCheckMaxTokens;
+    if (typeof providerCheckMaxTokens === "number" && Number.isSafeInteger(providerCheckMaxTokens) && providerCheckMaxTokens > 0) {
       runtime = {
         ...runtime,
         model: {
           ...runtime.model,
-          maxTokens: Math.min(runtime.model.maxTokens, options.providerCheckMaxTokens!),
+          maxTokens: Math.min(runtime.model.maxTokens, providerCheckMaxTokens),
         },
       };
     }
@@ -694,7 +695,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
         compactionSummaryMaxTokens: resolveAgentCompactionPolicy(options, auth.model).summaryMaxTokens,
         provenance: auth.provenance }, {
         assertReady: () => options.abortSignal?.throwIfAborted(),
-        check: (input) => { options.abortSignal?.throwIfAborted(); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model } as Parameters<typeof prepareNativeHandoffSummaryRequest>[0]);
+        check: (input) => { options.abortSignal?.throwIfAborted(); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
           return result.status === "ready" ? { status: "ready" as const } : result as import("../../contracts/native-storage.js").RuntimeHandoffFit; },
         run: (input) => produceNativeHandoffSummary({ ...input, model: auth.model, completeSimple: prepared.piModels.completeSimple.bind(prepared.piModels),
           signal: options.abortSignal, completionOptions: { transport: options.piTransport ?? "sse" } }),
@@ -813,7 +814,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
         harness, runtime, resolved, toolLimits: options.toolLimits,
         compaction: options.compaction,
         contextWindowOverride: options.compaction?.contextWindowOverride,
-      } as Parameters<typeof resolveLiveCompactionPolicy>[0]);
+      });
       const transcriptTokens = await estimateSessionMessageTokens(runState.session);
       // A prefix smaller than the retained recent tail cannot yield a useful
       // cut. Avoid spending a summary call merely to discover this afterward.
@@ -915,7 +916,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       toolLimits: options.toolLimits,
       compaction: options.compaction,
       contextWindowOverride: options.compaction?.contextWindowOverride,
-    } as Parameters<typeof resolveLiveCompactionPolicy>[0]);
+    });
     if (!options.nativeSessionProjection?.dispatchBudget) await runProactiveCompaction(runState, {
       harness,
       systemPrompt,
@@ -1114,13 +1115,13 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       outputTokens: ownUsage.output,
       cachedTokens: ownUsage.cacheRead,
       cacheWriteTokens: ownUsage.cacheWrite,
-    } as Parameters<typeof estimateCost>[0])!;
+    });
     // Keyed by the same parentRunId the Agent tool stamps its budget under, the
     // way `subagentInvoked` below reads its count.
     const usage = withSubagentUsage(
       ownUsage,
       subagentUsageForRun(options.subagents, options.toolContext?.runId),
-      estimatedCost!,
+      estimatedCost,
     );
     emitUsageCostEvents({
       onEvent,
@@ -1349,7 +1350,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       err,
     ).message;
     const isRetryable = retryableProviderFailureInfo({
-      errorText: errorMessage!,
+      errorText: errorMessage,
       failureKind: "provider_unavailable",
     }).retryable;
     const failure = buildErrorResult({

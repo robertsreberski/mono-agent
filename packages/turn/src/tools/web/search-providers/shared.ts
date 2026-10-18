@@ -251,7 +251,7 @@ export function wrappedSearchDestination(parsed: any): any {
   return ["uddg", "url", "u", "target"].map((key: string) => parsed.searchParams.get(key)).find(Boolean);
 }
 
-export function canonicalizeSearchUrl(value: any, base?: any): string;
+
 export function canonicalizeSearchUrl(value: any, base?: any): string | null {
   if (typeof value !== "string" || value.trim().length === 0) return null;
   let parsed;
@@ -426,7 +426,7 @@ function processCooldownResult(backend: any, retryAfterMs: any) {
   };
 }
 
-export function parseRetryAfter(response: any): number;
+
 export function parseRetryAfter(response: any): number | undefined {
   const raw = response?.headers?.get("retry-after");
   if (!raw) return undefined;

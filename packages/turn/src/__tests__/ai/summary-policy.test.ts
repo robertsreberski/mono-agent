@@ -35,7 +35,7 @@ it.each([false, true])("real compact path survives fake adaptive thinking-only t
     turnPrefixMessages: split ? [{ role: "user", content: "Pending turn", timestamp: 0 }] : [],
     retainedTail: [], isSplitTurn: split, tokensBefore: 500000, fileOps: { read: new Set(), written: new Set(), edited: new Set() },
     settings: { reserveTokens: split ? 9231 : 15000, keepRecentTokens: 4000 } };
-  const facade = summaryModels(fake, { operationId: "fake-adaptive", focus: "Summarize.", requests } as Parameters<typeof summaryModels>[1]);
+  const facade = summaryModels(fake, { operationId: "fake-adaptive", focus: "Summarize.", requests });
   const outcome = await compact(preparation, facade, model, undefined, "max", undefined, undefined, ENGINE_CONTEXT);
   expect(outcome.ok).toBe(true);
   expect(requests).toHaveLength(split ? 2 : 1);

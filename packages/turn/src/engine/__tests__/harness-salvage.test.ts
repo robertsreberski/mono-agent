@@ -10,7 +10,7 @@ it("salvages owned paired tool evidence without executing an unfinished turn", a
   const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r });
   const s = await repo.create({ id: "salvage-fixture" });
-  await (s.beginTurn as (...args: any[]) => ReturnType<typeof s.beginTurn>)("interrupted", {});
+  await (s.beginTurn)("interrupted", {});
   await s.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1700000000000 });
   await s.appendMessage({ role: "toolResult", toolCallId: "call", toolName: "Read", content: [{ type: "text", text: "Fictional evidence." }], isError: false, timestamp: 1700000000001 });
   await s.close();
@@ -25,7 +25,7 @@ it("salvages owned paired tool evidence without executing an unfinished turn", a
 it("salvages large v2 journals read-only with bounded result excerpts", async () => {
   const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const s = await repo.create({ id: "large-salvage" });
-  await (s.beginTurn as (...args: any[]) => ReturnType<typeof s.beginTurn>)("synthetic:large-salvage");
+  await (s.beginTurn)("synthetic:large-salvage");
   for (let i = 0; i < 12; i++) await s.appendMessage({ role: "user", content: "x".repeat(3 * 1024 * 1024), timestamp: i });
   await s.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Read", arguments: {} }], timestamp: 13 });
   await s.appendMessage({ role: "toolResult", toolCallId: "call", toolName: "Read", content: [{ type: "text", text: "y".repeat(5000) }], isError: false, timestamp: 14 });

@@ -33,7 +33,7 @@ export function normalizeProcessTimeoutMs(value: any, fallback: number = DEFAULT
  * deliberately asked for. `undefined` means "no explicit request", leaving the
  * host default in force.
  */
-export function normalizeBackgroundTimeoutMs(value: any): number;
+
 export function normalizeBackgroundTimeoutMs(value: any): number | undefined {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return undefined;
@@ -44,7 +44,7 @@ export function normalizeBackgroundTimeoutMs(value: any): number | undefined {
  * Legacy Bash `timeout` for a background job: the same seconds-vs-milliseconds
  * heuristic as {@link normalizeBashTimeoutMs}, minus the foreground ceiling.
  */
-export function normalizeBackgroundBashTimeoutMs(value: any): number;
+
 export function normalizeBackgroundBashTimeoutMs(value: any): number | undefined {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return undefined;

@@ -20,7 +20,7 @@ export interface RuntimeResultLike {
   readonly cancelled?: boolean;
   readonly cancellationReason?: RunCancellationReason;
   readonly error?: string | null;
-  readonly failureKind?: string | null;
+  readonly failureKind?: string | null | undefined;
   /**
    * Per-attempt provider failover detail emitted by the fallback router. Loosely
    * typed here because the router stores ModelRef objects and a `retryableSubkind`
