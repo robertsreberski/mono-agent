@@ -9,6 +9,7 @@ import {
 } from "../index.js";
 
 const EVENT_FIXTURES: AgentStreamEvent[] = [
+  { type: "usage_update", cumulativeUsd: null, knownCostUsd: 2 },
   { type: "assistant_thought", text: "pondering" },
   { type: "tool_call_started", id: "t1", name: "read_file", arguments: { path: "/tmp/x" } },
   { type: "tool_call_progress", id: "t1", name: "read_file", partialResult: "line 1\n" },

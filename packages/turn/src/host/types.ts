@@ -33,7 +33,8 @@ function isRuntimeSubagentIdentity(value: unknown): value is RuntimeSubagentIden
     && optionalString(value, "nativeId")
     && optionalString(value, "label")
     && optionalString(value, "agentPath")
-    && optionalNumber(value, "costUsd")
+    && (value.costUsd === null || optionalNumber(value, "costUsd"))
+    && optionalNumber(value, "knownCostUsd")
     // Declared but loosely held: attribution is operator telemetry from
     // present and future producers, so the guard admits any record shape
     // rather than rejecting a payload this console does not know yet.

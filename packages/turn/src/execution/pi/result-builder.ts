@@ -93,9 +93,11 @@ export function withSubagentUsage(usage: {
     output: number;
     cacheRead: number;
     cacheWrite: number;
-    cost: number;
+    cost: number | null;
+    knownCostUsd?: number;
 }, delegated: {
-    costUsd: number;
+    costUsd: number | null;
+    knownCostUsd?: number;
     input: number;
     output: number;
     cacheRead: number;
@@ -105,16 +107,19 @@ export function withSubagentUsage(usage: {
     output: number;
     cacheRead: number;
     cacheWrite: number;
-    cost: number;
+    cost: number | null;
+    knownCostUsd?: number;
 };
 export function withSubagentUsage(usage: {
     input: number;
     output: number;
     cacheRead: number;
     cacheWrite: number;
-    cost: number;
+    cost: number | null;
+    knownCostUsd?: number;
 }, delegated: {
-    costUsd: number;
+    costUsd: number | null;
+    knownCostUsd?: number;
     input: number;
     output: number;
     cacheRead: number;
@@ -124,15 +129,22 @@ export function withSubagentUsage(usage: {
     output: number;
     cacheRead: number;
     cacheWrite: number;
-    cost: number;
+    cost: number | null;
+    knownCostUsd?: number;
 } {
+  const ownCost = usage.cost === null ? null : typeof usage.cost === "number" && usage.cost > 0 && Number.isFinite(usage.cost) ? usage.cost
+    : usage.input === 0 && usage.output === 0 && usage.cacheRead === 0 && usage.cacheWrite === 0 ? 0
+      : typeof estimatedCost === "number" && Number.isFinite(estimatedCost) && estimatedCost >= 0 ? estimatedCost : null;
+  const cost = ownCost === null || delegated.costUsd === null ? null : ownCost + delegated.costUsd;
+  const knownCost = (ownCost ?? usage.knownCostUsd ?? 0) + (delegated.costUsd ?? delegated.knownCostUsd ?? 0);
   return {
+    ...(cost === null && (ownCost !== null || usage.knownCostUsd !== undefined || delegated.knownCostUsd !== undefined || (delegated.costUsd !== null && delegated.costUsd > 0))
+      ? { knownCostUsd: knownCost } : {}),
     input: usage.input + delegated.input,
     output: usage.output + delegated.output,
     cacheRead: usage.cacheRead + delegated.cacheRead,
     cacheWrite: usage.cacheWrite + delegated.cacheWrite,
-    // When own cost is unknown, this total excludes it and contains only delegated spend.
-    cost: delegated.costUsd > 0 ? ((usage.cost || estimatedCost) ?? 0) + delegated.costUsd : usage.cost,
+    cost,
   };
 }
 
@@ -193,7 +205,8 @@ export function emitUsageCostEvents({ onEvent, reference, usage, estimatedCost, 
         output: number;
         cacheRead: number;
         cacheWrite: number;
-        cost: number;
+        cost: number | null;
+        knownCostUsd?: number;
     };
     estimatedCost: number | null;
     start: number;
@@ -214,7 +227,8 @@ export function emitUsageCostEvents({
         output: number;
         cacheRead: number;
         cacheWrite: number;
-        cost: number;
+        cost: number | null;
+        knownCostUsd?: number;
     };
     estimatedCost: number | null;
     start: number;
@@ -230,7 +244,8 @@ export function emitUsageCostEvents({
     type: "cost_accumulated",
     sdk: "pi",
     model: reference,
-    cumulativeUsd: Number(usage.cost) || Number(estimatedCost) || 0,
+    cumulativeUsd: usage.cost,
+    ...(usage.cost === null && usage.knownCostUsd !== undefined ? { knownCostUsd: usage.knownCostUsd } : {}),
     tokens: {
       input: Number(usage.input) || 0,
       output: Number(usage.output) || 0,
@@ -358,7 +373,8 @@ export function buildSuccessResult(params: object) {
       cache_read_tokens: usageMeasured ? usage.cacheRead : null,
       cache_creation_tokens: usageMeasured ? usage.cacheWrite : null,
       cache_write_tokens: usageMeasured ? usage.cacheWrite : null,
-      cost_usd: usage.cost || estimatedCost,
+      cost_usd: usage.cost,
+      ...(usage.cost === null && usage.knownCostUsd !== undefined ? { known_cost_usd: usage.knownCostUsd } : {}),
     },
     durationMs: Date.now() - start,
     numTurns: turnCount || runAssistantCount,
@@ -531,7 +547,7 @@ export function buildErrorDetails(params: object) {
   };
 }
 
-type ResultUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+type ResultUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number | null; knownCostUsd?: number };
 type ResultCommon = { events: any[]; start: number; turnCount: number; resolved: { reference?: string; provider: string; model: string }; options: PiOptions; externalAbort: boolean; maxTurnsHit: boolean; providerSessionId: string; runtimeWarnings: PiWarning[]; effectiveEffort?: string | undefined };
 type ResultSuccess = ResultCommon & { finalText: string; finalThinking: string; usage: ResultUsage; estimatedCost: number | null; runAssistantCount: number; errorMessage: string | null; errorDetails: Record<string, unknown> | null; diagnostics: Record<string, unknown>; capabilitiesUsed: unknown; structuredResult: unknown; usageMeasured?: boolean };
 type ResultError = ResultCommon & { assistantTexts: string[]; errorMessage: string | null; lastToolName: string | null; toolResultsSeen: number; isRetryable: boolean; piTransport: string };

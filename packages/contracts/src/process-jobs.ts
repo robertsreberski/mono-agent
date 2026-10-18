@@ -147,7 +147,9 @@ export interface ProcessJobSubagentProgress {
   readonly toolCalls: number;
   readonly failedCalls: number;
   /** This detached child turn's priced usage in USD; absent when pricing is unavailable. */
-  readonly costUsd?: number;
+  readonly costUsd?: number | null;
+  /** Separately known spend, never a substitute for an unknown total. */
+  readonly knownCostUsd?: number;
   /** Non-zero tokens for this detached job's child turn, not the persistent instance's cumulative usage. */
   readonly usage?: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number };
   readonly recent: readonly {
@@ -197,13 +199,16 @@ export function normalizeProcessJobSubagentUsage(value: unknown): ProcessJobSuba
 export function isProcessJobSubagentProgress(value: unknown): value is ProcessJobSubagentProgress {
   if (!isRecord(value)
     || !hasExactlyKeys(value, ["revision", "profile", "toolCalls", "failedCalls", "recent",
-      ...["label", "route", "costUsd", "usage", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
+      ...["label", "route", "costUsd", "knownCostUsd", "usage", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
     || !nonNegativeInteger(value.revision) || !boundedNonEmptyString(value.profile, 128)
     || (value.label !== undefined && !boundedString(value.label, 256))
     || (value.route !== undefined && !isProcessJobSubagentRoute(value.route))
     || !nonNegativeInteger(value.toolCalls) || !nonNegativeInteger(value.failedCalls)
-    || (value.costUsd !== undefined && (typeof value.costUsd !== "number" || !Number.isFinite(value.costUsd)
+    || (value.costUsd !== undefined && value.costUsd !== null && (typeof value.costUsd !== "number" || !Number.isFinite(value.costUsd)
       || value.costUsd < 0 || value.costUsd > Number.MAX_SAFE_INTEGER))
+    || (value.knownCostUsd !== undefined && (typeof value.knownCostUsd !== "number" || !Number.isFinite(value.knownCostUsd)
+      || value.knownCostUsd < 0 || value.knownCostUsd > Number.MAX_SAFE_INTEGER
+      || (typeof value.costUsd === "number" && value.knownCostUsd !== value.costUsd)))
     || (value.usage !== undefined && normalizeProcessJobSubagentUsage(value.usage) === undefined)
     || value.failedCalls > value.toolCalls
     || (value.answerHead !== undefined && !boundedString(value.answerHead, 8_000))

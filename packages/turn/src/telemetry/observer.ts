@@ -109,7 +109,8 @@ export function createMetricsObserver({ name, maxLatencySamples }?: {
       cacheCreationTokens: number;
     };
     cost: {
-      cumulativeUsd: number;
+      cumulativeUsd: number | null;
+      knownCostUsd?: number;
     };
     cache: {
       hits: number;
@@ -157,7 +158,8 @@ export function createMetricsObserver({ name = "metrics", maxLatencySamples = 2_
       cacheCreationTokens: number;
     };
     cost: {
-      cumulativeUsd: number;
+      cumulativeUsd: number | null;
+      knownCostUsd?: number;
     };
     cache: {
       hits: number;
@@ -191,7 +193,8 @@ export function createMetricsObserver({ name = "metrics", maxLatencySamples = 2_
     eventsTotal: 0,
     eventsByType: new Map(),
     tokens: { input: 0, output: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
-    cumulativeCostUsd: 0,
+    cumulativeCostUsd: initialCost(),
+    knownCostUsd: initialKnownCost(),
     cacheHits: 0,
     cacheMisses: 0,
     cacheReadTokensFromEvents: 0,
@@ -257,8 +260,13 @@ export function createMetricsObserver({ name = "metrics", maxLatencySamples = 2_
     if (type === "cost_accumulated") {
       // bridges send the running total, not the delta, so use it as the
       // current value rather than adding.
-      if (Number.isFinite(Number(event.cumulativeUsd))) {
-        state.cumulativeCostUsd = Number(event.cumulativeUsd);
+      if (event.cumulativeUsd === null) {
+        state.cumulativeCostUsd = null;
+        state.knownCostUsd = typeof event.knownCostUsd === "number" && Number.isFinite(event.knownCostUsd) && event.knownCostUsd >= 0
+          ? event.knownCostUsd : undefined;
+      } else if (typeof event.cumulativeUsd === "number" && Number.isFinite(event.cumulativeUsd) && event.cumulativeUsd >= 0) {
+        state.cumulativeCostUsd = event.cumulativeUsd;
+        state.knownCostUsd = undefined;
       }
       if (event.tokens && typeof event.tokens === "object") {
         if (Number.isFinite(Number(event.tokens.input))) state.tokens.input = Number(event.tokens.input);
@@ -308,7 +316,8 @@ export function createMetricsObserver({ name = "metrics", maxLatencySamples = 2_
     return {
       events: { total: state.eventsTotal, byType: Object.fromEntries(state.eventsByType) },
       tokens: { ...state.tokens },
-      cost: { cumulativeUsd: state.cumulativeCostUsd },
+      cost: { cumulativeUsd: state.cumulativeCostUsd,
+        ...(state.knownCostUsd === undefined ? {} : { knownCostUsd: state.knownCostUsd }) },
       cache: {
         hits: state.cacheHits,
         misses: state.cacheMisses,
@@ -379,3 +388,6 @@ export type Observer = {
 };
 
 type MetricEvent = { type?: string; name?: string; message?: { content?: Array<{ type?: string; name?: string; is_error?: unknown }> }; toolName?: string; failureKind?: string; reason?: string; warning_kind?: unknown; tokens?: { input?: unknown; output?: unknown; cacheReadTokens?: unknown; cacheCreationTokens?: unknown }; cumulativeUsd?: unknown; model?: string; timestamp?: number; durationMs?: unknown; requestId?: unknown; turnId?: unknown; [key: string]: unknown };
+
+function initialCost(): number | null { return 0; }
+function initialKnownCost(): number | undefined { return undefined; }

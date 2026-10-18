@@ -104,7 +104,8 @@ export interface RuntimeSubagentIdentity {
   readonly label?: string;
   /** Provider-reported ancestry; informational only. */
   readonly agentPath?: string;
-  readonly costUsd?: number;
+  readonly costUsd?: number | null;
+  readonly knownCostUsd?: number;
   /**
    * Bounded provider-route attribution for the delegation. On `agent_started`
    * this is the LAUNCH route — the explicit request completed with the

@@ -852,13 +852,13 @@ describe("subagentUsageForRun", () => {
     expect(unmeasured.find((event: any) => event.phase === "agent_completed")?.subagent).not.toHaveProperty("usage");
   });
 
-  it("leaves the price off a delegation the runtime never priced", async () => {
+  it("omits a delegation cost when no price was observed", async () => {
     const events: any[] = [];
     const options = subagentOptions({ run: okRun() });
     const tool = createAgentTool(options, { parentRunId: "run-1", onEvent: (event: any) => events.push(event) });
     await tool.execute("c1", { prompt: "x" });
 
-    expect(events.find((event: any) => event.phase === "agent_completed").subagent).not.toHaveProperty("costUsd");
+    expect(events.find((event) => event.phase === "agent_completed").subagent).not.toHaveProperty("costUsd");
   });
 
   it("reads all zeroes rather than throwing when nothing was ever registered", () => {
@@ -1517,6 +1517,17 @@ describe("Agent tool max-turns wrap-up", () => {
     expect(finished[0].status).toBe("failed");
     expect(finished[0].failureKind).toBeUndefined();
     expect(finished[0].continuity).toBeUndefined();
+  });
+
+  it("omits cost from a refused persistent child outcome", async () => {
+    const finished: Array<{ usage?: { costUsd?: number | null } }> = [];
+    const options = subagentOptions({ run: async () => ({ text: "", usage: {}, numTurns: 0, failureKind: "session_busy", events: [] }),
+      instances: persistentInstances(finished) });
+    const tool = createAgentTool(options);
+    if (tool === null) throw new Error("Expected Agent tool");
+    await tool.execute("synthetic-refused", { prompt: "Synthetic task", persist: true });
+    expect(finished).toHaveLength(1);
+    expect(finished[0]?.usage).not.toHaveProperty("costUsd");
   });
 
   it("sums both runs' usage in the instance outcome", async () => {

@@ -37,7 +37,8 @@ export type RuntimeSubagentIdentity = {
    * Priced delegation cost, when the runtime can
    * attribute it to this subagent.
    */
-  costUsd?: number;
+  costUsd?: number | null;
+  knownCostUsd?: number;
   /**
    * Bounded provider-route attribution for the
    * delegation. Consumers must treat it as operator telemetry. On
