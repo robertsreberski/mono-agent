@@ -1,8 +1,11 @@
+import type { StreamSubscriberState } from "../../execution/pi/events.js";
+import type { RuntimeToolLifecycleEvent, RuntimeToolLifecycleSink } from "../../contracts/events.js";
+type RecordedEvent = { type: string; message: { content: Array<{ type: string; text?: string; [key: string]: unknown }> }; [key: string]: unknown };
 import { describe, expect, it } from "vitest";
 import { createStreamSubscriber } from "../../execution/pi/events.js";
 import { createToolLifecycleEventGate } from "../../runtime/tool-lifecycle.js";
 
-function freshRunState() {
+function freshRunState(): StreamSubscriberState {
   return {
     assistantTexts: [],
     assistantThinking: [],
@@ -18,10 +21,10 @@ function freshRunState() {
     toolFailureThisTurn: false,
     structuredOutputCompletedThisTurn: false,
     structuredResult: null,
-  };
+  } as unknown as StreamSubscriberState;
 }
 
-function harnessDouble() {
+function harnessDouble(): { calls: { aborts: number }; abort: () => void; getModel: () => { contextWindow: number }; getPromptCacheRequest?: () => { requestId: string; phase: string } } {
   const calls = { aborts: 0 };
   return {
     calls,
@@ -30,9 +33,9 @@ function harnessDouble() {
   };
 }
 
-function driver(overrides = {}) {
+function driver(overrides: { toolLifecycleSink?: RuntimeToolLifecycleSink; abortSignal?: AbortSignal; maxTurns?: number; outputSchema?: unknown } = {}) {
   const runState = freshRunState();
-  const emitted = [];
+  const emitted: RecordedEvent[] = [];
   const harness = harnessDouble();
   const gate = typeof overrides.toolLifecycleSink === "function"
     ? createToolLifecycleEventGate({
@@ -58,7 +61,7 @@ function driver(overrides = {}) {
   return { runState, emitted, harness, handler, flush: async () => await gate?.flush() };
 }
 
-const msgUpdate = (assistantMessageEvent) => ({ type: "message_update", assistantMessageEvent });
+const msgUpdate = (assistantMessageEvent: unknown) => ({ type: "message_update", assistantMessageEvent });
 
 describe("createStreamSubscriber — text/thinking dedup", () => {
   it("streams a text delta and suppresses the matching text_end (same content index)", () => {
@@ -68,9 +71,9 @@ describe("createStreamSubscriber — text/thinking dedup", () => {
     handler(msgUpdate({ type: "text_end", content: "hello", contentIndex: 0 }));
 
     expect(runState.assistantTexts.join("")).toBe("hello");
-    const textEvents = emitted.filter((e) => e.type === "assistant" && e.message.content[0].type === "text");
+    const textEvents = emitted.filter((e) => e.type === "assistant" && e.message.content[0]!.type === "text");
     // Two deltas emitted; the text_end is deduped because its index streamed.
-    expect(textEvents.map((e) => e.message.content[0].text)).toEqual(["hel", "lo"]);
+    expect(textEvents.map((e) => e.message.content[0]!.text)).toEqual(["hel", "lo"]);
   });
 
   it("emits a text_end that never streamed as a delta (no matching index)", () => {
@@ -88,8 +91,8 @@ describe("createStreamSubscriber — text/thinking dedup", () => {
 
     expect(runState.assistantThinking).toEqual(["hm", "fresh"]);
     const thinkingTexts = emitted
-      .filter((e) => e.type === "assistant" && e.message.content[0].type === "thinking")
-      .map((e) => e.message.content[0].text);
+      .filter((e) => e.type === "assistant" && e.message.content[0]!.type === "thinking")
+      .map((e) => e.message.content[0]!.text);
     expect(thinkingTexts).toEqual(["hm", "fresh"]);
   });
 });
@@ -116,7 +119,7 @@ describe("createStreamSubscriber — exact context snapshots", () => {
     handler({ type: "message_end", message: completedAssistant() });
     expect(emitted.find((event) => event.type === "context_usage")).toMatchObject({ phase: "assistant", requestId: "payload-1", providerCostUsd: null });
     handler({ type: "message_end", message: completedAssistant({ usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { total: 0.2 } } }) });
-    expect(emitted.filter((event) => event.type === "context_usage").at(-1).providerCostUsd).toBe(0.2);
+    expect(emitted.filter((event) => event.type === "context_usage").at(-1)!.providerCostUsd).toBe(0.2);
   });
 
   it("emits the provider-counted request snapshot when each assistant message ends", () => {
@@ -192,9 +195,9 @@ describe("createStreamSubscriber — exact context snapshots", () => {
 
 describe("createStreamSubscriber — tool lifecycle + timing", () => {
   it("keeps a fast sequential tool ordered behind a slow lifecycle sink", async () => {
-    let releaseInvocation;
-    const invocationReleased = new Promise((resolvePromise) => { releaseInvocation = resolvePromise; });
-    const persisted = [];
+    let releaseInvocation: () => void;
+    const invocationReleased = new Promise<void>((resolvePromise) => { releaseInvocation = resolvePromise; });
+    const persisted: string[] = [];
     const { emitted, handler, flush } = driver({
       toolLifecycleSink: async (event) => {
         persisted.push(`${event.phase}:${event.toolCallId}`);
@@ -206,19 +209,19 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
     handler({ type: "tool_execution_start", toolName: "Read", toolCallId: "fast", args: {} });
     handler({ type: "tool_execution_end", toolName: "Read", toolCallId: "fast", result: "done", isError: false });
     expect(emitted).toEqual([]);
-    releaseInvocation();
+    releaseInvocation!();
     await flush();
 
     expect(persisted).toEqual(["invocation:fast", "result:fast"]);
     expect(emitted.map((event) => event.type)).toEqual(["assistant", "tool_timing", "user"]);
-    expect(emitted[0].message.content[0]).toMatchObject({ type: "tool_use", id: "fast" });
-    expect(emitted[2].message.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "fast" });
+    expect(emitted[0]!.message.content[0]).toMatchObject({ type: "tool_use", id: "fast" });
+    expect(emitted[2]!.message.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "fast" });
   });
 
   it("keeps a parallel batch in provider emission order while persistence is delayed", async () => {
-    let releaseFirst;
-    const firstReleased = new Promise((resolvePromise) => { releaseFirst = resolvePromise; });
-    const persisted = [];
+    let releaseFirst: () => void;
+    const firstReleased = new Promise<void>((resolvePromise) => { releaseFirst = resolvePromise; });
+    const persisted: string[] = [];
     const { emitted, handler, flush } = driver({
       toolLifecycleSink: async (event) => {
         persisted.push(`${event.phase}:${event.toolCallId}`);
@@ -232,14 +235,14 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
     handler({ type: "tool_execution_end", toolName: "Read", toolCallId: "A", result: "A done", isError: false });
     handler({ type: "tool_execution_end", toolName: "Read", toolCallId: "B", result: "B done", isError: false });
     expect(emitted).toEqual([]);
-    releaseFirst();
+    releaseFirst!();
     await flush();
 
     expect(persisted).toEqual(["invocation:A", "invocation:B", "result:A", "result:B"]);
     expect(emitted.map((event) => event.type === "assistant"
-      ? `use:${event.message.content[0].id}`
+      ? `use:${event.message.content[0]!.id}`
       : event.type === "user"
-        ? `result:${event.message.content[0].tool_use_id}`
+        ? `result:${event.message.content[0]!.tool_use_id}`
         : `timing:${event.tool_use_id}`)).toEqual([
       "use:A", "use:B", "timing:A", "result:A", "timing:B", "result:B",
     ]);
@@ -253,14 +256,14 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
 
     expect(runState.lastToolName).toBe("my_tool");
     expect(runState.toolResultsSeen).toBe(1);
-    expect(emitted.some((e) => e.type === "assistant" && e.message.content[0].type === "thinking")).toBe(false);
-    expect(emitted.some((e) => e.type === "assistant" && e.message.content[0].type === "tool_use" && e.message.content[0].id === "call-1")).toBe(true);
+    expect(emitted.some((e) => e.type === "assistant" && e.message.content[0]!.type === "thinking")).toBe(false);
+    expect(emitted.some((e) => e.type === "assistant" && e.message.content[0]!.type === "tool_use" && e.message.content[0]!.id === "call-1")).toBe(true);
     expect(emitted.some((e) => e.type === "tool_update" && e.tool_use_id === "call-1")).toBe(true);
     const timing = emitted.find((e) => e.type === "tool_timing");
     expect(timing).toMatchObject({ tool_use_id: "call-1", name: "my_tool", is_error: false });
-    expect(typeof timing.execution_ms).toBe("number");
+    expect(typeof timing!.execution_ms).toBe("number");
     const result = emitted.find((e) => e.type === "user");
-    expect(result.message.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "call-1", is_error: false });
+    expect(result!.message.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "call-1", is_error: false });
     // toolStartTimes cleaned up after the timing event.
     expect(runState.toolStartTimes.has("call-1")).toBe(false);
   });
@@ -270,8 +273,8 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
     handler({ type: "tool_execution_start", toolName: "t", toolCallId: "c", args: {} });
     handler({ type: "tool_execution_end", toolName: "t", toolCallId: "c", result: "boom", isError: true });
     expect(runState.toolResultsSeen).toBe(0);
-    expect(emitted.find((e) => e.type === "tool_timing").is_error).toBe(true);
-    expect(emitted.find((e) => e.type === "user").message.content[0].is_error).toBe(true);
+    expect(emitted.find((e) => e.type === "tool_timing")!.is_error).toBe(true);
+    expect(emitted.find((e) => e.type === "user")!.message.content[0]!.is_error).toBe(true);
   });
 
   it.each([
@@ -294,7 +297,7 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
   }) => {
     const abort = new AbortController();
     abort.abort(abortReason);
-    const persisted = [];
+    const persisted: RuntimeToolLifecycleEvent[] = [];
     const { emitted, handler, flush } = driver({
       abortSignal: abort.signal,
       toolLifecycleSink: async (event) => {
@@ -321,7 +324,7 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
     });
     await flush();
 
-    expect(emitted.find((event) => event.type === "user").message.content[0].tool_lifecycle).toEqual({
+    expect(emitted.find((event) => event.type === "user")!.message.content[0]!.tool_lifecycle).toEqual({
       state: "cancelled",
       failure_kind: "cancelled",
       detail_code: "abort_signal",
@@ -351,7 +354,7 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
     });
 
     const result = emitted.find((e) => e.type === "user");
-    expect(result.message.content[0]).toMatchObject({
+    expect(result!.message.content[0]).toMatchObject({
       type: "tool_result",
       tool_use_id: "write-1",
       file_change: fileChange,

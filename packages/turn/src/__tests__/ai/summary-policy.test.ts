@@ -1,3 +1,4 @@
+import type { Model } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
 import { summaryRequestOptions, summaryThinkingLevel } from "../../execution/pi/compaction/summary-policy.js";
 import { summaryModels } from "../../execution/pi/compaction/compaction-summary.js";
@@ -25,8 +26,8 @@ it.each([12000, 64000, 7384])("reserves adaptive reasoning beyond text target %i
   expect(summaryRequestOptions({ ...model, maxTokens: target }, context, { maxTokens: target }).options.maxTokens).toBe(target);
 });
 it.each([false, true])("real compact path survives fake adaptive thinking-only truncation (split %s)", async (split) => {
-  const requests = [];
-  const fake = { completeSimple: async (_model, _context, options) => ({ role: "assistant", timestamp: 0,
+  const requests: Array<{ effectiveEffort: string; status: string; costUsd: number }> = [];
+  const fake = { completeSimple: async (_model: unknown, _context: unknown, options: { reasoning: string; maxTokens: number }) => ({ role: "assistant", timestamp: 0,
     stopReason: options.reasoning === "low" && options.maxTokens > 12000 / (split ? 1.3 : 1) * (split ? 0.5 : 0.8) ? "stop" : "length",
     content: options.reasoning === "low" ? [{ type: "text", text: "Morgan: finish the pending tests. No deployment approved." }] : [],
     usage: { input: 500000, output: 12000, cost: { total: 2.5 } } }) };
@@ -34,7 +35,7 @@ it.each([false, true])("real compact path survives fake adaptive thinking-only t
     turnPrefixMessages: split ? [{ role: "user", content: "Pending turn", timestamp: 0 }] : [],
     retainedTail: [], isSplitTurn: split, tokensBefore: 500000, fileOps: { read: new Set(), written: new Set(), edited: new Set() },
     settings: { reserveTokens: split ? 9231 : 15000, keepRecentTokens: 4000 } };
-  const facade = summaryModels(fake, { operationId: "fake-adaptive", focus: "Summarize.", requests });
+  const facade = summaryModels(fake, { operationId: "fake-adaptive", focus: "Summarize.", requests } as Parameters<typeof summaryModels>[1]);
   const outcome = await compact(preparation, facade, model, undefined, "max", undefined, undefined, ENGINE_CONTEXT);
   expect(outcome.ok).toBe(true);
   expect(requests).toHaveLength(split ? 2 : 1);
@@ -82,13 +83,13 @@ it("sends the enlarged cap with Gemini thinkingLevel, not an ignored thinkingBud
   const gemini = { ...model, id: "gemini-3.1-pro-preview", provider: "google", api: "google-generative-ai", input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const policy = summaryRequestOptions(gemini, { messages: [] }, { maxTokens: 12000 });
-  let payload;
-  const stream = streamSimple(gemini, { messages: [{ role: "user", content: "Fictional summary", timestamp: 0 }] }, {
-    ...policy.options, apiKey: "fictional-test-key", onPayload: (value) => { payload = value; throw new Error("Captured before network"); } });
+  let payload: { config: { maxOutputTokens: number; thinkingConfig: { thinkingLevel: string; thinkingBudget?: number } } };
+  const stream = streamSimple(gemini as Model<"google-generative-ai">, { messages: [{ role: "user", content: "Fictional summary", timestamp: 0 }] } as Parameters<typeof streamSimple>[1], {
+    ...policy.options, apiKey: "fictional-test-key", onPayload: (value) => { payload = value as typeof payload; throw new Error("Captured before network"); } });
   expect((await stream.result()).errorMessage).toContain("Captured before network");
-  expect(payload.config.maxOutputTokens).toBe(18000);
-  expect(payload.config.thinkingConfig.thinkingLevel).toBe("LOW");
-  expect(payload.config.thinkingConfig.thinkingBudget).toBeUndefined();
+  expect(payload!.config.maxOutputTokens).toBe(18000);
+  expect(payload!.config.thinkingConfig.thinkingLevel).toBe("LOW");
+  expect(payload!.config.thinkingConfig.thinkingBudget).toBeUndefined();
 });
 
 it("reserves shared-cap reasoning room for other always-on reasoning families", () => {

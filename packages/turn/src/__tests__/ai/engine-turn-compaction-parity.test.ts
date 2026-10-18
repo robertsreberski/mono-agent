@@ -20,12 +20,12 @@ import { piCompactionSettings } from "../../execution/pi/compaction/compaction-d
 // would break under the off-by-one `reserveTokens = window - triggerTokens`.
 
 /** The pre-Phase-5 decision, kept verbatim as the parity oracle. */
-function oldDecision(est, policy) {
+function oldDecision(est: number, policy: ReturnType<typeof resolveAgentCompactionPolicy>) {
   return est >= policy.triggerTokens;
 }
 
 /** The Phase-5 decision, exactly as runProactiveCompaction now evaluates it. */
-function newDecision(est, policy) {
+function newDecision(est: number, policy: ReturnType<typeof resolveAgentCompactionPolicy>) {
   return shouldCompact(est, policy.contextWindow, piCompactionSettings(policy));
 }
 

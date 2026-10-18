@@ -1,3 +1,4 @@
+import type { Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,23 +10,23 @@ import { disposeProviderSession } from "../../runtime/session-fanout.js";
 
 // Keep the real mid-stream retry policy, without its 1 s/2 s/4 s backoff.
 vi.mock("../../execution/pi/request-retry.js", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, requestRetryPolicy: (params) => ({ ...actual.requestRetryPolicy(params), baseDelayMs: 0 }) };
+  const actual = await importOriginal<typeof import("../../execution/pi/request-retry.js")>();
+  return { ...actual, requestRetryPolicy: (params: Parameters<typeof actual.requestRetryPolicy>[0]) => ({ ...actual.requestRetryPolicy(params), baseDelayMs: 0 }) };
 });
 
-let faux, fauxModels;
+let faux: ReturnType<typeof fauxProvider>, fauxModels: ReturnType<typeof createModels>;
 afterEach(() => { vi.restoreAllMocks(); });
 function setup() {
-  faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined });
+  faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined } as unknown as Parameters<typeof fauxProvider>[0]);
   fauxModels = createModels(); fauxModels.setProvider(faux.provider);
   return faux.getModel();
 }
-function runOptions(model, overrides = {}) {
+function runOptions(model: Model<string>, overrides = {}) {
   return { model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
     piResolvedModel: model, piResolvedModels: fauxModels, effort: "none", allowedTools: [], ...overrides };
 }
 
-it.each(["find"])("refuses cold reopen when the native %s throws", async (method) => {
+it.each(["find"] as const)("refuses cold reopen when the native %s throws", async (method) => {
   const model = setup();
   const root = mkdtempSync(join(tmpdir(), "catalogue-failure-"));
   const repo = resolveDurableNativeSessionRepo(root);
@@ -52,7 +53,7 @@ it.each(["find"])("refuses cold reopen when the native %s throws", async (method
 
 it.each([0, 1, 2, undefined])("piMaxRetries=%s sizes SDK retries and gates mid-stream request retries", async (piMaxRetries) => {
   const model = setup();
-  const requests = [];
+  const requests: Array<SimpleStreamOptions | undefined> = [];
   fauxModels.setProvider({ ...faux.provider, streamSimple(model, context, options) {
     requests.push(options); return faux.provider.streamSimple(model, context, options);
   } });
@@ -67,13 +68,13 @@ it.each([0, 1, 2, undefined])("piMaxRetries=%s sizes SDK retries and gates mid-s
     // Faux errors start a response first: a mid-stream 503 is re-sent three
     // times unless piMaxRetries=0 disables both layers.
     expect(faux.state.callCount).toBe(piMaxRetries === 0 ? 1 : 4);
-    expect(requests.every((options) => options.maxRetries === (piMaxRetries ?? 2))).toBe(true);
-    expect(result.events.filter((event) => event.type === "tool_call_started")).toEqual([]);
+    expect(requests.every((options) => options!.maxRetries === (piMaxRetries ?? 2))).toBe(true);
+    expect(result.events.filter((event: { type: string }) => event.type === "tool_call_started")).toEqual([]);
   } finally { vi.restoreAllMocks(); }
 });
 
 it.each([null, "", "   ", Infinity, "not-a-number"])("treats an unset/invalid direct retry budget (%s) as the default, not zero", async (piMaxRetries) => {
-  const model = setup(), requests = [];
+  const model = setup(), requests: Array<SimpleStreamOptions | undefined> = [];
   fauxModels.setProvider({ ...faux.provider, streamSimple(model, context, options) {
     requests.push(options); return faux.provider.streamSimple(model, context, options);
   } });
@@ -82,7 +83,7 @@ it.each([null, "", "   ", Infinity, "not-a-number"])("treats an unset/invalid di
     piMaxRetries, messages: [{ role: "user", content: "Fictional request" }],
   }));
   expect(result.text).toBe("Fictional answer");
-  expect(requests).toHaveLength(1); expect(requests[0].maxRetries).toBe(2);
+  expect(requests).toHaveLength(1); expect(requests[0]!.maxRetries).toBe(2);
 });
 
 
@@ -131,16 +132,16 @@ it("does not repeat a paid request whose stream throws with unknown outcome", as
 });
 
 it.each([[2.9, 2], [-2.9, 0], [99.5, 8]])("truncates and bounds embedder retry budget %s to %s", async (piMaxRetries, expected) => {
-  const model = setup(), requests = [];
+  const model = setup(), requests: Array<SimpleStreamOptions | undefined> = [];
   fauxModels.setProvider({ ...faux.provider, streamSimple(model, context, options) { requests.push(options); return faux.provider.streamSimple(model, context, options); } });
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
   const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, { piMaxRetries, messages: [{ role: "user", content: "Fictional request" }] }));
-  expect(result.error).toBeNull(); expect(requests[0].maxRetries).toBe(expected);
+  expect(result.error).toBeNull(); expect(requests[0]!.maxRetries).toBe(expected);
 });
 it.each([0, -1, null, "", Infinity, undefined])("uses the default retry-delay cap for embedder value %s", async (maxRetryDelayMs) => {
-  const model = setup(), requests = [];
+  const model = setup(), requests: Array<SimpleStreamOptions | undefined> = [];
   fauxModels.setProvider({ ...faux.provider, streamSimple(model, context, options) { requests.push(options); return faux.provider.streamSimple(model, context, options); } });
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
   await generateEngineTurnResponse("Fictional rules", runOptions(model, { maxRetryDelayMs, messages: [{ role: "user", content: "Fictional request" }] }));
-  expect(requests[0].maxRetryDelayMs).toBe(60_000);
+  expect(requests[0]!.maxRetryDelayMs).toBe(60_000);
 });

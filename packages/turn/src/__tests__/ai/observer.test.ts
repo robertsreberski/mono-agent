@@ -12,7 +12,7 @@ describe("createObserverHub", () => {
   });
 
   it("synchronously reports lifecycle admission and isolates observer errors", () => {
-    const seen = [];
+    const seen: object[] = [];
     const hub = createObserverHub({ observers: [
       { recordEvent() {}, recordToolLifecycle() { throw new Error("observer failed"); } },
       { recordEvent() {}, recordToolLifecycle(event) { seen.push(event); } },
@@ -23,7 +23,7 @@ describe("createObserverHub", () => {
   });
 
   it("registers an onEvent callback as a synthetic observer", () => {
-    const calls = [];
+    const calls: object[] = [];
     const hub = createObserverHub({ onEvent: (e) => calls.push(e) });
     hub.emit({ type: "tool_use", name: "Bash" });
     expect(calls).toEqual([{ type: "tool_use", name: "Bash" }]);
@@ -38,12 +38,12 @@ describe("createObserverHub", () => {
   });
 
   it("rejects observers that lack a recordEvent method", () => {
-    const hub = createObserverHub({ observers: [{}, null, undefined, { recordEvent: "not-a-fn" }] });
+    const hub = createObserverHub({ observers: [{}, null, undefined, { recordEvent: "not-a-fn" }] as unknown as NonNullable<NonNullable<Parameters<typeof createObserverHub>[0]>["observers"]> });
     expect(hub.observers()).toEqual([]);
   });
 
   it("flushes async observers", async () => {
-    const flushed = [];
+    const flushed: string[] = [];
     const hub = createObserverHub({
       observers: [
         { recordEvent: () => {}, async flush() { flushed.push("a"); } },
@@ -195,7 +195,7 @@ describe("createRuntime + observers integration", () => {
       onEvent,
     });
     expect(executeMock).toHaveBeenCalledTimes(1);
-    const passedOptions = executeMock.mock.calls[0][1];
+    const passedOptions = executeMock.mock.calls[0]![1];
     // The hub-emit wrapper should be in place of the original onEvent.
     expect(typeof passedOptions.onEvent).toBe("function");
     passedOptions.onEvent({ type: "tool_use", name: "Bash" });

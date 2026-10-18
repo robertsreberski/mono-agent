@@ -14,6 +14,12 @@
 // The native bridge must return the SAME unified result shape and emit the
 // SAME normalized runtime events as the legacy pi-sdk bridge.
 
+import type { Model, TranscriptContext, SimpleStreamOptions } from "@earendil-works/pi-ai";
+type Warning = { warning_kind?: string; reason?: string; outcome?: string };
+type EventPart = { type: string; content: string; text?: string; thinking?: string; id?: string; name?: string; input?: Record<string, unknown>; file_change?: unknown; raw_result?: { details: { raw: unknown } }; tool_use_id?: string; is_error?: boolean };
+type TestEvent = { type: string; warning_kind?: string; reason?: string; outcome?: string; message?: { content?: EventPart[] }; [key: string]: unknown };
+type NativeEvent = { type: string; lane?: string; runId?: string | undefined; entryId?: string; message?: { role: string; content?: unknown[] }; [key: string]: unknown };
+import type { RuntimeSandbox } from "../../agent/sandbox-seam.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,26 +61,26 @@ const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 
 describe("pi-native live input", () => {
   it("acknowledges only after the exact entry is consumed by the owned prompt operation", async () => {
-    let subscriber;
-    const acknowledge = vi.fn();
+    let subscriber!: (event: NativeEvent) => void;
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const accepted = vi.fn();
     const reject = vi.fn();
     const uncertain = vi.fn();
-    const steer = vi.fn(async () => "entry-1");
-    const warnings = [];
+    const steer = vi.fn<(text: string) => Promise<string>>(async () => "entry-1");
+    const warnings: Warning[] = [];
     const liveInput = (async function* () {
       yield { body: "Use the new limit", id: "input-1", accepted, acknowledge, uncertain, reject };
     })();
     const harness = {
       steer,
       cancelQueued: vi.fn(async () => ({ kind: "already_consumed" })),
-      subscribe(handler) { subscriber = handler; return vi.fn(); },
+      subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); },
     };
-    const promptEpoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const promptEpoch = createLiveInputPromptEpoch({ harness, onEvent: (event: TestEvent) => warnings.push(event) });
     const consumer = startLiveInput({
       harness,
       options: { liveInput },
-      onEvent: (event) => warnings.push(event),
+      onEvent: (event: TestEvent) => warnings.push(event),
       promptEpoch,
     });
 
@@ -104,8 +110,8 @@ describe("pi-native live input", () => {
     [["process_job", "user"], false],
     [["process_job", undefined], false],
   ])("requires every consumed input to be a known process-job wake (%j)", (kinds, eligible) => {
-    let subscriber;
-    const epoch = createLiveInputPromptEpoch({ harness: { subscribe(handler) { subscriber = handler; } }, onEvent: () => {} });
+    let subscriber!: (event: NativeEvent) => void;
+    const epoch = createLiveInputPromptEpoch({ harness: { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; } }, onEvent: () => {} });
     epoch.confirm("owned-run");
     subscriber({ type: "run_start", lane: "main", runId: "owned-run" });
     kinds.forEach((kind, index) => {
@@ -126,12 +132,12 @@ describe("pi-native live input", () => {
   // run, every steer Pi consumed mid-run stayed "Steering current run…" until
   // the whole run settled and was acknowledged in one batch at the end.
   it("acknowledges mid-run once the admitted operation is confirmed before run_start", () => {
-    let subscriber;
-    const acknowledge = vi.fn();
+    let subscriber!: (event: NativeEvent) => void;
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const uncertain = vi.fn();
-    const warnings = [];
-    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
-    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const warnings: Warning[] = [];
+    const harness = { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event: TestEvent) => warnings.push(event) });
 
     epoch.confirm("run-1");
     subscriber({ type: "run_start", lane: "main", runId: "run-1" });
@@ -156,10 +162,10 @@ describe("pi-native live input", () => {
   });
 
   it("acknowledges mid-run when confirm arrives after run_start", () => {
-    let subscriber;
-    const acknowledge = vi.fn();
+    let subscriber!: (event: NativeEvent) => void;
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const uncertain = vi.fn();
-    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const harness = { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); } };
     const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
 
     subscriber({ type: "run_start", lane: "main", runId: "run-1" });
@@ -173,11 +179,11 @@ describe("pi-native live input", () => {
   });
 
   it("invalidates when the admitted operation does not match the observed run", () => {
-    let subscriber;
-    const warnings = [];
-    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    let subscriber!: (event: NativeEvent) => void;
+    const warnings: Warning[] = [];
+    const harness = { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); } };
 
-    const early = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const early = createLiveInputPromptEpoch({ harness, onEvent: (event: TestEvent) => warnings.push(event) });
     const earlyMessage = { acknowledge: vi.fn(), uncertain: vi.fn() };
     early.register("entry", earlyMessage);
     early.confirm("op-admitted");
@@ -187,7 +193,7 @@ describe("pi-native live input", () => {
     expect(earlyMessage.acknowledge).not.toHaveBeenCalled();
     expect(earlyMessage.uncertain).toHaveBeenCalledTimes(1);
 
-    const late = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const late = createLiveInputPromptEpoch({ harness, onEvent: (event: TestEvent) => warnings.push(event) });
     const lateMessage = { acknowledge: vi.fn(), uncertain: vi.fn() };
     late.register("entry", lateMessage);
     subscriber({ type: "run_start", lane: "main", runId: "run-other" });
@@ -197,13 +203,13 @@ describe("pi-native live input", () => {
     expect(lateMessage.acknowledge).not.toHaveBeenCalled();
     expect(lateMessage.uncertain).toHaveBeenCalledTimes(1);
 
-    expect(warnings.filter((event) => event.warning_kind === "live_input_correlation_invalid"
+    expect(warnings.filter((event: Warning) => event.warning_kind === "live_input_correlation_invalid"
       && event.reason === "operation_mismatch")).toHaveLength(2);
   });
 
   it("keeps stop pending for unresolved steer then proves cancellation before safe rejection", async () => {
-    let resolveSteer;
-    const steer = vi.fn(() => new Promise((resolve) => { resolveSteer = resolve; }));
+    let resolveSteer!: (id: string) => void;
+    const steer = vi.fn(() => new Promise<string>((resolve) => { resolveSteer = resolve; }));
     const reject = vi.fn();
     const uncertain = vi.fn();
     const accepted = vi.fn();
@@ -247,10 +253,10 @@ describe("pi-native live input", () => {
   );
 
   it("makes mismatched, runless, stale, and non-user events unable to prove consumption", async () => {
-    let subscriber;
-    const acknowledge = vi.fn();
+    let subscriber!: (event: NativeEvent) => void;
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const uncertain = vi.fn();
-    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const harness = { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); } };
     const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
     const message = { acknowledge, uncertain };
     epoch.register("entry", message);
@@ -268,10 +274,10 @@ describe("pi-native live input", () => {
   });
 
   it("buffers owned message evidence until steer resolves its entry id", () => {
-    let subscriber;
-    const acknowledge = vi.fn();
+    let subscriber!: (event: NativeEvent) => void;
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const uncertain = vi.fn();
-    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const harness = { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); } };
     const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
 
     subscriber({ type: "run_start", lane: "main", runId: "run" });
@@ -293,12 +299,12 @@ describe("pi-native live input", () => {
   });
 
   it("keeps exact duplicate evidence idempotent when the unique-event buffer is full", () => {
-    let subscriber;
-    const acknowledge = vi.fn();
+    let subscriber!: (event: NativeEvent) => void;
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const uncertain = vi.fn();
-    const warnings = [];
-    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
-    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const warnings: Warning[] = [];
+    const harness = { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event: TestEvent) => warnings.push(event) });
     epoch.register("entry-100", { acknowledge, uncertain });
     subscriber({ type: "run_start", lane: "main", runId: "run" });
     for (let index = 0; index <= 100; index += 1) {
@@ -325,12 +331,12 @@ describe("pi-native live input", () => {
   });
 
   it("still invalidates a genuinely new evidence tuple beyond capacity", () => {
-    let subscriber;
-    const acknowledge = vi.fn();
+    let subscriber!: (event: NativeEvent) => void;
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const uncertain = vi.fn();
-    const warnings = [];
-    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
-    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const warnings: Warning[] = [];
+    const harness = { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event: TestEvent) => warnings.push(event) });
     epoch.register("entry-100", { acknowledge, uncertain });
     subscriber({ type: "run_start", lane: "main", runId: "run" });
     for (let index = 0; index <= 101; index += 1) {
@@ -353,12 +359,12 @@ describe("pi-native live input", () => {
   });
 
   it("invalidates correlation on a second distinct main-lane run_start", () => {
-    let subscriber;
-    const acknowledge = vi.fn();
+    let subscriber!: (event: NativeEvent) => void;
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const uncertain = vi.fn();
-    const warnings = [];
-    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
-    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const warnings: Warning[] = [];
+    const harness = { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event: TestEvent) => warnings.push(event) });
     epoch.register("entry", { acknowledge, uncertain });
 
     subscriber({ type: "run_start", lane: "main", runId: "run-one" });
@@ -492,7 +498,7 @@ describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
   });
 
   it("falls back to resolvePiApiKey when the map has no entry", async () => {
-    const store = createDynamicCredentialStore(new Map(), async (provider) => `key-for-${provider}`, []);
+    const store = createDynamicCredentialStore(new Map(), async (provider: string) => `key-for-${provider}`, []);
     expect(await store.read("openai")).toEqual({ type: "api_key", key: "key-for-openai" });
   });
 
@@ -500,7 +506,7 @@ describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
     const resolver = async () => {
       throw new Error("legacy api-key resolver should not run for OAuth store reads");
     };
-    resolver.readCredential = async (provider) => provider === "openai-codex"
+    resolver.readCredential = async (provider: string) => provider === "openai-codex"
       ? {
         type: "oauth",
         access: "access-token",
@@ -524,7 +530,7 @@ describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
     resolver.readCredential = async () => {
       throw new Error("auth file is corrupt");
     };
-    const warnings = [];
+    const warnings: Warning[] = [];
     const store = createDynamicCredentialStore(new Map(), resolver, warnings);
 
     await expect(store.read("openai-codex")).rejects.toThrow("auth file is corrupt");
@@ -542,14 +548,14 @@ describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
       throw new Error("legacy api-key resolver should not run for OAuth store writes");
     };
     resolver.readCredential = async () => credential;
-    resolver.modifyCredential = async (_provider, fn) => {
+    resolver.modifyCredential = async (_provider: string, fn: (current: typeof credential) => Promise<typeof credential | undefined>) => {
       const next = await fn(credential);
       if (next !== undefined) credential = next;
       return credential;
     };
 
     const store = createDynamicCredentialStore(new Map(), resolver, []);
-    const updated = await store.modify("openai-codex", async (current) => ({
+    const updated = await store.modify("openai-codex", async (current: typeof credential) => ({
       ...current,
       access: "new-access",
       expires: 4_200_000_000_000,
@@ -565,7 +571,7 @@ describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
   });
 
   it("emits a pi_auth_failed warning and proceeds keyless when resolvePiApiKey throws", async () => {
-    const warnings = [];
+    const warnings: Warning[] = [];
     const store = createDynamicCredentialStore(
       new Map(),
       async () => { throw new Error("boom"); },
@@ -638,8 +644,8 @@ describe("withSubagentUsage", () => {
   });
 });
 
-let faux = null;
-let fauxModels = null;
+let faux: ReturnType<typeof fauxProvider> | null = null;
+let fauxModels: ReturnType<typeof createModels> | null = null;
 
 // Register a faux provider into a fresh `Models` collection and hand its model
 // back. `modelDef` overrides merge onto the base faux model (e.g. `reasoning`,
@@ -648,11 +654,11 @@ function setup(modelDef = {}, provider = "faux") {
   faux = fauxProvider({
     provider,
     models: [{ id: "faux-model", ...modelDef }],
-    tokensPerSecond: undefined,
+    tokensPerSecond: undefined!,
   });
   fauxModels = createModels();
-  fauxModels.setProvider(faux.provider);
-  return faux.getModel();
+  fauxModels.setProvider(faux!.provider);
+  return faux!.getModel();
 }
 
 beforeEach(() => {
@@ -665,11 +671,11 @@ afterEach(() => {
   fauxModels = null;
 });
 
-function runOptions(model, overrides = {}) {
+function runOptions(model: Model<string>, overrides = {}) {
   return {
     model: { provider: model.provider, model: model.id, reference: `${model.provider}:${model.id}` },
     piResolvedModel: model,
-    piResolvedModels: fauxModels,
+    piResolvedModels: fauxModels!,
     effort: "none",
     allowedTools: [],
     ...overrides,
@@ -741,7 +747,7 @@ describe("pi-native AgentHarness bridge", () => {
     // Pi 0.99.2 then probes workload identity federation, which stops at its
     // first missing required setting.
     // Stored credentials are also disabled by the null resolver below.
-    const authContext = { env: vi.fn(async () => undefined), fileExists: vi.fn(async () => false) };
+    const authContext = { env: vi.fn<(name: string) => Promise<undefined>>(async () => undefined), fileExists: vi.fn(async () => false) };
     const result = await generateEngineTurnResponse("system", {
       model: { provider, model, reference: `${provider}:${model}` },
       messages: [{ role: "user", content: "hello" }],
@@ -763,8 +769,8 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("dispatches stable OpenCode headers and returns the attribution id as the fresh provider session", async () => {
     const model = setup({ id: "deepseek-v4-pro" }, "opencode-go");
-    const dispatchedHeaders = [];
-    faux.setResponses([
+    const dispatchedHeaders: SimpleStreamOptions["headers"][] = [];
+    faux!.setResponses([
       (_context, options) => {
         dispatchedHeaders.push(options?.headers);
         return fauxAssistantMessage([fauxText("first")]);
@@ -794,8 +800,8 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("generates a fresh attributed provider session for each unkeyed direct OpenCode call", async () => {
     const model = setup({ id: "deepseek-v4-pro" }, "opencode-go");
-    const dispatchedSessions = [];
-    faux.setResponses([
+    const dispatchedSessions: Array<string | null | undefined> = [];
+    faux!.setResponses([
       (_context, options) => {
         dispatchedSessions.push(options?.headers?.["x-opencode-session"]);
         return fauxAssistantMessage([fauxText("first")]);
@@ -822,13 +828,13 @@ describe("pi-native AgentHarness bridge", () => {
   it("wires native max through the AgentHarness stream options when advertised", async () => {
     const model = setup({ reasoning: true });
     model.thinkingLevelMap = { xhigh: "xhigh", max: "max" };
-    const originalStreamSimple = faux.provider.streamSimple.bind(faux.provider);
+    const originalStreamSimple = faux!.provider.streamSimple.bind(faux!.provider);
     let observedReasoning;
-    faux.provider.streamSimple = (requestModel, context, options) => {
+    faux!.provider.streamSimple = (requestModel, context, options) => {
       observedReasoning = options?.reasoning;
       return originalStreamSimple(requestModel, context, options);
     };
-    faux.setResponses([fauxAssistantMessage([fauxText("max response")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("max response")])]);
 
     const result = await generateEngineTurnResponse("system", runOptions(model, {
       effort: "max",
@@ -850,12 +856,12 @@ describe("pi-native AgentHarness bridge", () => {
   ])("reports the observed provider payload effort for %s", async (_name, reasoning, effort, nativeMax, expected) => {
     const model = setup({ reasoning });
     if (nativeMax) model.thinkingLevelMap = { xhigh: "xhigh", max: "max" };
-    const original = faux.provider.streamSimple.bind(faux.provider);
-    faux.provider.streamSimple = async (selected, context, options) => {
+    const original = faux!.provider.streamSimple.bind(faux!.provider);
+    (faux!.provider as unknown as { streamSimple: (selected: Model<string>, context: TranscriptContext, options: SimpleStreamOptions) => Promise<ReturnType<typeof original>> }).streamSimple = async (selected, context, options) => {
       await options.onPayload?.({ reasoning_effort: expected }, { ...selected, api: "openai-completions" });
       return original(selected, context, options);
     };
-    faux.setResponses([fauxAssistantMessage([fauxText("done")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("done")])]);
     const onEvent = vi.fn();
 
     const result = await generateEngineTurnResponse("system", runOptions(model, {
@@ -864,7 +870,7 @@ describe("pi-native AgentHarness bridge", () => {
       onEvent,
     }));
     const events = onEvent.mock.calls.map(([event]) => event);
-    const configIndex = events.findIndex((event) => event?.type === "provider_execution_config" && event.effectiveEffort);
+    const configIndex = events.findIndex((event: TestEvent) => event?.type === "provider_execution_config" && event.effectiveEffort);
 
     expect(result.effectiveEffort).toBe(expected);
     expect(events[configIndex]).toMatchObject({
@@ -872,12 +878,12 @@ describe("pi-native AgentHarness bridge", () => {
       effort,
       effectiveEffort: expected,
     });
-    expect(events.findIndex((event) => event.type === "provider_request_started")).toBeLessThan(configIndex);
+    expect(events.findIndex((event: TestEvent) => event.type === "provider_request_started")).toBeLessThan(configIndex);
   });
 
   it("returns the unified result shape and streams normalized events on a simple turn", async () => {
     const model = setup({ reasoning: true });
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([fauxThinking("considering"), fauxText("hello world")]),
     ]);
     const onEvent = vi.fn();
@@ -910,8 +916,8 @@ describe("pi-native AgentHarness bridge", () => {
       effort: "medium",
     });
     expect(events[1]).toMatchObject({ type: "provider_request_started", sdk: "pi", runtime: "pi" });
-    expect(events.some((event) => event?.type === "provider_request_completed")).toBe(true);
-    const contextUsage = events.find((event) => event?.type === "context_usage");
+    expect(events.some((event: TestEvent) => event?.type === "provider_request_completed")).toBe(true);
+    const contextUsage = events.find((event: TestEvent) => event?.type === "context_usage");
     expect(contextUsage).toMatchObject({
       sdk: "pi",
       model: "faux:faux-model",
@@ -931,16 +937,16 @@ describe("pi-native AgentHarness bridge", () => {
       contextUsage.tokens.cacheCreation,
     );
     const textBlocks = events
-      .filter((event) => event?.type === "assistant")
-      .flatMap((event) => event.message?.content || [])
-      .filter((block) => block?.type === "text")
-      .map((block) => block.text);
+      .filter((event: TestEvent) => event?.type === "assistant")
+      .flatMap((event: TestEvent) => event.message?.content || [])
+      .filter((block: EventPart) => block?.type === "text")
+      .map((block: EventPart) => block.text);
     expect(textBlocks.join("")).toContain("hello world");
   });
 
   it("does not emit assistant boundaries for seeded prior history", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxText("current reply")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("current reply")])]);
     const onEvent = vi.fn();
 
     const result = await generateEngineTurnResponse("system", runOptions(model, {
@@ -956,16 +962,16 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.text).toBe("current reply");
     expect(onEvent.mock.calls
       .map(([event]) => event)
-      .filter((event) => event?.type === "assistant_message_boundary"))
+      .filter((event: TestEvent) => event?.type === "assistant_message_boundary"))
       .toHaveLength(1);
   });
 
   it("closes a partially constructed harness when adapter setup fails", async () => {
     const model = setup();
-    const repo = new MemorySessionRepo();
+    const repo = new MemorySessionRepo() as unknown as Omit<MemorySessionRepo, "create" | "open" | "close"> & { create(options: Parameters<MemorySessionRepo["create"]>[0], context: unknown): ReturnType<MemorySessionRepo["create"]>; open(metadata: unknown, context: unknown): Promise<{ close(context: unknown): Promise<void> }>; close(context: unknown): Promise<void> };
     const rawSession = await repo.create({ id: "adapter-setup-failure" }, ENGINE_CONTEXT);
     const metadata = rawSession.metadata;
-    const session = createPiSessionAdapter(rawSession);
+    const session = createPiSessionAdapter(rawSession) as Omit<ReturnType<typeof createPiSessionAdapter>, "attach"> & { attach(harness: unknown, lane?: unknown): void };
     const attach = session.attach.bind(session);
     session.attach = (harness, lane) => {
       attach(harness, lane);
@@ -990,10 +996,10 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("forwards the requested transport to Pi and reports it in diagnostics", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxText("over sse")])]);
-    const originalStreamSimple = faux.provider.streamSimple.bind(faux.provider);
+    faux!.setResponses([fauxAssistantMessage([fauxText("over sse")])]);
+    const originalStreamSimple = faux!.provider.streamSimple.bind(faux!.provider);
     let observedTransport;
-    faux.provider.streamSimple = (requestModel, context, options) => {
+    faux!.provider.streamSimple = (requestModel, context, options) => {
       observedTransport = options?.transport;
       return originalStreamSimple(requestModel, context, options);
     };
@@ -1015,8 +1021,8 @@ describe("pi-native AgentHarness bridge", () => {
     // object through would silently drop the image before the provider call.
     const model = setup({ input: ["text", "image"] });
 
-    let capturedMessages = null;
-    faux.setResponses([
+    let capturedMessages: TranscriptContext["messages"] | null = null;
+    faux!.setResponses([
       (context) => {
         capturedMessages = context.messages;
         return fauxAssistantMessage([fauxText("seen")]);
@@ -1037,11 +1043,11 @@ describe("pi-native AgentHarness bridge", () => {
 
     expect(result.error).toBeNull();
     expect(capturedMessages).not.toBeNull();
-    const lastUser = [...capturedMessages].reverse().find((message) => message.role === "user");
+    const lastUser = [...capturedMessages!].reverse().find((message) => message.role === "user");
     expect(lastUser).toBeDefined();
-    expect(Array.isArray(lastUser.content)).toBe(true);
-    expect(lastUser.content).toContainEqual({ type: "image", data: "BASE64DATA", mimeType: "image/png" });
-    expect(lastUser.content).toContainEqual({ type: "text", text: "what is this" });
+    expect(Array.isArray(lastUser!.content)).toBe(true);
+    expect(lastUser!.content).toContainEqual({ type: "image", data: "BASE64DATA", mimeType: "image/png" });
+    expect(lastUser!.content).toContainEqual({ type: "text", text: "what is this" });
   });
 
   it("maps a tool call to normalized tool_use and tool_result events", async () => {
@@ -1049,7 +1055,7 @@ describe("pi-native AgentHarness bridge", () => {
     try {
       writeFileSync(join(root, "notes.txt"), "important context\n");
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxToolCall("Read", { file_path: "notes.txt" }, { id: "call-1" })]),
         fauxAssistantMessage([fauxText("done")]),
       ]);
@@ -1066,15 +1072,15 @@ describe("pi-native AgentHarness bridge", () => {
       expect(result.text).toBe("done");
 
       const events = onEvent.mock.calls.map(([event]) => event);
-      const syntheticProgress = events.find((event) =>
+      const syntheticProgress = events.find((event: TestEvent) =>
         event?.message?.content?.[0]?.type === "thinking");
-      const toolUse = events.find((event) =>
+      const toolUse = events.find((event: TestEvent) =>
         event?.message?.content?.[0]?.type === "tool_use"
-        && event.message.content[0].name === "Read");
-      const toolResult = events.find((event) =>
+        && event.message!.content![0]!.name === "Read");
+      const toolResult = events.find((event: TestEvent) =>
         event?.message?.content?.[0]?.type === "tool_result"
-        && event.message.content[0].tool_use_id === "call-1");
-      const toolTiming = events.find((event) =>
+        && event.message!.content![0]!.tool_use_id === "call-1");
+      const toolTiming = events.find((event: TestEvent) =>
         event?.type === "tool_timing" && event.tool_use_id === "call-1");
       expect(syntheticProgress).toBeUndefined();
       expect(toolUse).toBeTruthy();
@@ -1103,10 +1109,10 @@ describe("pi-native AgentHarness bridge", () => {
     try {
       writeFileSync(join(root, "notes.txt"), "important context\n");
       const model = setup();
-      const capturedRequests = [];
+      const capturedRequests: TranscriptContext["messages"][] = [];
       let releaseFirstResponse = () => {};
-      const firstResponseReleased = new Promise((resolve) => { releaseFirstResponse = resolve; });
-      faux.setResponses([
+      const firstResponseReleased = new Promise<void>((resolve) => { releaseFirstResponse = resolve; });
+      faux!.setResponses([
         async (context) => {
           capturedRequests.push(context.messages);
           // Hold the first request open until Pi has queued the steer, so the
@@ -1124,8 +1130,8 @@ describe("pi-native AgentHarness bridge", () => {
         },
       ]);
       let acknowledgedBeforeRunSettled = false;
-      const accepted = vi.fn(() => { releaseFirstResponse(); });
-      const acknowledge = vi.fn();
+      const accepted = vi.fn<(receipt: { providerEntryId: string }) => void>(() => { releaseFirstResponse(); });
+      const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
       const uncertain = vi.fn(() => { releaseFirstResponse(); });
       const reject = vi.fn(() => { releaseFirstResponse(); });
       const onEvent = vi.fn();
@@ -1149,16 +1155,16 @@ describe("pi-native AgentHarness bridge", () => {
       expect(reject).not.toHaveBeenCalled();
       expect(accepted).toHaveBeenCalledTimes(1);
       expect(typeof accepted.mock.calls[0]?.[0]?.providerEntryId).toBe("string");
-      expect(accepted.mock.calls[0][0].providerEntryId.length).toBeGreaterThan(0);
+      expect(accepted.mock.calls[0]![0].providerEntryId.length).toBeGreaterThan(0);
       expect(acknowledge).toHaveBeenCalledTimes(1);
-      expect(acknowledge.mock.calls[0]?.[0]?.providerEntryId).toBe(accepted.mock.calls[0][0].providerEntryId);
+      expect(acknowledge.mock.calls[0]?.[0]?.providerEntryId).toBe(accepted.mock.calls[0]![0].providerEntryId);
       expect(acknowledgedBeforeRunSettled).toBe(true);
 
       // live_input_* lifecycle events are emitted by the runtime layer that
       // wraps liveInput (instrumentLiveInputAppliedEvents), not by the bridge;
       // here only the bridge's own warnings are in scope.
       const events = onEvent.mock.calls.map(([event]) => event);
-      expect(events.some((event) => event?.type === "runtime_warning"
+      expect(events.some((event: TestEvent) => event?.type === "runtime_warning"
         && (event.warning_kind === "live_input_failed" || event.warning_kind === "live_input_cancellation_failed"))).toBe(false);
       // The steer reached the provider: the second request carries its text.
       const secondRequest = capturedRequests[1] ?? [];
@@ -1170,10 +1176,10 @@ describe("pi-native AgentHarness bridge", () => {
 
   it.each(["user", undefined])("refuses silence after consumed %s live input and returns the visible reply", async (kind) => {
     const model = setup();
-    let releaseFirst;
-    const firstReleased = new Promise((resolve) => { releaseFirst = resolve; });
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let firstSeen = false;
-    faux.setResponses([
+    faux!.setResponses([
       async () => {
         firstSeen = true;
         await firstReleased;
@@ -1182,7 +1188,7 @@ describe("pi-native AgentHarness bridge", () => {
       fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })]),
       fauxAssistantMessage([fauxText("Visible follow-up answer.")]),
     ]);
-    const acknowledge = vi.fn();
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const liveInput = (async function* () {
       await vi.waitFor(() => expect(firstSeen).toBe(true));
       yield { id: "process-job:untrusted-id", kind, body: "New instruction", accepted: releaseFirst, acknowledge,
@@ -1198,7 +1204,7 @@ describe("pi-native AgentHarness bridge", () => {
     expect(acknowledge).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ text: "Visible follow-up answer.", error: null, failureKind: null });
     expect(result.turnDisposition).toBeUndefined();
-    expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
+    expect(result.events.some((event: TestEvent) => event.type === "user" && event.message?.content?.some((part: EventPart) =>
       part.type === "tool_result" && part.is_error && part.content.includes("live_input_consumed")))).toBe(true);
   });
 
@@ -1210,10 +1216,10 @@ describe("pi-native AgentHarness bridge", () => {
     const inputId = "process-job:completion-two";
     const descriptor = { kind: "host", ownerKey: id, historyBucket: id, turnId, handleId: id, baseRevision: 0,
       reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "initial-wake" } };
-    let releaseFirst;
-    const firstReleased = new Promise((resolve) => { releaseFirst = resolve; });
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let firstSeen = false;
-    faux.setResponses([
+    faux!.setResponses([
       async () => {
         firstSeen = true;
         await firstReleased;
@@ -1221,7 +1227,7 @@ describe("pi-native AgentHarness bridge", () => {
       },
       fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })]),
     ]);
-    const acknowledge = vi.fn();
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
     const uncertain = vi.fn(releaseFirst);
     const liveInput = (async function* () {
       await vi.waitFor(() => expect(firstSeen).toBe(true));
@@ -1239,7 +1245,7 @@ describe("pi-native AgentHarness bridge", () => {
       expect(result).toMatchObject({ text: "", error: null, failureKind: null, turnDisposition: "silent" });
       expect(acknowledge).toHaveBeenCalledTimes(1);
       expect(uncertain).not.toHaveBeenCalled();
-      expect(result.runtimeWarnings.some((warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
+      expect(result.runtimeWarnings.some((warning: Warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
       if (coordinated) {
         const repo = resolveDurableNativeSessionRepo(root);
         const raw = await repo.open((await repo.list())[0]);
@@ -1258,7 +1264,7 @@ describe("pi-native AgentHarness bridge", () => {
         expect(await recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [inputId] })).toBe(true);
       }
       let nextContext;
-      faux.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("Next visible reply.")]); }]);
+      faux!.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("Next visible reply.")]); }]);
       const next = await generateEngineTurnResponse("system", { ...options, liveInput: undefined,
         messages: [{ role: "user", content: "Continue." }], sessionRecovery: undefined,
         ...(coordinated ? { sessionTurn: { ...descriptor, turnId: "next-turn", baseRevision: 1,
@@ -1272,27 +1278,27 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("retries toolUse silence when a late user-consumption receipt invalidates the real prompt epoch", async () => {
     const model = setup();
-    const listeners = new Set();
-    let operationId;
+    const listeners = new Set<(event: NativeEvent) => void>();
+    let operationId: string | undefined;
     const original = engineAdapter.createHarnessAdapter;
     const spy = vi.spyOn(engineAdapter, "createHarnessAdapter").mockImplementation(async (...args) => {
-      const harness = await original(...args);
+      const harness = await original(...args) as Omit<Awaited<ReturnType<typeof original>>, "subscribe" | "steer"> & { subscribe(listener: (event: NativeEvent) => void): () => void; steer(...args: unknown[]): Promise<string> };
       const subscribe = harness.subscribe;
       harness.subscribe = (listener) => {
         listeners.add(listener);
-        const remove = subscribe((event) => { if (event.type === "run_start" && event.lane === "main") operationId = event.runId; listener(event); });
+        const remove = subscribe((event: NativeEvent) => { if (event.type === "run_start" && event.lane === "main") operationId = event.runId; listener(event); });
         return () => { listeners.delete(listener); remove(); };
       };
       // Hold the queue receipt unconsumed until after the terminal tool accepts.
       harness.steer = async () => "late-user-entry";
-      return harness;
+      return harness as Awaited<ReturnType<typeof original>>;
     });
-    let release;
-    const admitted = new Promise((resolve) => { release = resolve; });
-    let started;
-    const ready = new Promise((resolve) => { started = resolve; });
-    const acknowledge = vi.fn();
-    faux.setResponses([
+    let release!: () => void;
+    const admitted = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const acknowledge = vi.fn<(receipt: { providerEntryId: string }) => void>();
+    faux!.setResponses([
       async () => { started(); await admitted; return fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "late-silence" })]); },
       (context) => { expect(getCurrentTools(context.messages)).toEqual([]); return fauxAssistantMessage([fauxText("Visible answer to the late user.")]); },
     ]);
@@ -1302,8 +1308,8 @@ describe("pi-native AgentHarness bridge", () => {
         messages: [{ role: "user", content: "Check the completion." }], allowedTools: ["FinishSilently"],
         toolContext: createToolContext({ workspace: sessionsRoot }), finishSilentlyController: { eligible: () => true },
         liveInput: (async function* () { await ready; yield { id: "late-user", kind: "user", body: "A late user instruction.", accepted: release, acknowledge }; })(),
-        onEvent: (event) => {
-          if (event.type !== "user" || !event.message?.content?.some((part) => part.type === "tool_result" && part.content.includes("Silent completion accepted."))) return;
+        onEvent: (event: TestEvent) => {
+          if (event.type !== "user" || !event.message?.content?.some((part: EventPart) => part.type === "tool_result" && part.content.includes("Silent completion accepted."))) return;
           accepted = true;
           // Simulate the late native consumption edge, not a host-controller flip.
           // This goes through the running epoch's actual entry/operation correlator.
@@ -1315,14 +1321,14 @@ describe("pi-native AgentHarness bridge", () => {
       expect(acknowledge).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({ text: "Visible answer to the late user.", error: null });
       expect(result.turnDisposition).toBeUndefined();
-      expect(result.runtimeWarnings.filter((warning) => warning.warning_kind === "empty_reply_retry").map((warning) => warning.outcome)).toEqual(["started", "text"]);
+      expect(result.runtimeWarnings.filter((warning: Warning) => warning.warning_kind === "empty_reply_retry").map((warning: Warning) => warning.outcome)).toEqual(["started", "text"]);
     } finally { spy.mockRestore(); }
   });
 
   it("retries empty output when accepted terminal silence loses certification", async () => {
     const model = setup();
     let eligible = true;
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-invalidated" })]),
       (context) => {
         expect(getCurrentTools(context.messages)).toEqual([]);
@@ -1333,22 +1339,22 @@ describe("pi-native AgentHarness bridge", () => {
       messages: [{ role: "user", content: "Check the completion." }], allowedTools: ["FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
       finishSilentlyController: { eligible: () => eligible },
-      onEvent: (event) => {
-        if (event.type === "user" && event.message?.content?.some((part) =>
+      onEvent: (event: TestEvent) => {
+        if (event.type === "user" && event.message?.content?.some((part: EventPart) =>
           part.type === "tool_result" && part.content.includes("Silent completion accepted."))) eligible = false;
       },
     }));
     expect(result).toMatchObject({ text: "Visible finalization reply.", error: null });
     expect(result.turnDisposition).toBeUndefined();
-    expect(result.runtimeWarnings.filter((warning) => warning.warning_kind === "empty_reply_retry")
-      .map((warning) => warning.outcome)).toEqual(["started", "text"]);
+    expect(result.runtimeWarnings.filter((warning: Warning) => warning.warning_kind === "empty_reply_retry")
+      .map((warning: Warning) => warning.outcome)).toEqual(["started", "text"]);
   });
 
   it("serializes invoked Bash calls while preserving source-ordered results", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sequential-tools-"));
     try {
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([
           fauxToolCall("Bash", { command: "sleep 0.15; echo first", workdir: root }, { id: "bash-1" }),
           fauxToolCall("Bash", { command: "echo second", workdir: root }, { id: "bash-2" }),
@@ -1368,9 +1374,9 @@ describe("pi-native AgentHarness bridge", () => {
       expect(result.error).toBeNull();
       const blocks = onEvent.mock.calls
         .map(([event]) => event?.message?.content?.[0])
-        .filter((block) => block?.type === "tool_use" || block?.type === "tool_result");
+        .filter((block: EventPart) => block?.type === "tool_use" || block?.type === "tool_result");
       const lifecycle = blocks
-        .map((block) => block.type === "tool_use"
+        .map((block: EventPart) => block.type === "tool_use"
           ? `start:${block.id}`
           : `end:${block.tool_use_id}`);
       expect(lifecycle).toEqual([
@@ -1379,7 +1385,7 @@ describe("pi-native AgentHarness bridge", () => {
         "end:bash-1",
         "end:bash-2",
       ]);
-      expect(blocks.filter((block) => block.type === "tool_result")).toEqual([
+      expect(blocks.filter((block: EventPart) => block.type === "tool_result")).toEqual([
         expect.objectContaining({ tool_use_id: "bash-1", is_error: false, content: expect.stringContaining("first") }),
         expect.objectContaining({ tool_use_id: "bash-2", is_error: false, content: expect.stringContaining("second") }),
       ]);
@@ -1391,7 +1397,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("keeps one NodeRepl session for the Pi run and cleans it up afterward", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-node-repl-"));
     const cleanup = vi.fn(async () => {});
-    const sandbox = {
+    const sandbox: RuntimeSandbox = {
       mergePolicies: (configured, request) => request ?? configured,
       prepareCommand: async ({ command }) => ({
         ...command,
@@ -1404,7 +1410,7 @@ describe("pi-native AgentHarness bridge", () => {
     };
     try {
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxToolCall("NodeRepl", { code: "const answer = 40" }, { id: "repl-1" })]),
         fauxAssistantMessage([fauxToolCall("NodeRepl", { code: "answer + 2" }, { id: "repl-2" })]),
         fauxAssistantMessage([fauxText("done")]),
@@ -1423,7 +1429,7 @@ describe("pi-native AgentHarness bridge", () => {
       expect(result.text).toBe("done");
       const toolResults = onEvent.mock.calls
         .map(([event]) => event?.message?.content?.[0])
-        .filter((block) => block?.type === "tool_result");
+        .filter((block: EventPart) => block?.type === "tool_result");
       expect(toolResults).toEqual(expect.arrayContaining([
         expect.objectContaining({ tool_use_id: "repl-1", content: "undefined", is_error: false }),
         expect.objectContaining({ tool_use_id: "repl-2", content: "42", is_error: false }),
@@ -1438,7 +1444,7 @@ describe("pi-native AgentHarness bridge", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-write-"));
     try {
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxToolCall("Write", { file_path: "notes.txt", content: "written\n" }, { id: "write-1" })]),
         fauxAssistantMessage([fauxText("done")]),
       ]);
@@ -1455,15 +1461,15 @@ describe("pi-native AgentHarness bridge", () => {
       expect(readFileSync(join(root, "notes.txt"), "utf8")).toBe("written\n");
 
       const events = onEvent.mock.calls.map(([event]) => event);
-      const contentBlocks = events.flatMap((event) => event?.message?.content || []);
-      const toolUses = contentBlocks.filter((block) => block?.type === "tool_use");
-      const writeResult = contentBlocks.find((block) =>
+      const contentBlocks = events.flatMap((event: TestEvent) => event?.message?.content || []);
+      const toolUses = contentBlocks.filter((block: EventPart) => block?.type === "tool_use");
+      const writeResult = contentBlocks.find((block: EventPart) =>
         block?.type === "tool_result" && block.tool_use_id === "write-1");
-      const syntheticFileEditBlocks = contentBlocks.filter((block) =>
+      const syntheticFileEditBlocks = contentBlocks.filter((block: EventPart) =>
         (block?.type === "tool_use" && block.name === "file_edit")
         || (block?.type === "tool_result" && String(block.tool_use_id || "").startsWith("file_edit:")));
 
-      expect(toolUses.map((block) => block.name)).toEqual(["Write"]);
+      expect(toolUses.map((block: EventPart) => block.name)).toEqual(["Write"]);
       expect(writeResult?.file_change).toMatchObject({
         status: "completed",
         summary: { files: 1, added_lines: 1, removed_lines: 0, changed_lines: 1, unavailable_count: 0 },
@@ -1481,7 +1487,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("surfaces MCP server init failures in runtimeWarnings, not just as transient events", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const onEvent = vi.fn();
 
     const result = await generateEngineTurnResponse("system", runOptions(model, {
@@ -1493,17 +1499,17 @@ describe("pi-native AgentHarness bridge", () => {
     }));
 
     expect(result.error).toBeNull();
-    const initWarnings = (result.runtimeWarnings || []).filter((warning) => warning?.warning_kind === "mcp_init_failed");
+    const initWarnings = (result.runtimeWarnings || []).filter((warning: Warning) => warning?.warning_kind === "mcp_init_failed");
     expect(initWarnings.length).toBeGreaterThanOrEqual(1);
     expect(initWarnings[0]).toMatchObject({ warning_kind: "mcp_init_failed", server: "broken" });
     // ...and it is STILL emitted to the live event stream (existing behavior preserved).
     const events = onEvent.mock.calls.map(([event]) => event);
-    expect(events.some((event) => event?.warning_kind === "mcp_init_failed")).toBe(true);
+    expect(events.some((event: TestEvent) => event?.warning_kind === "mcp_init_failed")).toBe(true);
   });
 
   it("propagates MCP CallToolResult.isError into tool-result and timing events", async () => {
     const model = setup();
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([fauxToolCall("failing_thing", {}, { id: "mcp-error-1" })]),
       fauxAssistantMessage([fauxText("handled")]),
     ]);
@@ -1527,13 +1533,13 @@ describe("pi-native AgentHarness bridge", () => {
 
       expect(result.error).toBeNull();
       const events = onEvent.mock.calls.map(([event]) => event);
-      expect(events.find((event) => event.type === "tool_timing" && event.tool_use_id === "mcp-error-1"))
+      expect(events.find((event: TestEvent) => event.type === "tool_timing" && event.tool_use_id === "mcp-error-1"))
         .toMatchObject({ is_error: true });
       const toolResult = events
-        .flatMap((event) => event?.message?.content || [])
-        .find((block) => block.type === "tool_result" && block.tool_use_id === "mcp-error-1");
+        .flatMap((event: TestEvent) => event?.message?.content || [])
+        .find((block: EventPart) => block.type === "tool_result" && block.tool_use_id === "mcp-error-1");
       expect(toolResult).toMatchObject({ is_error: true, content: "permission denied" });
-      expect(toolResult.raw_result.details.raw).toMatchObject({
+      expect(toolResult!.raw_result!.details.raw).toMatchObject({
         isError: true,
         structuredContent: { code: "denied" },
       });
@@ -1547,7 +1553,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("captures structured output through the StructuredOutput tool", async () => {
     const model = setup();
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: 42 }, { id: "so-1" })]),
       fauxAssistantMessage([fauxText("final")]),
     ]);
@@ -1569,7 +1575,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("settles a terminal StructuredOutput submission successfully at maxTurns one", async () => {
     const model = setup();
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: 42 }, { id: "so-max-one" })]),
     ]);
 
@@ -1595,7 +1601,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("certifies a sole terminal FinishSilently call at the max-turn ceiling", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })])]);
+    faux!.setResponses([fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })])]);
     const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Check the scheduled job" }],
       allowedTools: ["FinishSilently"],
@@ -1604,10 +1610,10 @@ describe("pi-native AgentHarness bridge", () => {
       maxTurns: 1,
     }));
     expect(result).toMatchObject({ text: "", error: null, turnDisposition: "silent" });
-    expect(result.runtimeWarnings.some((warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
+    expect(result.runtimeWarnings.some((warning: Warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
     expect(result.diagnostics).toMatchObject({ max_turns_hit: false });
-    expect(result.events.some((event) => event.type === "user"
-      && event.message?.content?.some((part) => part.type === "tool_result"))).toBe(true);
+    expect(result.events.some((event: TestEvent) => event.type === "user"
+      && event.message?.content?.some((part: EventPart) => part.type === "tool_result"))).toBe(true);
   });
 
   it("does not force sequential execution on an admitted read-only batch", async () => {
@@ -1618,14 +1624,14 @@ describe("pi-native AgentHarness bridge", () => {
     globalThis.fetch = async () => {
       active += 1;
       peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
       active -= 1;
       return new Response("<html><body>Sample result</body></html>", {
         status: 200, headers: { "content-type": "text/html" },
       });
     };
     try {
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([
           fauxToolCall("WebFetch", { url: "https://example.test/one" }, { id: "fetch-1" }),
           fauxToolCall("WebFetch", { url: "https://example.test/two" }, { id: "fetch-2" }),
@@ -1646,7 +1652,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("never exposes FinishSilently on an interactive request without a controller", async () => {
     const model = setup();
     let exposedTools;
-    faux.setResponses([(context) => {
+    faux!.setResponses([(context) => {
       exposedTools = getCurrentTools(context.messages).map((tool) => tool.name);
       return fauxAssistantMessage([fauxText("Visible answer")]);
     }]);
@@ -1666,7 +1672,7 @@ describe("pi-native AgentHarness bridge", () => {
       [fauxText("Earlier answer"), fauxToolCall("FinishSilently", {}, { id: "silent-narrated" })],
       [fauxToolCall("FinishSilently", {}, { id: "silent-mixed" }), fauxToolCall("Read", { file_path: "unused" }, { id: "read-mixed" })],
     ]) {
-      faux.setResponses([fauxAssistantMessage(content), fauxAssistantMessage([fauxText("Visible answer")])]);
+      faux!.setResponses([fauxAssistantMessage(content), fauxAssistantMessage([fauxText("Visible answer")])]);
       const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Check" }],
         allowedTools: ["FinishSilently", "Read"],
@@ -1674,15 +1680,15 @@ describe("pi-native AgentHarness bridge", () => {
         finishSilentlyController: { eligible: () => true },
       }));
       expect(result.turnDisposition).toBeUndefined();
-      expect(result.events.some((event) => event.type === "user"
-        && event.message?.content?.some((part) => part.type === "tool_result"
-          && part.is_error === true && part.content.includes(content[0].type === "text" ? "visible_content" : "not_sole_call")))).toBe(true);
+      expect(result.events.some((event: TestEvent) => event.type === "user"
+        && event.message?.content?.some((part: EventPart) => part.type === "tool_result"
+          && part.is_error === true && part.content.includes(content[0]!.type === "text" ? "visible_content" : "not_sole_call")))).toBe(true);
     }
   });
 
   it("allows silence after an ordinary tool error and a refused mixed-batch silence", async () => {
     const model = setup();
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([fauxToolCall("Read", { file_path: "/missing-fictional-file" }, { id: "read-error" })]),
       fauxAssistantMessage([
         fauxToolCall("FinishSilently", {}, { id: "silent-refused" }),
@@ -1697,7 +1703,7 @@ describe("pi-native AgentHarness bridge", () => {
       finishSilentlyController: { eligible: () => true },
     }));
     expect(result).toMatchObject({ error: null, text: "", turnDisposition: "silent" });
-    expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
+    expect(result.events.some((event: TestEvent) => event.type === "user" && event.message?.content?.some((part: EventPart) =>
       part.type === "tool_result" && part.is_error && part.content.includes("not_sole_call")))).toBe(true);
   });
 
@@ -1712,7 +1718,7 @@ describe("pi-native AgentHarness bridge", () => {
     let requests = 0;
     try {
       const model = setup({ reasoning: true });
-      faux.setResponses([
+      faux!.setResponses([
         () => { requests++; return fauxAssistantMessage([fauxThinking("Private draft, not reply text"), fauxToolCall("SuggestReplies", {}, { id: "choices-empty" })], { stopReason: "toolUse" }); },
         () => { requests++; return fauxAssistantMessage([]); },
         (context) => { requests++; retryContext = structuredClone(context); return fauxAssistantMessage(reply ? [fauxText(reply)] : [fauxThinking("Still private")]); },
@@ -1726,14 +1732,14 @@ describe("pi-native AgentHarness bridge", () => {
       expect(requests).toBe(3); // two original provider messages, one finalization
       expect(result).toMatchObject({ error: null, text: reply });
       expect(result.text).not.toContain("Private");
-      expect(getCurrentTools(retryContext.messages)).toEqual([]);
-      expect(retryContext.messages.at(-1)).toMatchObject({ role: "user" });
-      expect(JSON.stringify(retryContext.messages.at(-1))).toContain("user-facing reply");
-      expect(result.runtimeWarnings.filter((warning) => warning.warning_kind === "empty_reply_retry")
-        .map((warning) => warning.outcome)).toEqual(["started", reply ? "text" : "empty"]);
+      expect(getCurrentTools(retryContext!.messages)).toEqual([]);
+      expect(retryContext!.messages.at(-1)).toMatchObject({ role: "user" });
+      expect(JSON.stringify(retryContext!.messages.at(-1))).toContain("user-facing reply");
+      expect(result.runtimeWarnings.filter((warning: Warning) => warning.warning_kind === "empty_reply_retry")
+        .map((warning: Warning) => warning.outcome)).toEqual(["started", reply ? "text" : "empty"]);
       // Framework-authored user text must never reach channel history/activity.
-      expect(result.events.filter((event) => event.type === "user").every((event) =>
-        event.message.content.every((block) => block.type === "tool_result"))).toBe(true);
+      expect(result.events.filter((event: TestEvent) => event.type === "user").every((event: TestEvent) =>
+        event.message!.content!.every((block: EventPart) => block.type === "tool_result"))).toBe(true);
     } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
   });
 
@@ -1742,7 +1748,7 @@ describe("pi-native AgentHarness bridge", () => {
     const controller = new AbortController();
     let requests = 0;
     const submit = vi.fn(async () => {});
-    faux.setResponses([() => {
+    faux!.setResponses([() => {
       requests++;
       if (kind === "cancelled") controller.abort();
       return fauxAssistantMessage(kind === "pending question"
@@ -1758,7 +1764,7 @@ describe("pi-native AgentHarness bridge", () => {
       ...(kind === "pending question" ? { allowedTools: ["AskParent"], askParentController: { submit } } : {}),
     }));
     expect(requests).toBe(1);
-    expect(result.runtimeWarnings.some((warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
+    expect(result.runtimeWarnings.some((warning: Warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
     if (kind === "cancelled") expect(result.cancelled).toBe(true);
     if (kind === "provider failure") expect(result.error).toContain("Provider unavailable");
     if (kind === "max turns") expect(result.diagnostics.max_turns_hit).toBe(true);
@@ -1769,7 +1775,7 @@ describe("pi-native AgentHarness bridge", () => {
     const model = setup();
     const controller = new AbortController();
     let requests = 0;
-    faux.setResponses([
+    faux!.setResponses([
       () => { requests++; return fauxAssistantMessage([]); },
       () => { requests++; controller.abort(); return fauxAssistantMessage([]); },
     ]);
@@ -1783,7 +1789,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("preserves provider failures from reply finalization", async () => {
     const model = setup();
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([]),
       fauxAssistantMessage([], { stopReason: "error", errorMessage: "Finalization provider unavailable" }),
     ]);
@@ -1803,7 +1809,7 @@ describe("pi-native AgentHarness bridge", () => {
       .mockResolvedValue({ content: [{ type: "text", text: "Choices attached" }] });
     try {
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxText("Approve option A"), fauxToolCall("SuggestReplies", {}, { id: "choices-1" })]),
         fauxAssistantMessage(finalText ? [fauxText(finalText)] : []),
       ]);
@@ -1826,7 +1832,7 @@ describe("pi-native AgentHarness bridge", () => {
       .mockResolvedValue({ content: [{ type: "text", text: "Published" }] });
     try {
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxToolCall(toolName, {}, { id: "interaction-1" })]),
         fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silence-after-file" })]),
         fauxAssistantMessage([fauxText("Visible answer")]),
@@ -1841,14 +1847,14 @@ describe("pi-native AgentHarness bridge", () => {
       expect(call).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({ error: null, text: "Visible answer" });
       expect(result.turnDisposition).toBeUndefined();
-      expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
+      expect(result.events.some((event: TestEvent) => event.type === "user" && event.message?.content?.some((part: EventPart) =>
         part.type === "tool_result" && part.is_error && part.content.includes("visible_content")))).toBe(true);
     } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
   });
 
   it.each(["operation_mismatch", "event_buffer_overflow"])("reports live_input_uncertain for %s correlation", async (failure) => {
-    let subscriber;
-    const epoch = createLiveInputPromptEpoch({ harness: { subscribe(handler) { subscriber = handler; } }, onEvent: () => {} });
+    let subscriber!: (event: NativeEvent) => void;
+    const epoch = createLiveInputPromptEpoch({ harness: { subscribe(handler: (event: NativeEvent) => void) { subscriber = handler; } }, onEvent: () => {} });
     epoch.confirm("owned-run");
     subscriber({ type: "run_start", lane: "main", runId: "owned-run" });
     if (failure === "operation_mismatch") epoch.confirm("other-run");
@@ -1878,7 +1884,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("never certifies silence on runtime failure or cancellation", async () => {
     const model = setup();
-    faux.setResponses([() => { throw new Error("Provider unavailable"); }]);
+    faux!.setResponses([() => { throw new Error("Provider unavailable"); }]);
     const failed = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Check" }],
       allowedTools: ["FinishSilently"],
@@ -1902,7 +1908,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("does not certify an ineligible request", async () => {
     const model = setup();
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-denied" })]),
       fauxAssistantMessage([fauxText("Visible answer")]),
     ]);
@@ -1913,15 +1919,15 @@ describe("pi-native AgentHarness bridge", () => {
       finishSilentlyController: { eligible: () => false },
     }));
     expect(result.turnDisposition).toBeUndefined();
-    expect(result.events.some((event) => event.type === "user"
-      && event.message?.content?.some((part) => part.type === "tool_result"
+    expect(result.events.some((event: TestEvent) => event.type === "user"
+      && event.message?.content?.some((part: EventPart) => part.type === "tool_result"
         && part.is_error === true && part.content.includes("ineligible_turn")))).toBe(true);
   });
 
   it("forwards the single pre-response retry budget to the provider transport", async () => {
     const model = setup();
-    let seenOptions = null;
-    faux.setResponses([
+    let seenOptions: SimpleStreamOptions | undefined | null = null;
+    faux!.setResponses([
       (_context, options) => {
         seenOptions = options;
         return fauxAssistantMessage([fauxText("ok")]);
@@ -1934,13 +1940,13 @@ describe("pi-native AgentHarness bridge", () => {
     }));
 
     expect(result.error).toBeNull();
-    expect(seenOptions?.maxRetries).toBe(4);
+    expect((seenOptions as SimpleStreamOptions | undefined | null)?.maxRetries).toBe(4);
   });
 
   it("surfaces a provider stream error in the unified failure shape", async () => {
     const model = setup();
     const onEvent = vi.fn();
-    faux.setResponses([
+    faux!.setResponses([
       () => { throw new Error("boom provider failure"); },
     ]);
 
@@ -1962,7 +1968,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("distinguishes successful measured cache zeros from absent failed usage", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
     }));
@@ -1976,7 +1982,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("retains partial measured usage from a failed provider response", async () => {
     const model = setup();
     const failed = fauxAssistantMessage([], { stopReason: "error", errorMessage: "partial failure" });
-    faux.setResponses([failed]);
+    faux!.setResponses([failed]);
     const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
     }));
@@ -1989,7 +1995,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("resumes a durable session and seeds the next run with the prior transcript", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
     const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
@@ -2000,8 +2006,8 @@ describe("pi-native AgentHarness bridge", () => {
     expect(first.providerSessionId).toBeTruthy();
 
     // Capture the provider context of the resumed run to assert prior turns are seeded.
-    let resumedContext = null;
-    faux.setResponses([
+    let resumedContext: TranscriptContext | null = null;
+    faux!.setResponses([
       (context) => {
         resumedContext = context;
         return fauxAssistantMessage([fauxText("reply-2")]);
@@ -2017,7 +2023,7 @@ describe("pi-native AgentHarness bridge", () => {
     expect(second.text).toBe("reply-2");
     expect(second.providerSessionId).toBe(first.providerSessionId);
 
-    const userTexts = (resumedContext?.messages || [])
+    const userTexts = ((resumedContext as TranscriptContext | null)?.messages || [])
       .filter((message) => message?.role === "user")
       .map((message) => (typeof message.content === "string"
         ? message.content
@@ -2036,7 +2042,7 @@ describe("pi-native AgentHarness bridge", () => {
     // — see the cross-restart resume test in pi-native-sessions.test.js, F9.)
     const model = setup();
     let invoked = false;
-    faux.setResponses([
+    faux!.setResponses([
       () => { invoked = true; return fauxAssistantMessage([fauxText("never")]); },
     ]);
     const result = await generateEngineTurnResponse("system", runOptions(model, {
@@ -2052,7 +2058,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("honors an already-aborted signal without invoking the provider", async () => {
     const model = setup();
     let invoked = false;
-    faux.setResponses([
+    faux!.setResponses([
       () => { invoked = true; return fauxAssistantMessage([fauxText("never")]); },
     ]);
     const controller = new AbortController();
@@ -2077,7 +2083,7 @@ describe("pi-native AgentHarness bridge", () => {
     // and BEFORE the provider call (~:706). The faux response must never run.
     const model = setup();
     let invoked = false;
-    faux.setResponses([
+    faux!.setResponses([
       () => { invoked = true; return fauxAssistantMessage([fauxText("never")]); },
     ]);
 
@@ -2087,7 +2093,7 @@ describe("pi-native AgentHarness bridge", () => {
       reason: undefined,
       // The bridge attaches its handler here (post-setup); flipping aborted on
       // that call deterministically simulates an abort the handler install missed.
-      addEventListener(_type, _handler, _opts) { aborted = true; },
+      addEventListener(_type: string, _handler: unknown, _opts: unknown) { aborted = true; },
       removeEventListener() {},
     };
 
@@ -2110,7 +2116,7 @@ describe("pi-native AgentHarness bridge", () => {
       // configured clamps are set BELOW the pi-bridge fallbacks (16000 text /
       // 100 search) so the normalized params can only equal the configured values
       // if typed policy clamping reached the tool builder + display path.
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxToolCall("Grep", { pattern: "needle" }, { id: "g-1" })]),
         fauxAssistantMessage([fauxText("done")]),
       ]);
@@ -2126,13 +2132,13 @@ describe("pi-native AgentHarness bridge", () => {
 
       const events = onEvent.mock.calls.map(([event]) => event);
       const toolUse = events
-        .filter((event) => event?.message?.content?.[0]?.type === "tool_use")
-        .map((event) => event.message.content[0])
-        .find((block) => block.name === "Grep");
+        .filter((event: TestEvent) => event?.message?.content?.[0]?.type === "tool_use")
+        .map((event: TestEvent) => event.message!.content![0]!)
+        .find((block: EventPart) => block.name === "Grep");
       expect(toolUse).toBeTruthy();
       // 1000 / 25 are the configured clamps; the fallback path would yield 16000 / 100.
-      expect(toolUse.input.max_output_chars).toBe(1000);
-      expect(toolUse.input.head_limit).toBe(25);
+      expect(toolUse!.input!.max_output_chars).toBe(1000);
+      expect(toolUse!.input!.head_limit).toBe(25);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -2140,7 +2146,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("reports context_compaction_applied as false when enabled but not triggered", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
     }));
@@ -2151,7 +2157,7 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("reports context_compaction_applied as null when disabled via typed policy", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       compaction: { enabled: false },
@@ -2162,15 +2168,15 @@ describe("pi-native AgentHarness bridge", () => {
 });
 
 describe("pi-native typed policy objects", () => {
-  const deprecationWarnings = (result) =>
-    (result.runtimeWarnings || []).filter((warning) => warning?.warning_kind === "deprecated_settings_option");
+  const deprecationWarnings = (result: { runtimeWarnings?: Warning[] }) =>
+    (result.runtimeWarnings || []).filter((warning: Warning) => warning?.warning_kind === "deprecated_settings_option");
 
-  async function grepClampRun(overrides) {
+  async function grepClampRun(overrides: object) {
     const root = mkdtempSync(join(tmpdir(), "pi-native-typed-"));
     try {
       writeFileSync(join(root, "a.txt"), "needle here\n");
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxToolCall("Grep", { pattern: "needle" }, { id: "g-1" })]),
         fauxAssistantMessage([fauxText("done")]),
       ]);
@@ -2185,9 +2191,9 @@ describe("pi-native typed policy objects", () => {
       expect(result.error).toBeNull();
       const events = onEvent.mock.calls.map(([event]) => event);
       const toolUse = events
-        .filter((event) => event?.message?.content?.[0]?.type === "tool_use")
-        .map((event) => event.message.content[0])
-        .find((block) => block.name === "Grep");
+        .filter((event: TestEvent) => event?.message?.content?.[0]?.type === "tool_use")
+        .map((event: TestEvent) => event.message!.content![0]!)
+        .find((block: EventPart) => block.name === "Grep");
       return { result, toolUse };
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2199,13 +2205,13 @@ describe("pi-native typed policy objects", () => {
     const timer = vi.spyOn(globalThis, "setTimeout");
     try {
       const model = setup();
-      const advertised = [];
-      faux.setResponses([
+      const advertised: Array<Omit<ReturnType<typeof getCurrentTools>[number], "parameters"> & { parameters: { properties: Record<string, { description?: string }> } }> = [];
+      faux!.setResponses([
         (context) => {
           // pi-ai 0.86.0 folds the request tools into the transcript's leading
           // system message: provider-facing factories see a TranscriptContext
           // and must replay tools with getCurrentTools(), not context.tools.
-          advertised.push(...getCurrentTools(context.messages));
+          advertised.push(...getCurrentTools(context.messages) as typeof advertised);
           return fauxAssistantMessage([
             fauxToolCall("Bash", { command: "echo bash", timeout_ms: 3_600_000 }, { id: "budget-bash" }),
             fauxToolCall("Exec", { executable: process.execPath, args: ["--version"], timeout_ms: 3_600_000 }, { id: "budget-exec" }),
@@ -2223,9 +2229,9 @@ describe("pi-native typed policy objects", () => {
       const cap = bashTimeoutMs ?? 120_000;
       for (const name of ["Bash", "Exec"]) {
         const tool = advertised.find((tool) => tool.name === name);
-        expect(tool.description).toContain("host_turn_context");
-        expect(tool.parameters.properties.timeout_ms.description).not.toContain(`${cap} ms`);
-        expect(tool.parameters.properties).toHaveProperty("background");
+        expect(tool!.description).toContain("host_turn_context");
+        expect(tool!.parameters.properties.timeout_ms!.description).not.toContain(`${cap} ms`);
+        expect(tool!.parameters.properties).toHaveProperty("background");
       }
       expect(timer.mock.calls.filter(([, ms]) => ms === cap)).toHaveLength(2);
     } finally {
@@ -2239,8 +2245,8 @@ describe("pi-native typed policy objects", () => {
       toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
     });
     // 1000 / 25 are the configured clamps; the fallback path would yield 16000 / 100.
-    expect(toolUse.input.max_output_chars).toBe(1000);
-    expect(toolUse.input.head_limit).toBe(25);
+    expect(toolUse!.input!.max_output_chars).toBe(1000);
+    expect(toolUse!.input!.head_limit).toBe(25);
     expect(deprecationWarnings(result)).toHaveLength(0);
   });
 
@@ -2258,20 +2264,20 @@ describe("pi-native typed policy objects", () => {
 
   it("honors a typed compaction policy object (enabled:false -> context_compaction_applied null)", async () => {
     const model = setup();
-    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       compaction: { enabled: false },
     }));
     expect(result.error).toBeNull();
     expect(result.capabilitiesUsed.context_compaction_applied).toBeNull();
-    expect(result.runtimeWarnings.filter((w) => w?.warning_kind === "deprecated_settings_option")).toHaveLength(0);
+    expect(result.runtimeWarnings.filter((w: Warning) => w?.warning_kind === "deprecated_settings_option")).toHaveLength(0);
   });
 
   it("routes tool sandboxing through a per-run RuntimeSandbox override (run impl > host impl)", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sandbox-"));
     try {
-      const recorder = (calls) => ({
+      const recorder = (calls: Array<Parameters<RuntimeSandbox["prepareCommand"]>[0]["command"]>): RuntimeSandbox => ({
         mergePolicies: (a, b) => b ?? a,
         prepareCommand: async ({ command }) => {
           calls.push(command);
@@ -2279,12 +2285,12 @@ describe("pi-native typed policy objects", () => {
         },
         networkAllowsUrl: () => true,
       });
-      const hostCalls = [];
-      const runCalls = [];
+      const hostCalls: Array<Parameters<RuntimeSandbox["prepareCommand"]>[0]["command"]> = [];
+      const runCalls: Array<Parameters<RuntimeSandbox["prepareCommand"]>[0]["command"]> = [];
       // Host ToolContext carries one sandbox impl; the run overrides it with another.
       const toolContext = createToolContext({ workspace: root, sandbox: recorder(hostCalls) });
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxToolCall("Bash", { command: "echo hi", workdir: root }, { id: "b-1" })]),
         fauxAssistantMessage([fauxText("done")]),
       ]);
@@ -2314,8 +2320,8 @@ describe("pi-native typed policy objects", () => {
     try {
       const artifactDir = join(root, "tool-output", "run-spill");
       mkdirSync(artifactDir, { recursive: true });
-      const saved = [];
-      const persistArtifact = ({ filename, buffer, toolName }) => {
+      const saved: Array<{ path: string; toolName: string; bytes: number }> = [];
+      const persistArtifact = ({ filename, buffer, toolName }: { filename: string; buffer: Buffer; toolName: string }) => {
         const path = join(artifactDir, filename);
         writeFileSync(path, buffer);
         saved.push({ path, toolName, bytes: buffer.length });
@@ -2323,7 +2329,7 @@ describe("pi-native typed policy objects", () => {
       };
       const toolContext = createToolContext({ workspace: root });
       const model = setup();
-      faux.setResponses([
+      faux!.setResponses([
         fauxAssistantMessage([fauxToolCall("Bash", {
           command: "printf 'HEAD'; printf '%04000d' 0; printf 'TAIL'",
           workdir: root,
@@ -2340,16 +2346,16 @@ describe("pi-native typed policy objects", () => {
       }));
       expect(result.error).toBeNull();
       expect(saved).toHaveLength(1);
-      expect(saved[0].toolName).toBe("Bash");
-      expect(saved[0].bytes).toBeGreaterThan(4000);
-      const written = readFileSync(saved[0].path, "utf8");
+      expect(saved[0]!.toolName).toBe("Bash");
+      expect(saved[0]!.bytes).toBeGreaterThan(4000);
+      const written = readFileSync(saved[0]!.path, "utf8");
       expect(written.startsWith("HEAD")).toBe(true);
       expect(written.endsWith("TAIL")).toBe(true);
-      const toolResult = result.events.find((event) =>
-        event.type === "user" && event.message?.content?.some?.((block) => block.type === "tool_result" && block.tool_use_id === "b-spill"));
+      const toolResult = result.events.find((event: TestEvent) =>
+        event.type === "user" && event.message?.content?.some?.((block: EventPart) => block.type === "tool_result" && block.tool_use_id === "b-spill"));
       const text = JSON.stringify(toolResult);
       expect(text).toContain("[truncated Bash output");
-      expect(text).toContain(`Full output saved to: ${saved[0].path}`);
+      expect(text).toContain(`Full output saved to: ${saved[0]!.path}`);
       // The host ToolContext itself is untouched: the sink rode on a per-run copy.
       expect(toolContext.persistArtifact).toBeUndefined();
     } finally {
@@ -2365,7 +2371,7 @@ describe("pi-native auto-compaction", () => {
   // Build a transcript large enough that AgentHarness.compact() (keepRecent ~20k)
   // finds a cut point and actually summarizes a prefix. The trailing user turn
   // becomes the prompt; the rest is seeded as prior history.
-  function bigHistory(turns, chars) {
+  function bigHistory(turns: number, chars: number) {
     const blob = "x".repeat(chars);
     const messages = [];
     for (let i = 0; i < turns; i += 1) {
@@ -2379,14 +2385,14 @@ describe("pi-native auto-compaction", () => {
   it("suppresses unchanged failed summaries across resumed runs and retains their spend", async () => {
     const base = setup();
     let summaries = 0;
-    const respond = (context) => {
+    const respond = (context: TranscriptContext) => {
       if (JSON.stringify(context.messages[0]).includes("context summarization assistant")) {
         summaries += 1;
         return fauxAssistantMessage([], { stopReason: "length" });
       }
       return fauxAssistantMessage([fauxText("Fictional reply")]);
     };
-    faux.setResponses(Array.from({ length: 12 }, () => respond));
+    faux!.setResponses(Array.from({ length: 12 }, () => respond));
     const options = runOptions(base, { piResolvedModel: { ...base, contextWindow: 200000 }, compaction: { contextWindowOverride: 32000 },
       sessionId: "fictional-suppression", sessionKeepAlive: true, sessionsRoot,
       messages: bigHistory(60, 2000), resolvePiApiKey: async () => "faux-key" });
@@ -2396,37 +2402,37 @@ describe("pi-native auto-compaction", () => {
     const second = await generateEngineTurnResponse("system", { ...options, messages: [{ role: "user", content: "Continue" }] });
     const third = await generateEngineTurnResponse("system", { ...options, messages: [{ role: "user", content: "Continue again" }] });
     expect(summaries).toBe(1);
-    expect([first, second, third].flatMap((result) => result.runtimeWarnings).filter((warning) => warning.warning_kind === "context_compaction_suppressed")).toHaveLength(1);
-    expect(third.runtimeWarnings.some((warning) => warning.warning_kind === "context_compaction_suppressed")).toBe(false);
+    expect([first, second, third].flatMap((result) => result.runtimeWarnings).filter((warning: Warning) => warning.warning_kind === "context_compaction_suppressed")).toHaveLength(1);
+    expect(third.runtimeWarnings.some((warning: Warning) => warning.warning_kind === "context_compaction_suppressed")).toBe(false);
   });
 
   it("skips and suppresses doomed low-headroom summaries without invoking a provider", async () => {
     const base = setup();
     let summaries = 0;
-    const respond = (context) => {
+    const respond = (context: TranscriptContext) => {
       if (JSON.stringify(context.messages[0]).includes("context summarization assistant")) summaries += 1;
       return fauxAssistantMessage([fauxText("Fictional reply")]);
     };
-    faux.setResponses(Array.from({ length: 8 }, () => respond));
+    faux!.setResponses(Array.from({ length: 8 }, () => respond));
     const options = runOptions(base, { piResolvedModel: { ...base, contextWindow: 4000 },
       sessionId: "fictional-headroom", sessionKeepAlive: true, sessionsRoot,
       messages: bigHistory(60, 2000), resolvePiApiKey: async () => "faux-key" });
     const first = await generateEngineTurnResponse("system", options);
     const second = await generateEngineTurnResponse("system", { ...options, messages: [{ role: "user", content: "Continue" }] });
     expect(summaries).toBe(0);
-    expect(first.runtimeWarnings.some((warning) => warning.warning_kind === "context_compaction_insufficient_headroom")).toBe(true);
-    expect(first.events.some((event) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom")).toBe(true);
+    expect(first.runtimeWarnings.some((warning: Warning) => warning.warning_kind === "context_compaction_insufficient_headroom")).toBe(true);
+    expect(first.events.some((event: TestEvent) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom")).toBe(true);
     expect(first.usage.compaction).toMatchObject({ cost_usd: 0 });
-    expect(first.events.find((event) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom").accounting.requests[0]).toMatchObject({
+    expect(first.events.find((event: TestEvent) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom").accounting.requests[0]).toMatchObject({
       providerInvoked: false, reason: "insufficient_summary_headroom", costUsd: 0 });
-    expect([first, second].flatMap((result) => result.runtimeWarnings).filter((warning) => warning.warning_kind === "context_compaction_suppressed")).toHaveLength(1);
+    expect([first, second].flatMap((result) => result.runtimeWarnings).filter((warning: Warning) => warning.warning_kind === "context_compaction_suppressed")).toHaveLength(1);
   });
 
   it("proactively compacts before the turn when near the window", async () => {
     const base = setup();
     const windowed = { ...base, contextWindow: 200000 };
     let summaryCalled = false;
-    faux.setResponses([
+    faux!.setResponses([
       () => { summaryCalled = true; return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]); },
       fauxAssistantMessage([fauxText("done")]),
     ]);
@@ -2449,7 +2455,7 @@ describe("pi-native auto-compaction", () => {
     const base = setup();
     let summaries = 0;
     let summaryContext;
-    faux.setResponses([(context) => {
+    faux!.setResponses([(context) => {
       summaries += 1;
       summaryContext = context;
       return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]);
@@ -2467,7 +2473,7 @@ describe("pi-native auto-compaction", () => {
     expect(result.events).toEqual([expect.objectContaining({ type: "cost_accumulated" })]);
     // The only provider request is Pi's own summarization prompt; the host
     // system prompt never reaches a model in manual mode.
-    expect(summaryContext.messages[0]).toMatchObject({ role: "system", content: expect.stringContaining("context summarization assistant") });
+    expect(summaryContext!.messages[0]).toMatchObject({ role: "system", content: expect.stringContaining("context summarization assistant") });
     expect(JSON.stringify(summaryContext)).not.toContain("HOST-PLACEHOLDER-PROMPT");
   });
 
@@ -2475,7 +2481,7 @@ describe("pi-native auto-compaction", () => {
     const base = setup();
     const id = "d".repeat(64);
     const history = bigHistory(60, 2000);
-    faux.setResponses([fauxAssistantMessage([fauxText("SUMMARY durable cut")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("SUMMARY durable cut")])]);
     const compacted = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true, messages: history, sessionId: id, providerSessionId: id,
       sessionKeepAlive: true, sessionsRoot: sessionsRoot,
@@ -2485,7 +2491,7 @@ describe("pi-native auto-compaction", () => {
     expect(await syncProviderSession(id)).toBe(true);
     await refreshProviderSession(id);
     let resumedContext;
-    faux.setResponses([(context) => {
+    faux!.setResponses([(context) => {
       resumedContext = context;
       return fauxAssistantMessage([fauxText("continued")]);
     }]);
@@ -2503,19 +2509,19 @@ describe("pi-native auto-compaction", () => {
   it("does not seal a second manual compaction completed when its native cut fails as a no-op", async () => {
     const base = setup();
     const id = "manual-seal-noop";
-    const descriptor = (turnId) => ({ kind: "host", ownerKey: id, historyBucket: id, turnId, handleId: id, baseRevision: 0,
+    const descriptor = (turnId: string) => ({ kind: "host", ownerKey: id, historyBucket: id, turnId, handleId: id, baseRevision: 0,
       reconciliation: { version: 1, purpose: "compaction", fenceDigest: "a".repeat(64), initialInputId: null } });
     const options = { manualCompaction: true, sessionId: id, providerSessionId: id, sessionKeepAlive: true,
       sessionsRoot, resolvePiApiKey: async () => "faux-key",
       compaction: { keepRecentTokens: 20_000, summaryMaxTokens: 2000, minSavingsTokens: 0 } };
-    faux.setResponses([fauxAssistantMessage([fauxText("Fictional first summary.")])]);
+    faux!.setResponses([fauxAssistantMessage([fauxText("Fictional first summary.")])]);
     const first = await generateEngineTurnResponse("system", runOptions(base, {
       ...options, sessionTurn: descriptor("first-manual"), messages: bigHistory(60, 2000),
     }));
     expect(first.manualCompaction?.status).toBe("succeeded");
     // Retained context passes the preflight estimate, but has no new prefix
     // to cut. The guard emits skipped while compact() closes its op failed.
-    faux.setResponses([]);
+    faux!.setResponses([]);
     const second = await generateEngineTurnResponse("system", runOptions(base, {
       ...options, sessionTurn: descriptor("second-manual"),
     }));
@@ -2536,7 +2542,7 @@ describe("pi-native auto-compaction", () => {
 
   it.each(["failed", "cancelled"])("never seals a %s manual summary as completed", async (outcome) => {
     const base = setup(), id = `manual-seal-${outcome}`, controller = new AbortController();
-    faux.setResponses([outcome === "failed"
+    faux!.setResponses([outcome === "failed"
       ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional summary failure." })
       : () => { controller.abort(); return fauxAssistantMessage([fauxText("Fictional cancelled summary.")]); }]);
     const result = await generateEngineTurnResponse("system", runOptions(base, {
@@ -2562,10 +2568,10 @@ describe("pi-native auto-compaction", () => {
     const base = setup();
     const controller = new AbortController();
     let summarySignal;
-    faux.setResponses([async (_context, streamOptions) => {
+    faux!.setResponses([async (_context, streamOptions) => {
       summarySignal = streamOptions?.signal;
       controller.abort();
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
       return fauxAssistantMessage([fauxText("SUMMARY too late")]);
     }]);
     const result = await generateEngineTurnResponse("system", runOptions(base, {
@@ -2576,12 +2582,12 @@ describe("pi-native auto-compaction", () => {
     }));
     expect(result.manualCompaction).toBeUndefined();
     expect(result.cancelled).toBe(true);
-    expect(summarySignal?.aborted).toBe(true);
+    expect((summarySignal as AbortSignal | undefined)?.aborted).toBe(true);
   });
 
   it("does not answer a user turn when a manual summary fails or there is nothing to cut", async () => {
     const base = setup();
-    faux.setResponses([]);
+    faux!.setResponses([]);
     const skipped = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true,
       messages: [{ role: "user", content: "short" }],
@@ -2589,7 +2595,7 @@ describe("pi-native auto-compaction", () => {
     }));
     expect(skipped.manualCompaction).toMatchObject({ status: "skipped" });
     expect(skipped.manualCompaction.reason).toBe("nothing_to_compact");
-    faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "summary failed" })]);
+    faux!.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "summary failed" })]);
     const failed = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true,
       messages: bigHistory(60, 2000),
@@ -2602,8 +2608,8 @@ describe("pi-native auto-compaction", () => {
   it("uses the same OpenCode session headers for compaction and the main turn", async () => {
     const base = setup({ id: "deepseek-v4-pro" }, "opencode-go");
     const windowed = { ...base, contextWindow: 200000 };
-    const dispatchedHeaders = [];
-    faux.setResponses([
+    const dispatchedHeaders: SimpleStreamOptions["headers"][] = [];
+    faux!.setResponses([
       (_context, options) => {
         dispatchedHeaders.push(options?.headers);
         return fauxAssistantMessage([fauxText("SUMMARY")]);
@@ -2635,7 +2641,7 @@ describe("pi-native auto-compaction", () => {
     // REACTIVE path. The big transcript lets compact() actually find a cut.
     const windowed = { ...base, contextWindow: 10_000_000 };
     let summaryCalled = false;
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }),
       () => { summaryCalled = true; return fauxAssistantMessage([fauxText("SUMMARY")]); },
       fauxAssistantMessage([fauxText("recovered")]),
@@ -2660,7 +2666,7 @@ describe("pi-native auto-compaction", () => {
     // Early compaction override triggers before the real provider window is full.
     const windowed = { ...base, contextWindow: 200000 };
     let providerCalls = 0;
-    faux.setResponses([
+    faux!.setResponses([
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); }, // proactive compact
       () => { providerCalls += 1; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }); },
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("should-not-happen")]); },
@@ -2685,7 +2691,7 @@ describe("pi-native auto-compaction", () => {
     const base = setup();
     const windowed = { ...base, contextWindow: 10_000_000 };
     let providerCalls = 0;
-    faux.setResponses([
+    faux!.setResponses([
       () => { providerCalls += 1; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }); },
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); },
       () => { providerCalls += 1; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }); },
@@ -2713,7 +2719,7 @@ describe("pi-native auto-compaction", () => {
     // Run 1: a ~60k-token transcript stays under the declared-window trigger
     // (~150k), so it does NOT compact proactively. The overflow names the real
     // ceiling (120000), which the bridge records for this model.
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([], { stopReason: "error", errorMessage: "maximum context length is 120000 tokens" }),
       fauxAssistantMessage([fauxText("SUMMARY")]),
       fauxAssistantMessage([fauxText("recovered-1")]),
@@ -2731,7 +2737,7 @@ describe("pi-native auto-compaction", () => {
     // Run 2: same model. A ~110k-token transcript is under the declared trigger
     // (~150k) but OVER the learned-window trigger (~90k), so proactive fires only
     // because the real ceiling (120000) was learned.
-    faux.setResponses([
+    faux!.setResponses([
       fauxAssistantMessage([fauxText("SUMMARY")]),
       fauxAssistantMessage([fauxText("done-2")]),
     ]);
@@ -2762,7 +2768,7 @@ describe("pi-native auto-compaction", () => {
   // tool schemas + the trailing per-turn user message ("continue", ~3 tokens) —
   // NOT the prior transcript (already summed by the raw branch). That ~30k of
   // overhead pushes the corrected estimate (~56k + ~30k = ~86k) over 70000.
-  function overheadFixture(reference) {
+  function overheadFixture(reference: string) {
     const base = setup();
     const windowed = { ...base, contextWindow: 100000 };
     // ~120k chars -> ~30k tokens of system-prompt overhead.
@@ -2778,7 +2784,7 @@ describe("pi-native auto-compaction", () => {
     const { base, windowed, bigSystemPrompt, messages } = overheadFixture("faux:overhead-on");
     // When the corrected trigger fires: call 1 = compaction summary, call 2 = turn.
     let providerCalls = 0;
-    faux.setResponses([
+    faux!.setResponses([
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); },
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("done")]); },
     ]);
@@ -2817,7 +2823,7 @@ describe("pi-native auto-compaction", () => {
     // With overhead explicitly disabled the transcript alone is under the trigger,
     // so no compaction fires: call 1 IS the turn (text "turn-output"), never a summary.
     let providerCalls = 0;
-    faux.setResponses([
+    faux!.setResponses([
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("turn-output")]); },
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("should-not-happen")]); },
     ]);

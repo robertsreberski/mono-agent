@@ -1,38 +1,49 @@
+import type { RuntimeResult, RuntimeModelRef } from "../../contracts/runtime.js";
+import type { RuntimeLiveInputMessage } from "../../contracts/live-input.js";
+import type { PiOptions } from "../../execution/pi/types.js";
+type TestEvent = { type: string; [key: string]: unknown };
+type Warning = { warning_kind: string; message?: string; reason?: string };
+type Result = Omit<RuntimeResult, "events" | "runtimeWarnings" | "failoverHistory"> & { events: TestEvent[]; runtimeWarnings: Warning[]; failoverHistory: Array<{ model: RuntimeModelRef; [key: string]: unknown }> };
+type RunOptions = Omit<PiOptions, "onEvent" | "liveInput" | "sessionTurn" | "sessionRecovery"> & { onEvent?: (event: TestEvent) => unknown; liveInput?: unknown; sessionTurn?: object; sessionRecovery?: object; [key: string]: unknown };
+type MockResult = Partial<Omit<Result, "providerSessionRecovery" | "dispatchProgress">> & { providerSessionRecovery?: object; dispatchProgress?: { version: number; armed: boolean; toolAdmitted: boolean; liveInputTaken: boolean } };
+type RouterOptions = Omit<NonNullable<Parameters<typeof import("../../runtime/router.js")["createRouterRuntime"]>[0]>, "resolveAttempt" | "chain" | "retry"> & { retry?: { backoffMs?: number; maxBackoffMs?: number; primaryAttempts?: number }; chain?: Array<RuntimeModelRef | { model: RuntimeModelRef; effort?: string | null; requires?: object; attempts?: number | string }>; resolveAttempt?: (input: { model: RuntimeModelRef; attemptIndex: number; retryIndex: number }) => unknown };
+type ExecuteOptions = Omit<RunOptions, "model" | "onEvent" | "liveInput"> & { model: RuntimeModelRef; onEvent: (event: TestEvent) => void; liveInput: AsyncIterable<RuntimeLiveInputMessage>; messages: unknown[]; toolContext: { sandboxPolicy?: unknown } };
+type TestRuntime = Omit<ReturnType<typeof import("../../runtime/router.js")["createRouterRuntime"]>, "run" | "prepareNativeDispatch"> & { run(system: string, options: RunOptions): Promise<Result>; prepareNativeDispatch(system: string, options: RunOptions): Promise<{ checkHandoffSummary(input: object): unknown; produceHandoffSummary(input: object): Promise<unknown>; run(): Promise<Result>; close(): Promise<void> }> };
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const executeMock = vi.fn();
+const executeMock = vi.fn<(system: string, options: ExecuteOptions) => Promise<MockResult>>();
 const assertEngineTurnModelRefMock = vi.fn();
 const runtimeCapabilitiesMock = vi.fn();
 
 vi.mock("../../runtime/capabilities.js", async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import("../../runtime/capabilities.js")>();
   return {
     ...actual,
-    runtimeCapabilities: (...args) => runtimeCapabilitiesMock(...args) ?? actual.runtimeCapabilities(...args),
+    runtimeCapabilities: (...args: Parameters<typeof actual.runtimeCapabilities>) => runtimeCapabilitiesMock(...args) ?? actual.runtimeCapabilities(...args),
   };
 });
 
 vi.mock("../../execution/pi/model-ref.js", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
+  const actual = await importOriginal<typeof import("../../execution/pi/model-ref.js")>();
+  return { assertEngineTurnModelRef: (ref: RuntimeModelRef) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
 });
 
 vi.mock("../../execution/pi/run.js", async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import("../../execution/pi/run.js")>();
   return {
     ...actual,
-    engineTurnAdapter: { id: "stub", execute: (...args) => executeMock(...args) },
+    engineTurnAdapter: { id: "stub", execute: (...args: Parameters<typeof executeMock>) => executeMock(...args) },
   };
 });
 
-const { createRouterRuntime } = await import("../../runtime/router.js");
-const { createRuntime } = await import("../../runtime/create-runtime.js");
+const { createRouterRuntime } = await import("../../runtime/router.js") as unknown as { createRouterRuntime(options: RouterOptions): TestRuntime };
+const { createRuntime } = await import("../../runtime/create-runtime.js") as unknown as { createRuntime: (...args: Parameters<typeof import("../../runtime/create-runtime.js")["createRuntime"]>) => TestRuntime };
 const { passthroughSandbox } = await import("../../agent/sandbox-seam.js");
 const { createFakeSandbox } = await import("../helpers/fake-sandbox.js");
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
-function modelRef(provider, model) {
+function modelRef(provider: string, model: string): RuntimeModelRef {
   return { provider, model, reference: `${provider}:${model}` };
 }
 
@@ -52,7 +63,7 @@ describe("createRouterRuntime — basic", () => {
       sessionId: "owned", sessionKeepAlive: true, messages: [] });
     expect(result.error).toBe("summary failed");
     expect(executeMock).toHaveBeenCalledTimes(1);
-    expect(executeMock.mock.calls[0][1]).toMatchObject({ sessionId: "owned", manualCompaction: true });
+    expect(executeMock.mock.calls[0]![1]!).toMatchObject({ sessionId: "owned", manualCompaction: true });
   });
   it("rejects an empty chain", () => {
     expect(() => createRouterRuntime({ chain: [] })).toThrow(/non-empty chain/);
@@ -92,7 +103,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
         failureKind: null,
       });
 
-    const events = [];
+    const events: TestEvent[] = [];
     const router = createRouterRuntime({
       chain: [
         modelRef("anthropic", "claude-opus-4-7"),
@@ -102,9 +113,9 @@ describe("createRouterRuntime — fallback on retryable", () => {
     const result = await router.run("sys", { messages: [], onEvent: (e) => events.push(e) });
     expect(result.text).toBe("recovered");
     expect(result.failoverHistory).toHaveLength(1);
-    expect(result.failoverHistory[0].model.model).toBe("claude-opus-4-7");
+    expect(result.failoverHistory[0]!.model.model).toBe("claude-opus-4-7");
     expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(executeMock.mock.calls[0][1].webSearchState).toBe(executeMock.mock.calls[1][1].webSearchState);
+    expect(executeMock.mock.calls[0]![1]!.webSearchState).toBe(executeMock.mock.calls[1]![1]!.webSearchState);
     // Payloads, not just types: every renderer reads these fields as strings, so
     // an object here is silently dropped downstream rather than failing loudly.
     const failoverEvents = events.filter((e) => e.type?.startsWith("provider_failover"));
@@ -153,7 +164,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     const result = await router.run("sys", { messages: [] });
 
     expect(result.text).toBe("local recovery");
-    expect(executeMock.mock.calls.map((call) => call[1].model.provider)).toEqual([
+    expect(executeMock.mock.calls.map((call) => call[1]!.model.provider)).toEqual([
       "openai-codex",
       "anthropic",
       "ollama",
@@ -167,7 +178,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
   it("reuses one instrumented live-input stream across failover without duplicate applied events", async () => {
     const acknowledge = vi.fn(() => "recorded");
     const reject = vi.fn(() => "recorded");
-    const events = [];
+    const events: TestEvent[] = [];
     executeMock
       .mockImplementationOnce(async (_systemPrompt, options) => {
         const next = await options.liveInput[Symbol.asyncIterator]().next();
@@ -227,7 +238,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
       inputId: "follow-up-1",
       receivedAt: "2026-07-22T08:30:00.000Z",
     }]);
-    expect(executeMock.mock.calls[0][1].liveInput).toBe(executeMock.mock.calls[1][1].liveInput);
+    expect(executeMock.mock.calls[0]![1]!.liveInput).toBe(executeMock.mock.calls[1]![1]!.liveInput);
   });
 
   it("falls back on pi 0.80's terse 'Connection error.' (live-smoke regression)", async () => {
@@ -266,7 +277,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     // three-model fallback chain configured, and the router never advanced off the
     // primary because the text matched no retryable pattern. The work already done
     // must reach the next route instead of being thrown away.
-    const callPrompts = [];
+    const callPrompts: string[] = [];
     executeMock.mockImplementation(async (systemPrompt) => {
       callPrompts.push(systemPrompt);
       if (callPrompts.length === 1) {
@@ -296,8 +307,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock).toHaveBeenCalledTimes(2);
     expect(result.failoverHistory).toMatchObject([{ retryableSubkind: "network" }]);
     // The partial answer survives the route change rather than being discarded.
-    expect(callPrompts[1]).toContain("<resume_context>");
-    expect(callPrompts[1]).toContain("Malta dive itinerary so far");
+    expect(callPrompts[1]!).toContain("<resume_context>");
+    expect(callPrompts[1]!).toContain("Malta dive itinerary so far");
   });
 
   it("falls back when the primary model still exceeds its context window after compaction", async () => {
@@ -375,8 +386,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     const result = await router.run("sys", { messages: [] });
     expect(result.failoverHistory).toHaveLength(1);
     expect(result.failureKind).toBe("provider_unavailable");
-    expect(result.failoverHistory[0].failureKind).toBe("provider_unavailable");
-    expect(result.failoverHistory[0].retryableSubkind).toBe("non_retryable");
+    expect(result.failoverHistory[0]!.failureKind).toBe("provider_unavailable");
+    expect(result.failoverHistory[0]!.retryableSubkind).toBe("non_retryable");
     expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
@@ -403,7 +414,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("recovered");
     expect(result.failoverHistory).toHaveLength(1);
-    expect(result.failoverHistory[0].failureKind).toBe("provider_auth");
+    expect(result.failoverHistory[0]!.failureKind).toBe("provider_auth");
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
@@ -469,14 +480,14 @@ describe("createRouterRuntime — fallback on retryable", () => {
 
     expect(result.text).toBe("recovered");
     expect(options).toEqual(originalOptions);
-    expect(executeMock.mock.calls[0][1]).toMatchObject(sessionKeys);
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionId");
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("providerSessionId");
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionKeepAlive");
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionIdleTimeoutMs");
-    expect(executeMock.mock.calls[0][1].providerAttributionSessionId).toBe("conversation-epoch");
+    expect(executeMock.mock.calls[0]![1]!).toMatchObject(sessionKeys);
+    expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty("sessionId");
+    expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty("providerSessionId");
+    expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty("sessionKeepAlive");
+    expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty("sessionIdleTimeoutMs");
+    expect(executeMock.mock.calls[0]![1]!.providerAttributionSessionId).toBe("conversation-epoch");
     // A backup never presents the primary's attribution/session identity.
-    expect(executeMock.mock.calls[1][1].providerAttributionSessionId).toMatch(UUID_PATTERN);
+    expect(executeMock.mock.calls[1]![1]!.providerAttributionSessionId).toMatch(UUID_PATTERN);
   });
 
   it("rejects an attempt resolver that tries to replace provider attribution", async () => {
@@ -534,7 +545,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("recovered");
     expect(result.failoverHistory).toHaveLength(1);
-    expect(result.failoverHistory[0].failureKind).toBe("provider_auth");
+    expect(result.failoverHistory[0]!.failureKind).toBe("provider_auth");
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
@@ -584,7 +595,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
 
 describe("createRouterRuntime — transcript replay on fallback", () => {
   it("prepends a resume context to the system prompt when falling back", async () => {
-    const callPrompts = [];
+    const callPrompts: string[] = [];
     executeMock.mockImplementation(async (systemPrompt) => {
       callPrompts.push(systemPrompt);
       if (callPrompts.length === 1) {
@@ -609,14 +620,14 @@ describe("createRouterRuntime — transcript replay on fallback", () => {
     });
     await router.run("Original system prompt", { messages: [] });
     expect(callPrompts).toHaveLength(2);
-    expect(callPrompts[0]).toBe("Original system prompt");
-    expect(callPrompts[1]).toContain("<resume_context>");
-    expect(callPrompts[1]).toContain("first attempt");
-    expect(callPrompts[1]).toContain("Original system prompt");
+    expect(callPrompts[0]!).toBe("Original system prompt");
+    expect(callPrompts[1]!).toContain("<resume_context>");
+    expect(callPrompts[1]!).toContain("first attempt");
+    expect(callPrompts[1]!).toContain("Original system prompt");
   });
 
   it("does not duplicate a pending snapshot across a capability mismatch", async () => {
-    const prompts = [];
+    const prompts: string[] = [];
     executeMock.mockImplementationOnce(async (prompt) => {
       prompts.push(prompt);
       return {
@@ -651,9 +662,9 @@ describe("createRouterRuntime — transcript replay on fallback", () => {
 
     expect(result.text).toBe("ok");
     expect(prompts).toHaveLength(3);
-    expect(prompts[1].match(/<resume_context>/gu)).toHaveLength(1);
-    expect(prompts[2].match(/<resume_context>/gu)).toHaveLength(1);
-    expect(prompts[2]).toContain("first attempt");
+    expect(prompts[1]!.match(/<resume_context>/gu)).toHaveLength(1);
+    expect(prompts[2]!.match(/<resume_context>/gu)).toHaveLength(1);
+    expect(prompts[2]!).toContain("first attempt");
   });
 });
 
@@ -669,7 +680,7 @@ describe("createRouterRuntime — capability filtering", () => {
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("ok");
     expect(result.failoverHistory).toHaveLength(1);
-    expect(result.failoverHistory[0].failureKind).toBe("skipped_capability_mismatch");
+    expect(result.failoverHistory[0]!.failureKind).toBe("skipped_capability_mismatch");
   });
 
   it("does not report provider availability exhaustion when no provider entry executed", async () => {
@@ -706,9 +717,9 @@ describe("createRouterRuntime — capability filtering", () => {
     const result = await router.run("sys", { messages: [] });
 
     expect(result.text).toBe("recovered");
-    expect(result.failoverHistory[0].failureKind).toBe("skipped_capability_mismatch");
-    expect(executeMock.mock.calls[1][0]).toBe("sys");
-    expect(executeMock.mock.calls[1][1].diagnosticsSeed).toBeUndefined();
+    expect(result.failoverHistory[0]!.failureKind).toBe("skipped_capability_mismatch");
+    expect(executeMock.mock.calls[1]![0]!).toBe("sys");
+    expect(executeMock.mock.calls[1]![1]!.diagnosticsSeed).toBeUndefined();
   });
 
   it("still attempts a Pi fallback when request options add no missing capability", async () => {
@@ -744,7 +755,7 @@ describe("createRouterRuntime — chain entry shorthand", () => {
     });
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("ok");
-    const call = executeMock.mock.calls[0][1];
+    const call = executeMock.mock.calls[0]![1]!;
     expect(call.model).toEqual(modelRef("anthropic", "x"));
   });
 });
@@ -765,9 +776,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
 
     await router.run("sys", { messages: [], effort: "high" });
 
-    expect(executeMock.mock.calls[0][1].effort).toBe("high");
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("effort");
-    expect(executeMock.mock.calls[2][1].effort).toBe("ultra");
+    expect(executeMock.mock.calls[0]![1]!.effort).toBe("high");
+    expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty("effort");
+    expect(executeMock.mock.calls[2]![1]!.effort).toBe("ultra");
   });
 
   it("only the primary first attempt owns a session when both routes support resume", async () => {
@@ -788,14 +799,14 @@ describe("createRouterRuntime — production fallback contracts", () => {
     };
     await router.run("sys", { messages: [], ...sessionKeys, providerAttributionSessionId: "epoch" });
     expect(executeMock).toHaveBeenCalledTimes(4);
-    expect(executeMock.mock.calls[0][1]).toMatchObject(sessionKeys);
+    expect(executeMock.mock.calls[0]![1]!).toMatchObject(sessionKeys);
     for (const [, options] of executeMock.mock.calls.slice(1)) {
       for (const key of Object.keys(sessionKeys)) expect(options).not.toHaveProperty(key);
       expect(options.providerAttributionSessionId).toMatch(UUID_PATTERN);
     }
     // Every non-eligible attempt, including same-model retries, gets its own id.
     const attributionIds = executeMock.mock.calls.map(([, options]) => options.providerAttributionSessionId);
-    expect(attributionIds[0]).toBe("epoch");
+    expect(attributionIds[0]!).toBe("epoch");
     expect(new Set(attributionIds).size).toBe(4);
   });
 
@@ -826,14 +837,14 @@ describe("createRouterRuntime — production fallback contracts", () => {
       expect(result.text).toBe("answer");
       expect(result.diagnostics).toMatchObject(diagnostics);
       expect(result.events).toEqual(expect.arrayContaining(events));
-      const options = executeMock.mock.calls.at(-1)[1];
+      const options = executeMock.mock.calls.at(-1)![1]!;
       expect(options.model).toEqual(outcome === "primary retry" ? primary : backup);
       expect(options.providerAttributionSessionId).toMatch(UUID_PATTERN);
       for (const key of ["sessionTurn", "sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
         expect(options).not.toHaveProperty(key);
       }
       expect(result.failoverHistory).toHaveLength(1);
-      expect(result.failoverHistory[0].failureKind).toBe(
+      expect(result.failoverHistory[0]!.failureKind).toBe(
         outcome === "skipped-primary backup" ? "skipped_capability_mismatch" : "provider_unavailable",
       );
     },
@@ -849,7 +860,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
   });
 
   it("strips primary session state when resume capability is false", async () => {
-    const actual = await vi.importActual("../../runtime/capabilities.js");
+    const actual = await vi.importActual<typeof import("../../runtime/capabilities.js")>("../../runtime/capabilities.js");
     runtimeCapabilitiesMock.mockReturnValue({ ...actual.runtimeCapabilities(), supports_session_resume: false });
     executeMock.mockResolvedValueOnce({ text: "ok", providerSessionId: "coordinated-id", events: [] });
     const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
@@ -858,7 +869,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
       sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 }, sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "run", handleId: "coordinated-id", baseRevision: 1 },
     });
     for (const key of ["sessionTurn", "sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
-      expect(executeMock.mock.calls[0][1]).not.toHaveProperty(key);
+      expect(executeMock.mock.calls[0]![1]!).not.toHaveProperty(key);
     }
     expect(result.providerSessionId).toBeUndefined();
   });
@@ -867,7 +878,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
     executeMock
       .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
-    const seen = [];
+    const seen: unknown[] = [];
     const router = createRouterRuntime({
       chain: [
         modelRef("local-a", "a"),
@@ -888,9 +899,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
     });
 
     expect(seen).toEqual(["local-a", "openai"]);
-    expect(executeMock.mock.calls[0][1].customProvider).toEqual({ id: "local-a", api_key: "route-secret" });
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("customProvider");
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("customModel");
+    expect(executeMock.mock.calls[0]![1]!.customProvider).toEqual({ id: "local-a", api_key: "route-secret" });
+    expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty("customProvider");
+    expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty("customModel");
     expect(JSON.stringify(result)).not.toContain("route-secret");
     expect(JSON.stringify(result)).not.toContain("wrong-secret");
   });
@@ -918,11 +929,11 @@ describe("createRouterRuntime — production fallback contracts", () => {
     });
 
     expect(result.text).toBe("fallback ok");
-    expect(executeMock.mock.calls[0][1]).toMatchObject({
+    expect(executeMock.mock.calls[0]![1]!).toMatchObject({
       allowedTools: ["*"],
       disallowedTools: [],
     });
-    expect(executeMock.mock.calls[1][1]).toMatchObject({
+    expect(executeMock.mock.calls[1]![1]!).toMatchObject({
       allowedTools: ["Read", "Agent"],
       disallowedTools: ["Write"],
     });
@@ -948,9 +959,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const result = await router.run("sys", { messages: [], ...primaryMetadata });
 
     expect(result.text).toBe("builtin recovered");
-    expect(executeMock.mock.calls[0][1]).toMatchObject(primaryMetadata);
+    expect(executeMock.mock.calls[0]![1]!).toMatchObject(primaryMetadata);
     for (const key of Object.keys(primaryMetadata)) {
-      expect(executeMock.mock.calls[1][1]).not.toHaveProperty(key);
+      expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty(key);
     }
   });
 
@@ -965,7 +976,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
       chain: [modelRef("anthropic", "claude-sonnet-4-6")],
       resolveAttempt: () => ({ runtime: resolvedRuntime }),
     });
-    router.configureTools({
+    router.configureTools!({
       workspace: "/tmp/configured",
       additionalReadRoots: ["/tmp/framework", "/tmp/worktrees"],
       additionalWriteRoots: ["/tmp/worktrees"],
@@ -975,13 +986,13 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const result = await router.run("sys", { messages: [] });
 
     expect(result.text).toBe("ok");
-    expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
+    expect(executeMock.mock.calls[0]![1]!.toolContext).toMatchObject({
       workspace: "/tmp/configured",
       additionalReadRoots: ["/tmp/framework", "/tmp/worktrees"],
       additionalWriteRoots: ["/tmp/worktrees"],
       sandbox: passthroughSandbox,
     });
-    expect(executeMock.mock.calls[0][1].toolContext.sandboxPolicy).toBeUndefined();
+    expect(executeMock.mock.calls[0]![1]!.toolContext.sandboxPolicy).toBeUndefined();
   });
 
   it("fails before execution when a resolver-supplied Pi runtime cannot accept tool context", async () => {
@@ -1040,7 +1051,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
 
     await router.run("sys", { messages: [] });
 
-    const finalPrompt = executeMock.mock.calls[2][0];
+    const finalPrompt = executeMock.mock.calls[2]![0]!;
     expect(finalPrompt.match(/<resume_context>/gu)).toHaveLength(1);
     expect(finalPrompt).toContain("first progress");
     expect(finalPrompt).toContain("second progress");
@@ -1092,7 +1103,7 @@ describe("createRouterRuntime — same-model retry", () => {
 
     expect(result.text).toBe("recovered");
     expect(executeMock).toHaveBeenCalledTimes(3);
-    expect(executeMock.mock.calls.map((c) => c[1].model.model)).toEqual([
+    expect(executeMock.mock.calls.map((c) => c[1]!.model.model)).toEqual([
       "claude-opus-4-7",
       "claude-opus-4-7",
       "claude-sonnet-4-6",
@@ -1122,7 +1133,7 @@ describe("createRouterRuntime — same-model retry", () => {
 
     expect(result.text).toBe("bigger window");
     expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(executeMock.mock.calls[1][1].model.model).toBe("claude-sonnet-4-6");
+    expect(executeMock.mock.calls[1]![1]!.model.model).toBe("claude-sonnet-4-6");
   });
 
   it("advances past ChatGPT subscription exhaustion without retrying the same route", async () => {
@@ -1136,8 +1147,8 @@ describe("createRouterRuntime — same-model retry", () => {
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("fallback worked");
     expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(result.failoverHistory[0].retryableSubkind).toBe("subscription_limit");
-    expect(executeMock.mock.calls[1][1].model.model).toBe("claude-sonnet-4-6");
+    expect(result.failoverHistory[0]!.retryableSubkind).toBe("subscription_limit");
+    expect(executeMock.mock.calls[1]![1]!.model.model).toBe("claude-sonnet-4-6");
   });
 
   it("fails over from an OpenAI ChatGPT subscription limit without retrying that route", async () => {
@@ -1150,10 +1161,10 @@ describe("createRouterRuntime — same-model retry", () => {
     });
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("fallback worked");
-    expect(result.failoverHistory[0].retryableSubkind).toBe("subscription_limit");
+    expect(result.failoverHistory[0]!.retryableSubkind).toBe("subscription_limit");
     expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(executeMock.mock.calls[0][1].model.provider).toBe("openai");
-    expect(executeMock.mock.calls[1][1].model.provider).toBe("openai-codex");
+    expect(executeMock.mock.calls[0]![1]!.model.provider).toBe("openai");
+    expect(executeMock.mock.calls[1]![1]!.model.provider).toBe("openai-codex");
   });
 
   it("retries a terminated stream on the same model", async () => {
@@ -1246,7 +1257,7 @@ describe("createRouterRuntime — same-model retry", () => {
       .mockResolvedValueOnce(overloaded())
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
 
-    const events = [];
+    const events: TestEvent[] = [];
     const router = createRouterRuntime({
       chain: [{ model: OPUS, attempts: 2 }],
       retry: { backoffMs: 0, maxBackoffMs: 0 },
@@ -1255,7 +1266,7 @@ describe("createRouterRuntime — same-model retry", () => {
 
     const retryEvents = events.filter((e) => e.type === "provider_retry_started");
     expect(retryEvents).toHaveLength(1);
-    expect(retryEvents[0]).toMatchObject({
+    expect(retryEvents[0]!).toMatchObject({
       attemptIndex: 0,
       retryIndex: 1,
       attempts: 2,
@@ -1284,7 +1295,7 @@ describe("createRouterRuntime — same-model retry", () => {
   it("re-resolves the attempt and runs its cleanup once per retry", async () => {
     executeMock.mockResolvedValue(overloaded());
     const cleanup = vi.fn();
-    const resolveAttempt = vi.fn(() => ({ cleanup }));
+    const resolveAttempt = vi.fn<NonNullable<RouterOptions["resolveAttempt"]>>(() => ({ cleanup }));
     const router = createRouterRuntime({
       chain: [{ model: OPUS, attempts: 3 }],
       retry: { backoffMs: 0, maxBackoffMs: 0 },
@@ -1293,8 +1304,8 @@ describe("createRouterRuntime — same-model retry", () => {
     await router.run("sys", { messages: [] });
 
     expect(resolveAttempt).toHaveBeenCalledTimes(3);
-    expect(resolveAttempt.mock.calls.map((c) => c[0].retryIndex)).toEqual([0, 1, 2]);
-    expect(resolveAttempt.mock.calls.every((c) => c[0].attemptIndex === 0)).toBe(true);
+    expect(resolveAttempt.mock.calls.map((c) => c[0]!.retryIndex)).toEqual([0, 1, 2]);
+    expect(resolveAttempt.mock.calls.every((c) => c[0]!.attemptIndex === 0)).toBe(true);
     expect(cleanup).toHaveBeenCalledTimes(3);
   });
 
@@ -1310,8 +1321,8 @@ describe("createRouterRuntime — same-model retry", () => {
     const sessionKeys = { sessionId: "sess-1", providerSessionId: "sess-1", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000 };
     await router.run("sys", { messages: [], ...sessionKeys });
 
-    expect(executeMock.mock.calls[0][1]).toMatchObject(sessionKeys);
-    for (const key of Object.keys(sessionKeys)) expect(executeMock.mock.calls[1][1]).not.toHaveProperty(key);
+    expect(executeMock.mock.calls[0]![1]!).toMatchObject(sessionKeys);
+    for (const key of Object.keys(sessionKeys)) expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty(key);
   });
 
   it("carries one merged resume snapshot across a same-model retry", async () => {
@@ -1331,13 +1342,13 @@ describe("createRouterRuntime — same-model retry", () => {
     });
     await router.run("sys", { messages: [] });
 
-    const retryPrompt = executeMock.mock.calls[1][0];
+    const retryPrompt = executeMock.mock.calls[1]![0]!;
     expect(retryPrompt.match(/<resume_context>/gu)).toHaveLength(1);
     expect(retryPrompt).toContain("first progress");
   });
 
   it("advances immediately when the attempt resolver fails, without burning retries", async () => {
-    const resolveAttempt = vi.fn(() => {
+    const resolveAttempt = vi.fn<NonNullable<RouterOptions["resolveAttempt"]>>(() => {
       throw new Error("credential mint failed");
     });
     const router = createRouterRuntime({
@@ -1349,7 +1360,7 @@ describe("createRouterRuntime — same-model retry", () => {
     await router.run("sys", { messages: [] });
 
     expect(resolveAttempt).toHaveBeenCalledTimes(2);
-    expect(resolveAttempt.mock.calls.map((c) => c[0].attemptIndex)).toEqual([0, 1]);
+    expect(resolveAttempt.mock.calls.map((c) => c[0]!.attemptIndex)).toEqual([0, 1]);
   });
 
   it("rejects invalid attempts values", () => {
@@ -1368,7 +1379,7 @@ it.each(["cancelled", "provider_unavailable"])("strips recovery receipts on ever
   const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
   const result = await router.run("sys", { messages: [], sessionRecovery: { runId: "run", revision: 1 }, sessionId: "id", sessionKeepAlive: true });
   expect(executeMock).toHaveBeenCalledTimes(2);
-  expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionRecovery");
+  expect(executeMock.mock.calls[1]![1]!).not.toHaveProperty("sessionRecovery");
   expect(result.providerSessionRecovery).toBeUndefined();
 });
 
@@ -1377,7 +1388,7 @@ it("attributes a primary user cancellation without changing its result or trying
   const model = modelRef("openai-codex", "gpt-5.6-sol");
   const receipt = { runId: "run", revision: 1, providerSessionId: "id", modelKey: model.reference, tipId: "tip" };
   executeMock.mockResolvedValueOnce({ cancelled: true, failureKind: null, error: null, events: [], providerSessionRecovery: receipt });
-  const events = [];
+  const events: TestEvent[] = [];
   const router = createRouterRuntime({ chain: [model, modelRef("anthropic", "backup")] });
   const result = await router.run("sys", { messages: [], sessionRecovery: { runId: "run", revision: 1 }, sessionId: "id", sessionKeepAlive: true, onEvent: (event) => events.push(event) });
   expect(result).toMatchObject({ cancelled: true, failureKind: null, providerSessionRecovery: receipt });
@@ -1405,16 +1416,16 @@ it.each(["retry", "backup"])("awaits protected detached-turn acknowledgement bef
   const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
   const failure = { text: "Fictional partial.", error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false };
   executeMock.mockResolvedValueOnce(failure).mockResolvedValueOnce({ text: "Fictional stateless answer.", events: [] });
-  let release, entered; const acknowledged = new Promise((resolve) => { release = resolve; }); const waiting = new Promise((resolve) => { entered = resolve; });
+  let release!: () => void, entered!: () => void; const acknowledged = new Promise<void>((resolve) => { release = resolve; }); const waiting = new Promise<void>((resolve) => { entered = resolve; });
   const onSessionTurnDetached = vi.fn(async (attempt) => { expect(attempt.result).toMatchObject(failure); entered(); await acknowledged; });
   const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
     reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
   const router = createRouterRuntime({ chain: [{ model: primary, attempts: kind === "retry" ? 2 : 1 }, { model: backup }], retry: { backoffMs: 0, maxBackoffMs: 0 } });
   const run = router.run("Fictional system.", { messages: [], sessionId: "handle", sessionKeepAlive: true, sessionTurn, onSessionTurnDetached });
   await waiting; expect(executeMock).toHaveBeenCalledTimes(1); release(); expect((await run).text).toBe("Fictional stateless answer.");
-  expect(onSessionTurnDetached).toHaveBeenCalledOnce(); expect(onSessionTurnDetached.mock.calls[0][0]).toMatchObject({ descriptor: sessionTurn, attemptIndex: 0, retryIndex: 0 });
+  expect(onSessionTurnDetached).toHaveBeenCalledOnce(); expect(onSessionTurnDetached.mock.calls[0]![0]!).toMatchObject({ descriptor: sessionTurn, attemptIndex: 0, retryIndex: 0 });
   for (const [, options] of executeMock.mock.calls) expect(options.onSessionTurnDetached).toBeUndefined();
-  expect(executeMock.mock.calls[1][1].sessionTurn).toBeUndefined(); expect(executeMock.mock.calls[1][1].sessionId).toBeUndefined();
+  expect(executeMock.mock.calls[1]![1]!.sessionTurn).toBeUndefined(); expect(executeMock.mock.calls[1]![1]!.sessionId).toBeUndefined();
 });
 it.each([false, true])("fails closed if the protected detached acknowledgement is unavailable or rejects (throws=%s)", async (throws) => {
   executeMock.mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false,
@@ -1443,16 +1454,16 @@ it("acknowledges an absent/skipped primary before a stateless backup can answer"
 });
 
 it("awaits detachment when an eligible injected primary itself returns capability mismatch", async () => {
-  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"); let acknowledge;
-  const barrier = new Promise((resolve) => { acknowledge = resolve; });
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"); let acknowledge!: () => void;
+  const barrier = new Promise<void>((resolve) => { acknowledge = resolve; });
   const primaryRun = vi.fn(async () => ({ text: null, error: "Fictional capability mismatch", failureKind: "skipped_capability_mismatch", events: [] }));
-  const backupRun = vi.fn(async () => ({ text: "Fictional backup answer", events: [] }));
+  const backupRun = vi.fn<(system: string, options: ExecuteOptions) => Promise<MockResult>>(async () => ({ text: "Fictional backup answer", events: [] }));
   const onSessionTurnDetached = vi.fn(async (attempt) => { expect(attempt.result.failureKind).toBe("skipped_capability_mismatch"); await barrier; });
   const router = createRouterRuntime({ chain: [{ model: primary }, { model: backup }], resolveAttempt: ({ attemptIndex }) => ({ runtime: { run: attemptIndex === 0 ? primaryRun : backupRun, configureTools: vi.fn() } }) });
   const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0, reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
   const running = router.run("sys", { messages: [], sessionTurn, onSessionTurnDetached });
   await vi.waitFor(() => expect(onSessionTurnDetached).toHaveBeenCalledOnce()); expect(backupRun).not.toHaveBeenCalled(); acknowledge();
-  expect((await running).text).toBe("Fictional backup answer"); expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun.mock.calls[0][1].sessionTurn).toBeUndefined(); expect(backupRun.mock.calls[0][1].onSessionTurnDetached).toBeUndefined();
+  expect((await running).text).toBe("Fictional backup answer"); expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun.mock.calls[0]![1]!.sessionTurn).toBeUndefined(); expect(backupRun.mock.calls[0]![1]!.onSessionTurnDetached).toBeUndefined();
 });
 
 it.each(["nativeSessionAuthority", "nativeSessionProjection"])("protects %s against private route resolution", async (key) => {
@@ -1471,8 +1482,8 @@ it.each(["primary retry", "backup", "skipped primary"])("strips inherited projec
     ...(variant === "skipped primary" ? { requires: { supports_native_subagents: true } } : {}) }, backup], retry: { backoffMs: 0, maxBackoffMs: 0 } });
   const nativeSessionAuthority = { fixture: "host-owned-authority" }, nativeSessionProjection = { fixture: "host-owned-projection" };
   await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true, nativeSessionAuthority, nativeSessionProjection });
-  if (variant !== "skipped primary") expect(executeMock.mock.calls[0][1]).toMatchObject({ nativeSessionAuthority, nativeSessionProjection });
-  const detached = executeMock.mock.calls.at(-1)[1];
+  if (variant !== "skipped primary") expect(executeMock.mock.calls[0]![1]!).toMatchObject({ nativeSessionAuthority, nativeSessionProjection });
+  const detached = executeMock.mock.calls.at(-1)![1]!;
   expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
 });
 
@@ -1486,7 +1497,7 @@ it("preserves ordinary resolver native-root selection without native authority",
   const primary = modelRef("openai-codex", "primary"); executeMock.mockResolvedValueOnce({ text: "ordinary reply", events: [] });
   const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { sessionsRoot: "/fictional/ordinary-native" } }) });
   expect((await router.run("Rules", { model: primary, messages: [] })).text).toBe("ordinary reply");
-  expect(executeMock.mock.calls[0][1].sessionsRoot).toBe("/fictional/ordinary-native");
+  expect(executeMock.mock.calls[0]![1]!.sessionsRoot).toBe("/fictional/ordinary-native");
 });
 
 it.each(["backup", "retry", "unsupported primary"])("permits a detached %s resolver to choose its own native root", async (variant) => {
@@ -1500,7 +1511,7 @@ it.each(["backup", "retry", "unsupported primary"])("permits a detached %s resol
   const result = await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true,
     nativeSessionAuthority: { fixture: "host-owned" }, nativeSessionProjection: { fixture: "host-owned" }, sessionsRoot: "/fictional/owned-native" });
   expect(result.error).toBeFalsy(); expect(result.text).toBe("detached root selected");
-  const detached = executeMock.mock.calls.at(-1)[1]; expect(detached.sessionsRoot).toBe("/fictional/detached-native");
+  const detached = executeMock.mock.calls.at(-1)![1]!; expect(detached.sessionsRoot).toBe("/fictional/detached-native");
   expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
   expect(detached).not.toHaveProperty("sessionTurn"); expect(detached).not.toHaveProperty("providerSessionId");
 });
@@ -1514,7 +1525,7 @@ describe("createRouterRuntime — detached identity scrub", () => {
     providerAttributionSessionId: "coordinated-id", sessionKeepAlive: true,
     sessionRecovery: { runId: "run", revision: 1 },
   };
-  const backupFailures = {
+  const backupFailures: Record<string, MockResult> = {
     success: { text: "answer", error: null, failureKind: null },
     cancelled: { text: null, error: null, failureKind: null, cancelled: true },
     terminal: { text: null, error: "usage exceeded", failureKind: "usage_limit" },
@@ -1555,7 +1566,7 @@ describe("createRouterRuntime — detached identity scrub", () => {
     executeMock.mockResolvedValueOnce({ error: "usage exceeded", failureKind: "usage_limit", events: [], providerSessionId: "coordinated-id", providerSessionRecovery: receipt });
     const router = createRouterRuntime({ chain: [primary, backup] });
     const result = await router.run("sys", { ...sessionOptions });
-    expect(executeMock.mock.calls[0][1]).toMatchObject(sessionOptions);
+    expect(executeMock.mock.calls[0]![1]!).toMatchObject(sessionOptions);
     expect(result.providerSessionId).toBe("coordinated-id");
     expect(result.providerSessionRecovery).toEqual(receipt);
   });
@@ -1566,10 +1577,10 @@ describe("createRouterRuntime — tools are never re-run", () => {
   const backup = modelRef("anthropic", "claude-sonnet-4-6");
   const toolUse = { type: "assistant", message: { content: [{ type: "tool_use", id: "call-1", name: "Bash", input: { command: "echo hi" } }] } };
   const toolResult = { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "call-1", content: "hi" }] } };
-  const failure = (events) => ({ text: null, error: "Connection error.", failureKind: "provider_unavailable", cancelled: false, events });
+  const failure = (events: TestEvent[]) => ({ text: null, error: "Connection error.", failureKind: "provider_unavailable", cancelled: false, events });
 
   /** @param {Array<*>} events */
-  function blockedWarnings(events) {
+  function blockedWarnings(events: TestEvent[]) {
     return events.filter((event) => event.type === "runtime_warning" && event.warning_kind === "provider_failover_blocked");
   }
 
@@ -1579,7 +1590,7 @@ describe("createRouterRuntime — tools are never re-run", () => {
   ])("does not start a backup after %s evidence", async (_kind, attemptEvents) => {
     executeMock.mockResolvedValueOnce(failure(attemptEvents));
     executeMock.mockResolvedValueOnce({ text: "backup", events: [], failureKind: null });
-    const events = [];
+    const events: TestEvent[] = [];
     const router = createRouterRuntime({ chain: [primary, backup] });
     const result = await router.run("sys", { messages: [], onEvent: (event) => events.push(event) });
     expect(executeMock).toHaveBeenCalledTimes(1);
@@ -1599,7 +1610,7 @@ describe("createRouterRuntime — tools are never re-run", () => {
       throw new Error("Connection error.");
     });
     executeMock.mockResolvedValueOnce({ text: "retry", events: [], failureKind: null });
-    const events = [];
+    const events: TestEvent[] = [];
     const router = createRouterRuntime({
       chain: [{ model: primary, attempts: 2 }, backup],
       retry: { backoffMs: 0, maxBackoffMs: 0 },
@@ -1615,7 +1626,7 @@ describe("createRouterRuntime — tools are never re-run", () => {
   it("does not start a backup after the primary consumed a live input", async () => {
     executeMock.mockImplementationOnce(async (_systemPrompt, options) => {
       const next = await options.liveInput[Symbol.asyncIterator]().next();
-      next.value.acknowledge();
+      next.value.acknowledge!();
       return failure([]);
     });
     executeMock.mockResolvedValueOnce({ text: "backup", events: [], failureKind: null });
@@ -1632,8 +1643,8 @@ describe("createRouterRuntime — tools are never re-run", () => {
    * A route runtime that leases a live input, fails, and leaves the lease open
    * so the test can settle it after the attempt returned.
    */
-  function leaseAndFail(held) {
-    return async (_systemPrompt, options) => {
+  function leaseAndFail(held: { message?: RuntimeLiveInputMessage }) {
+    return async (_systemPrompt: string, options: ExecuteOptions) => {
       const next = await options.liveInput[Symbol.asyncIterator]().next();
       held.message = next.value;
       return failure([]);
@@ -1647,10 +1658,10 @@ describe("createRouterRuntime — tools are never re-run", () => {
   }
 
   it("blocks a same-model retry when the failed attempt consumes a live input during backoff", async () => {
-    const held = {};
+    const held: { message?: RuntimeLiveInputMessage } = {};
     executeMock.mockImplementationOnce(leaseAndFail(held));
     executeMock.mockResolvedValueOnce({ text: "retry", events: [], failureKind: null });
-    const events = [];
+    const events: TestEvent[] = [];
     const router = createRouterRuntime({
       chain: [{ model: primary, attempts: 2 }, backup],
       retry: { backoffMs: 0, maxBackoffMs: 0 },
@@ -1660,7 +1671,7 @@ describe("createRouterRuntime — tools are never re-run", () => {
       onEvent: (event) => {
         events.push(event);
         // Late settlement by the route runtime, after run() returned.
-        if (event.type === "provider_retry_started") held.message.acknowledge();
+        if (event.type === "provider_retry_started") held.message!.acknowledge!();
       },
     });
     expect(events.some((event) => event.type === "provider_retry_started")).toBe(true);
@@ -1672,15 +1683,15 @@ describe("createRouterRuntime — tools are never re-run", () => {
   });
 
   it("blocks a backup when the failed attempt consumes a live input while the resolver runs", async () => {
-    const held = {};
+    const held: { message?: RuntimeLiveInputMessage } = {};
     executeMock.mockImplementationOnce(leaseAndFail(held));
     executeMock.mockResolvedValueOnce({ text: "backup", events: [], failureKind: null });
     const cleanup = vi.fn();
     const resolveAttempt = vi.fn(async ({ attemptIndex }) => {
-      if (attemptIndex === 1) held.message.acknowledge();
+      if (attemptIndex === 1) held.message!.acknowledge!();
       return { cleanup };
     });
-    const events = [];
+    const events: TestEvent[] = [];
     const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt });
     const result = await router.run("sys", { messages: [], liveInput: oneLiveInput(), onEvent: (event) => events.push(event) });
     expect(resolveAttempt).toHaveBeenCalledTimes(2);
@@ -1693,7 +1704,7 @@ describe("createRouterRuntime — tools are never re-run", () => {
   });
 
   it("blocks a backup when the failed attempt streams tool evidence while the resolver runs", async () => {
-    let lateOnEvent;
+    let lateOnEvent!: (event: TestEvent) => void;
     executeMock.mockImplementationOnce(async (_systemPrompt, options) => {
       lateOnEvent = options.onEvent;
       return failure([]);
@@ -1733,7 +1744,7 @@ describe("createRouterRuntime — tools are never re-run", () => {
     const text = { type: "assistant", message: { content: [{ type: "text", text: "partial" }] } };
     executeMock.mockResolvedValueOnce(failure([text]));
     executeMock.mockResolvedValueOnce({ text: "backup", events: [], failureKind: null });
-    const events = [];
+    const events: TestEvent[] = [];
     const router = createRouterRuntime({ chain: [primary, backup] });
     const result = await router.run("sys", { messages: [], onEvent: (event) => events.push(event) });
     expect(executeMock).toHaveBeenCalledTimes(2);
@@ -1768,13 +1779,13 @@ describe("createRouterRuntime — tools are never re-run", () => {
 
 it("rechecks failed-attempt tool evidence after awaiting native detachment", async () => {
   const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
-  let primaryOnEvent;
+  let primaryOnEvent!: (event: TestEvent) => void;
   const primaryRun = vi.fn(async (_prompt, options) => {
     primaryOnEvent = options.onEvent;
     return { error: "Connection error.", failureKind: "provider_unavailable", events: [] };
   });
   const backupRun = vi.fn(async () => ({ text: "Must not run", events: [] }));
-  const cleanup = vi.fn(); const events = [];
+  const cleanup = vi.fn(); const events: TestEvent[] = [];
   const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) =>
     ({ runtime: { run: attemptIndex === 0 ? primaryRun : backupRun, configureTools() {} }, ...(attemptIndex === 1 ? { cleanup } : {}) }) });
   const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
@@ -1799,15 +1810,15 @@ describe("private detached host replay", () => {
     const router = createRouterRuntime({ chain: [primary, { model: backup, attempts: 2 }], retry: { backoffMs: 0, maxBackoffMs: 0 } });
     const result = await router.run("sys", { messages: [...(cold ? replay : []), ...messages], sessionTurn, onSessionTurnDetached: ack, detachedContext });
     expect(detachedContext).toHaveBeenCalledOnce(); expect(ack).toHaveBeenCalledOnce();
-    expect(ack.mock.invocationCallOrder[0]).toBeLessThan(detachedContext.mock.invocationCallOrder[0]);
+    expect(ack.mock.invocationCallOrder[0]!).toBeLessThan(detachedContext.mock.invocationCallOrder[0]!);
     for (const [, options] of executeMock.mock.calls.slice(1)) {
       expect(options.messages).toEqual([...replay, ...messages]);
-      expect(Object.isFrozen(options.messages[0])).toBe(true);
+      expect(Object.isFrozen(options.messages[0]!)).toBe(true);
       expect(options).not.toHaveProperty("detachedContext");
     }
     expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery");
     expect(JSON.stringify(result)).not.toContain("Fictional earlier context");
-    expect(executeMock.mock.calls[1][1].providerAttributionSessionId).not.toBe(executeMock.mock.calls[2][1].providerAttributionSessionId);
+    expect(executeMock.mock.calls[1]![1]!.providerAttributionSessionId).not.toBe(executeMock.mock.calls[2]![1]!.providerAttributionSessionId);
   });
 
   it.each(["success", "terminal", "exhausted", "tool", "ack fails", "resolver fails", "capabilities skip"])("never loads without an admitted next attempt: %s", async (kind) => {
@@ -1823,7 +1834,7 @@ describe("private detached host replay", () => {
 
   it("fails closed without exposing loader error content", async () => {
     executeMock.mockResolvedValueOnce(failure);
-    const events = [], ack = vi.fn(async () => {}), detachedContext = vi.fn(async () => { throw new Error("Fictional private loader detail"); });
+    const events: TestEvent[] = [], ack = vi.fn(async () => {}), detachedContext = vi.fn(async () => { throw new Error("Fictional private loader detail"); });
     const router = createRouterRuntime({ chain: [primary, backup] });
     const result = await router.run("sys", { messages, sessionTurn, onEvent: (event) => events.push(event), onSessionTurnDetached: ack, detachedContext });
     expect(executeMock).toHaveBeenCalledOnce(); expect(ack).toHaveBeenCalledOnce(); expect(detachedContext).toHaveBeenCalledOnce();
@@ -1842,20 +1853,20 @@ describe("private detached host replay", () => {
   });
 
   it.each(["tool", "live input"])("scrubs a failure when %s settles during the detach ack", async (effect) => {
-    let onEvent, consumer;
+    let onEvent!: (event: TestEvent) => void, consumer!: AsyncIterator<RuntimeLiveInputMessage>;
     const run = vi.fn(async (_prompt, options) => {
       onEvent = options.onEvent;
       if (options.liveInput) consumer = options.liveInput[Symbol.asyncIterator]();
       return failure;
     });
-    const ack = vi.fn(async () => { await Promise.resolve(); if (effect === "tool") onEvent({ type: "tool_execution_start", toolName: "Read" }); else { const next = await consumer.next(); next.value.acknowledge(); } });
+    const ack = vi.fn(async () => { await Promise.resolve(); if (effect === "tool") onEvent({ type: "tool_execution_start", toolName: "Read" }); else { const next = await consumer.next(); next.value.acknowledge!(); } });
     const loader = vi.fn(async () => []), backupRun = vi.fn(), cleanup = vi.fn();
     const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) => ({ runtime: { run: attemptIndex === 0 ? run : backupRun, configureTools() {} }, cleanup }) });
     const result = await router.run("sys", { messages, sessionTurn, onSessionTurnDetached: ack, detachedContext: loader,
       ...(effect === "live input" ? { liveInput: { async *[Symbol.asyncIterator]() { yield { body: "Fictional steer", id: "fictional-input", acknowledge: () => "recorded" }; } } } : {}) });
     expect(ack).toHaveBeenCalledOnce(); expect(loader).not.toHaveBeenCalled(); expect(backupRun).not.toHaveBeenCalled();
     expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery");
-    expect(result.runtimeWarnings[0].reason).toBe(effect === "tool" ? "tool_already_executed" : "live_input_consumed");
+    expect(result.runtimeWarnings[0]!.reason).toBe(effect === "tool" ? "tool_already_executed" : "live_input_consumed");
   });
 
   it("blocks a protected primary at the side-effect gate without ack", async () => {
@@ -1871,16 +1882,16 @@ describe("private detached host replay", () => {
     const ack = vi.fn();
     const result = await createRouterRuntime({ chain: [primary, backup] }).run("sys", { messages, sessionTurn, onSessionTurnDetached: ack });
     expect(executeMock).toHaveBeenCalledOnce(); expect(ack).not.toHaveBeenCalled();
-    expect(result.failureKind).toBe("skipped_capability_mismatch"); expect(result.runtimeWarnings[0].reason).toBe("tool_already_executed");
+    expect(result.failureKind).toBe("skipped_capability_mismatch"); expect(result.runtimeWarnings[0]!.reason).toBe("tool_already_executed");
   });
 
   it("fences side effects that settle while the loader awaits", async () => {
-    let onEvent;
+    let onEvent!: (event: TestEvent) => void;
     const run = vi.fn(async (_prompt, options) => { onEvent = options.onEvent; return failure; });
     const backupRun = vi.fn(), ack = vi.fn(async () => {});
     const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) => ({ runtime: { run: attemptIndex ? backupRun : run, configureTools() {} } }) });
     const result = await router.run("sys", { messages, sessionTurn, onSessionTurnDetached: ack, detachedContext: async () => { await Promise.resolve(); onEvent({ type: "tool_execution_start", toolName: "Read" }); return []; } });
-    expect(backupRun).not.toHaveBeenCalled(); expect(result).not.toHaveProperty("providerSessionId"); expect(result.runtimeWarnings[0].reason).toBe("tool_already_executed");
+    expect(backupRun).not.toHaveBeenCalled(); expect(result).not.toHaveProperty("providerSessionId"); expect(result.runtimeWarnings[0]!.reason).toBe("tool_already_executed");
   });
 });
 
@@ -1921,7 +1932,7 @@ it.each(["toolAdmitted", "liveInputTaken"])("gates ordinary retry/backup on %s e
   executeMock.mockResolvedValueOnce({ error: "Connection error.", failureKind: "provider_unavailable", events: [], dispatchProgress: progress, providerSessionId: "primary-id" });
   const result = await createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, backup], retry: { backoffMs: 0, maxBackoffMs: 0 } }).run("sys", { messages: [], onSessionTurnDetached: ack });
   expect(executeMock).toHaveBeenCalledOnce(); expect(ack).not.toHaveBeenCalled(); expect(result.failureKind).toBe("provider_unavailable");
-  expect(result.runtimeWarnings[0].reason).toBe(field === "toolAdmitted" ? "tool_already_executed" : "live_input_consumed");
+  expect(result.runtimeWarnings[0]!.reason).toBe(field === "toolAdmitted" ? "tool_already_executed" : "live_input_consumed");
 });
 
 it("keeps ordinary failover after an untouched attempt and blocks a backup's marker-admitted tool", async () => {
@@ -1931,14 +1942,14 @@ it("keeps ordinary failover after an untouched attempt and blocks a backup's mar
   executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: empty });
   executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: { ...empty, toolAdmitted: true } });
   const result = await createRouterRuntime({ chain: [primary, { model: backup, attempts: 2 }, last], retry: { backoffMs: 0, maxBackoffMs: 0 } }).run("sys", { messages: [] });
-  expect(executeMock).toHaveBeenCalledTimes(2); expect(result.runtimeWarnings[0].reason).toBe("tool_already_executed");
+  expect(executeMock).toHaveBeenCalledTimes(2); expect(result.runtimeWarnings[0]!.reason).toBe("tool_already_executed");
 });
 
 it("gives an unconsumed live input a fresh consumer on the backup", async () => {
   let consumers = 0;
   const liveInput = { [Symbol.asyncIterator]() { consumers++; return (async function* () { yield { body: "Fictional steer", id: "fictional-input", acknowledge: () => "recorded" }; })(); } };
   executeMock.mockImplementationOnce(async (_prompt, options) => { options.liveInput[Symbol.asyncIterator](); return { error: "Connection error.", failureKind: "provider_unavailable", events: [] }; });
-  executeMock.mockImplementationOnce(async (_prompt, options) => { const iterator = options.liveInput[Symbol.asyncIterator](), next = await iterator.next(); next.value.acknowledge(); await iterator.return(); return { text: "Fictional backup", events: [] }; });
+  executeMock.mockImplementationOnce(async (_prompt, options) => { const iterator = options.liveInput[Symbol.asyncIterator](), next = await iterator.next(); next.value.acknowledge!(); await iterator.return!(); return { text: "Fictional backup", events: [] }; });
   const result = await createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] }).run("sys", { messages: [], liveInput });
   expect(result.error).toBeFalsy(); expect(result.text).toBe("Fictional backup"); expect(consumers).toBe(2);
 });
@@ -1969,7 +1980,7 @@ it("rejects the old run option before dispatch, including when the replacement i
 });
 
 it("rejects the old option at direct provider entrypoints too", async () => {
-  const { generateEngineTurnResponse, preparePiNativeDispatch } = await vi.importActual("../../execution/pi/run.js");
+  const { generateEngineTurnResponse, preparePiNativeDispatch } = await vi.importActual<typeof import("../../execution/pi/run.js")>("../../execution/pi/run.js");
   const options = { piSessionsRoot: "/fictional/old" };
   await expect(generateEngineTurnResponse("sys", options)).rejects.toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
   expect(() => preparePiNativeDispatch("sys", options)).toThrow("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
@@ -1994,7 +2005,7 @@ describe("context fit and provider dialect fallbacks", () => {
     const result = await router.run("sys", { messages: [{ role: "user", content: "x".repeat(1200000) }] });
     expect(result.text).toBe("fitting reply");
     expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(executeMock.mock.calls[1][1].model).toEqual(large);
+    expect(executeMock.mock.calls[1]![1]!.model).toEqual(large);
     expect(result.failoverHistory).toContainEqual(expect.objectContaining({ failureKind: "skipped_context_window", model: small }));
     expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "fallback_context_window_skipped" }));
   });
@@ -2012,7 +2023,7 @@ describe("context fit and provider dialect fallbacks", () => {
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("recovered");
     expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(result.failoverHistory[0].retryableSubkind).toBe("provider_tool_schema_incompatible");
+    expect(result.failoverHistory[0]!.retryableSubkind).toBe("provider_tool_schema_incompatible");
   });
 });
 
@@ -2028,7 +2039,7 @@ it("retains paid primary compaction exactly once after a backup succeeds", async
   const requests = [{ requestId: "fictional-summary:1", model: "faux:primary", status: "rejected", input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 1.25 }];
   executeMock.mockResolvedValueOnce({ error: "context window exceeded", failureKind: "context_limit", events: [], usage: { cost_usd: 1.25, compaction: { requests, cost_usd: 1.25 } } })
     .mockResolvedValueOnce({ text: "reply", events: [], usage: { input_tokens: 10, output_tokens: 2, cost_usd: 0.5 } });
-  const events = [];
+  const events: TestEvent[] = [];
   const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-5-5"), modelRef("openai-codex", "gpt-6-luna")] });
   const result = await router.run("sys", { messages: [], onEvent: (event) => events.push(event) });
   expect(result.usage.cost_usd).toBe(1.75);
@@ -2039,7 +2050,7 @@ it("retains paid primary compaction exactly once after a backup succeeds", async
 it.each([undefined, null, "one-at-a-time", "all"])("rejects retired scheduling %s before dispatch/preparation", async (piToolParallelismMode) => {
   const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7")] });
   const runtime = createRuntime();
-  const { generateEngineTurnResponse, preparePiNativeDispatch } = await vi.importActual("../../execution/pi/run.js");
+  const { generateEngineTurnResponse, preparePiNativeDispatch } = await vi.importActual<typeof import("../../execution/pi/run.js")>("../../execution/pi/run.js");
   const options = { piToolParallelismMode, piToolExecutionMode: "safe-parallel" };
   const hint = "piToolParallelismMode was renamed to piToolExecutionMode";
   for (const target of [router, runtime]) {
@@ -2057,7 +2068,7 @@ it("refuses resolver-supplied retired scheduling terminally and releases its res
   const run = vi.fn(async () => ({ text: "primary", events: [], usage: {} }));
   const backupRun = vi.fn(async () => ({ text: "backup", events: [], usage: {} }));
   const cleanup = vi.fn();
-  const events = [];
+  const events: TestEvent[] = [];
   const resolveAttempt = vi.fn(({ attemptIndex }) => attemptIndex === 0
     ? { options: { piToolParallelismMode: "all" }, runtime: { run, configureTools() {} }, cleanup }
     : { runtime: { run: backupRun, configureTools() {} } });

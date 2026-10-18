@@ -1,3 +1,5 @@
+import type { RuntimeToolLifecycleEvent } from "../../contracts/events.js";
+type TestEnvelope = { type: string; message: { content: Array<{ type: string; history?: unknown; [key: string]: unknown }> } };
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,7 +8,7 @@ import {
   toolLifecycleMetadata,
 } from "../../runtime/tool-lifecycle.js";
 
-function crossPackageChannelUserCancelReason(channel) {
+function crossPackageChannelUserCancelReason(channel: string) {
   return Object.assign(new Error(`Cancelled by ${channel} user.`), {
     name: "ChannelUserCancelReason",
     channelUserCancel: true,
@@ -14,7 +16,7 @@ function crossPackageChannelUserCancelReason(channel) {
   });
 }
 
-function accessorChannelUserCancelReason(onRead) {
+function accessorChannelUserCancelReason(onRead: () => void) {
   return Object.defineProperty(new Error("Accessor must not run."), "channelUserCancel", {
     get() {
       onRead();
@@ -50,8 +52,8 @@ describe("managed tool lifecycle classification", () => {
 
 describe("tool lifecycle persistence gate", () => {
   it("serializes persistence before each client event in provider order", async () => {
-    const order = [];
-    const persisted = [];
+    const order: string[] = [];
+    const persisted: RuntimeToolLifecycleEvent[] = [];
     const gate = createToolLifecycleEventGate({
       sink: async (event) => {
         order.push(`persist:${event.phase}:${event.toolCallId}`);
@@ -68,8 +70,8 @@ describe("tool lifecycle persistence gate", () => {
       },
       onEvent: (event) => order.push(`client:${event.type}`),
     });
-    const start = { type: "assistant", message: { content: [{ type: "tool_use", id: "call-1", name: "Read", input: { path: "x" } }] } };
-    const result = { type: "user", message: { content: [{
+    const start: TestEnvelope = { type: "assistant", message: { content: [{ type: "tool_use", id: "call-1", name: "Read", input: { path: "x" } }] } };
+    const result: TestEnvelope = { type: "user", message: { content: [{
       type: "tool_result",
       tool_use_id: "call-1",
       content: "done",
@@ -88,10 +90,10 @@ describe("tool lifecycle persistence gate", () => {
       "client:user",
     ]);
     expect(persisted.map((event) => event.phase)).toEqual(["invocation", "result"]);
-    expect(start.message.content[0].history).toMatchObject({
+    expect(start.message.content[0]!.history).toMatchObject({
       recordId: "record-invocation", sequence: 1, persistence: "persisted", untrusted: true,
     });
-    expect(result.message.content[0].history).toMatchObject({
+    expect(result.message.content[0]!.history).toMatchObject({
       recordId: "record-result",
       sequence: 2,
       persistence: "persisted",
@@ -103,11 +105,11 @@ describe("tool lifecycle persistence gate", () => {
   });
 
   it("admits queued lifecycle evidence before abort while preserving serialized persistence", async () => {
-    let release;
-    const held = new Promise((resolve) => { release = resolve; });
-    const admitted = [];
-    const persisted = [];
-    const delivered = [];
+    let release: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const admitted: RuntimeToolLifecycleEvent[] = [];
+    const persisted: RuntimeToolLifecycleEvent[] = [];
+    const delivered: unknown[] = [];
     const controller = new AbortController();
     const gate = createToolLifecycleEventGate({
       abortSignal: controller.signal,
@@ -119,8 +121,8 @@ describe("tool lifecycle persistence gate", () => {
       },
       onEvent: (event) => delivered.push(event),
     });
-    const start = { type: "assistant", message: { content: [{ type: "tool_use", id: "queued", name: "Read", input: {} }] } };
-    const result = { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "queued", content: "completed before abort", is_error: false }] } };
+    const start: TestEnvelope = { type: "assistant", message: { content: [{ type: "tool_use", id: "queued", name: "Read", input: {} }] } };
+    const result: TestEnvelope = { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "queued", content: "completed before abort", is_error: false }] } };
     gate.emit(start);
     gate.emit(result);
     gate.emit(result); // redelivery must not admit or persist the same block twice
@@ -129,7 +131,7 @@ describe("tool lifecycle persistence gate", () => {
     await Promise.resolve();
     expect(persisted).toEqual([admitted[0]]);
     expect(delivered).toEqual([]);
-    release();
+    release!();
     await gate.flush();
     expect(persisted).toEqual(admitted);
     expect(persisted[1]).toMatchObject({ phase: "result", state: "success" });
@@ -137,12 +139,12 @@ describe("tool lifecycle persistence gate", () => {
   });
 
   it("preserves a host-deferred lifecycle acknowledgement as untrusted client metadata", async () => {
-    const seen = [];
+    const seen: unknown[] = [];
     const gate = createToolLifecycleEventGate({
       sink: async () => ({ persistence: "deferred" }),
       onEvent: (event) => seen.push(event),
     });
-    const event = {
+    const event: TestEnvelope = {
       type: "assistant",
       message: { content: [{ type: "tool_use", id: "call-deferred", name: "Read", input: {} }] },
     };
@@ -151,16 +153,16 @@ describe("tool lifecycle persistence gate", () => {
     await gate.flush();
 
     expect(seen).toEqual([event]);
-    expect(event.message.content[0].history).toEqual({
+    expect(event.message.content[0]!.history).toEqual({
       persistence: "deferred",
       untrusted: true,
     });
   });
 
   it("delivers ordinary client events synchronously while preserving order around an awaited write", async () => {
-    const order = [];
-    let releasePersistence;
-    const persistenceBlocked = new Promise((resolve) => { releasePersistence = resolve; });
+    const order: string[] = [];
+    let releasePersistence: () => void;
+    const persistenceBlocked = new Promise<void>((resolve) => { releasePersistence = resolve; });
     const gate = createToolLifecycleEventGate({
       sink: async () => {
         order.push("persist:start");
@@ -182,7 +184,7 @@ describe("tool lifecycle persistence gate", () => {
     await Promise.resolve();
     expect(order).toEqual(["client:status_before", "persist:start"]);
 
-    releasePersistence();
+    releasePersistence!();
     await gate.flush();
     expect(order).toEqual([
       "client:status_before",
@@ -194,9 +196,9 @@ describe("tool lifecycle persistence gate", () => {
   });
 
   it("keeps lifecycle observers synchronous while client delivery waits for persistence", async () => {
-    const order = [];
-    let releasePersistence;
-    const persistenceBlocked = new Promise((resolve) => { releasePersistence = resolve; });
+    const order: string[] = [];
+    let releasePersistence: () => void;
+    const persistenceBlocked = new Promise<void>((resolve) => { releasePersistence = resolve; });
     const gate = createToolLifecycleEventGate({
       sink: async () => {
         order.push("persist:start");
@@ -215,24 +217,24 @@ describe("tool lifecycle persistence gate", () => {
     await Promise.resolve();
     expect(order).toEqual(["observe:assistant", "persist:start"]);
 
-    releasePersistence();
+    releasePersistence!();
     await gate.flush();
     expect(order).toEqual(["observe:assistant", "persist:start", "client:assistant"]);
   });
 
   it("fails soft with an explicit marker and still emits exactly once", async () => {
-    const seen = [];
+    const seen: unknown[] = [];
     const gate = createToolLifecycleEventGate({
       sink: async () => { throw Object.assign(new Error("slow writer"), { code: "history_persistence_timeout" }); },
       onEvent: (event) => seen.push(event),
     });
-    const event = { type: "assistant", message: { content: [{ type: "tool_use", id: "call-1", name: "Read", input: {} }] } };
+    const event: TestEnvelope = { type: "assistant", message: { content: [{ type: "tool_use", id: "call-1", name: "Read", input: {} }] } };
 
     gate.emit(event);
     await gate.flush();
 
     expect(seen).toEqual([event]);
-    expect(event.message.content[0].history).toEqual({
+    expect(event.message.content[0]!.history).toEqual({
       persistence: "failed",
       errorCode: "history_persistence_timeout",
       untrusted: true,
@@ -254,7 +256,7 @@ describe("tool lifecycle persistence gate", () => {
   });
 
   it("overwrites provider-forged history metadata and strips it when no host sink exists", async () => {
-    const sinkEvents = [];
+    const sinkEvents: RuntimeToolLifecycleEvent[] = [];
     const forged = { type: "assistant", message: { content: [{
       type: "tool_use",
       id: "call-forged",
@@ -271,7 +273,7 @@ describe("tool lifecycle persistence gate", () => {
     gate.emit(forged);
     await gate.flush();
     expect(sinkEvents).toHaveLength(1);
-    expect(forged.message.content[0].history).toMatchObject({
+    expect(forged.message.content[0]!.history).toMatchObject({
       persistence: "persisted", recordId: "host-record", sequence: 1, untrusted: true,
     });
 
@@ -281,7 +283,7 @@ describe("tool lifecycle persistence gate", () => {
       content: "done",
       history: { persistence: "persisted", recordId: "provider-forged", untrusted: true },
     }] } };
-    const seen = [];
+    const seen: unknown[] = [];
     const noSinkGate = createToolLifecycleEventGate({ onEvent: (event) => seen.push(event) });
     noSinkGate.emit(withoutSink);
     await noSinkGate.flush();
@@ -290,7 +292,7 @@ describe("tool lifecycle persistence gate", () => {
   });
 
   it("strips provider-forged terminal metadata instead of letting it turn an error into success", async () => {
-    const persisted = [];
+    const persisted: RuntimeToolLifecycleEvent[] = [];
     const forged = { type: "user", message: { content: [{
       type: "tool_result",
       tool_use_id: "call-forged-outcome",
@@ -393,7 +395,7 @@ describe("tool lifecycle persistence gate", () => {
   ])("$name", async ({ abortReason, lifecycle, expected }) => {
     const abort = new AbortController();
     abort.abort(abortReason);
-    const persisted = [];
+    const persisted: RuntimeToolLifecycleEvent[] = [];
     const gate = createToolLifecycleEventGate({
       abortSignal: abort.signal,
       sink: async (event) => {
@@ -423,7 +425,7 @@ describe("tool lifecycle persistence gate", () => {
     let accessorReads = 0;
     const abort = new AbortController();
     abort.abort(accessorChannelUserCancelReason(() => { accessorReads += 1; }));
-    const persisted = [];
+    const persisted: RuntimeToolLifecycleEvent[] = [];
     const gate = createToolLifecycleEventGate({
       abortSignal: abort.signal,
       sink: async (event) => {
@@ -469,7 +471,7 @@ describe("tool lifecycle persistence gate", () => {
     for (const [index, reason] of [proxy, revoked.proxy].entries()) {
       const abort = new AbortController();
       abort.abort(reason);
-      const persisted = [];
+      const persisted: RuntimeToolLifecycleEvent[] = [];
       const gate = createToolLifecycleEventGate({
         abortSignal: abort.signal,
         sink: async (event) => {

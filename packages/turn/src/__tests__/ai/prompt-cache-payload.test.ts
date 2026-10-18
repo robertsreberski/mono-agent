@@ -1,5 +1,27 @@
-/** @typedef {(input: {request: object, runId: string, context: object}) => ({runtimeOptions?: object, cleanup?: () => unknown} | Promise<{runtimeOptions?: object, cleanup?: () => unknown}>)} RuntimeExtension */
-/** @typedef {{composeHostTurnEnvelope: (context: string, message: string) => string, formatHostCapabilities: (options: Partial<import("@mono-agent/turn/host/types").RuntimeRunOptions>) => string}} EnvelopeModule */
+import type { AssistantMessage, Model, SimpleStreamOptions } from '@earendil-works/pi-ai';
+import type { RuntimeRunOptions, RuntimeModelRef, RuntimeResult } from '../../contracts/runtime.js';
+type HostRequest = { conversationId: string; userMessage: string; metadata: { source: string }; abortSignal: AbortSignal };
+type RuntimeExtension = (input: { request: HostRequest; runId: string; context: object }) => {
+  runtimeOptions?: Partial<RuntimeRunOptions>; cleanup?: () => void | Promise<void>;
+} | Promise<{ runtimeOptions?: Partial<RuntimeRunOptions>; cleanup?: () => void | Promise<void> }>;
+type ConversationBuilders = {
+  createConversationHarness(options: { identityPath: string; model: RuntimeModelRef; historyStore: object; toolPolicy: object;
+    runtimeOptionsForRequest: () => { runtimeOptions: Partial<RuntimeRunOptions> };
+    session?: { mode: 'continuous'; supportsResume: boolean; idleTimeoutMs: number };
+    runtime: { run(system: string, options: RuntimeRunOptions): Promise<RuntimeResult>; disposeSession: typeof disposeProviderSession };
+  }): { run(request: HostRequest): Promise<{ text: string; failure?: unknown }>; dispose?: () => Promise<void> };
+  createInMemoryHistoryStore(options: { maxMessages: number }): object;
+  createToolPolicy(options: { allowedTools: string[]; disallowedTools: string[] }): object;
+};
+type ConfigBuilder = {
+  resolveJsonMonoAgentConfig(options: { cwd: string; json: { runtime: { model: string }; context: { identityPath: string };
+    providers: { piNative: { cacheRetention?: 'long' | 'short' } };
+  } }): { providers?: { piNative?: { cacheRetention?: 'long' | 'short' } } };
+};
+type EnvelopeModule = { composeHostTurnEnvelope: (context: string, message: string) => string; formatHostCapabilities: (options: Partial<RuntimeRunOptions>) => string };
+type WirePart = { type: string; role?: string; name?: string; id?: string; call_id?: string; tool_use_id?: string; content: WirePart[] };
+type WirePayload = { input: WirePart[]; messages: WirePart[]; tools: Array<{ name: string }> };
+type TestSend = (model: Model<string>, context: unknown, options: SimpleStreamOptions) => ReturnType<typeof streamSimple>;
 // Cross-boundary proof: real host assembly -> native session -> real OpenAI
 // request builder. fetch is fully replaced; no network/authentication is used.
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -12,14 +34,14 @@ import { generateEngineTurnResponse } from '../../execution/pi/run.js';
 import { disposeProviderSession } from '../../runtime/session-fanout.js';
 import { createToolContext } from "../../tools/shared/tool-context.js";
 
-const { createConversationHarness, createInMemoryHistoryStore, createToolPolicy } = (await import(new URL('../../../../conversation/src/index.ts', import.meta.url).href));
-const { resolveJsonMonoAgentConfig } = (await import(new URL('../../../../config/src/index.ts', import.meta.url).href));
+const { createConversationHarness, createInMemoryHistoryStore, createToolPolicy } = (await import(new URL('../../../../conversation/src/index.ts', import.meta.url).href)) as ConversationBuilders;
+const { resolveJsonMonoAgentConfig } = (await import(new URL('../../../../config/src/index.ts', import.meta.url).href)) as ConfigBuilder;
 
 // Direct tool construction in this file binds one explicit context.
 const ctx = createToolContext();
 
-const roots = [];
-const sessions = new Set();
+const roots: string[] = [];
+const sessions = new Set<string>();
 afterEach(async () => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -29,18 +51,18 @@ afterEach(async () => {
 });
 
 function providerCapture() {
-  const payloads = [];
+  const payloads: WirePayload[] = [];
   const base = fauxProvider({ provider: 'cache-fixture', models: [{ id: 'fixture' }] });
   const model = { ...base.getModel(), api: 'openai-responses', baseUrl: 'https://fixture.invalid/v1', reasoning: false };
   const models = createModels();
   models.setProvider({
     ...base.provider, getModels: () => [model],
-    streamSimple: (selected, context, options) => streamSimple(selected, context, {
+    streamSimple: (selected, context, options) => streamSimple(selected as Model<"openai-responses">, context, {
       ...options, apiKey: 'synthetic-test-value', maxRetries: 0,
       fetch: async (_url, init) => {
         // Observe the serialized request handed to the SDK transport, including
         // provider conversion and StructuredOutput, not just context.prompt.
-        payloads.push(JSON.parse(init.body));
+        payloads.push(JSON.parse(init!.body as string));
         const n = payloads.length;
         const item = { type: 'message', id: `msg_${n}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: `reply-${n}`, annotations: [] }] };
         const response = { id: `resp_${n}`, object: 'response', status: 'completed', output: [item], usage: { input_tokens: 100, output_tokens: 5, total_tokens: 105 } };
@@ -59,7 +81,7 @@ function providerCapture() {
   return { payloads, model, models };
 }
 
-function host(fixture, continuous) {
+function host(fixture: ReturnType<typeof providerCapture>, continuous: boolean) {
   const root = mkdtempSync(join(tmpdir(), 'prompt-cache-payload-'));
   roots.push(root);
   writeFileSync(join(root, 'IDENTITY.md'), 'Stable fixture identity.');
@@ -71,7 +93,7 @@ function host(fixture, continuous) {
     runtimeOptionsForRequest: () => ({ runtimeOptions: { allowedTools: ["Bash"] } }),
     ...(continuous ? { session: { mode: 'continuous', supportsResume: true, idleTimeoutMs: 60000 } } : {}),
     runtime: {
-      run: async (system, options) => {
+      run: async (system: string, options: RuntimeRunOptions) => {
         const result = await generateEngineTurnResponse(system, { ...options, piResolvedModel: fixture.model, piResolvedModels: fixture.models, effort: 'none' });
         if (result.providerSessionId) sessions.add(result.providerSessionId);
         return result;
@@ -80,21 +102,21 @@ function host(fixture, continuous) {
     },
   });
 }
-const request = (id, text, source) => ({ conversationId: id, userMessage: text, metadata: { source }, abortSignal: new AbortController().signal });
-const instructions = (payload) => payload.input.filter((item) => item.role === 'developer' || item.role === 'system');
-const conversation = (payload) => payload.input.filter((item) => item.role !== 'developer' && item.role !== 'system');
+const request = (id: string, text: string, source: string) => ({ conversationId: id, userMessage: text, metadata: { source }, abortSignal: new AbortController().signal });
+const instructions = (payload: WirePayload) => payload.input.filter((item) => item.role === 'developer' || item.role === 'system');
+const conversation = (payload: WirePayload) => payload.input.filter((item) => item.role !== 'developer' && item.role !== 'system');
 
 describe('built provider prompt prefix', () => {
   it.each([false, true])('keeps system/tools byte-identical across changing turns (continuous=%s)', async (continuous) => {
     const fixture = providerCapture();
     const harness = host(fixture, continuous);
-    for (const [text, source] of [['unique-first', 'web'], ['unique-second', 'tui'], ['unique-third', 'web']]) {
+    for (const [text, source] of [['unique-first', 'web'], ['unique-second', 'tui'], ['unique-third', 'web']] as const) {
       const result = await harness.run(request('web:fixture', text, source));
       expect(result.failure).toBeUndefined();
       expect(result.text).toMatch(/^reply-/);
     }
     expect(fixture.payloads).toHaveLength(3);
-    const [first, second, third] = fixture.payloads;
+    const [first, second, third] = fixture.payloads as [WirePayload, WirePayload, WirePayload];
     expect(JSON.stringify(instructions(second))).toBe(JSON.stringify(instructions(first)));
     expect(JSON.stringify(instructions(third))).toBe(JSON.stringify(instructions(first)));
     expect(JSON.stringify(second.tools)).toBe(JSON.stringify(first.tools));
@@ -104,7 +126,7 @@ describe('built provider prompt prefix', () => {
     expect(JSON.stringify(second).match(/unique-second/g)).toHaveLength(1);
     expect(JSON.stringify(third).match(/unique-third/g)).toHaveLength(1);
     if (continuous) expect(conversation(second).slice(0, conversation(first).length)).toEqual(conversation(first));
-    await harness.dispose();
+    await harness.dispose!();
   });
 
   it('shares stable instructions across concurrent conversations without sharing transcripts', async () => {
@@ -116,17 +138,17 @@ describe('built provider prompt prefix', () => {
     ]);
     expect(results.every((result) => result.failure === undefined)).toBe(true);
     expect(fixture.payloads).toHaveLength(2);
-    expect(instructions(fixture.payloads[0])).toEqual(instructions(fixture.payloads[1]));
+    expect(instructions(fixture.payloads[0]!)).toEqual(instructions(fixture.payloads[1]!));
     for (const payload of fixture.payloads) {
       const text = JSON.stringify(payload);
       expect(text.includes('conversation-one-only') !== text.includes('conversation-two-only')).toBe(true);
     }
     expect(sessions.size).toBe(2);
-    await harness.dispose();
+    await harness.dispose!();
   });
 });
 
-it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered native tool prefix through %s without failed reasoning', async (api) => {
+it.each(['anthropic-messages', 'openai-responses'] as const)('serializes a recovered native tool prefix through %s without failed reasoning', async (api) => {
   const { fauxAssistantMessage, fauxThinking, fauxToolCall } = await import('@earendil-works/pi-ai');
   const { buildHarnessSessionContext } = await import('../../engine/session-context.js');
   const { validRecoveryProjection } = await import('../../engine/terminal-recovery.js');
@@ -136,7 +158,7 @@ it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered nati
   const model = { ...base, api, baseUrl: 'https://fixture.invalid/v1' };
   const signature = api === 'anthropic-messages' ? 'faux-signature'
     : JSON.stringify({ type: 'reasoning', id: 'rs_fixture', summary: [], encrypted_content: 'faux-signature' });
-  const assistant = (content, stopReason) => ({ ...fauxAssistantMessage(content, { stopReason }), api, provider: model.provider, model: model.id });
+  const assistant = (content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]) => ({ ...fauxAssistantMessage(content, { stopReason }), api, provider: model.provider, model: model.id });
   const messages = buildHarnessSessionContext([
     { type: 'message', message: { role: 'user', content: 'cancelled ask', timestamp: 1 } },
     { type: 'message', message: assistant([{ ...fauxThinking('completed'), thinkingSignature: signature }, fauxToolCall('Read', { file_path: 'file' }, { id: 'call_fixture' })], 'toolUse') },
@@ -145,11 +167,11 @@ it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered nati
     { type: 'message', message: { role: 'user', content: 'next ask', timestamp: 2 } },
   ]);
   expect(validRecoveryProjection(messages, model)).toBe(true);
-  let payload;
-  await send(model, { systemPrompt: 'stable', messages, tools: [{ name: 'Read', description: 'Read fixture', parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } }] }, {
+  let payload!: WirePayload;
+  await (send as unknown as TestSend)(model, { systemPrompt: 'stable', messages, tools: [{ name: 'Read', description: 'Read fixture', parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } }] }, {
     apiKey: 'synthetic-test-value', maxRetries: 0,
     fetch: async (_url, init) => {
-      payload = JSON.parse(init.body);
+      payload = JSON.parse(init!.body as string);
       return new Response(JSON.stringify({ error: { message: 'intercepted test response', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
     },
   }).result();
@@ -160,14 +182,14 @@ it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered nati
   const calls = items.filter((item) => item.type === (api === 'anthropic-messages' ? 'tool_use' : 'function_call'));
   const results = items.filter((item) => item.type === (api === 'anthropic-messages' ? 'tool_result' : 'function_call_output'));
   expect(calls).toHaveLength(1); expect(results).toHaveLength(1);
-  expect(api === 'anthropic-messages' ? results[0].tool_use_id : results[0].call_id)
-    .toBe(api === 'anthropic-messages' ? calls[0].id : calls[0].call_id);
+  expect(api === 'anthropic-messages' ? results[0]!.tool_use_id : results[0]!.call_id)
+    .toBe(api === 'anthropic-messages' ? calls[0]!.id : calls[0]!.call_id);
 });
 
 
-it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays byte-identical across admission changes within each profile', async (api) => {
+it.each(['anthropic-messages', 'openai-responses'] as const)('keeps actual %s tool arrays byte-identical across admission changes within each profile', async (api) => {
   const { getPiBuiltinTools } = await import("../../tools/pi-tools.js");
-  const { composeHostTurnEnvelope, formatHostCapabilities } = /** @type {EnvelopeModule} */ (await import(new URL('../../../../conversation/src/context/turn-envelope.ts', import.meta.url).href));
+  const { composeHostTurnEnvelope, formatHostCapabilities } = (await import(new URL('../../../../conversation/src/context/turn-envelope.ts', import.meta.url).href)) as EnvelopeModule;
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const model = { ...fauxProvider({ provider: 'wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
   const processJobs = { start: async () => { throw new Error('must not start'); }, limits: { maxRuntimeMs: 10000 } };
@@ -175,7 +197,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
   const parent = { run: async () => { throw new Error('must not run'); }, instances };
   for (const profile of ['parent', 'persistent-child']) {
     const exposure = { persistentSubagents: profile === 'parent', askParent: profile === 'persistent-child' };
-    let baseline;
+    let baseline: string | undefined;
     const envelopes = new Set();
     for (const [index, kind] of ['user', 'job-wake', 'cron', 'child-continuation', 'exhausted-lineage', 'absent-controller'].entries()) {
       const admitted = index < 3;
@@ -191,13 +213,13 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
         ...options, ctx, processJobsController: options.processJobs,
       });
       if (profile === 'persistent-child') expect(tools.map((tool) => tool.name)).toEqual(['AskParent', 'Bash', 'Exec']);
-      const envelope = composeHostTurnEnvelope(formatHostCapabilities(options), kind);
+      const envelope = composeHostTurnEnvelope(formatHostCapabilities(options as unknown as Partial<RuntimeRunOptions>), kind);
       envelopes.add(envelope);
-      let payload;
-      await send(model, { systemPrompt: 'fixed', tools, messages: [{ role: 'user', content: envelope, timestamp: 1 }] }, {
+      let payload!: WirePayload;
+      await (send as unknown as TestSend)(model, { systemPrompt: 'fixed', tools, messages: [{ role: 'user', content: envelope, timestamp: 1 }] }, {
         apiKey: 'synthetic-test-value', maxRetries: 0,
         fetch: async (_url, init) => {
-          payload = JSON.parse(init.body);
+          payload = JSON.parse(init!.body as string);
           return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
         },
       }).result();
@@ -220,34 +242,34 @@ it.each([
   ['anthropic-messages', undefined, false, '5m'],
   ['openai-responses', undefined, true, null],
   ['openai-responses', 'long', true, null],
-])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
+] as const)('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
   vi.stubEnv('PI_CACHE_RETENTION', cacheRetention === 'short' ? 'long' : 'short');
-  const resolvedRetention = resolveJsonMonoAgentConfig({ cwd: '/repo', json: { runtime: { model: 'anthropic:claude-sonnet-4-6' }, context: { identityPath: 'IDENTITY.md' }, providers: { piNative: { ...(cacheRetention === undefined ? {} : { cacheRetention }) } } } }).providers.piNative.cacheRetention;
+  const resolvedRetention = resolveJsonMonoAgentConfig({ cwd: '/repo', json: { runtime: { model: 'anthropic:claude-sonnet-4-6' }, context: { identityPath: 'IDENTITY.md' }, providers: { piNative: { ...(cacheRetention === undefined ? {} : { cacheRetention }) } } } }).providers!.piNative!.cacheRetention;
   const driverModule = await import('../../engine/run-driver.js');
   const create = vi.spyOn(driverModule, 'createRunDriver');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const base = fauxProvider({ provider: 'retention-fixture', models: [{ id: 'fixture' }] });
-  const model = { ...base.getModel(), api, baseUrl: 'https://fixture.invalid/v1', compat: { supportsLongCacheRetention: supported } };
-  const models = createModels(); const payloads = []; const streamOptions = []; const events = [];
+  const model = { ...base.getModel(), api, baseUrl: 'https://fixture.invalid/v1', compat: { supportsLongCacheRetention: supported } } as Model<string>;
+  const models = createModels(); const payloads: WirePayload[] = []; const streamOptions: Array<SimpleStreamOptions | undefined> = []; const events: Array<{ type: string }> = [];
   models.setProvider({ ...base.provider, getModels: () => [model], streamSimple: (selected, context, options) => {
     streamOptions.push(options);
-    return send(selected, context, { ...options, apiKey: 'synthetic-test-value', maxRetries: 0,
+    return (send as unknown as TestSend)(selected, context, { ...options, apiKey: 'synthetic-test-value', maxRetries: 0,
       fetch: async (_url, init) => {
-        payloads.push(JSON.parse(init.body));
+        payloads.push(JSON.parse(init!.body as string));
         return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
       },
     });
   } });
   await generateEngineTurnResponse('stable', { model: { provider: 'retention-fixture', model: 'fixture', reference: 'retention-fixture:fixture' },
     piResolvedModel: model, piResolvedModels: models, messages: [{ role: 'user', content: 'test' }], allowedTools: ['Read'],
-    cacheRetention: resolvedRetention, promptCacheDiagnostics: true, onEvent: (event) => events.push(event),
+    cacheRetention: resolvedRetention, promptCacheDiagnostics: true, onEvent: (event: { type: string }) => events.push(event),
   });
   expect(payloads).toHaveLength(1);
-  if (api === 'anthropic-messages') expect(streamOptions[0].cacheRetention).toBe(resolvedRetention);
+  if (api === 'anthropic-messages') expect(streamOptions[0]!.cacheRetention).toBe(resolvedRetention);
   else {
-    expect(create.mock.calls[0][1].streamOptions).not.toHaveProperty('cacheRetention');
+    expect(create.mock.calls[0]![1]!.streamOptions).not.toHaveProperty('cacheRetention');
     // Pi itself materializes an undefined option in its downstream projection.
-    expect(streamOptions[0].cacheRetention).toBeUndefined();
+    expect(streamOptions[0]!.cacheRetention).toBeUndefined();
   }
   const diagnostic = events.find((event) => event.type === 'prompt_cache_diagnostic');
   expect(diagnostic).toMatchObject({ requestedCacheRetention: resolvedRetention, observedCacheTtls: ttl ? [ttl] : [] });
@@ -255,21 +277,21 @@ it.each([
   else expect(JSON.stringify(payloads[0])).not.toContain('"ttl":"1h"');
 });
 
-it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MCP and builtin %s definitions stable on real request-scoped endpoints', async (api) => {
+it.each(['anthropic-messages', 'openai-responses'] as const)('keeps combined app-owned MCP and builtin %s definitions stable on real request-scoped endpoints', async (api) => {
   const { getPiBuiltinTools } = await import("../../tools/pi-tools.js");
   const { initPiMcpTools, closePiMcpClients } = await import("../../tools/mcp/tools.js");
-  const { createSetConversationTitleRuntimeExtension } = /** @type {{createSetConversationTitleRuntimeExtension: () => RuntimeExtension}} */ (await import(new URL('../../../../app/src/request-tools/conversation-title.ts', import.meta.url).href));
-  const { createConsoleProjectsRuntimeExtension } = /** @type {{createConsoleProjectsRuntimeExtension: (options?: object) => RuntimeExtension}} */ (await import(new URL('../../../../app/src/request-tools/console-projects.ts', import.meta.url).href));
-  const { createMemoryRememberRuntimeExtension } = /** @type {{createMemoryRememberRuntimeExtension: (options: object) => RuntimeExtension}} */ (await import(new URL('../../../../app/src/memory/memory-remember.ts', import.meta.url).href));
-  const { createAdapterSendToolsServer } = /** @type {{createAdapterSendToolsServer: (settings: object, clients: object, indexing?: object, options?: object) => Promise<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>}} */ (await import(new URL('../../../../app/src/delivery/send-tools/server.ts', import.meta.url).href));
+  const { createSetConversationTitleRuntimeExtension } = (await import(new URL('../../../../app/src/request-tools/conversation-title.ts', import.meta.url).href)) as {createSetConversationTitleRuntimeExtension: () => RuntimeExtension};
+  const { createConsoleProjectsRuntimeExtension } = (await import(new URL('../../../../app/src/request-tools/console-projects.ts', import.meta.url).href)) as {createConsoleProjectsRuntimeExtension: (options?: object) => RuntimeExtension};
+  const { createMemoryRememberRuntimeExtension } = (await import(new URL('../../../../app/src/memory/memory-remember.ts', import.meta.url).href)) as {createMemoryRememberRuntimeExtension: (options: object) => RuntimeExtension};
+  const { createAdapterSendToolsServer } = (await import(new URL('../../../../app/src/delivery/send-tools/server.ts', import.meta.url).href)) as {createAdapterSendToolsServer: (settings: object, clients: object, indexing?: object, options?: object) => Promise<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>};
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
-  const { composeRuntimeOptionExtensions } = /** @type {{composeRuntimeOptionExtensions: (extensions: ReadonlyArray<RuntimeExtension | undefined>, options?: object) => RuntimeExtension | undefined}} */ (await import(new URL('../../../../app/src/composition/runtime-option-extensions.ts', import.meta.url).href));
-  const { composeHostTurnEnvelope, formatHostCapabilities } = /** @type {EnvelopeModule} */ (await import(new URL('../../../../conversation/src/context/turn-envelope.ts', import.meta.url).href));
+  const { composeRuntimeOptionExtensions } = (await import(new URL('../../../../app/src/composition/runtime-option-extensions.ts', import.meta.url).href)) as {composeRuntimeOptionExtensions: (extensions: ReadonlyArray<RuntimeExtension | undefined>, options?: object) => RuntimeExtension};
+  const { composeHostTurnEnvelope, formatHostCapabilities } = (await import(new URL('../../../../conversation/src/context/turn-envelope.ts', import.meta.url).href)) as EnvelopeModule;
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const model = { ...fauxProvider({ provider: 'app-wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
   const mutations = vi.fn(); const bridgeFetch = vi.fn();
-  let baseline; const envelopes = new Set();
+  let baseline: string | undefined; const envelopes = new Set();
   for (const [index, kind] of ['user', 'job-wake', 'cron', 'exhausted-lineage', 'absent-controller'].entries()) {
     const interactive = ['user', 'exhausted-lineage'].includes(kind);
     const web = { threadId: 'thread', turnId: `turn-${index}`, conversationTitle: { schema: 1, writable: true }, consoleProjects: { schema: 1 },
@@ -299,7 +321,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
     try {
       expect(mcp.warnings).toEqual([]);
       if (!interactive) {
-        for (const [name, args] of [['SetConversationTitle', { title: 'No mutation' }], ['CreateProject', { name: 'No mutation' }], ['Remember', { text: 'Must not be persisted.' }]]) {
+        for (const [name, args] of [['SetConversationTitle', { title: 'No mutation' }], ['CreateProject', { name: 'No mutation' }], ['Remember', { text: 'Must not be persisted.' }]] as const) {
           const result = await mcp.tools.find((tool) => tool.name === name).execute('refused', args);
           expect(result.details.mcp_result_is_error, name).toBe(true);
           if (name === "Remember") expect(result.details.raw?.structuredContent).toMatchObject({ stored: false });
@@ -311,13 +333,13 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
         expect(result.isError).toBe(true);
       }
       const envelope = composeHostTurnEnvelope(formatHostCapabilities(runOptions), kind); envelopes.add(envelope);
-      let payload;
+      let payload!: WirePayload;
       // pi-ai 0.86.0 moved prompt/tool folding into `Models`: the api-level
       // stream entry points take the normalized TranscriptContext, so fold
       // here exactly as `Models.streamSimple` does before dispatch.
-      await send(model, normalizeContext({ systemPrompt: 'fixed', tools: [...builtins, ...mcp.tools, ...adapterTools], messages: [{ role: 'user', content: envelope, timestamp: 1 }] }), {
+      await (send as unknown as TestSend)(model, normalizeContext({ systemPrompt: 'fixed', tools: [...builtins, ...mcp.tools, ...adapterTools], messages: [{ role: 'user', content: envelope, timestamp: 1 }] }), {
         apiKey: 'synthetic-test-value', maxRetries: 0, fetch: async (_url, init) => {
-          payload = JSON.parse(init.body);
+          payload = JSON.parse(init!.body as string);
           return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
         },
       }).result();

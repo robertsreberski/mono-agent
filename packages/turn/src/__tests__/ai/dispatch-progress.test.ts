@@ -10,22 +10,22 @@ import { createRouterRuntime } from "../../runtime/router.js";
 import { activateTurnHarness, startLiveInput } from "../../execution/pi/turn-runner.js";
 import { generateEngineTurnResponse, preparePiNativeDispatch } from "../../execution/pi/run.js";
 
-const cleanups = [];
+const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
 function active() {
-  const dispatchProgress = createDispatchProgress(), hooks = {};
-  let subscriber;
+  const dispatchProgress = createDispatchProgress(), hooks: Record<string, (event: unknown) => unknown> = {};
+  let subscriber: (event: unknown) => void;
   const runState = { dispatchProgress, assistantTexts: [], assistantThinking: [], textDeltaIndexes: new Set(), thinkingDeltaIndexes: new Set(), toolStartTimes: new Map(), toolApprovals: new Map(), toolExecutionsThisTurn: 0, turnCount: 0 };
-  const harness = { on(type, handler) { hooks[type] = handler; }, subscribe(handler) { subscriber = handler; }, abort: async () => {}, getModel: () => ({ contextWindow: 10000 }) };
+  const harness = { on(type: string, handler: (event: unknown) => unknown) { hooks[type] = handler; }, subscribe(handler: typeof subscriber) { subscriber = handler; }, abort: async () => {}, getModel: () => ({ contextWindow: 10000 }) };
   expect(dispatchProgress.armed).toBe(false);
   activateTurnHarness(runState, { harness, onEvent() {}, options: {}, toolLimits: {}, sdk: "pi", reference: "faux:fictional" });
   expect(dispatchProgress).toEqual({ version: 1, armed: true, toolAdmitted: false, liveInputTaken: false });
-  return { dispatchProgress, hooks, emit: (event) => subscriber(event) };
+  return { dispatchProgress, hooks, emit: (event: unknown) => subscriber(event) };
 }
 
 it.each(["before_tool", "tool_execution_start"])("detects tool admission at %s", (path) => {
   const f = active();
-  if (path === "before_tool") f.hooks.before_tool({ toolName: "Read" });
+  if (path === "before_tool") f.hooks.before_tool!({ toolName: "Read" });
   else f.emit({ type: path, toolName: "FictionalLookup", toolCallId: "fictional-call", args: {} });
   expect(f.dispatchProgress.toolAdmitted).toBe(true);
 });
@@ -43,7 +43,7 @@ it.each([undefined, null, {}, { version: 2, armed: true, toolAdmitted: false, li
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "dispatch-progress-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const faux = fauxProvider({ models: [{ id: "fictional", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined }), models = createModels(); models.setProvider(faux.provider);
+  const faux = fauxProvider({ models: [{ id: "fictional", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined } as unknown as Parameters<typeof fauxProvider>[0]), models = createModels(); models.setProvider(faux.provider);
   const options = { model: { provider: "faux", model: "fictional", reference: "faux:fictional" }, messages: [{ role: "user", content: "Fictional input" }], piResolvedModel: faux.getModel(), piResolvedModels: models,
     cwd: root, allowedTools: [], compaction: { enabled: false }, piMaxRetries: 0, providerCheckMaxTokens: 4096 };
   return { root, faux, options };
@@ -89,10 +89,10 @@ it.each([new Error("Fictional error"), Object.freeze(new Error("Fictional frozen
   if (error instanceof Error && Object.isExtensible(error)) expect(annotated).toBe(error); else expect(annotated.cause).toBe(error);
 });
 
-function beforeToolHook(handler, { hideToolStarts = false, execute } = {}) {
+function beforeToolHook(handler: (event: unknown) => unknown, { hideToolStarts = false, execute }: { hideToolStarts?: boolean; execute?: (...args: unknown[]) => unknown } = {}) {
   const create = sessionAdapter.createHarnessAdapter;
   vi.spyOn(sessionAdapter, "createHarnessAdapter").mockImplementation(async (session, options) => {
-    const harness = await create(session, { ...options, tools: options.tools.map((tool) =>
+    const harness = await create(session, { ...options, tools: options.tools.map((tool: { name: string; execute: (...args: unknown[]) => unknown }) =>
       tool.name === "Read" && execute ? { ...tool, execute } : tool) }), on = harness.on.bind(harness);
     harness.on = (type, callback) => {
       const remove = on(type, callback);
@@ -101,7 +101,7 @@ function beforeToolHook(handler, { hideToolStarts = false, execute } = {}) {
     };
     if (hideToolStarts) {
       const subscribe = harness.subscribe.bind(harness);
-      harness.subscribe = (listener) => subscribe((event) => { if (!event.type.startsWith("tool_execution_")) listener(event); });
+      harness.subscribe = (listener) => subscribe((event: { type: string }) => { if (!event.type.startsWith("tool_execution_")) listener(event); });
     }
     return harness;
   });
@@ -116,7 +116,7 @@ it("retains before-tool evidence when native cleanup throws, blocking retry and 
   const primaryRun = vi.fn((prompt, options) => generateEngineTurnResponse(prompt, { ...f.options, ...options, allowedTools: ["Read"] })), backupRun = vi.fn();
   const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 2 }, { provider: "anthropic", model: "fictional-backup", reference: "anthropic:fictional-backup" }], retry: { backoffMs: 0, maxBackoffMs: 0 },
     resolveAttempt: ({ attemptIndex }) => ({ runtime: { configureTools() {}, run: attemptIndex ? backupRun : primaryRun } }) });
-  const events = [], result = await router.run("Fictional rules", { ...f.options, onEvent: (event) => events.push(event) });
+  const events: Array<{ type: string; message?: { content?: Array<{ type: string }> } }> = [], result = await router.run("Fictional rules", { ...f.options, onEvent: (event) => events.push(event) });
   expect(beforeTool, String(result.error)).toHaveBeenCalledOnce(); expect(cleanup).toHaveBeenCalledOnce();
   expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun).not.toHaveBeenCalled();
   expect(result.dispatchProgress).toMatchObject({ armed: true, toolAdmitted: true });

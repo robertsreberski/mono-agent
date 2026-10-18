@@ -55,14 +55,14 @@ describe("buildCapabilitiesUsed", () => {
 describe("toolCompactionAppliedFromWarnings", () => {
   it("detects tool_payload_truncated warnings", () => {
     expect(toolCompactionAppliedFromWarnings([
-      { warning_kind: "tool_payload_truncated", message: "..." },
+      { warning_kind: "tool_payload_truncated", message: "..." } as { warning_kind: string },
       { warning_kind: "live_input_failed" },
     ])).toBe(true);
   });
 
   it("returns false on empty / non-array input", () => {
     expect(toolCompactionAppliedFromWarnings([])).toBe(false);
-    expect(toolCompactionAppliedFromWarnings(null)).toBe(false);
-    expect(toolCompactionAppliedFromWarnings("nope")).toBe(false);
+    expect(toolCompactionAppliedFromWarnings(null as unknown as Parameters<typeof toolCompactionAppliedFromWarnings>[0])).toBe(false);
+    expect(toolCompactionAppliedFromWarnings("nope" as unknown as Parameters<typeof toolCompactionAppliedFromWarnings>[0])).toBe(false);
   });
 });

@@ -16,7 +16,7 @@ it("suppresses across reopened controllers, warns once and resets on growth/cool
 });
 it("isolates sessions, ignores unattempted/aborted work, clears success and bypasses manual", () => {
   const input = { ...base, scope: "another-session" };
-  compactionFailureGuard(input).settle("failed", false);
+  (compactionFailureGuard(input).settle as (outcome: string, attempted: boolean, reason?: string) => void)("failed", false);
   expect(compactionFailureGuard(input).suppressed).toBe(false);
   compactionFailureGuard(input).settle("failed", true, "aborted");
   expect(compactionFailureGuard(input).suppressed).toBe(false);
@@ -26,7 +26,7 @@ it("isolates sessions, ignores unattempted/aborted work, clears success and bypa
   expect(compactionFailureGuard({ ...input, trigger: "manual" }).suppressed).toBe(false);
   expect(compactionFailureGuard({ ...input, scope: null })).toBeNull();
   expect(compactionFailureGuard({ ...input, policy: { failureCooldownMs: 0 } })).toBeNull();
-  compactionFailureGuard(input).settle("accepted", true);
+  (compactionFailureGuard(input).settle as (outcome: string, attempted: boolean, reason?: string) => void)("accepted", true);
   expect(compactionFailureGuard(input).suppressed).toBe(false);
 });
 

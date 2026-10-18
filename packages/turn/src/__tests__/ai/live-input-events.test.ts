@@ -1,8 +1,9 @@
+import type { RuntimeLiveInputMessage, LiveInputEvent } from "../../runtime/live-input-events.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { instrumentLiveInputAppliedEvents } from "../../runtime/live-input-events.js";
 
-function replayableLiveInput(messages, hooks = {}) {
+function replayableLiveInput(messages: RuntimeLiveInputMessage[] | ((generation: number) => RuntimeLiveInputMessage[]), hooks: { onReturn?: () => void } = {}) {
   let generation = 0;
   return {
     [Symbol.asyncIterator]() {
@@ -10,12 +11,12 @@ function replayableLiveInput(messages, hooks = {}) {
       generation += 1;
       let cursor = 0;
       return {
-        async next() {
+        async next(): Promise<IteratorResult<RuntimeLiveInputMessage>> {
           return cursor < values.length
-            ? { done: false, value: values[cursor++] }
+            ? { done: false, value: values[cursor++]! }
             : { done: true, value: undefined };
         },
-        async return() {
+        async return(): Promise<IteratorResult<RuntimeLiveInputMessage>> {
           hooks.onReturn?.();
           return { done: true, value: undefined };
         },
@@ -27,18 +28,18 @@ function replayableLiveInput(messages, hooks = {}) {
 describe("instrumentLiveInputAppliedEvents", () => {
   it("emits applied only after exact recorded host confirmation and keeps telemetry metadata-only", async () => {
     const acknowledge = vi.fn(() => "recorded");
-    const events = [];
+    const events: LiveInputEvent[] = [];
     const source = replayableLiveInput([{
       body: "full private guidance",
       id: "follow-up-1",
       receivedAt: "2026-07-22T08:30:00.000Z",
       acknowledge,
     }]);
-    const item = await instrumentLiveInputAppliedEvents(source, (event) => events.push(event))
+    const item = await instrumentLiveInputAppliedEvents(source, (event) => events.push(event))!
       [Symbol.asyncIterator]().next();
 
-    expect(item.value.acknowledge({ providerEntryId: "entry-1", providerRunId: "run-1" })).toBe("recorded");
-    expect(item.value.acknowledge({ providerEntryId: "entry-1", providerRunId: "run-1" })).toBe("ignored");
+    expect(item.value.acknowledge!({ providerEntryId: "entry-1", providerRunId: "run-1" })).toBe("recorded");
+    expect(item.value.acknowledge!({ providerEntryId: "entry-1", providerRunId: "run-1" })).toBe("ignored");
 
     expect(acknowledge).toHaveBeenCalledTimes(1);
     expect(events.map((event) => event.type)).toEqual([
@@ -59,13 +60,13 @@ describe("instrumentLiveInputAppliedEvents", () => {
     ["throw", () => { throw new Error("private callback failure"); }, "threw"],
     ["thenable", () => Promise.resolve("recorded"), "unconfirmed"],
   ])("does not manufacture applied when acknowledgement returns %s", async (_label, acknowledge, disposition) => {
-    const events = [];
+    const events: LiveInputEvent[] = [];
     const stream = instrumentLiveInputAppliedEvents(
       replayableLiveInput([{ body: "secret", id: "one", acknowledge }]),
       (event) => events.push(event),
     );
-    const item = await stream[Symbol.asyncIterator]().next();
-    item.value.acknowledge();
+    const item = await stream![Symbol.asyncIterator]().next();
+    item.value.acknowledge!();
     expect(events).toEqual([
       { type: "live_input_consumed", inputId: "one" },
       {
@@ -83,7 +84,7 @@ describe("instrumentLiveInputAppliedEvents", () => {
     const ownerReject = vi.fn(() => "recorded");
     const ownerAcknowledge = vi.fn(() => "recorded");
     const duplicateAcknowledge = vi.fn(() => "recorded");
-    const events = [];
+    const events: LiveInputEvent[] = [];
     const stream = instrumentLiveInputAppliedEvents(replayableLiveInput((generation) => [{
       body: generation === 0 ? "original" : "invalid duplicate body",
       id: "same",
@@ -92,11 +93,11 @@ describe("instrumentLiveInputAppliedEvents", () => {
       acknowledge: generation === 0 ? ownerAcknowledge : duplicateAcknowledge,
     }]), (event) => events.push(event));
 
-    const first = await stream[Symbol.asyncIterator]().next();
-    expect(first.value.reject(new Error("safe"))).toBe("recorded");
-    const replay = await stream[Symbol.asyncIterator]().next();
+    const first = await stream![Symbol.asyncIterator]().next();
+    expect(first.value.reject!(new Error("safe"))).toBe("recorded");
+    const replay = await stream![Symbol.asyncIterator]().next();
     expect(replay.value.body).toBe("original");
-    expect(replay.value.acknowledge()).toBe("recorded");
+    expect(replay.value.acknowledge!()).toBe("recorded");
 
     expect(ownerReject).toHaveBeenCalledTimes(1);
     expect(ownerAcknowledge).toHaveBeenCalledTimes(1);
@@ -111,15 +112,15 @@ describe("instrumentLiveInputAppliedEvents", () => {
     const originalAccepted = vi.fn(() => "recorded");
     const originalReject = vi.fn(() => "recorded");
     const originalAcknowledge = vi.fn(() => "recorded");
-    const freshAccepted = vi.fn(function () {
+    const freshAccepted = vi.fn(function (this: RuntimeLiveInputMessage) {
       expect(this.body).toBe("invalid replacement body");
       return "recorded";
     });
-    const freshAcknowledge = vi.fn(function () {
+    const freshAcknowledge = vi.fn(function (this: RuntimeLiveInputMessage) {
       expect(this.receivedAt).toBe(replacementReceivedAt);
       return "recorded";
     });
-    const events = [];
+    const events: LiveInputEvent[] = [];
     const stream = instrumentLiveInputAppliedEvents(replayableLiveInput((generation) => [{
       body: generation === 0 ? "original body" : "invalid replacement body",
       id: "same-owner",
@@ -130,20 +131,20 @@ describe("instrumentLiveInputAppliedEvents", () => {
       acknowledge: generation === 0 ? originalAcknowledge : freshAcknowledge,
     }]), (event) => events.push(event));
 
-    const first = await stream[Symbol.asyncIterator]().next();
-    expect(first.value.accepted({ providerEntryId: "entry-1" })).toBe("recorded");
-    expect(first.value.reject({ code: "native_queue_removed" })).toBe("recorded");
+    const first = await stream![Symbol.asyncIterator]().next();
+    expect(first.value.accepted!({ providerEntryId: "entry-1" })).toBe("recorded");
+    expect(first.value.reject!({ code: "native_queue_removed" })).toBe("recorded");
 
-    const replay = await stream[Symbol.asyncIterator]().next();
+    const replay = await stream![Symbol.asyncIterator]().next();
     expect(replay.value).toMatchObject({
       body: "original body",
       id: "same-owner",
       receivedAt: originalReceivedAt,
       logicalOwner,
     });
-    expect(first.value.acknowledge({ providerEntryId: "stale" })).toBe("ignored");
-    expect(replay.value.accepted({ providerEntryId: "entry-2" })).toBe("recorded");
-    expect(replay.value.acknowledge({ providerEntryId: "entry-2", providerRunId: "run-2" }))
+    expect(first.value.acknowledge!({ providerEntryId: "stale" })).toBe("ignored");
+    expect(replay.value.accepted!({ providerEntryId: "entry-2" })).toBe("recorded");
+    expect(replay.value.acknowledge!({ providerEntryId: "entry-2", providerRunId: "run-2" }))
       .toBe("recorded");
 
     expect(originalAccepted).toHaveBeenCalledTimes(1);
@@ -168,11 +169,11 @@ describe("instrumentLiveInputAppliedEvents", () => {
       replayableLiveInput([{ body: "guide", id: "one", reject: () => undefined, acknowledge }]),
       vi.fn(),
     );
-    const first = await stream[Symbol.asyncIterator]().next();
-    expect(first.value.reject({ code: "native_queue_removed" })).toBeUndefined();
-    const replay = await stream[Symbol.asyncIterator]().next();
+    const first = await stream![Symbol.asyncIterator]().next();
+    expect(first.value.reject!({ code: "native_queue_removed" })).toBeUndefined();
+    const replay = await stream![Symbol.asyncIterator]().next();
     expect(replay.value.body).toBe("guide");
-    expect(replay.value.acknowledge()).toBe("recorded");
+    expect(replay.value.acknowledge!()).toBe("recorded");
     expect(acknowledge).toHaveBeenCalledTimes(1);
   });
 
@@ -180,7 +181,7 @@ describe("instrumentLiveInputAppliedEvents", () => {
     "suppresses duplicate callback owners while the first owner is %s",
     async (phase) => {
       const duplicateCallback = vi.fn();
-      const events = [];
+      const events: LiveInputEvent[] = [];
       const stream = instrumentLiveInputAppliedEvents(replayableLiveInput([
         {
           body: "owner",
@@ -191,11 +192,11 @@ describe("instrumentLiveInputAppliedEvents", () => {
         },
         { body: "duplicate", id: "same", acknowledge: duplicateCallback },
       ]), (event) => events.push(event));
-      const iterator = stream[Symbol.asyncIterator]();
+      const iterator = stream![Symbol.asyncIterator]();
       const first = await iterator.next();
-      if (phase === "native_accepted") first.value.accepted();
-      if (phase === "consumed") first.value.acknowledge();
-      if (phase === "uncertain") first.value.uncertain({ reason: "delivery_uncertain" });
+      if (phase === "native_accepted") first.value.accepted!();
+      if (phase === "consumed") first.value.acknowledge!();
+      if (phase === "uncertain") first.value.uncertain!({ reason: "delivery_uncertain" });
       expect((await iterator.next()).done).toBe(true);
       expect(duplicateCallback).not.toHaveBeenCalled();
       expect(events.filter((event) => event.type === "live_input_duplicate_suppressed")).toHaveLength(1);
@@ -203,20 +204,20 @@ describe("instrumentLiveInputAppliedEvents", () => {
   );
 
   it("never replays anonymous values but still exposes identified values in later generations", async () => {
-    const events = [];
+    const events: LiveInputEvent[] = [];
     const source = replayableLiveInput([
       { body: "anonymous one" },
       { body: "anonymous two" },
       { body: "identified", id: "identified" },
     ]);
     const stream = instrumentLiveInputAppliedEvents(source, (event) => events.push(event));
-    const first = stream[Symbol.asyncIterator]();
+    const first = stream![Symbol.asyncIterator]();
     expect((await first.next()).value.body).toBe("anonymous one");
     expect((await first.next()).value.body).toBe("anonymous two");
     const identified = await first.next();
-    identified.value.reject(new Error("safe"));
+    identified.value.reject!(new Error("safe"));
 
-    const replay = stream[Symbol.asyncIterator]();
+    const replay = stream![Symbol.asyncIterator]();
     expect((await replay.next()).value.body).toBe("identified");
     expect((await replay.next()).done).toBe(true);
     expect(events.filter((event) => event.reason === "anonymous_identity")).toHaveLength(2);
@@ -225,14 +226,14 @@ describe("instrumentLiveInputAppliedEvents", () => {
   it("converts post-acceptance rejection without proved removal into uncertainty", async () => {
     const reject = vi.fn();
     const uncertain = vi.fn(() => "recorded");
-    const events = [];
+    const events: LiveInputEvent[] = [];
     const stream = instrumentLiveInputAppliedEvents(
       replayableLiveInput([{ body: "guide", id: "one", reject, uncertain }]),
       (event) => events.push(event),
     );
-    const item = await stream[Symbol.asyncIterator]().next();
-    item.value.accepted({ providerEntryId: "entry" });
-    expect(item.value.reject(new Error("unknown native state"))).toBe("recorded");
+    const item = await stream![Symbol.asyncIterator]().next();
+    item.value.accepted!({ providerEntryId: "entry" });
+    expect(item.value.reject!(new Error("unknown native state"))).toBe("recorded");
     expect(reject).not.toHaveBeenCalled();
     expect(uncertain).toHaveBeenCalledTimes(1);
     expect(events.at(-1)).toMatchObject({
@@ -249,11 +250,11 @@ describe("instrumentLiveInputAppliedEvents", () => {
       replayableLiveInput([{ body: "guide", id: "one", reject: () => "recorded", acknowledge }]),
       vi.fn(),
     );
-    const first = await stream[Symbol.asyncIterator]().next();
-    first.value.reject(new Error("safe"));
-    const replay = await stream[Symbol.asyncIterator]().next();
-    expect(first.value.acknowledge()).toBe("ignored");
-    expect(replay.value.acknowledge()).toBe("recorded");
+    const first = await stream![Symbol.asyncIterator]().next();
+    first.value.reject!(new Error("safe"));
+    const replay = await stream![Symbol.asyncIterator]().next();
+    expect(first.value.acknowledge!()).toBe("ignored");
+    expect(replay.value.acknowledge!()).toBe("recorded");
     expect(acknowledge).toHaveBeenCalledTimes(1);
   });
 
@@ -263,10 +264,10 @@ describe("instrumentLiveInputAppliedEvents", () => {
       replayableLiveInput([{ body: "guide", id: "one", reject }]),
       vi.fn(),
     );
-    const first = await stream[Symbol.asyncIterator]().next();
-    expect(first.value.reject({ code: "native_queue_removed" })).toBe("ignored");
+    const first = await stream![Symbol.asyncIterator]().next();
+    expect(first.value.reject!({ code: "native_queue_removed" })).toBe("ignored");
 
-    await expect(stream[Symbol.asyncIterator]().next()).resolves.toEqual({
+    await expect(stream![Symbol.asyncIterator]().next()).resolves.toEqual({
       done: true,
       value: undefined,
     });
@@ -278,9 +279,9 @@ describe("instrumentLiveInputAppliedEvents", () => {
     const source = replayableLiveInput([{ body: "guide" }], { onReturn });
     const first = instrumentLiveInputAppliedEvents(source, vi.fn());
     expect(instrumentLiveInputAppliedEvents(first, vi.fn())).toBe(first);
-    const iterator = first[Symbol.asyncIterator]();
+    const iterator = first![Symbol.asyncIterator]();
     await iterator.next();
-    await iterator.return();
+    await iterator.return!();
     expect(onReturn).toHaveBeenCalledTimes(1);
   });
 });

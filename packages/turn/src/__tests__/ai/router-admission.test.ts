@@ -1,10 +1,11 @@
+import type { RuntimeEvent } from "../../contracts/events.js";
 import { expect, it, vi } from "vitest";
 import { createRouterRuntime } from "../../runtime/router.js";
 
 it.each([false, true])("reports cancellation without failover when aborted during detached context loading (throws=%s)", async (throws) => {
   const primary = { provider: "openai-codex", model: "fictional-primary", reference: "openai-codex:fictional-primary" };
   const backup = { provider: "anthropic", model: "fictional-backup", reference: "anthropic:fictional-backup" };
-  const controller = new AbortController(), events = [];
+  const controller = new AbortController(), events: Array<RuntimeEvent & { warning_kind?: string }> = [];
   const primaryRun = vi.fn(async () => ({ error: "Connection error.", failureKind: "provider_unavailable", events: [] }));
   const backupRun = vi.fn(async () => ({ text: "Fictional backup answer", events: [] })), cleanup = vi.fn();
   const loader = vi.fn(async () => {
@@ -14,7 +15,6 @@ it.each([false, true])("reports cancellation without failover when aborted durin
     return [{ role: "user", content: "Fictional earlier history" }];
   });
   const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) => ({
-    // @ts-expect-error Deliberately partial route double; only dispatch is exercised.
     runtime: { configureTools() {}, run: attemptIndex === 0 ? primaryRun : backupRun },
     ...(attemptIndex === 1 ? { cleanup } : {}),
   }) });

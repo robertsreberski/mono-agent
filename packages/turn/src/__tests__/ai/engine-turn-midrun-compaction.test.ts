@@ -10,6 +10,16 @@
 // the cost guards (one attempt in flight, one evaluation per round, required
 // fresh assistant progress and growth) without paying for four faux runs.
 
+import type { AssistantMessage, Context, UserMessage } from "@earendil-works/pi-ai";
+import type { CompactionRecordedPayload } from "../../contracts/runtime.js";
+import type { PiOptions } from "../../execution/pi/types.js";
+type FixtureMessage = UserMessage | ReturnType<typeof assistantMessage>;
+type FixtureEntry = { type: string; id: string; parentId: string | null; timestamp: number; message: FixtureMessage };
+type FixtureCompaction = { summary: string; tokensBefore: number; retainedTail: FixtureMessage[] };
+type FixtureHook = (event: { reason: string; branchEntries: FixtureEntry[]; signal: AbortSignal }) => Promise<{ cancel?: boolean; compaction?: FixtureCompaction } | undefined>;
+type CompactionEvent = { type: string; status: string; trigger: string; tokensAfter: number; tokensBefore: number; accounting: { midRun: boolean } };
+type Warning = { warning_kind: string };
+type CompactionSettings = { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,14 +49,14 @@ function fauxSetup(modelDef = {}) {
   const faux = fauxProvider({
     provider: "faux",
     models: [{ id: "faux-model", contextWindow: 30_000, maxTokens: 8_000, ...modelDef }],
-    tokensPerSecond: undefined,
+    tokensPerSecond: undefined!,
   });
   const models = createModels();
   models.setProvider(faux.provider);
   return { faux, models, model: faux.getModel() };
 }
 
-function runOptions({ model, models }, overrides = {}) {
+function runOptions({ model, models }: ReturnType<typeof fauxSetup>, overrides: Omit<Partial<PiOptions>, "onEvent"> & { onEvent?: (event: CompactionEvent) => unknown } = {}) {
   return {
     model: { provider: model.provider, model: model.id, reference: `${model.provider}:${model.id}` },
     piResolvedModel: model,
@@ -63,7 +73,7 @@ describe("pi-native mid-run compaction (real harness)", () => {
     writeFileSync(join(root, "notes.txt"), "notes\n");
     try {
       const setup = fauxSetup();
-      const summaryPrompts = [];
+      const summaryPrompts: Context[] = [];
       setup.faux.setResponses([
         fauxAssistantMessage([fauxText(BULK), fauxToolCall("Read", { file_path: "notes.txt" }, { id: "call-1" })]),
         fauxAssistantMessage([fauxText(BULK), fauxToolCall("Read", { file_path: "notes.txt" }, { id: "call-2" })]),
@@ -73,15 +83,15 @@ describe("pi-native mid-run compaction (real harness)", () => {
         },
         fauxAssistantMessage([fauxText("done")]),
       ]);
-      const events = [];
-      const recorded = [];
+      const events: CompactionEvent[] = [];
+      const recorded: CompactionRecordedPayload[] = [];
 
       const result = await generateEngineTurnResponse("system", runOptions(setup, {
         cwd: root,
         allowedTools: ["Read"],
         messages: [{ role: "user", content: "read the notes twice" }],
-        onEvent: (event) => events.push(event),
-        onCompactionRecorded: (row) => recorded.push(row),
+        onEvent: (event: CompactionEvent) => events.push(event),
+        onCompactionRecorded: (row: CompactionRecordedPayload) => recorded.push(row),
         runId: "run-midrun",
       }));
 
@@ -92,9 +102,9 @@ describe("pi-native mid-run compaction (real harness)", () => {
       // prompt: two assistant rounds + one summary + the final assistant.
       const compactionEvents = events.filter((event) => event?.type === "context_compaction");
       expect(compactionEvents.map((event) => event.status)).toEqual(["running", "succeeded"]);
-      expect(compactionEvents[0].trigger).toBe("proactive");
-      expect(compactionEvents[1].accounting.midRun).toBe(true);
-      expect(compactionEvents[1].tokensAfter).toBeLessThan(compactionEvents[1].tokensBefore);
+      expect(compactionEvents[0]!.trigger).toBe("proactive");
+      expect(compactionEvents[1]!.accounting.midRun).toBe(true);
+      expect(compactionEvents[1]!.tokensAfter).toBeLessThan(compactionEvents[1]!.tokensBefore);
       expect(summaryPrompts).toHaveLength(1);
       expect(setup.faux.state.callCount).toBe(4);
       expect(recorded).toEqual([expect.objectContaining({
@@ -108,7 +118,7 @@ describe("pi-native mid-run compaction (real harness)", () => {
       // the pre-request proactive pass and must not have started a second run.
       expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
       expect(events.filter((event) => event?.type === "provider_request_started")).toHaveLength(1);
-      expect((result.runtimeWarnings || []).map((warning) => warning.warning_kind))
+      expect((result.runtimeWarnings || []).map((warning: Warning) => warning.warning_kind))
         .not.toContain("live_input_correlation_invalid");
 
       // Accounting: the first round's assistant message was summarized out of
@@ -126,11 +136,11 @@ describe("pi-native mid-run compaction (real harness)", () => {
     setup.faux.setResponses([
       fauxAssistantMessage([fauxText("short answer")]),
     ]);
-    const events = [];
+    const events: CompactionEvent[] = [];
 
     const result = await generateEngineTurnResponse("system", runOptions(setup, {
       messages: [{ role: "user", content: "hello" }],
-      onEvent: (event) => events.push(event),
+      onEvent: (event: CompactionEvent) => events.push(event),
     }));
 
     expect(result.error).toBeNull();
@@ -157,13 +167,13 @@ describe("pi-native mid-run compaction (real harness)", () => {
         },
         fauxAssistantMessage([fauxText("done")]),
       ]);
-      const events = [];
+      const events: CompactionEvent[] = [];
 
       const result = await generateEngineTurnResponse("system", runOptions(setup, {
         cwd: root,
         allowedTools: ["Read"],
         messages: [{ role: "user", content: "read the notes twice" }],
-        onEvent: (event) => events.push(event),
+        onEvent: (event: CompactionEvent) => events.push(event),
         abortSignal: controller.signal,
       }));
 
@@ -182,11 +192,11 @@ describe("pi-native mid-run compaction (real harness)", () => {
 
 // --- Controller-level guards -------------------------------------------------
 
-function userMessage(text) {
+function userMessage(text: string): UserMessage {
   return { role: "user", content: [{ type: "text", text }], timestamp: 1 };
 }
 
-function assistantMessage(text, usage) {
+function assistantMessage(text: string, usage?: Omit<AssistantMessage["usage"], "cost"> & { cost: Partial<AssistantMessage["usage"]["cost"]> }) {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
@@ -202,7 +212,7 @@ function assistantMessage(text, usage) {
   };
 }
 
-function entriesFor(messages) {
+function entriesFor(messages: FixtureMessage[]) {
   return messages.map((message, index) => ({
     type: "message",
     id: `e${index + 1}`,
@@ -231,10 +241,10 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
     usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0 } },
   }));
   /** @type {Array<(event: any) => void>} */
-  const subscribers = [];
+  const subscribers: Array<(event: { type: string; lane: string; reason: string; status: string; entryId: string }) => void> = [];
   /** @type {Array<(event: any) => any>} */
-  const hooks = [];
-  const settings = [];
+  const hooks: FixtureHook[] = [];
+  const settings: CompactionSettings[] = [];
   let midRunArmed = false;
   const harness = {
     models: { completeSimple, getModel: () => model },
@@ -251,14 +261,14 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
       commitCompaction(entries, result.compaction);
       return result.compaction;
     }),
-    setCompactionSettings: vi.fn(async (value) => { settings.push(value); }),
-    setMidRunCompactionArmed: (value) => { midRunArmed = value; },
-    on: (type, handler) => {
+    setCompactionSettings: vi.fn(async (value: CompactionSettings) => { settings.push(value); }),
+    setMidRunCompactionArmed: (value: boolean) => { midRunArmed = value; },
+    on: (type: string, handler: FixtureHook) => {
       expect(type).toBe("session_before_compact");
       hooks.push(handler);
       return () => hooks.splice(hooks.indexOf(handler), 1);
     },
-    subscribe: (listener) => {
+    subscribe: (listener: (typeof subscribers)[number]) => {
       subscribers.push(listener);
       return () => subscribers.splice(subscribers.indexOf(listener), 1);
     },
@@ -271,17 +281,17 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
       reactiveAttempted: false,
       compactedThisRun: false,
       policy,
-      diagnostics: { context_fixed_overhead_tokens: 500, context_user_message_tokens: 100 },
+      diagnostics: { context_fixed_overhead_tokens: 500, context_user_message_tokens: 100 } as Record<string, unknown>,
       carriedUsage: null,
       carriedUsageMeasured: false,
     },
   };
-  const events = [];
-  const runtimeWarnings = [];
-  const recorded = [];
+  const events: CompactionEvent[] = [];
+  const runtimeWarnings: Warning[] = [];
+  const recorded: CompactionRecordedPayload[] = [];
   /** @type {Array<any>} */
-  const transcript = [];
-  function commitCompaction(entries, compaction) {
+  const transcript: FixtureMessage[] = [];
+  function commitCompaction(entries: FixtureEntry[], compaction: FixtureCompaction) {
     const timestamp = Date.now();
     const committed = {
       type: "compaction",
@@ -297,9 +307,9 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   }
   const controller = createMidRunCompaction(runState, {
     harness,
-    options: { onCompactionRecorded: (row) => recorded.push(row), runId: "r1" },
+    options: { onCompactionRecorded: (row: CompactionRecordedPayload) => recorded.push(row), runId: "r1" },
     reference: "faux:m",
-    onEvent: (event) => events.push(event),
+    onEvent: (event: CompactionEvent) => events.push(event),
     runtimeWarnings,
   });
   return {
@@ -315,10 +325,10 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
     hookCount: () => hooks.length,
     summaryRequests: () => completeSimple.mock.calls.length,
     transcript: () => [...transcript],
-    append(...messages) {
+    append(...messages: FixtureMessage[]) {
       transcript.push(...messages);
     },
-    setTranscript(messages) {
+    setTranscript(messages: FixtureMessage[]) {
       transcript.splice(0, transcript.length, ...messages);
     },
     // Simulate one Pi checkpoint: dispatch the before_compaction hook and, when
@@ -346,8 +356,8 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
 
 // Three bulky earlier messages plus a small tail: the cut keeps the tail and
 // summarizes the rest, which is the shape a long tool-using run reaches.
-function growingTranscript(rounds) {
-  const messages = [userMessage("start")];
+function growingTranscript(rounds: number) {
+  const messages: FixtureMessage[] = [userMessage("start")];
   for (let index = 0; index < rounds; index += 1) {
     messages.push(assistantMessage(`round ${index} ${"x".repeat(40_000)}`));
     messages.push(userMessage(`follow up ${index}`));
@@ -376,7 +386,7 @@ describe("mid-run compaction guards", () => {
     fixture.setTranscript(growingTranscript(2));
 
     const first = await fixture.checkpoint();
-    expect(first.compaction).toBeDefined();
+    expect(first!.compaction).toBeDefined();
     expect(fixture.summaryRequests()).toBeGreaterThan(0);
     expect(fixture.runState.compaction.applied).toBe(true);
     expect(fixture.runState.compaction.compactedThisRun).toBe(true);
@@ -424,7 +434,7 @@ describe("mid-run compaction guards", () => {
     const params = {
       harness: fixture.harness, runtime: {}, resolved: { reference: `faux:midrun-${growth}` },
       options: {}, promptText: "continue", promptImages: [], reference: "faux:m",
-      onEvent: (event) => fixture.events.push(event), runtimeWarnings: fixture.runtimeWarnings,
+      onEvent: (event: CompactionEvent) => fixture.events.push(event), runtimeWarnings: fixture.runtimeWarnings,
       state: overflow, runError: null, captureState,
     };
     const result = await runReactiveCompaction(fixture.runState, params);
@@ -454,7 +464,7 @@ describe("mid-run compaction guards", () => {
     const afterFirst = fixture.summaryRequests();
     expect(afterFirst).toBeGreaterThan(0);
     expect(fixture.runState.compaction.applied).toBe(false);
-    expect(fixture.runtimeWarnings.map((warning) => warning.warning_kind))
+    expect(fixture.runtimeWarnings.map((warning: Warning) => warning.warning_kind))
       .toEqual(["context_compaction_not_reducible"]);
     expect(fixture.events.map((event) => event.status)).toEqual(["running", "skipped"]);
 
@@ -474,7 +484,7 @@ describe("mid-run compaction guards", () => {
 
     expect(fixture.summaryRequests()).toBe(0);
     expect(fixture.events).toHaveLength(0);
-    expect(fixture.runtimeWarnings.map((warning) => warning.warning_kind))
+    expect(fixture.runtimeWarnings.map((warning: Warning) => warning.warning_kind))
       .toEqual(["context_compaction_midrun_ineffective"]);
     expect(fixture.runState.compaction.applied).toBe(false);
   });
@@ -522,7 +532,7 @@ describe("mid-run compaction guards", () => {
     const fixture = controllerFixture({ policy: { contextWindow: 400_000, triggerTokens: 280_000 } });
 
     expect(await fixture.controller.arm()).toBe(false);
-    expect(fixture.runtimeWarnings.map((warning) => warning.warning_kind))
+    expect(fixture.runtimeWarnings.map((warning: Warning) => warning.warning_kind))
       .toEqual(["context_compaction_midrun_unavailable"]);
   });
 });
@@ -537,14 +547,14 @@ describe("mid-run transcript accounting", () => {
   });
 
   it("accepts reserve 1 when the transcript trigger equals Pi's window", async () => {
-    const reserveTokens = midRunReserveTokens(100_000, 100_400, 400);
+    const reserveTokens = midRunReserveTokens(100_000, 100_400, 400)!;
     expect(reserveTokens).toBe(1);
     const settings = { enabled: true, reserveTokens, keepRecentTokens: 4_000 };
     expect(shouldCompact(99_999, 100_000, settings)).toBe(false);
     expect(shouldCompact(100_000, 100_000, settings)).toBe(true);
     const fixture = controllerFixture({ policy: { triggerTokens: 100_400 } });
     expect(await fixture.controller.arm()).toBe(true);
-    expect(fixture.settings[0].reserveTokens).toBe(1);
+    expect(fixture.settings[0]!.reserveTokens).toBe(1);
     expect(fixture.runtimeWarnings).toHaveLength(0);
     await fixture.controller.disarm();
   });

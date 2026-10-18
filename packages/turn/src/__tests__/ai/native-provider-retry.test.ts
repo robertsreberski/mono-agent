@@ -1,3 +1,4 @@
+import type { StreamFunction, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider, normalizeContext } from "@earendil-works/pi-ai";
 import { streamSimple as sdkStreamSimple } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js";
@@ -6,18 +7,18 @@ import { generateEngineTurnResponse } from "../../execution/pi/run.js";
 
 // Keep the real mid-stream retry policy, without its 1 s/2 s/4 s backoff.
 vi.mock("../../execution/pi/request-retry.js", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, requestRetryPolicy: (params) => ({ ...actual.requestRetryPolicy(params), baseDelayMs: 0 }) };
+  const actual = await importOriginal<typeof import("../../execution/pi/request-retry.js")>();
+  return { ...actual, requestRetryPolicy: (params: Parameters<typeof actual.requestRetryPolicy>[0]) => ({ ...actual.requestRetryPolicy(params), baseDelayMs: 0 }) };
 });
 afterEach(() => vi.restoreAllMocks());
-async function run(fetch, overrides = {}, sdk = sdkStreamSimple) {
+async function run(fetch: typeof globalThis.fetch, overrides = {}, sdk: typeof sdkStreamSimple | typeof sdkCodexStreamSimple = sdkStreamSimple) {
   const codex = sdk === sdkCodexStreamSimple;
   const codexToken = ["fictional", Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64"), "fictional"].join(".");
   const faux = fauxProvider({ provider: "faux", models: [{ id: "fictional-model" }] });
-  const models = createModels(), model = faux.getModel(), requests = [];
+  const models = createModels(), model = faux.getModel(), requests: Array<SimpleStreamOptions | undefined> = [];
   models.setProvider({ ...faux.provider, streamSimple(model, context, options) {
     requests.push(options);
-    return sdk({ ...model, provider: codex ? "openai-codex" : "openai", api: codex ? "openai-codex-responses" : "openai-completions", baseUrl: "https://fictional.invalid/v1" }, context,
+    return (sdk as StreamFunction<"openai-completions" | "openai-codex-responses", SimpleStreamOptions>)({ ...model, provider: codex ? "openai-codex" : "openai", api: codex ? "openai-codex-responses" : "openai-completions", baseUrl: "https://fictional.invalid/v1" }, context,
       { ...options, apiKey: codex ? codexToken : "fictional-unused-key", fetch });
   } });
   const result = await generateEngineTurnResponse("Fictional rules", {
@@ -27,14 +28,14 @@ async function run(fetch, overrides = {}, sdk = sdkStreamSimple) {
   });
   return { result, requests };
 }
-function refusal(status, headers = {}) {
+function refusal(status: number, headers = {}) {
   return Response.json({ error: { message: "Fictional refusal" } }, { status, headers: { "retry-after-ms": "0", ...headers } });
 }
 it.each([408, 409, 429, 501, 507, 529])("retries pre-response HTTP %s by SDK policy, with no extra driver layer", async (status) => {
   const fetch = vi.fn(async () => refusal(status));
   const { result, requests } = await run(fetch);
   expect(result.error).toBeTruthy(); expect(fetch).toHaveBeenCalledTimes(3);
-  expect(requests).toHaveLength(1); expect(requests[0].maxRetries).toBe(2);
+  expect(requests).toHaveLength(1); expect(requests[0]!.maxRetries).toBe(2);
 });
 it.each([0, 1])("bounds real pre-response transport requests for piMaxRetries=%s", async (piMaxRetries) => {
   const fetch = vi.fn(async () => refusal(503));
@@ -63,12 +64,12 @@ it.each([["terminated", 4], ["The upstream provider returned an error", 1]])("re
   });
   const { result, requests } = await run(fetch);
   expect(result.error).toContain(message); expect(fetch).toHaveBeenCalledTimes(count); expect(requests).toHaveLength(count);
-  expect(requests.every((options) => options.maxRetries === 2)).toBe(true);
+  expect(requests.every((options) => options!.maxRetries === 2)).toBe(true);
 });
 it("keeps real health probes single-shot even if an embedder supplies a retry budget", async () => {
   const fetch = vi.fn(async () => refusal(503));
   const { requests } = await run(fetch, { providerCheckMaxTokens: 4 });
-  expect(fetch).toHaveBeenCalledOnce(); expect(requests[0].maxRetries).toBe(0);
+  expect(fetch).toHaveBeenCalledOnce(); expect(requests[0]!.maxRetries).toBe(0);
 });
 
 
@@ -97,12 +98,12 @@ it("does not repeat an unknown-outcome single-shot connection failure", async ()
 });
 
 // Exercise the real Anthropic transport, not a copied rejection predicate.
-async function anthropic(fetch) {
+async function anthropic(fetch: typeof globalThis.fetch) {
   const { streamSimple } = await import("@earendil-works/pi-ai/api/anthropic-messages");
   const { getBuiltinModel } = await import("@earendil-works/pi-ai/providers/all");
   return streamSimple({ ...getBuiltinModel("anthropic", "claude-haiku-5-5"), baseUrl: "https://fictional.invalid" }, normalizeContext({
     systemPrompt: "Fictional rules", messages: [{ role: "user", content: "Fictional request", timestamp: 1 }],
-    tools: ["prefer", "require"].map((strict) => ({ name: `Fictional_${strict}`, description: "Fictional tool",
+    tools: (["prefer", "require"] as const).map((strict) => ({ name: `Fictional_${strict}`, description: "Fictional tool",
       parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
       constrainedSampling: { type: "json_schema", strict } })),
   }), { apiKey: "fictional-unused-key", fetch, maxRetries: 0 }).result();
@@ -110,13 +111,13 @@ async function anthropic(fetch) {
 const grammarRejection = (status = 400, type = "invalid_request_error", message = "The compiled grammar is too large") => Response.json({ type: "error",
   error: { type, message } }, { status });
 it.each(["The compiled grammar is too large", "Too many strict tools (fictional)", "Schemas contains too many parameters with union types (fictional)"])("downgrades preferred strict tools only after definite 400 rejection (%s), even with maxRetries=0", async (message) => {
-  const payloads = [];
+  const payloads: Array<{ tools: Array<{ name: string; strict?: boolean }> }> = [];
   const fetch = vi.fn(async (_url, init) => { payloads.push(JSON.parse(init.body)); return grammarRejection(400, "invalid_request_error", message); });
   const result = await anthropic(fetch);
   expect(result.stopReason).toBe("error");
   expect(fetch).toHaveBeenCalledTimes(2);
-  expect(payloads[0].tools.filter((tool) => tool.name.startsWith("Fictional_")).map((tool) => tool.strict)).toEqual([true, true]);
-  expect(payloads[1].tools.filter((tool) => tool.name.startsWith("Fictional_")).map((tool) => tool.strict)).toEqual([undefined, true]);
+  expect(payloads[0]!.tools.filter((tool) => tool.name.startsWith("Fictional_")).map((tool) => tool.strict)).toEqual([true, true]);
+  expect(payloads[1]!.tools.filter((tool) => tool.name.startsWith("Fictional_")).map((tool) => tool.strict)).toEqual([undefined, true]);
 });
 it.each([401, 429, 503])("does not strict-downgrade or SDK retry Anthropic HTTP %s with maxRetries=0", async (status) => {
   const fetch = vi.fn(async () => grammarRejection(status));

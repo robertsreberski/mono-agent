@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
-const request = (requestId, costUsd, status = "rejected") => ({ requestId, model: "faux:summary", status,
+const request = (requestId: string, costUsd: number | null, status = "rejected") => ({ requestId, model: "faux:summary", status,
   input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd });
 it("dedupes lifecycle snapshots and bills rejected and failed summaries exactly once", () => {
   const usage = createCompactionUsage();
@@ -28,6 +28,6 @@ it("keeps missing costs unknown, a measured zero zero and mixed prices partial",
 it("preserves non-dispatch evidence in accounting and bounded manual receipts", () => {
   const collector = createCompactionUsage();
   collector.add([{ ...request("local:1", 0), providerInvoked: false, input: 0, output: 0 }]);
-  expect(collector.slice().requests[0].providerInvoked).toBe(false);
-  expect(manualCompactionAccounting(collector.slice()).requests[0].providerInvoked).toBe(false);
+  expect(collector.slice()!.requests![0]!.providerInvoked).toBe(false);
+  expect(manualCompactionAccounting(collector.slice())!.requests![0]!.providerInvoked).toBe(false);
 });
