@@ -3036,6 +3036,32 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("persists unknown job money as browser markers and reopens its nullable accounting", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const job: ProcessJobProjection = { ...fakeProcessJob({ conversationId: `web:${thread.id}` }),
+      tool: "Agent", kind: "internal", instanceId: "synthetic-helper", childStillBusy: false,
+      subagentProgress: { revision: 1, profile: "Synthetic helper", toolCalls: 0, failedCalls: 0, recent: [], costUsd: null, knownCostUsd: 2 } };
+    store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey });
+    const raw = new DatabaseSync(store.paths.database);
+    const rows = raw.prepare("SELECT parts_json FROM messages WHERE thread_id = ?").all(thread.id);
+    expect(JSON.stringify(rows)).toContain("costUnknown");
+    expect(JSON.stringify(rows)).not.toContain('costUsd\\":null');
+    raw.close(); store.close();
+    const reopened = await WebStore.open({ stateDir });
+    try {
+      const cost = await reopened.threadUsage(thread.id);
+      expect(cost.total).toMatchObject({ costUsd: null, knownCostUsd: 2 });
+      const parts = reopened.getThreadDetail(thread.id)?.messages.flatMap((message) => message.parts);
+      expect(parts).toContainEqual(expect.objectContaining({ type: "process-job", job: expect.objectContaining({
+        subagentProgress: expect.objectContaining({ costUsd: null, knownCostUsd: 2 }),
+      }) }));
+    } finally { reopened.close(); }
+  });
+
   it("reads future or malformed persisted job token usage without relaxing ingest", async () => {
     const base = await temporaryRoot(); cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -6448,6 +6474,47 @@ describe("WebStore conversation projects", () => {
     }
   });
 
+  it("keeps failed-before-dispatch and historical zero omissions numeric, with detached spend outside the month", async () => {
+    const { store, clock } = await openStore();
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Synthetic project", context: "" });
+      const thread = store.createThread("agent-one", { projectId: project.id });
+      pricedTurn(store, thread.id, 3);
+      const refused = store.beginTurn({ threadId: thread.id, text: "Synthetic refusal", attachmentIds: [] });
+      store.failTurn(refused.turnId, { message: "Synthetic pre-dispatch refusal" });
+      const parts = JSON.stringify([{ type: "subagent", name: "Synthetic helper", toolCallId: "synthetic-legacy", status: "complete", calls: [] }]);
+      const when = new Date(clock.now).toISOString();
+      raw.prepare("INSERT INTO messages (id, thread_id, role, parts_json, created_at, updated_at, status) VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')")
+        .run("synthetic-legacy-zero", thread.id, parts, when, when);
+      const job: ProcessJobProjection = { ...fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" }), tool: "Agent", kind: "internal",
+        instanceId: "synthetic-helper", childStillBusy: false, timestamps: { admittedAt: when, startedAt: when, queueDeadlineAt: when, runtimeDeadlineAt: when, completedAt: when },
+        subagentProgress: { revision: 1, profile: "Synthetic helper", toolCalls: 0, failedCalls: 0, recent: [] } };
+      store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey });
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(3);
+      expect(store.getProject(project.id)?.monthUsd).toBe(3);
+      const priced: ProcessJobProjection = { ...job, subagentProgress: { revision: 2, profile: "Synthetic helper", toolCalls: 0, failedCalls: 0, recent: [], costUsd: 2 } };
+      store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: priced, deliveryKey: job.wake.deliveryKey });
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(5);
+      expect(store.getProject(project.id)?.monthUsd).toBe(3);
+      expect(raw.prepare("SELECT parts_json FROM messages WHERE id = 'synthetic-legacy-zero'").get()).toEqual({ parts_json: parts });
+    } finally { raw.close(); store.close(); }
+  });
+
+  it("keeps a project month's total unknown separately from its known spend", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Synthetic project", context: "" });
+      const thread = store.createThread("agent-one", { projectId: project.id });
+      pricedTurn(store, thread.id, 3);
+      const turn = store.beginTurn({ threadId: thread.id, text: "Synthetic unpriced work", attachmentIds: [] });
+      store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "usage_update", cumulativeUsd: null } }]);
+      store.completeTurn(turn.turnId, "Synthetic reply");
+      expect(store.getProject(project.id)).toMatchObject({ monthUsd: null, monthKnownUsd: 3 });
+      expect((await store.threadUsage(thread.id)).total).toMatchObject({ costUsd: null, knownCostUsd: 3 });
+    } finally { store.close(); }
+  });
+
   it("sums only the current UTC month's priced usage", async () => {
     const { store, clock } = await openStore();
     try {
@@ -7311,7 +7378,9 @@ describe("thread usage aggregation", () => {
       const turn = store.beginTurn({ threadId: thread.id, text: "Example prompt", attachmentIds: [] });
       expect((await store.threadUsage(thread.id)).settledAssistantTurns).toBe(0);
       store.completeTurn(turn.turnId, "Example answer");
-      expect(await store.threadUsage(thread.id)).toMatchObject({ settledAssistantTurns: 1, total: {} });
+      const usage = await store.threadUsage(thread.id);
+      expect(usage).toMatchObject({ settledAssistantTurns: 1 });
+      expect(usage.total).not.toHaveProperty("costUsd");
     } finally { store.close(); }
   });
 

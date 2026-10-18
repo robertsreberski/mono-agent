@@ -995,6 +995,13 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     });
   });
 
+  it("preserves unknown inclusive cost and separately known spend", () => {
+    expect(streamEventFromRuntimeEvent({ type: "cost_accumulated", cumulativeUsd: null, knownCostUsd: 2 }))
+      .toEqual({ type: "usage_update", cumulativeUsd: null, knownCostUsd: 2 });
+    expect(streamEventFromRuntimeEvent({ type: "cost_accumulated", cumulativeUsd: 3, knownCostUsd: 2 }))
+      .toEqual({ type: "usage_update", cumulativeUsd: 3 });
+  });
+
   it("maps provider request lifecycle to provider_status", () => {
     expect(
       streamEventFromRuntimeEvent({

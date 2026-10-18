@@ -29,12 +29,19 @@ export function createCompactionUsage(): {
     slice(): CompactionSlice | undefined {
       if (!requests.size) return undefined;
       const rows = [...requests.values()];
+      const costRows = rows.filter((row) => row.providerInvoked !== false);
       const slice: CompactionSlice = { version: 1, requests: rows };
       for (const key of (Object.keys(fields) as UsageKey[])) {
-        const known = rows.filter((row) => finite(row[key]));
-        slice[key] = known.length ? known.reduce((sum, row) => sum + row[key]!, 0) : null;
+        const contributing = key === "cost_usd" ? costRows : rows;
+        const known = contributing.filter((row) => finite(row[key]));
+        slice[key] = known.length ? known.reduce((sum, row) => sum + (row[key] ?? 0), 0)
+          : key === "cost_usd" && !costRows.length ? 0 : null;
       }
-      if (rows.some((row) => !finite(row.cost_usd))) slice.cost_partial = true;
+      if (costRows.some((row) => !finite(row.cost_usd))) {
+        slice.cost_partial = true;
+        if (finite(slice.cost_usd)) slice.known_cost_usd = slice.cost_usd;
+        slice.cost_usd = null;
+      }
       return slice;
     },
   };
@@ -61,11 +68,21 @@ export function withCompactionUsage(result: import("../contracts/runtime.js").Ru
   if (!compaction) return result;
   const usage = { ...(result.usage ?? {}) };
   const included = usage.compaction;
+  const ownCost = finite(usage.cost_usd) && !usage.cost_partial ? usage.cost_usd : null;
+  const ownKnown = ownCost ?? (finite(usage.known_cost_usd) ? usage.known_cost_usd : finite(usage.cost_usd) ? usage.cost_usd : undefined);
+  const oldKnown = finite(included?.cost_usd) ? included.cost_usd : included?.known_cost_usd ?? 0;
+  const summaryKnown = compaction.requests.some((row) => row.providerInvoked !== false)
+    ? finite(compaction.cost_usd) ? compaction.cost_usd : compaction.known_cost_usd : undefined;
   for (const key of (Object.keys(fields) as UsageKey[])) {
+    if (key === "cost_usd") continue;
     const own = finite(usage[key]) ? usage[key] : null;
     const old = finite(included?.[key]) ? included[key] : 0;
     usage[key] = own === null && compaction[key] === null ? null : Math.max(0, (own ?? 0) - old) + (compaction[key] ?? 0);
   }
+  usage.cost_usd = ownCost === null || !finite(compaction.cost_usd) ? null : Math.max(0, ownCost - oldKnown) + compaction.cost_usd;
+  if (usage.cost_usd === null && (ownKnown !== undefined || summaryKnown !== undefined)) {
+    usage.known_cost_usd = Math.max(0, (ownKnown ?? 0) - oldKnown) + (summaryKnown ?? 0);
+  } else delete usage.known_cost_usd;
   usage.cache_creation_tokens = usage.cache_write_tokens;
   usage.compaction = compaction;
   if (compaction.cost_partial || !finite(result.usage?.cost_usd)) usage.cost_partial = true;
@@ -82,14 +99,16 @@ export function compactionCostEvent(result: { usage?: import("../contracts/runti
     cacheCreationTokens: any;
   };
   costPartial?: boolean;
-  cumulativeUsd?: any;
+  cumulativeUsd: number | null;
+  knownCostUsd?: number;
   type: string;
   sdk: string;
   model: unknown;
 } {
   const usage = result.usage ?? {};
   return { type: "cost_accumulated", sdk: "pi", model: result.model,
-    ...(finite(usage.cost_usd) ? { cumulativeUsd: usage.cost_usd } : {}),
+    cumulativeUsd: finite(usage.cost_usd) ? usage.cost_usd : null,
+    ...(finite(usage.known_cost_usd) ? { knownCostUsd: usage.known_cost_usd } : {}),
     ...(usage.cost_partial ? { costPartial: true } : {}),
     // Billing totals remain inclusive; occupancy consumers must not count summaries.
     contextTokens: Math.min(Number.MAX_SAFE_INTEGER, (Object.keys(fields) as UsageKey[]).filter((key) => key !== "cost_usd")
@@ -125,4 +144,4 @@ export function manualCompactionAccounting(slice: CompactionSlice | null | undef
 type UsageKey = "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens" | "cost_usd";
 type RawUsageKey = "input" | "output" | "cacheRead" | "cacheWrite" | "costUsd";
 type CompactionRequest = Partial<Record<UsageKey | RawUsageKey, number | null>> & { requestId: string; model?: string | null | undefined; status?: string | undefined; providerInvoked?: boolean | undefined };
-type CompactionSlice = Partial<Record<UsageKey, number | null>> & { version: number; requests: CompactionRequest[]; cost_partial?: boolean };
+type CompactionSlice = Partial<Record<UsageKey, number | null>> & { version: number; requests: CompactionRequest[]; cost_partial?: boolean; known_cost_usd?: number };

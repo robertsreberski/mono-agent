@@ -673,7 +673,7 @@ injection. Deleting a project detaches its chats back to the agent — never
 deletes or stops them — and they reappear under the agent immediately. The
 project page lists members only; Recent stays agent-wide. Project summaries
 carry `conversationCount`, `runningCount`, and the current UTC month's
-recognised priced usage as `monthUsd` (omitted when no priced observation
+recognised usage as `monthUsd` (unknown when any contributing cost is unpriced; omitted when no cost observation
 exists). The browser API is `GET/POST /api/v1/projects`,
 `PATCH/DELETE /api/v1/projects/:id`, `projectId` on thread create/patch (null
 detaches; never combined with `ifRunConfigUnset`) and as a `GET /threads`
@@ -1056,7 +1056,7 @@ configuration change.
 `GET /api/v1/threads/:id/usage` returns `{usage: WebThreadUsage}` for the
 whole conversation, independently of the paginated transcript. It folds
 synchronous delegation cost into the parent run, adds detached job spend once,
-and marks token or cost lower bounds when telemetry is incomplete. Synchronous
+and marks incomplete token totals and unknown cost totals when telemetry is incomplete. Synchronous
 subagents report their measured token share; older or unmeasured runs keep the
 sub-line partial, while detached progress carries measured per-job token counts
 from upgraded agents. Older jobs without counts keep the totals as lower bounds.
@@ -1426,3 +1426,24 @@ pnpm --filter @mono-agent/web run typecheck
 pnpm --filter @mono-agent/web run test
 pnpm --filter @mono-agent/web run build
 ```
+
+### Unknown-cost browser compatibility
+
+Any total containing unpriced work is displayed as **unknown**, including a
+conversation, job group, project month or model bucket. Separately observed spend
+is labelled **Known cost**, never promoted to the total or a `≥$X` total. Missing
+cost fields are not unknown observations; legacy omissions and pending jobs
+retain their previous numeric totals. Explicitly measured zero stays zero.
+Synchronous child spend is included once;
+detached job spend is added separately once to conversations (not project months).
+
+Internal amounts are nullable. Browser HTTP, SSE, persisted raw message parts
+and on-device snapshots omit a null amount and send `costUnknown: true` instead;
+projects use `monthCostUnknown: true`. Optional `knownCostUsd`/`monthKnownUsd`
+retain separately observed spend. Opaque tool arguments/results are not billing
+envelopes and are left untouched. New clients normalize explicit markers to
+internal null; an unmarked omission remains no observation. An unknown snapshot
+replaces stale numeric totals. Cached older bundles safely omit unknown prices;
+no negotiation headers, query options or cache variants are required. The
+service worker's staged update is not a mandatory refresh. Upgrade agent/web
+binaries together for full unknown/known-cost presentation.

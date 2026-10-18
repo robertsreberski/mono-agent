@@ -9659,6 +9659,12 @@ describe("ConsoleStoreProvider integration", () => {
 
       await waitFor(() => expect(store.current.activeThreads?.threads[0]?.runState.activity)
         .toEqual({ toolCallCount: 9, phase: "asking", cumulativeUsd: 3.5 }));
+      // An unknown snapshot replaces that older numeric cumulative value.
+      emit("turn.changed", { threadId: betaRun.id, payload: { turn: { id: "turn-b", status: "running",
+        activity: { toolCallCount: 10, phase: "working", costUnknown: true, knownCostUsd: 2 },
+      } } });
+      await waitFor(() => expect(store.current.activeThreads?.threads[0]?.runState.activity)
+        .toMatchObject({ cumulativeUsd: null, knownCostUsd: 2 }));
       // And it is still the listing's membership: the event patched a card, it
       // did not add or remove one.
       expect(store.current.activeThreads?.total).toBe(1);

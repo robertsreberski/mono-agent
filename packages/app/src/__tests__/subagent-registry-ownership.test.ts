@@ -114,8 +114,10 @@ describe("registry ownership fences independent of process-job service availabil
     const identity: SubagentOwnerIdentity = { conversationId: "conversation", instanceId: "child", instanceIncarnation: created.incarnation!,
       turnToken: oldJob, jobId: oldJob, storeRoot };
     const publication = { identity, sequence: 1, disposition: { status: "ok" as const, continuity: "retained" as const }, released: true,
-      outcome: { status: "ok" as const } };
+      outcome: { status: "ok" as const, usage: { costUsd: null, knownCostUsd: 2 } } };
     await handle.publishOwned("intent", publication); await handle.publishOwned("confirm", publication);
+    await handle.publishOwned("confirm", publication);
+    expect(await handle.get("child")).toMatchObject({ turns: 1, usage: { costUsd: null, knownCostUsd: 2 } });
     proof = { state: "released", identity, sequence: 1, continuity: "retained", receiptRecorded: true };
     await handle.publishOwned("finalize", publication); await handle.publishOwned("acknowledge", publication);
     await handle.close("child"); const replacement = await handle.create(spec); const active = await handle.begin("child");

@@ -1,3 +1,4 @@
+import { browserCostWire, normalizeBrowserCosts } from "../../src/cost-wire.js";
 import { isConversationMarker } from "./conversation-markers";
 import { sanitizeCronTranscript } from "./cron-visibility";
 import { mergeSeenRevisions, readSeenRevisions, type SeenRevision } from "./unread";
@@ -306,6 +307,7 @@ const isStoredMessage = (value: unknown): value is WebMessage =>
  * it the cold start -- down with it.
  */
 const readThreadRow = (value: unknown): PersistedThread | undefined => {
+  normalizeBrowserCosts(value);
   if (!isRecord(value)) return undefined;
   if (typeof value.id !== "string" || !isSummary(value.thread)) return undefined;
   if (!Array.isArray(value.messages)) return undefined;
@@ -331,6 +333,7 @@ const readThreadRow = (value: unknown): PersistedThread | undefined => {
 };
 
 const readBucketRow = (value: unknown): PersistedBucket | undefined => {
+  normalizeBrowserCosts(value);
   if (!isRecord(value) || typeof value.key !== "string") return undefined;
   if (!Array.isArray(value.threads) || !value.threads.every(isSummary)) return undefined;
   return {
@@ -342,6 +345,7 @@ const readBucketRow = (value: unknown): PersistedBucket | undefined => {
 };
 
 const readSnapshotRow = (value: unknown): PersistedSnapshot | undefined => {
+  normalizeBrowserCosts(value);
   if (!isRecord(value)) return undefined;
   if (!Array.isArray(value.agents) || !isRecord(value.console) || !isRecord(value.limits)) {
     return undefined;
@@ -849,7 +853,7 @@ export const createThreadPersistence = (
               continue;
             }
             next.set(id, entry);
-            threads.put(row);
+            threads.put(browserCostWire(row));
           }
         };
         keysRequest.onsuccess = () => {
@@ -861,12 +865,12 @@ export const createThreadPersistence = (
           decide();
         };
         if (state.bucket !== undefined) {
-          transaction.objectStore(BUCKET_STORE).put({ ...state.bucket,
-            threads: state.bucket.threads.map(withoutTransientCompaction), savedAt });
+          transaction.objectStore(BUCKET_STORE).put(browserCostWire({ ...state.bucket,
+            threads: state.bucket.threads.map(withoutTransientCompaction), savedAt }));
         }
         if (state.snapshot !== undefined) {
           const meta = transaction.objectStore(META_STORE);
-          meta.put({ ...state.snapshot, savedAt }, SNAPSHOT_KEY);
+          meta.put(browserCostWire({ ...state.snapshot, savedAt }), SNAPSHOT_KEY);
           meta.put(state.snapshot.console.hostName, HOST_KEY);
         }
         const held = state.seen;

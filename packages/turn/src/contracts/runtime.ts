@@ -411,7 +411,8 @@ export type RuntimeSubagentInstance = {
     output: number;
     cacheRead: number;
     cacheWrite: number;
-    costUsd: number;
+    costUsd: number | null;
+    knownCostUsd?: number;
   };
 };
 
@@ -472,7 +473,8 @@ export type RuntimeSubagentInstances = {
       output?: number;
       cacheRead?: number;
       cacheWrite?: number;
-      costUsd?: number;
+      costUsd?: number | null;
+  knownCostUsd?: number;
     };
     answerHead?: string;
   }, token?: string) => Promise<RuntimeSubagentInstance>;

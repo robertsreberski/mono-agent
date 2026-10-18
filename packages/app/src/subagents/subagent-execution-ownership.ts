@@ -1,3 +1,4 @@
+import { isInstanceUsage } from "./usage.js";
 import type { SubagentExecutionOwnership, SubagentOwnedCommand } from "./types.js";
 import type { InstanceUsage } from "./types.js";
 import type { SubagentDisposition } from "./types.js";
@@ -113,7 +114,5 @@ function disposition(value: unknown): value is SubagentDisposition {
 }
 
 function usage(value: unknown): value is InstanceUsage {
-  return object(value) && exact(value, ["input", "output", "cacheRead", "cacheWrite", "costUsd"])
-    && ["input", "output", "cacheRead", "cacheWrite"].every((key) => Number.isSafeInteger(value[key]) && Number(value[key]) >= 0)
-    && typeof value.costUsd === "number" && Number.isFinite(value.costUsd) && value.costUsd >= 0;
+  return isInstanceUsage(value);
 }

@@ -17,9 +17,9 @@ it("keeps missing costs unknown, a measured zero zero and mixed prices partial",
   const unknown = createCompactionUsage();
   unknown.add([request("unknown:1", null)]);
   expect(withCompactionUsage({ usage: {} }, unknown).usage).toMatchObject({ cost_usd: null, cost_partial: true, compaction: { cost_usd: null } });
-  expect(compactionCostEvent(withCompactionUsage({ usage: {} }, unknown))).not.toHaveProperty("cumulativeUsd");
+  expect(compactionCostEvent(withCompactionUsage({ usage: {} }, unknown))).toMatchObject({ cumulativeUsd: null });
   unknown.add([request("zero:1", 0)]);
-  expect(unknown.slice()).toMatchObject({ cost_usd: 0, cost_partial: true });
+  expect(unknown.slice()).toMatchObject({ cost_usd: null, known_cost_usd: 0, cost_partial: true });
   const measured = createCompactionUsage(); measured.add([request("zero:2", 0, "succeeded")]);
   expect(measured.slice()).toMatchObject({ cost_usd: 0 });
   expect(measured.slice()).not.toHaveProperty("cost_partial");
@@ -30,4 +30,18 @@ it("preserves non-dispatch evidence in accounting and bounded manual receipts", 
   collector.add([{ ...request("local:1", 0), providerInvoked: false, input: 0, output: 0 }]);
   expect(collector.slice()!.requests![0]!.providerInvoked).toBe(false);
   expect(manualCompactionAccounting(collector.slice())!.requests![0]!.providerInvoked).toBe(false);
+});
+
+it("excludes never-dispatched summaries from costs and known subtotals", () => {
+  const collector = createCompactionUsage();
+  collector.add([{ ...request("synthetic:not-dispatched", null, "failed"), providerInvoked: false }]);
+  expect(collector.slice()).toMatchObject({ cost_usd: 0 });
+  expect(collector.slice()).not.toHaveProperty("known_cost_usd");
+  expect(withCompactionUsage({ usage: { cost_usd: 3 } }, collector).usage.cost_usd).toBe(3);
+  expect(withCompactionUsage({ usage: { cost_usd: null, input_tokens: 10 } }, collector).usage).not.toHaveProperty("known_cost_usd");
+  collector.add([{ ...request("synthetic:not-dispatched", 99, "failed"), providerInvoked: false },
+    { ...request("synthetic:priced", 2), providerInvoked: true }]);
+  expect(collector.slice()).toMatchObject({ cost_usd: 2 });
+  collector.add([{ ...request("synthetic:unpriced", null), providerInvoked: true }]);
+  expect(collector.slice()).toMatchObject({ cost_usd: null, known_cost_usd: 2 });
 });

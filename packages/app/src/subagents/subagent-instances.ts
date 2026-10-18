@@ -1,5 +1,6 @@
+import { addInstanceUsage, isInstanceUsage } from "./usage.js";
 import { EFFORT_LEVELS } from "@mono-agent/config";
-import type { SubagentQuestion, InstanceUsage, SubagentInstance, SubagentRecoverySubject, SubagentRecoveryFacts, SubagentRecoveryInspection, InstanceRoute, InstanceRegistryHandle } from "./types.js";
+import type { SubagentQuestion, SubagentInstance, SubagentRecoverySubject, SubagentRecoveryFacts, SubagentRecoveryInspection, InstanceRoute, InstanceRegistryHandle } from "./types.js";
 import { isSubagentVerificationTarget, type SubagentVerificationTarget, type SubagentVerificationDeclaration } from "./subagent-verification-observer.js";
 import { newSubagentRecoveryBinding, isSubagentRecoveryBinding, issueRecoveryAcknowledgement, checkRecoveryAcknowledgement, consumeRecoveryAcknowledgement, rebindConsumedAcknowledgement, recoveryToken, type SubagentRecoveryBinding, type SubagentRecoveryAcknowledgement } from "./subagent-recovery-binding.js";
 import type { SubagentSalvage } from "./subagent-salvage.js";
@@ -131,9 +132,7 @@ function validRecord(value: unknown, conversationId: string, sessionsRoot: strin
     || !integer(value.turns) || !integer(value.createdAt) || !integer(value.updatedAt) || value.updatedAt < value.createdAt
     || (value.lastStatus !== undefined && (typeof value.lastStatus !== "string" || !OUTCOMES.includes(value.lastStatus)))
     || (value.lastAnswerHead !== undefined && (typeof value.lastAnswerHead !== "string" || value.lastAnswerHead.length > 300))
-    || !object(usage) || !keys(usage, ["input", "output", "cacheRead", "cacheWrite", "costUsd"])
-    || !["input", "output", "cacheRead", "cacheWrite"].every((key) => integer(usage[key]))
-    || typeof usage.costUsd !== "number" || !Number.isFinite(usage.costUsd) || usage.costUsd < 0
+    || !isInstanceUsage(usage)
     || !object(d) || !keys(d, ["name", "description", "systemPrompt", "model", "effort", "allowedTools", "disallowedTools", "mcpServerNames", "maxTurns", "timeoutMs"])
     || d.name !== value.name || d.systemPrompt !== value.systemPrompt || !text(d.description)) return false;
   if (d.model !== undefined && !validModelReference(d.model)) return false;
@@ -567,10 +566,7 @@ export function createSubagentInstanceRegistry(options: {
             record.turns += wasRunning && disposition.status !== "busy" ? 1 : 0;
             record.updatedAt = now();
             record.lastStatus = disposition.status;
-            for (const key of Object.keys(record.usage) as (keyof InstanceUsage)[]) {
-              const amount = publication.outcome?.usage?.[key] ?? 0;
-              if (Number.isFinite(amount) && amount >= 0) record.usage[key] += amount;
-            }
+            if (disposition.status !== "busy") addInstanceUsage(record.usage, publication.outcome?.usage, Math.max(0, record.turns - 1));
             released = turns.get(turnPath(record.id));
             delete record.preProvider; delete record.createdForAdmission;
             delete record.activeTurn; delete record.ownerLink; delete record.reservation;
@@ -740,10 +736,7 @@ export function createSubagentInstanceRegistry(options: {
           record.updatedAt = now();
           record.lastStatus = outcome.status;
           record.lastAnswerHead = (outcome.answerHead ?? "").slice(0, 300);
-          for (const key of Object.keys(record.usage) as (keyof InstanceUsage)[]) {
-            const amount = outcome.usage?.[key] ?? 0;
-            if (Number.isFinite(amount) && amount >= 0) record.usage[key] += amount;
-          }
+          if (outcome.status !== "busy") addInstanceUsage(record.usage, outcome.usage, Math.max(0, record.turns - 1));
           return record;
           }); } finally {
             // A failed read, recovery write, or final publication must not strand

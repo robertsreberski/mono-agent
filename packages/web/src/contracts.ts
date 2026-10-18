@@ -351,11 +351,13 @@ export interface WebRunActivity {
   /**
    * The latest cumulative run cost the runtime reported, in USD.
    *
-   * Absent whenever no `usage_update` priced this run, and absent rather than
-   * zero for a value that is not a finite non-negative number: a run whose
-   * model has no price is not a run that cost nothing.
+   * Absent when no cost was observed; null when the reported total is unknown.
+   * Browser wire/storage omits null and sends `costUnknown: true` instead.
+   * Invalid numeric samples are not observations; a priced zero remains zero.
    */
-  readonly cumulativeUsd?: number;
+  readonly cumulativeUsd?: number | null;
+  readonly knownCostUsd?: number;
+  readonly costUnknown?: true;
 }
 
 export type WebCancelOrigin = "user-stop" | "client-disconnect" | "client-reconnect" | "service-shutdown" | "api";
@@ -557,7 +559,9 @@ export interface WebProject {
   readonly conversationCount: number;
   /** Members with a foreground turn running. */
   readonly runningCount: number;
-  readonly monthUsd?: number;
+  readonly monthUsd?: number | null;
+  readonly monthKnownUsd?: number;
+  readonly monthCostUnknown?: true;
   /** The channel conversation this project mirrors, when it is bound to one. */
   readonly external?: WebExternalConversation;
 }
@@ -713,7 +717,9 @@ export type WebMessagePart =
       readonly result?: unknown;
       readonly executionMs?: number;
       /** What this delegation cost, when the runtime priced its model. */
-      readonly costUsd?: number;
+      readonly costUsd?: number | null;
+      readonly knownCostUsd?: number;
+      readonly costUnknown?: true;
       /** Child token counts, when measured; omitted for unreported runs. */
       readonly usage?: WebUsageTokens;
       /** Provider route requested, attempted, and executed by this child. */
@@ -887,9 +893,13 @@ export interface WebUsageTokens {
   readonly output: number;
 }
 
+/** Internally nullable; browser wire omits unknown amounts and carries costUnknown: true.
+ * The same convention applies to message telemetry, activity and job progress. */
 export interface WebUsageSlice {
   readonly tokens?: WebUsageTokens;
-  readonly costUsd?: number;
+  readonly costUsd?: number | null;
+      readonly knownCostUsd?: number;
+      readonly costUnknown?: true;
   readonly tokensPartial?: true;
   readonly costPartial?: true;
 }

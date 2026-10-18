@@ -1,3 +1,4 @@
+import { normalizeBrowserCosts } from "../../src/cost-wire.js";
 import { routeWriteState } from "./mobile-history";
 import type { TagSummary, TagColor } from "./types";
 import type { ProjectColor } from "./types";
@@ -465,7 +466,7 @@ const runningProjectionKey = (thread: ThreadSummary): string => {
     thread.runState.status,
     activity === undefined
       ? ""
-      : `${String(activity.toolCallCount)}/${activity.phase}/${String(activity.cumulativeUsd ?? "")}`,
+      : `${String(activity.toolCallCount)}/${activity.phase}/${String(activity.cumulativeUsd)}/${String(activity.costUnknown)}/${String(activity.knownCostUsd)}`,
   ].join("\u0000");
 };
 const sameRunningProjection = (
@@ -4561,6 +4562,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       try {
         const parsed = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
         if (parsed.version !== 1) return;
+        normalizeBrowserCosts(parsed);
         recordServerTime(parsed.at);
         webEvent = parsed;
       } catch {

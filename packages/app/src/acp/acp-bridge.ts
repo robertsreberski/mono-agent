@@ -680,7 +680,7 @@ async function publishEvent(
     sessionUpdate: "usage_update",
     used: totalTokens,
     size: Math.max(totalTokens, liveContext.window ?? contextWindow ?? 1),
-    ...(event.cumulativeUsd === undefined
+    ...(typeof event.cumulativeUsd !== "number"
       ? {}
       : { cost: { amount: event.cumulativeUsd, currency: "USD" } }),
   });

@@ -96,13 +96,13 @@ describe("messageUsageRollup", () => {
     const card = { type: "process-job", job: { subagentProgress: { costUsd: 3, route: { executed: { model: "grove/fast" } } } } };
     const rolled = messageUsageRollup({ parts: [child, usage(1), card] });
     const total = sumThreadUsage([rolled]);
-    expect(rolled.main.costUsd).toBe(4);
-    expect(total.total.costUsd).toBe(7);
+    expect(rolled.main).toMatchObject({ costUsd: 4 });
+    expect(total.total).toMatchObject({ costUsd: 7 });
     expect(total.subagents).toMatchObject({ costUsd: 7, runs: 2, tokensPartial: true });
     expect(total.total.tokensPartial).toBe(true);
     expect(total.byModel.reduce((sum, row) => sum + (row.costUsd ?? 0), 0)).toBe(7);
     expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0), usage(0)] })]).total.costUsd).toBe(0);
-    expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0)] })]).total.costUsd).toBe(0);
+    expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0)] })]).total).toMatchObject({ costUsd: 0 });
   });
   it("drops the total lower bound once every detached job reports tokens", () => {
     const card = { type: "process-job", job: { subagentProgress: { costUsd: 0.25,
@@ -239,7 +239,7 @@ describe("compaction spend", () => {
   });
   it("preserves unknown and measured-zero compaction costs", async () => {
     const { messageUsageRollup } = await import("../message-cost.js");
-    expect(latestMessageCostUsd([summary(2, false, null)])).toBeUndefined();
+    expect(latestMessageCostUsd([summary(2, false, null)])).toBeNull();
     expect(messageUsageRollup({ parts: [summary(2, false, null)] }).compaction).toMatchObject({ costPartial: true });
     expect(latestMessageCostUsd([summary(2, false, 0)])).toBe(0);
   });

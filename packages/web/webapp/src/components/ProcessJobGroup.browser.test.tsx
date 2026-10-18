@@ -308,3 +308,49 @@ describe("agent groups in Chromium", () => {
     await capture(`job-group-closed-${name.replaceAll(" ", "-")}`, stack);
   });
 });
+
+it.each([[390, 844], [1440, 1000]])("shows a synthetic unknown detached group at %i x %i", async (width, height) => {
+  await page.viewport(width, height);
+  const unpriced = settled(agentTurn("unknown-a", "synthetic-helper", minutesAgo(4), { summary: "Synthetic unpriced work" }));
+  const priced = settled(agentTurn("unknown-b", "synthetic-helper", minutesAgo(2), { summary: "Synthetic priced sibling" }));
+  if (unpriced.kind !== "internal" || priced.kind !== "internal") throw new Error("Expected synthetic internal jobs");
+  const first: ProcessJobProjection = { ...unpriced,
+    subagentProgress: { revision: 1, profile: "Synthetic helper", toolCalls: 0, failedCalls: 0, recent: [], costUsd: null, knownCostUsd: 2 } };
+  const second: ProcessJobProjection = { ...priced,
+    subagentProgress: { revision: 1, profile: "Synthetic helper", toolCalls: 0, failedCalls: 0, recent: [], costUsd: 3 } };
+  render(<><h1>Synthetic unknown detached cost</h1>{shelf([first, second])}</>);
+  const toggle = screen.getByRole("button", { name: /^Background jobs/u });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+  const history = screen.queryByRole("button", { name: "Background job history" });
+  if (history !== null && history.getAttribute("aria-pressed") !== "true") fireEvent.click(history);
+  const row = group("synthetic-helper");
+  const summary = row.querySelector(":scope > summary");
+  if (summary === null) throw new Error("Missing synthetic group summary");
+  fireEvent.click(summary);
+  await frames();
+  expect(row).toBeVisible();
+  expect(row).toHaveTextContent("cost unknown");
+  expect(row).toHaveTextContent("Known cost $5.00");
+  expect(row).toHaveTextContent("$3.00");
+  noOverflow(row);
+  const shots = import.meta.env.VITE_UNKNOWN_COST_SHOTS;
+  if (typeof shots === "string") await page.screenshot({ path: `${shots}/synthetic-unknown-detached-job-${width}x${height}.png` });
+});
+
+it("keeps a running job group numeric when a pending or zero child omits price", async () => {
+  const waiting = agentTurn("pending-cost", "synthetic-helper", minutesAgo(1), { summary: "Synthetic pending work" });
+  if (waiting.kind !== "internal") throw new Error("Expected synthetic internal job");
+  const pending: ProcessJobProjection = { ...waiting, subagentProgress: { revision: 1, profile: "helper", toolCalls: 0, failedCalls: 0, recent: [] } };
+  const complete = settled(agentTurn("priced-cost", "synthetic-helper", minutesAgo(2), { summary: "Synthetic priced work" }));
+  if (complete.kind !== "internal") throw new Error("Expected synthetic internal job");
+  const priced: ProcessJobProjection = { ...complete, subagentProgress: { revision: 1, profile: "helper", toolCalls: 0, failedCalls: 0, recent: [], costUsd: 3 } };
+  render(shelf([pending, priced]));
+  const toggle = shelfToggle();
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+  const row = group("synthetic-helper");
+  const summary = row.querySelector(":scope > summary");
+  if (summary === null) throw new Error("Missing synthetic group summary");
+  fireEvent.click(summary);
+  expect(row).toHaveTextContent("$3.00 so far");
+  expect(row).not.toHaveTextContent("cost unknown");
+});

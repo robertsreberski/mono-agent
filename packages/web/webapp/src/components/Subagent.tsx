@@ -1,3 +1,4 @@
+import { costAmount, knownCostAmount } from "../../../src/cost-wire.js";
 import type { DataMessagePartProps } from "@assistant-ui/react";
 import type { ReactNode } from "react";
 import type { RunAttribution as RunAttributionValue } from "../types";
@@ -54,7 +55,8 @@ interface SubagentView {
   readonly prompt?: string;
   readonly result?: unknown;
   readonly executionMs?: number;
-  readonly costUsd?: number;
+  readonly costUsd?: number | null;
+  readonly knownCostUsd?: number;
   readonly attribution?: RunAttributionValue;
   readonly history?: Record<string, unknown>;
   readonly status: ToolCallStatus;
@@ -117,6 +119,8 @@ const subagentView = (data: unknown): SubagentView | undefined => {
   if (typeof record.name !== "string") return undefined;
   const calls = Array.isArray(record.calls) ? record.calls : [];
   const prompt = delegationPrompt(record.args);
+  const price = costAmount(record);
+  const knownCostUsd = knownCostAmount(record);
   return {
     ...(typeof record.toolCallId === "string" && record.toolCallId.length > 0
       ? { toolCallId: record.toolCallId }
@@ -129,9 +133,8 @@ const subagentView = (data: unknown): SubagentView | undefined => {
     ...(finiteDuration(record.executionMs) === undefined
       ? {}
       : { executionMs: record.executionMs as number }),
-    ...(typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
-      ? { costUsd: record.costUsd }
-      : {}),
+    ...(price === null || typeof price === "number" && price > 0 ? { costUsd: price } : {}),
+    ...(price === null && knownCostUsd !== undefined ? { knownCostUsd } : {}),
     ...(record.attribution !== null && typeof record.attribution === "object" && !Array.isArray(record.attribution)
       ? { attribution: record.attribution as unknown as RunAttributionValue }
       : {}),
@@ -387,7 +390,8 @@ export function SubagentPart({ data }: DataMessagePartProps) {
   const meta = [
     `${String(view.calls.length)} tool${view.calls.length === 1 ? "" : "s"}`,
     ...(view.executionMs === undefined ? [] : [formatToolDuration(view.executionMs)]),
-    ...(view.costUsd === undefined ? [] : [formatUsd(view.costUsd)]),
+    ...(view.costUsd === undefined ? [] : [view.costUsd === null ? "cost unknown" : formatUsd(view.costUsd)]),
+    ...(view.knownCostUsd === undefined ? [] : [`Known cost ${formatUsd(view.knownCostUsd)}`]),
     // The folded row only flags that something is wrong; the note inside carries
     // the wording and the error code, so the two must not disagree.
     ...(historyFailure === undefined ? [] : ["history not saved"]),

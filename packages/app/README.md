@@ -1647,3 +1647,15 @@ This uses built app packages, the runtime's shipped JavaScript and a controlled
 Pi provider (no network credentials). It prints JSON evidence for tool-bearing
 stop/resume/close and bounded uncooperative stop, then removes its private
 throwaway state under the worktree's `node_modules`.
+
+### Unknown costs and durable compatibility
+
+Subagent run/lifetime usage and internal process-job progress retain nullable
+`costUsd` and optional `knownCostUsd`: any unpriced contributing run makes the
+total unknown while separately retaining known spend. Busy/no-execution outcomes
+do not add cost-bearing work. Existing fully priced numbers remain unchanged.
+
+Readers widen within the existing durable record versions; there is no bulk
+migration. Upgrade the agent and web binaries together and take a consistent
+pre-upgrade backup. Older binaries must not run against an upgraded state root;
+rollback requires restoring a pre-upgrade backup.

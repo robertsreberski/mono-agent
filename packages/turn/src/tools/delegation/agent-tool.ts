@@ -135,11 +135,11 @@ function numberOrZero(value: any) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
-function emptyUsage() {
+function emptyUsage(): RuntimeSubagentInstance["usage"] {
   return { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
 
-function reportedTokens(usage: { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number; }) {
+function reportedTokens(usage: RuntimeSubagentInstance["usage"]) {
   const { input, output, cacheRead, cacheWrite } = usage;
   const values = [input, output, cacheRead, cacheWrite];
   return values.every((value) => Number.isSafeInteger(value) && value >= 0)
@@ -166,7 +166,7 @@ function budgetForRun(subagents: any, parentRunId: string | undefined) {
     if (oldest.done) break;
     store.delete(oldest.value);
   }
-  const fresh = { total: 0, bytes: 0, warnedQueued: false, usage: emptyUsage() };
+  const fresh = { total: 0, bytes: 0, warnedQueued: false, hasKnownCost: false, usage: emptyUsage() };
   store.set(key, fresh);
   return fresh;
 }
@@ -198,11 +198,14 @@ export function subagentInvocationCount(subagents: any, parentRunId: string | un
  * returns zeroes when the run has no synchronous child spend.
  * @param subagents The run-scoped options object, or undefined.
  */
-export function subagentUsageForRun(subagents: any, parentRunId?: string): { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number } {
+export function subagentUsageForRun(subagents: any, parentRunId?: string): RuntimeSubagentInstance["usage"] {
   const store = subagents?.__budgets;
-  const usage = store instanceof Map ? store.get(parentRunId ?? "unkeyed")?.usage : undefined;
+  const budget = store instanceof Map ? store.get(parentRunId ?? "unkeyed") : undefined;
+  const usage = budget?.usage;
   return {
-    costUsd: numberOrZero(usage?.costUsd),
+    costUsd: usage === undefined ? 0 : costNumber(usage.costUsd),
+    ...(usage?.knownCostUsd !== undefined ? { knownCostUsd: usage.knownCostUsd }
+      : budget?.hasKnownCost && usage?.costUsd === 0 ? { knownCostUsd: 0 } : {}),
     input: numberOrZero(usage?.input),
     output: numberOrZero(usage?.output),
     cacheRead: numberOrZero(usage?.cacheRead),
@@ -559,9 +562,13 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
             : context.onEvent === undefined ? {} : { emit: context.onEvent }),
           // Synchronous spend is summed across router attempts. Detached spend
           // belongs only to its instance and job, even if it completes immediately.
-          recordUsage: (spent) => {
+          recordUsage: (spent, observedCost) => {
             if (detached) return;
-            budget.usage.costUsd += spent.costUsd;
+            const before = costNumber(budget.usage.costUsd);
+            const known = (before ?? costNumber(budget.usage.knownCostUsd) ?? 0) + (spent.costUsd ?? spent.knownCostUsd ?? 0);
+            budget.usage.costUsd = before === null || spent.costUsd === null ? null : before + spent.costUsd;
+            budget.hasKnownCost = budget.hasKnownCost || observedCost === true && (spent.costUsd !== null || spent.knownCostUsd !== undefined);
+            if (budget.usage.costUsd === null && budget.hasKnownCost) budget.usage.knownCostUsd = known;
             budget.usage.input += spent.input;
             budget.usage.output += spent.output;
             budget.usage.cacheRead += spent.cacheRead;
@@ -647,6 +654,7 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
               ...(params.verification?.reportPath === undefined ? {} : { reportPath: params.verification.reportPath }),
               persistent: instance !== undefined,
             });
+            collector.nextRun();
             const wrapResult = await invokeChildRun(prompt, WRAP_UP_MAX_TURNS, false);
             return attachWrapUpSignals(toWrapUpRecord(wrapResult, { turnsUsed, turnsAllowed: maxTurns }), first, wrapResult);
           } catch (error: any) {
@@ -735,8 +743,8 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
         if (instance && !abandoned) {
           const state = classifyOutcome({ result, thrown, timedOut });
           // The non-detached instance outcome sums both provider runs: the
-          // parent budget already accumulates across them via recordUsage and
-          // the detached path via collector.usage(), but `result.usage` alone
+          // parent budget retains its legacy last-event accounting, while
+          // the detached path uses collector.usage(), but `result.usage` alone
           // is the first run's. (The detached usage there already includes the
           // wrap-up, so this stays scoped to this path.)
           const usage = sumRunUsage(result?.usage, result?.wrapUp?.wrapUsage ?? null);
@@ -745,7 +753,7 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
             ...(result?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}),
             answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: detached ? detachedUsage(result, collector.usage()) : { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
               cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
-              costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } };
+              ...reportedCost(usage, result?.cost) } };
           if (execution?.managed) {
             await execution.managed.report(instanceOutcome);
             instance = await instances!.get(instance.id);
@@ -1031,11 +1039,15 @@ function reportDetachedProgress(event: any, report?: (event: any) => void, launc
  * answer body, so forwarding them would splice a subagent's prose into the
  * main agent's reply. Its text reaches the parent through the tool result.
  */
-function createActivityCollector({ callId, profileName, callIndex, requested = {}, launch = {}, label, emit, recordUsage }: { callId: string; profileName: string; callIndex: number; requested?: { model?: string; effort?: string; }; launch?: { model?: string; effort?: string; }; label?: string | undefined; emit?: (event: any) => void; recordUsage?: (usage: { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number; }) => void; }) {
+function createActivityCollector({ callId, profileName, callIndex, requested = {}, launch = {}, label, emit, recordUsage }: { callId: string; profileName: string; callIndex: number; requested?: { model?: string; effort?: string; }; launch?: { model?: string; effort?: string; }; label?: string | undefined; emit?: (event: any) => void; recordUsage?: (usage: RuntimeSubagentInstance["usage"], observedCost: boolean) => void; }) {
   const open: Map<string, { name: string; args: unknown; startedAt: number; ms?: number | undefined; }> = new Map();
   const done: { name: string; args: unknown; ms?: number | undefined; isError: boolean; }[] = [];
   /** What the child reported spending, so the parent run can own it. */
   const usage = emptyUsage();
+  let observedCost = false;
+  let priorObserved = false;
+  let priorCost: number | null = 0;
+  let priorKnown: number | undefined;
   const subagent = { id: callId, name: profileName, callIndex, ...(label === undefined ? {} : { label }) };
   let finalAttribution: { executed?: { model?: string | undefined; effort?: string | undefined; effectiveEffort?: string | undefined } } | undefined;
   // `requested` is the explicit route only: call-time overrides and profile
@@ -1056,7 +1068,16 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
   return {
     entries: () => done,
     attribution: () => finalAttribution,
-    usage: () => ({ ...usage }),
+    usage: () => {
+      const { costUsd: _cost, knownCostUsd: _known, ...tokens } = usage;
+      return observedCost || priorObserved ? { ...usage } : tokens;
+    },
+    nextRun() {
+      priorObserved = observedCost;
+      priorCost = usage.costUsd;
+      priorKnown = usage.costUsd ?? usage.knownCostUsd;
+      observedCost = false;
+    },
     /** Lifecycle bookends so the subagent is visible before its first tool call. */
     started() {
       // Badge the row from the moment the delegation starts. `requested` here
@@ -1082,7 +1103,15 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
     finished({ status, durationMs, result }: { status: string; durationMs: number; result?: any; }) {
       // Before the bookend, so the run's own usage report can already include
       // it, and so an abandoned child still hands over whatever it spent.
-      recordUsage?.(usage);
+      // Priced budgets retain the last cost event (including wrap-up), as before.
+      // Across provider runs only explicit unknown changes completeness.
+      if (priorObserved && observedCost && (priorCost === null || usage.costUsd === null)) {
+        const currentKnown = usage.costUsd ?? usage.knownCostUsd;
+        usage.costUsd = null;
+        if (priorKnown !== undefined || currentKnown !== undefined) usage.knownCostUsd = (priorKnown ?? 0) + (currentKnown ?? 0);
+        else delete usage.knownCostUsd;
+      }
+      if (priorObserved || observedCost || reportedTokens(usage) !== undefined) recordUsage?.(usage, priorObserved || observedCost);
       const reportedExecuted = ["ok", "awaiting_reply"].includes(status) && result && typeof result === "object"
         ? {
             ...(boundedRouteString(result.model) === undefined ? {} : { model: boundedRouteString(result.model) }),
@@ -1119,10 +1148,11 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
         // The one place the child's price is knowable per delegation: operator
         // surfaces show it on the row so an expensive one is identifiable, not
         // just visible in the run total it disappears into.
-        ...((usage.costUsd > 0 || tokenUsage !== undefined || attribution !== undefined)
+        ...((usage.costUsd === null || usage.costUsd > 0 || tokenUsage !== undefined || attribution !== undefined)
           ? { subagent: {
               ...subagent,
-              ...(usage.costUsd > 0 ? { costUsd: usage.costUsd } : {}),
+              ...(usage.costUsd === null || usage.costUsd > 0 ? { costUsd: usage.costUsd } : {}),
+              ...(usage.knownCostUsd === undefined ? {} : { knownCostUsd: usage.knownCostUsd }),
               ...(tokenUsage === undefined ? {} : { usage: tokenUsage }),
               ...(attribution === undefined ? {} : { attribution }),
             } }
@@ -1253,7 +1283,13 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
         // as the run's cumulative figure, and a child's smaller total arriving
         // last would read as the run getting cheaper.
         const tokens = event.tokens && typeof event.tokens === "object" ? event.tokens : {};
-        usage.costUsd = numberOrZero(event.cumulativeUsd);
+        if (event.cumulativeUsd === null || costNumber(event.cumulativeUsd) !== null) {
+          observedCost = true;
+          usage.costUsd = costNumber(event.cumulativeUsd);
+          const known = costNumber(event.knownCostUsd);
+          if (usage.costUsd === null && known !== null) usage.knownCostUsd = known;
+          else delete usage.knownCostUsd;
+        }
         usage.input = numberOrZero(tokens.input);
         usage.output = numberOrZero(tokens.output);
         usage.cacheRead = numberOrZero(tokens.cacheReadTokens);
@@ -1446,6 +1482,14 @@ function sumRunUsage(firstUsage: any, secondUsage: any) {
     if (typeof value !== "number" || !Number.isFinite(value)) continue;
     const current = base[key];
     base[key] = (typeof current === "number" && Number.isFinite(current) ? current : 0) + value;
+  }
+  if (Object.hasOwn(base, "cost_usd") || Object.hasOwn(secondUsage, "cost_usd")) {
+    const first = reportedCost(firstUsage);
+    const second = reportedCost(secondUsage);
+    base.cost_usd = first.costUsd === null || second.costUsd === null ? null : (first.costUsd ?? 0) + (second.costUsd ?? 0);
+    if (base.cost_usd === null && (typeof first.costUsd === "number" || typeof second.costUsd === "number" || first.knownCostUsd !== undefined || second.knownCostUsd !== undefined)) {
+      base.known_cost_usd = (first.costUsd ?? first.knownCostUsd ?? 0) + (second.costUsd ?? second.knownCostUsd ?? 0);
+    } else delete base.known_cost_usd;
   }
   return base;
 }
@@ -1707,7 +1751,7 @@ function detachedUsage(result: any, observed: any = {}) {
     output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens ?? observed.output),
     cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens ?? observed.cacheRead),
     cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens ?? observed.cacheWrite),
-    costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total ?? observed.costUsd) };
+    ...reportedCost(usage, result?.cost, observed) };
 }
 
 const CHILD_RUN_FAILURE = Symbol("mono-agent.childRunFailure");
@@ -1730,3 +1774,28 @@ function isChildRunFailure(error: any) {
 export type RuntimeSubagentDefinition = import("../../contracts/runtime.js").RuntimeSubagentDefinition;
 
 export type RuntimeSubagentsOptions = import("../../contracts/runtime.js").RuntimeSubagentsOptions;
+
+function usageRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function costNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Explicit unknown wins over lower-priority legacy and observed prices. */
+function reportedCost(value: unknown, legacy?: unknown, observed?: unknown): { costUsd?: number | null; knownCostUsd?: number } {
+  const usage = usageRecord(value) ? value : {};
+  const fallback = usageRecord(legacy) ? legacy : {};
+  const sample = usageRecord(observed) ? observed : {};
+  const nested = usageRecord(usage.cost) ? usage.cost : {};
+  for (const [record, key, knownKey] of [[usage, "cost_usd", "known_cost_usd"], [fallback, "total", "knownCostUsd"],
+    [fallback, "totalUsd", "knownCostUsd"], [nested, "total", "knownCostUsd"], [sample, "costUsd", "knownCostUsd"]]) {
+    if (!usageRecord(record) || typeof key !== "string" || typeof knownKey !== "string" || !Object.hasOwn(record, key) || record[key] === undefined) continue;
+    const costUsd = costNumber(record[key]);
+    const known = costNumber(record[knownKey]);
+    if (costUsd === null) return { costUsd: null, ...(known === null ? {} : { knownCostUsd: known }) };
+    return { costUsd };
+  }
+  return {};
+}

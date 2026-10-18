@@ -3835,6 +3835,39 @@ it.each([undefined, "user-stop", "client-disconnect", "client-reconnect", "servi
 });
 
 describe("conversation usage route", () => {
+  it("serves marker-only unknown money over HTTP, SSE and conditional snapshots", async () => {
+    const { baseUrl } = await start({ fetchImpl: operatorFetch({ turns: () => [
+      JSON.stringify({ kind: "event", event: { type: "usage_update", cumulativeUsd: 9 } }),
+      JSON.stringify({ kind: "event", event: { type: "usage_update", cumulativeUsd: null, knownCostUsd: 2 } }),
+      JSON.stringify({ kind: "finish", finalText: "Synthetic reply" }), "",
+    ].join("\n") }) });
+    const id = await createThread(baseUrl, "agent-one");
+    const response = await fetch(`${baseUrl}/api/v1/events?threadId=${id}`);
+    if (response.body === null) throw new Error("Missing synthetic SSE body");
+    const reader = response.body.getReader();
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+    try {
+      await fetch(`${baseUrl}/api/v1/threads/${id}/turns`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "Synthetic unknown-price request" }) });
+      const frames = await drainTurn(next);
+      expect(JSON.stringify(frames)).toContain('"costUnknown":true');
+      expect(JSON.stringify(frames)).not.toMatch(/"(?:costUsd|cumulativeUsd)":null/);
+      const usage = await json(await fetch(`${baseUrl}/api/v1/threads/${id}/usage`));
+      expect(usage).toMatchObject({ usage: { total: { costUnknown: true, knownCostUsd: 2 } } });
+      expect(JSON.stringify(usage)).not.toMatch(/"(?:costUsd|cumulativeUsd)":null/);
+      const snapshot = await fetch(`${baseUrl}/api/v1/threads/${id}`);
+      const body = await json(snapshot);
+      expect(JSON.stringify(body)).toContain('"costUnknown":true');
+      expect(JSON.stringify(body)).not.toMatch(/"(?:costUsd|cumulativeUsd)":null/);
+      const etag = snapshot.headers.get("etag");
+      if (etag === null) throw new Error("Missing synthetic snapshot validator");
+      const cached = await rawGet(baseUrl, `/api/v1/threads/${id}`, { "if-none-match": etag });
+      expect(cached.status).toBe(304);
+      expect(JSON.stringify(cached.headers.vary ?? "")).not.toMatch(/cost/i);
+    } finally { await reader.cancel(); }
+  });
+
   it("returns an on-demand aggregate and 404 for missing threads", async () => {
     const { baseUrl, root } = await start();
     const id = await createThread(baseUrl, "agent-one");

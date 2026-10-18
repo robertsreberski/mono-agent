@@ -286,6 +286,11 @@ describe("internal subagent progress projection", () => {
     const { costUsd: _costUsd, ...withoutCost } = progress;
     expect(isProcessJobSubagentProgress(withoutCost)).toBe(true);
     expect(isProcessJobSubagentProgress({ ...withoutCost, costUsd: 0 })).toBe(true);
+    expect(isProcessJobSubagentProgress({ ...withoutCost, costUsd: null, knownCostUsd: 2 })).toBe(true);
+    for (const knownCostUsd of [-1, Number.NaN, Number.POSITIVE_INFINITY, "2", null]) {
+      expect(isProcessJobSubagentProgress({ ...withoutCost, costUsd: null, knownCostUsd })).toBe(false);
+    }
+    expect(isProcessJobSubagentProgress({ ...withoutCost, costUsd: 1, knownCostUsd: 2 })).toBe(false);
     for (const costUsd of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, "0.01"]) {
       expect(isProcessJobSubagentProgress({ ...withoutCost, costUsd })).toBe(false);
       expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: { ...withoutCost, costUsd } })).toThrow(TypeError);

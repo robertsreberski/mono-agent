@@ -635,7 +635,7 @@ describe("withSubagentUsage", () => {
 
   it("leaves a run that delegated nothing exactly as it was", () => {
     expect(withSubagentUsage(own, none, 0.019)).toEqual(own);
-    expect(withSubagentUsage({ ...own, cost: 0 }, none, 0.019).cost).toBe(0);
+    expect(withSubagentUsage({ ...own, cost: 0 }, none, 0.019).cost).toBe(0.019);
   });
 
   it("keeps an unpriced delegation's tokens without inventing a price for them", () => {

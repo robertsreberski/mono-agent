@@ -359,9 +359,11 @@ function parseCronOperatorEvent(
         || (event.name !== undefined && typeof event.name !== "string")) fail();
       break;
     case "usage_update": {
-      if (!hasOnlyKeys(event, ["type", "model", "cumulativeUsd", "tokens", "metadata"])
+      if (!hasOnlyKeys(event, ["type", "model", "cumulativeUsd", "knownCostUsd", "tokens", "metadata"])
         || (event.model !== undefined && typeof event.model !== "string")
-        || !optionalFiniteNumber(event.cumulativeUsd, true)) fail();
+        || (event.cumulativeUsd !== null && !optionalFiniteNumber(event.cumulativeUsd, true))
+        || !optionalFiniteNumber(event.knownCostUsd, true)
+        || (typeof event.cumulativeUsd === "number" && event.knownCostUsd !== undefined && event.knownCostUsd !== event.cumulativeUsd)) fail();
       if (event.tokens !== undefined) {
         if (!isSnapshotRecord(event.tokens)
           || !hasOnlyKeys(event.tokens, ["input", "output", "cacheRead", "cacheCreation"])

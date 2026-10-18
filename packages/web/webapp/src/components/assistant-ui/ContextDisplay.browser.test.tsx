@@ -162,3 +162,18 @@ it.each([[390, 844], [1280, 900]])("renders compaction-inclusive cost at %i × %
   const shots = import.meta.env.VITE_COMPACTION_COST_SHOTS as string | undefined;
   if (shots) await page.screenshot({ path: `${shots}/compaction-cost-${width}.png` });
 });
+
+it.each([[390, 844], [1440, 1000]])("shows synthetic unknown totals and separately priced children at %i x %i", async (width, height) => {
+  await page.viewport(width, height);
+  const synthetic: WebThreadUsage = { total: { costUsd: null, knownCostUsd: 2 },
+    subagents: { runs: 1, costUsd: 2 }, byModel: [{ model: "faux:unpriced", costUsd: null }, { model: "faux:helper", costUsd: 2 }], computedAt: "2026-01-01T00:00:00Z" };
+  render(<><h1>Synthetic unknown parent, priced child</h1><ContextDisplay context={context} totals={synthetic} /></>);
+  fireEvent.click(screen.getByRole("button", { name: /^Context usage:/ }));
+  const dialog = await screen.findByRole("dialog", { name: "Context usage" });
+  expect(dialog.querySelector(".context-display-cost-total")).toHaveTextContent("unknown");
+  expect(within(dialog).getByText("Known cost").parentElement).toHaveTextContent("$2.00");
+  expect(within(dialog).getByText("incl. subagents", { selector: "dt" }).parentElement).toHaveTextContent("$2.00");
+  expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
+  const shots = import.meta.env.VITE_UNKNOWN_COST_SHOTS;
+  if (typeof shots === "string") await page.screenshot({ path: `${shots}/synthetic-unknown-parent-priced-child-${width}x${height}.png` });
+});

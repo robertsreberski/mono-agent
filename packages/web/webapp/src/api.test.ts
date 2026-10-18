@@ -1098,3 +1098,12 @@ it("validates optional compaction usage before it can reach ContextDisplay", () 
     expect(() => parseThreadUsage({ ...base, compaction: invalid })).toThrow("Invalid conversation usage response");
   }
 });
+
+it("normalizes unknown usage without treating unmarked omissions as free", () => {
+  const base = { byModel: [], computedAt: "2026-01-01T00:00:00Z" };
+  expect(parseThreadUsage({ ...base, total: { costUnknown: true, knownCostUsd: 2 } }).total)
+    .toMatchObject({ costUsd: null, knownCostUsd: 2 });
+  expect(parseThreadUsage({ ...base, total: {} }).total.costUsd).toBeUndefined();
+  expect(() => parseThreadUsage({ ...base, total: { costUnknown: false } })).toThrow();
+  expect(() => parseThreadUsage({ ...base, total: { costUnknown: true, knownCostUsd: -1 } })).toThrow();
+});
