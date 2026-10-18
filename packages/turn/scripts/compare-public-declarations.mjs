@@ -22,8 +22,94 @@ function readonly(symbol) {
     || Boolean(symbol.declarations?.some((node) => node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword)));
 }
 
+
+const normalizeDocumentation = (value) => value.replace(/\r\n?/gu, "\n").trim().split(/\n[ \t]*\n/gu)
+  .map((paragraph) => paragraph.split("\n").map((line) => line.trim().replace(/[ \t]+/gu, " ")).reduce((text, line) =>
+    text + (text ? /^(?:[-+*]|\d+[.)])\s/u.test(line) ? "\n" : " " : "") + line, "")).join("\n\n");
+
+// Index actual JSDoc nodes rather than display strings: braces inside examples
+// are prose, not types. Baseline dead typedef blocks belong to their named TS
+// owners, even when declaration emit attached them to the next value declaration.
+// Candidate prose must live on real declarations, not survive only in dead blocks.
+function semanticDocumentation(program, checker, attributeDefinitions) {
+  const indexed = new Set(), records = new Map();
+  const comment = (value) => normalizeDocumentation((typeof value === "string" ? value : value?.map((part) =>
+    part.getText()).join("") ?? "").replaceAll("\uE000", "@"));
+  const owner = (node) => ts.isVariableStatement(node) ? node.declarationList.declarations[0] : node;
+  const add = (node, kind, text) => {
+    if (!node) return;
+    const record = records.get(node) ?? { descriptions: new Set(), tags: new Set() };
+    if (kind === "description") { if (text) record.descriptions.add(text); }
+    else record.tags.add(JSON.stringify({ name: kind, text }));
+    records.set(node, record);
+  };
+  function index(source) {
+    if (indexed.has(source)) return;
+    indexed.add(source);
+    const named = (name, location) => {
+      const symbol = checker.resolveName(name, location, ts.SymbolFlags.Type | ts.SymbolFlags.Value, false);
+      return symbol?.declarations?.[0];
+    };
+    function block(doc, attached) {
+      // TypeScript treats an inline scoped package name as an unknown tag and
+      // can swallow subsequent @property tags into it. Mask only package-name
+      // at-signs while parsing, then restore them in the compared prose.
+      const parsed = ts.createSourceFile("documentation.ts", `${doc.getText().replace(/@(?=[a-z][a-z0-9-]*\/)/gu, "\uE000")}\nconst owner = 0;`, ts.ScriptTarget.Latest, true);
+      doc = parsed.statements[0].jsDoc[0];
+      const definition = doc.tags?.find((tag) => ts.isJSDocTypedefTag(tag) || ts.isJSDocCallbackTag(tag));
+      if (definition && !attributeDefinitions) return;
+      const target = definition ? named(definition.name?.getText() ?? "", attached) ?? attached : owner(attached);
+      add(target, "description", comment(doc.comment));
+      function tag(value, destination) {
+        const name = value.tagName.text, prose = comment(value.comment);
+        if (ts.isJSDocTypedefTag(value) || ts.isJSDocCallbackTag(value) || ts.isJSDocOverloadTag(value)) {
+          add(destination, "description", prose);
+          for (const property of value.typeExpression?.jsDocPropertyTags ?? []) tag(property, destination);
+          for (const parameter of value.typeExpression?.parameters ?? []) tag(parameter, destination);
+          if (value.typeExpression?.type?.tagName) tag(value.typeExpression.type, destination);
+        } else if (ts.isJSDocPropertyTag(value) || name === "property" || name === "prop") {
+          const propertyName = value.name?.getText() ?? prose.split(/\s/u)[0];
+          const propertyProse = value.name ? prose : prose.slice(propertyName.length).trim();
+          const symbol = destination?.symbol;
+          let type = symbol && checker.getDeclaredTypeOfSymbol(symbol), member;
+          for (const part of propertyName.split(".")) {
+            member = type && checker.getPropertyOfType(type, part);
+            type = member && checker.getTypeOfSymbolAtLocation(member, member.valueDeclaration ?? member.declarations[0]);
+          }
+          // Unresolved prose is never silently discarded.
+          if (propertyProse) add(member?.valueDeclaration ?? member?.declarations?.[0] ?? destination,
+            member ? "description" : "property:" + propertyName, propertyProse);
+        } else if (["type", "template", "param", "arg", "argument", "returns", "return", "this", "extends", "augments", "implements", "satisfies", "throws", "exception"].includes(name)) {
+          if (prose) add(destination, name === "type" ? "description" : name,
+            (ts.isJSDocParameterTag(value) ? value.name.getText() + " " : "") + prose);
+        } else {
+          // Semantic markers (notably @deprecated) matter even without prose.
+          add(destination, name, prose);
+        }
+      }
+      for (const value of doc.tags ?? []) tag(value, target);
+    }
+    function visit(node) {
+      for (const doc of node.jsDoc ?? []) block(doc, node);
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
+  return (symbol) => {
+    const nodes = symbol.declarations ?? (symbol.declaration ? [symbol.declaration] : []);
+    for (const node of nodes) index(node.getSourceFile());
+    const descriptions = new Set(), tags = new Set();
+    for (const node of nodes) {
+      for (const text of records.get(node)?.descriptions ?? []) descriptions.add(text);
+      for (const text of records.get(node)?.tags ?? []) tags.add(text);
+    }
+    const complete = [...descriptions].filter((text) => ![...descriptions].some((other) => other !== text && other.startsWith(text + " ")));
+    return { description: complete.sort().join("\n\n"), tags: [...tags].sort() };
+  };
+}
+
 /** Compare emitted declaration graphs, including guarantees structural assignment ignores. */
-export function compareGraphs(baseline, candidate, entries) {
+export function compareGraphs(baseline, candidate, entries, { documentationMode = "semantic" } = {}) {
   const options = { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
     target: ts.ScriptTarget.ES2022, strict: true, exactOptionalPropertyTypes: true, noEmit: true, skipLibCheck: true };
   const roots = entries.flatMap(({ types }) => [join(baseline, types), join(candidate, types)]);
@@ -32,6 +118,8 @@ export function compareGraphs(baseline, candidate, entries) {
   if (diagnostics.length) throw new Error(ts.formatDiagnostics(diagnostics, {
     getCurrentDirectory: () => root, getCanonicalFileName: (file) => file, getNewLine: () => "\n",
   }));
+  const baselineDocumentation = semanticDocumentation(program, checker, true);
+  const candidateDocumentation = semanticDocumentation(program, checker, false);
   const rows = [];
   for (const { key, types } of entries) {
     const errors = [], visited = new Set();
@@ -40,9 +128,17 @@ export function compareGraphs(baseline, candidate, entries) {
       symbol.valueDeclaration ?? symbol.declarations?.[0] ?? program.getSourceFile(roots[0]));
     const unalias = (symbol) => symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
     const documentation = (before, after, path) => {
-      const normalize = (value) => value.replace(/\r\n?/gu, "\n").trim().split(/\n[ \t]*\n/gu)
-        .map((paragraph) => paragraph.split("\n").map((line) => line.trim().replace(/[ \t]+/gu, " ")).reduce((text, line) =>
-          `${text}${text ? /^(?:[-+*]|\d+[.)])\s/u.test(line) ? "\n" : " " : ""}${line}`, "")).join("\n\n");
+      const normalize = normalizeDocumentation;
+      if (documentationMode === "semantic") {
+        const previous = baselineDocumentation(before), current = candidateDocumentation(after);
+        if (previous.description && previous.description !== current.description) {
+          fail(path, current.description ? "changed documentation" : "lost documentation");
+        }
+        if (previous.tags.length && JSON.stringify(previous.tags) !== JSON.stringify(current.tags)) {
+          fail(path, current.tags.length ? "changed documentation tags" : "lost documentation tags");
+        }
+        return;
+      }
       const previous = normalize(ts.displayPartsToString(before.getDocumentationComment(checker)));
       const current = normalize(ts.displayPartsToString(after.getDocumentationComment(checker)));
       if (previous && previous !== current) fail(path, current ? "changed documentation" : "lost documentation");
@@ -189,7 +285,7 @@ export function compareGraphs(baseline, candidate, entries) {
   return rows;
 }
 
-export function compareRevision(revision = "origin/main") {
+export function compareRevision(revision = "origin/main", { documentationMode = "semantic" } = {}) {
   const oid = execFileSync("git", ["rev-parse", `${revision}^{commit}`], { cwd: root, encoding: "utf8" }).trim();
   const cache = join(root, ".worklab-tmp/turn-declaration-comparison");
   mkdirSync(cache, { recursive: true });
@@ -210,8 +306,8 @@ export function compareRevision(revision = "origin/main") {
   copyGraph(turn, join(scratch, "baseline"), "baseline");
   copyGraph(join(root, "packages/turn"), join(scratch, "candidate"), "candidate");
   const entries = Object.entries(manifest.exports).map(([key, target]) => ({ key, types: target.types }));
-  const rows = compareGraphs(join(scratch, "baseline"), join(scratch, "candidate"), entries);
-  const report = { baseline: oid, candidate: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), rows };
+  const rows = compareGraphs(join(scratch, "baseline"), join(scratch, "candidate"), entries, { documentationMode });
+  const report = { documentationMode, baseline: oid, candidate: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), rows };
   writeFileSync(join(cache, "latest.json"), `${JSON.stringify(report, null, 2)}\n`);
   for (const row of rows) console.log(`${row.errors.length ? "FAIL" : "PASS"} ${row.entry}: ${row.exports} exports; ${row.errors.length} regressions`);
   console.log(`baseline ${oid}; candidate ${report.candidate} (working tree); report ${join(cache, "latest.json")}`);
@@ -219,6 +315,6 @@ export function compareRevision(revision = "origin/main") {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const report = compareRevision(process.argv[2]);
+  const report = compareRevision(process.argv[2], { documentationMode: process.argv.includes("--literal-docs") ? "literal" : "semantic" });
   process.exitCode = report.rows.some((row) => row.errors.length) ? 1 : 0;
 }
