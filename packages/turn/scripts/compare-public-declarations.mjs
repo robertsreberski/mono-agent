@@ -38,8 +38,9 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
   const owner = (node) => ts.isVariableStatement(node) ? node.declarationList.declarations[0] : node;
   const add = (node, kind, text) => {
     if (!node) return;
-    const record = records.get(node) ?? { descriptions: new Set(), tags: new Set() };
+    const record = records.get(node) ?? { descriptions: new Set(), tags: new Set(), misplaced: new Set() };
     if (kind === "description") { if (text) record.descriptions.add(text); }
+    else if (kind === "misplaced") record.misplaced.add(text);
     else record.tags.add(JSON.stringify({ name: kind, text }));
     records.set(node, record);
   };
@@ -62,7 +63,21 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
       add(target, "description", comment(doc.comment));
       function tag(value, destination) {
         const name = value.tagName.text, prose = comment(value.comment);
-        if (ts.isJSDocTypedefTag(value) || ts.isJSDocCallbackTag(value) || ts.isJSDocOverloadTag(value)) {
+        if (!attributeDefinitions && ts.isJSDocOverloadTag(value)) {
+          // Candidate metadata cannot replace prose on a real signature or its
+          // parameters. Keep its literal attachment without crediting that owner.
+          for (const nested of [value, ...value.typeExpression?.parameters ?? [], value.typeExpression?.type].filter(Boolean)) {
+            const text = comment(nested.comment);
+            if (text) {
+              add(destination, "overload:" + nested.tagName.text, text);
+              add(destination, "misplaced", "@overload");
+              if (ts.isJSDocParameterTag(nested)) {
+                const parameter = destination.parameters?.find((node) => node.name.getText() === nested.name.getText());
+                add(parameter, "misplaced", "@overload");
+              }
+            }
+          }
+        } else if (ts.isJSDocTypedefTag(value) || ts.isJSDocCallbackTag(value) || ts.isJSDocOverloadTag(value)) {
           add(destination, "description", prose);
           for (const property of value.typeExpression?.jsDocPropertyTags ?? []) tag(property, destination);
           for (const parameter of value.typeExpression?.parameters ?? []) tag(parameter, destination);
@@ -76,11 +91,15 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
             member = type && checker.getPropertyOfType(type, part);
             type = member && checker.getTypeOfSymbolAtLocation(member, member.valueDeclaration ?? member.declarations[0]);
           }
-          // Unresolved prose is never silently discarded.
-          if (propertyProse) add(member?.valueDeclaration ?? member?.declarations?.[0] ?? destination,
-            member ? "description" : "property:" + propertyName, propertyProse);
+          // Resolve candidate metadata for diagnostics only, never as owner prose.
+          const memberNode = member?.valueDeclaration ?? member?.declarations?.[0];
+          if (!attributeDefinitions && memberNode && propertyProse) add(memberNode, "misplaced", `@${name}`);
+          // Unresolved/opaque metadata remains literal and is never discarded.
+          if (propertyProse) add(attributeDefinitions && memberNode ? memberNode : destination,
+            attributeDefinitions && member ? "description" : "property:" + propertyName, propertyProse);
         } else if (["type", "template", "param", "arg", "argument", "returns", "return", "this", "extends", "augments", "implements", "satisfies", "throws", "exception"].includes(name)) {
-          if (prose) add(destination, name === "type" ? "description" : name,
+          if (name === "type" && !attributeDefinitions && prose && destination?.symbol) add(destination, "misplaced", "@type");
+          if (prose) add(destination, name === "type" && attributeDefinitions ? "description" : name,
             (ts.isJSDocParameterTag(value) ? value.name.getText() + " " : "") + prose);
         } else {
           // Semantic markers (notably @deprecated) matter even without prose.
@@ -98,13 +117,14 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
   return (symbol) => {
     const nodes = symbol.declarations ?? (symbol.declaration ? [symbol.declaration] : []);
     for (const node of nodes) index(node.getSourceFile());
-    const descriptions = new Set(), tags = new Set();
+    const descriptions = new Set(), tags = new Set(), misplaced = new Set();
     for (const node of nodes) {
       for (const text of records.get(node)?.descriptions ?? []) descriptions.add(text);
       for (const text of records.get(node)?.tags ?? []) tags.add(text);
+      for (const text of records.get(node)?.misplaced ?? []) misplaced.add(text);
     }
     const complete = [...descriptions].filter((text) => ![...descriptions].some((other) => other !== text && other.startsWith(text + " ")));
-    return { description: complete.sort().join("\n\n"), tags: [...tags].sort() };
+    return { description: complete.sort().join("\n\n"), tags: [...tags].sort(), misplaced: [...misplaced].sort() };
   };
 }
 
@@ -131,11 +151,16 @@ export function compareGraphs(baseline, candidate, entries, { documentationMode 
       const normalize = normalizeDocumentation;
       if (documentationMode === "semantic") {
         const previous = baselineDocumentation(before), current = candidateDocumentation(after);
+        const misplaced = current.misplaced.map((tag) => tag === "@type" ? tag : `parent ${tag}`).join("/");
         if (previous.description && previous.description !== current.description) {
-          fail(path, current.description ? "changed documentation" : "lost documentation");
+          fail(path, current.description ? "changed documentation" : current.misplaced.length
+            ? `candidate prose only in ${misplaced}; move it to the member`
+            : "lost documentation");
         }
         if (previous.tags.length && JSON.stringify(previous.tags) !== JSON.stringify(current.tags)) {
-          fail(path, current.tags.length ? "changed documentation tags" : "lost documentation tags");
+          fail(path, current.misplaced.length
+            ? `candidate prose only in ${misplaced}; move it to the member`
+            : current.tags.length ? "changed documentation tags" : "lost documentation tags");
         }
         return;
       }

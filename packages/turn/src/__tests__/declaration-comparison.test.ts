@@ -305,3 +305,25 @@ it("deduplicates a copied typedef description prefix only within its named owner
   expect(compare(before, after)).toEqual([]);
   expect(compare(before, after.replace("with details.", "with changes.")).some((error) => error.includes("changed documentation"))).toBe(true);
 });
+
+it.each([
+  ["property", "export type Shape = {\n /** Member guarantee. */ value: string };", "/** @property value Member guarantee. */ export type Shape = { value: string };", "Shape.value: candidate prose only in parent @property; move it to the member"],
+  ["prop", "export type Shape = {\n /** Member guarantee. */ value: string };", "/** @prop value Member guarantee. */ export type Shape = { value: string };", "Shape.value: candidate prose only in parent @prop; move it to the member"],
+  ["nested property", "export type Shape = { nested: {\n /** Member guarantee. */ value: string } };", "/** @property nested.value Member guarantee. */ export type Shape = { nested: { value: string } };", "Shape.nested.value: candidate prose only in parent @property; move it to the member"],
+  ["type", "/** Value guarantee. */ export const value: string;", "/** @type {string} Value guarantee. */ export const value: string;", "value: candidate prose only in @type; move it to the member"],
+  ["overload", "/** Call guarantee. */ export function run(value: string): string;", "/** @overload Call guarantee.\n * @param {string} value\n * @returns {string}\n */ export function run(value: string): string;", "run: candidate prose only in parent @overload; move it to the member"],
+  ["overload parameter", "/** @param value Input guarantee. */ export function run(value: string): string;", "/** @overload\n * @param {string} value Input guarantee.\n */ export function run(value: string): string;", "run: candidate prose only in parent @overload; move it to the member"],
+])("rejects candidate prose credited only through legacy %s metadata", (_name, before, after, message) => {
+  expect(compare(before!, after!)).toContain(message);
+});
+
+it("still attributes baseline type prose to its real owner", () => {
+  expect(compare("/** @type {string} Value guarantee. */ export const value: string;",
+    "/** Value guarantee. */ export const value: string;")).toEqual([]);
+});
+
+it("diagnoses parent property prose across merged interface declarations", () => {
+  expect(compare("export interface Shape {\n /** Merged value guarantee. */ value: string } export interface Shape { other: number }",
+    "export interface Shape { value: string }\n /** @property value Merged value guarantee. */ export interface Shape { other: number }"))
+    .toContain("Shape.value: candidate prose only in parent @property; move it to the member");
+});
