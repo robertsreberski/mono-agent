@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers";
 import {
   appendFileSync,
   chmodSync,
@@ -999,3 +1000,23 @@ function markCaptureIntentComplete(root: string, file: string): void {
   intent.state = "complete";
   writeFileSync(path, `${JSON.stringify(intent)}\n`, { mode: 0o600 });
 }
+
+// Resolved promises alone do not let the worker process IPC replies.
+describe.sequential("worker event-loop fairness", { shuffle: false }, () => {
+  let immediateProcessed = false;
+
+  it("queues work on the worker event loop", () => {
+    setImmediate(() => { immediateProcessed = true; });
+    expect(immediateProcessed).toBe(false);
+  });
+
+  it("processes queued work before the next synchronous test", () => {
+    expect(immediateProcessed).toBe(true);
+  });
+});
+
+// Synchronous SQLite/filesystem work and resolved provider doubles can starve
+// Vitest worker RPC replies under load. Give IPC one native turn per case.
+afterEach(async () => {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});

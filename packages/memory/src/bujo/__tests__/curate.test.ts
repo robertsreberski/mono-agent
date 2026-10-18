@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers";
 import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -766,4 +767,24 @@ describe("operator entity merges", { timeout: 20_000 }, () => {
     const db = openMemoryDb({ path: resolveActiveMemoryDbPath(path), readOnly: true, dim: 16 });
     try { expect(auditCanonicalGraphParity(path, db).status).toBe("match"); } finally { db.close(); }
   });
+});
+
+// Resolved promises alone do not let the worker process IPC replies.
+describe.sequential("worker event-loop fairness", { shuffle: false }, () => {
+  let immediateProcessed = false;
+
+  it("queues work on the worker event loop", () => {
+    setImmediate(() => { immediateProcessed = true; });
+    expect(immediateProcessed).toBe(false);
+  });
+
+  it("processes queued work before the next synchronous test", () => {
+    expect(immediateProcessed).toBe(true);
+  });
+});
+
+// Synchronous SQLite/filesystem work and resolved provider doubles can starve
+// Vitest worker RPC replies under load. Give IPC one native turn per case.
+afterEach(async () => {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 });

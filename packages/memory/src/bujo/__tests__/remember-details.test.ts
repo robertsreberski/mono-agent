@@ -1,7 +1,8 @@
+import { setImmediate } from "node:timers";
 import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fakeEmbeddings } from "./helpers.js";
 import { createBujoMemoryStore } from "../store.js";
 import { appendGraphBatch } from "../graph.js";
@@ -279,4 +280,24 @@ describe("enhanced Remember", () => {
       expect(findCanonicalMemoryBullet(root, first.id, "test")?.bullet.status).toBe("open");
     } finally { await store.close(); }
   });
+});
+
+// Resolved promises alone do not let the worker process IPC replies.
+describe.sequential("worker event-loop fairness", { shuffle: false }, () => {
+  let immediateProcessed = false;
+
+  it("queues work on the worker event loop", () => {
+    setImmediate(() => { immediateProcessed = true; });
+    expect(immediateProcessed).toBe(false);
+  });
+
+  it("processes queued work before the next synchronous test", () => {
+    expect(immediateProcessed).toBe(true);
+  });
+});
+
+// Synchronous SQLite/filesystem work and resolved provider doubles can starve
+// Vitest worker RPC replies under load. Give IPC one native turn per case.
+afterEach(async () => {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 });
