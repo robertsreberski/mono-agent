@@ -222,14 +222,14 @@ export type RuntimeResult = Readonly<Pick<RuntimeContracts.RuntimeResult, "turnD
 
 
 /**
- * Typed per-run tool-output limits (mirrors agent-runtime's RuntimeToolLimits,
+ * Typed per-run tool-output limits (mirrors turn's RuntimeToolLimits,
  * contracts/runtime.js). Omitted fields use the turn defaults.
  */
 export type RuntimeToolLimits = Readonly<Policies.RuntimeToolLimits>;
 
 
 /**
- * Typed per-run context-compaction policy (mirrors agent-runtime's
+ * Typed per-run context-compaction policy (mirrors turn's
  * RuntimeCompactionPolicy). Omitted scalar budgets resolve adaptively against
  * the effective model context window.
  */
@@ -237,7 +237,7 @@ export type RuntimeCompactionPolicy = Readonly<Policies.RuntimeCompactionPolicy>
 
 
 /**
- * Per-run prompt-fragment overrides (mirrors agent-runtime's
+ * Per-run prompt-fragment overrides (mirrors turn's
  * RuntimePromptOverrides). Precedence run over host over the kernel default.
  */
 export type RuntimePromptOverrides = Readonly<Policies.RuntimePromptOverrides>;
@@ -467,11 +467,11 @@ export interface RuntimeToolOptions {
 }
 
 
-/** A parsed model reference as agent-runtime's pricing resolvers receive it (see telemetry/cost.js's ParsedModelReference). */
+/** A parsed model reference as turn's pricing resolvers receive it (see telemetry/cost.ts's ParsedModelReference). */
 export type MonoRuntimeParsedPricingModel = Readonly<Pricing.ParsedModelReference>;
 
 
-/** agent-runtime's normalized per-token pricing row (see telemetry/cost.js's NormalizedPricing). */
+/** turn's normalized per-token pricing row (see telemetry/cost.ts's NormalizedPricing). */
 export type MonoRuntimePricing = Readonly<Pricing.NormalizedPricing>;
 
 

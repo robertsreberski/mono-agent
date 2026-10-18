@@ -48,7 +48,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   const { fallbackChain, retry, resolveAttempt, sessionTurnReconciliation, ...hostOptions } = options;
   const chain = normalizeFallbackChain(fallbackChain);
   const retryPolicy = normalizeRetryPolicy(retry);
-  // agent-runtime's kernel ships only a fail-closed passthrough sandbox (see
+  // turn's kernel ships only a fail-closed passthrough sandbox (see
   // agent/sandbox-seam.js) — this is the ONE place the real sandbox
   // implementation gets injected, so every mono-agent host's sandbox policy is
   // actually enforced without the kernel depending on this package itself.

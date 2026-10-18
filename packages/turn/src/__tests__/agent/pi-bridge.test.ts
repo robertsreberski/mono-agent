@@ -818,7 +818,7 @@ describe("pi MCP tool helpers", () => {
   // turn-runner passes one only to the built-ins. So declaring an MCP server —
   // not approving a call — is the authorization boundary for its tools.
   //
-  // This test exists because the agent-runtime README once promised the
+  // This test exists because the turn README once promised the
   // opposite ("Per-call gating is the host's onToolApprovalRequest callback"),
   // which no test contradicted. If MCP calls ever DO become gated, this test
   // must fail, and the README's MCP + "Approval gates" sections must be
@@ -1264,7 +1264,7 @@ describe("pi MCP tool helpers", () => {
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
 
     // The deny gate honors a legacy alias; a policy that blocks only one spelling
-    // is not a policy, so agent-app checks both when deciding what a child gets.
+    // is not a policy, so app checks both when deciding what a child gets.
     for (const denied of ["ReadSkill", "read_skill"]) {
       const tools = getPiBuiltinTools(["Read"], { ctx, skillsRoot, skillNames: ["research"], disallowedTools: [denied] });
       expect(tools.find((tool: any) => tool.name === "ReadSkill"), denied).toBeFalsy();
@@ -1385,7 +1385,7 @@ describe("pi MCP tool helpers", () => {
   });
 
   it("ReadSkill supports the minimal {name}+skillsRoot form via the skills param", async () => {
-    // agent-harness passes minimal {name} objects plus a shared skillsRoot; the
+    // conversation passes minimal {name} objects plus a shared skillsRoot; the
     // bridge maps them to skillNames AND forwards the objects. With a shared root
     // the objects lack filePath, so resolution stays on the shared-root path.
     const root = tempWorkspace();

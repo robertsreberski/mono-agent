@@ -1598,7 +1598,7 @@ const ARGV_PREVIEW_MAX_CHARS = 200;
  * leaks the operator's account name into its context and every operator surface.
  *
  * Duplicated rather than imported: `@mono-agent/turn` deliberately has
- * no internal dependencies, so it cannot reach `agent-contracts`.
+ * no internal dependencies, so it cannot reach `contracts`.
  */
 function relativizePaths(value: string, cwd: string | undefined) {
   let result = value;

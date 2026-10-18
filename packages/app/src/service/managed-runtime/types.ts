@@ -63,7 +63,7 @@ export interface ManagedRuntimeProvenanceVerificationDeps {
   readonly beforeFinalManifestProof?: () => Promise<void>;
 }
 
-/** One config-selected package that is loaded dynamically rather than declared by agent-app. */
+/** One config-selected package that is loaded dynamically rather than declared by app. */
 export interface ManagedRuntimeAdditionalPackage {
   readonly packageName: string;
   /** Resolved package root containing package.json (not a node_modules symlink). */

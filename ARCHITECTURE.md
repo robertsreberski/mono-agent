@@ -56,7 +56,7 @@ flowchart TB
   end
 
   subgraph AppLayer["App layer"]
-    AgentApp["@mono-agent/app<br/>config to channels + responder"]
+    App["@mono-agent/app<br/>config to channels + responder"]
   end
 
   subgraph Execution["Execution layer"]
@@ -81,7 +81,7 @@ flowchart TB
   Host -. plugin .-> Messenger
   Host -. runtime extension .-> Orchestrator
   Host --> Config
-  Host --> AgentApp
+  Host --> App
 
   Web --> Contracts
   Web --> Config
@@ -96,11 +96,11 @@ flowchart TB
 
   Orchestrator --> Contracts
   Orchestrator -.->|runtime extension| Harness
-  AgentApp --> Config
-  AgentApp --> Harness
-  AgentApp --> Memory
-  AgentApp --> AgentRuntime
-  AgentApp --> Observability
+  App --> Config
+  App --> Harness
+  App --> Memory
+  App --> AgentRuntime
+  App --> Observability
   Config --> Contracts
   Config --> AgentRuntime
   Harness --> Contracts
@@ -162,7 +162,7 @@ Rules for future packages:
 
 Choose the lowest rung in [`docs/reference/capability-ladder.md`](./docs/reference/capability-ladder.md). A shared contract change is the last resort, not the default home for reusable-looking code.
 
-## Agent-app internals
+## App internals
 
 `host/app-controller.ts` owns lifecycle state and delegates operations. Each `host/app-controller-*.ts` module declares the narrow controller port it needs; operation modules must not import the concrete controller. Cross-cutting service logic lives in focused modules such as `service/launchd/background-log-maintenance.ts`, `doctor/doctor-runs.ts`, and `service/web/managed-web-logs.ts` rather than returning to the CLI/controller entrypoints.
 

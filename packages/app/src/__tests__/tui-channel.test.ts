@@ -163,7 +163,7 @@ async function resolveInfo(captured: TuiAdapterOptions): Promise<TuiAdapterInfo>
 /**
  * A realistically long canonical reference — a SIZE, not a bound.
  *
- * The parser has no length rule at all: `requireQuotableReference` (agent-runtime's
+ * The parser has no length rule at all: `requireQuotableReference` (turn's
  * `model-refs.js`) refuses control and formatting code points and nothing else, because what a
  * model may be called is decided by providers, not by a grammar layer. Two rounds tried a byte
  * ceiling here and both numbers refused a model that really exists.

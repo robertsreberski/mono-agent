@@ -778,7 +778,7 @@ function usage() {
     "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, selected package READMEs,",
     "and mono-agent-composer references) for retired pre-v1 surfaces; applies the demo retirement",
     "guards to every catalog package/extras README; and rejects the exact retired demo roots and root commands",
-    "and scans those docs plus operator-adapter source text for absolute artifact/replay claims",
+    "and scans those docs plus channel-operator source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",
   ].join("\n");

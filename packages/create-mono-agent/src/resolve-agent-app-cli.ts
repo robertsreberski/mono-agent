@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 
-interface AgentAppManifest {
+interface AppManifest {
   readonly bin?: string | Record<string, string>;
 }
 
@@ -11,8 +11,8 @@ interface AgentAppManifest {
  *
  * Reading the `bin` path from the manifest (rather than hardcoding `dist/cli.js`)
  * means this survives any install layout — npm/npx global, pnpm-linked — and any
- * future change to agent-app's bin location. We resolve it through CJS
- * `require.resolve` of `@mono-agent/app/package.json` (which agent-app
+ * future change to app's bin location. We resolve it through CJS
+ * `require.resolve` of `@mono-agent/app/package.json` (which app
  * exports), so this works throughout the supported Node range without depending on
  * synchronous `import.meta.resolve` (available throughout the supported Node 24.15.0+ range).
  */
@@ -27,7 +27,7 @@ export function resolveAgentAppCliEntry(from: string | URL = import.meta.url): s
       `the create-mono-agent installer could not find @mono-agent/app (its CLI host) — reinstall it (\`npm i -g create-mono-agent\`). (${reason})`,
     );
   }
-  const manifest = require("@mono-agent/app/package.json") as AgentAppManifest;
+  const manifest = require("@mono-agent/app/package.json") as AppManifest;
   const bin = manifest.bin;
   const relative = typeof bin === "string" ? bin : bin?.["mono-agent"];
   if (typeof relative !== "string" || relative.length === 0) {

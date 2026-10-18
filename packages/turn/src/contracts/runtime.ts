@@ -16,7 +16,6 @@ export type RuntimeEvent = import("./events.js").RuntimeEvent;
 
 export type RuntimeToolLifecycleSink = import("./events.js").RuntimeToolLifecycleSink;
 
-export type { RuntimeObserver } from "./events.js";
 
 export type RuntimeRunOptions = {
   /**
@@ -104,7 +103,7 @@ export type RuntimeRunOptions = {
    */
   liveInput?: AsyncIterable<import("./live-input.js").RuntimeLiveInputMessage>;
   /**
-   * Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
+   * Per-call observers (see telemetry/observer.ts) merged with host-level (createRuntime) observers.
    */
   observers?: ReadonlyArray<any>;
   onEvent?: (event: RuntimeEvent) => void;
@@ -284,7 +283,7 @@ export type RuntimeRunOptions = {
 /**
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
  * second (options) argument: the host-supplied RuntimeRunOptions, merged by
- * createRuntime (runtime/create-runtime.js) with the bound HOST_KEYS host-integration
+ * createRuntime (runtime/create-runtime.ts) with the bound HOST_KEYS host-integration
  * callbacks, the resolved runtimeBrand, the per-instance toolContext (read by
  * internal tool helpers; absent when a host drives a bridge directly without
  * createRuntime), and the per-run observerHub (onEvent is overridden to the
@@ -354,7 +353,7 @@ export type RuntimeSubagentRunRequest = {
 /**
  * Owning-layer callback that actually executes one child turn. The kernel
  * supplies a self-run fallback so `createRuntime` works without host wiring;
- * agent-app replaces it so subagent runs get the configured fallback chain,
+ * app replaces it so subagent runs get the configured fallback chain,
  * same-model retries, and run recording.
  */
 export type RuntimeSubagentRun = (request: RuntimeSubagentRunRequest) => Promise<RuntimeResult>;
@@ -785,15 +784,15 @@ export type TurnHostOptions = {
    */
   sandbox?: import("../agent/sandbox-seam.js").RuntimeSandbox;
   /**
-   * Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime/create-runtime.js).
+   * Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime/create-runtime.ts).
    */
   prompts?: RuntimePromptOverrides;
   /**
-   * Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
+   * Observer instances (see telemetry/observer.ts); loose because telemetry/observer.ts is not a kernel seam file.
    */
   observers?: ReadonlyArray<any>;
   /**
-   * See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
+   * See resolveRuntimeBrand (runtime-brand.ts); accepts a partial RuntimeBrand.
    */
   runtimeBrand?: any;
   /**

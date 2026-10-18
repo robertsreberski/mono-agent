@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const kernelMocks = vi.hoisted(() => {
+const turnMocks = vi.hoisted(() => {
   const createKernelRuntime = () => ({
     run: vi.fn(),
     configureTools: vi.fn(),
@@ -11,8 +11,8 @@ const kernelMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("#turn/runtime/create-runtime", () => ({ createRuntime: kernelMocks.createRuntime }));
-vi.mock("#turn/runtime/router", () => ({ createRouterRuntime: kernelMocks.createRouterRuntime }));
+vi.mock("#turn/runtime/create-runtime", () => ({ createRuntime: turnMocks.createRuntime }));
+vi.mock("#turn/runtime/router", () => ({ createRouterRuntime: turnMocks.createRouterRuntime }));
 
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptContext, MonoRuntimeAttemptResolution } from "@mono-agent/turn/host/types";
@@ -35,8 +35,8 @@ function adversarialSandbox(label = "caller") {
 
 describe("createMonoRuntime sandbox injection", () => {
   beforeEach(() => {
-    kernelMocks.createRuntime.mockClear();
-    kernelMocks.createRouterRuntime.mockClear();
+    turnMocks.createRuntime.mockClear();
+    turnMocks.createRouterRuntime.mockClear();
   });
 
   it.each([
@@ -51,13 +51,13 @@ describe("createMonoRuntime sandbox injection", () => {
 
     createMonoRuntime(callerOptions as unknown as CreateMonoRuntimeOptions);
 
-    expect(kernelMocks.createRuntime).toHaveBeenCalledOnce();
-    const host = kernelMocks.createRuntime.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(turnMocks.createRuntime).toHaveBeenCalledOnce();
+    const host = turnMocks.createRuntime.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(host.workspace).toBe("/repo/workspace");
     expect(host.sandbox).toBe(monoSandboxImpl);
     expect(host.sandbox).not.toBe(callerSandbox);
     expect(callerOptions.sandbox).toBe(callerSandbox);
-    expect(kernelMocks.createRouterRuntime).not.toHaveBeenCalled();
+    expect(turnMocks.createRouterRuntime).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -81,9 +81,9 @@ describe("createMonoRuntime sandbox injection", () => {
 
     await runtime.run("SYSTEM", request as unknown as RuntimeRunOptions);
 
-    const kernelRuntime = kernelMocks.createRuntime.mock.results[0]?.value;
-    expect(kernelRuntime?.run).toHaveBeenCalledOnce();
-    const forwarded = kernelRuntime?.run.mock.calls[0]?.[1] as Record<string, unknown>;
+    const turnRuntime = turnMocks.createRuntime.mock.results[0]?.value;
+    expect(turnRuntime?.run).toHaveBeenCalledOnce();
+    const forwarded = turnRuntime?.run.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(Object.hasOwn(forwarded, "sandbox")).toBe(false);
     expect(forwarded).toMatchObject({
       cwd: "/request/workspace",
@@ -112,9 +112,9 @@ describe("createMonoRuntime sandbox injection", () => {
 
     runtime.configureTools?.(next as unknown as RuntimeToolOptions);
 
-    const kernelRuntime = kernelMocks.createRuntime.mock.results[0]?.value;
-    expect(kernelRuntime?.configureTools).toHaveBeenCalledOnce();
-    const forwarded = kernelRuntime?.configureTools.mock.calls[0]?.[0] as Record<string, unknown>;
+    const turnRuntime = turnMocks.createRuntime.mock.results[0]?.value;
+    expect(turnRuntime?.configureTools).toHaveBeenCalledOnce();
+    const forwarded = turnRuntime?.configureTools.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(Object.hasOwn(forwarded, "sandbox")).toBe(false);
     expect(forwarded).toMatchObject({
       workspace: "/configured/workspace",
@@ -155,8 +155,8 @@ describe("createMonoRuntime sandbox injection", () => {
     });
     await runtime.run("SYSTEM", request as unknown as RuntimeRunOptions);
 
-    expect(kernelMocks.createRouterRuntime).toHaveBeenCalledOnce();
-    const routerOptions = kernelMocks.createRouterRuntime.mock.calls[0]?.[0] as {
+    expect(turnMocks.createRouterRuntime).toHaveBeenCalledOnce();
+    const routerOptions = turnMocks.createRouterRuntime.mock.calls[0]?.[0] as {
       host: Record<string, unknown>;
       resolveAttempt: (context: MonoRuntimeAttemptContext) => Promise<MonoRuntimeAttemptResolution | undefined>;
     };
@@ -173,8 +173,8 @@ describe("createMonoRuntime sandbox injection", () => {
       pluginSentinel: "preserved-plugin-extension",
     });
 
-    const kernelRuntime = kernelMocks.createRouterRuntime.mock.results[0]?.value;
-    const forwarded = kernelRuntime?.run.mock.calls[0]?.[1] as Record<string, unknown>;
+    const turnRuntime = turnMocks.createRouterRuntime.mock.results[0]?.value;
+    const forwarded = turnRuntime?.run.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(Object.hasOwn(forwarded, "sandbox")).toBe(false);
     expect(forwarded.requestSentinel).toBe("preserved-router-request");
     expect(callerOptions.sandbox).toBe(hostSandbox);
@@ -183,7 +183,7 @@ describe("createMonoRuntime sandbox injection", () => {
   });
 
   it("forwards per-route attempts and the retry policy into the kernel router", () => {
-    // Closes the config->router gap: agent-app proves the chain it builds, this
+    // Closes the config->router gap: app proves the chain it builds, this
     // proves createMonoRuntime hands that chain's attempts and the backoff
     // policy to the real kernel router rather than dropping them.
     createMonoRuntime({
@@ -201,8 +201,8 @@ describe("createMonoRuntime sandbox injection", () => {
       ],
     });
 
-    expect(kernelMocks.createRouterRuntime).toHaveBeenCalledOnce();
-    const options = kernelMocks.createRouterRuntime.mock.calls[0]?.[0] as {
+    expect(turnMocks.createRouterRuntime).toHaveBeenCalledOnce();
+    const options = turnMocks.createRouterRuntime.mock.calls[0]?.[0] as {
       chain: readonly { attempts?: number }[];
       retry?: { backoffMs?: number; maxBackoffMs?: number };
     };

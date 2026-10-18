@@ -1,6 +1,6 @@
 // FIFO counting semaphore for run-scoped tool concurrency.
 //
-// agent-harness owns the equivalent helper for provider-execution width, but
+// conversation owns the equivalent helper for provider-execution width, but
 // the kernel cannot depend on the harness, so the shape is duplicated here for
 // the in-process tools that need to bound their own fan-out.
 

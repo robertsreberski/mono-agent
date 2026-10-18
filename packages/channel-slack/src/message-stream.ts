@@ -87,7 +87,7 @@ export interface SlackMessageStreamOptions {
   /**
    * Notified with each message this stream posts. Used to link a posted message
    * back to the conversation that produced it, so a later in-thread reply can
-   * resume that conversation (see `posted-message-index` in agent-app).
+   * resume that conversation (see `posted-message-index` in app).
    */
   onPosted?: SlackPostedMessageListener;
   /** Notified after a status or answer post/edit has a native Slack receipt. */

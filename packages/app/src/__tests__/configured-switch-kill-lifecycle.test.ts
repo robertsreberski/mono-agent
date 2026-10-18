@@ -1,5 +1,5 @@
 // Configured-host process-kill matrix for reset and retention of a switched v5
-// conversation (P3 A4). Storage-level phase matrices remain in agent-harness
+// conversation (P3 A4). Storage-level phase matrices remain in conversation
 // managed-native-lifecycle.
 import { afterEach, expect, it } from "vitest";
 import { TEST_TIMEOUT_MS, cleanupRoots, count, expectSettled, killAndRecover } from "./fixtures/configured-switch-kill.js";

@@ -618,7 +618,7 @@ describe("current launch manifest", () => {
 
     expect(version).not.toBeNull();
     if (version === null) {
-      throw new Error(`agent-runtime version is not valid semver: ${runtime.version}`);
+      throw new Error(`turn version is not valid semver: ${runtime.version}`);
     }
     const expectedBaseline = `${version[1]}.${version[2]}.x`;
     expect(migration).toContain(

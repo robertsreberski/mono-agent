@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 
-/** The installed agent-app version, used for exact lockstep plugin guidance. */
+/** The installed app version, used for exact lockstep plugin guidance. */
 export function appPackageVersion(): string | undefined {
   try {
     const pkg = createRequire(import.meta.url)("../../package.json") as { readonly version?: unknown };

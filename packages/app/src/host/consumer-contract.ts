@@ -185,7 +185,7 @@ export async function validateConsumerContractFixture(
  * binaries would make them platform-specific and opaque to review. Seed the
  * copied fixture with a real empty generation so doctor validates the same
  * managed layout as a rebuilt consumer. Keep the import dynamic: merely
- * importing agent-app must never load better-sqlite3/sqlite-vec.
+ * importing app must never load better-sqlite3/sqlite-vec.
  */
 async function seedPrivateConsumerMemoryGeneration(
   privateFixtureRoot: string,

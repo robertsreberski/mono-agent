@@ -50,7 +50,7 @@ export class TurnHostError extends Error {
  * diagnostic some characters. Refusing a reference costs an operator a route that runs.
  *
  * Keeping this at 96 therefore costs nothing real. Every consumer is on a REJECTION path --
- * `modelReferenceEcho` in @mono-agent/config, `echoValue` in agent-app's request-model-override,
+ * `modelReferenceEcho` in @mono-agent/config, `echoValue` in app's request-model-override,
  * `echo` in its trigger-overrides -- so it never truncates a reference that parsed. It stays
  * large enough to show a mistyped one in full: 96 bytes covers every reference in Pi's
  * 1312-entry built-in catalog (longest 77) and every ref this machine's Ollama and LM Studio
@@ -92,8 +92,8 @@ function escapeDiagnosticCharacter(character: string): string {
 /**
  * Escape, then clamp: escaping expands, so clamping last is what makes the returned byte
  * length an actual bound. Clamping walks code points (never splitting one) on a UTF-8 byte
- * budget, the same convention as `clampUtf8Bytes` in agent-harness and `clampUtf8` in the
- * agent-app skill registry, and marks the cut so a clamped echo is distinguishable from a
+ * budget, the same convention as `clampUtf8Bytes` in conversation and `clampUtf8` in the
+ * app skill registry, and marks the cut so a clamped echo is distinguishable from a
  * short value. Escaping is idempotent and clamping is monotone, so applying this twice --
  * which happens when config re-bounds a reason the adapter already bounded -- is a no-op.
  */

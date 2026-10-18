@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import * as agentHarness from "@mono-agent/conversation";
+import * as conversation from "@mono-agent/conversation";
 import { MonoAgentConfigError } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
@@ -1721,7 +1721,7 @@ describe("agent host composition helpers", () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const createHarness = vi.spyOn(agentHarness, "createConversationHarness");
+    const createHarness = vi.spyOn(conversation, "createConversationHarness");
     let harness: Awaited<ReturnType<typeof createConfiguredConversationHarness>> | undefined;
     try {
       harness = await createConfiguredConversationHarness({

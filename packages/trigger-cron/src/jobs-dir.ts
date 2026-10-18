@@ -10,7 +10,7 @@ import type { CronJobConfig } from "./config.js";
 const DEFAULT_TIMEZONE = "UTC";
 
 // Matches a leading YAML-style frontmatter block (`---` … `---`). Mirrors the
-// shape used by the skill index, but cron-adapter must not depend on host or
+// shape used by the skill index, but trigger-cron must not depend on host or
 // other-package code, so the parser is self-contained here. Cron frontmatter is
 // flat scalars only, so a tiny line parser is enough — no YAML dependency.
 const FRONTMATTER_PATTERN = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/u;

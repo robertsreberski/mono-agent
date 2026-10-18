@@ -6,7 +6,7 @@
 // packages/turn/src/host/sandbox/index.ts (via host/sandbox/implementation.ts).
 // This fixture reimplements just enough of host integration's pure policy algebra
 // (monotonic merge, engine-delegated command prep, network-mode allow checks)
-// for agent-runtime's OWN tool-enforcement tests (tools.test.js,
+// for turn's OWN tool-enforcement tests (agent/tools.test.ts,
 // pi-bridge.test.js, tool-context.test.js) to exercise realistic sandbox
 // behavior without a workspace dependency. It intentionally omits the real
 // SRT engine integration — every test that needs `prepareCommand` to do real
@@ -14,7 +14,7 @@
 // seam existed.
 //
 // This is a fixture, not a product path: the byte-identical real
-// implementation is wired in by runtime-adapter.
+// implementation is wired in by turn host.
 
 const DEFAULT_DENY_WRITE = [".env", ".env.*", ".git/config", ".git/hooks/**"];
 

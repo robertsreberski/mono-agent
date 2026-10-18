@@ -1,6 +1,6 @@
 // Injectable sandbox seam.
 //
-// agent-runtime is a provider-agnostic kernel. This module removes its last
+// turn is a provider-agnostic kernel. This module removes its last
 // workspace dependency by turning "how commands get sandboxed" into data a
 // host hands the kernel, not code the kernel imports. A host constructs a
 // `RuntimeSandbox` implementation and passes it to `createRuntime({sandbox})`
@@ -20,7 +20,7 @@
 //   - A policy IS present and its `mode` demands real enforcement ("native")
 //     but nothing was injected to actually enforce it: FAIL CLOSED. This is a
 //     deliberate behavior change from before this seam existed (where the
-//     real sandbox implementation was bundled in agent-runtime and always did
+//     real sandbox implementation was bundled in turn and always did
 //     the enforcing) — a host that configures a policy without wiring a real
 //     RuntimeSandbox implementation used to get silent, unenforced
 //     "enforcement"; now it gets a loud, actionable error instead. See
@@ -48,7 +48,7 @@ const SANDBOX_UNAVAILABLE_CODE = "sandbox_unavailable";
 /**
  * Plain Error with a `.code`/`.details` shape matching the workspace's
  * CodedError convention (code discriminant + details that echo it, see the
- * agent-contracts package's CodedError) — duplicated here rather than
+ * contracts package's CodedError) — duplicated here rather than
  * imported, since the kernel must not depend on any workspace package.
  */
 class SandboxUnavailableError extends Error {

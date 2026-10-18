@@ -27,12 +27,6 @@ export type OAuthCredential = import("@earendil-works/pi-ai").OAuthCredential;
 
 export type ProviderAuthInteraction = import("@earendil-works/pi-ai").ProviderAuthInteraction;
 
-/** @coreScanRetained */
-export type AuthPrompt = import("@earendil-works/pi-ai").AuthPrompt;
-
-/** @coreScanRetained */
-export type AuthEvent = import("@earendil-works/pi-ai").AuthEvent;
-
 export type OAuthLoginCallbacks = import("@earendil-works/pi-ai/oauth").OAuthLoginCallbacks;
 
 let providerIndexCache: Map<string, import("@earendil-works/pi-ai").Provider> | undefined;
@@ -121,7 +115,7 @@ export async function resolveOAuthApiKey(providerId: string, credentials: Record
  *
  * `manual_code` must stay wired to `onManualCodeInput`: Anthropic races its
  * localhost callback against a pasted redirect URL, and that path is the reason
- * `agent-app`'s `runPiOAuthLogin` exists at all.
+ * `app`'s `runPiOAuthLogin` exists at all.
  */
 export function toAuthInteraction(callbacks: OAuthLoginCallbacks): ProviderAuthInteraction {
   if (callbacks === null || typeof callbacks !== "object") {

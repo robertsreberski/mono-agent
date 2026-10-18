@@ -21,14 +21,14 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const runtimeAdapterMocks = vi.hoisted(() => ({
+const sandboxMocks = vi.hoisted(() => ({
   createSrtSandboxEngine: vi.fn(),
 }));
 
 vi.mock("@mono-agent/turn/host/sandbox", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/turn/host/sandbox")>();
-  runtimeAdapterMocks.createSrtSandboxEngine.mockImplementation(actual.createSrtSandboxEngine);
-  return { ...actual, createSrtSandboxEngine: runtimeAdapterMocks.createSrtSandboxEngine };
+  sandboxMocks.createSrtSandboxEngine.mockImplementation(actual.createSrtSandboxEngine);
+  return { ...actual, createSrtSandboxEngine: sandboxMocks.createSrtSandboxEngine };
 });
 
 import { MANAGED_SRT_LOCK_SHA256, MANAGED_SRT_MARKER, MANAGED_SRT_PACKAGE, MANAGED_SRT_VERSION, managedSrtInstallRoot } from "@mono-agent/turn/host/sandbox";
@@ -64,7 +64,7 @@ async function tempDir(): Promise<string> {
 }
 
 beforeEach(async () => {
-  runtimeAdapterMocks.createSrtSandboxEngine.mockClear();
+  sandboxMocks.createSrtSandboxEngine.mockClear();
   const launchRoot = await tempDir();
   trustedNodePath = resolve(launchRoot, "node");
   // process.execPath permissions and hard-link count belong to the host (for
@@ -686,7 +686,7 @@ describe("managed SRT setup", () => {
   it("functionally checks the same trusted Node path reported by managed status", async () => {
     const cacheRoot = await tempDir();
     await setupManagedSrt({ ...options(cacheRoot), verify: false });
-    runtimeAdapterMocks.createSrtSandboxEngine.mockReturnValueOnce({
+    sandboxMocks.createSrtSandboxEngine.mockReturnValueOnce({
       id: "srt",
       async isAvailable() {
         return false;
@@ -698,7 +698,7 @@ describe("managed SRT setup", () => {
 
     await expect(checkSandboxRuntime(options(cacheRoot)))
       .rejects.toMatchObject({ code: "sandbox_check_failed" });
-    expect(runtimeAdapterMocks.createSrtSandboxEngine).toHaveBeenCalledWith(expect.objectContaining({
+    expect(sandboxMocks.createSrtSandboxEngine).toHaveBeenCalledWith(expect.objectContaining({
       cacheRoot,
       managedNodePath: trustedNodePath,
       platform: "darwin",

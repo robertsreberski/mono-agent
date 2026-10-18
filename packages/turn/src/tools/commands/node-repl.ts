@@ -14,7 +14,7 @@ const NODE_REPL_MAX_FRAME_BYTES = NODE_REPL_MAX_BUFFER_BYTES * 3;
 const KILL_GRACE_MS = 1_000;
 
 // Kept self-contained so the sandboxed child can start from `node --eval`
-// without needing read access to agent-runtime's installed package directory.
+// without needing read access to turn's installed package directory.
 function nodeReplWorkerMain(frameToken: any) {
   const repl = require("node:repl");
   const { PassThrough } = require("node:stream");

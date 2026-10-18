@@ -61,7 +61,7 @@ interface ConfiguredMemoryDependencies {
   readonly logger?: { warn(message: string): void };
   /**
    * Injection seam for the bujo memory LLM's runtime (tests). This runtime MUST
-   * NOT carry the channel runtime's fallback chain: the agent-runtime fallback
+   * NOT carry the channel runtime's fallback chain: the turn fallback
    * router overrides each run's per-call `model` with the chain's primary entry.
    */
   readonly memoryRuntime?: MonoRuntimeLike;

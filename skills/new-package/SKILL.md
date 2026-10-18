@@ -63,7 +63,7 @@ pnpm --filter @mono-agent/<name> run build && pnpm --filter @mono-agent/<name> t
 
 Then the full `verify-green` gate. Common arch-check failures: package dir
 missing from the catalog, unknown/disallowed dependency category, missing README
-section, adapter-neutrality violation in agent-contracts.
+section, adapter-neutrality violation in contracts.
 
 ## Boundaries to respect
 

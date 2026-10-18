@@ -9,7 +9,7 @@ export async function steerSubagent(subagents: import("../../contracts/runtime.j
   const error = (code: string, message?: string) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId,
     status: "not_applied", applied: false, ...(message === undefined ? {} : { message }) }, true);
   // Bounded independently of the contracts package, which tool files do not
-  // import; mirrors AGENT_LIVE_INPUT_MAX_CHARACTERS (agent-contracts).
+  // import; mirrors AGENT_LIVE_INPUT_MAX_CHARACTERS (contracts).
   if (typeof params.steer !== "string" || !params.steer.trim() || params.steer.length > 8_000) {
     return error("subagent_steer_invalid_request", "steer must be a non-empty string of at most 8000 characters.");
   }

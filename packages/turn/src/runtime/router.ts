@@ -768,7 +768,7 @@ function normalizeRetryDelay(value: any, fallback: number, name: string): number
 }
 
 /**
- * Abortable sleep. agent-runtime is the kernel and cannot reach the app-layer
+ * Abortable sleep. turn is the kernel and cannot reach the app-layer
  * backoff helpers, so this mirrors the local `delay` in the codex bridge.
  */
 function delay(ms: number, signal?: AbortSignal): Promise<void> {

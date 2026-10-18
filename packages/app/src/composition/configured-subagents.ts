@@ -152,7 +152,7 @@ function resolveSubagentPrompt(definition: { readonly prompt?: string; readonly 
  * Build the `subagents` runtime option: the profiles the `Agent` tool offers,
  * its caps, and the callback that runs one child turn.
  *
- * agent-app owns this rather than the harness or the adapter because it alone
+ * app owns this rather than the harness or the adapter because it alone
  * holds the config, the router runtime, and `runtimeForModel`. Routing a child
  * through the shared router is what gives subagents the configured fallback
  * chain and same-model retries for free.

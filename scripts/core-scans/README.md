@@ -30,7 +30,8 @@ not proof that a declaration is safe to delete. Reports and tool diagnostics are
 replaced on each run under `node_modules/.cache/core-scans/`:
 
 - `knip-{default,production,entry-exports}.json` and matching `.stderr.txt` files;
-- `madge-{contracts,config,turn,conversation,app}.json` and matching `.stderr.txt` files.
+- `madge-{contracts,config,turn,conversation,app}.json`, matching `.stderr.txt` files,
+  and `.policy.json` files recording exact accepted, unexpected and stale cycles.
 
 Knip prints per-package file, value-export, type-export, and other-issue counts.
 Compare symbols/paths, not just totals; production-minus-default identifies
@@ -148,13 +149,77 @@ name is justified solely by a generated inventory. The unused named stream and
 provider-projection types lacking authored documentation were cut; declarations
 required by retained function/class signatures remain private.
 
-PR 12 also registers seven exact compatibility type aliases after removing
-redundant JSDoc-only uses. Public aliases cite their exporting entry; signature
-and test-only aliases cite the declaration or test consumer. The remaining
-private aliases are explicit PR 13 dead-code closure candidates. The policy
-test checks each registered name is still exported at its exact source owner;
-no file-level or all-types exception is used.
+Four compatibility aliases remain: public RuntimeBridge/RuntimeBridgeDescriptor
+cite their exporting entry; RuntimeSdkId cites the runtime contract that uses
+it; AgentRuntimeInstance cites the native prepared-dispatch test and runtime
+factory signatures. The unused private RuntimeObserver, AuthPrompt and AuthEvent
+aliases and their retention entries are removed. The policy test checks each
+registered name is still exported at its exact source owner; no file-level or
+all-types exception is used.
 
-The five core packages must have zero findings in all three modes. Cycle findings
-remain visible until the separate structural cleanup; exceptions do not hide
-cycles or turn a nonzero tool result into success.
+The five core packages must have zero findings in all three dead-code modes.
+
+## Exact cycle policy
+
+[`cycle-policy.mjs`](./cycle-policy.mjs) registers one directed **erased** cycle,
+reported by the app traversal:
+`packages/web/dist/console-tools.d.ts → packages/web/dist/store.d.ts → packages/web/dist/console-tools.d.ts`.
+The source edges are `console-tools.ts → store.ts` (`import type WebStore`) and
+`store.ts → console-tools.ts` (runtime console operations). The reverse edge is
+absent from JavaScript: this is a concrete store/operation declaration
+collaboration, not a runtime initialization cycle. A broad forwarding store port
+solely to eliminate declaration traversal would add another owner without
+removing a runtime dependency.
+
+Raw Madge findings and diagnostics stay visible. Only this exact path/edge set
+passes; an additional cycle **or a stale exception** fails with exit 1. Tool or
+malformed-report errors still exit 2. Cycle rotation is equivalent, not a wildcard
+path or SCC-wide waiver. The policy follows emitted JavaScript edges from
+`console-tools.js` transitively and refuses any path back to `store.js`, including
+static imports, value re-exports and literal dynamic imports. Missing emitted
+files fail rather than establish erasure. Tests pin source import kinds and
+reject each runtime-edge form, including a path through a third module.
+
+## Consolidated owners and deliberately distinct policies
+
+| Concern | Owner and retained boundary |
+| --- | --- |
+| SRT identity and verifier | turn host sandbox; app and host coordinator policies remain distinct |
+| Null recorder | observability; importing the no-op does not enable telemetry |
+| Process incarnation | conversation; platform identity/claim semantics remain local |
+| Effort vocabulary | config; provider capability interpretation stays with its provider |
+| Memory health facts | lightweight memory metadata; no eager memory backend loading |
+| Retry facts / reply-file defaults | turn runtime / config respectively; coordinators retain budgets |
+| Retired predicate / native-root probe | config / turn host respectively; rejection and disk-probe ordering unchanged |
+| MCP transport | app/mcp; conversation transport retains its separate session lifecycle |
+| File, lease and activity primitives | app/durable-state; service ownership policies remain at callers |
+| Daily conversation grammar | conversation; BuJo daily semantics remain memory-owned |
+| Runtime and process contracts | turn contract leaves; host adapters retain orchestration |
+| MCP Apps constants / timeout | contracts / turn respectively; wire values stay fixed |
+| Bash and Exec mechanics | turn command leaves; host capability/admission remains separate |
+| Approved snapshots | app service leaves; publication and trust remain coordinator decisions |
+| Read-only inspectors | storage owners; no mutation or permissive fallback added |
+| Conversation titles | app producer and web consumer validators; real MCP parity tests pin names and bounds |
+
+Do not merge conceptual lookalikes: tool and conversation semaphores have
+separate capacity scopes; JSON/source parsing has different trust boundaries;
+session, skill and process layers have distinct lifecycles. Redaction,
+publication/truncation and locks preserve their owner-specific ordering and
+failure policies. The title producer bounds trimmed raw input before collapse;
+the web consumer bounds normalized completed output.
+
+## Naming policy
+
+Current package and source prose uses the current owners. Historical
+changelog/migration/archive text, retired-name diagnostics and negative tests,
+real upstream SDK names, and native/OS or architectural kernel vocabulary are
+not aliases. Serialized diagnostic keys (including managed closure metadata)
+are not cosmetic identifiers.
+
+The explicit operational identities remain unchanged: turn runtime-brand's
+`agent_runtime` schema prefix, `agent-runtime` MCP/client/service names,
+`agent-runtime-cli-` temporary prefix, provider prefix, title/version and doctor
+hint; persisted `pi-sdk`/`mono-harness`; managed-runtime `agent-app` filesystem,
+marker and package identity values. Retired package mappings and their
+rejection tests remain exact. This is not a new exception category or a stored
+key migration.

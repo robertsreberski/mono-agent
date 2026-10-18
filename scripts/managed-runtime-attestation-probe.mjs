@@ -29,7 +29,7 @@ export function parseManagedRuntimeAttestationProbeArgs(argv) {
 
 /**
  * Content-free read-only bridge between the fleet checker and the built
- * agent-app's managed-runtime/snapshot contracts.
+ * app's managed-runtime/snapshot contracts.
  */
 export async function runManagedRuntimeAttestationProbe(
   argv = process.argv.slice(2),

@@ -5,7 +5,7 @@ import type { MonoRuntimeFallbackChainEntry, RuntimeModelReference } from "@mono
 import type { ConfiguredAgentRuntimeOptions } from "./configured-agent-options.js";
 
 /**
- * When backup models are configured, runs go through the agent-runtime fallback
+ * When backup models are configured, runs go through the turn fallback
  * router with the effective primary model first.
  */
 export function fallbackChainForConfig(

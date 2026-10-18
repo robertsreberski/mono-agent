@@ -189,7 +189,7 @@ function projectToolHistoryBeforeCurrentTurn(
  * Full disclosure and absent roots deliberately expose no tool.
  *
  * Descriptions ride along with the names because these entries are also what a
- * subagent inherits (see the subagent run in agent-app): a child needs to render
+ * subagent inherits (see the subagent run in app): a child needs to render
  * its own index, and a bare name list cannot say what any skill is for. Only
  * name and description cross over — `mainFile` is an absolute host path and is
  * dropped here so it never reaches run options or a prompt built from them.

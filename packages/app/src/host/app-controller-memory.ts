@@ -62,7 +62,7 @@ export async function memoryStore(
     const deps = {
       cwd: controller.cwd,
       // Only a verified managed runtime has an exact plugin closure beside
-      // agent-app. A systemd worker may publish a secret-free snapshot for
+      // app. A systemd worker may publish a secret-free snapshot for
       // discovery while retaining the unmanaged plugin resolution order.
 
       ...(logger === undefined ? {} : { logger }),

@@ -447,7 +447,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       }
     ]
     // Jobs here merge with cron/*.md files (duplicate ids error).
-    // Agent-app pins overlap to skip; config exposes no queue/replace controls.
+    // App pins overlap to skip; config exposes no queue/replace controls.
     // Overlapping ticks of the same configured job are therefore skipped, never queued.
   }
 }

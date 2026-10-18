@@ -6,7 +6,7 @@ import { basename } from "node:path";
  * separately exposed `mono-agent` bin byte-for-byte compatible, while a bare
  * `create-mono-agent` (or one followed directly by flags) enters init. A lone
  * informational flag remains non-mutating: help resolves to the init topic
- * while version reaches agent-app unchanged.
+ * while version reaches app unchanged.
  */
 export function delegatedCliArgs(invocationPath: string | undefined, args: readonly string[]): readonly string[] {
   const invocation = invocationPath === undefined ? "" : basename(invocationPath);
@@ -49,8 +49,8 @@ export interface DelegatorProcess {
 const GROUP_DELIVERED_SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGHUP"];
 
 /**
- * Wires a spawned agent-app CLI child to the shim process so exit status and
- * shutdown are byte-identical to invoking agent-app's bin directly:
+ * Wires a spawned app CLI child to the shim process so exit status and
+ * shutdown are byte-identical to invoking app's bin directly:
  *
  * - SIGINT/SIGHUP: inert keep-alive handlers (the group already delivered them to
  *   the child); we wait for the child's graceful exit rather than re-signalling.

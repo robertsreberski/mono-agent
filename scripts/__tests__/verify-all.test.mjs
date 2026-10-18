@@ -239,7 +239,7 @@ describe("verify-all", () => {
     });
   });
 
-  it("derives the release smoke tag from the agent-app manifest", () => {
+  it("derives the release smoke tag from the app manifest", () => {
     const calls = [];
     expect(readReleaseSmokeTag("/repo", (path, encoding) => {
       calls.push({ path, encoding });
