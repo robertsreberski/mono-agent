@@ -20,7 +20,7 @@ it.each([false, true])("replays the exact checkpoint after process reopen includ
   const before = await session.getEntries(); const native = before.filter((entry: any) => entry.type === "message");
   const derived = { role: "user", content: "Fictional split-turn continuation", timestamp: 4, projectionOnly: true };
   const kept = native.map((entry: any) => entry.message); kept.push(derived);
-  await (session as FixtureStore).beginTurn("synthetic:checkpoint"); await session.openOperation("checkpoint-op", { model: { provider: "faux", id: "fictional", api: "openai-responses" } }, "compaction", "manual");
+  await session.beginTurn("synthetic:checkpoint"); await session.openOperation("checkpoint-op", { model: { provider: "faux", id: "fictional", api: "openai-responses" } }, "compaction", "manual");
   await session.appendCompaction({ summary: "Exact fictional checkpoint", retainedTail: kept, tokensBefore: 900, tokensAfter: 120, details: { fixture: "exact" } });
   await session.sync(); await session.closeOperation("checkpoint-op", "completed"); await session.endTurn("synthetic:checkpoint", "completed"); await session.sync();
   const entries = await session.getEntries(); const messages = buildHarnessSessionContext(entries); const checkpoint = entries.at(-1).checkpoint!;
@@ -53,5 +53,3 @@ it("scopes a missing checkpoint error to its journal and still opens an unrelate
   const healthy = await reopened.open(peerMetadata);
   try { expect(await healthy.getEntries()).toHaveLength(1); } finally { await healthy.close(); }
 });
-
-type FixtureStore = Omit<Awaited<ReturnType<import("../session-store.js").MemorySessionRepo["create"]>>, "beginTurn"> & { beginTurn(turnId: string, config?: object, identitySource?: string, binding?: unknown, projectionBinding?: unknown): Promise<unknown> };

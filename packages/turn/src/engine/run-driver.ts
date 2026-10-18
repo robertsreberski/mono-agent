@@ -19,10 +19,10 @@ export function createRunDriver(store: any, options: any): {
     hooks: {
         on: (type: any, handler: any) => () => any;
     };
-    beginTurn: (id: string, source: string, descriptor: any) => Promise<void>;
-    endTurn: (status: any, result: any) => Promise<void>;
+    beginTurn: (id?: string, source?: string, descriptor?: any) => Promise<void>;
+    endTurn: (status: any, result?: any) => Promise<void>;
     emit: (event: any) => Promise<void>;
-    prompt: (text: any, promptOptions: any) => Promise<{
+    prompt: (text: any, promptOptions?: any) => Promise<{
         tipId: any;
         deferred?: any;
         operationId: `${string}-${string}-${string}-${string}-${string}`;

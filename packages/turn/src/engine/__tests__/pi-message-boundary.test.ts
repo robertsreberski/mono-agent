@@ -21,7 +21,7 @@ it("keeps Pi response/tool timing out of stored envelopes, hooks and subsequent 
       execute: async () => ({ content: [{ type: "text", text: "Fictional result" }], details: { durationMs: 456 } }) }] });
   driver.hooks.on("after_response", ({ message }: any) => { responses.push(structuredClone(message)); });
   try {
-    expect((await (driver as FixtureDriver).prompt("Fictional request")).status).toBe("completed");
+    expect((await driver.prompt("Fictional request")).status).toBe("completed");
     expect(requests).toHaveLength(2);
     const stored = (await raw.getEntries()).filter((entry: any) => entry.type === "message").map((entry: any) => entry.message);
     const result = stored.find((message: any) => message.role === "toolResult");
@@ -34,5 +34,3 @@ it("keeps Pi response/tool timing out of stored envelopes, hooks and subsequent 
     }
   } finally { await driver.close(); await raw.close(); await rm(root, { recursive: true, force: true }); }
 });
-
-type FixtureDriver = Omit<ReturnType<typeof import("../run-driver.js").createRunDriver>, "prompt"> & { prompt(content: unknown, options?: object): ReturnType<ReturnType<typeof import("../run-driver.js").createRunDriver>["prompt"]> };

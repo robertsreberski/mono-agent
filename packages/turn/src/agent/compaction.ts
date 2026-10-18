@@ -34,13 +34,8 @@ function clampInteger(value: any, fallback: number, min: number, max: number): n
   return Math.floor(clampNumber(value, fallback, min, max));
 }
 
-export function resolveAgentCompactionPolicy({ toolLimits, compaction }?: {
-  toolLimits?: import("../contracts/policy.js").RuntimeToolLimits;
-  compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy;
-}, model?: {
-  contextWindow?: number;
-}): AgentCompactionPolicy;
-export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} }: { toolLimits?: import("../contracts/policy.js").RuntimeToolLimits; compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy; } | undefined = {}, model: { contextWindow?: number | undefined; } | null | undefined = {}): AgentCompactionPolicy {
+
+export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} }: { toolLimits?: import("../contracts/policy.js").RuntimeToolLimits | undefined; compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy | undefined; } | undefined = {}, model: { contextWindow?: number | undefined; } | null | undefined = {}): AgentCompactionPolicy {
   const contextWindow = clampInteger(model?.contextWindow, DEFAULT_CONTEXT_WINDOW, 32000, 10_000_000);
   const triggerRatio = clampNumber(
     compaction.triggerRatio,

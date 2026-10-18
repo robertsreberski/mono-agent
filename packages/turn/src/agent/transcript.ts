@@ -84,7 +84,7 @@ function summarizeTurn(turn: TranscriptTurn, { maxChars = DEFAULT_TURN_SUMMARY_C
 // is nothing usable to resume from. Older turns beyond `verbatimTurns` are
 // summarized into a one-paragraph snippet; only the trailing `verbatimTurns`
 // keep their full assistant text + tool detail.
-export function buildTranscriptTailSnapshot(events: ReadonlyArray<any>, { maxTurns, verbatimTurns, maxChars, toolResultChars, assistantTextChars, turnSummaryChars, runtimeBrand, }?: {
+export function buildTranscriptTailSnapshot(events: ReadonlyArray<any> | null | undefined, { maxTurns, verbatimTurns, maxChars, toolResultChars, assistantTextChars, turnSummaryChars, runtimeBrand, }?: {
   maxTurns?: number;
   verbatimTurns?: number;
   maxChars?: number;
@@ -101,7 +101,7 @@ export function buildTranscriptTailSnapshot(events: ReadonlyArray<any>, { maxTur
     summary: string;
   }[];
   turns: any[];
-};
+} | null;
 export function buildTranscriptTailSnapshot(events: readonly any[] | null | undefined, {
   maxTurns = DEFAULT_MAX_TURNS,
   verbatimTurns = DEFAULT_VERBATIM_TURNS,

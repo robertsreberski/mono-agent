@@ -62,7 +62,7 @@ const TOOL_CONTEXT_KEYS = (([
  * undefined and are copied from `input` when present.
  */
 export function createToolContext(input: ToolContextOptions = {}): ToolContext {
-  const ctx: { [K in keyof ToolContext]: ToolContext[K] | undefined } = {
+  const ctx: ToolContext = {
     workspace: undefined,
     repoRoot: undefined,
     additionalReadRoots: undefined,
@@ -76,7 +76,7 @@ export function createToolContext(input: ToolContextOptions = {}): ToolContext {
     sandbox: passthroughSandbox,
     runtimeBrand: { ...DEFAULT_RUNTIME_BRAND },
   };
-  return updateToolContext(ctx as ToolContext, input);
+  return updateToolContext(ctx, input);
 }
 
 /**
@@ -87,15 +87,13 @@ export function createToolContext(input: ToolContextOptions = {}): ToolContext {
  * observe the change — the configuration owned by this runtime.
  */
 export function updateToolContext(ctx: ToolContext, next: ToolContextOptions = {}): ToolContext {
-  for (const key of TOOL_CONTEXT_KEYS) {
-    // Per-key assignment across a heterogeneous record: TS can't correlate the
-    // looked-up value type with `key` across two independent indexed accesses
-    // (a known structural limitation, not a real type hazard here).
-    if (key in next) ctx[key] = ((next) as any)[key];
+  function copyKey<Key extends typeof TOOL_CONTEXT_KEYS[number]>(key: Key) {
+    if (key in next) ctx[key] = next[key];
   }
+  for (const key of TOOL_CONTEXT_KEYS) copyKey(key);
   if ("toolEnvironment" in next) {
     const environment = next.toolEnvironment;
-    (ctx as { toolEnvironment?: ToolContext["toolEnvironment"] }).toolEnvironment = environment === undefined ? undefined : {
+    ctx.toolEnvironment = environment === undefined ? undefined : {
       schema: 1,
       values: { ...environment.values },
       ...(environment.pathPrepend === undefined ? {} : { pathPrepend: [...environment.pathPrepend] }),
@@ -156,36 +154,36 @@ export type RuntimeSandboxEngine = import("../../agent/sandbox-seam.js").Runtime
 export type RuntimeSandbox = import("../../agent/sandbox-seam.js").RuntimeSandbox;
 
 export type ToolContext = {
-  workspace?: string;
-  repoRoot?: string;
-  additionalReadRoots?: ReadonlyArray<string>;
-  additionalWriteRoots?: ReadonlyArray<string>;
-  runId?: string;
-  toolArtifactDir?: string;
-  ripgrepPath?: string;
-  qaOutputDir?: string;
-  sandboxPolicy?: SandboxPolicy;
-  sandboxEngine?: RuntimeSandboxEngine;
+  workspace?: string | undefined;
+  repoRoot?: string | undefined;
+  additionalReadRoots?: ReadonlyArray<string> | undefined;
+  additionalWriteRoots?: ReadonlyArray<string> | undefined;
+  runId?: string | undefined;
+  toolArtifactDir?: string | undefined;
+  ripgrepPath?: string | undefined;
+  qaOutputDir?: string | undefined;
+  sandboxPolicy?: SandboxPolicy | undefined;
+  sandboxEngine?: RuntimeSandboxEngine | undefined;
   sandbox: RuntimeSandbox;
   runtimeBrand: RuntimeBrand;
   toolEnvironment?: {
       schema: 1;
       values: Readonly<Record<string, string>>;
-      pathPrepend?: readonly string[];
-  };
+      pathPrepend?: readonly string[] | undefined;
+  } | undefined;
   /**
    * Run-scoped host artifact sink. Not a configurable key: the turn runner
    * attaches it to a per-run copy of the context so per-tool output caps can
    * spill their full text into the run's tool-output directory.
    */
-  persistArtifact?: (artifact: {
+  persistArtifact?: ((artifact: {
       filename: string;
       buffer: Buffer;
       toolName: string;
       toolUseId: string | null;
-  }) => string | null;
+  }) => string | null) | undefined;
 };
 
 export type ToolContextOptions = Omit<Partial<ToolContext>, "runtimeBrand"> & {
-  runtimeBrand?: Partial<RuntimeBrand>;
+  runtimeBrand?: Partial<RuntimeBrand> | undefined;
 };

@@ -229,7 +229,7 @@ export async function resolveSession(runState: NativeSessionState, {
           if (concurrent) {
             entry = concurrent;
           } else {
-            nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs! });
+            nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
           }
         }
       } finally {
@@ -373,7 +373,7 @@ export async function commitSession(runState: NativeSessionState, {
       if (sessionEntry) {
         // Resumed run: the harness appended this run's turns onto the live
         // session; just re-arm the idle window.
-        nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs! });
+        nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
         // Surface a write failure the harness swallowed: a session that can
         // no longer persist must not pretend to be resumable.
         await session.buildContext();
@@ -388,7 +388,7 @@ export async function commitSession(runState: NativeSessionState, {
         // A create-on-miss reservation is overwritten by its commit (same id);
         // a plain fresh keep-alive run registers directly.
         if (reservation) reservation.commit(entry);
-        else nativeSessions.set(providerSessionId, entry, { idleTimeoutMs: sessionTtlMs! });
+        else nativeSessions.set(providerSessionId, entry, { idleTimeoutMs: sessionTtlMs });
         runState.registeredSessionEntry = entry;
       }
       const retained = runState.sessionEntry || runState.registeredSessionEntry;
@@ -408,7 +408,7 @@ export async function commitSession(runState: NativeSessionState, {
     if ((runState.hasBaselineLeaf || baselineLeafId) && (failed || externalAbort)) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
-    nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs! });
+    nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
   } else {
     if (reservation) reservation.release();
     await closeAndDeleteSession(session, runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo);

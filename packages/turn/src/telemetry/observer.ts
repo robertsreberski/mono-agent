@@ -114,7 +114,7 @@ export function createMetricsObserver({ name, maxLatencySamples }?: {
     cache: {
       hits: number;
       misses: number;
-      hitRatio: number;
+      hitRatio: number | null;
       readTokensFromEvents: number;
     };
     tools: {

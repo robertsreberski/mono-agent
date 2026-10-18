@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeRunFailureKind, KNOWN_RUN_FAILURE_KINDS } from "../index.js";
+import { describeRunFailureKind, KNOWN_RUN_FAILURE_KINDS, type RuntimeResultLike } from "../index.js";
 
 describe("describeRunFailureKind", () => {
   it("documents the core operator-facing failure kinds", () => {
@@ -99,4 +99,10 @@ describe("describeRunFailureKind", () => {
     expect(KNOWN_RUN_FAILURE_KINDS.map((entry) => entry.kind)).toContain("provider_auth");
     expect(KNOWN_RUN_FAILURE_KINDS.map((entry) => entry.kind)).toContain("skipped_capability_mismatch");
   });
+});
+
+it("treats explicitly undefined runtime failure kinds like omitted ones", () => {
+  const result: RuntimeResultLike = { failureKind: undefined };
+  expect(describeRunFailureKind(result)).toEqual(describeRunFailureKind({}));
+  expect(describeRunFailureKind({ failureKind: undefined })).toEqual(describeRunFailureKind({}));
 });

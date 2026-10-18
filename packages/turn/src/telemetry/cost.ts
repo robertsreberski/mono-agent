@@ -18,11 +18,7 @@ function rate(value: any, fallback: number | undefined = 0): number {
   return n == null ? fallback : n;
 }
 
-export function normalizePricing(pricing: PricingInputRow | null | undefined, { source, priced, missing }?: {
-  source?: string;
-  priced?: boolean;
-  missing?: number;
-}): NormalizedPricing | null;
+
 export function normalizePricing(pricing: PricingInputRow | null | undefined, { source, priced = true, missing = 0 }: { source?: string | undefined; priced?: boolean | undefined; missing?: number | undefined; } | undefined = {}): NormalizedPricing | null {
   if (!pricing || typeof pricing !== "object") return null;
   const input = rate(pricing.input ?? pricing.input_per_million, missing);
@@ -39,7 +35,7 @@ export function normalizePricing(pricing: PricingInputRow | null | undefined, { 
     missing,
   );
   const output = rate(pricing.output ?? pricing.output_per_million, missing);
-  return { input, cacheRead, cacheWrite, output, source, priced } as NormalizedPricing;
+  return { input, cacheRead, cacheWrite, output, source, priced };
 }
 
 /**
@@ -53,8 +49,8 @@ export function unknownPricing(): NormalizedPricing {
   return { input: null, cacheRead: null, cacheWrite: null, output: null, source: "unknown", priced: false };
 }
 
-export function parseReference(reference: string): ParsedModelReference | null;
-export function parseReference(reference: string | undefined): ParsedModelReference | null {
+
+export function parseReference(reference?: string): ParsedModelReference | null {
   if (typeof reference !== "string" || reference.length === 0 || reference.trim() !== reference) return null;
   const separator = reference.indexOf(":");
   if (separator <= 0 || separator === reference.length - 1) return null;
@@ -122,12 +118,9 @@ function piCatalogPricing(parsed: ParsedModelReference | null | undefined): Norm
 // The pricing helpers below (`normalizePricing`, `zeroPricing`, `unknownPricing`,
 // `pricingHasRates`, `isPrivateHost`, `parseReference`) are exported so hosts
 // can build their own resolvers without re-implementing the row-shape conversion.
-export function resolvePricing({ resolveCustomPricing, model }?: {
-  resolveCustomPricing?: (parsed: ParsedModelReference) => (NormalizedPricing | null);
-  model?: string;
-}): NormalizedPricing;
+
 export function resolvePricing({ resolveCustomPricing, model }: { resolveCustomPricing?: ((parsed: ParsedModelReference) => (NormalizedPricing | null)) | undefined; model?: string | undefined; } | undefined = {}): NormalizedPricing {
-  const parsed = parseReference(model as string);
+  const parsed = parseReference(model);
   if (!parsed) return unknownPricing();
   const custom = typeof resolveCustomPricing === "function"
     ? resolveCustomPricing(parsed)
@@ -145,15 +138,7 @@ function estimatePiCatalogCost(model: any, usage: { input: number; output: numbe
   }).total;
 }
 
-export function estimateCost({ resolveCustomPricing, model, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, cacheCreationTokens, }?: {
-  resolveCustomPricing?: (parsed: ParsedModelReference) => (NormalizedPricing | null);
-  model?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  cachedTokens?: number;
-  cacheWriteTokens?: number;
-  cacheCreationTokens?: number;
-}): number | null;
+
 export function estimateCost({
   resolveCustomPricing,
   model,
@@ -167,7 +152,7 @@ export function estimateCost({
   const cacheWrite = Math.max(0, Number(cacheWriteTokens ?? cacheCreationTokens) || 0);
   const input = Math.max(0, Number(inputTokens) || 0);
   const output = Math.max(0, Number(outputTokens) || 0);
-  const parsed = parseReference(model as string);
+  const parsed = parseReference(model);
   const customPricing = parsed && typeof resolveCustomPricing === "function"
     ? resolveCustomPricing(parsed)
     : null;
@@ -204,7 +189,7 @@ export type NormalizedPricing = {
   cacheRead: number | null;
   cacheWrite: number | null;
   output: number | null;
-  source: string;
+  source: string | undefined;
   priced: boolean;
 };
 

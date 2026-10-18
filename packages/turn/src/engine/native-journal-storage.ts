@@ -34,7 +34,9 @@ const missing = (error: any) => (error as NodeJS.ErrnoException)?.code === "ENOE
 const STAGES = ["", ".creating", ".importing", ".upgrading"];
 export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = async () => {} }: { sessionsRoot: string; onPhase?: (phase: string) => Promise<void>; }) {
   if (typeof sessionsRoot !== "string" || !isAbsolute(sessionsRoot.trim())) throw new TypeError("Managed native root must be absolute");
-  const root = normalizeDurableSessionsRoot(sessionsRoot), repo = resolveDurableNativeSessionRepo(root);
+  const root = normalizeDurableSessionsRoot(sessionsRoot);
+  if (root === null) throw new TypeError("Managed native root must be absolute");
+  const repo = resolveDurableNativeSessionRepo(root);
   const phase = async (name: any) => { await onPhase(name); };
   const path = (id: any) => { if (!/^[A-Za-z0-9_-]+$/.test(id)) fail(); return join(root, "journals", `${id}.jsonl`); };
   /**

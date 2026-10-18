@@ -98,7 +98,7 @@ describe("host public contract", () => {
   it("retains the public core result and nested host request guarantees", () => {
     expectTypeOf<RuntimeResult["structuredResult"]>().toBeUnknown();
     expectTypeOf<TurnRunResult["sdk"]>().toEqualTypeOf<"pi" | undefined>();
-    expectTypeOf<ReturnType<typeof createRouterRuntime>["run"]>().toEqualTypeOf<TurnRuntimeInstance["run"]>();
+    expectTypeOf<ReturnType<ReturnType<typeof createRouterRuntime>["run"]>>().toEqualTypeOf<ReturnType<TurnRuntimeInstance["run"]>>();
     if (false) {
       const host = null as unknown as RuntimeRunOptions;
       // @ts-expect-error model provider remains a readonly host projection.

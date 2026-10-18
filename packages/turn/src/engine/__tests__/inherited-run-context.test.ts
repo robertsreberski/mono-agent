@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { it, expect, vi } from "vitest";
 import { MemorySessionRepo } from "../session-store.js";
 import { createRunDriver } from "../run-driver.js";
@@ -19,7 +20,8 @@ async function fixture() {
 it("charges complete resolved tool declarations, not just tool names, before dispatch", async () => {
   const f = await fixture();
   const driver = createRunDriver(f.raw, { ...f.options, tools: [{ name: "Read", description: "x".repeat(60000), parameters: { type: "object" }, execute: async () => ({ content: [] }) }] });
-  await expect((driver as FixtureDriver).prompt("current")).rejects.toThrow("Handoff dispatch budget exceeded: host_cap"); expect(f.provider).not.toHaveBeenCalled();
+  await expect(driver.prompt("current")).rejects.toThrow("Handoff dispatch budget exceeded: host_cap"); expect(f.provider).not.toHaveBeenCalled();
+  assert.ok(f.raw.records);
   expect(f.raw.records.filter((record) => record.kind === "compaction")).toHaveLength(0);
   await driver.close(); await f.raw.close();
 });
@@ -27,7 +29,7 @@ it("pins immutable inherited content while the current turn executes", async () 
   const f = await fixture(), input = structuredClone(inherited);
   const driver = createRunDriver(f.raw, { ...f.options, inheritedProjection: input });
   input.messages[0]!.content = "mutated after preparation";
-  const result = await (driver as FixtureDriver).prompt("current"); expect(result.error).toBeUndefined();
+  const result = await driver.prompt("current"); expect(result.error).toBeUndefined();
   expect(JSON.stringify(f.provider.mock.calls[0]![0]!)).toContain("outcome-unknown ledger");
   expect(JSON.stringify(f.provider.mock.calls[0]![0]!)).not.toContain("mutated after preparation");
   await driver.close(); await f.raw.close();
@@ -60,16 +62,14 @@ it("preserves the non-retainable prefix when a current-only checkpoint precedes 
 it("validates a single durable projection binding and rejects repeated or malformed bindings before append", async () => {
   const f = await fixture();
   const binding = { version: 1, artifact: { id: "4".repeat(64), hash: "5".repeat(64) }, coverage, messageDigest: "6".repeat(64) };
+  assert.ok(f.raw.records);
   const baseline = f.raw.records.length;
-  await expect((f.raw as FixtureStore).beginTurn("invalid", {}, "synthetic", undefined, { ...binding, artifact: { ...binding.artifact!, hash: "bad" } })).rejects.toThrow("Invalid session journal");
+  await expect(f.raw.beginTurn("invalid", {}, "synthetic", undefined, { ...binding, artifact: { ...binding.artifact!, hash: "bad" } })).rejects.toThrow("Invalid session journal");
   expect(f.raw.records).toHaveLength(baseline);
-  await (f.raw as FixtureStore).beginTurn("bound", {}, "synthetic", undefined, binding); await f.raw.endTurn("bound", "completed");
+  await f.raw.beginTurn("bound", {}, "synthetic", undefined, binding); await f.raw.endTurn("bound", "completed");
   expect(f.raw.validator.projectionBinding).toEqual(binding);
+  assert.ok(f.raw.records);
   const settled = f.raw.records.length;
-  await expect((f.raw as FixtureStore).beginTurn("rebind", {}, "synthetic", undefined, binding)).rejects.toThrow("Invalid session journal");
+  await expect(f.raw.beginTurn("rebind", {}, "synthetic", undefined, binding)).rejects.toThrow("Invalid session journal");
   expect(f.raw.records).toHaveLength(settled); expect(f.provider).not.toHaveBeenCalled(); await f.raw.close();
 });
-
-type FixtureStore = Omit<Awaited<ReturnType<import("../session-store.js").MemorySessionRepo["create"]>>, "beginTurn"> & { beginTurn(turnId: string, config?: object, identitySource?: string, binding?: unknown, projectionBinding?: unknown): Promise<unknown> };
-
-type FixtureDriver = Omit<ReturnType<typeof import("../run-driver.js").createRunDriver>, "prompt"> & { prompt(content: unknown, options?: object): ReturnType<ReturnType<typeof import("../run-driver.js").createRunDriver>["prompt"]> };

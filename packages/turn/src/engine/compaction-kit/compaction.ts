@@ -110,7 +110,7 @@ function getLastAssistantUsageInfo(messages: any) {
     return undefined;
 }
 /** Estimate context tokens for messages using provider usage when available. */
-export function estimateContextTokens(messages: any): { tokens: any; usageTokens: any; trailingTokens: number; lastUsageIndex: number };
+export function estimateContextTokens(messages: any): { tokens: any; usageTokens: any; trailingTokens: number; lastUsageIndex: number | null };
 export function estimateContextTokens(messages: any): { tokens: any; usageTokens: any; trailingTokens: number; lastUsageIndex: number | null } {
     const usageInfo = getLastAssistantUsageInfo(messages);
     if (!usageInfo) {
