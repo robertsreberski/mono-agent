@@ -187,6 +187,12 @@ describe("staged projection source guard", () => {
     expect(await findContextBuilderBypasses(root)).toEqual(paths.sort());
   });
 
+  it.each(["mts", "cts"])("walks real %s sources instead of skipping context-builder bypasses", async (extension) => {
+    const paths = [`packages/other/src/worker.${extension}`, `extras/fixture/src/worker.${extension}`, `apps/chat/src/worker.${extension}`];
+    const root = await sourceRoot(Object.fromEntries(paths.map((path) => [path, bypass])));
+    expect(await findContextBuilderBypasses(root)).toEqual(paths.sort());
+  });
+
   it.each(["js", "ts"])("recognizes only the exact permitted owners authored as %s", async (extension) => {
     const root = await sourceRoot({
       [`packages/turn/src/engine/session-context.${extension}`]: "export function buildHarnessSessionContext() {}",

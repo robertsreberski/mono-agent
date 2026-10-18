@@ -10,7 +10,7 @@ export async function findContextBuilderBypasses(root: string) {
       if (["__tests__", "node_modules", "dist"].includes(child.name)) continue;
       const file = join(path, child.name);
       if (child.isDirectory()) await scan(file);
-      else if (/\.(?:[cm]?js|tsx?)$/.test(child.name)) files.push(file);
+      else if (/\.(?:[cm]?[jt]s|tsx)$/.test(child.name)) files.push(file);
     }
   }
   for (const parent of ["packages", "extras"]) {
