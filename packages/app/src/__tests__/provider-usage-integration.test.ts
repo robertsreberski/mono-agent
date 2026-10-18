@@ -10,9 +10,9 @@ import { describe, expect, it, vi } from "vitest";
 import { formatProviderUsageLead } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
-import { createAgentProviderUsage } from "../provider-usage-scope.js";
-import { createProviderUsageService } from "../provider-usage.js";
-import { createProviderUsageRuntimeExtension, isProviderUsageToolAllowed, PROVIDER_USAGE_INPUT } from "../provider-usage-tool.js";
+import { createAgentProviderUsage } from "../providers/provider-usage-scope.js";
+import { createProviderUsageService } from "../providers/provider-usage.js";
+import { createProviderUsageRuntimeExtension, isProviderUsageToolAllowed, PROVIDER_USAGE_INPUT } from "../providers/provider-usage-tool.js";
 
 const request = (): ConversationHarnessRuntimeOptionsInput => ({ request: { conversationId: "telegram:fixture", userMessage: "Quota?", abortSignal: new AbortController().signal }, runId: "fixture-run", context: {} as never });
 describe("ProviderUsage tool", () => {

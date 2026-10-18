@@ -1,9 +1,9 @@
 import type { listRecordedRuns, listTraceSources, TraceSourceListItem } from "@mono-agent/observability";
 
-import type { ApprovedBackgroundSnapshotBinding } from "../../approved-background-snapshot.js";
-import type { MaintenanceActivityRequest } from "../../launchd-maintenance-activity.js";
-import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "../../launchd.js";
-import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "../../launchd-logs.js";
+import type { ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
+import type { MaintenanceActivityRequest } from "../launchd/launchd-maintenance-activity.js";
+import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "../launchd/launchd.js";
+import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "../launchd/launchd-logs.js";
 import type {
   ManagedBackgroundRuntime,
   ManagedBackgroundRuntimeInput,
@@ -11,13 +11,13 @@ import type {
   ManagedRuntimeLaunchVerification,
   ManagedRuntimeSourceIdentity,
 } from "../managed-runtime/types.js";
-import type { BackgroundSnapshot } from "../../background-snapshot.js";
+import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { OwnerPrivateLock } from "../../durable-state/owner-private-lock.js";
 import type {
   BackgroundLifecycleTarget,
   BackgroundLockAcquireOptions,
-} from "../../launchd-lifecycle-lock.js";
-import type { PollOptions } from "../../background-lifecycle-utils.js";
+} from "../launchd/launchd-lifecycle-lock.js";
+import type { PollOptions } from "./background-lifecycle-utils.js";
 
 /**
  * Background-service orchestration for the mono-agent CLI. The interactive

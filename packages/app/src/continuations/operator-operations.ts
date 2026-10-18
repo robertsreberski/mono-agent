@@ -2,21 +2,21 @@ import {
   ContinuationOperationTimeoutError,
   ContinuationProtocolError,
   ContinuationServiceStoppingError,
-} from "../continuation-service-errors.js";
+} from "./continuation-service-errors.js";
 import {
   boundedHistoryErrorCode,
   clearLease,
   errorRecord,
   requireRecord,
   statusOfRequired,
-} from "../continuation-service-helpers.js";
+} from "./continuation-service-helpers.js";
 import {
   CONTINUATION_STATES,
   TERMINAL_CONTINUATION_STATES,
   type ContinuationHealthSnapshot,
   type ContinuationHistoryRecordResult,
   type ContinuationStatusSnapshot,
-} from "../continuations.js";
+} from "./continuations.js";
 import type { ContinuationOperatorDependencies } from "./operation-ports.js";
 
 export function createContinuationOperatorOperations(dependencies: ContinuationOperatorDependencies) {

@@ -62,7 +62,7 @@ curl -fsS http://127.0.0.1:5050/api/v1/bootstrap    # assert on the JSON body
 
 ## D. Readiness-probe worker (real Worker vs a fake provider)
 
-`packages/app/dist/readiness-probe-worker.js` runs each model route's live
+`packages/app/dist/setup/readiness-probe-worker.js` runs each model route's live
 probe turn in an isolated `worker_threads.Worker`; the unit suite only reaches it
 through a synthetic `run`/`workerUrl` seam, so the real file is smoke-only.
 `mono-agent init` spawns it as its route probe — point the primary model's local

@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { formatHostCapabilities } from "@mono-agent/conversation";
 
-import { consumePeerGeneration, makePeerHandoff, stampPeerOperatorHandoff, verifyPeerHandoff } from "../peer-provenance.js";
-import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
+import { consumePeerGeneration, makePeerHandoff, stampPeerOperatorHandoff, verifyPeerHandoff } from "../peers/peer-provenance.js";
+import { createProcessJobsRuntimeExtension } from "../process-jobs/process-jobs-runtime.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true }))); });

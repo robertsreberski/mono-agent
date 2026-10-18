@@ -1,6 +1,6 @@
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
-import { inspectPiAuthStore } from "../pi-auth-store-inspection.js";
+import { inspectPiAuthStore } from "./pi-auth-store-inspection.js";
 import { isRecord, isUsableStoredPiCredential, PI_API_KEY_PROVIDERS } from "./credential-values.js";
 import { piAuthPathForSetup } from "./oauth-command.js";
 import type { DetectProviderCredentialStatesOptions, ProviderCredentialState } from "./setup-types.js";

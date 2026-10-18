@@ -24,21 +24,21 @@ import type {
 import type { SlackAdapterStartOptions } from "@mono-agent/channel-slack";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 
-import { startMonoAgentApp } from "../app.js";
-import { MonoAgentAppController } from "../app-controller.js";
-import type { BackgroundSnapshot } from "../background-snapshot.js";
-import { loadAppCoreConfig, resolveAppTraceSourceId } from "../app-config.js";
+import { startMonoAgentApp } from "../host/app.js";
+import { MonoAgentAppController } from "../host/app-controller.js";
+import type { BackgroundSnapshot } from "../service/background/background-snapshot.js";
+import { loadAppCoreConfig, resolveAppTraceSourceId } from "../composition/app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../delivery/send-tools/child-config.js";
 import {
   createSlackChannelDriver,
   createTelegramChannelDriver,
   defaultChannelDrivers,
-} from "../channels.js";
+} from "../channels/channels.js";
 import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
-import { startContinuationService } from "../continuation-service.js";
-import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations.js";
+import { startContinuationService } from "../continuations/continuation-service.js";
+import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations/continuations.js";
 
-const builtMemoryHealthWorkerUrl = new URL("../../dist/memory-health-worker.js", import.meta.url);
+const builtMemoryHealthWorkerUrl = new URL("../../dist/memory/memory-health-worker.js", import.meta.url);
 const malformedMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-malformed.mjs", import.meta.url);
 const oneAttemptMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-one-attempt.mjs", import.meta.url);
 

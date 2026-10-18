@@ -1,4 +1,4 @@
-import * as ui from "../../../ui.js";
+import * as ui from "../../ui.js";
 import { write } from "./render.js";
 const REPLAY_ADOPTION_SCHEMA_VERSION = 1;
 

@@ -7,8 +7,8 @@ import type { ProviderAuthStatusSnapshot } from "@mono-agent/contracts";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
-import { createProviderAuthOperator } from "../provider-auth-operator.js";
+import { createProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
+import { createProviderAuthOperator } from "../providers/provider-auth-operator.js";
 import { persistPiProviderCredential } from "../providers/auth-store-write.js";
 
 const tempDirs: string[] = [];

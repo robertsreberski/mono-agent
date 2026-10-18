@@ -6,7 +6,7 @@ import process from "node:process";
 import { isLoopbackHost } from "@mono-agent/contracts";
 
 import { writeOwnerPrivateLaunchdFile } from "../launchd/plist-files.js";
-import type { ManagedWebPaths } from "../../web-maintenance-paths.js";
+import type { ManagedWebPaths } from "./web-maintenance-paths.js";
 import { commandDetail, errorMessage, urlHost } from "./presentation.js";
 import { isRecord } from "./record.js";
 import { TAILSCALE_OWNERSHIP_SCHEMA } from "./types.js";

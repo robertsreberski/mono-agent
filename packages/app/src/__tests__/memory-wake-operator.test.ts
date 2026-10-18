@@ -8,8 +8,8 @@ import { startTuiAdapter } from "@mono-agent/channel-operator";
 import { OperatorClient } from "@mono-agent/web";
 import { expect, it } from "vitest";
 
-import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
-import { bindProcessJobWakeContextToResponder, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { MemoryRetrievalService, type SharedRecallStore } from "../memory/memory-retrieval.js";
+import { bindProcessJobWakeContextToResponder, runWithProcessJobWakeContext } from "../process-jobs/process-jobs-context.js";
 
 it("suppresses only the exact host wake through web operator ingress, not the human queued behind it", async () => {
   const dir = await mkdtemp(join(tmpdir(), "recall-operator-test-"));

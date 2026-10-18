@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 
-import { buildChannelRuntimeControls } from "../channel-runtime-controls.js";
+import { buildChannelRuntimeControls } from "../channels/channel-runtime-controls.js";
 
 function configWith(providers: unknown): MonoAgentConfig {
   return {

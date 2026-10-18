@@ -10,8 +10,8 @@ import { loadTuiAdapterConfig } from "@mono-agent/channel-operator";
 import { loadWebhookAdapterConfig } from "@mono-agent/trigger-webhook";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { isChannelConfigured } from "../channel-gate.js";
-import { defaultChannelDrivers } from "../channels.js";
+import { isChannelConfigured } from "../channels/channel-gate.js";
+import { defaultChannelDrivers } from "../channels/channels.js";
 
 let dir: string;
 let configPath: string;

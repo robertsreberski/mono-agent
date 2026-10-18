@@ -7,14 +7,14 @@ import { promisify } from "node:util";
 import { PassThrough } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import { createProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return { ...actual, link: vi.fn(actual.link) };
 });
 
-import { executeProviderSetupPlan } from "../provider-setup.js";
+import { executeProviderSetupPlan } from "../providers/provider-setup.js";
 import { detectProviderCredentialStates } from "../providers/credential-state.js";
 import { piAuthPathForSetup, piAuthRecoveryCommand } from "../providers/oauth-command.js";
 import { planProviderSetup } from "../providers/setup-plan.js";

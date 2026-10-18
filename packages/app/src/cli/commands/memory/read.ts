@@ -6,12 +6,12 @@ import { MemorySearchError } from "@mono-agent/memory/search";
 import type { MemorySearchErrorCode } from "@mono-agent/memory/search";
 import type { MemoryDb, MemoryRecord, MemoryStoreStats } from "@mono-agent/memory/store";
 
-import { formatMemoryProfile, resolveMemoryEntities, safeLine } from "../../../memory-guidance.js";
+import { formatMemoryProfile, resolveMemoryEntities, safeLine } from "../../../memory/memory-guidance.js";
 import type {
   MemoryRecallBujoSettings,
   MemoryRecallSettings,
-} from "../../../memory-recall-settings.js";
-import * as ui from "../../../ui.js";
+} from "../../../memory/memory-recall-settings.js";
+import * as ui from "../../ui.js";
 import { previewRecallSettings } from "./context.js";
 import { isUnderDirectory } from "./private-plan.js";
 import {

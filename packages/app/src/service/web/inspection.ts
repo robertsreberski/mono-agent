@@ -1,18 +1,18 @@
 import process from "node:process";
 
-import { decodeManagedWebDefinition } from "../../web-service-definition.js";
-import type { ManagedWebDefinition } from "../../web-service-definition.js";
+import { decodeManagedWebDefinition } from "./web-service-definition.js";
+import type { ManagedWebDefinition } from "./web-service-definition.js";
 import {
   buildEnvironmentArguments,
   buildWebMaintenancePlistXml,
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
   WEB_MAINTENANCE_LAUNCHD_LABEL,
-} from "../../launchd.js";
-import type { LaunchdWebMaintenanceDefinition } from "../../launchd.js";
+} from "../launchd/launchd.js";
+import type { LaunchdWebMaintenanceDefinition } from "../launchd/launchd.js";
 import { inspectOwnerPrivateLaunchdPlist, readOwnerPrivateLaunchdPlist } from "../launchd/plist-files.js";
-import { managedWebLogMaintenanceEnvironment } from "../../managed-web-maintenance-environment.js";
-import { verifyManagedRuntimeMaintenanceEntrypoint } from "../../managed-runtime-maintenance-entry.js";
-import type { ManagedWebPaths } from "../../web-maintenance-paths.js";
+import { managedWebLogMaintenanceEnvironment } from "../launchd/managed-web-maintenance-environment.js";
+import { verifyManagedRuntimeMaintenanceEntrypoint } from "../managed-runtime/managed-runtime-maintenance-entry.js";
+import type { ManagedWebPaths } from "./web-maintenance-paths.js";
 import { urlHost } from "./presentation.js";
 import type { WebMaintenancePublicationInputs } from "./types.js";
 

@@ -5,12 +5,12 @@ import { validateCronExpression } from "@mono-agent/trigger-cron";
 import { effectiveEmbeddingIdentity } from "@mono-agent/memory/search";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { FIRST_RUN_MEMORY_INITIALIZING_MARKER } from "../first-run-managed-memory.js";
+import { FIRST_RUN_MEMORY_INITIALIZING_MARKER } from "../setup/first-run-managed-memory.js";
 import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   probeMemoryEmbeddingSelection,
-} from "../memory-embedding-service.js";
-import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
+} from "../memory/memory-embedding-service.js";
+import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
 import { piModelResolutionIssue } from "./runtime.js";
 import { displayReferenceOf, displayText, displayReason, pathExists } from "./format.js";
 import { LIVENESS_PROBE_TIMEOUT_MS } from "./probe-defaults.js";

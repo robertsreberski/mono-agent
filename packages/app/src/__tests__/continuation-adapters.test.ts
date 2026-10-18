@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { ServerResponse } from "node:http";
 import { expect, it, vi } from "vitest";
 
-import { startContinuationService } from "../continuation-service.js";
+import { startContinuationService } from "../continuations/continuation-service.js";
 import * as protocol from "../continuations/protocol-operations.js";
-import type { ClaimBinding } from "../continuation-service-types.js";
-import { continuationDigest, type ContinuationClaimCapability } from "../continuations.js";
+import type { ClaimBinding } from "../continuations/continuation-service-types.js";
+import { continuationDigest, type ContinuationClaimCapability } from "../continuations/continuations.js";
 
 it("authorizes every operator edge before dispatch or malformed body parsing", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "continuation-adapter-"));

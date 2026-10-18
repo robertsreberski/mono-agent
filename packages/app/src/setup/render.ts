@@ -1,17 +1,17 @@
 import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import process from "node:process";
 
-import { riskColor } from "../cli-validate-config-command.js";
+import { riskColor } from "../cli/commands/cli-validate-config-command.js";
 import type { InitMonoAgentFolderResult } from "./scaffold-types.js";
-import { deriveLaunchdLabel, launchdPathsFor } from "../launchd.js";
+import { deriveLaunchdLabel, launchdPathsFor } from "../service/launchd/launchd.js";
 import { providerSetupActionCommandLine } from "../providers/setup-plan.js";
 import type { ProviderSetupPlan } from "../providers/setup-types.js";
 import type {
   ReadinessProbeResult,
   ReadinessRouteResult,
-} from "../readiness-probe.js";
+} from "./readiness-probe.js";
 import type { SecretChecklistItem, WizardPlan } from "./wizard-types.js";
-import * as ui from "../ui.js";
+import * as ui from "../cli/ui.js";
 
 export function readinessRoutesForDisplay(plan: WizardPlan): readonly { model: string; effort?: string }[] {
   const runtime = (plan.configJson.runtime ?? {}) as Record<string, unknown>;

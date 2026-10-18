@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { attachScopedKeypress } from "../cli-cancellation.js";
+import { attachScopedKeypress } from "../cli/cli-cancellation.js";
 
 export async function withScopedPreflightCancellation<T>(
   task: (signal: AbortSignal) => Promise<T>,

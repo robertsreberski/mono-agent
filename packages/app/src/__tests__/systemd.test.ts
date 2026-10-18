@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   inspectSystemd, readSystemdDefinition, renderSystemdUnit, startSystemd, stopSystemd,
   systemdLogs, systemdUnitName, systemdUnitPath, withSystemdLock,
-} from "../systemd.js";
-import type { SystemdDefinition, SystemdDeps } from "../systemd.js";
+} from "../service/systemd/systemd.js";
+import type { SystemdDefinition, SystemdDeps } from "../service/systemd/systemd.js";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });

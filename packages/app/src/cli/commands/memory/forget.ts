@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
-import * as ui from "../../../ui.js";
+import * as ui from "../../ui.js";
 import { assertNoLiveConfiguredAgent, memoryRegistryDirs, previewRecallSettings } from "./context.js";
 import { MEMORY_FORGET_SCHEMA_VERSION, writeMemoryForgetFailure } from "./forget-failure.js";
 import type { MemoryForgetFailureCode } from "./forget-failure.js";

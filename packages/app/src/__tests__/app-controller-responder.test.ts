@@ -10,19 +10,19 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { loadAppCoreConfig } from "../app-config.js";
+import { loadAppCoreConfig } from "../composition/app-config.js";
 import {
   buildResponder,
   replyArtifactStorageMaxBytesForMcpApps,
   requestModelOverrideRuntimeOptions as createRequestModelOverrideRuntimeOptions,
   type ResponderControllerPort,
-} from "../app-controller-responder.js";
-import { DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES } from "../mcp-apps.js";
+} from "../host/app-controller-responder.js";
+import { DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES } from "../mcp-apps/mcp-apps.js";
 import {
   PUBLISH_REPLY_FILE_TOOL_NAME,
   REPLY_ARTIFACT_MCP_SERVER_NAME,
-} from "../reply-artifacts.js";
-import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
+} from "../artifacts/reply-artifacts.js";
+import { createSeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
@@ -34,8 +34,8 @@ import {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
   type ProcessJobsRootRegistrySnapshot,
-} from "../process-jobs-root-registry.js";
-import { resolveProcessJobsProtectionPosture } from "../process-jobs-protection.js";
+} from "../process-jobs/process-jobs-root-registry.js";
+import { resolveProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
 
 const processIdentity = vi.hoisted(() => ({
   current: {

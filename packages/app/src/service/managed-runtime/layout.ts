@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
-import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../../launchd-maintenance-command.js";
+import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../launchd/launchd-maintenance-command.js";
 import { assertRegularFile, isErrno, lstat, ownedPrivately } from "./inspection-io.js";
 import type { RuntimeIdentity, RuntimeLayout } from "./types.js";
 

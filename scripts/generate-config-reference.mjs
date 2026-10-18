@@ -7,7 +7,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const {
   buildGeneratedConfigReferenceMarkdown,
   buildMonoAgentConfigSchema,
-} = await import("../packages/app/dist/config-reference.js");
+} = await import("../packages/app/dist/config-reference/config-reference.js");
 
 const schemaPath = join(root, "packages/app/schema/mono-agent.config.schema.json");
 const referencePath = join(root, "docs/config/reference.md");

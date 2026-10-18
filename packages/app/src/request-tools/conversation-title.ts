@@ -1,0 +1,121 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolPolicyInput } from "@mono-agent/conversation";
+import * as z from "zod/v4";
+
+import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
+import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
+
+export const SET_CONVERSATION_TITLE_MCP_SERVER_NAME = "mono-agent-conversation-title";
+export const SET_CONVERSATION_TITLE_TOOL_NAME = "SetConversationTitle";
+const SET_CONVERSATION_TITLE_MAX_CHARACTERS = 80;
+
+const SET_CONVERSATION_TITLE_INPUT = z.object({
+  title: z.string()
+    .describe(
+      `A 3–8 word noun phrase naming the subject of the whole conversation, not the current step.`,
+    )
+    .trim()
+    .min(1)
+    .max(SET_CONVERSATION_TITLE_MAX_CHARACTERS)
+    .refine(
+      (value) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value),
+      "title contains unsupported control characters",
+    ),
+}).strict();
+
+type SetConversationTitleInput = z.infer<typeof SET_CONVERSATION_TITLE_INPUT>;
+type ConversationTitlePolicy = Pick<ToolPolicyInput, "allowedTools" | "disallowedTools">;
+
+const SET_CONVERSATION_TITLE_POLICY_NAMES = [
+  SET_CONVERSATION_TITLE_TOOL_NAME,
+  `mcp__${SET_CONVERSATION_TITLE_MCP_SERVER_NAME}__${SET_CONVERSATION_TITLE_TOOL_NAME}`,
+  `mcp__${SET_CONVERSATION_TITLE_MCP_SERVER_NAME}__*`,
+] as const;
+
+/** The console title tool follows the normal app-owned allow/deny boundary. */
+export function isSetConversationTitleToolAllowed(policy: ConversationTitlePolicy | undefined): boolean {
+  const allowed = policy?.allowedTools ?? [];
+  const denied = policy?.disallowedTools ?? [];
+  if (denied.includes("*") || SET_CONVERSATION_TITLE_POLICY_NAMES.some((name) => denied.includes(name))) {
+    return false;
+  }
+  return allowed.includes("*") || SET_CONVERSATION_TITLE_POLICY_NAMES.some((name) => allowed.includes(name));
+}
+
+/** One stateless tool whose structured result is applied by the originating web console. */
+function createSetConversationTitleServer(isWritable: () => boolean = () => true): McpServer {
+  const server = new McpServer({
+    name: SET_CONVERSATION_TITLE_MCP_SERVER_NAME,
+    version: "1.0.0",
+  });
+  server.registerTool(
+    SET_CONVERSATION_TITLE_TOOL_NAME,
+    {
+      title: "Set conversation title",
+      description: "Name the conversation as a whole. This title is how the user will recognise and find this thread in their conversation list, so it must say what the conversation is about overall — never what you are doing at this moment. Set it as soon as the subject is clear, then keep improving it: whenever the conversation develops so that a better name for the whole thread becomes apparent — its real subject emerges, broadens, or materially changes topic — replace it with that better name. Never use it as a status line: do not retitle to track your current step, task, or progress, and never let the title describe only the most recent part of the conversation. A good title still makes sense to someone scanning their list weeks later. Use a stable 3–8 word noun phrase naming the subject; never a progress report, a verb phrase about your current activity, a copy of the user's message, or a generic label. The user can permanently lock the title by renaming it manually.",
+      inputSchema: SET_CONVERSATION_TITLE_INPUT,
+    },
+    async (input: SetConversationTitleInput) => {
+      if (!isWritable()) return { isError: true, content: [{ type: "text" as const, text: "Conversation title is unavailable: the originating turn is not writable." }] };
+      const title = normalizeConversationTitle(input.title);
+      return {
+        content: [{
+          type: "text" as const,
+          // JSON-quoted: the title is model-controlled text, and interpolating
+          // it raw lets a crafted value close the quote and append its own
+          // sentence — forging a claim that the rename landed.
+          text: `Conversation title proposed: ${JSON.stringify(title)}. Update it later only if a better name for the whole conversation emerges.`,
+        }],
+        structuredContent: { schema: 1, title },
+      };
+    },
+  );
+  return server;
+}
+
+/** Stable definition; only an exact writable interactive web turn admits calls. */
+export function createSetConversationTitleRuntimeExtension(): RuntimeOptionsExtension {
+  const extension = createRequestScopedMcpRuntimeExtension({
+    serverName: SET_CONVERSATION_TITLE_MCP_SERVER_NAME,
+    startingMessage: "Conversation title tool is starting",
+    createServer: (input) => createSetConversationTitleServer(() => isWritableWebConversationTitleRequest(input.request)),
+  });
+  return async (input) => {
+    const result = await extension(input);
+    const available = isWritableWebConversationTitleRequest(input.request);
+    return { ...result, runtimeOptions: { ...result.runtimeOptions, hostCapabilities: {
+      SetConversationTitle: { available, ...(available ? {} : { reason: "origin_not_writable" }) },
+    } } };
+  };
+}
+
+function isWritableWebConversationTitleRequest(request: {
+  readonly conversationId: string;
+  readonly metadata?: Record<string, unknown>;
+}): boolean {
+  const metadata = request.metadata;
+  if (metadata?.source !== "web") return false;
+  const web = record(metadata.web);
+  const capability = record(web?.conversationTitle);
+  if (
+    capability?.schema !== 1
+    || capability.writable !== true
+    || typeof web?.threadId !== "string"
+    || typeof web.turnId !== "string"
+    || web.threadId.length === 0
+    || web.turnId.length === 0
+    || web.trigger !== undefined
+  ) return false;
+  const logicalConversationId = request.conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
+  return logicalConversationId === `web:${web.threadId}`;
+}
+
+function normalizeConversationTitle(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}

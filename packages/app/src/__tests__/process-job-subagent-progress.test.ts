@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isProcessJobSubagentProgress } from "@mono-agent/contracts";
-import { redactSubagentArgumentPreview, SubagentJobProgress } from "../process-job-subagent-progress.js";
+import { redactSubagentArgumentPreview, SubagentJobProgress } from "../process-jobs/process-job-subagent-progress.js";
 
 describe("private subagent job progress", () => {
   it("bounds retention while keeping totals, durations and exactly-once retained completions", () => {

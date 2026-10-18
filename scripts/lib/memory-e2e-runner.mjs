@@ -11,13 +11,13 @@ export async function productionModules({ privateEvaluation = false } = {}) {
     import("../../packages/conversation/dist/index.js"), import("../../packages/memory/dist/bujo/index.js"),
     import("../../packages/memory/dist/bujo/capture-intake.js"), import("../../packages/memory/dist/store/index.js"),
     import("../../packages/memory/dist/search/index.js"), import("@mono-agent/turn/host"),
-    import("../../packages/app/dist/memory-retrieval.js"), import("../../packages/app/dist/memory-journal.js"),
-    import("../../packages/app/dist/runtime-option-extensions.js"),
+    import("../../packages/app/dist/memory/memory-retrieval.js"), import("../../packages/app/dist/memory/memory-journal.js"),
+    import("../../packages/app/dist/composition/runtime-option-extensions.js"),
   ]);
   if (!privateEvaluation) return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions };
   const [config, app, controllerMemory, grammar, graph, providerAuth, providerFailures, runtimeConfig, runtimeAuth] = await Promise.all([
     import("../../packages/config/dist/index.js"), import("../../packages/app/dist/composition/configured-memory.js"),
-    import("../../packages/app/dist/app-controller-memory.js"), import("../../packages/memory/dist/bujo/grammar.js"), import("../../packages/memory/dist/bujo/graph.js"),
+    import("../../packages/app/dist/host/app-controller-memory.js"), import("../../packages/memory/dist/bujo/grammar.js"), import("../../packages/memory/dist/bujo/graph.js"),
     import("@mono-agent/turn/ai"), import("@mono-agent/turn/ai"),
     import("@mono-agent/turn/host/config"), import("@mono-agent/turn"),
   ]);

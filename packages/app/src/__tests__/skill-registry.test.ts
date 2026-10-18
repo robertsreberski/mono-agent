@@ -11,7 +11,7 @@ import {
   buildSkillRegistry,
   createSkillRegistryMonitor,
   isReadSkillDenied,
-} from "../skill-registry.js";
+} from "../skills/skill-registry.js";
 
 function skill(name: string, description = `${name} description`): SkillIndexEntry {
   return { name, description, mainFile: `/private/skills/${name}/SKILL.md` };

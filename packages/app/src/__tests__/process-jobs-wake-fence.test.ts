@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validWakeCertificates, validWakeFence } from "../process-jobs-wake-fence.js";
+import { validWakeCertificates, validWakeFence } from "../process-jobs/process-jobs-wake-fence.js";
 
 const token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const boundary = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";

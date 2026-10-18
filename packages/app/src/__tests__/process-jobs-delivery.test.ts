@@ -1,7 +1,7 @@
 import { expect, expectTypeOf, it } from "vitest";
 
-import type { DurableProcessJobRecord } from "../process-jobs-store.js";
-import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";
+import type { DurableProcessJobRecord } from "../process-jobs/process-jobs-store.js";
+import type { SubagentOwnerIdentity } from "../subagents/subagent-registry-ownership.js";
 import { publishManagedJob, type ManagedPublicationOperations } from "../process-jobs/managed-publication.js";
 import { deliverProcessJobWake, type ProcessJobWakeOperations } from "../process-jobs/wake-delivery.js";
 import type { NotifyDeliveryResult } from "../channels/types.js";

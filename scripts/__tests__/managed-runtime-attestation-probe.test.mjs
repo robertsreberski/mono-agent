@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runManagedRuntimeAttestation } from "../fleet-green-check/probes.mjs";
 import { describe, expect, it } from "vitest";
 
@@ -65,15 +65,15 @@ it("compares current inputs with effective console approval instead of the raw a
   await mkdir(dist, { recursive: true });
   await writeFile(join(repo, "package.json"), JSON.stringify({ type: "module" }));
   const files = {
-    "background-runtime.js": `export async function attestManagedBackgroundRuntime() { return { schema: "mono-agent.managed-runtime-attestation.v1", fingerprint: "${"a".repeat(64)}", installedAt: "2026-01-01T00:00:00.000Z" }; }`,
-    "background-snapshot.js": `export async function captureDurableBackgroundInputs() { return { snapshot: { configPath: "/agent/config.json", revision: "approved" }, environment: {} }; } export function decodeBackgroundSnapshot() { throw new Error("Raw argv comparison is wrong"); }`,
-    "background-snapshot-key.js": `export async function loadBackgroundSnapshotKey() { return new Uint8Array(32); }`,
-    "managed-runtime-packages.js": `export async function resolveConfiguredManagedRuntimePackages() { return []; }`,
-    "launchd.js": `export function deriveLaunchdLabel() { return "com.mono-agent.example-12345678"; } export function launchdPathsFor() { return { logDir: "${repo}/managed/logs" }; }`,
-    "approved-background-snapshot.js": `export function resolveApprovedBackgroundSnapshot(binding) { if (binding.encodedSnapshot !== "original_snapshot" || binding.launchProof !== "runtime_proof" || binding.configPath !== "/agent/config.json" || binding.label !== "com.mono-agent.example-12345678") throw new Error("Wrong approval binding"); return { configPath: "/agent/config.json", revision: "approved" }; }`,
+    "service/managed-runtime/background-runtime.js": `export async function attestManagedBackgroundRuntime() { return { schema: "mono-agent.managed-runtime-attestation.v1", fingerprint: "${"a".repeat(64)}", installedAt: "2026-01-01T00:00:00.000Z" }; }`,
+    "service/background/background-snapshot.js": `export async function captureDurableBackgroundInputs() { return { snapshot: { configPath: "/agent/config.json", revision: "approved" }, environment: {} }; } export function decodeBackgroundSnapshot() { throw new Error("Raw argv comparison is wrong"); }`,
+    "service/background/background-snapshot-key.js": `export async function loadBackgroundSnapshotKey() { return new Uint8Array(32); }`,
+    "service/managed-runtime/managed-runtime-packages.js": `export async function resolveConfiguredManagedRuntimePackages() { return []; }`,
+    "service/launchd/launchd.js": `export function deriveLaunchdLabel() { return "com.mono-agent.example-12345678"; } export function launchdPathsFor() { return { logDir: "${repo}/managed/logs" }; }`,
+    "service/background/approved-background-snapshot.js": `export function resolveApprovedBackgroundSnapshot(binding) { if (binding.encodedSnapshot !== "original_snapshot" || binding.launchProof !== "runtime_proof" || binding.configPath !== "/agent/config.json" || binding.label !== "com.mono-agent.example-12345678") throw new Error("Wrong approval binding"); return { configPath: "/agent/config.json", revision: "approved" }; }`,
   };
   try {
-    await Promise.all(Object.entries(files).map(([name, source]) => writeFile(join(dist, name), source)));
+    await Promise.all(Object.entries(files).map(async ([name, source]) => { await mkdir(dirname(join(dist, name)), { recursive: true }); await writeFile(join(dist, name), source); }));
     const out = sink();
     expect(await runManagedRuntimeAttestationProbe([repo, "/runtime/cli.js", "/agent", "/agent/config.json", "", "original_snapshot", "137", "runtime_proof"], out, {})).toBe(0);
     expect(JSON.parse(out.text).status).toBe("ok");

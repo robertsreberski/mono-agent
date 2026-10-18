@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
-import { MAX_PI_AUTH_STORE_BYTES } from "../pi-auth-store-inspection.js";
+import { MAX_PI_AUTH_STORE_BYTES } from "./pi-auth-store-inspection.js";
 export const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
   openai: "OPENAI_API_KEY",

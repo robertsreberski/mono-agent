@@ -7,7 +7,7 @@ import type { ProcessJobProjection } from "@mono-agent/contracts";
 import type { TraceSourceListItem, TraceSourceListResult } from "@mono-agent/observability";
 import { describe, expect, it, vi } from "vitest";
 
-import { operatorEndpointOf, runJobsCommand } from "../jobs-command.js";
+import { operatorEndpointOf, runJobsCommand } from "../cli/commands/jobs-command.js";
 
 describe("mono-agent jobs", () => {
   it("reads only a non-empty running operator endpoint from legacy tui metadata", () => {

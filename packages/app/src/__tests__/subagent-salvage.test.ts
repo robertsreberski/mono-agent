@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boundSubagentSalvage } from "../subagent-salvage.js";
+import { boundSubagentSalvage } from "../subagents/subagent-salvage.js";
 
 describe("bounded untrusted child salvage", () => {
   it("redacts before truncating, neutralizes fences and paths, and leaves no arguments", () => {

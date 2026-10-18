@@ -17,8 +17,8 @@ const sessionAuthorizationMock = vi.hoisted(() => ({
   beforeLoad: undefined as (() => Promise<void>) | undefined,
 }));
 
-vi.mock("../acp-session-store.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../acp-session-store.js")>();
+vi.mock("../acp/acp-session-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../acp/acp-session-store.js")>();
   return {
     ...actual,
     async loadAcpSessionAuthorization(
@@ -30,8 +30,8 @@ vi.mock("../acp-session-store.js", async (importOriginal) => {
   };
 });
 
-import { runAcpBridge } from "../acp-bridge.js";
-import { makePeerHandoff } from "../peer-provenance.js";
+import { runAcpBridge } from "../acp/acp-bridge.js";
+import { makePeerHandoff } from "../peers/peer-provenance.js";
 
 const cleanupRoots: string[] = [];
 const cleanupServers: Server[] = [];

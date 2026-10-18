@@ -47,7 +47,7 @@ vi.mock("@mono-agent/turn/host", async (importOriginal) => {
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
   };
 });
-vi.mock("../account-home.js", () => ({
+vi.mock("../host/account-home.js", () => ({
   accountHomeDirectory: () => coordinatorHome.path,
 }));
 vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({
@@ -71,8 +71,8 @@ const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
   processJobsRootRegistryPaths,
-} = await import("../process-jobs-root-registry.js");
-const { resolveProcessJobsProtectionPosture } = await import("../process-jobs-protection.js");
+} = await import("../process-jobs/process-jobs-root-registry.js");
+const { resolveProcessJobsProtectionPosture } = await import("../process-jobs/process-jobs-protection.js");
 
 const tempDirs: string[] = [];
 beforeAll(async () => {

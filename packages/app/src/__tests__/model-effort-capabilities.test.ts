@@ -4,7 +4,7 @@ import { getPiBuiltinModel, reasoningLevelsForPiModel } from "@mono-agent/turn/a
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { LocalProviderDefinition } from "@mono-agent/turn/host/types";
 
-import { resolveAdvertisedModelEffort } from "../model-effort-capabilities.js";
+import { resolveAdvertisedModelEffort } from "../providers/model-effort-capabilities.js";
 
 const LOCAL_OLLAMA: readonly LocalProviderDefinition[] = [
   { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },

@@ -9,7 +9,7 @@ import { openMemoryDb } from "@mono-agent/memory/store";
 import type { MemoryRecord } from "@mono-agent/memory/store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createMemoryRecallServer } from "../memory-recall.js";
+import { createMemoryRecallServer } from "../memory/memory-recall.js";
 import type { MemoryRecallHit, RecallCapableStore } from "../memory/recall-contract.js";
 
 /**

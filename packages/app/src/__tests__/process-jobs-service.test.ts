@@ -18,13 +18,13 @@ import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobStartR
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelId, RunningChannel } from "../channels/types.js";
-import type { ProcessJobsSettings } from "../process-jobs-config.js";
-import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
+import type { ProcessJobsSettings } from "../process-jobs/process-jobs-config.js";
+import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs/process-jobs-config.js";
 import {
   openProcessJobsService,
   type ProcessJobsHealth,
   type ProcessJobsServiceHandle,
-} from "../process-jobs-service.js";
+} from "../process-jobs/process-jobs-service.js";
 import {
   isTerminalProcessJobState,
   openProcessJobStore,
@@ -41,10 +41,10 @@ import {
   type ProcessJobOriginRecord,
   type ProcessJobStore,
   type ProcessJobStoreWorkCounter,
-} from "../process-jobs-store.js";
+} from "../process-jobs/process-jobs-store.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
-import { routeProactiveNotification } from "../proactive-notify.js";
-import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { routeProactiveNotification } from "../delivery/proactive-notify.js";
+import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs/process-jobs-context.js";
 
 const INCARNATION: ProcessIncarnation = {
   schema: "mono-agent.process-incarnation.v1",

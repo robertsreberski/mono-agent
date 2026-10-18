@@ -6,12 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   installComposerCompanion,
-} from "../docs-mcp-pairing.js";
+} from "../setup/docs-mcp-pairing.js";
 import type {
   DocsMcpEntry,
   DocsMcpHarnessAdapter,
   DocsMcpPairingDependencies,
-} from "../docs-mcp-pairing.js";
+} from "../setup/docs-mcp-pairing.js";
 
 const temporaryDirectories: string[] = [];
 

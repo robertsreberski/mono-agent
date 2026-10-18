@@ -5,7 +5,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it, vi } from "vitest";
 import { createLoopbackMcpEndpoint } from "../mcp/loopback-transport.js";
-import { createRequestScopedMcpRuntimeExtension } from "../request-scoped-mcp.js";
+import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
 
 const token = vi.hoisted(() => "11111111-1111-4111-8111-111111111111");
 vi.mock("node:crypto", async (original) => ({ ...await original<typeof import("node:crypto")>(), randomUUID: () => token }));

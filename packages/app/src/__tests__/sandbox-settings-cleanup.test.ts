@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { expect, it } from "vitest";
 
-import { cleanupPersistedSandboxSettings } from "../sandbox-settings-cleanup.js";
+import { cleanupPersistedSandboxSettings } from "../service/sandbox/sandbox-settings-cleanup.js";
 
 it("never follows a validly named sandbox directory symlink during persisted cleanup", async () => {
   const target = await mkdtemp(join(tmpdir(), "process-cleanup-target-"));

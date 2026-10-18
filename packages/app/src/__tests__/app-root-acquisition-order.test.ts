@@ -25,16 +25,16 @@ vi.mock("../durable-state/agent-root-coordinator.js", async (importOriginal) => 
   assertAgentRootLeaseOutsideWorkspace() {},
 }));
 
-vi.mock("../channels.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../channels.js")>(),
+vi.mock("../channels/channels.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../channels/channels.js")>(),
   resolveChannelDrivers: async () => {
     order.push("driver-resolution");
     return [];
   },
 }));
 
-vi.mock("../app-config.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../app-config.js")>();
+vi.mock("../composition/app-config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../composition/app-config.js")>();
   return {
     ...actual,
     loadAppCoreConfig: async (...args: Parameters<typeof actual.loadAppCoreConfig>) => {
@@ -44,7 +44,7 @@ vi.mock("../app-config.js", async (importOriginal) => {
   };
 });
 
-const { startMonoAgentApp } = await import("../app.js");
+const { startMonoAgentApp } = await import("../host/app.js");
 
 const temporaryDirectories: string[] = [];
 

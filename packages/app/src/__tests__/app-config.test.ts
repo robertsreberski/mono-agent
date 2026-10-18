@@ -12,7 +12,7 @@ import {
   resolveGlobalTraceRegistryDir,
   resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
-} from "../app-config.js";
+} from "../composition/app-config.js";
 
 const ACCOUNT_TRACE_REGISTRY = join(userInfo().homedir, ".mono-agent", "trace-sources");
 

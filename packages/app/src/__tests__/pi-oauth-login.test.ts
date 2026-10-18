@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertPiOAuthLoginPersistenceSupported,
   runPiOAuthLogin,
-} from "../pi-oauth-login.js";
+} from "../providers/pi-oauth-login.js";
 
 const dirs: string[] = [];
 const execFileAsync = promisify(execFile);

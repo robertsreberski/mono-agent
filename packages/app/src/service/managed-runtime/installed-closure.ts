@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../../launchd-maintenance-command.js";
+import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../launchd/launchd-maintenance-command.js";
 import {
   assertPathInsideRoot,
   assertRegularFile,

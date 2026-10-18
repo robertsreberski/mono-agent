@@ -859,12 +859,12 @@ describe("check-consumer-docs-consistency", () => {
       "// Oversized events are field-reduced until the encoded frame fits.",
       "// Every oversized event is field reduced.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/app/src/cli-background-command.ts", [
+    await writeRepoDoc(repoRoot, "packages/app/src/cli/commands/cli-background-command.ts", [
       "function describeExporter() {",
       "  return \"JSONL artifacts are always written locally\";",
       "}",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/app/src/cli-help.ts", [
+    await writeRepoDoc(repoRoot, "packages/app/src/cli/cli-help.ts", [
       "const HELP_COMMANDS = [",
       "  \"Open the operator console from any directory: live chat with full\",",
       "  \"thinking/tool/telemetry insight, recorded-run replay, and config view.\",",
@@ -900,7 +900,7 @@ describe("check-consumer-docs-consistency", () => {
     expect(reported).toContain("exporter retirement implies network isolation");
     expect(reported).toContain("always-written JSONL artifacts");
     expect(result.issues).toContain(
-      `${join(repoRoot, "packages/app/src/cli-background-command.ts")}:2:11: ` +
+      `${join(repoRoot, "packages/app/src/cli/commands/cli-background-command.ts")}:2:11: ` +
         "uses absolute observability/replay wording \"always-written JSONL artifacts\". " +
         "Describe transport and string caps, best-effort export, the start snapshot, " +
         "in-memory buffering, terminal replacement, and crash-loss/reconciliation boundaries instead.",
@@ -921,8 +921,8 @@ describe("check-consumer-docs-consistency", () => {
       "packages/app/skills/mono-agent-composer/references/playbooks.md",
       "packages/app/skills/mono-agent-composer/references/config-blueprint.md",
       "packages/app/skills/mono-agent-composer/references/discovery-questions.md",
-      "packages/app/src/cli-background-command.ts",
-      "packages/app/src/cli-help.ts",
+      "packages/app/src/cli/commands/cli-background-command.ts",
+      "packages/app/src/cli/cli-help.ts",
       "packages/channel-operator/package.json",
       "packages/channel-operator/src/tui/constants.ts",
       "scripts/package-catalog.mjs",
@@ -960,12 +960,12 @@ describe("check-consumer-docs-consistency", () => {
       "# Tool guard",
       "The guard attempts best-effort persistence; missing or failed sinks leave omitted bytes unavailable.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/app/src/cli-background-command.ts", [
+    await writeRepoDoc(repoRoot, "packages/app/src/cli/commands/cli-background-command.ts", [
       "function describeExporter() {",
       "  return \"JSONL artifacts remain local\";",
       "}",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/app/src/cli-help.ts", [
+    await writeRepoDoc(repoRoot, "packages/app/src/cli/cli-help.ts", [
       "const HELP_COMMANDS = [",
       "  \"Open the operator console from any directory: live chat with structured\",",
       "  \"thinking/tool/telemetry insight, recorded-run replay, and config view.\",",

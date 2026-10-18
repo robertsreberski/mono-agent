@@ -1,7 +1,7 @@
 import { MODEL_REFERENCE_ECHO_MAX_BYTES, MODEL_REFERENCE_REASON_MAX_BYTES, sanitizeModelReferenceText } from "@mono-agent/turn/host/config";
 import { describe, expect, it } from "vitest";
 
-import { findTriggerOverrideIssues } from "../trigger-overrides.js";
+import { findTriggerOverrideIssues } from "../composition/trigger-overrides.js";
 
 const NEWLINE = String.fromCharCode(10);
 const byteLength = (value: string): number => Buffer.byteLength(value, "utf8");

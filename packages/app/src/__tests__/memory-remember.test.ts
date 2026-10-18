@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { appendGraphBatch, createBujoMemoryStore, dailyFilePath } from "@mono-agent/memory/bujo";
-import { MemoryRetrievalService } from "../memory-retrieval.js";
+import { MemoryRetrievalService } from "../memory/memory-retrieval.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -18,7 +18,7 @@ import {
   MEMORY_REMEMBER_MCP_SERVER_NAME,
   REMEMBER_TOOL_NAME,
   type RememberCapableStore,
-} from "../memory-remember.js";
+} from "../memory/memory-remember.js";
 
 const FIXED = new Date("2026-09-03T10:00:00.000Z");
 const stores: { close(): Promise<void> }[] = [];

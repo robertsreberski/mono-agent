@@ -12,9 +12,9 @@ import type { DeliverWebNotificationInput } from "@mono-agent/web";
 import { WebConsoleError } from "@mono-agent/web";
 
 import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
-import { createTuiChannelDriver } from "../channels.js";
-import { MAX_DISCOVERED_INFO_MODEL_BYTES, startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
-import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER, MAX_CATALOG_ID_BYTES, MAX_PAGE_SIZE } from "../provider-model-catalog.js";
+import { createTuiChannelDriver } from "../channels/channels.js";
+import { MAX_DISCOVERED_INFO_MODEL_BYTES, startAppOwnedTuiChannel } from "../channels/drivers/tui.js";
+import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER, MAX_CATALOG_ID_BYTES, MAX_PAGE_SIZE } from "../providers/provider-model-catalog.js";
 
 const noopResponder: AgentResponder = {
   async respond() {

@@ -12,14 +12,14 @@ import {
   ensureManagedBackgroundRuntime as ensureManagedBackgroundRuntimeImpl,
   inspectManagedRuntimeSourceIdentity,
   verifyManagedRuntimeLaunch,
-} from "../background-runtime.js";
+} from "../service/managed-runtime/background-runtime.js";
 import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput, ManagedRuntimeProgress } from "../service/managed-runtime/types.js";
 import { fingerprintClosureFile } from "../service/managed-runtime/installed-closure.js";
 import { runtimeLayout } from "../service/managed-runtime/layout.js";
 import { runtimeMarkerFromJson } from "../service/managed-runtime/marker.js";
 import { verifyRuntimeFast } from "../service/managed-runtime/reuse-proof.js";
 import { deduplicateSourceReuseProofLinks } from "../service/managed-runtime/source-closure.js";
-import { MANAGED_BACKGROUND_WORKER_ENV, sanitizeManagedBackgroundWorkerEnvironment } from "../background-environment.js";
+import { MANAGED_BACKGROUND_WORKER_ENV, sanitizeManagedBackgroundWorkerEnvironment } from "../service/background/background-environment.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 
 const io = vi.hoisted(() => ({

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { invalidWebConsoleName, isWebTheme } from "../../web-service-definition.js";
+import { invalidWebConsoleName, isWebTheme } from "./web-service-definition.js";
 import { WEB_SERVICE_SCHEMA } from "./types.js";
 import type { WebServiceRecord, WebServiceRecordRead } from "./types.js";
 

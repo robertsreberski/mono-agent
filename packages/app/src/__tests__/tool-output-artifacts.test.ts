@@ -6,7 +6,7 @@ import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/convers
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createToolOutputArtifactsRuntimeExtension } from "../tool-output-artifacts.js";
+import { createToolOutputArtifactsRuntimeExtension } from "../artifacts/tool-output-artifacts.js";
 
 const roots: string[] = [];
 

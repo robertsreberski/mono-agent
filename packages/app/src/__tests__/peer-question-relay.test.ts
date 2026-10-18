@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PeerQuestionRelay } from "../peer-question-relay.js";
+import { PeerQuestionRelay } from "../peers/peer-question-relay.js";
 
 afterEach(() => vi.useRealTimers());
 

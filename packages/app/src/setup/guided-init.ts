@@ -5,24 +5,24 @@ import { fileURLToPath } from "node:url";
 
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
-import { ensureBackgroundReady } from "../background.js";
+import { ensureBackgroundReady } from "../service/background/background.js";
 import { defaultBackgroundDeps } from "../service/background/deps.js";
 import { managedBackgroundEnvironment, resolveInstanceTarget } from "../service/background/target.js";
 import type { BackgroundLaunchResult } from "../service/background/types.js";
-import { captureDurableBackgroundInputs } from "../background-snapshot.js";
-import type { BackgroundSnapshot } from "../background-snapshot.js";
-import type { ParsedCliArgs } from "../cli-args.js";
-import { isAbortLike } from "../cli-cancellation.js";
+import { captureDurableBackgroundInputs } from "../service/background/background-snapshot.js";
+import type { BackgroundSnapshot } from "../service/background/background-snapshot.js";
+import type { ParsedCliArgs } from "../cli/cli-args.js";
+import { isAbortLike } from "../cli/cli-cancellation.js";
 import {
   formatSection,
   renderPlanCompleteness,
-} from "../cli-validate-config-command.js";
-import { validateMonoAgentFolder } from "../doctor.js";
-import type { ValidationReport } from "../doctor-types.js";
-import { effectiveFirstRunEnvironment, evaluateFirstRunConfigurationReadiness, evaluateFirstRunReadiness, hasSensitivePersistedEnvironmentValue, piAuthPathBackgroundConflict, resolveEffectivePiAuthPath, selectedSecretEnvironmentConflicts, selectedSecretValues, unexpectedPersistedMonoAgentOverrides, validateWizardPlanInStaging, withExactProcessEnvironment } from "../first-run-readiness.js";
+} from "../cli/commands/cli-validate-config-command.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
+import type { ValidationReport } from "../doctor/doctor-types.js";
+import { effectiveFirstRunEnvironment, evaluateFirstRunConfigurationReadiness, evaluateFirstRunReadiness, hasSensitivePersistedEnvironmentValue, piAuthPathBackgroundConflict, resolveEffectivePiAuthPath, selectedSecretEnvironmentConflicts, selectedSecretValues, unexpectedPersistedMonoAgentOverrides, validateWizardPlanInStaging, withExactProcessEnvironment } from "./first-run-readiness.js";
 import { readCliConfigSnapshot, readCliDotenvSnapshot } from "../service/background/source-inputs.js";
 import type { CliConfigSnapshot, CliDotenvSnapshot, CliEnvironment } from "../service/background/source-inputs.js";
-import { initMonoAgentFolder } from "../init.js";
+import { initMonoAgentFolder } from "./init.js";
 import {
   secretEnvConcurrentModificationCause,
   verifySecretEnvPersistenceGuard,
@@ -34,15 +34,15 @@ import {
 } from "../providers/setup-plan.js";
 import { detectProviderCredentialStates } from "../providers/credential-state.js";
 import type { ProviderSetupPlan } from "../providers/setup-types.js";
-import { readinessProbeTimeoutMs, runAllRouteReadinessProbe } from "../readiness-probe.js";
+import { readinessProbeTimeoutMs, runAllRouteReadinessProbe } from "./readiness-probe.js";
 import type {
   ReadinessProbeResult,
   ReadinessRouteResult,
-} from "../readiness-probe.js";
-import { setupManagedSrt } from "../sandbox-manager.js";
-import { composeWizardPlan, referencedSetupModelRefs } from "../wizard/answers.js";
+} from "./readiness-probe.js";
+import { setupManagedSrt } from "../service/sandbox/sandbox-manager.js";
+import { composeWizardPlan, referencedSetupModelRefs } from "./wizard/answers.js";
 import type { WizardAnswers, WizardPlan } from "./wizard-types.js";
-import { runInitWizard, runSetupRepairWizard } from "../wizard/run.js";
+import { runInitWizard, runSetupRepairWizard } from "./wizard/run.js";
 import { withScopedPreflightCancellation } from "./cancellation.js";
 import { nonEmptyEnv, pathExists, runProviderSetupBeforeInit } from "./provider-setup-gate.js";
 import {
@@ -60,7 +60,7 @@ import {
 } from "./render.js";
 import type { RunInitEnvironmentContext } from "./types.js";
 import * as p from "@clack/prompts";
-import * as ui from "../ui.js";
+import * as ui from "../cli/ui.js";
 
 export async function runGuidedInit(args: ParsedCliArgs, environment: RunInitEnvironmentContext, cwd: string): Promise<number> {
   // Existing-config pre-check — don't walk the wizard into a guaranteed no-op.

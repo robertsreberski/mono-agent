@@ -14,7 +14,7 @@ import {
   PROCESS_JOBS_CAPS,
   PROCESS_JOBS_DEFAULTS,
   loadProcessJobsSettings,
-} from "../process-jobs-config.js";
+} from "../process-jobs/process-jobs-config.js";
 
 describe("loadProcessJobsSettings", () => {
   it("accepts depth 64 and rejects 65 without changing the default", async () => {

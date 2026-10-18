@@ -12,8 +12,8 @@ import { MemorySearchError } from "@mono-agent/memory/search";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it, vi } from "vitest";
 
-import { memoryGuidanceScopes } from "../memory-guidance.js";
-import { createSharedMemoryRecallRuntimeExtension, MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
+import { memoryGuidanceScopes } from "../memory/memory-guidance.js";
+import { createSharedMemoryRecallRuntimeExtension, MemoryRetrievalService, type SharedRecallStore } from "../memory/memory-retrieval.js";
 
 function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boolean } = {}): SharedRecallStore & { readonly queries: string[]; readonly accesses: string[][] } {
   const queries: string[] = [];

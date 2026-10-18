@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 
-import { createRequestModelOverrideRuntimeExtension, implicitModelRuntimeOptions, requestModelOverrideRoutesOnlyPiNative } from "../request-model-override.js";
-import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
+import { createRequestModelOverrideRuntimeExtension, implicitModelRuntimeOptions, requestModelOverrideRoutesOnlyPiNative } from "../composition/request-model-override.js";
+import { composeRuntimeOptionExtensions } from "../composition/runtime-option-extensions.js";
 
 interface RunOptions {
   readonly logger?: { warn: ReturnType<typeof vi.fn>; info?: ReturnType<typeof vi.fn> };

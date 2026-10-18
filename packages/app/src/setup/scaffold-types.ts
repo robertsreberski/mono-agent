@@ -1,6 +1,6 @@
-import type { FirstRunManagedMemoryHooks } from "../first-run-managed-memory.js";
+import type { FirstRunManagedMemoryHooks } from "./first-run-managed-memory.js";
 import type { WizardAnswers, WizardPlan } from "./wizard-types.js";
-import type { defaultAnswers } from "../wizard/answers.js";
+import type { defaultAnswers } from "./wizard/answers.js";
 import type { InitFileChange, SecretPersistenceOutcome } from "./types.js";
 
 export interface InitMonoAgentFolderOptions {

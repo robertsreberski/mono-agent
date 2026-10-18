@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { listPiBuiltinModels, listPiBuiltinProviders } from "@mono-agent/turn/ai";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 
-import { buildProviderModelCatalog, selectProviderAuthCheckModel } from "../provider-model-catalog.js";
-import { resolveAdvertisedModelEffortForBuiltin } from "../model-effort-capabilities.js";
+import { buildProviderModelCatalog, selectProviderAuthCheckModel } from "../providers/provider-model-catalog.js";
+import { resolveAdvertisedModelEffortForBuiltin } from "../providers/model-effort-capabilities.js";
 
 describe("provider-model-catalog", () => {
   it("selects the cheapest bounded check model deterministically", () => {

@@ -10,7 +10,7 @@ import {
   classifyMemoryBundleExportFailure,
 } from "../cli/commands/memory/bundle.js";
 import { isFtsFallbackEligible } from "../cli/commands/memory/read.js";
-import type { MemoryRecallSettings } from "../memory-recall-settings.js";
+import type { MemoryRecallSettings } from "../memory/memory-recall-settings.js";
 
 const semanticSettings: MemoryRecallSettings = {
   root: "/memory",

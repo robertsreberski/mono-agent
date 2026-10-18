@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../composition/configured-subagents.js";
 const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"));
 const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
-import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagents/subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -73,8 +73,8 @@ vi.mock("../durable-state/agent-root-coordinator.js", async (importOriginal) => 
   assertAgentRootLeaseOutsideWorkspace() {},
 }));
 
-vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-jobs-root-registry.js")>(),
+vi.mock("../process-jobs/process-jobs-root-registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-jobs/process-jobs-root-registry.js")>(),
   loadProcessJobsRootRegistryProtection: async () => ({
     kind: "empty",
     agentRoot: "/repo",
@@ -89,7 +89,7 @@ vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
 }));
 
 const { createConfiguredConversationHarness } = await import("../index.js");
-const { createConfiguredAgentResponderForApp } = await import("../configured-agent.js");
+const { createConfiguredAgentResponderForApp } = await import("../composition/configured-agent.js");
 
 const PRIMARY = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
 const HAIKU = { provider: "anthropic", model: "claude-haiku-4-5", reference: "anthropic:claude-haiku-4-5" } as const;
@@ -555,7 +555,7 @@ it.each(["disabled", "failed-start", "undefined-standalone", "retained-history"]
   let responder: Awaited<ReturnType<typeof createConfiguredAgentResponderForApp>> | undefined;
   try {
     const instancesRoot = resolve(root, "children"); const jobsRoot = resolve(root, "jobs"); const jobId = randomUUID();
-    const moduleUrl = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+    const moduleUrl = new URL("../../dist/subagents/subagent-instances.js", import.meta.url).href;
     execFileSync(process.execPath, ["--input-type=module", "-e", `
       import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
       const handle = await createSubagentInstanceRegistry({ root: ${JSON.stringify(instancesRoot)}, retireSession: async () => {},

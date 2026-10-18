@@ -11,14 +11,14 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { createManagedNativeJournalStorage } from "@mono-agent/turn/ai";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type MonoRuntimeLike, type RuntimeNativePreparedDispatch } from "@mono-agent/turn/host/types";
-import { createConfiguredAgentResponder, createConfiguredAgentResponderForApp } from "../configured-agent.js";
+import { createConfiguredAgentResponder, createConfiguredAgentResponderForApp } from "../composition/configured-agent.js";
 import { wrapOwnedConfiguredRuntime } from "../composition/runtime-ownership.js";
-import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
-import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
-import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "../configured-native-switch.js";
+import { createRequestModelOverrideRuntimeExtension } from "../composition/request-model-override.js";
+import { createSlackPostedReplyHistory } from "../delivery/posted-reply-history.js";
+import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "../composition/configured-native-switch.js";
 import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../durable-state/agent-root-coordinator.js";
-import { completionOnlyRuntime } from "../configured-runtime-capabilities.js";
-import { loadAppCoreConfig } from "../app-config.js";
+import { completionOnlyRuntime } from "../composition/configured-runtime-capabilities.js";
+import { loadAppCoreConfig } from "../composition/app-config.js";
 // White-box fixture uses Web's existing persisted inbound identity, not an APP ledger.
 import { WebStore } from "../../../web/dist/store.js";
 

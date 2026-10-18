@@ -2,8 +2,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/conversation";
 import { describe, expect, it } from "vitest";
-import { createSuggestRepliesService, isSuggestRepliesToolAllowed, SUGGEST_REPLIES_SERVER_NAME, SUGGEST_REPLIES_TOOL_NAME } from "../suggest-replies.js";
-import { createReplyPartBudget } from "../reply-part-budget.js";
+import { createSuggestRepliesService, isSuggestRepliesToolAllowed, SUGGEST_REPLIES_SERVER_NAME, SUGGEST_REPLIES_TOOL_NAME } from "../request-tools/suggest-replies.js";
+import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
 
 function request(metadata: Record<string, unknown> = { source: "web", web: { threadId: "one", turnId: "turn-1" } }): ConversationHarnessRuntimeOptionsInput {
   return { request: { conversationId: "web:one", userMessage: "work", abortSignal: new AbortController().signal, metadata },

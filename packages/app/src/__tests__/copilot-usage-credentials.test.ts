@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createCopilotCredentialDiscovery } from "../copilot-usage-credentials.js";
+import { createCopilotCredentialDiscovery } from "../providers/copilot-usage-credentials.js";
 
 const editor = (value: string, host = "github.com:synthetic-app") => JSON.stringify({ [host]: { oauth_token: value } });
 function fixture(files: (string | undefined)[] = []) {

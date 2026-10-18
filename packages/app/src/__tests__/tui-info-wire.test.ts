@@ -8,7 +8,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { OperatorClient } from "@mono-agent/web";
 
 import type { ChannelStartInput, RunningChannel } from "../channels/types.js";
-import { createTuiChannelDriver } from "../channels.js";
+import { createTuiChannelDriver } from "../channels/channels.js";
 
 /**
  * The `/v1/info` producer and its console consumer, wired end to end over a

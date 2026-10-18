@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
-import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
+import type { ValidationSection, ValidationStatus } from "../doctor/doctor-types.js";
 import type { ValidateMonoAgentFolderOptions } from "../doctor/options.js";
 
 const state = vi.hoisted(() => ({
@@ -19,14 +19,14 @@ const state = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../app-config.js", () => ({
+vi.mock("../composition/app-config.js", () => ({
   loadAppCoreConfig: async () => {
     if (state.coreFailure) throw new Error("Core access denied.");
     return { runtime: { session: { root: "unused" } }, artifacts: { dir: "/fixture/artifacts" }, tools: { allowedTools: [], disallowedTools: [] } };
   },
   isAppCoreConfigError: () => true,
 }));
-vi.mock("../sessions-root.js", () => ({ assertSupportedSessionsRoot: async () => undefined }));
+vi.mock("../conversation-admin/sessions-root.js", () => ({ assertSupportedSessionsRoot: async () => undefined }));
 vi.mock("@mono-agent/config", async (original) => ({
   ...await original<typeof import("@mono-agent/config")>(),
   readMonoAgentConfigJson: async () => ({ json: {} }),
@@ -39,7 +39,7 @@ vi.mock("@mono-agent/contracts", async (original) => ({
   ...await original<typeof import("@mono-agent/contracts")>(),
   readSettingsJson: async () => ({ duplicateKeyPaths: ["runtime.model"] }),
 }));
-vi.mock("../channel-config-view.js", () => ({ collectChannelConfigViews: async () => [] }));
+vi.mock("../channels/channel-config-view.js", () => ({ collectChannelConfigViews: async () => [] }));
 vi.mock("../doctor/cross-checks.js", () => ({
   collectStaticTriggerCredentialRefs: async () => [],
   applyRequestModelOverrideCompatibilityChecks: async () => { state.calls.push("model-cross-check"); },
@@ -53,22 +53,22 @@ vi.mock("../doctor/credentials.js", () => ({ credentialsSection: async () => sta
 vi.mock("../doctor/context.js", () => ({ contextSection: async () => state.section("context") }));
 vi.mock("../doctor/memory.js", () => ({ memorySection: vi.fn(async () => state.section("memory")) }));
 vi.mock("../doctor/tools.js", () => ({ toolsSection: async () => state.section("tools") }));
-vi.mock("../computer-use.js", () => ({ computerUseSection: async () => state.section("computer-use") }));
-vi.mock("../doctor-session-history.js", () => ({ sessionToolHistorySection: async () => state.section("session-history") }));
+vi.mock("../host/computer-use.js", () => ({ computerUseSection: async () => state.section("computer-use") }));
+vi.mock("../doctor/doctor-session-history.js", () => ({ sessionToolHistorySection: async () => state.section("session-history") }));
 vi.mock("../doctor/web-tools.js", () => ({ webToolsSection: vi.fn(async () => state.section("web-tools")) }));
-vi.mock("../continuation-config.js", () => ({
+vi.mock("../continuations/continuation-config.js", () => ({
   loadContinuationSettings: async () => { state.calls.push("continuations"); throw new Error("Continuation access denied."); },
 }));
-vi.mock("../process-jobs-config.js", async (original) => ({
-  ...await original<typeof import("../process-jobs-config.js")>(),
+vi.mock("../process-jobs/process-jobs-config.js", async (original) => ({
+  ...await original<typeof import("../process-jobs/process-jobs-config.js")>(),
   loadProcessJobsSettings: async () => { state.calls.push("process-jobs"); throw new Error("Job access denied."); },
 }));
 vi.mock("../doctor/sandbox.js", () => ({ sandboxSection: async () => state.section("sandbox") }));
-vi.mock("../doctor-runs.js", () => ({ runsSection: async () => state.section("runs") }));
+vi.mock("../doctor/doctor-runs.js", () => ({ runsSection: async () => state.section("runs") }));
 vi.mock("../doctor/launchd-logs.js", () => ({ launchdLogsSection: async () => state.section("launchd-logs") }));
 vi.mock("../doctor/channels.js", () => ({ channelSection: async () => state.section("channel:fixture") }));
 
-import { validateMonoAgentFolder } from "../doctor.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import { memorySection } from "../doctor/memory.js";
 import { webToolsSection } from "../doctor/web-tools.js";
 

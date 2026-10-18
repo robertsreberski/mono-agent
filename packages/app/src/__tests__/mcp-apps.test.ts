@@ -31,10 +31,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createMcpAppService,
   DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
-} from "../mcp-apps.js";
+} from "../mcp-apps/mcp-apps.js";
 import {
   replyArtifactStorageBudgetFor,
-} from "../reply-artifacts.js";
+} from "../artifacts/reply-artifacts.js";
 
 const tempDirs: string[] = [];
 const stream: AgentMessageStream = { async append() {} };
@@ -1458,7 +1458,7 @@ describe("MCP Apps registry", () => {
 
       // Reload the module-scoped storage state to model a fresh service process.
       vi.resetModules();
-      const { createMcpAppService: createRestartedMcpAppService } = await import("../mcp-apps.js");
+      const { createMcpAppService: createRestartedMcpAppService } = await import("../mcp-apps/mcp-apps.js");
       const restartedService = createRestartedMcpAppService({
         artifactDir,
         auditMaxBytes: 1_024,

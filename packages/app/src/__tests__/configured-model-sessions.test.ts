@@ -10,7 +10,7 @@ vi.mock("../../../turn/src/execution/pi/run.js", async (original) => ({
   ...await original<Record<string, unknown>>(),
   engineTurnAdapter: { id: "session-attribution-test", execute },
 }));
-const { createRequestModelOverrideRuntimeExtension } = await import("../request-model-override.js");
+const { createRequestModelOverrideRuntimeExtension } = await import("../composition/request-model-override.js");
 const { createConfiguredConversationHarness, createConfiguredAgentRuntime } = await import("../index.js");
 const dirs: string[] = [];
 afterEach(async () => { execute.mockReset(); await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });

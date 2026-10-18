@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { initMonoAgentFolder } from "../init.js";
+import { initMonoAgentFolder } from "../setup/init.js";
 import {
   activeProjectSkillSelections,
   assertManagedProjectSkillInitSafe,
@@ -13,8 +13,8 @@ import {
   PROJECT_SKILL_MANIFEST_PATH,
   PROJECT_SKILL_VERSION,
   updateManagedProjectSkills,
-} from "../project-skills.js";
-import { defaultAnswers } from "../wizard/answers.js";
+} from "../skills/project-skills.js";
+import { defaultAnswers } from "../setup/wizard/answers.js";
 
 const dirs: string[] = [];
 const RETIRED = "mono-agent-configure";

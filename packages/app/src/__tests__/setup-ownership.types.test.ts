@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 
-import type { runInit } from "../cli-init-command.js";
+import type { runInit } from "../cli/commands/cli-init-command.js";
 import type { runProviderSetupBeforeInit } from "../setup/provider-setup-gate.js";
 import type { initChangeDisplayRows, secretChecklistDisplayRows } from "../setup/render.js";
 import type { ExecuteProviderSetupOptions, PersistPiProviderCredentialOptions, ProviderSetupPlan, ProviderSetupResult } from "../providers/setup-types.js";

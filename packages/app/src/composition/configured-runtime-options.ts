@@ -4,7 +4,7 @@ import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createSrtSandboxEngine } from "@mono-agent/turn/host/sandbox";
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
-import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
+import { createHostWebRequestCoordinator } from "../host/web-request-coordinator.js";
 import type { StaticRuntimeOptions } from "./configured-agent-options.js";
 
 export function configuredSandboxEngine(

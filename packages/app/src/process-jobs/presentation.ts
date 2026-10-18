@@ -2,9 +2,9 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { ProcessJobProjection } from "@mono-agent/contracts";
-import { redactProcessOutput as redactOutput } from "../process-output-redaction.js";
-import { redactSecrets } from "../redact-secrets.js";
-import type { SubagentSalvage } from "../subagent-salvage.js";
+import { redactProcessOutput as redactOutput } from "./process-output-redaction.js";
+import { redactSecrets } from "../diagnostics/redact-secrets.js";
+import type { SubagentSalvage } from "../subagents/subagent-salvage.js";
 import { isInternal, type ServiceStartRequest } from "./types.js";
 
 const PROCESS_JOB_DESCRIPTION_SCAN_CHARS = 4_096;

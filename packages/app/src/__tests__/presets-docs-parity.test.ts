@@ -1,4 +1,4 @@
-import { composeWizardPlan } from "../wizard/answers.js";
+import { composeWizardPlan } from "../setup/wizard/answers.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,7 @@ import {
   PRESET_CATALOG,
   presetAnswers,
   presetIds,
-} from "../wizard/presets.js";
+} from "../setup/wizard/presets.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 

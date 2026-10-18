@@ -174,7 +174,7 @@ export const LAUNCHCTL = "/bin/launchctl";
 export const ENV = "/usr/bin/env";
 export const MANAGED_BACKGROUND_WORKER_ENV = "MONO_AGENT_MANAGED_WORKER";
 // Keep this fail-closed list aligned with BACKGROUND_OPERATIONAL_ENV_NAMES in
-// packages/app/src/background-environment.ts. The lifecycle marker is
+// packages/app/src/service/background/background-environment.ts. The lifecycle marker is
 // added by managedBackgroundEnvironment rather than the public allowlist.
 export const MANAGED_BACKGROUND_ENV_NAMES = new Set([
   "APPDATA",

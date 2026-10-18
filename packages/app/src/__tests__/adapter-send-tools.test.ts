@@ -26,24 +26,24 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
-import { startMonoAgentApp } from "../app.js";
+import { startMonoAgentApp } from "../host/app.js";
 import {
   createAdapterSendProxy,
   safeAdapterSendProxyErrorMessage,
-} from "../adapter-send-proxy.js";
+} from "../delivery/send-tools/adapter-send-proxy.js";
 import {
   adapterSendToolNames,
   isAdapterSendToolAllowed,
   resolveAdapterSendToolsSettings,
-} from "../adapter-send-tools.js";
+} from "../delivery/send-tools/adapter-send-tools.js";
 import type { AdapterSendToolsSettings } from "../delivery/send-tools/types.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME, adapterSendToolsChildConfigFromEnv, adapterSendToolsMcpEnv } from "../delivery/send-tools/child-config.js";
 import { adapterSendToolsMcpServerSpec, createAdapterSendToolsRuntimeExtension } from "../delivery/send-tools/host-extension.js";
 import { createAdapterSendToolsClients } from "../delivery/send-tools/clients.js";
 import { createAdapterSendToolsServer } from "../delivery/send-tools/server.js";
-import { lookupProducingConversation, resolvePostedMessageIndexPath } from "../posted-message-index.js";
-import { startInteractionBridge } from "../interaction-bridge.js";
-import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
+import { lookupProducingConversation, resolvePostedMessageIndexPath } from "../delivery/posted-message-index.js";
+import { startInteractionBridge } from "../mcp/interaction-bridge.js";
+import { createSlackPostedReplyHistory } from "../delivery/posted-reply-history.js";
 
 let dir: string;
 
@@ -2896,8 +2896,8 @@ describe("parent-interruption wake interaction suppression", () => {
     await writeFile(configPath, JSON.stringify({ tools: { allowedTools: ["AskUser"] } }));
     const bridge = await startInteractionBridge({ port: 0, askTimeoutMs: null });
     try {
-      const { adapterSendToolsRuntimeOptions } = await import("../app-controller-responder.js");
-      const { requestSuppressesInteractionTools } = await import("../adapter-send-tools.js");
+      const { adapterSendToolsRuntimeOptions } = await import("../host/app-controller-responder.js");
+      const { requestSuppressesInteractionTools } = await import("../delivery/send-tools/adapter-send-tools.js");
       const options = await adapterSendToolsRuntimeOptions({ env: {}, cwd: dir, configReadPath: configPath, interactionBridge: bridge } as never,
         { tools: { allowedTools: ["AskUser"], disallowedTools: [] }, artifacts: { dir: join(dir, "artifacts") } } as never);
       const extension = options.createExtension!(requestSuppressesInteractionTools);

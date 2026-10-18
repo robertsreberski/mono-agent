@@ -5,8 +5,8 @@ import {
   checkManagedProjectSkills,
   isRetiredProjectSkillName,
   managedProjectSkillsExist,
-} from "../project-skills.js";
-import type { ValidationSection, ValidationStatus } from "../doctor-types.js";
+} from "../skills/project-skills.js";
+import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
 import { pathExists } from "./format.js";
 
 export async function contextSection(config: MonoAgentConfig, cwd: string): Promise<ValidationSection> {

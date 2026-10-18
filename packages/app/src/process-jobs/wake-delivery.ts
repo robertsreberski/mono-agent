@@ -1,10 +1,10 @@
 import type { NotifyDeliveryResult } from "../channels/types.js";
-import type { DurableProcessJobRecord } from "../process-jobs-store.js";
-import { projectProcessJob, PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX, PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS, PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS } from "../process-jobs-store.js";
+import type { DurableProcessJobRecord } from "./process-jobs-store.js";
+import { projectProcessJob, PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX, PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS, PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS } from "./process-jobs-store.js";
 import type { ProcessJobProjection } from "@mono-agent/contracts";
 import type { ProcessJobWakeInput } from "./types.js";
-import type { SubagentSalvage } from "../subagent-salvage.js";
-import { consumeSilentProcessJobWake } from "../process-jobs-context.js";
+import type { SubagentSalvage } from "../subagents/subagent-salvage.js";
+import { consumeSilentProcessJobWake } from "./process-jobs-context.js";
 import { boundedSafeDiagnostic, processJobWakePrompt } from "./presentation.js";
 
 export const MAX_WAKE_ATTEMPTS = 3;

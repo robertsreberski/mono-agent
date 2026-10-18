@@ -212,7 +212,7 @@ const controllerOperationModules = [
   "app-controller-traceability.ts",
 ];
 for (const file of controllerOperationModules) {
-  const relativePath = join("packages", "app", "src", file);
+  const relativePath = join("packages", "app", "src", "host", file);
   const text = readFileSync(join(root, relativePath), "utf8");
   if (/from\s+["']\.\/app-controller\.js["']/u.test(text)) {
     errors.push(`${relativePath} must depend on a narrow controller port, not MonoAgentAppController.`);
@@ -221,37 +221,37 @@ for (const file of controllerOperationModules) {
 
 const extractedResponsibilityDeclarations = [
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function startManagedWebLogMonitor",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function inspectLegacyManagedWebLogArtifacts",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function maintainLegacyManagedWebLogArtifacts",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function runWebLogMaintenanceCommand",
     owner: "web-log-maintenance.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function writeWebLogMaintenanceStatus",
     owner: "web-log-maintenance-status.ts",
   },
   {
-    file: join("packages", "app", "src", "background.ts"),
+    file: join("packages", "app", "src", "service", "background", "background.ts"),
     declaration: "function maintainLaunchdLogsWithSharedLockOperation",
     owner: "background-log-maintenance.ts",
   },
   {
-    file: join("packages", "app", "src", "background.ts"),
+    file: join("packages", "app", "src", "service", "background", "background.ts"),
     declaration: "function maintainLaunchdLogsOperation",
     owner: "background-log-maintenance.ts",
   },
@@ -268,15 +268,18 @@ const extractedResponsibilityDeclarations = [
 ];
 for (const rule of extractedResponsibilityDeclarations) {
   const files = [rule.file];
-  const serviceDirectory = rule.file === join("packages", "app", "src", "web-command.ts")
+  const serviceDirectory = rule.file === join("packages", "app", "src", "cli", "commands", "web-command.ts")
     ? join("packages", "app", "src", "service", "web")
-    : rule.file === join("packages", "app", "src", "background.ts")
+    : rule.file === join("packages", "app", "src", "service", "background", "background.ts")
       ? join("packages", "app", "src", "service", "background")
       : undefined;
   if (serviceDirectory) {
+    const ownerFile = rule.file === join("packages", "app", "src", "cli", "commands", "web-command.ts")
+      ? join(serviceDirectory, rule.owner) : undefined;
     files.push(...readdirSync(join(root, serviceDirectory), { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
-      .map((entry) => join(serviceDirectory, entry.name)));
+      .map((entry) => join(serviceDirectory, entry.name))
+      .filter((file) => file !== rule.file && file !== ownerFile));
   }
   for (const file of files) {
     const text = readFileSync(join(root, file), "utf8");

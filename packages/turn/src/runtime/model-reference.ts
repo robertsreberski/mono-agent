@@ -88,7 +88,7 @@ function requireModel(model: string) {
  *    on `MODEL_REFERENCE_ECHO_MAX_BYTES`, @mono-agent/turn/host;
  *  - an adapter error body is clamped by `sendJsonError`;
  *  - the `/v1/info` payload is bounded by per-contributor measured budgets and a total
- *    serializer fence that sheds whole fields (`channel-drivers/tui.ts`, `sendBoundedInfo`).
+ *    serializer fence that sheds whole fields (`channels/drivers/tui.ts`, `sendBoundedInfo`).
  * Each of those is asserted at its own layer; none of them is asserted here, because none of
  * them is this function's job.
  *

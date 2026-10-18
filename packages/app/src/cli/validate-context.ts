@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { ParsedCliArgs } from "../cli-args.js";
+import type { ParsedCliArgs } from "./cli-args.js";
 interface ValidateContext {
   readonly cwd: string;
   readonly configPath: string;

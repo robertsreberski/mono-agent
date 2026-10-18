@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { parseTelegramConversationId, formatTelegramConversationTarget } from "@mono-agent/channel-telegram/conversation";
 
-import { slackTargetFromConversation, telegramChatIdFromConversation } from "../channels.js";
-import { telegramTargetFromConversation } from "../telegram-destination.js";
+import { slackTargetFromConversation, telegramChatIdFromConversation } from "../channels/channels.js";
+import { telegramTargetFromConversation } from "../channels/telegram/telegram-destination.js";
 
 describe("telegramChatIdFromConversation", () => {
   it("extracts numeric and group chat ids, stripping a rollover bucket", () => {

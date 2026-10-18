@@ -1,10 +1,10 @@
 import type { WebTheme } from "@mono-agent/web";
 
 import type { ManagedBackgroundRuntimeInput } from "../managed-runtime/types.js";
-import type { LaunchctlRunner, LaunchdPaths, LaunchdWebMaintenanceInfo } from "../../launchd.js";
-import type { ManagedWebLogMonitorDependencies } from "../../managed-web-logs.js";
-import type { verifyManagedRuntimeMaintenanceEntrypoint } from "../../managed-runtime-maintenance-entry.js";
-import type { ManagedWebPaths } from "../../web-maintenance-paths.js";
+import type { LaunchctlRunner, LaunchdPaths, LaunchdWebMaintenanceInfo } from "../launchd/launchd.js";
+import type { ManagedWebLogMonitorDependencies } from "./managed-web-logs.js";
+import type { verifyManagedRuntimeMaintenanceEntrypoint } from "../managed-runtime/managed-runtime-maintenance-entry.js";
+import type { ManagedWebPaths } from "./web-maintenance-paths.js";
 export interface RunWebCommandOptions {
   readonly positionals: readonly string[];
   readonly env: Record<string, string | undefined>;
@@ -95,7 +95,7 @@ export interface RunWebCommandDeps {
     dependencies: ManagedWebLogMonitorDependencies,
   ) => { stop(): void };
   readonly homeDir?: string;
-  readonly systemd?: import("../../systemd.js").SystemdDeps;
+  readonly systemd?: import("../systemd/systemd.js").SystemdDeps;
 }
 
 export interface WebServiceRecord {

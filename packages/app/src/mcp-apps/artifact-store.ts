@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { CodedError, MCP_APP_RESOURCE_MIME_TYPE } from "@mono-agent/contracts";
 import type { AgentReplyMcpAppPart } from "@mono-agent/contracts";
 
-import { ReplyArtifactStorageFullError, type ReplyArtifactStorageBudget } from "../reply-artifacts.js";
+import { ReplyArtifactStorageFullError, type ReplyArtifactStorageBudget } from "../artifacts/reply-artifacts.js";
 import { APP_ID, isSupportedProtocolVersion, record, serializeBoundedJsonLine } from "./content.js";
 import type { McpAppManifest, McpAppState } from "./types.js";
 

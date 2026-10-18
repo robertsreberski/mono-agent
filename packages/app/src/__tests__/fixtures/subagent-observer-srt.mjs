@@ -19,12 +19,12 @@ const { monoSandboxImpl } = await import("../../../../turn/dist/host/sandbox/imp
 const { createToolContext } = await import("../../../../turn/dist/tools/shared/tool-context.js");
 const { getPiBuiltinTools } = await import("../../../../turn/dist/tools/pi-tools.js");
 const { acquireAgentRootOwnership } = await import("../../../dist/durable-state/agent-root-coordinator.js");
-const { registerProcessJobsRoot } = await import("../../../dist/process-jobs-root-registry.js");
-const { openProcessJobsService } = await import("../../../dist/process-jobs-service.js");
-const { PROCESS_JOBS_DEFAULTS } = await import("../../../dist/process-jobs-config.js");
-const { createSubagentInstanceRegistry } = await import("../../../dist/subagent-instances.js");
-const { createSubagentRecoveryAccess } = await import("../../../dist/subagent-recovery-access.js");
-const { resolveSubagentObservationGit } = await import("../../../dist/subagent-observation-git.js");
+const { registerProcessJobsRoot } = await import("../../../dist/process-jobs/process-jobs-root-registry.js");
+const { openProcessJobsService } = await import("../../../dist/process-jobs/process-jobs-service.js");
+const { PROCESS_JOBS_DEFAULTS } = await import("../../../dist/process-jobs/process-jobs-config.js");
+const { createSubagentInstanceRegistry } = await import("../../../dist/subagents/subagent-instances.js");
+const { createSubagentRecoveryAccess } = await import("../../../dist/subagents/subagent-recovery-access.js");
+const { resolveSubagentObservationGit } = await import("../../../dist/subagents/subagent-observation-git.js");
 const { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } = await import("./verification-scratch.mjs");
 const ROOT = fileURLToPath(new URL("../../../../../", import.meta.url)).replace(/\/$/, "");
 assert.equal(process.cwd(), ROOT);
@@ -132,7 +132,7 @@ try {
     if (observed.facts?.status !== "observed") {
       // Failure-only diagnostic, still the real SRT and exact gated process path.
       // It does not replace or pass the primary Pi-bridge assertion below.
-      const { observeSubagentVerification, registerSubagentVerification } = await import("../../../dist/subagent-verification-observer.js");
+      const { observeSubagentVerification, registerSubagentVerification } = await import("../../../dist/subagents/subagent-verification-observer.js");
       const { startPreparedProcess } = await import("../../../../turn/dist/tools/commands/process-runner.js");
       const diagnosticAccess = { workspace: worktree, readableRoots: extraReadRoots, sandboxPolicy: policy, sandboxEngine: engine,
         runProbe: async (prepared, timeoutMs) => {

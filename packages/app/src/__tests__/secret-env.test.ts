@@ -26,7 +26,7 @@ import {
   secretEnvLockPathForCanonical,
   verifySecretEnvPersistenceGuard,
 } from "../setup/secret-env.js";
-import { initMonoAgentFolder } from "../init.js";
+import { initMonoAgentFolder } from "../setup/init.js";
 
 let dir: string;
 const SECRET_IGNORE_BLOCK = "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n";

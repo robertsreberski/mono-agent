@@ -1,6 +1,6 @@
 import { expect, expectTypeOf, it } from "vitest";
 
-import type { DurableProcessJobRecord } from "../process-jobs-store.js";
+import type { DurableProcessJobRecord } from "../process-jobs/process-jobs-store.js";
 import { boundedNewestRecords } from "../process-jobs/policy.js";
 import { boundOutput, boundedSafeDiagnostic, outputPreview } from "../process-jobs/presentation.js";
 

@@ -6,8 +6,8 @@ import {
   configuredRuntimeModels,
   hasConfiguredRuntimeFallbacks,
   runtimeUsesFallbackRouter,
-} from "../runtime-routes.js";
-import { runtimeRouteSupportsMcpApps } from "../app-controller-utils.js";
+} from "../composition/runtime-routes.js";
+import { runtimeRouteSupportsMcpApps } from "../host/app-controller-utils.js";
 
 const primary = {
   provider: "openai-codex",

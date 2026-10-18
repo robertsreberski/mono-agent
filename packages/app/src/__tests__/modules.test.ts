@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { ALLOW_ALL_TOOLS, baseConfig, BUILTIN_TOOL_NAMES, APP_TOOL_NAMES, type CapabilityModule, DEFAULT_MODEL, DEFAULT_SAFE_TOOLS, resolveModuleInputs } from "../modules/index.js";
-import { isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "../modules/known-tools.js";
+import { ALLOW_ALL_TOOLS, baseConfig, BUILTIN_TOOL_NAMES, APP_TOOL_NAMES, type CapabilityModule, DEFAULT_MODEL, DEFAULT_SAFE_TOOLS, resolveModuleInputs } from "../setup/modules/index.js";
+import { isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "../tools/known-tools.js";
 
 /** A minimal module fixture used only to exercise resolveModuleInputs. */
 const fixtureModule: CapabilityModule = {

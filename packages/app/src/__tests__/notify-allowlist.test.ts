@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ProcessJobProjection } from "@mono-agent/contracts";
 
-import { createSlackChannelDriver, createTelegramChannelDriver } from "../channels.js";
+import { createSlackChannelDriver, createTelegramChannelDriver } from "../channels/channels.js";
 import { type ChannelStartInput } from "../channels/types.js";
 
 /** Minimal ChannelStartInput with the parsed runtime contract channel drivers consume. */

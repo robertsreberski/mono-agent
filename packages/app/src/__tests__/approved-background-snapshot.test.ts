@@ -6,8 +6,8 @@ import {
   approvedBackgroundSnapshotPath, invalidateApprovedBackgroundSnapshots,
   resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot,
   type ApprovedBackgroundSnapshotBinding,
-} from "../approved-background-snapshot.js";
-import { captureBackgroundSnapshot, encodeBackgroundSnapshot, materializeBackgroundRuntimeInputs } from "../background-snapshot.js";
+} from "../service/background/approved-background-snapshot.js";
+import { captureBackgroundSnapshot, encodeBackgroundSnapshot, materializeBackgroundRuntimeInputs } from "../service/background/background-snapshot.js";
 
 let dir: string;
 let binding: ApprovedBackgroundSnapshotBinding;

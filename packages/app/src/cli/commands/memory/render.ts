@@ -1,7 +1,7 @@
 import type { CompletedTurnIntakeInspection } from "@mono-agent/memory/bujo";
 import type { EntityRecord } from "@mono-agent/memory/store";
 
-import * as ui from "../../../ui.js";
+import * as ui from "../../ui.js";
 import type { StrictMemoryHealthReport } from "./types.js";
 
 export function intakeInspectionResult(inspection: CompletedTurnIntakeInspection, id: string | undefined) {

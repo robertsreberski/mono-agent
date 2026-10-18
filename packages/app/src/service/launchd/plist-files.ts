@@ -4,7 +4,7 @@ import { type FileHandle, lstat, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
 
-import { isErrno } from "../../background-lifecycle-utils.js";
+import { isErrno } from "../background/background-lifecycle-utils.js";
 
 export async function writeOwnerPrivateLaunchdFile(path: string, data: string): Promise<void> {
   let existing: Stats | undefined;

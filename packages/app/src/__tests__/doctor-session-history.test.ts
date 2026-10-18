@@ -16,7 +16,7 @@ import {
 } from "@mono-agent/conversation";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { sessionToolHistorySection } from "../doctor-session-history.js";
+import { sessionToolHistorySection } from "../doctor/doctor-session-history.js";
 
 const tempDirs: string[] = [];
 

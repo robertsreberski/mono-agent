@@ -1,4 +1,4 @@
-import * as ui from "../../../ui.js";
+import * as ui from "../../ui.js";
 import { write } from "./render.js";
 export const MEMORY_FORGET_SCHEMA_VERSION = 1;
 

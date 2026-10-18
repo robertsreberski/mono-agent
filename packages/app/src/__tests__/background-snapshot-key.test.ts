@@ -10,7 +10,7 @@ import {
   backgroundSnapshotKeyPath,
   loadBackgroundSnapshotKey,
   loadOrCreateBackgroundSnapshotKey,
-} from "../background-snapshot-key.js";
+} from "../service/background/background-snapshot-key.js";
 
 const roots: string[] = [];
 const execFileAsync = promisify(execFile);

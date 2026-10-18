@@ -1,8 +1,8 @@
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import type { ProcessJobWakeInput } from "../process-jobs/types.js";
-import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
-import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { createSubagentRecoveryAccess } from "../subagents/subagent-recovery-access.js";
+import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs/process-jobs-context.js";
 import { createLiveInputMailbox } from "@mono-agent/conversation";
 import { formatHostCapabilities } from "@mono-agent/conversation";
 import { execToolRun } from "@mono-agent/turn/tools";
@@ -20,12 +20,12 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
 import { writeJsonAtomic } from "../durable-state/private-files.js";
-import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
-import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
-import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
-import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
-import { hasSubagentObligation } from "../subagent-execution-ownership.js";
-import { launchInternalProcessJob } from "../process-jobs-internal.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagents/subagent-instances.js";
+import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
+import { PROCESS_JOBS_DEFAULTS } from "../process-jobs/process-jobs-config.js";
+import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs/process-jobs-store.js";
+import { hasSubagentObligation } from "../subagents/subagent-execution-ownership.js";
+import { launchInternalProcessJob } from "../process-jobs/process-jobs-internal.js";
 const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"));
 const { createAgentTool, subagentUsageForRun } = await import(new URL("./delegation/agent-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-tool.js");
 const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
@@ -1266,7 +1266,7 @@ describe("managed detached production execution", () => {
 
   it.each(["changed-root", "missing-job", "registry-reset"])("G03/G04: actual managed certificate remains fenced after %s without recreating historical state", async (mode) => {
     const f = await managedFixture(undefined, {}, true); const root = resolve(f.root, "children"); let held = false;
-    let identity: import("../subagent-registry-ownership.js").SubagentOwnerIdentity | undefined;
+    let identity: import("../subagents/subagent-registry-ownership.js").SubagentOwnerIdentity | undefined;
     f.service.bindManagedSubagents!({ root,
       verify: async (owner) => (await f.registry.open(owner.conversationId, { existingOnly: true })).verifyOwner(owner),
       publish: async (phase, publication) => {
@@ -1286,7 +1286,7 @@ describe("managed detached production execution", () => {
     if (mode === "missing-job") await store.mutate((records) => { records.delete(receipt.details.jobId); });
     if (mode === "registry-reset") await rm(resolve(subagentConversationRoot(root, origin.conversationId), "instances.json"));
     const reopened = await openProcessJobsService({ ...f.options, store, settings: { ...f.options.settings, stateDir } }); services.push(reopened);
-    const resolveOwner = vi.fn((owner: import("../subagent-registry-ownership.js").SubagentOwnerIdentity) => reopened.resolveSubagentOwner!(owner));
+    const resolveOwner = vi.fn((owner: import("../subagents/subagent-registry-ownership.js").SubagentOwnerIdentity) => reopened.resolveSubagentOwner!(owner));
     const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => Date.now() + 3 * 86_400_000,
       resolveOwner, checkOwnerIndex: (conversationId, known) => reopened.checkSubagentOwnerIndex!(conversationId, known),
     });
@@ -1458,7 +1458,7 @@ describe("managed detached production execution", () => {
     await f.service.stop();
     const root = resolve(f.root, "children"); let clock = Date.now();
     const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => clock,
-      ...(resolver === "stopped" ? { resolveOwner: (identity: import("../subagent-registry-ownership.js").SubagentOwnerIdentity) => f.service.resolveSubagentOwner!(identity) } : {}),
+      ...(resolver === "stopped" ? { resolveOwner: (identity: import("../subagents/subagent-registry-ownership.js").SubagentOwnerIdentity) => f.service.resolveSubagentOwner!(identity) } : {}),
     });
     const unavailable = await registry.open(origin.conversationId, { existingOnly: true });
     await expect(unavailable.close("helper")).rejects.toThrow("subagent_owner_unavailable");

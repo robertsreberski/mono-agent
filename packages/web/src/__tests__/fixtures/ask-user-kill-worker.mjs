@@ -8,7 +8,7 @@ import { JsonlSessionRepo } from "../../../../turn/src/engine/session-store.js";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { createConversationHarness, createDurableHistoryStore } from "../../../../conversation/dist/index.js";
-import { startInteractionBridge } from "../../../../app/dist/interaction-bridge.js";
+import { startInteractionBridge } from "../../../../app/dist/mcp/interaction-bridge.js";
 import { WebStore } from "../../../dist/store.js";
 
 const [root, mode] = process.argv.slice(2), timestamp = "2000-01-01T00:00:00.000Z";

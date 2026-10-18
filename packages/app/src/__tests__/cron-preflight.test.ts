@@ -11,7 +11,7 @@ import {
   type CronPreflightChild,
   type CronPreflightSpawn,
   type CronPreflightSpawnOptions,
-} from "../cron-preflight.js";
+} from "../cron/cron-preflight.js";
 
 const firing: CronFiringIdentity = {
   runId: "cron:digest:2026-09-18T09:00:00.000Z",

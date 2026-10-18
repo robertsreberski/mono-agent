@@ -1,15 +1,15 @@
-import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
+import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "../service/launchd/launchd-maintenance-activity.js";
 import { basename } from "node:path";
 import {
   DEFAULT_LAUNCHD_LOG_POLICY,
   inspectLaunchdLogs,
   LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS,
   launchdLogPathsForConfig,
-} from "../launchd-logs.js";
-import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "../launchd-logs.js";
-import { readLaunchdLogMonitorStatus } from "../launchd-log-monitor-status.js";
-import type { ManagedLaunchdLogMonitorStatus } from "../launchd-log-monitor-status.js";
-import type { ValidationSection } from "../doctor-types.js";
+} from "../service/launchd/launchd-logs.js";
+import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "../service/launchd/launchd-logs.js";
+import { readLaunchdLogMonitorStatus } from "../service/launchd/launchd-log-monitor-status.js";
+import type { ManagedLaunchdLogMonitorStatus } from "../service/launchd/launchd-log-monitor-status.js";
+import type { ValidationSection } from "./doctor-types.js";
 
 /** Read-only launchd log inventory used by both `validate` and its `doctor` alias. */
 export async function launchdLogsSection(configPath: string): Promise<ValidationSection> {

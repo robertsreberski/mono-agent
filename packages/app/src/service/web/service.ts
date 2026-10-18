@@ -1,5 +1,5 @@
 import { webHealthcheck } from "./health.js";
-import { formatManagedRuntimeProgress } from "../../managed-runtime-progress.js";
+import { formatManagedRuntimeProgress } from "../managed-runtime/managed-runtime-progress.js";
 import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -13,13 +13,13 @@ import {
   DEFAULT_WEB_HOST,
   DEFAULT_WEB_PORT,
   DEFAULT_WEB_THEME,
-} from "../../web-service-definition.js";
-import { resolveGlobalTraceRegistryDir } from "../../app-config.js";
-import { acquireFilesystemLifecycleLock } from "../../launchd-lifecycle-lock.js";
-import { ensureOwnerPrivateLaunchdDirectory } from "../../launchd-private-files.js";
+} from "./web-service-definition.js";
+import { resolveGlobalTraceRegistryDir } from "../../composition/app-config.js";
+import { acquireFilesystemLifecycleLock } from "../launchd/launchd-lifecycle-lock.js";
+import { ensureOwnerPrivateLaunchdDirectory } from "../launchd/launchd-private-files.js";
 import { inspectOwnerPrivateLaunchdPlist, readOwnerPrivateLaunchdPlist, writeOwnerPrivateLaunchdFile } from "../launchd/plist-files.js";
-import { selectBackgroundOperationalEnvironment } from "../../background-environment.js";
-import { ensureManagedBackgroundRuntime } from "../../background-runtime.js";
+import { selectBackgroundOperationalEnvironment } from "../background/background-environment.js";
+import { ensureManagedBackgroundRuntime } from "../managed-runtime/background-runtime.js";
 import {
   bootout,
   bootstrap,
@@ -33,8 +33,8 @@ import {
   WEB_LAUNCHD_LABEL,
   WEB_MAINTENANCE_LAUNCHD_LABEL,
   webMaintenanceCalendarMinute,
-} from "../../launchd.js";
-import type { LaunchctlRunner, LaunchdServiceInfo } from "../../launchd.js";
+} from "../launchd/launchd.js";
+import type { LaunchctlRunner, LaunchdServiceInfo } from "../launchd/launchd.js";
 import {
   beginLaunchdLogMaintenanceIntent,
   clearLaunchdLogMaintenanceIntent,
@@ -43,20 +43,20 @@ import {
   markLaunchdLogMaintenanceStopped,
   readLaunchdLogMaintenanceIntent,
   rotateStoppedLaunchdLogs,
-} from "../../launchd-logs.js";
+} from "../launchd/launchd-logs.js";
 import {
   inspectLegacyManagedWebLogArtifacts,
   maintainLegacyManagedWebLogArtifacts,
   startManagedWebLogMonitor,
-} from "../../managed-web-logs.js";
-import { managedWebLogMaintenanceEnvironment } from "../../managed-web-maintenance-environment.js";
-import { managedWebPaths } from "../../web-maintenance-paths.js";
-import type { ManagedWebPaths } from "../../web-maintenance-paths.js";
+} from "./managed-web-logs.js";
+import { managedWebLogMaintenanceEnvironment } from "../launchd/managed-web-maintenance-environment.js";
+import { managedWebPaths } from "./web-maintenance-paths.js";
+import type { ManagedWebPaths } from "./web-maintenance-paths.js";
 import {
   readWebLogMaintenanceStatus,
   writeWebLogMaintenanceStatus,
   writeWebLogMonitorStatus,
-} from "../../web-log-maintenance-status.js";
+} from "./web-log-maintenance-status.js";
 import { healthUrl, inspectInstalledWebMaintenanceHelper, installedWebDefinition, requiredUid } from "./inspection.js";
 import { commandDetail, errorMessage, printWebUrls, sharingAttemptDescription, shellQuote, urlHost, writeCommandDetail } from "./presentation.js";
 import { isRecord, readOptionalText, readServiceRecord } from "./record.js";
@@ -77,7 +77,7 @@ import type {
   WebServerHandle,
   WebServiceRecord,
 } from "./types.js";
-import * as ui from "../../ui.js";
+import * as ui from "../../cli/ui.js";
 // Deliberately outside `com.mono-agent.*`: fleet discovery reserves that prefix
 // for configured agent instances.
 const MANAGED_WEB_WORKER_ENV = "MONO_AGENT_MANAGED_WEB_WORKER";
@@ -747,7 +747,7 @@ export async function resetWeb(options: RunWebCommandOptions, deps: RunWebComman
   const stdout = deps.stdout ?? process.stdout;
   const paths = managedWebPaths(deps.homeDir);
   if ((deps.platform ?? process.platform) === "linux") {
-    const { inspectSystemd, readSystemdDefinition, SYSTEMD_WEB_IDENTITY } = await import("../../systemd.js");
+    const { inspectSystemd, readSystemdDefinition, SYSTEMD_WEB_IDENTITY } = await import("../systemd/systemd.js");
     const systemdDeps = { ...deps.systemd, ...(deps.homeDir === undefined ? {} : { homeDir: deps.homeDir }) };
     const service = await inspectSystemd(SYSTEMD_WEB_IDENTITY, systemdDeps).catch(() => undefined);
     const definition = await readSystemdDefinition(SYSTEMD_WEB_IDENTITY, systemdDeps);

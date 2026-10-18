@@ -8,16 +8,16 @@ import type { SandboxEngine } from "@mono-agent/turn/host/types";
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import * as memoryStore from "@mono-agent/memory/store";
 
-import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
-import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
-import { validateMonoAgentFolder } from "../doctor.js";
+import { canonicalContinuationJson, continuationDigest } from "../continuations/continuations.js";
+import { MAX_RECORD_BYTES } from "../continuations/continuation-store-types.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import { launchdLogsSectionFromInspection } from "../doctor/launchd-logs.js";
-import type { LaunchdLogInspection } from "../launchd-logs.js";
-import { appPackageVersion } from "../package-version.js";
+import type { LaunchdLogInspection } from "../service/launchd/launchd-logs.js";
+import { appPackageVersion } from "../host/package-version.js";
 import {
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   recordProcessJobHealthIncident,
-} from "../process-jobs-store.js";
+} from "../process-jobs/process-jobs-store.js";
 
 let dir: string;
 

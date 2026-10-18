@@ -1,8 +1,8 @@
 import type { ProcessJobErrorCode, ProcessJobState } from "@mono-agent/contracts";
 import type { ProcessJobProcessResult } from "@mono-agent/turn/host/types";
-import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "../process-jobs-config.js";
-import { isTerminalProcessJobState, isProcessJobOriginRecord, type DurableProcessJobRecord, type ProcessJobOriginRecord } from "../process-jobs-store.js";
-import { hasSubagentObligation } from "../subagent-execution-ownership.js";
+import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
+import { isTerminalProcessJobState, isProcessJobOriginRecord, type DurableProcessJobRecord, type ProcessJobOriginRecord } from "./process-jobs-store.js";
+import { hasSubagentObligation } from "../subagents/subagent-execution-ownership.js";
 import { ProcessJobServiceError } from "./errors.js";
 import { boundedSafeDiagnostic } from "./presentation.js";
 import { isInternal, type ServiceStartRequest } from "./types.js";

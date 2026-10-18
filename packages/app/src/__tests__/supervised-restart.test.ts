@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   verifySupervisedRestart,
-} from "../supervised-restart.js";
-import { systemdUnitName } from "../systemd.js";
-import { createSupervisedRestartAuthority } from "../supervised-restart-authority.js";
-import { createSupervisedRestartLatch } from "../supervised-restart-latch.js";
+} from "../service/restart/supervised-restart.js";
+import { systemdUnitName } from "../service/systemd/systemd.js";
+import { createSupervisedRestartAuthority } from "../service/restart/supervised-restart-authority.js";
+import { createSupervisedRestartLatch } from "../service/restart/supervised-restart-latch.js";
 
 const CONFIG_PATH = "/work/demo/mono-agent.config.json";
 // The fragment check compares the loaded unit's basename against the unit name

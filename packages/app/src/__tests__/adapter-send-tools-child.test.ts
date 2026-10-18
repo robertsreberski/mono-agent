@@ -44,7 +44,7 @@ it("runs the compiled adapter child over stdio and cancels its bridge ask indepe
   const spec = adapterSendToolsMcpServerSpec(configPath, directory, ["AskUser"], {
     conversationId: "web:fixture", interactionConversationId: "web:fixture", runId: "fixture-run",
   }, { bridgeUrl: `http://127.0.0.1:${address.port}`, bridgeToken: "fictional-bridge-token", timeoutMs: null });
-  const expectedChild = fileURLToPath(new URL("../../dist/adapter-send-tools-main.js", import.meta.url));
+  const expectedChild = fileURLToPath(new URL("../../dist/delivery/send-tools/adapter-send-tools-main.js", import.meta.url));
   const transport = new StdioClientTransport({ command: spec.command as string, args: spec.args as string[],
     cwd: spec.cwd as string, env: spec.env as Record<string, string>, stderr: "pipe" });
   const client = new Client({ name: "compiled-adapter-fixture", version: "1.0.0" });

@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/p
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
-import { loadOrCreateContinuationSecret } from "../continuation-secret.js";
+import { loadOrCreateContinuationSecret } from "../continuations/continuation-secret.js";
 
 const roots: string[] = [];
 async function directory(): Promise<string> {

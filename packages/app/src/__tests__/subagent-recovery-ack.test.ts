@@ -12,9 +12,9 @@ const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-a
 const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
 // @ts-expect-error Real native engine; only provider transport is fake.
 import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
-import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagents/subagent-instances.js";
 import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
-import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";
+import type { SubagentOwnerIdentity } from "../subagents/subagent-registry-ownership.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const spec = { id: "helper", name: "helper", systemPrompt: "Review", definition: { name: "helper", description: "Review", systemPrompt: "Review" } };
@@ -248,7 +248,7 @@ it("reopens an unconsumed reservation without granting a second admission", asyn
 });
 it("physically kills the owner after reservation but before admission; duplicates never retry missing work", async () => {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.ack-crash-")); roots.push(root);
-  const module = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+  const module = new URL("../../dist/subagents/subagent-instances.js", import.meta.url).href;
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     import { randomUUID } from 'node:crypto';
     import { createSubagentInstanceRegistry } from ${JSON.stringify(module)};

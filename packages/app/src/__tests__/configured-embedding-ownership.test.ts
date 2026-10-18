@@ -12,8 +12,8 @@ vi.mock("../durable-state/agent-root-coordinator.js", async (importOriginal) => 
   assertAgentRootLeaseOutsideWorkspace: seams.assertWorkspace,
   releaseAgentRootOwnershipWhenIdle: seams.releaseRoot,
 }));
-vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../process-jobs-root-registry.js")>(),
+vi.mock("../process-jobs/process-jobs-root-registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-jobs/process-jobs-root-registry.js")>(),
   loadProcessJobsRootRegistryProtection: seams.load,
   attestProcessJobsRootRegistrySnapshot: seams.attest,
 }));

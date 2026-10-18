@@ -10,7 +10,7 @@ const effects = vi.hoisted(() => ({
   writer: vi.fn(() => { throw new Error("unexpected writer acquisition"); }),
 }));
 
-vi.mock("../memory-recall.js", () => ({
+vi.mock("../memory/memory-recall.js", () => ({
   createMemoryEmbeddingProvider: effects.embedding,
   createRecallStore: effects.recall,
 }));
@@ -23,7 +23,7 @@ vi.mock("@mono-agent/memory/bujo", async (original) => ({
   rollbackMemoryIndex: effects.writer,
 }));
 
-import { runMemoryCommand } from "../memory-command.js";
+import { runMemoryCommand } from "../cli/commands/memory-command.js";
 
 const roots: string[] = [];
 afterEach(async () => {

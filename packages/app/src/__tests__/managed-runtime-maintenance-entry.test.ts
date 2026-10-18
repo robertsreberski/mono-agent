@@ -5,8 +5,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { encodeManagedRuntimeLaunchProof } from "../managed-runtime-launch-proof.js";
-import { verifyManagedRuntimeMaintenanceEntrypoint } from "../managed-runtime-maintenance-entry.js";
+import { encodeManagedRuntimeLaunchProof } from "../service/managed-runtime/managed-runtime-launch-proof.js";
+import { verifyManagedRuntimeMaintenanceEntrypoint } from "../service/managed-runtime/managed-runtime-maintenance-entry.js";
 
 const roots: string[] = [];
 

@@ -1,8 +1,8 @@
 import type { ProcessJobProjection } from "@mono-agent/contracts";
 import type { ProcessJobStartRequest } from "@mono-agent/turn/host/types";
-import type { ProcessJobOriginRecord } from "../process-jobs-store.js";
-import type { WakeRecovery } from "../process-jobs-wake-fence.js";
-import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
+import type { ProcessJobOriginRecord } from "./process-jobs-store.js";
+import type { WakeRecovery } from "./process-jobs-wake-fence.js";
+import type { InternalProcessJobRequest } from "./process-jobs-internal.js";
 
 export type ServiceStartRequest = ProcessJobStartRequest | InternalProcessJobRequest;
 

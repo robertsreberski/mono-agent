@@ -167,13 +167,13 @@ vi.mock("@clack/prompts", () => ({
   log: { step: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
-vi.mock("../wizard/model-discovery.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../wizard/model-discovery.js")>();
+vi.mock("../setup/wizard/model-discovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../setup/wizard/model-discovery.js")>();
   return { ...actual, discoverWizardModelCandidates: discoveryMock.discover };
 });
 
-vi.mock("../memory-embedding-service.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../memory-embedding-service.js")>();
+vi.mock("../memory/memory-embedding-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../memory/memory-embedding-service.js")>();
   return {
     ...actual,
     discoverMemoryEmbeddingModels: memoryEmbeddingMock.discover,
@@ -181,12 +181,12 @@ vi.mock("../memory-embedding-service.js", async (importOriginal) => {
   };
 });
 
-import { defaultAnswers } from "../wizard/answers.js";
+import { defaultAnswers } from "../setup/wizard/answers.js";
 import {
   guidedModelRefProblem,
   runInitWizard,
   runSetupRepairWizard,
-} from "../wizard/run.js";
+} from "../setup/wizard/run.js";
 
 beforeEach(() => {
   for (const queue of [
