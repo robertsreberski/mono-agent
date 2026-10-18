@@ -98,7 +98,7 @@ describe("verify-all", () => {
       "release:consumer",
       "typecheck",
       "test",
-      "git diff --check",
+      "Whitespace against merge base",
     ]);
     expect(stdout.text.endsWith([
       "final summary",
@@ -827,13 +827,13 @@ describe("verify-all", () => {
 
   it("rejects shell-source mutations that a lossy tokenizer could erase", () => {
     const source = readCiWorkflow();
-    const gitCheck = "        run: git diff --check";
+    const gitCheck = "        run: node scripts/check-committed-whitespace.mjs";
     const gitleaksFirstLine = "          docker run --rm \\";
     const gitleaksMount = "            -v \"$PWD:/repo\" \\";
     const mutations = [
-      replaceExactly(source, gitCheck, ["        run: |", "          git", "          diff --check"].join("\n")),
+      replaceExactly(source, gitCheck, ["        run: |", "          node", "          scripts/check-committed-whitespace.mjs"].join("\n")),
       replaceExactly(source, gitleaksFirstLine, "          docker run --rm"),
-      replaceExactly(source, gitCheck, "        run: git diff --check \"\""),
+      replaceExactly(source, gitCheck, "        run: node scripts/check-committed-whitespace.mjs \"\""),
       replaceExactly(
         source,
         gitleaksMount,
@@ -1353,10 +1353,10 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     command: "pnpm",
     args: ["test"],
   }),
-  gateRunContract("git diff --check", {
-    label: "git diff --check",
-    command: "git",
-    args: ["diff", "--check"],
+  gateRunContract("node scripts/check-committed-whitespace.mjs", {
+    label: "Whitespace against merge base",
+    command: "node",
+    args: ["scripts/check-committed-whitespace.mjs"],
   }),
 ]);
 
