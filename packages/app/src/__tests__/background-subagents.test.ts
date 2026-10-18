@@ -12,8 +12,7 @@ import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
 import { buildSubagentsOptions } from "../composition/configured-subagents.js";
-// @ts-expect-error Real Pi test seam; transport only is fake.
-import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
+import { generateEngineTurnResponse } from "@mono-agent/turn/ai";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";

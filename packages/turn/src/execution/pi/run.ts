@@ -1,3 +1,7 @@
+type CredentialInputs = { apiKeys: Map<string, string> | undefined; resolvePiApiKey: PiApiKeyResolver | undefined; runtimeWarnings: PiWarning[] };
+import type { Models, Model, Api } from "@earendil-works/pi-ai";
+import type { PiOptions, PiRunState, PiRuntime, PiPreparedControl, PiWarning, PiEventSink, PiMcpClient, PiTranscript } from "./types.js";
+import type { PiCredential, PiApiKeyResolver } from "../../providers/pi/auth.js";
 import { assertNoRetiredRunOptions } from "../../runtime/retired-options.js";
 import { runHarnessPrompt } from "./prompt-operation.js";
 import { canCertifySilentTurn } from "../../runtime/silent-turn.js";
@@ -99,7 +103,14 @@ import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDisp
  * stateful/mutating tools sequential; the harness adapter gates each invoked
  * call in safe-parallel mode, while the explicit sequential mode covers all calls.
  */
-export function resolvePiToolExecutionMode(options = {}) {
+export function resolvePiToolExecutionMode(options?: {}): {
+    mode: any;
+    warnings: {
+        warning_kind: string;
+        message: string;
+    }[];
+};
+export function resolvePiToolExecutionMode(options: PiOptions = {}) {
   assertNoRetiredRunOptions(options);
   const warnings = [];
   const requested = options.piToolExecutionMode;
@@ -115,12 +126,12 @@ export function resolvePiToolExecutionMode(options = {}) {
   return { mode: mode || "safe-parallel", warnings };
 }
 
-async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnings }) {
+async function resolveApiKey(provider: string, { apiKeys, resolvePiApiKey, runtimeWarnings }: CredentialInputs) {
   if (apiKeys?.has(provider)) return apiKeys.get(provider);
   if (typeof resolvePiApiKey !== "function") return undefined;
   try {
     return await resolvePiApiKey(provider);
-  } catch (err) {
+  } catch (err: any) {
     runtimeWarnings.push({
       warning_kind: "pi_auth_failed",
       provider,
@@ -130,7 +141,7 @@ async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnin
   }
 }
 
-async function readCredential(provider, { apiKeys, resolvePiApiKey, runtimeWarnings }) {
+async function readCredential(provider: string, { apiKeys, resolvePiApiKey, runtimeWarnings }: CredentialInputs): Promise<PiCredential | undefined> {
   if (apiKeys?.has(provider)) {
     const key = apiKeys.get(provider);
     return typeof key === "string" && key.length > 0 ? { type: "api_key", key } : undefined;
@@ -143,7 +154,7 @@ async function readCredential(provider, { apiKeys, resolvePiApiKey, runtimeWarni
   return typeof key === "string" && key.length > 0 ? { type: "api_key", key } : undefined;
 }
 
-function isCredential(credential) {
+function isCredential(credential: any): credential is PiCredential {
   return credential
     && typeof credential === "object"
     && (credential.type === "api_key" || credential.type === "oauth");
@@ -157,13 +168,14 @@ function isCredential(credential) {
 // failures remain soft (`pi_auth_failed` warning + keyless env fallback);
 // credential-store read/modify failures reject so Pi can surface them as auth
 // storage failures instead of silently treating a corrupt store as no credential.
-export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWarnings) {
-  const read = async (providerId) => readCredential(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
-  return /** @type {any} */ ({
+export function createDynamicCredentialStore(apiKeys: any, resolvePiApiKey: any, runtimeWarnings: any): any;
+export function createDynamicCredentialStore(apiKeys: Map<string, string> | undefined, resolvePiApiKey: PiApiKeyResolver | undefined, runtimeWarnings: PiWarning[]) {
+  const read = async (providerId: string) => readCredential(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
+  return /** @type {any} */ (({
     read,
     // The callback-only fallback below can derive auth but cannot persist an
     // OAuth rotation. Ordinary refresh requires a persisting resolver.
-    async modify(providerId, fn) {
+    async modify(providerId: string, fn: (current: PiCredential | undefined) => Promise<PiCredential | undefined>) {
       if (!apiKeys?.has(providerId) && typeof resolvePiApiKey?.modifyCredential === "function") {
         return resolvePiApiKey.modifyCredential(providerId, fn);
       }
@@ -175,7 +187,7 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
       }
       return next ?? current;
     },
-    async delete(providerId) {
+    async delete(providerId: string) {
       if (apiKeys?.has(providerId)) {
         apiKeys.delete(providerId);
         return;
@@ -184,7 +196,7 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
         await resolvePiApiKey.deleteCredential(providerId);
       }
     },
-  });
+  }) as any);
 }
 
 // Assemble the pi 0.80 `Models` collection serving this run. Builtin models
@@ -193,7 +205,7 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
 // resolved model. `piResolvedModels` is an advanced/test seam mirroring
 // `piResolvedModel`: when supplied it is used verbatim (the model dispatched via
 // `piResolvedModel` may live outside pi's builtin catalog, e.g. a faux model).
-function buildRunModels(runtime, options, runtimeWarnings) {
+function buildRunModels(runtime: PiRuntime, options: PiOptions, runtimeWarnings: PiWarning[]) {
   let models;
   if (options.piResolvedModels) {
     models = options.piResolvedModels;
@@ -243,37 +255,45 @@ const PROVIDER_CHECK_REQUEST_METHODS = new Set([
  * @param {unknown} requestedCap
  * @returns {import("@earendil-works/pi-ai").Models}
  */
-function withProviderCheckOutputCap(models, requestedCap) {
+function withProviderCheckOutputCap(models: Models, requestedCap: unknown): Models {
   const cap = Number(requestedCap);
   if (!Number.isSafeInteger(cap) || cap <= 0) return models;
-  const capped = (model) => {
+  const capped = (model: Model<Api> | undefined) => {
     if (model === undefined) return model;
     const current = Number(model.maxTokens);
     return { ...model, maxTokens: Number.isFinite(current) && current > 0 ? Math.min(current, cap) : cap };
   };
-  const wrappers = new Map();
-  return /** @type {import("@earendil-works/pi-ai").Models} */ (new Proxy(models, {
+  const wrappers = new Map<string, (...args: any[]) => any>();
+  return /** @type {import("@earendil-works/pi-ai").Models} */ ((new Proxy(models, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (typeof property !== "string" || typeof value !== "function") return value;
-      if (property === "getModel") return (...args) => capped(value.apply(target, args));
+      if (property === "getModel") return (...args: any[]) => capped(value.apply(target, args));
       if (!PROVIDER_CHECK_REQUEST_METHODS.has(property)) return value.bind(target);
       let wrapper = wrappers.get(property);
       if (wrapper === undefined) {
-        wrapper = (model, ...args) => {
+        wrapper = (model: Model<Api>, ...args: any[]) => {
           return value.call(target, capped(model), ...args);
         };
         wrappers.set(property, wrapper);
       }
       return wrapper;
     },
-  }));
+  })) as import("@earendil-works/pi-ai").Models);
 }
 
 // Normalize the incoming runtime messages into AgentMessages the harness can
 // seed/prompt. Returns the prior messages (appended to the session before the
 // run) and the final user text used to drive `harness.prompt`.
-export function splitPromptMessages(messages, model) {
+export function splitPromptMessages(messages: any, model: any): {
+    priorMessages: any[];
+    promptText: string;
+    promptImages: {
+        type: string;
+        data: any;
+        mimeType: any;
+    }[];
+} {
   const source = Array.isArray(messages) && messages.length
     ? messages
     : [{ role: "user", content: "" }];
@@ -298,7 +318,7 @@ export function splitPromptMessages(messages, model) {
 
 // Split a user message's content into joined text and ImageContent[] image
 // parts ({ type, data, mimeType }), preserving multimodal input for the runtime.
-function splitUserContent(content) {
+function splitUserContent(content: any) {
   if (typeof content === "string") return { text: content, images: [] };
   if (!Array.isArray(content)) return { text: String(content ?? ""), images: [] };
   const texts = [];
@@ -317,31 +337,33 @@ function splitUserContent(content) {
 
 import { createCompactionUsage, withCompactionUsage, compactionCostEvent, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
 
-export async function generateEngineTurnResponse(systemPrompt, options = {}) {
+export function generateEngineTurnResponse(systemPrompt: any, options?: {}): Promise<any>;
+export async function generateEngineTurnResponse(systemPrompt: string, options: PiOptions = {}) {
   return await executePiNativeResponse(systemPrompt, options);
 }
 
 /** Additive preparation only. No configured host invokes it yet. */
-export function preparePiNativeDispatch(systemPrompt, options = {}, afterSettlement = async () => {}) {
+export function preparePiNativeDispatch(systemPrompt: any, options?: {}, afterSettlement?: () => Promise<void>): Promise<import("../../contracts/runtime.js").NativePreparedDispatch>;
+export function preparePiNativeDispatch(systemPrompt: string, options: PiOptions = {}, afterSettlement: () => Promise<void> = async () => {}) {
   if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
   assertNoRetiredRunOptions(options);
   const frozen = snapshotNativeDispatchOptions(options);
   return createPreparedDispatchLease((control) => executePiNativeResponse(systemPrompt, frozen, control).finally(afterSettlement), frozen.abortSignal);
 }
 
-async function executePiNativeResponse(systemPrompt, options = {}, control = undefined) {
+async function executePiNativeResponse(systemPrompt: string, options: PiOptions = {}, control: PiPreparedControl | undefined = undefined) {
   if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
   assertNoRetiredRunOptions(options);
   const dispatchProgress = createDispatchProgress();
   try {
     const compactionUsage = createCompactionUsage();
-    const observed = { ...options, onEvent: (event) => { compactionUsage.observe(event); options.onEvent?.(event); } };
+    const observed = { ...options, onEvent: (event: any) => { compactionUsage.observe(event); options.onEvent?.(event); } };
     const result = withCompactionUsage(await executeTrackedPiNativeResponse(systemPrompt, observed, control, dispatchProgress), compactionUsage);
     if (options.manualCompaction && result.usage?.compaction) {
-      const accounting = manualCompactionAccounting(result.usage.compaction);
+      const accounting = manualCompactionAccounting(result.usage.compaction)!;
       if (result.manualCompaction) result.manualCompaction.accounting = accounting;
       else if (!result.cancelled && !options.abortSignal?.aborted && accounting.requests.some((row) => row.input !== null || row.output !== null || row.costUsd !== null)) {
-        result.manualCompaction = { status: "failed", trigger: "manual", operationId: accounting.requests[0].requestId.replace(/:\d+$/, ""), accounting, reason: "summary_failed" };
+        result.manualCompaction = { status: "failed", trigger: "manual", operationId: accounting.requests[0]!.requestId.replace(/:\d+$/, ""), accounting, reason: "summary_failed" };
       }
     }
     if (result.usage?.compaction) {
@@ -355,7 +377,7 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
   }
 }
 
-async function executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress) {
+async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiOptions, control: PiPreparedControl | undefined, dispatchProgress: import("../../contracts/runtime.js").RuntimeDispatchProgress) {
   if (Object.hasOwn(options, "settings")) {
     throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
   }
@@ -369,7 +391,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       sandbox: options.sandbox,
       sandboxPolicy: options.sandboxPolicy,
       sandboxEngine: options.sandboxEngine,
-    }) };
+    } as Parameters<typeof createToolContext>[0]) };
   }
   // Idempotent; arms the undici diagnostics-channel probe so a transport
   // failure during this run can be resolved back to a real reason even after
@@ -385,11 +407,11 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     throw new Error("invalid pi model reference: provider and model are required");
   }
   const start = Date.now();
-  const events = [];
-  const runtimeWarnings = [];
-  let mcpClients = [];
+  const events: any[] = [];
+  const runtimeWarnings: PiWarning[] = [];
+  let mcpClients: PiMcpClient[] = [];
   let closeRunTools = async () => {};
-  let harness = null;
+  let harness: (Omit<Awaited<ReturnType<typeof buildTurnHarness>>, "endTurn"> & { compactionFailureKey?: string; endTurn: (status: string, result?: any) => Promise<void> }) | null = null;
   /** @type {null | {disarm: () => Promise<void>}} */
   let midRunCompaction = null;
   // The ONE explicit runState the extracted modules (stream subscriber, session
@@ -398,7 +420,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
   // orchestrator local cannot be reassigned from a module). `events` /
   // `runtimeWarnings` stay as consts shared by reference. `toolStartTimes` maps
   // toolCallId -> start timestamp so per-tool execution latency can be emitted.
-  const runState = {
+  const runState: PiRunState = {
     dispatchProgress,
     assistantTexts: [],
     assistantThinking: [],
@@ -522,7 +544,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
   let structuredOutputFinalizationRetryFailed = false;
   const piTransport = resolvePiTransport(options.piTransport);
 
-  const onEvent = (event) => {
+  const onEvent: PiEventSink = (event) => {
     if (event?.type === "tool_approval_denied" && typeof event.toolUseId === "string") {
       runState.toolApprovals.set(event.toolUseId, event);
     }
@@ -548,7 +570,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       onEvent,
       riskTiersByTool: approvalRiskTiers,
       alwaysAllowTools: options.approvalAlwaysAllowTools,
-    })
+    } as Parameters<typeof createApprovalManager>[0])
     : null;
 
   if (options.abortSignal?.aborted) {
@@ -561,14 +583,14 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     nativeSessionAuthority: options.nativeSessionAuthority && { ...options.nativeSessionAuthority,
       hostAuthority: structuredClone(options.nativeSessionAuthority.hostAuthority) },
     nativeSessionProjection: options.nativeSessionProjection && structuredClone(options.nativeSessionProjection) };
-  let durableRepo;
+  let durableRepo: ReturnType<typeof resolveDurableNativeSessionRepo>;
 
   const prepareRun = async () => {
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
     // ready pi-ai Model (e.g. a registered faux provider model) plus optional
     // capabilities, bypassing the static model-registry lookup. Production
     // callers leave it undefined and resolve through pi-ai's registry.
-    let runtime = options.piResolvedModel
+    let runtime: PiRuntime = options.piResolvedModel
       ? {
         model: withContext1M(options.piResolvedModel, options.customProvider ? undefined : options.context1MModels),
         capabilities: options.piResolvedCapabilities || {
@@ -582,13 +604,13 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
         },
         apiKeys: new Map(),
       }
-      : resolvePiRuntimeModel(resolved, options);
-    if (Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0) {
+      : resolvePiRuntimeModel(resolved, options) as PiRuntime;
+    if (Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens! > 0) {
       runtime = {
         ...runtime,
         model: {
           ...runtime.model,
-          maxTokens: Math.min(runtime.model.maxTokens, options.providerCheckMaxTokens),
+          maxTokens: Math.min(runtime.model.maxTokens, options.providerCheckMaxTokens!),
         },
       };
     }
@@ -641,7 +663,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     // One pre-response SDK-policy retry layer in pi-ai; no driver response retry.
     const retryValue = typeof options.piMaxRetries === "string" && options.piMaxRetries.trim() !== ""
       ? Number(options.piMaxRetries) : options.piMaxRetries;
-    const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, Math.trunc(retryValue))) : 2;
+    const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, Math.trunc(retryValue as number))) : 2;
     const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs)) && Number(options.maxRetryDelayMs) > 0
       ? Number(options.maxRetryDelayMs)
       : 60_000;
@@ -670,15 +692,15 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       // attached to this exact runState and are never initialized a second time.
       for (const tool of prepared.tools) tool.parameters = freezeDispatchData(copyDispatchData(tool.parameters));
       systemPrompt = appendStructuredOutputInstruction(systemPrompt, options.outputSchema, options.prompts);
-      const binding = await control.ready({ systemPrompt, messages: structuredClone(options.messages ?? []),
+      const binding = await control!.ready({ systemPrompt, messages: structuredClone(options.messages ?? []),
         model: { provider: auth.model.provider, id: auth.model.id, api: auth.model.api,
           contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
         tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
         compactionSummaryMaxTokens: resolveAgentCompactionPolicy(options, auth.model).summaryMaxTokens,
         provenance: auth.provenance }, {
         assertReady: () => options.abortSignal?.throwIfAborted(),
-        check: (input) => { options.abortSignal?.throwIfAborted(); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
-          return result.status === "ready" ? { status: "ready" } : result; },
+        check: (input) => { options.abortSignal?.throwIfAborted(); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model } as Parameters<typeof prepareNativeHandoffSummaryRequest>[0]);
+          return result.status === "ready" ? { status: "ready" as const } : result as import("../../contracts/native-storage.js").RuntimeHandoffFit; },
         run: (input) => produceNativeHandoffSummary({ ...input, model: auth.model, completeSimple: prepared.piModels.completeSimple.bind(prepared.piModels),
           signal: options.abortSignal, completionOptions: { transport: options.piTransport ?? "sse" } }),
       });
@@ -744,13 +766,13 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       maxRetries,
       maxRetryDelayMs,
       steeringMode: toolSteeringMode,
-      options: { ...options, onEffectiveEffort: (effectiveEffort) => onEvent({ type: "provider_execution_config", sdk: "pi", model: reference,
+      options: { ...options, onEffectiveEffort: (effectiveEffort: string | undefined) => onEvent({ type: "provider_execution_config", sdk: "pi", model: reference,
         ...(options.effort ? { effort: options.effort } : {}), ...(effectiveEffort ? { effectiveEffort } : {}), timestamp: Date.now() }) },
     });
     harness.compactionFailureKey = JSON.stringify([options.sessionsRoot || options.cwd || "runtime", requestedSessionId || providerSessionId]);
 
     if (options.nativeSessionProjection) {
-      runState.session.setInheritedProjection(options.nativeSessionProjection.inherited);
+      runState.session!.setInheritedProjection(options.nativeSessionProjection.inherited);
     }
     // Seed prior transcript (everything before the trailing user turn) into the
     // harness-owned session. On a true resume the session already holds the
@@ -760,7 +782,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     const { priorMessages, promptText, promptImages } = options.manualCompaction === true
       ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
       : splitPromptMessages(options.messages, runtime.model);
-    runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
+    runState.sessionBaselineCount = (await runState.session!.buildContext()).messages.length;
     if (!options.nativeSessionProjection && (!requestedSessionId || runState.createdOnMiss
       || control && options.nativeSessionAuthority && runState.sessionBaselineCount === 0)) {
       for (const message of priorMessages) {
@@ -775,7 +797,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     // TRUE resume needs this: a create-on-miss session is fresh, so a failure
     // drops it entirely via the fresh-run path (no leaf to roll back to).
     if (requestedSessionId && (!runState.createdOnMiss || runState.sessionEntry)) {
-      try { runState.baselineLeafId = await runState.session.getLeafId(); runState.hasBaselineLeaf = true; } catch { /* best-effort */ }
+      try { runState.baselineLeafId = await runState.session!.getLeafId(); runState.hasBaselineLeaf = true; } catch { /* best-effort */ }
     }
 
     // One logical turn encompasses proactive/manual compaction and every prompt
@@ -796,25 +818,25 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
         harness, runtime, resolved, toolLimits: options.toolLimits,
         compaction: options.compaction,
         contextWindowOverride: options.compaction?.contextWindowOverride,
-      });
+      } as Parameters<typeof resolveLiveCompactionPolicy>[0]);
       const transcriptTokens = await estimateSessionMessageTokens(runState.session);
       // A prefix smaller than the retained recent tail cannot yield a useful
       // cut. Avoid spending a summary call merely to discover this afterward.
       const tooSmall = transcriptTokens !== null && transcriptTokens < policy.keepRecentTokens;
       // Host cancellation (e.g. shutdown) aborts the in-flight summary operation.
       if (options.abortSignal) {
-        const abortManual = () => { void harness.abort().catch(() => {}); };
+        const abortManual = () => { void harness!.abort().catch(() => {}); };
         options.abortSignal.addEventListener("abort", abortManual, { once: true });
-        runState.removeAbortHandler = () => options.abortSignal.removeEventListener?.("abort", abortManual);
+        runState.removeAbortHandler = () => options.abortSignal!.removeEventListener?.("abort", abortManual);
         if (options.abortSignal.aborted) throw new Error("Manual compaction was cancelled.");
       }
       /** @type {{status: string, operationId: string, reason?: string, tokensBefore?: number, tokensAfter?: number, tokenCountsExact?: boolean}|undefined} */
-      let terminal = tooSmall
+      let terminal: { status: string; operationId: string; reason?: string; tokensBefore?: number; tokensAfter?: number; tokenCountsExact?: boolean } | undefined = tooSmall
         ? { status: "skipped", operationId: randomUUID(), reason: "nothing_to_compact" }
         : undefined;
       const attempt = tooSmall ? undefined : await tryCompact(harness, {
         trigger: "manual",
-        onEvent: (event) => {
+        onEvent: (event: any) => {
           // Observe only this attempt, never infer native success from a UI
           // "skipped" event (the guarded driver may have declined the cut).
           if (event?.type === "context_compaction" && event.trigger === "manual" && event.status !== "running") terminal = event;
@@ -899,7 +921,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       toolLimits: options.toolLimits,
       compaction: options.compaction,
       contextWindowOverride: options.compaction?.contextWindowOverride,
-    });
+    } as Parameters<typeof resolveLiveCompactionPolicy>[0]);
     if (!options.nativeSessionProjection?.dispatchBudget) await runProactiveCompaction(runState, {
       harness,
       systemPrompt,
@@ -929,7 +951,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
 
     // Arm the main-prompt epoch after proactive compaction so compaction and
     // transcript seeding cannot be mistaken for live-input consumption.
-    runState.recoveryBaselineTipId = await runState.session.getLeafId();
+    runState.recoveryBaselineTipId = await runState.session!.getLeafId();
 
     // Last abort check before Pi admits the prompt. Proactive compaction,
     // mid-run arming and getLeafId all await after the pre-request check above;
@@ -970,7 +992,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
         },
       });
       if (promptResult.suspended) {
-        await settleNativeSession(runState, { action: "sync" });
+        await settleNativeSession(runState as Parameters<typeof settleNativeSession>[0], { action: "sync" });
         throw new NativeSuspendedError();
       }
       runError = promptResult.runError;
@@ -994,11 +1016,11 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
 
     runState.externalAbort ||= !!options.abortSignal?.aborted;
 
-    const captureState = async () => {
-      const context = await runState.session.buildContext();
+    const captureState = async (): Promise<PiTranscript> => {
+      const context = await runState.session!.buildContext();
       const transcript = context.messages || [];
       const runTranscript = transcript.slice(runState.sessionBaselineCount);
-      const assistantMessages = runTranscript.filter((message) => message?.role === "assistant");
+      const assistantMessages = runTranscript.filter((message: any) => message?.role === "assistant");
       const lastAssistant = assistantMessages[assistantMessages.length - 1] || null;
       return {
         transcript,
@@ -1027,7 +1049,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       externalAbort: runState.externalAbort,
       maxTurnsHit: runState.maxTurnsHit,
     })) {
-      const retry = await runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings, prompts: options.prompts });
+      const retry = await runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings, prompts: options.prompts } as Parameters<typeof runStructuredOutputFinalizationRetry>[0]);
       structuredOutputFinalizationRetryAttempts = retry.attempts;
       structuredOutputFinalizationRetryReason = retry.reason;
       structuredOutputFinalizationRetryFailed = runState.structuredResult === null || runState.structuredResult === undefined;
@@ -1067,7 +1089,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       invalidatedSilentCompletion: runState.silentTurn.completed,
       pendingQuestion: runState.silentTurn.pendingQuestion,
     })) {
-      const retry = await runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal: options.abortSignal, prompts: options.prompts });
+      const retry = await runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal: options.abortSignal, prompts: options.prompts } as Parameters<typeof runEmptyReplyRetry>[0]);
       if (retry.error) runError = retry.error;
       runState.externalAbort ||= !!options.abortSignal?.aborted;
       state = await captureState();
@@ -1098,13 +1120,13 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       outputTokens: ownUsage.output,
       cachedTokens: ownUsage.cacheRead,
       cacheWriteTokens: ownUsage.cacheWrite,
-    });
+    } as Parameters<typeof estimateCost>[0])!;
     // Keyed by the same parentRunId the Agent tool stamps its budget under, the
     // way `subagentInvoked` below reads its count.
     const usage = withSubagentUsage(
       ownUsage,
       subagentUsageForRun(options.subagents, options.toolContext?.runId),
-      estimatedCost,
+      estimatedCost!,
     );
     emitUsageCostEvents({
       onEvent,
@@ -1247,7 +1269,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       capabilitiesUsed,
       usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
       structuredResult: runState.structuredResult,
-      effectiveEffort: harness.getEffectiveEffort?.(),
+      effectiveEffort: harness!.getEffectiveEffort?.(),
     });
     const finalResult = buildFinalResult();
     await harness.endTurn(runState.externalAbort ? "aborted" : finalResult.error || finalResult.failureKind ? "failed" : "completed", {
@@ -1284,7 +1306,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       : certifySilence();
     return { ...(runState.preserveTurnEvidence ? finalResult : buildFinalResult()), cancelled: runState.externalAbort, ...(providerSessionRecovery ? { providerSessionRecovery } : {}),
     ...(silentCertified ? { turnDisposition: "silent" } : {}) };
-  } catch (err) {
+  } catch (err: any) {
     runState.externalAbort ||= !!options.abortSignal?.aborted;
     // Drop a just-created fresh durable session, release a create-on-miss
     // reservation placeholder, and roll a resumed session back to its pre-turn
@@ -1292,7 +1314,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
     if (runState.preserveTurnEvidence) {
       try {
-        if (err instanceof NativeSuspendedError) await settleNativeSession(runState, { action: "repair-interrupted" });
+        if (err instanceof NativeSuspendedError) await settleNativeSession(runState as Parameters<typeof settleNativeSession>[0], { action: "repair-interrupted" });
         else await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed", {
           text: runState.assistantTexts.join("") || null, error: runState.externalAbort ? null : normalizePiErrorMessage(err?.message || String(err)),
           failureKind: runState.externalAbort ? null : isJournalStorageError(err) ? "safety_journal_storage_failed"
@@ -1313,7 +1335,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
         if (runState.sessionEntry) {
           // A resumed suspension is a failed unreceipted host turn: seal it
           // without projecting completion, then let normal commit roll back.
-          await settleNativeSession(runState, { action: "fail-suspended" });
+          await settleNativeSession(runState as Parameters<typeof settleNativeSession>[0], { action: "fail-suspended" });
         }
         await commitSession(runState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
           externalAbort: false, errorMessage: runState.sessionEntry ? "Native provider suspended without a recovery receipt" : undefined, onEvent });
@@ -1333,7 +1355,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       err,
     ).message;
     const isRetryable = retryableProviderFailureInfo({
-      errorText: errorMessage,
+      errorText: errorMessage!,
       failureKind: "provider_unavailable",
     }).retryable;
     const failure = buildErrorResult({
@@ -1388,7 +1410,7 @@ export const engineTurnAdapter = {
   id: "pi",
   kind: "pi",
   capabilities: runtimeCapabilities(),
-  supports: (ref) => Boolean(ref?.provider && ref?.model),
+  supports: (ref: any) => Boolean(ref?.provider && ref?.model),
   execute: generateEngineTurnResponse,
   prepareNativeDispatch: preparePiNativeDispatch,
 };

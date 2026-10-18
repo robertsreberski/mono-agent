@@ -5,8 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createConversationHarness, createConversationResponder, createInMemoryHistoryStore, createLiveInputMailbox, createToolPolicy } from "@mono-agent/conversation";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import { withProjectContext } from "@mono-agent/web";
-// @ts-expect-error Real native engine test seam; only provider transport is scripted.
-import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
+import { generateEngineTurnResponse } from "@mono-agent/turn/ai";
 import { createToolContext } from "@mono-agent/turn/tools";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

@@ -7,21 +7,28 @@ const SHARED_TOOLS = new Set([
 ]);
 
 /** @param {{name?: string, executionMode?: string}} tool */
-export function isSharedTool(tool) {
+export function isSharedTool(tool: {
+    name?: string;
+    executionMode?: string;
+}): boolean {
   return tool.executionMode !== "sequential" && SHARED_TOOLS.has(tool.name ?? "");
 }
 
 /** FIFO admission within one harness run. An exclusive waiter bars later shared calls. */
-export function createToolExecutionGate() {
+export function createToolExecutionGate(): {
+    acquire: (shared: boolean, signal?: AbortSignal) => Promise<any>;
+    stop: () => void;
+    resume: () => void;
+} {
   let active = 0;
   let exclusive = false;
   let stopped = false;
   /** @type {Array<{shared: boolean, resolve: (release: () => void) => void, reject: (error: Error) => void, signal?: AbortSignal, onAbort: () => void}>} */
-  const pending = [];
+  const pending: Array<{ shared: boolean; resolve: (release: () => void) => void; reject: (error: Error) => void; signal: AbortSignal | undefined; onAbort: () => void }> = [];
 
   const drain = () => {
     while (pending.length && !exclusive && !stopped) {
-      const next = pending[0];
+      const next = pending[0]!;
       if (!next.shared && active > 0) break;
       pending.shift();
       next.signal?.removeEventListener("abort", next.onAbort);
@@ -45,9 +52,9 @@ export function createToolExecutionGate() {
   };
 
   /** @param {boolean} shared @param {AbortSignal} [signal] */
-  const acquire = (shared, signal) => {
+  const acquire = (shared: boolean, signal?: AbortSignal) => {
     if (stopped || signal?.aborted) return Promise.reject(new Error("tool execution aborted"));
-    return new Promise((resolve, reject) => {
+    return new Promise<() => void>((resolve, reject) => {
       /** @type {any} */
       const waiter = {
         shared, signal, resolve, reject,

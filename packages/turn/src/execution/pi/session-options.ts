@@ -4,15 +4,16 @@ import { projectInheritedContext } from "../../engine/request-projection.js";
 
 import { normalizeDurableSessionsRoot } from "../../engine/sessions-root.js";
 
-const onlyKeys = (value, allowed) => value !== null && typeof value === "object" && !Array.isArray(value)
+const onlyKeys = (value: unknown, allowed: readonly string[]) => value !== null && typeof value === "object" && !Array.isArray(value)
   && Object.keys(value).every((key) => allowed.includes(key));
-const coverageId = (value) => typeof value === "string" && value.length > 0 && value.length <= 512;
+const coverageId = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 512;
 const failure = () => Object.assign(new Error("Invalid protected native session authority"), { code: "ERR_NATIVE_SESSION_AUTHORITY" });
 /** Host-only opt-in. The callback proves current canonical handle, ready artifact
  * and held conversation ownership; catalogue presence is never that proof.
  * @param {any} options @param {string} handleId @param {string|null} requestedId
  */
-export function validateNativeSessionAuthority(options, handleId, requestedId) {
+export function validateNativeSessionAuthority(options: any, handleId: string, requestedId: string | null): void;
+export function validateNativeSessionAuthority(options: import("./types.js").PiOptions, handleId: string, requestedId: string | null): void {
   const access = options.nativeSessionAuthority;
   if (access === undefined) {
     if (options.nativeSessionProjection !== undefined) throw failure();
@@ -34,7 +35,7 @@ export function validateNativeSessionAuthority(options, handleId, requestedId) {
       projectInheritedContext([], projection.inherited);
       const coverage = projection.inherited.coverage;
       if (!onlyKeys(projection.artifact, ["id", "hash"]) || !onlyKeys(coverage, ["version", "sources"])
-        || coverage.sources.some((source) => !onlyKeys(source, ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"])
+        || coverage.sources.some((source: { journalId: unknown; sourceTipId: unknown }) => !onlyKeys(source, ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"])
           || !coverageId(source.journalId) || source.sourceTipId !== null && !coverageId(source.sourceTipId))) throw failure();
     }
   } catch { throw failure(); }

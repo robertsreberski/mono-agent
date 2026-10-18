@@ -9,8 +9,8 @@ const PI_TRANSPORTS = new Set(["auto", "sse", "websocket", "websocket-cached"]);
  * @param {unknown} value
  * @returns {"auto" | "sse" | "websocket" | "websocket-cached"}
  */
-export function resolvePiTransport(value) {
+export function resolvePiTransport(value: unknown): "auto" | "sse" | "websocket" | "websocket-cached" {
   return typeof value === "string" && PI_TRANSPORTS.has(value)
-    ? /** @type {"auto" | "sse" | "websocket" | "websocket-cached"} */ (value)
+    ? /** @type {"auto" | "sse" | "websocket" | "websocket-cached"} */ ((value) as "auto" | "sse" | "websocket" | "websocket-cached")
     : "auto";
 }

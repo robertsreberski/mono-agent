@@ -10,8 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"));
 const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
-// @ts-expect-error Real native engine; only provider transport is fake.
-import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
+import { generateEngineTurnResponse } from "@mono-agent/turn/ai";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagents/subagent-instances.js";
 import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
 import type { SubagentOwnerIdentity } from "../subagents/subagent-registry-ownership.js";

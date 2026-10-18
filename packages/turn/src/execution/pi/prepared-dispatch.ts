@@ -1,10 +1,12 @@
+export type NativeDispatchBinding = import("../../contracts/runtime.js").NativeDispatchBinding;
+export type NativePreparedDispatch = import("../../contracts/runtime.js").NativePreparedDispatch;
 // @ts-check
 
 export { copy as copyDispatchData };
 
 /** Validate and copy before consuming either a direct or routed lease.
  * @param {any} [input] @returns {any} */
-export function prepareNativeDispatchBinding(input = {}) {
+export function prepareNativeDispatchBinding(input: any = {}): any {
   if (!input || typeof input !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Reflect.ownKeys(input).some((key) => typeof key !== "string" || !bindingKeys.has(key))) {
     throw new TypeError("Prepared dispatch accepts only host session binding fields");
   }
@@ -23,7 +25,7 @@ const dataKeys = ["model", "messages", "outputSchema", "mcpServers", "skills", "
 
 /** Copy plain data while preserving privileged callback/controller identity.
  * @param {any} value @returns {any} */
-function copy(value) {
+function copy(value: any): any {
   if (Array.isArray(value)) return value.map(copy);
   if (value && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
     return Object.fromEntries(Reflect.ownKeys(value).map((key) => [key, copy(value[key])]));
@@ -31,7 +33,7 @@ function copy(value) {
   return value;
 }
 /** Snapshot synchronously, before tool/MCP/auth awaits. @param {any} options */
-export function snapshotNativeDispatchOptions(options) {
+export function snapshotNativeDispatchOptions(options: any): any {
   const output = { ...options };
   for (const key of dataKeys) if (key in options) output[key] = copy(options[key]);
   if (options.toolContext) output.toolContext = { ...options.toolContext,
@@ -40,7 +42,7 @@ export function snapshotNativeDispatchOptions(options) {
   return output;
 }
 /** @param {any} value @returns {any} */
-export function freezeDispatchData(value) {
+export function freezeDispatchData(value: any): any {
   if (value && typeof value === "object") {
     for (const key of Reflect.ownKeys(value)) freezeDispatchData(value[key]);
     Object.freeze(value);
@@ -51,7 +53,16 @@ export function freezeDispatchData(value) {
 /** Check ordinary provider availability without retaining credentials. Every
  * actual summary/turn request resolves auth through the original Models collection.
  * @param {any} models @param {any} model @param {AbortSignal|undefined} signal */
-export async function prepareDispatchAuth(models, model, signal) {
+export async function prepareDispatchAuth(models: any, model: any, signal: AbortSignal | undefined): Promise<{
+    models: any;
+    model: any;
+    provenance: {
+        provider: any;
+        api: any;
+        model: any;
+        account: any;
+    };
+}> {
   model = freezeDispatchData(copy(model));
   if (!models.getProvider(model.provider)) throw new Error("Prepared dispatch provider is unavailable");
   const selected = models.getModel(model.provider, model.id);
@@ -68,17 +79,24 @@ export async function prepareDispatchAuth(models, model, signal) {
  * @param {(control: {ready: (snapshot: any, producer?: {assertReady: () => void, check: (input: any) => any, run: (input: any) => Promise<any>}) => Promise<any>}) => Promise<any>} execute
  * @param {AbortSignal|undefined} signal
  * @returns {Promise<NativePreparedDispatch>} */
-export function createPreparedDispatchLease(execute, signal) {
-  /** @type {(value: NativePreparedDispatch) => void} */ let resolvePrepared;
-  /** @type {(error: any) => void} */ let rejectPrepared;
-  const prepared = new Promise((resolve, reject) => { resolvePrepared = resolve; rejectPrepared = reject; });
-  /** @type {(value: any) => void} */ let resume;
-  /** @type {(error: any) => void} */ let stop;
-  const binding = new Promise((resolve, reject) => { resume = resolve; stop = reject; });
+export function createPreparedDispatchLease(execute: (control: {
+    ready: (snapshot: any, producer?: {
+        assertReady: () => void;
+        check: (input: any) => any;
+        run: (input: any) => Promise<any>;
+    }) => Promise<any>;
+}) => Promise<any>, signal: AbortSignal | undefined): Promise<NativePreparedDispatch>;
+export function createPreparedDispatchLease(execute: (control: import("./types.js").PiPreparedControl) => Promise<any>, signal: AbortSignal | undefined): Promise<NativePreparedDispatch> {
+  /** @type {(value: NativePreparedDispatch) => void} */ let resolvePrepared!: (value: NativePreparedDispatch) => void;
+  /** @type {(error: any) => void} */ let rejectPrepared!: (error: unknown) => void;
+  const prepared = new Promise<NativePreparedDispatch>((resolve, reject) => { resolvePrepared = resolve; rejectPrepared = reject; });
+  /** @type {(value: any) => void} */ let resume!: (value: NativeDispatchBinding) => void;
+  /** @type {(error: any) => void} */ let stop!: (error: unknown) => void;
+  const binding = new Promise<NativeDispatchBinding>((resolve, reject) => { resume = resolve; stop = reject; });
   // Cancellation during async initialization may reject before ready awaits it.
   void binding.catch(() => {});
   let state = "preparing", producerUsed = false, producerBusy = false;
-  /** @type {Promise<any>|undefined} */ let producerWork;
+  /** @type {Promise<any>|undefined} */ let producerWork: Promise<any> | undefined;
   const cancel = () => { if (state === "preparing" || state === "prepared") { state = "closed"; const finish = () => stop(signal?.reason ?? new Error("Prepared dispatch closed"));
     if (producerBusy) void producerWork?.catch(() => {}).then(finish); else finish(); } };
   signal?.addEventListener("abort", cancel, { once: true });
@@ -86,7 +104,7 @@ export function createPreparedDispatchLease(execute, signal) {
   const outcome = execute({ ready: async (snapshot, producer) => {
     if (state === "closed") throw new Error("Prepared dispatch closed before readiness");
     state = "prepared";
-    const producerInput = (input) => {
+    const producerInput = (input: import("../../contracts/runtime.js").NativeHandoffProducerRequest) => {
       if (state !== "prepared" || producerUsed) throw new Error("Prepared handoff producer is no longer available");
       if (!input || typeof input !== "object" || Object.keys(input).some((key) => !["prepared", "outputReserve"].includes(key))) throw new TypeError("Invalid prepared handoff producer request");
       return structuredClone(input);

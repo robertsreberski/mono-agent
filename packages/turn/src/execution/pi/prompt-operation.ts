@@ -10,9 +10,16 @@
  *   provider request, so the live-input epoch can own the operation up front.
  * @returns {Promise<{runError: any, operationId?: string, suspended?: boolean}>}
  */
-export async function runHarnessPrompt(harness, promptText, promptImages, hooks) {
-  let runError = null;
-  let operationId, suspended = false;
+export function runHarnessPrompt(harness: any, promptText: string, promptImages: Array<any>, hooks?: {
+    onOperationAdmitted?: (operationId: string) => void;
+}): Promise<{
+    runError: any;
+    operationId?: string;
+    suspended?: boolean;
+}>;
+export async function runHarnessPrompt(harness: { prompt: (text: string, options?: { images?: any[]; onOperationAdmitted?: (id: string) => void }) => Promise<{ operationId?: string; status: string }>; waitForIdle: () => Promise<void> }, promptText: string, promptImages: any[], hooks?: { onOperationAdmitted?: (operationId: string) => void }) {
+  let runError: unknown = null;
+  let operationId: string | undefined, suspended = false;
   try {
     // Pass structured images (when present) so multimodal input reaches the
     // model as image blocks rather than stringified text. The engine adapter prompt

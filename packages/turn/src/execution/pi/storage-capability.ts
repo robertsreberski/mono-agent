@@ -1,3 +1,4 @@
+export type RuntimeNativePreparationStorage = import("../../contracts/native-storage.js").RuntimeNativePreparationStorage;
 import { createManagedNativeJournalStorage as storage } from "../../engine/native-journal-storage.js";
 import { checkNativeInheritedPrefix } from "./handoff-producer.js";
 
@@ -9,9 +10,12 @@ import { checkNativeInheritedPrefix } from "./handoff-producer.js";
  *   checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage['checkInheritedPrefix']>,
  *   inspectCurrentJournal: NonNullable<RuntimeNativePreparationStorage['inspectCurrentJournal']>
  * }} */
-export function createManagedNativeJournalStorage(options) {
+export function createManagedNativeJournalStorage(options: Parameters<typeof storage>[0]): RuntimeNativePreparationStorage & {
+    checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]>;
+    inspectCurrentJournal: NonNullable<RuntimeNativePreparationStorage["inspectCurrentJournal"]>;
+} {
   const native = storage(options);
-  return /** @type {ReturnType<typeof createManagedNativeJournalStorage>} */ ({
+  return /** @type {ReturnType<typeof createManagedNativeJournalStorage>} */ (({
     ...native,
     checkInheritedPrefix: (messages, model, compaction, prefixTokenCap) =>
       checkNativeInheritedPrefix([...messages], model, compaction, prefixTokenCap),
@@ -25,5 +29,5 @@ export function createManagedNativeJournalStorage(options) {
       ids === undefined ? undefined : [...ids],
       owners === undefined ? undefined : { ...owners, conversationKeys: [...owners.conversationKeys] },
     ),
-  });
+  }) as ReturnType<typeof createManagedNativeJournalStorage>);
 }

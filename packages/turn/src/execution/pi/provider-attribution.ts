@@ -1,3 +1,5 @@
+export type Models = import("@earendil-works/pi-ai").Models;
+export type ProviderHeaders = import("@earendil-works/pi-ai").ProviderHeaders;
 // @ts-check
 
 const OPENCODE_HOST = "opencode.ai";
@@ -22,8 +24,11 @@ const REQUEST_METHODS = new Set([
  *
  * @param {{provider?: string, baseUrl?: string}} model
  */
-export function isOpenCodeModel(model) {
-  if (OPENCODE_PROVIDERS.has(model?.provider)) return true;
+export function isOpenCodeModel(model: {
+    provider?: string;
+    baseUrl?: string;
+}): boolean {
+  if (OPENCODE_PROVIDERS.has(model?.provider!)) return true;
   if (typeof model?.baseUrl !== "string") return false;
   try {
     return new URL(model.baseUrl).hostname === OPENCODE_HOST;
@@ -41,7 +46,7 @@ export function isOpenCodeModel(model) {
  * @param {string} value
  * @returns {ProviderHeaders}
  */
-function addDefaultHeader(headers, name, value) {
+function addDefaultHeader(headers: ProviderHeaders, name: string, value: string): ProviderHeaders {
   const lowerName = name.toLowerCase();
   if (Object.keys(headers).some((existingName) => existingName.toLowerCase() === lowerName)) {
     return headers;
@@ -54,11 +59,11 @@ function addDefaultHeader(headers, name, value) {
  * @param {string} sessionId
  * @returns {Object<string, *>}
  */
-function withOpenCodeHeaderTransform(options, sessionId) {
+function withOpenCodeHeaderTransform(options: Record<string, any> | undefined, sessionId: string): Record<string, any> {
   const previousTransform = options?.transformHeaders;
   return {
     ...(options ?? {}),
-    transformHeaders: async (headers) => {
+    transformHeaders: async (headers: ProviderHeaders) => {
       let attributed = addDefaultHeader(headers, "x-opencode-session", sessionId);
       attributed = addDefaultHeader(attributed, "x-opencode-client", "mono-agent");
       return typeof previousTransform === "function"
@@ -78,9 +83,9 @@ function withOpenCodeHeaderTransform(options, sessionId) {
  * @param {string} sessionId
  * @returns {Models}
  */
-export function withOpenCodeSessionHeaders(models, sessionId) {
-  const wrappers = new Map();
-  return /** @type {Models} */ (new Proxy(models, {
+export function withOpenCodeSessionHeaders(models: Models, sessionId: string): Models {
+  const wrappers = new Map<string, (model: any, input: any, options: any) => any>();
+  return /** @type {Models} */ ((new Proxy(models, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (typeof property !== "string" || typeof value !== "function") return value;
@@ -98,5 +103,5 @@ export function withOpenCodeSessionHeaders(models, sessionId) {
       }
       return wrapper;
     },
-  }));
+  })) as Models);
 }
