@@ -59,6 +59,10 @@
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
+  "devDependencies": {
+    "@mono-agent/channel-a2a": "workspace:0.25.1",
+    "@mono-agent/channel-whatsapp": "workspace:0.25.1"
+  },
   "publishConfig": {
     "access": "public"
   }

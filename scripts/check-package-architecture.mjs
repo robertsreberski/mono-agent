@@ -19,6 +19,7 @@ import {
   REQUIRED_PACKAGE_README_SECTIONS,
 } from "./lib/package-docs.mjs";
 import { findPackageVerificationErrors } from "./lib/package-verification.mjs";
+import { findUndeclaredWorkspaceImports, workspaceFileInventory } from "./lib/workspace-imports.mjs";
 
 const root = process.cwd();
 const packageScope = "@mono-agent/";
@@ -27,6 +28,8 @@ const requiredReadmeSections = REQUIRED_PACKAGE_README_SECTIONS.map((section) =>
 const errors = [];
 const catalogByName = packageByName();
 const catalogPaths = new Set(packageCatalog.map((entry) => packageRelativePath(entry)));
+const trackedFiles = workspaceFileInventory(root);
+const workspacePackages = packageCatalog.map((entry) => ({ name: entry.name, path: packageRelativePath(entry) }));
 const packagePaths = workspacePackagePaths()
   .sort();
 
@@ -99,6 +102,9 @@ for (const catalogEntry of packageCatalog) {
   }
 
   const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  errors.push(...findUndeclaredWorkspaceImports({
+    root, packagePath, manifest, workspaceNames: new Set(catalogByName.keys()), workspacePackages, trackedFiles,
+  }));
   if (catalogEntry.publishable === true) {
     errors.push(...findPackageVerificationErrors({ manifest, packagePath }));
   }
@@ -365,7 +371,7 @@ function isTextFile(path) {
   if (statSync(path).size > 1_000_000) {
     return false;
   }
-  return /\.(?:cjs|css|cts|html|js|json|md|mjs|mts|ts|tsx|yaml|yml)$/u.test(path);
+  return /\.(?:cjs|css|cts|html|js|json|jsx|md|mjs|mts|ts|tsx|yaml|yml)$/u.test(path);
 }
 
 function isPackageDirectory(dir) {

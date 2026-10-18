@@ -221,6 +221,13 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      '@mono-agent/channel-a2a':
+        specifier: workspace:0.25.1
+        version: link:../../extras/channel-a2a
+      '@mono-agent/channel-whatsapp':
+        specifier: workspace:0.25.1
+        version: link:../../extras/channel-whatsapp
 
   packages/channel-openai-api:
     dependencies:
@@ -450,6 +457,12 @@ importers:
         specifier: 3.6.7
         version: 3.6.7(supports-color@7.2.0)
     devDependencies:
+      '@mono-agent/conversation':
+        specifier: workspace:0.25.1
+        version: link:../conversation
+      '@mono-agent/turn':
+        specifier: workspace:0.25.1
+        version: link:../turn
       '@types/compression':
         specifier: ^1.8.1
         version: 1.8.1
