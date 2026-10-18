@@ -26,7 +26,7 @@ function packageJsonUrl(repoRoot) {
 
 /**
  * Default import step: resolve each bare specifier through Node's exports
- * resolution (createRequire anchored at agent-runtime's OWN package.json, so the
+ * resolution (createRequire anchored at turn's OWN package.json, so the
  * package self-references its own name — this works whether or not the workspace
  * root has an `@mono-agent/turn` symlink, e.g. inside a git worktree),
  * then actually load the resolved module. Resolution exercises the exports map;
@@ -56,7 +56,7 @@ function packageDir(repoRoot) {
 }
 
 /**
- * Read the mapped subpath entries from agent-runtime's package.json exports —
+ * Read the mapped subpath entries from turn's package.json exports —
  * each carries the bare specifier a consumer imports (the `default`/`.js`
  * condition Node resolves) AND the absolute path of the `types` condition
  * target (the generated `.d.ts` a TS consumer resolves). Wildcard keys (should

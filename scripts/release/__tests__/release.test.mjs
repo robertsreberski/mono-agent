@@ -455,6 +455,25 @@ describe("release pack validation", () => {
     }
   });
 
+  test("keeps turn tarballs dist-only with declarations and the native runner", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-turn-pack-contract-"));
+    try {
+      const filename = path.join(directory, "fictional.tgz");
+      fs.writeFileSync(filename, "fixture archive");
+      const turn = { name: "@mono-agent/turn", relativeDir: "packages/turn" };
+      const runner = "dist/host/sandbox/srt-embed-runner.mjs";
+      const packed = (extra = [], includeRunner = true) => ({ filename,
+        files: ["package.json", "README.md", "dist/index.js", "dist/index.d.ts", "dist/host/sandbox/srt-embed-runner.d.mts",
+          ...(includeRunner ? [runner] : []), ...extra].map((path) => ({ path })) });
+      expect(assertPackResult(turn, packed(), directory, { packageDir: directory }).fileCount).toBe(6);
+      for (const file of ["src/index.js", "types/index.d.ts", "dist/__tests__/test.js", "dist/fixtures/worker.mjs",
+        "dist/index.ts", "dist/worker.mts", "dist/index.js.map", "dist/index.d.ts.map"]) {
+        expect(() => assertPackResult(turn, packed([file]), directory, { packageDir: directory })).toThrow(/non-shipping files/);
+      }
+      expect(() => assertPackResult(turn, packed([], false), directory)).toThrow(/missing the sandbox runner/);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test("rejects compiled output whose source was deleted", () => {
     const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-orphan-test-"));
     const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
@@ -618,7 +637,7 @@ describe("current launch manifest", () => {
 
     expect(version).not.toBeNull();
     if (version === null) {
-      throw new Error(`agent-runtime version is not valid semver: ${runtime.version}`);
+      throw new Error(`turn version is not valid semver: ${runtime.version}`);
     }
     const expectedBaseline = `${version[1]}.${version[2]}.x`;
     expect(migration).toContain(

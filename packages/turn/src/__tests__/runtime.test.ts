@@ -21,8 +21,6 @@ vi.mock("../execution/pi/run.js", async (importOriginal) => {
 const resolverMock = vi.fn(() => { throw new Error("Runtime must not dispatch through a resolver"); });
 vi.mock("../runtime/bridges.js", () => ({
   resolveEngineTurnAdapter: (...args: []) => resolverMock(...args),
-  // @ts-expect-error Preserve the baseline duplicate mock key verbatim.
-  resolveEngineTurnAdapter: (...args: []) => resolverMock(...args),
 }));
 
 type FixtureRuntime = Omit<ReturnType<typeof import("../runtime/create-runtime.js").createRuntime>, "run" | "configureTools"> & {

@@ -6,7 +6,7 @@
 
 import { ALLOW_ALL_TOOLS, RENAMED_TOOL_NAMES, renamedToolMessage, renamedToolName } from "@mono-agent/config";
 
-/** Re-export the allow-all sentinel so agent-app callers share one canonical value. */
+/** Re-export the allow-all sentinel so app callers share one canonical value. */
 export { ALLOW_ALL_TOOLS };
 
 /**

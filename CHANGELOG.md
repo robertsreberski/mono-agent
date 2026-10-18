@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Build and ship `@mono-agent/turn` runtime and declarations together from `dist`,
+  preserving all eleven public entries.
+
 - Remove the deprecated `piToolParallelismMode` key (breaking config/API change).
   Migrate `piToolParallelismMode: "one-at-a-time"` to
   `piToolExecutionMode: "sequential"`, and `piToolParallelismMode: "all"` to

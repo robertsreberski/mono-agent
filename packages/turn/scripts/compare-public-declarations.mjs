@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -8,8 +8,13 @@ const root = fileURLToPath(new URL("../../../", import.meta.url));
 
 function copyGraph(source, target, label) {
   mkdirSync(target, { recursive: true });
-  cpSync(join(source, "types"), join(target, "types"), { recursive: true });
   const manifest = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+  const declarations = [manifest.types, ...Object.values(manifest.exports).map((entry) => entry.types),
+    ...Object.values(manifest.imports ?? {}).map((entry) => entry.types)];
+  for (const directory of new Set(declarations.map((entry) => entry.split("/")[1]))) {
+    cpSync(join(source, directory), join(target, directory), { recursive: true,
+      filter: (path) => statSync(path).isDirectory() || /\.d\.[cm]?ts$/u.test(path) });
+  }
   // Distinct package IDs prevent TypeScript from redirecting one snapshot to the other.
   manifest.name = `@declaration-comparison/${label}`;
   writeFileSync(join(target, "package.json"), JSON.stringify(manifest));
@@ -38,8 +43,9 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
   const owner = (node) => ts.isVariableStatement(node) ? node.declarationList.declarations[0] : node;
   const add = (node, kind, text) => {
     if (!node) return;
-    const record = records.get(node) ?? { descriptions: new Set(), tags: new Set() };
+    const record = records.get(node) ?? { descriptions: new Set(), tags: new Set(), misplaced: new Set() };
     if (kind === "description") { if (text) record.descriptions.add(text); }
+    else if (kind === "misplaced") record.misplaced.add(text);
     else record.tags.add(JSON.stringify({ name: kind, text }));
     records.set(node, record);
   };
@@ -62,7 +68,21 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
       add(target, "description", comment(doc.comment));
       function tag(value, destination) {
         const name = value.tagName.text, prose = comment(value.comment);
-        if (ts.isJSDocTypedefTag(value) || ts.isJSDocCallbackTag(value) || ts.isJSDocOverloadTag(value)) {
+        if (!attributeDefinitions && ts.isJSDocOverloadTag(value)) {
+          // Candidate metadata cannot replace prose on a real signature or its
+          // parameters. Keep its literal attachment without crediting that owner.
+          for (const nested of [value, ...value.typeExpression?.parameters ?? [], value.typeExpression?.type].filter(Boolean)) {
+            const text = comment(nested.comment);
+            if (text) {
+              add(destination, "overload:" + nested.tagName.text, text);
+              add(destination, "misplaced", "@overload");
+              if (ts.isJSDocParameterTag(nested)) {
+                const parameter = destination.parameters?.find((node) => node.name.getText() === nested.name.getText());
+                add(parameter, "misplaced", "@overload");
+              }
+            }
+          }
+        } else if (ts.isJSDocTypedefTag(value) || ts.isJSDocCallbackTag(value) || ts.isJSDocOverloadTag(value)) {
           add(destination, "description", prose);
           for (const property of value.typeExpression?.jsDocPropertyTags ?? []) tag(property, destination);
           for (const parameter of value.typeExpression?.parameters ?? []) tag(parameter, destination);
@@ -76,11 +96,15 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
             member = type && checker.getPropertyOfType(type, part);
             type = member && checker.getTypeOfSymbolAtLocation(member, member.valueDeclaration ?? member.declarations[0]);
           }
-          // Unresolved prose is never silently discarded.
-          if (propertyProse) add(member?.valueDeclaration ?? member?.declarations?.[0] ?? destination,
-            member ? "description" : "property:" + propertyName, propertyProse);
+          // Resolve candidate metadata for diagnostics only, never as owner prose.
+          const memberNode = member?.valueDeclaration ?? member?.declarations?.[0];
+          if (!attributeDefinitions && memberNode && propertyProse) add(memberNode, "misplaced", `@${name}`);
+          // Unresolved/opaque metadata remains literal and is never discarded.
+          if (propertyProse) add(attributeDefinitions && memberNode ? memberNode : destination,
+            attributeDefinitions && member ? "description" : "property:" + propertyName, propertyProse);
         } else if (["type", "template", "param", "arg", "argument", "returns", "return", "this", "extends", "augments", "implements", "satisfies", "throws", "exception"].includes(name)) {
-          if (prose) add(destination, name === "type" ? "description" : name,
+          if (name === "type" && !attributeDefinitions && prose && destination?.symbol) add(destination, "misplaced", "@type");
+          if (prose) add(destination, name === "type" && attributeDefinitions ? "description" : name,
             (ts.isJSDocParameterTag(value) ? value.name.getText() + " " : "") + prose);
         } else {
           // Semantic markers (notably @deprecated) matter even without prose.
@@ -98,13 +122,14 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
   return (symbol) => {
     const nodes = symbol.declarations ?? (symbol.declaration ? [symbol.declaration] : []);
     for (const node of nodes) index(node.getSourceFile());
-    const descriptions = new Set(), tags = new Set();
+    const descriptions = new Set(), tags = new Set(), misplaced = new Set();
     for (const node of nodes) {
       for (const text of records.get(node)?.descriptions ?? []) descriptions.add(text);
       for (const text of records.get(node)?.tags ?? []) tags.add(text);
+      for (const text of records.get(node)?.misplaced ?? []) misplaced.add(text);
     }
     const complete = [...descriptions].filter((text) => ![...descriptions].some((other) => other !== text && other.startsWith(text + " ")));
-    return { description: complete.sort().join("\n\n"), tags: [...tags].sort() };
+    return { description: complete.sort().join("\n\n"), tags: [...tags].sort(), misplaced: [...misplaced].sort() };
   };
 }
 
@@ -112,7 +137,7 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
 export function compareGraphs(baseline, candidate, entries, { documentationMode = "semantic" } = {}) {
   const options = { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
     target: ts.ScriptTarget.ES2022, strict: true, exactOptionalPropertyTypes: true, noEmit: true, skipLibCheck: true };
-  const roots = entries.flatMap(({ types }) => [join(baseline, types), join(candidate, types)]);
+  const roots = entries.flatMap(({ types, candidateTypes = types }) => [join(baseline, types), join(candidate, candidateTypes)]);
   const program = ts.createProgram(roots, options), checker = program.getTypeChecker();
   const diagnostics = ts.getPreEmitDiagnostics(program);
   if (diagnostics.length) throw new Error(ts.formatDiagnostics(diagnostics, {
@@ -121,7 +146,7 @@ export function compareGraphs(baseline, candidate, entries, { documentationMode 
   const baselineDocumentation = semanticDocumentation(program, checker, true);
   const candidateDocumentation = semanticDocumentation(program, checker, false);
   const rows = [];
-  for (const { key, types } of entries) {
+  for (const { key, types, candidateTypes = types } of entries) {
     const errors = [], visited = new Set();
     const fail = (path, message) => errors.push(`${path}: ${message}`);
     const symbolType = (symbol) => checker.getTypeOfSymbolAtLocation(symbol,
@@ -131,11 +156,16 @@ export function compareGraphs(baseline, candidate, entries, { documentationMode 
       const normalize = normalizeDocumentation;
       if (documentationMode === "semantic") {
         const previous = baselineDocumentation(before), current = candidateDocumentation(after);
+        const misplaced = current.misplaced.map((tag) => tag === "@type" ? tag : `parent ${tag}`).join("/");
         if (previous.description && previous.description !== current.description) {
-          fail(path, current.description ? "changed documentation" : "lost documentation");
+          fail(path, current.description ? "changed documentation" : current.misplaced.length
+            ? `candidate prose only in ${misplaced}; move it to the member`
+            : "lost documentation");
         }
         if (previous.tags.length && JSON.stringify(previous.tags) !== JSON.stringify(current.tags)) {
-          fail(path, current.tags.length ? "changed documentation tags" : "lost documentation tags");
+          fail(path, current.misplaced.length
+            ? `candidate prose only in ${misplaced}; move it to the member`
+            : current.tags.length ? "changed documentation tags" : "lost documentation tags");
         }
         return;
       }
@@ -262,8 +292,8 @@ export function compareGraphs(baseline, candidate, entries, { documentationMode 
       signatures(left, right, ts.SignatureKind.Call, path);
       signatures(left, right, ts.SignatureKind.Construct, `${path}.constructor`);
     }
-    const module = (directory) => checker.getSymbolAtLocation(program.getSourceFile(join(directory, types)));
-    const before = checker.getExportsOfModule(module(baseline)), after = new Map(checker.getExportsOfModule(module(candidate)).map((symbol) => [symbol.name, symbol]));
+    const module = (directory, target) => checker.getSymbolAtLocation(program.getSourceFile(join(directory, target)));
+    const before = checker.getExportsOfModule(module(baseline, types)), after = new Map(checker.getExportsOfModule(module(candidate, candidateTypes)).map((symbol) => [symbol.name, symbol]));
     for (const symbol of before) {
       const candidateSymbol = after.get(symbol.name);
       if (!candidateSymbol) { fail(symbol.name, "removed export"); continue; }
@@ -304,8 +334,9 @@ export function compareRevision(revision = "origin/main", { documentationMode = 
   const result = spawnSync("pnpm", ["run", "build"], { cwd: turn, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`Baseline build failed:\n${result.stdout}\n${result.stderr}`);
   copyGraph(turn, join(scratch, "baseline"), "baseline");
-  copyGraph(join(root, "packages/turn"), join(scratch, "candidate"), "candidate");
-  const entries = Object.entries(manifest.exports).map(([key, target]) => ({ key, types: target.types }));
+  const candidateManifest = copyGraph(join(root, "packages/turn"), join(scratch, "candidate"), "candidate");
+  if (JSON.stringify(Object.keys(manifest.exports)) !== JSON.stringify(Object.keys(candidateManifest.exports))) throw new Error("Changed public export keys");
+  const entries = Object.entries(manifest.exports).map(([key, target]) => ({ key, types: target.types, candidateTypes: candidateManifest.exports[key].types }));
   const rows = compareGraphs(join(scratch, "baseline"), join(scratch, "candidate"), entries, { documentationMode });
   const report = { documentationMode, baseline: oid, candidate: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), rows };
   writeFileSync(join(cache, "latest.json"), `${JSON.stringify(report, null, 2)}\n`);

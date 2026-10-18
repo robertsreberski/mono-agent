@@ -17,7 +17,7 @@ import { LEGACY_TOOL_ALIASES } from "../../tools/known-tools.js";
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.
  *
- * This mirrors `MemoryRecall`: agent-app injects a stdio MCP server through
+ * This mirrors `MemoryRecall`: app injects a stdio MCP server through
  * per-request runtime options. The adapter config remains the source of truth:
  * if Slack or Telegram is disabled, invalid, blocked by tool policy, or lacks an
  * allowed destination policy, the corresponding send tool is not exposed. When

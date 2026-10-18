@@ -1,4 +1,5 @@
 import { existsSync, renameSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,6 +91,32 @@ describe("clean-dist", () => {
     expect(existsSync(join(repoRoot, "packages/turn/types/x.d.ts"))).toBe(false);
     // A package that has no declaration-only output is traversed without changing its sources.
     expect(existsSync(join(repoRoot, "packages/config/src/index.ts"))).toBe(true);
+  });
+
+  it("removes only untracked retired turn products with the matching authored twin", async () => {
+    const repoRoot = await fixtureRepo(["packages/turn/src/nested", "packages/other/src"]);
+    execFileSync("git", ["init", "--quiet", repoRoot]);
+    const retired = ["index.js", "index.js.map", "nested/runner.mjs", "nested/runner.mjs.map", "map-only.js.map", "tracked-map.js"];
+    const retained = ["index.ts", "nested/runner.mts", "map-only.ts", "orphan.js", "orphan.js.map", "orphan.mjs", "orphan.mjs.map",
+      "tracked.ts", "tracked.js", "tracked.js.map", "tracked-map.ts", "tracked-map.js.map", "wrong-twin.ts", "wrong-twin.mjs", "index.d.ts"];
+    for (const file of [...retired, ...retained]) await writeFile(join(repoRoot, "packages/turn/src", file), file);
+    for (const file of ["index.ts", "index.js", "index.js.map"]) await writeFile(join(repoRoot, "packages/other/src", file), file);
+    execFileSync("git", ["-C", repoRoot, "add", "--", "packages/turn/src/tracked.js", "packages/turn/src/tracked.js.map", "packages/turn/src/tracked-map.js.map"]);
+
+    cleanBuildOutputs({ repoRoot, log: () => {} });
+
+    for (const file of retired) expect(existsSync(join(repoRoot, "packages/turn/src", file)), file).toBe(false);
+    for (const file of retained) expect(await readFile(join(repoRoot, "packages/turn/src", file), "utf8")).toBe(file);
+    for (const file of ["index.ts", "index.js", "index.js.map"]) expect(await readFile(join(repoRoot, "packages/other/src", file), "utf8")).toBe(file);
+    cleanBuildOutputs({ repoRoot, log: () => {} });
+    for (const file of retained) expect(existsSync(join(repoRoot, "packages/turn/src", file)), file).toBe(true);
+  });
+
+  it("preserves source products when a tracked-path inventory cannot be established", async () => {
+    const repoRoot = await fixtureRepo(["packages/turn/src"]);
+    for (const file of ["index.ts", "index.js"]) await writeFile(join(repoRoot, "packages/turn/src", file), file);
+    cleanBuildOutputs({ repoRoot, log: () => {} });
+    expect(await readFile(join(repoRoot, "packages/turn/src/index.js"), "utf8")).toBe("index.js");
   });
 
   it("is idempotent and tolerates absent workspace parents", async () => {

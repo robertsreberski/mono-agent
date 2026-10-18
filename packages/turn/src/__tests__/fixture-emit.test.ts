@@ -25,15 +25,14 @@ it("emits outside attested trees without changing the root runtime dependency di
   };
   mkdirSync(join(repository, "node_modules"), { recursive: true });
   mkdirSync(join(repository, "extras"));
-  put("package.json", '{"name":"@fixture/turn","type":"module","version":"1.0.0","exports":"./src/runtime/leaf.js"}');
+  put("package.json", '{"name":"@fixture/turn","type":"module","version":"1.0.0","exports":"./dist/runtime/leaf.js"}');
   put("tsconfig.fixtures.json", JSON.stringify({ compilerOptions: {
-    target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", allowJs: true,
-    checkJs: false, skipLibCheck: true, rootDir: "src",
+    target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext",
+    skipLibCheck: true, rootDir: "src",
   }, include: ["src/**/__tests__/**/fixtures/**/*.mts"] }));
   put("src/engine/__tests__/fixtures/projection-parity-worker.mts", 'import { version } from "typescript"; const name = "typescript"; const sdk = await import(`${name}`); const marker: string = (await import("../../../runtime/leaf.js")).marker; console.log(sdk.version === version && marker === "compiled" ? version : "mismatch");\n');
   put("src/__tests__/ai/fixtures/worker.mts", 'import { marker } from "../../../runtime/leaf.js"; console.log(marker);\n');
   put("src/__tests__/ai/fixtures/frozen.json", '{"nested":true}\n');
-  put("src/runtime/leaf.js", 'export const marker = "legacy";\n');
   put("src/runtime/leaf.ts", 'export const marker: string = "source";\n');
   put("dist/runtime/leaf.js", 'export const marker = "compiled";\n');
   put("src/engine/__tests__/fixtures/frozen.json", '{"format":"frozen"}\n');

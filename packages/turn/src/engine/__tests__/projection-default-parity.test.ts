@@ -1,11 +1,8 @@
-import { beforeAll, it, expect } from "vitest";
+import { it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, copyFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-
-const { assertFresh } = await import(new URL("../../../scripts/staged-build.mjs", import.meta.url).href);
-beforeAll(() => { assertFresh(); });
 
 it.each([3, 4])("matches frozen harness bytes for default context/checkpoints/v%s imports/repairs and runtime seams", async (version) => {
   const root = fileURLToPath(new URL("../../../../../", import.meta.url));

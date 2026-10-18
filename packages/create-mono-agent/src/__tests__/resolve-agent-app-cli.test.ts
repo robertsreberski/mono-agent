@@ -8,7 +8,7 @@ import { resolveAgentAppCliEntry } from "../resolve-agent-app-cli.js";
 describe("resolveAgentAppCliEntry", () => {
   it("resolves @mono-agent/app's mono-agent CLI bin to an existing file", () => {
     const entry = resolveAgentAppCliEntry();
-    // Points into the agent-app package and at its shipped CLI entry.
+    // Points into the app package and at its shipped CLI entry.
     expect(entry).toMatch(/[\\/]app[\\/]/u);
     expect(basename(entry)).toBe("cli.js");
     // The dependency must actually ship the file the bin promises.

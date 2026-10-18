@@ -60,10 +60,8 @@ export function emitTestFixtures(directory = packageDirectory) {
   // covers runtime template/expression imports without rewriting their values.
   writeFileSync(join(output, "resolve-fixture-imports.mjs"), `
 import { registerHooks } from "node:module";
-import { fileURLToPath } from "node:url";
 const prefix = ${JSON.stringify(pathToFileURL(`${output}/`).href)};
 const anchor = ${JSON.stringify(import.meta.url)};
-const source = ${JSON.stringify(pathToFileURL(join(directory, "src/")).href)};
 const production = ${JSON.stringify(pathToFileURL(join(directory, "dist/")).href)};
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (context.parentURL?.startsWith(prefix)) {
@@ -75,11 +73,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       }
     }
   }
-  const resolved = nextResolve(specifier, context);
-  if (resolved.url.startsWith(source) && !resolved.url.slice(source.length).includes("__tests__/")) {
-    return nextResolve(fileURLToPath(production + resolved.url.slice(source.length)), context);
-  }
-  return resolved;
+  return nextResolve(specifier, context);
 } });
 `);
   if (!existsSync(join(output, "engine/__tests__/fixtures/projection-parity-worker.mjs"))) throw new Error("Missing emitted parity worker");

@@ -28,7 +28,7 @@ function section(page: string, heading: string): string {
 }
 
 describe("cron adapter README parity", () => {
-  it("keeps direct overlap controls distinct from the agent-app config surface", async () => {
+  it("keeps direct overlap controls distinct from the app config surface", async () => {
     const readme = await readFile(readmeUrl, "utf8");
 
     expect(readme).toContain("programmatic-only");

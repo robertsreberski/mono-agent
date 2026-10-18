@@ -19,7 +19,7 @@ import { createToolContext } from "@mono-agent/turn/tools";
 import { describe, expect, it } from "vitest";
 
 // This function is deliberately never executed. Its body is a downstream
-// consumer compile contract for the declarations emitted by agent-runtime.
+// consumer compile contract for the declarations emitted by turn.
 function publicToolContextTypeContract(): void {
   const ctx = createToolContext({ workspace: "/tmp" });
 
@@ -80,7 +80,7 @@ function publicToolContextTypeContract(): void {
   void isPathAllowed("README.md", undefined, {});
 }
 
-describe("agent-runtime public ToolContext declarations", () => {
+describe("turn public ToolContext declarations", () => {
   it("retain the compile-only contract without executing direct tools", () => {
     expect(publicToolContextTypeContract).toBeTypeOf("function");
   });

@@ -503,7 +503,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         // tool is not created and behavior matches the legacy path.
         //
         // Each entry carries its description as well as its name: this is also
-        // what a subagent inherits (agent-app forwards it down the Agent tool
+        // what a subagent inherits (app forwards it down the Agent tool
         // seam), and a child renders its own index from these entries.
         ...(skillDisclosureEntries.length > 0 && options.skillsRoot !== undefined
           ? {

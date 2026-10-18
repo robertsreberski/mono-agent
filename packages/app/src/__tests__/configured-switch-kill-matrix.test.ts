@@ -2,7 +2,7 @@
 // Real public config, Web-shaped persisted delivery IDs, faux providers, tools
 // disabled. Each row: one producer killed at or after a durable boundary, two
 // fresh-process redeliveries of the same message, then one new explicit
-// delivery. Storage-level boundary matrices stay in agent-harness:
+// delivery. Storage-level boundary matrices stay in conversation:
 // managed-native-switch / managed-model-switch-storage / model-switch-return.
 import { afterEach, expect, it } from "vitest";
 import { TEST_TIMEOUT_MS, cleanupRoots, count, expectSettled, killAndRecover, resumeAfter, type Report } from "./fixtures/configured-switch-kill.js";

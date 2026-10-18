@@ -208,13 +208,13 @@ function statusByLabel(results) {
 
 async function loadRuntimeDependencies() {
   const importPackage = Function("specifier", "return import(specifier)");
-  const agentApp = await importPackage("@mono-agent/app");
+  const app = await importPackage("@mono-agent/app");
   const observability = await importPackage("@mono-agent/observability");
   return {
-    consumerContractNames: agentApp.consumerContractNames,
-    validateConsumerContractFixture: agentApp.validateConsumerContractFixture,
-    resolveAppArtifactDir: agentApp.resolveAppArtifactDir,
-    resolveAppTraceStaleAfterMs: agentApp.resolveAppTraceStaleAfterMs,
+    consumerContractNames: app.consumerContractNames,
+    validateConsumerContractFixture: app.validateConsumerContractFixture,
+    resolveAppArtifactDir: app.resolveAppArtifactDir,
+    resolveAppTraceStaleAfterMs: app.resolveAppTraceStaleAfterMs,
     auditRecordedRuns: observability.auditRecordedRuns,
   };
 }

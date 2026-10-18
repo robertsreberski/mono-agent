@@ -26,32 +26,6 @@ const paths = Object.fromEntries([
 // taggedNames is enforced by the focused policy test; no file-wide export ignores.
 export const retainedExports = [
   {
-    "file": "packages/turn/src/contracts/events.ts",
-    "names": [
-      "RuntimeObserver"
-    ],
-    "reason": "deferred: only references were redundant JSDoc removed by PR 12; kept so PR 12 stays declaration-preserving; removal candidate for PR 13's dead-code closure",
-    "citation": "packages/turn/src/contracts/events.ts",
-    "taggedNames": [
-      "RuntimeObserver"
-    ],
-    "declarationPreserving": true
-  },
-  {
-    "file": "packages/turn/src/providers/pi/oauth-compat.ts",
-    "names": [
-      "AuthPrompt",
-      "AuthEvent"
-    ],
-    "reason": "deferred: only references were redundant JSDoc removed by PR 12; kept so PR 12 stays declaration-preserving; removal candidate for PR 13's dead-code closure",
-    "citation": "packages/turn/src/providers/pi/oauth-compat.ts",
-    "taggedNames": [
-      "AuthPrompt",
-      "AuthEvent"
-    ],
-    "declarationPreserving": true
-  },
-  {
     "file": "packages/turn/src/contracts/model.ts",
     "names": [
       "RuntimeSdkId"
@@ -204,7 +178,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/engine/index.js",
+    "file": "packages/turn/src/engine/index.ts",
     "names": [
       "JsonlSessionRepo",
       "MemorySessionRepo",
@@ -230,7 +204,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/engine/sessions.js",
+    "file": "packages/turn/src/engine/sessions.ts",
     "names": [
       "resolveDurableNativeSessionRepo",
       "resolveSession",
@@ -260,7 +234,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/engine/owned-fs.js",
+    "file": "packages/turn/src/engine/owned-fs.ts",
     "names": [
       "OwnedFileDamagedError",
       "assertIdentity",

@@ -21,7 +21,7 @@ export type { ProcessJobControllerLimits } from "#turn/contracts/process";
 export type { ProcessJobsController } from "#turn/contracts/process";
 
 
-/** Bridge the typed host controller to agent-runtime's dependency-free seam. */
+/** Bridge the typed host controller to turn's dependency-free seam. */
 export function bridgeProcessJobsController(
   controller: ProcessJobsController,
 ): ProcessJobsController {

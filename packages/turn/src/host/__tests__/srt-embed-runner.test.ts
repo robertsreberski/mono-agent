@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
  * from the module's exports.
  */
 
-const RUNNER = fileURLToPath(new URL("../sandbox/srt-embed-runner.mjs", import.meta.url));
+const RUNNER = fileURLToPath(new URL("../../../dist/host/sandbox/srt-embed-runner.mjs", import.meta.url));
 
 // The runner refuses to launch on darwin unless SRT emitted the
 // unrestricted-network profile marker, then rewrites that marker in place. The

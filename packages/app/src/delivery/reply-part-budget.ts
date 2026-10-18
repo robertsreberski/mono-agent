@@ -10,7 +10,7 @@ export interface ReplyPartBudget {
 
 /**
  * One request-scoped count/deduplication budget shared by every rich-part
- * producer composed by agent-app. Part payloads remain owned by their producer;
+ * producer composed by app. Part payloads remain owned by their producer;
  * this object carries only stable identities and a bounded count.
  */
 export function createReplyPartBudget(maxParts = MAX_AGENT_REPLY_PARTS): ReplyPartBudget {

@@ -147,20 +147,6 @@ export type RuntimeToolLifecyclePersistence = Readonly<{
 
 export type RuntimeToolLifecycleSink = (event: RuntimeToolLifecycleEvent) => Promise<RuntimeToolLifecyclePersistence | undefined>;
 
-/**
- * Per-call or host-level observer merged by createObserverHub (telemetry/observer.js).
- * Loose on purpose: observer.js is not a kernel seam file.
- * @coreScanRetained
- */
-export type RuntimeObserver = {
-  /**
-   * Synchronous admission before queued lifecycle persistence.
-   */
-  recordToolLifecycle?: (event: RuntimeToolLifecycleEvent) => void;
-  onEvent?: (event: RuntimeEvent) => (void | Promise<void>);
-  flush?: () => (void | Promise<void>);
-};
-
 export type RuntimeEventLike = Readonly<{
   type?: string;
   [key: string]: unknown;

@@ -118,14 +118,52 @@ try {
 finish(0, "removed");
 `;
 
+// Transitional hygiene for checkouts built before turn switched to dist. Never
+// infer ownership from an extension alone, or traverse a symlink into source.
+function cleanRetiredTurnProducts(repoRoot, log) {
+  const relativeRoot = "packages/turn/src";
+  let directory = repoRoot;
+  for (const segment of relativeRoot.split("/")) {
+    directory = path.join(directory, segment);
+    try { if (!fs.lstatSync(directory).isDirectory()) return; }
+    catch (error) { if (error.code === "ENOENT") return; throw error; }
+  }
+  const gitOptions = { cwd: repoRoot, encoding: "utf8" };
+  const checkout = spawnSync("git", ["rev-parse", "--show-toplevel"], gitOptions);
+  const inventory = spawnSync("git", ["ls-files", "-z", "--", relativeRoot], gitOptions);
+  if (checkout.status !== 0 || inventory.status !== 0
+    || fs.realpathSync(checkout.stdout.trim()) !== fs.realpathSync(repoRoot)) {
+    log("skipped retired turn source products: tracked-path inventory unavailable");
+    return;
+  }
+  const tracked = new Set(inventory.stdout.split("\0"));
+  let count = 0;
+  function visit(relativeDir) {
+    for (const entry of fs.readdirSync(path.join(repoRoot, relativeDir), { withFileTypes: true })) {
+      const relativeFile = path.posix.join(relativeDir, entry.name);
+      if (entry.isDirectory()) { visit(relativeFile); continue; }
+      if (!entry.isFile() || tracked.has(relativeFile)) continue;
+      const product = /^(.*)\.(js|mjs)(?:\.map)?$/u.exec(entry.name);
+      if (!product) continue;
+      const twin = path.join(repoRoot, relativeDir, `${product[1]}.${product[2] === "mjs" ? "mts" : "ts"}`);
+      try { if (!fs.lstatSync(twin).isFile()) continue; }
+      catch (error) { if (error.code === "ENOENT") continue; throw error; }
+      fs.unlinkSync(path.join(repoRoot, relativeFile));
+      count++;
+    }
+  }
+  visit(relativeRoot);
+  log(`clean: removed ${count} retired turn source products`);
+}
+
 /**
- * Remove every build output directory so the next build cannot inherit compiled files whose
- * sources were deleted.
+ * Remove build output directories and untracked retired turn products so the next build cannot
+ * inherit compiled files whose sources were deleted.
  *
  * `dist/` is gitignored, so a long-lived checkout accumulates output for sources that no
  * longer exist and `pnpm pack` ships it: @mono-agent/telegram-adapter@0.15.3 published
- * `dist/ask.js` two releases after `src/ask.ts` was removed. The declaration-only `types/`
- * emit has the same stale-output risk even though most packages do not create that directory.
+ * `dist/ask.js` two releases after `src/ask.ts` was removed. All current builds emit
+ * to dist/. Old types/ directories are removed only as migration cleanup hygiene.
  *
  * Deliberately not wired into `pnpm run build`. It discards each package's
  * `dist/.tsbuildinfo`, which would turn every local and worktree build into a full rebuild of
@@ -157,6 +195,7 @@ export function cleanBuildOutputs({
       }
     }
   }
+  cleanRetiredTurnProducts(repoRoot, log);
   // Keep this exact transitional cleanup after the demo sources are removed. Long-lived
   // checkouts can still contain the ignored compiled CLI and must not retain a runnable demo.
   // Do not broaden this to demos/**: ordinary fixtures using that name are not retired output.

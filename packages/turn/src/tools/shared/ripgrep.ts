@@ -40,7 +40,7 @@ function packagedRgPath() {
   try {
     // Resolve the platform package relative to @vscode/ripgrep itself. pnpm's
     // strict layout does not expose this optional transitive dependency from
-    // agent-runtime, and importing the wrapper eagerly would throw when a
+    // turn, and importing the wrapper eagerly would throw when a
     // consumer intentionally installs with optional dependencies omitted.
     const wrapperEntry = requireFromHere.resolve("@vscode/ripgrep");
     const requireFromRipgrep = createRequire(wrapperEntry);

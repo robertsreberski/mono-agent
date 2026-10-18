@@ -16,6 +16,18 @@ the configuration schema.
 
 ---
 
+## Current artifact layout
+
+All eleven retained public entries resolve runtime and declarations from `dist`.
+The strict production build is one `tsc -p tsconfig.build.json`; `.mts` emits the
+adjacent sandbox runner `.mjs`. The earlier source materialization and separate
+`types` output are retired, not compatibility import paths. Use public entries,
+not implementation paths. Source/test checking and test-only fixture emission
+remain separate non-shipping tooling. Historical migration details below retain
+their original context.
+
+Contributors: run `pnpm run clean` once after updating a checkout built before this change.
+
 ## Unreleased package rename
 
 - Remove the old workspace package names in a breaking rename, with no aliases.
