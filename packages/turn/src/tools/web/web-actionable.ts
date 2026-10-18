@@ -40,7 +40,6 @@ import { normalizeSearchCountry } from "./web-search-country.js";
  * partial-success codes (`ok`, `no_results`, `ok_static_render_failed`,
  * `ok_excerpts_only`, `focus_no_match`, `focus_applied`) are assigned by the
  * caller, never through this mapping.
- * @type {ReadonlySet<string>}
  */
 const BLOCKED_WEB_CODES: ReadonlySet<string> = Object.freeze(new Set([
   "robots_denied",
@@ -58,10 +57,6 @@ const BLOCKED_WEB_CODES: ReadonlySet<string> = Object.freeze(new Set([
   "quota_reserved",
 ]));
 
-/**
- * @param {unknown} code
- * @returns {"blocked"|"error"}
- */
 export function webStatusForCode(code: unknown): "blocked" | "error" {
   return typeof code === "string" && BLOCKED_WEB_CODES.has(code) ? "blocked" : "error";
 }
@@ -73,9 +68,6 @@ const WEB_NEXT_ACTION_REASON_MAX_CHARS = 300;
  * Validate the research-contract fetch options shared by the controller fast
  * path and the local/parallel execution paths. Focus and link selection are
  * post-extraction views: they never change transport or cache identity.
- *
- * @param {{focus?: unknown, include_links?: unknown}} params
- * @returns {{focus: string|undefined, includeLinks: boolean, error?: {code: string, message: string}}}
  */
 export function normalizeWebResearchOptions(params: { focus?: unknown; include_links?: unknown }): { focus: string | undefined; includeLinks: boolean; error?: { code: string; message: string } } {
   let focus;
@@ -100,10 +92,6 @@ export function normalizeWebResearchOptions(params: { focus?: unknown; include_l
  * paragraphs) relevant to the focus string, preserving document order and
  * provenance. No model, no network, no randomness. A focus with no usable
  * terms constrains nothing and returns the full body.
- *
- * @param {unknown} body
- * @param {string} focus
- * @returns {{text: string, matchedBlocks: number, totalBlocks: number}}
  */
 export function applyFocusFilter(body: unknown, focus: string): { text: string; matchedBlocks: number; totalBlocks: number } {
   const source = String(body ?? "");
@@ -132,17 +120,11 @@ export function applyFocusFilter(body: unknown, focus: string): { text: string; 
  * candidate is not schema-valid — callers omit it rather than emitting a
  * broken or executable-from-prose hint. Continuations reuse the existing
  * line-range parameters and preserve the caller's extraction options.
- *
- * @param {unknown} tool
- * @param {any} args
- * @param {unknown} [reason]
- * @returns {{tool: string, args: any, reason?: string}|null}
  */
 export function buildWebNextAction(tool: unknown, args: any, reason?: unknown): { tool: string; args: any; reason?: string } | null {
   if (tool !== "WebFetch" && tool !== "WebSearch") return null;
   const valid = tool === "WebFetch" ? validWebFetchArgs(args) : validWebSearchArgs(args);
   if (valid === null) return null;
-  /** @type {{tool: string, args: any, reason?: string}} */
   const action: {tool: string, args: any, reason?: string} = { tool, args: valid };
   const note = typeof reason === "string" ? reason.trim().replace(/\s+/gu, " ") : "";
   if (note) action.reason = [...note].length > WEB_NEXT_ACTION_REASON_MAX_CHARS
@@ -154,7 +136,6 @@ export function buildWebNextAction(tool: unknown, args: any, reason?: unknown): 
 /**
  * Serialize the actionable envelope for the model. Compact single-line JSON;
  * undefined fields are omitted, never padded.
- * @param {Record<string, any>} envelope
  */
 export function formatActionableEnvelope(envelope: Record<string, any>): string {
   return JSON.stringify(envelope);
@@ -163,8 +144,6 @@ export function formatActionableEnvelope(envelope: Record<string, any>): string 
 /**
  * Parse a model-facing envelope back into an object. Used only by host code
  * (cache refresh); never applied to untrusted page or provider text.
- * @param {unknown} text
- * @returns {any|null}
  */
 export function parseActionableEnvelope(text: unknown): any | null {
   if (typeof text !== "string" || !text.startsWith("{")) return null;
@@ -181,10 +160,6 @@ export function parseActionableEnvelope(text: unknown): any | null {
  * Refresh a cached WebSearch envelope with the consuming run's budget without
  * re-querying. Returns the refreshed JSON text, or null when the cached text
  * is not a search envelope (legacy or corrupt entries fall back to a miss).
- *
- * @param {unknown} text
- * @param {{requestsUsed?: number, requestsThisCall?: number, requestsRemaining?: number, maxRequestsPerRun?: number, dispatchesUsed?: number, maxDispatches?: number, dispatchesRemaining?: number, retryInRun?: boolean}} budget
- * @param {unknown} requestedQuery
  */
 export function refreshCachedSearchEnvelope(text: unknown, budget: {
     requestsUsed?: number;
@@ -227,11 +202,6 @@ export function refreshCachedSearchEnvelope(text: unknown, budget: { requestsUse
 /**
  * Failure envelope shared by controller fast paths. Status derives from the
  * stable code via the blocked mapping; the summary is host-generated.
- *
- * @param {"WebSearch"|"WebFetch"} tool
- * @param {string} code
- * @param {string} summary
- * @param {{attempts?: number}} [telemetry]
  */
 export function webFailureEnvelope(tool: "WebSearch" | "WebFetch", code: string, summary: string, telemetry: { attempts?: number } = {}): { text: string; outcome: { status: "error" | "blocked"; code: string; retryable: boolean; attempts: number; backend: string; cacheHit: boolean; durationMs: number; bytes: number; truncated: boolean }; error: boolean } {
   const text = formatActionableEnvelope({ tool, status: webStatusForCode(code), code, summary });
@@ -261,11 +231,6 @@ export function webFailureEnvelope(tool: "WebSearch" | "WebFetch", code: string,
  * re-serialized without an empty next_actions key, outcome.next_actions is
  * updated or deleted to agree, and outcome.bytes is refreshed. Hints confer
  * no authority: only policy- and capability-allowed actions are emitted.
- *
- * @param {unknown} text
- * @param {any} outcome
- * @param {(action: any) => boolean} predicate
- * @returns {{text: string, outcome: any}|null}
  */
 export function filterEnvelopeNextActions(text: unknown, outcome: any, predicate: (action: any) => boolean): { text: string; outcome: any } | null {
   const parsed = parseActionableEnvelope(text);
@@ -315,14 +280,10 @@ function uniqueTerms(haystack: any) {
   return out;
 }
 
-/**
- * @param {any} args
- */
 function validWebFetchArgs(args: any) {
   if (!args || typeof args !== "object" || Array.isArray(args)) return null;
   const { url, start_line, max_lines, format, render, focus, include_links } = args;
   if (typeof url !== "string" || !isHttpUrl(url) || url.length > 8192) return null;
-  /** @type {Record<string, any>} */
   const valid: Record<string, any> = { url };
   if (start_line !== undefined) {
     if (!Number.isSafeInteger(start_line) || start_line < 1) return null;
@@ -351,14 +312,10 @@ function validWebFetchArgs(args: any) {
   return valid;
 }
 
-/**
- * @param {any} args
- */
 function validWebSearchArgs(args: any) {
   if (!args || typeof args !== "object" || Array.isArray(args)) return null;
   const { query, limit, alternate_queries, domains, exclude_domains, language, country, time_range } = args;
   if (typeof query !== "string" || !query.trim() || query.trim().length > 500) return null;
-  /** @type {Record<string, any>} */
   const valid: Record<string, any> = { query: query.trim() };
   if (limit !== undefined) {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) return null;

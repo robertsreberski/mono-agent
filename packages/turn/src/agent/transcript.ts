@@ -84,17 +84,6 @@ function summarizeTurn(turn: TranscriptTurn, { maxChars = DEFAULT_TURN_SUMMARY_C
 // is nothing usable to resume from. Older turns beyond `verbatimTurns` are
 // summarized into a one-paragraph snippet; only the trailing `verbatimTurns`
 // keep their full assistant text + tool detail.
-/**
- * @param {ReadonlyArray<*>} events
- * @param {Object} [options]
- * @param {number} [options.maxTurns]
- * @param {number} [options.verbatimTurns]
- * @param {number} [options.maxChars]
- * @param {number} [options.toolResultChars]
- * @param {number} [options.assistantTextChars]
- * @param {number} [options.turnSummaryChars]
- * @param {import('../runtime-brand.js').RuntimeBrand} [options.runtimeBrand]
- */
 export function buildTranscriptTailSnapshot(events: ReadonlyArray<any>, { maxTurns, verbatimTurns, maxChars, toolResultChars, assistantTextChars, turnSummaryChars, runtimeBrand, }?: {
   maxTurns?: number;
   verbatimTurns?: number;
@@ -113,17 +102,6 @@ export function buildTranscriptTailSnapshot(events: ReadonlyArray<any>, { maxTur
   }[];
   turns: any[];
 };
-/**
- * @param {ReadonlyArray<*>} events
- * @param {Object} [options]
- * @param {number} [options.maxTurns]
- * @param {number} [options.verbatimTurns]
- * @param {number} [options.maxChars]
- * @param {number} [options.toolResultChars]
- * @param {number} [options.assistantTextChars]
- * @param {number} [options.turnSummaryChars]
- * @param {import('../runtime-brand.js').RuntimeBrand} [options.runtimeBrand]
- */
 export function buildTranscriptTailSnapshot(events: readonly any[] | null | undefined, {
   maxTurns = DEFAULT_MAX_TURNS,
   verbatimTurns = DEFAULT_VERBATIM_TURNS,

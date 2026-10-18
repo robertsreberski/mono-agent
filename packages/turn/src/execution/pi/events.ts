@@ -86,34 +86,7 @@ function toolResultOutcome(result: any) {
 }
 
 /**
- * The slice of run state the stream subscriber reads and mutates. A structural
- * subset of the orchestrator's runState.
- * @typedef {object} StreamSubscriberState
- * @property {string[]} assistantTexts
- * @property {import("../../contracts/runtime.js").RuntimeDispatchProgress} [dispatchProgress]
- * @property {string[]} assistantThinking
- * @property {Set<unknown>} textDeltaIndexes
- * @property {Set<unknown>} thinkingDeltaIndexes
- * @property {Map<string, number>} toolStartTimes
- * @property {Map<string, any>} toolApprovals
- * @property {number} turnCount
- * @property {number} toolResultsSeen
- * @property {string|null} lastToolName
- * @property {boolean} maxTurnsHit
- * @property {number} toolExecutionsThisTurn
- * @property {boolean} toolFailureThisTurn
- * @property {boolean} structuredOutputCompletedThisTurn
- * @property {boolean} silentCompletedThisTurn
- * @property {{soleCall: boolean, visibleContent: boolean, pendingQuestion: boolean, failed: boolean, accepted: boolean, completed: boolean, liveInputRefusalReason?: () => ("live_input_consumed"|"live_input_uncertain"|null)}} silentTurn
- * @property {unknown} structuredResult
- * @property {{retries: number, failedAttempts: number|null, textMark: number, thinkingMark: number}} [requestRetry]
- */
-
-/**
  * Subscribe to the engine driver; runtime owns maxTurns abort and event presentation.
- * @param {StreamSubscriberState} runState
- * @param {{onEvent: (event: any) => void, options: any, toolLimits: any, harness: any, sdk: string, model: string, runtimeWarnings?: any[]}} deps
- * @returns {(event: any) => void}
  */
 export function createStreamSubscriber(runState: StreamSubscriberState, { onEvent, options, toolLimits, harness, sdk, model, runtimeWarnings }: {
     onEvent: (event: any) => void;

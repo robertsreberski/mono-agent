@@ -7,79 +7,22 @@
 import { calculateCost as calculatePiCost } from "@earendil-works/pi-ai";
 import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
 
-/**
- * @typedef {Object} ParsedModelReference
- * @property {string} provider
- * @property {string} model
- */
-
-/**
- * @typedef {Object} NormalizedPricing
- * @property {number|null} input
- * @property {number|null} cacheRead
- * @property {number|null} cacheWrite
- * @property {number|null} output
- * @property {string} source
- * @property {boolean} priced
- */
-
-/**
- * @typedef {Object} PricingInputRow
- * Duck-typed pricing row a host (or the pi catalog) supplies: either
- * camelCase or the provider's `*_per_million` snake_case spelling.
- * @property {number|string} [input]
- * @property {number|string} [input_per_million]
- * @property {number|string} [cacheRead]
- * @property {number|string} [cachedInput]
- * @property {number|string} [cached_input_per_million]
- * @property {number|string} [cacheWrite]
- * @property {number|string} [cache_write_per_million]
- * @property {number|string} [cache_creation_per_million]
- * @property {number|string} [output]
- * @property {number|string} [output_per_million]
- */
-
-/**
- * @param {*} value
- * @returns {number|null}
- */
 function finiteOrNull(value: any): number | null {
   if (value == null || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-/**
- * @param {*} value
- * @param {number} [fallback]
- * @returns {number}
- */
 function rate(value: any, fallback: number | undefined = 0): number {
   const n = finiteOrNull(value);
   return n == null ? fallback : n;
 }
 
-/**
- * @param {PricingInputRow|null|undefined} pricing
- * @param {Object} [options]
- * @param {string} [options.source]
- * @param {boolean} [options.priced]
- * @param {number} [options.missing]
- * @returns {NormalizedPricing|null}
- */
 export function normalizePricing(pricing: PricingInputRow | null | undefined, { source, priced, missing }?: {
   source?: string;
   priced?: boolean;
   missing?: number;
 }): NormalizedPricing | null;
-/**
- * @param {PricingInputRow|null|undefined} pricing
- * @param {Object} [options]
- * @param {string} [options.source]
- * @param {boolean} [options.priced]
- * @param {number} [options.missing]
- * @returns {NormalizedPricing|null}
- */
 export function normalizePricing(pricing: PricingInputRow | null | undefined, { source, priced = true, missing = 0 }: { source?: string | undefined; priced?: boolean | undefined; missing?: number | undefined; } | undefined = {}): NormalizedPricing | null {
   if (!pricing || typeof pricing !== "object") return null;
   const input = rate(pricing.input ?? pricing.input_per_million, missing);
@@ -100,30 +43,17 @@ export function normalizePricing(pricing: PricingInputRow | null | undefined, { 
 }
 
 /**
- * @param {string} source
- * @returns {NormalizedPricing}
-  * @coreScanRetained
+ * @coreScanRetained
  */
 export function zeroPricing(source: string): NormalizedPricing {
   return { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, source, priced: true };
 }
 
-/**
- * @returns {NormalizedPricing}
- */
 export function unknownPricing(): NormalizedPricing {
   return { input: null, cacheRead: null, cacheWrite: null, output: null, source: "unknown", priced: false };
 }
 
-/**
- * @param {string} reference
- * @returns {ParsedModelReference|null}
- */
 export function parseReference(reference: string): ParsedModelReference | null;
-/**
- * @param {string} reference
- * @returns {ParsedModelReference|null}
- */
 export function parseReference(reference: string | undefined): ParsedModelReference | null {
   if (typeof reference !== "string" || reference.length === 0 || reference.trim() !== reference) return null;
   const separator = reference.indexOf(":");
@@ -135,9 +65,7 @@ export function parseReference(reference: string | undefined): ParsedModelRefere
 }
 
 /**
- * @param {string} baseUrl
- * @returns {boolean}
-  * @coreScanRetained
+ * @coreScanRetained
  */
 export function isPrivateHost(baseUrl: string): boolean {
   try {
@@ -156,9 +84,7 @@ export function isPrivateHost(baseUrl: string): boolean {
 }
 
 /**
- * @param {PricingInputRow} [pricing]
- * @returns {boolean}
-  * @coreScanRetained
+ * @coreScanRetained
  */
 export function pricingHasRates(pricing: PricingInputRow | undefined = {}): boolean {
   return [
@@ -173,24 +99,18 @@ export function pricingHasRates(pricing: PricingInputRow | undefined = {}): bool
  * Live pricing from pi-ai's builtin catalog (getBuiltinModel). The parsed
  * provider is already the Pi catalog provider id; the model remains opaque and
  * may contain additional colons or slashes.
- * @param {ParsedModelReference|null|undefined} parsed
- * @returns {import("@earendil-works/pi-ai").Model<any>|null}
  */
 function piCatalogModel(parsed: ParsedModelReference | null | undefined): import("@earendil-works/pi-ai").Model<any> | null {
   if (!parsed?.provider || !parsed.model) return null;
   try {
     // `provider` may be caller-supplied (including custom providers), wider
     // than pi-ai's built-in provider union; guard the catalog read below.
-    return getPiModel(/** @type {*} */ ((parsed.provider) as any), parsed.model) || null;
+    return getPiModel(((parsed.provider) as any), parsed.model) || null;
   } catch {
     return null;
   }
 }
 
-/**
- * @param {ParsedModelReference|null|undefined} parsed
- * @returns {NormalizedPricing|null}
- */
 function piCatalogPricing(parsed: ParsedModelReference | null | undefined): NormalizedPricing | null {
   const model = piCatalogModel(parsed);
   return model?.cost ? normalizePricing(model.cost, { source: "pi-catalog" }) : null;
@@ -202,22 +122,10 @@ function piCatalogPricing(parsed: ParsedModelReference | null | undefined): Norm
 // The pricing helpers below (`normalizePricing`, `zeroPricing`, `unknownPricing`,
 // `pricingHasRates`, `isPrivateHost`, `parseReference`) are exported so hosts
 // can build their own resolvers without re-implementing the row-shape conversion.
-/**
- * @param {Object} [options]
- * @param {(parsed: ParsedModelReference) => (NormalizedPricing|null)} [options.resolveCustomPricing]
- * @param {string} [options.model]
- * @returns {NormalizedPricing}
- */
 export function resolvePricing({ resolveCustomPricing, model }?: {
   resolveCustomPricing?: (parsed: ParsedModelReference) => (NormalizedPricing | null);
   model?: string;
 }): NormalizedPricing;
-/**
- * @param {Object} [options]
- * @param {(parsed: ParsedModelReference) => (NormalizedPricing|null)} [options.resolveCustomPricing]
- * @param {string} [options.model]
- * @returns {NormalizedPricing}
- */
 export function resolvePricing({ resolveCustomPricing, model }: { resolveCustomPricing?: ((parsed: ParsedModelReference) => (NormalizedPricing | null)) | undefined; model?: string | undefined; } | undefined = {}): NormalizedPricing {
   const parsed = parseReference(model as string);
   if (!parsed) return unknownPricing();
@@ -229,11 +137,6 @@ export function resolvePricing({ resolveCustomPricing, model }: { resolveCustomP
     || unknownPricing();
 }
 
-/**
- * @param {any} model
- * @param {{input: number, output: number, cacheRead: number, cacheWrite: number}} usage
- * @returns {number}
- */
 function estimatePiCatalogCost(model: any, usage: { input: number; output: number; cacheRead: number; cacheWrite: number; }): number {
   return calculatePiCost(model, {
     ...usage,
@@ -242,18 +145,6 @@ function estimatePiCatalogCost(model: any, usage: { input: number; output: numbe
   }).total;
 }
 
-
-/**
- * @param {Object} [options]
- * @param {(parsed: ParsedModelReference) => (NormalizedPricing|null)} [options.resolveCustomPricing]
- * @param {string} [options.model]
- * @param {number} [options.inputTokens]
- * @param {number} [options.outputTokens]
- * @param {number} [options.cachedTokens]
- * @param {number} [options.cacheWriteTokens]
- * @param {number} [options.cacheCreationTokens]
- * @returns {number|null}
- */
 export function estimateCost({ resolveCustomPricing, model, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, cacheCreationTokens, }?: {
   resolveCustomPricing?: (parsed: ParsedModelReference) => (NormalizedPricing | null);
   model?: string;
@@ -263,17 +154,6 @@ export function estimateCost({ resolveCustomPricing, model, inputTokens, outputT
   cacheWriteTokens?: number;
   cacheCreationTokens?: number;
 }): number | null;
-/**
- * @param {Object} [options]
- * @param {(parsed: ParsedModelReference) => (NormalizedPricing|null)} [options.resolveCustomPricing]
- * @param {string} [options.model]
- * @param {number} [options.inputTokens]
- * @param {number} [options.outputTokens]
- * @param {number} [options.cachedTokens]
- * @param {number} [options.cacheWriteTokens]
- * @param {number} [options.cacheCreationTokens]
- * @returns {number|null}
- */
 export function estimateCost({
   resolveCustomPricing,
   model,

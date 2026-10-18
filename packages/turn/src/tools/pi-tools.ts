@@ -148,11 +148,6 @@ function withToolLimits(name: any, params: any, limits: any = {}) {
   return next;
 }
 
-/**
- * @param {any} name
- * @param {any} params
- * @param {{cwd?: any, toolLimits?: any, ctx?: any}} [options]
- */
 export function normalizePiBuiltinToolParams(name: any, params: any, { cwd, toolLimits, ctx }: { cwd?: any; toolLimits?: any; ctx?: any } = {}): any {
   return withToolLimits(name, withAbsolutePaths(name, params, cwd, ctx), toolLimits);
 }
@@ -193,14 +188,6 @@ function isStructuredToolRun(value: any) {
     && typeof value.outcome === "object";
 }
 
-/**
- * @param {any} name
- * @param {any} label
- * @param {any} description
- * @param {any} parameters
- * @param {any} execute
- * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: any, ownedForegroundProcessController?: any, forceSequential?: boolean}} [options]
- */
 function createBuiltinTool(name: any, label: any, description: any, parameters: any, execute: any, {
   cwd,
   onEvent,
@@ -265,7 +252,7 @@ function createBuiltinTool(name: any, label: any, description: any, parameters: 
           message: "Bash.timeout is deprecated; use timeout_ms for exact millisecond semantics.",
         });
       }
-      const details = /** @type {any} */ (({
+      const details = (({
         tool: name,
         ...(SENSITIVE_RESULT_PARAMS.has(name) ? {} : { params: normalized }),
         ...(structured ? { outcome: structured.outcome } : {}),
@@ -296,10 +283,6 @@ function createBuiltinTool(name: any, label: any, description: any, parameters: 
  * preserved on the shared-root path; on the filePath path the name→file binding is
  * fixed at build time and the model can only pick an enum value, so there is no
  * name-driven traversal surface.
- */
-/**
- * @param {any[]} [skillNames]
- * @param {{skillsRoot?: any, dataDir?: any, skills?: any[]}} [options]
  */
 function readSkillTool(skillNames: any[] = [], { skillsRoot, dataDir, skills = [] }: { skillsRoot?: any; dataDir?: any; skills?: any[]; } = {}) {
   const sharedRoot = skillsRoot
@@ -377,10 +360,6 @@ export function createStructuredOutputTool(outputSchema: any, onStructuredOutput
   };
 }
 
-/**
- * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, ownedForegroundProcessController?: any, processJobsAvailability?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, askParentController?: any, finishSilentlyController?: any, silentTurnState?: any, toolExposure?: any, subagentContext?: any, ctx?: any}} [options]
- */
 export function getPiBuiltinTools(allowedTools: any, {
   disallowedTools = [],
   skillNames = [],

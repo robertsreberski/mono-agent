@@ -2,20 +2,16 @@ export type RuntimeNativePreparationStorage = import("../../contracts/native-sto
 import { createManagedNativeJournalStorage as storage } from "../../engine/native-journal-storage.js";
 import { checkNativeInheritedPrefix } from "./handoff-producer.js";
 
-/** @typedef {import('../../contracts/native-storage.js').RuntimeNativePreparationStorage} RuntimeNativePreparationStorage */
-/** Administrative storage capability; the host owns policy/authority. Keep one
+/**
+ * Administrative storage capability; the host owns policy/authority. Keep one
  * factory, including the readonly-input copies and exact-coordinate normalization.
- * @param {Parameters<typeof storage>[0]} options
- * @returns {RuntimeNativePreparationStorage & {
- *   checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage['checkInheritedPrefix']>,
- *   inspectCurrentJournal: NonNullable<RuntimeNativePreparationStorage['inspectCurrentJournal']>
- * }} */
+ */
 export function createManagedNativeJournalStorage(options: Parameters<typeof storage>[0]): RuntimeNativePreparationStorage & {
     checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]>;
     inspectCurrentJournal: NonNullable<RuntimeNativePreparationStorage["inspectCurrentJournal"]>;
 } {
   const native = storage(options);
-  return /** @type {ReturnType<typeof createManagedNativeJournalStorage>} */ (({
+  return (({
     ...native,
     checkInheritedPrefix: (messages, model, compaction, prefixTokenCap) =>
       checkNativeInheritedPrefix([...messages], model, compaction, prefixTokenCap),

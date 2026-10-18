@@ -9,14 +9,14 @@ export function summaryThinkingLevel(model: any, effort: string = "auto"): "mini
   const requested = effort === "auto"
     ? levels.includes("off") ? "off" : levels.includes("low") ? "low" : levels[0]
     : effort === "none" ? "off" : effort === "ultra" ? "max" : effort;
-  return clampThinkingLevel(model, /** @type {import('@earendil-works/pi-ai').ModelThinkingLevel} */ ((requested) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"));
+  return clampThinkingLevel(model, ((requested) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"));
 }
 
-/** The kit supplies the text target (including its existing split-turn division).
+/**
+ * The kit supplies the text target (including its existing split-turn division).
  * Adaptive thinking shares that ceiling, unlike Pi's legacy Anthropic adjustment.
  * Explicit small text targets remain useful; a context/model clamp must not reduce
  * the answer below that target, or below Pi's minimum for larger targets.
- * @param {any} model @param {any} context @param {any} options @param {string} effort @param {number|undefined} minimumUsefulAnswer
  */
 export function summaryRequestOptions(model: any, context: any, options: any = {}, effort: string = "auto", minimumUsefulAnswer: number | undefined = undefined): {
     canDispatch: boolean;

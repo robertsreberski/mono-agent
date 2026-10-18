@@ -7,9 +7,6 @@ export const MAX_WEB_SEARCH_REQUESTS_PER_RUN = 20;
  * Private mutable state shared by every WebSearch controller created for one
  * logical runtime run. Router retries receive the same object, while child and
  * later runs receive a fresh one.
- *
- * @param {any} searchConfig
- * @param {any} [existing]
  */
 export function createWebSearchRunState(searchConfig: any, existing?: any): any {
   if (isWebSearchRunState(existing)) return existing;

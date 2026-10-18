@@ -48,10 +48,7 @@ function assistantCountOf(messages: any) {
  * excluded from the transcript estimate. Both sides are non-negative integers,
  * so `x >= t` iff `x > t - 1` and the exact mapping is
  * `reserveTokens = piWindow - (triggerTokens - fixedOverhead) + 1`.
- * @param {number} piWindow
- * @param {number} triggerTokens
- * @param {number} fixedOverheadTokens
- * @returns {number|null} null when the trigger is not expressible in this window
+ * @returns null when the trigger is not expressible in this window
  */
 export function midRunReserveTokens(piWindow: number, triggerTokens: number, fixedOverheadTokens: number): number | null {
   const window = Number(piWindow) || 0;
@@ -65,7 +62,6 @@ export function midRunReserveTokens(piWindow: number, triggerTokens: number, fix
  * resolved from the harness's own `Models` collection when available (that is
  * what `prepareCompactionThreshold` uses via `lane.models.getModel`), falling
  * back to the bridge's live model.
- * @param {any} harness
  */
 function piThresholdWindow(harness: any) {
   const live = typeof harness?.getModel === "function" ? harness.getModel() : null;
@@ -91,9 +87,6 @@ function piThresholdWindow(harness: any) {
  * 457-462), and the rebuilt context is exactly `[summary, ...retainedTail]`
  * (execution/pi/driver-adapter.js projectContext), so the run-owned messages that
  * survive are the last `min(retained, runOwned)` of them.
- * @param {Array<any>} contextBefore
- * @param {number} baseline
- * @param {number} retainedTailLength
  */
 export function midRunBaselineAdjustment(contextBefore: Array<any>, baseline: number, retainedTailLength: number): {
     baselineAfter: number;
@@ -134,8 +127,6 @@ function addCarriedUsage(target: any, addition: any) {
  * Arm Pi's checkpoint compaction for the lifetime of one prompt with this
  * bridge's guarded decision installed, and return the disarm handle. Must be
  * called BEFORE `harness.prompt()`; `disarm()` is idempotent and never throws.
- * @param {any} runState
- * @param {{harness: any, options: any, reference: string, onEvent: (event: any) => void, runtimeWarnings: Array<any>}} deps
  */
 export async function armMidRunCompaction(runState: any, { harness, options, reference, onEvent, runtimeWarnings }: {
     harness: any;
@@ -161,10 +152,6 @@ export async function armMidRunCompaction(runState: any, { harness, options, ref
   return controller;
 }
 
-/**
- * @param {any} runState
- * @param {{harness: any, options: any, reference: string, onEvent: (event: any) => void, runtimeWarnings: Array<any>}} deps
- */
 export function createMidRunCompaction(runState: any, { harness, options, reference, onEvent, runtimeWarnings }: {
     harness: any;
     options: any;
@@ -201,14 +188,10 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
 
   let armed = false;
   let disposed = false;
-  /** @type {null | (() => void)} */
   let removeHook: (() => void) | null = null;
-  /** @type {null | (() => void)} */
   let unsubscribe: (() => void) | null = null;
   let inFlight = false;
-  /** @type {null | {transcriptTokens: number, assistantCount: number}} */
   let lastAttempt: { transcriptTokens: number; assistantCount: number; } | null = null;
-  /** @type {null | any} */
   let pending: any = null;
   let warnedIneffective = false;
   const stats = { evaluations: 0, attempts: 0, applied: 0, skipped: 0, failed: 0, ineffective: 0 };
@@ -217,8 +200,6 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
    * Report ONCE per run that the transcript is over the trigger but its shape
    * cannot be reduced. Repeating it every round would be noise, and staying
    * completely silent would hide a run that is knowingly above the price step.
-   * @param {number} projectedSavings
-   * @param {number} summarizableTokens
    */
   function warnIneffectiveOnce(projectedSavings: number, summarizableTokens: number) {
     stats.ineffective += 1;
@@ -254,8 +235,6 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
 
   /**
    * Cheap vetoes evaluated before any paid summary request.
-   * @param {any} event
-   * @param {{contextBefore: Array<any>, transcriptTokens: number, assistantCount: number}} measured
    */
   function veto(event: any, measured: { contextBefore: Array<any>; transcriptTokens: number; assistantCount: number; }) {
     if (options.abortSignal?.aborted || event?.signal?.aborted) return { reason: "aborted" };
@@ -296,7 +275,6 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
     );
     const emit = createCompactionEmitter(accounting, started);
 
-    /** @type {null | {contextBefore: Array<any>, transcriptTokens: number, assistantCount: number}} */
     let measured: { contextBefore: Array<any>; transcriptTokens: number; assistantCount: number; } | null = null;
     const guarded = createGuardedCompactionHook({
       harness,
@@ -415,7 +393,6 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
    * then emits `compaction_end`, so the applied state is published here rather
    * than optimistically inside the hook. An aborted or declined task therefore
    * leaves nothing half-applied.
-   * @param {any} event
    */
   function onCompactionEnd(event: any) {
     if (!event || event.type !== "compaction_end" || event.reason !== "threshold") return;

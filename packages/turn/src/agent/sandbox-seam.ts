@@ -43,89 +43,6 @@
 
 // @ts-check
 
-/**
- * @typedef {Object} SandboxCommandSpec
- * @property {string} command
- * @property {ReadonlyArray<string>} [args]
- * @property {string} [cwd]
- * @property {Record<string, string|undefined>} [env]
- * @property {boolean} [allowLocalBinding] Trusted per-command capability.
- */
-
-/**
- * @typedef {Object} PreparedSandboxCommand
- * @property {string} command
- * @property {ReadonlyArray<string>} args
- * @property {string} cwd
- * @property {Record<string, string|undefined>} [env]
- * @property {boolean} [allowLocalBinding]
- * @property {boolean} sandboxed
- * @property {string} [sandboxSettingsPath]
- * @property {() => Promise<void>} [cleanup]
- */
-
-/**
- * @typedef {Object} SandboxNetworkPolicyLike
- * @property {string} [mode]
- * @property {ReadonlyArray<string>} [allowlist]
- */
-
-/**
- * @typedef {Object} SandboxPolicy
- * Opaque, host-defined sandbox policy. The kernel itself only ever inspects
- * `mode` (passthroughSandbox's fail-closed check) and `network.mode`
- * (passthroughSandbox's networkAllowsUrl) — every other field (root,
- * readableRoots, writableRoots, denyWrite, ...) is read directly off whatever
- * the injected `mergePolicies` returns by path-resolver.js, and is opaque
- * pass-through data as far as this module is concerned. Real hosts get the
- * full, richly-typed policy from @mono-agent/turn/host
- * (`packages/turn/src/host/sandbox/index.ts`), whose `SandboxPolicy` is a
- * structural superset of this shape.
- * @property {string} [mode]
- * @property {SandboxNetworkPolicyLike} [network]
- * @property {ReadonlyArray<string>} [readableRoots]
- * @property {ReadonlyArray<string>} [writableRoots]
- * @property {ReadonlyArray<string>} [protectedRoots] Host-internal roots denied for both reads and writes.
- * @property {ReadonlyArray<string>} [denyWrite]
- * @property {string} [root]
- */
-
-/**
- * @typedef {Object} RuntimeSandboxEngine
- * Optional concrete sandboxing backend a caller can hand to `prepareCommand`
- * (matches @mono-agent/turn/host's `SandboxEngine`). Not used by
- * `passthroughSandbox` (see module doc: adapters live in host/sandbox, not
- * the kernel) — documented here only because it is part of the
- * `prepareCommand` input shape real implementations accept.
- * @property {() => Promise<boolean>} isAvailable
- * @property {(command: SandboxCommandSpec, policy: SandboxPolicy) => Promise<PreparedSandboxCommand>} prepareCommand
- */
-
-/**
- * @typedef {Object} PrepareSandboxedCommandInput
- * @property {SandboxPolicy} [policy]
- * @property {RuntimeSandboxEngine} [engine]
- * @property {SandboxCommandSpec} command
- */
-
-/**
- * @typedef {Object} RuntimeSandbox
- * The injectable sandbox seam. A host constructs one (or reuses
- * `passthroughSandbox`) and passes it to `createRuntime({sandbox})`.
- * @property {(configured: (SandboxPolicy|undefined), request: (SandboxPolicy|undefined)) => (SandboxPolicy|undefined)} mergePolicies
- *   Monotonic tighten-only merge (I13): the result must never allow anything
- *   `configured` alone would have denied.
- * @property {(input: PrepareSandboxedCommandInput) => Promise<PreparedSandboxCommand>} prepareCommand
- *   Resolves a command spec into whatever the underlying process spawner
- *   should actually exec (identity when no enforcement is needed).
- * @property {(policy: (SandboxPolicy|undefined), url: string) => boolean} networkAllowsUrl
- *   Whether a tool call to `url` is allowed under `policy`.
- * @property {ReadonlyArray<string>} [additionalReadPaths]
- *   Optional host-provided extra read-allowed roots beyond the tool
- *   context's workspace/repoRoot. Not consumed by any kernel helper today;
- *   documented for forward-compatibility with host-side path resolution.
- */
-
 const SANDBOX_UNAVAILABLE_CODE = "sandbox_unavailable";
 
 /**
@@ -137,10 +54,6 @@ const SANDBOX_UNAVAILABLE_CODE = "sandbox_unavailable";
 class SandboxUnavailableError extends Error {
   declare code: string;
   declare details: Record<string, unknown>;
-  /**
-   * @param {string} message
-   * @param {Record<string, unknown>} [details]
-   */
   constructor(message: string, details: Record<string, unknown> | undefined = {}) {
     super(message);
     this.name = "SandboxUnavailableError";
@@ -149,19 +62,10 @@ class SandboxUnavailableError extends Error {
   }
 }
 
-/**
- * @param {string|undefined} mode
- * @returns {boolean}
- */
 function isRealSandboxMode(mode: string | undefined): boolean {
   return typeof mode === "string" && mode !== "off";
 }
 
-/**
- * @param {SandboxNetworkPolicyLike|undefined} configured
- * @param {SandboxNetworkPolicyLike|undefined} request
- * @returns {SandboxNetworkPolicyLike|undefined}
- */
 function mergeNetwork(configured: SandboxNetworkPolicyLike | undefined, request: SandboxNetworkPolicyLike | undefined): SandboxNetworkPolicyLike | undefined {
   if (configured === undefined) return request;
   if (request === undefined) return configured;
@@ -171,11 +75,6 @@ function mergeNetwork(configured: SandboxNetworkPolicyLike | undefined, request:
   return configured.mode === "all" ? request : configured;
 }
 
-/**
- * @param {SandboxPolicy|undefined} configured
- * @param {SandboxPolicy|undefined} request
- * @returns {SandboxPolicy|undefined}
- */
 function mergePolicies(configured: any, request: any): any {
   if (configured === undefined) return request;
   if (request === undefined) return configured;
@@ -202,8 +101,6 @@ function mergePolicies(configured: any, request: any): any {
  * Fails closed the moment a policy actually demands enforcement, rather than
  * silently returning an unsandboxed command under a policy that looks
  * enforced.
- * @param {PrepareSandboxedCommandInput} input
- * @returns {Promise<PreparedSandboxCommand>}
  */
 async function prepareCommand({ policy, command }: PrepareSandboxedCommandInput): Promise<PreparedSandboxCommand> {
   if (policy === undefined || !isRealSandboxMode(policy.mode)) {
@@ -217,11 +114,6 @@ async function prepareCommand({ policy, command }: PrepareSandboxedCommandInput)
   );
 }
 
-/**
- * @param {SandboxPolicy|undefined} policy
- * @param {string} _url
- * @returns {boolean}
- */
 function networkAllowsUrl(policy: any, _url: string): boolean {
   if (policy === undefined) return true;
   // A policy whose mode demands real enforcement must fail closed on network
@@ -234,7 +126,6 @@ function networkAllowsUrl(policy: any, _url: string): boolean {
   return policy.network === undefined || policy.network.mode === "all";
 }
 
-/** @type {RuntimeSandbox} */
 export const passthroughSandbox: RuntimeSandbox = {
   mergePolicies,
   prepareCommand,
@@ -275,13 +166,19 @@ export type SandboxNetworkPolicyLike = {
  * readableRoots, writableRoots, denyWrite, ...) is read directly off whatever
  * the injected `mergePolicies` returns by path-resolver.js, and is opaque
  * pass-through data as far as this module is concerned. Real hosts get the
- * full, richly-typed policy from
+ * full, richly-typed policy from @mono-agent/turn/host
+ * (`packages/turn/src/host/sandbox/index.ts`), whose `SandboxPolicy` is a
+ * structural superset of this shape.
+ * @property protectedRoots Host-internal roots denied for both reads and writes.
  */
 export type SandboxPolicy = any;
 
 /**
  * Optional concrete sandboxing backend a caller can hand to `prepareCommand`
- * (matches
+ * (matches @mono-agent/turn/host's `SandboxEngine`). Not used by
+ * `passthroughSandbox` (see module doc: adapters live in host/sandbox, not
+ * the kernel) — documented here only because it is part of the
+ * `prepareCommand` input shape real implementations accept.
  */
 export type RuntimeSandboxEngine = any;
 

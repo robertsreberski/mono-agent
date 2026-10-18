@@ -2,13 +2,9 @@
  * Run a single prompt on the harness and wait for it to go idle. A stream error
  * surfaces on the harness (not a throw), so a thrown prompt is captured as
  * runError; waitForIdle always runs afterward.
- * @param {any} harness
- * @param {string} promptText
- * @param {Array<any>} promptImages
- * @param {{onOperationAdmitted?: (operationId: string) => void}} [hooks]
+ * @param [hooks]
  *   `onOperationAdmitted` fires as soon as Pi admits the run, before any
  *   provider request, so the live-input epoch can own the operation up front.
- * @returns {Promise<{runError: any, operationId?: string, suspended?: boolean}>}
  */
 export function runHarnessPrompt(harness: any, promptText: string, promptImages: Array<any>, hooks?: {
     onOperationAdmitted?: (operationId: string) => void;

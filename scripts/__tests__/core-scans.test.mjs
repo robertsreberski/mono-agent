@@ -250,3 +250,25 @@ describe("core scan policy", () => {
     expect(JSON.parse(readFileSync(resolve(directory, "knip-default.json"), "utf8"))).toHaveProperty("error");
   });
 });
+
+test("retains only exact existing declaration-preservation aliases at their registered owners", () => {
+  const aliases = retainedExports.filter((entry) => entry.declarationPreserving);
+  expect(aliases.flatMap((entry) => entry.names.map((name) => `${entry.file}:${name}`)).sort()).toEqual([
+    "packages/turn/src/contracts/events.ts:RuntimeObserver",
+    "packages/turn/src/providers/pi/oauth-compat.ts:AuthPrompt",
+    "packages/turn/src/providers/pi/oauth-compat.ts:AuthEvent",
+    "packages/turn/src/contracts/model.ts:RuntimeSdkId",
+    "packages/turn/src/contracts/runtime.ts:AgentRuntimeInstance",
+    "packages/turn/src/contracts/runtime.ts:RuntimeBridge",
+    "packages/turn/src/contracts/runtime.ts:RuntimeBridgeDescriptor",
+  ].sort());
+  for (const entry of aliases) {
+    const ast = ts.createSourceFile(entry.file, readFileSync(resolve(root, entry.file), "utf8"), ts.ScriptTarget.Latest, true);
+    const exports = ast.statements.filter((node) => ts.isTypeAliasDeclaration(node)
+      && node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)).map((node) => node.name.text);
+    for (const name of entry.names) expect(exports, `${entry.file}:${name}`).toContain(name);
+    expect(entry.taggedNames).toEqual(entry.names);
+    const citation = readFileSync(resolve(root, entry.citation), "utf8");
+    for (const name of entry.names) expect(citation, entry.citation).toContain(name);
+  }
+});

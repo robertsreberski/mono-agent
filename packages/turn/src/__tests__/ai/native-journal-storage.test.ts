@@ -26,7 +26,7 @@ async function fixture(extra = {}) {
     await store.writeRecord("owner_binding", { kind: "host", ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
     await store.writeRecord("handle_binding", { handleId: store.metadata.id, baseRevision: 0, authoritative: true, model: { provider: from.provider, id: from.model, api: from.api } });
   }, "bind");
-  await store.appendMessage({ role: "user", content: "Fictional source fact", timestamp: 17 }, /** @type {any} */ ("source-message")); await store.sync();
+  await store.appendMessage({ role: "user", content: "Fictional source fact", timestamp: 17 }, ("source-message")); await store.sync();
   const metadata = { ...store.metadata }; await store.close();
   const bridge = createManagedNativeJournalStorage({ sessionsRoot: root, ...extra });
   const source = await bridge.freeze({ epoch: "9".repeat(64), handleId: metadata.id,
@@ -277,7 +277,7 @@ it("captures exactly one current journal, or canonical gaps when it is missing, 
   // The limit bounds retained evidence, not the physical journal: an effective
   // tail (no checkpoint) larger than the limit is the typed capacity refusal.
   const store = await f.repo.open(f.metadata);
-  await store.appendMessage({ role: "user", content: "x".repeat(MAX_CAPTURE_BYTES), timestamp: 18 }, /** @type {any} */ ("oversized-tail")); await store.sync(); await store.close();
+  await store.appendMessage({ role: "user", content: "x".repeat(MAX_CAPTURE_BYTES), timestamp: 18 }, ("oversized-tail")); await store.sync(); await store.close();
   const source = await f.bridge.freeze({ epoch: "9".repeat(64), handleId: f.metadata.id, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket, provenance: from });
   const capture = () => f.bridge.captureEvidence(source, owner);
   await expect(capture()).rejects.toBeInstanceOf(NativeEvidenceCapacityError);

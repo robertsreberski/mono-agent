@@ -240,9 +240,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
     stopReason: "stop",
     usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0 } },
   }));
-  /** @type {Array<(event: any) => void>} */
   const subscribers: Array<(event: { type: string; lane: string; reason: string; status: string; entryId: string }) => void> = [];
-  /** @type {Array<(event: any) => any>} */
   const hooks: FixtureHook[] = [];
   const settings: CompactionSettings[] = [];
   let midRunArmed = false;
@@ -289,7 +287,6 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   const events: CompactionEvent[] = [];
   const runtimeWarnings: Warning[] = [];
   const recorded: CompactionRecordedPayload[] = [];
-  /** @type {Array<any>} */
   const transcript: FixtureMessage[] = [];
   function commitCompaction(entries: FixtureEntry[], compaction: FixtureCompaction) {
     const timestamp = Date.now();

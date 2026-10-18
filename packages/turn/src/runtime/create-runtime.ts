@@ -46,14 +46,6 @@ import { createToolLifecycleEventGate } from "./tool-lifecycle.js";
 import { snapshotNativeDispatchOptions } from "../execution/pi/prepared-dispatch.js";
 import { createWebSearchRunState } from "../tools/web/web-search-state.js";
 
-/**
- * @typedef {import("../contracts/runtime.js").TurnHostOptions} TurnHostOptions
- * @typedef {import("../contracts/runtime.js").TurnToolOptions} TurnToolOptions
- * @typedef {import("../contracts/runtime.js").AgentRuntimeInstance} AgentRuntimeInstance
- * @typedef {import("../contracts/runtime.js").RuntimeRunOptions} RuntimeRunOptions
- * @typedef {import("../contracts/runtime.js").RuntimeResult} RuntimeResult
- */
-
 // Host-integration callbacks bound onto every request. This list is the runtime
 // host-default half of `RuntimeRequest` in contracts/runtime.js. Every entry must be
 // admitted either by RuntimeRunOptions itself or by its host-option Pick.
@@ -81,11 +73,6 @@ const TOOL_RUNTIME_KEYS = [
   "sandbox",
 ];
 
-/**
- * @param {Object<string, *>} source
- * @param {Array<string>} keys
- * @returns {Object<string, *>}
- */
 function pickDefined(source: { [x: string]: any; }, keys: string[]): { [x: string]: any; } {
   const out: Record<string, any> = {};
   for (const key of keys) {
@@ -98,9 +85,6 @@ function pickDefined(source: { [x: string]: any; }, keys: string[]): { [x: strin
  * Select recognized keys that are present even when their value is undefined.
  * `configureTools` uses this variant so callers can explicitly clear state
  * held by the long-lived per-instance ToolContext.
- * @param {Object<string, *>} source
- * @param {Array<string>} keys
- * @returns {Object<string, *>}
  */
 function pickPresent(source: { [x: string]: any; }, keys: string[]): { [x: string]: any; } {
   const out: Record<string, any> = {};
@@ -118,25 +102,17 @@ const PROMPT_OVERRIDE_KEYS = ["structuredOutputInstruction", "structuredOutputFi
  * leaves the bridge on its built-in string). Kept out of the `...hostDefaults,
  * ...options` spread so a run that overrides ONE prompt does not drop the host's
  * other prompt defaults (an object-replacing spread would).
- * @param {import("../contracts/policy.js").RuntimePromptOverrides} [hostPrompts]
- * @param {import("../contracts/policy.js").RuntimePromptOverrides} [runPrompts]
- * @returns {import("../contracts/policy.js").RuntimePromptOverrides|undefined}
  */
 function resolvePrompts(hostPrompts?: RuntimePromptOverrides, runPrompts?: RuntimePromptOverrides): RuntimePromptOverrides | undefined {
   if (!hostPrompts && !runPrompts) return undefined;
-  /** @type {Record<string, *>} */
   const merged: Record<string, any> = {};
   for (const key of PROMPT_OVERRIDE_KEYS) {
-    const value = /** @type {any} */ ((runPrompts) as any)?.[key] ?? /** @type {any} */ ((hostPrompts) as any)?.[key];
+    const value = ((runPrompts) as any)?.[key] ?? ((hostPrompts) as any)?.[key];
     if (value !== undefined) merged[key] = value;
   }
   return merged;
 }
 
-/**
- * @param {TurnHostOptions} [host]
- * @returns {AgentRuntimeInstance}
- */
 export function createRuntime(host: TurnHostOptions = {}): AgentRuntimeInstance {
   const hostDefaults = pickDefined(host, HOST_KEYS);
   const toolRuntime = pickDefined(host, TOOL_RUNTIME_KEYS);
@@ -149,7 +125,6 @@ export function createRuntime(host: TurnHostOptions = {}): AgentRuntimeInstance 
   // THIS object so later runs of this instance observe the update.
   const toolContext = createToolContext({ ...toolRuntime, runtimeBrand });
 
-  /** @type {*} */
   let self: any;
 
   /**
@@ -164,7 +139,6 @@ export function createRuntime(host: TurnHostOptions = {}): AgentRuntimeInstance 
    * tool stamps `depth + 1` into every descriptor it hands out, and
    * `getPiBuiltinTools` refuses to register the tool at depth >= 1, so a custom
    * callback cannot produce a grandchild even if it ignores the rest.
-   * @param {*} request
    */
   const defaultSubagentRun = async (request: any) => self.run(request.systemPrompt, {
     // The tool merges call-time overrides into the definition; otherwise inherit.
@@ -201,7 +175,6 @@ export function createRuntime(host: TurnHostOptions = {}): AgentRuntimeInstance 
     subagents: { depth: (request.depth ?? 1) },
   });
 
-  /** @param {string} systemPrompt @param {Partial<RuntimeRunOptions>} options @param {boolean} prepare */
   const executeRequest = async (systemPrompt: string, options: Partial<RuntimeRunOptions> = {}, prepare: boolean = false) => {
     if (Object.hasOwn(options, "settings")) {
       throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
@@ -268,7 +241,7 @@ export function createRuntime(host: TurnHostOptions = {}): AgentRuntimeInstance 
         // wins over either bag's whole-object `prompts`.
         ...(prompts === undefined ? {} : { prompts }),
     };
-    /** @type {Promise<void>|undefined} */ let flushed: Promise<void>;
+ let flushed: Promise<void>;
     const flush = () => flushed ??= (async () => { await lifecycleGate.flush(); await hub.flush(); })();
     if (prepare) {
       try {
@@ -281,14 +254,12 @@ export function createRuntime(host: TurnHostOptions = {}): AgentRuntimeInstance 
 
   self = {
     /**
-     * @param {string} systemPrompt
-     * @param {Partial<RuntimeRunOptions>} [options] Optional only so the
+     * @param [options] Optional only so the
      *   `options.model` guard below can throw a descriptive error; every
      *   real caller must supply a model (see AgentRuntimeInstance.run).
-     * @returns {Promise<RuntimeResult>}
      */
-    run: (systemPrompt: string, options?: Partial<RuntimeRunOptions>): Promise<RuntimeResult> => /** @type {Promise<RuntimeResult>} */ ((executeRequest(systemPrompt, options)) as Promise<RuntimeResult>),
-    prepareNativeDispatch: (systemPrompt: any, options: any) => /** @type {Promise<import("../contracts/runtime.js").NativePreparedDispatch>} */ (
+    run: (systemPrompt: string, options?: Partial<RuntimeRunOptions>): Promise<RuntimeResult> => ((executeRequest(systemPrompt, options)) as Promise<RuntimeResult>),
+    prepareNativeDispatch: (systemPrompt: any, options: any) => (
       (executeRequest(systemPrompt, snapshotNativeDispatchOptions(options), true)) as Promise<NativePreparedDispatch>),
     configureTools(next: TurnToolOptions = {}) {
       updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));

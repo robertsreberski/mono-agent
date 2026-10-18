@@ -7,14 +7,6 @@ function normalizeTtl(value: any, fallback: any): any {
   return n;
 }
 
-/**
- * @param {object} [options]
- * @param {number} [options.idleTimeoutMs]
- * @param {(value: any, reason: string) => (void | Promise<void>)} [options.onEvict]
- * @param {(value: any) => (void | Promise<void>)} [options.onSync]
- * @param {() => number} [options.now]
- * @param {(value: any) => boolean} [options.isBusy]
- */
 export function createSessionRegistry({
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   onEvict,
@@ -23,18 +15,9 @@ export function createSessionRegistry({
   isBusy,
 }: { idleTimeoutMs?: number; onEvict?: (value: any, reason: string) => (void | Promise<void>); onSync?: (value: any) => (void | Promise<void>); now?: () => number; isBusy?: (value: any) => boolean; } = {}): {
     get(id: any): any;
-    /**
-     * @param {any} id
-     * @param {any} value
-     * @param {{idleTimeoutMs?: number}} [options]
-     */
     set(id: any, value: any, options?: {
         idleTimeoutMs?: number;
     }): boolean;
-    /**
-     * @param {any} id
-     * @param {{idleTimeoutMs?: number}} [options]
-     */
     touch(id: any, options?: {
         idleTimeoutMs?: number;
     }): void;
@@ -219,11 +202,6 @@ export function createSessionRegistry({
       }
       return entry.value;
     },
-    /**
-     * @param {any} id
-     * @param {any} value
-     * @param {{idleTimeoutMs?: number}} [options]
-     */
     set(id: any, value: any, { idleTimeoutMs: entryTtl }: { idleTimeoutMs?: number; } = {}): boolean {
       const previous = entries.get(id);
       // Never overwrite an in-flight/failed durability operation. The marker
@@ -243,10 +221,6 @@ export function createSessionRegistry({
       armTimer(id, entry);
       return true;
     },
-    /**
-     * @param {any} id
-     * @param {{idleTimeoutMs?: number}} [options]
-     */
     touch(id: any, { idleTimeoutMs: entryTtl }: { idleTimeoutMs?: number; } = {}): void {
       const entry = entries.get(id);
       if (!entry) return;

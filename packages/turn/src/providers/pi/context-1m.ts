@@ -5,8 +5,7 @@ export const CONTEXT_1M_TOKENS = 1_000_000;
 
 /**
  * Only built-in chat models with Pi's long-input pricing tier qualify.
- * @param {string} reference Canonical provider:model reference.
- * @returns {boolean}
+ * @param reference Canonical provider:model reference.
  */
 export function supportsPiContext1M(reference: string): boolean {
   if (typeof reference !== "string") return false;
@@ -14,12 +13,11 @@ export function supportsPiContext1M(reference: string): boolean {
   const provider = reference.slice(0, separator);
   const id = reference.slice(separator + 1);
   if (separator < 0 || !["openai", "openai-codex"].includes(provider) || !id.startsWith("gpt-")) return false;
-  const model = getBuiltinModel(/** @type {any} */ (provider) as any, id);
+  const model = getBuiltinModel((provider) as any, id);
   return model?.contextWindow === 272_000
     && model.cost?.tiers?.some((tier) => tier.inputTokensAbove === 272_000) === true;
 }
 
-/** @param {any} model @param {Record<string, boolean>|undefined} policy */
 export function withContext1M(model: any, policy: Record<string, boolean> | undefined): any {
   if (!model) return model;
   const reference = `${model.provider}:${model.id}`;
@@ -35,9 +33,6 @@ const REQUEST_METHODS = new Set([
 /**
  * Pi re-resolves model metadata at lane binding and dispatch. Keep both views
  * run-scoped, including restored lanes, without mutating the shared catalog.
- * @param {import("@earendil-works/pi-ai").Models} models
- * @param {Record<string, boolean>|undefined} policy
- * @returns {import("@earendil-works/pi-ai").Models}
  */
 export function withContext1MModels(models: import("@earendil-works/pi-ai").Models, policy: Record<string, boolean> | undefined): import("@earendil-works/pi-ai").Models {
   if (!policy || !Object.values(policy).some((value) => value === true)) return models;

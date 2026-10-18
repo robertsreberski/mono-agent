@@ -14,15 +14,10 @@ const REQUEST_METHODS = new Set([
   "cancelDeferred",
 ]);
 
-/** @typedef {import("@earendil-works/pi-ai").Models} Models */
-/** @typedef {import("@earendil-works/pi-ai").ProviderHeaders} ProviderHeaders */
-
 /**
  * Match Pi's OpenCode attribution boundary without accepting deceptive suffixes
  * or subdomains. Provider ids remain authoritative for callers that deliberately
  * route OpenCode through a nonstandard endpoint.
- *
- * @param {{provider?: string, baseUrl?: string}} model
  */
 export function isOpenCodeModel(model: {
     provider?: string;
@@ -40,11 +35,6 @@ export function isOpenCodeModel(model: {
 /**
  * Add one default without replacing an auth/model/request value, including a
  * caller's case-insensitive null suppression.
- *
- * @param {ProviderHeaders} headers
- * @param {string} name
- * @param {string} value
- * @returns {ProviderHeaders}
  */
 function addDefaultHeader(headers: ProviderHeaders, name: string, value: string): ProviderHeaders {
   const lowerName = name.toLowerCase();
@@ -54,11 +44,6 @@ function addDefaultHeader(headers: ProviderHeaders, name: string, value: string)
   return { ...headers, [name]: value };
 }
 
-/**
- * @param {Object<string, *>|undefined} options
- * @param {string} sessionId
- * @returns {Object<string, *>}
- */
 function withOpenCodeHeaderTransform(options: Record<string, any> | undefined, sessionId: string): Record<string, any> {
   const previousTransform = options?.transformHeaders;
   return {
@@ -78,14 +63,10 @@ function withOpenCodeHeaderTransform(options: Record<string, any> | undefined, s
  * bound to the original Models instance because its state lives in private
  * fields; matching is performed on the actual model dispatched by Pi, covering
  * builtin, custom-provider, compaction, deferred, and advanced/test models.
- *
- * @param {Models} models
- * @param {string} sessionId
- * @returns {Models}
  */
 export function withOpenCodeSessionHeaders(models: Models, sessionId: string): Models {
   const wrappers = new Map<string, (model: any, input: any, options: any) => any>();
-  return /** @type {Models} */ ((new Proxy(models, {
+  return ((new Proxy(models, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (typeof property !== "string" || typeof value !== "function") return value;

@@ -49,7 +49,7 @@ import {
 } from "../../runtime/session-fanout.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
-  const fs = /** @type {typeof import("node:fs/promises")} */ (await importOriginal<typeof import("node:fs/promises")>());
+  const fs = (await importOriginal<typeof import("node:fs/promises")>());
   return { ...fs, open: vi.fn(fs.open) };
 });
 
@@ -77,7 +77,9 @@ afterEach(() => {
   fauxModels = null;
 });
 
-/** @returns {Record<string, any> & {model: any}} Dynamic SDK option overrides for these integration fixtures. */
+/**
+ * @returns Dynamic SDK option overrides for these integration fixtures.
+ */
 function runOptions(model: Model<string>, overrides: Record<string, unknown> & { onEvent?: (event: RecordedEvent) => void } = {}): Record<string, any> & { model: any } {
   return {
     model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
@@ -176,7 +178,7 @@ describe("Sessions", () => {
     const model = setup({ reasoning: true });
     const controller = new AbortController();
     let beforeCancel: Message[] = [];
-    /** @type {any} */ let next: Message[] = undefined!;
+ let next: Message[] = undefined!;
     let sessionId;
     try {
       faux!.setResponses([
@@ -257,7 +259,7 @@ describe("Sessions", () => {
       expect(cancelled.cancelled).toBe(true);
       expect(cancelled.providerSessionRecovery).toBeDefined();
       await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
-      /** @type {any} */ let context: TranscriptContext = undefined!;
+ let context: TranscriptContext = undefined!;
       faux!.setResponses([(value) => { context = value; return fauxAssistantMessage([fauxText("next")]); }]);
       const resumed = await generateEngineTurnResponse("stable", runOptions(model, { cwd: root, sessionsRoot: join(root, "pi"), sessionKeepAlive: true, sessionId,
         messages: [{ role: "user", content: "next" }], allowedTools: ["Read"] }));
@@ -316,9 +318,9 @@ describe("Sessions", () => {
     const { createPiSessionAdapter } = sessionAdapter;
     const base = { cwd: root, sessionsRoot: root, sessionKeepAlive: true, sessionId, compaction: { enabled: false } };
     const repo = resolveDurableNativeSessionRepo(root);
-    /** @type {any} */ let baseline: string | null = undefined!;
+ let baseline: string | null = undefined!;
     let adapterSpy;
-    /** @type {any} */ let closeSpy: MockInstance<ReturnType<typeof sessionAdapter.createPiSessionAdapter>["close"]> = undefined!;
+ let closeSpy: MockInstance<ReturnType<typeof sessionAdapter.createPiSessionAdapter>["close"]> = undefined!;
     try {
       if (resumed) {
         faux!.setResponses([fauxAssistantMessage([fauxText("warm answer")])]);
@@ -565,14 +567,14 @@ describe("Sessions", () => {
 
       await expect(retireDurableNativeSession(id, root)).resolves.toBeUndefined();
       expect(countJsonlFiles(root)).toBe(0);
-      /** @type {any} */ ((release) as (() => void) | undefined)?.();
+ ((release) as (() => void) | undefined)?.();
       await expect(unwinding).resolves.toMatchObject({ text: "late answer" });
       expect(countJsonlFiles(root)).toBe(0);
 
       await expect(retireDurableNativeSession(id, root)).resolves.toBeUndefined();
       expect(countJsonlFiles(root)).toBe(0);
     } finally {
-      /** @type {any} */ ((release) as (() => void) | undefined)?.();
+ ((release) as (() => void) | undefined)?.();
       await retireDurableNativeSession(id, root).catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
@@ -906,7 +908,7 @@ describe("Sessions", () => {
     expect(contended.failureKind).toBe("session_busy");
     expect(contended.diagnostics.pi_error_code).toBe("pi_session_busy");
 
-    /** @type {any} */ ((release) as (() => void) | undefined)?.();
+ ((release) as (() => void) | undefined)?.();
     const blocked = await blockedRun;
     expect(blocked.error).toBeNull();
     expect(blocked.text).toBe("reply-2");
@@ -952,7 +954,7 @@ describe("Sessions", () => {
     const source = join(directory, "fixture_fixture-session.jsonl");
     await fsPromises.copyFile(new URL(`../../engine/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url), source);
     await fsPromises.chmod(root, 0o755);
-    /** @type {any} */ let context: TranscriptContext = undefined!; const warnings: RecordedEvent[] = [];
+ let context: TranscriptContext = undefined!; const warnings: RecordedEvent[] = [];
     faux!.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("New fictional reply.")]); }, fauxAssistantMessage([fauxText("Next fictional reply.")])]);
     try {
       const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
@@ -1006,7 +1008,7 @@ describe("Sessions", () => {
         ...(failure === "abort" ? { abortSignal: controller.signal, onEvent: (event: RecordedEvent) => { if (event.type === "capabilities_resolved") controller.abort(); } } : {}),
       }));
       expect(failure === "abort" ? failed.cancelled : Boolean(failed.error)).toBe(true);
-      await disposeProviderSession("fixture-session"); /** @type {any} */ let context: TranscriptContext = undefined!;
+      await disposeProviderSession("fixture-session"); let context: TranscriptContext = undefined!;
       faux!.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Successful retry.")]); }]);
       const result = await generateEngineTurnResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Next clean turn." }], sessionKeepAlive: true, sessionId: "fixture-session", sessionsRoot: root,
@@ -1034,7 +1036,7 @@ describe("Sessions", () => {
       const dispatch = vi.fn(() => fauxAssistantMessage([fauxText("Must not dispatch.")])); faux!.setResponses([dispatch]);
       const duplicate = await generateEngineTurnResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "Duplicate input." }] });
       expect(duplicate.error).toContain("Invalid session journal"); expect(dispatch).not.toHaveBeenCalled(); expect(duplicate.providerSessionRecovery).toBeUndefined();
-      /** @type {any} */ let context: TranscriptContext = undefined!; faux!.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Next reply.")]); }]);
+ let context: TranscriptContext = undefined!; faux!.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Next reply.")]); }]);
       const next = await generateEngineTurnResponse("Fictional verification.", { ...base, sessionRecovery: { runId: "next-host-run", revision: 1 }, messages: [{ role: "user", content: "Next input." }] });
       assertPresent(next);
       expect(next.error).toBeNull(); expect(transcriptOf(context)).toEqual(["user:First input.", "assistant:First reply.", "user:Next input."]);
@@ -1266,11 +1268,11 @@ describe("Sessions", () => {
       expect(contender.failureKind).toBe("session_busy");
       expect(invoked).toBe(false);
 
-      /** @type {any} */ ((releaseDelete) as (() => void) | undefined)?.();
+ ((releaseDelete) as (() => void) | undefined)?.();
       await expect(invalidation).resolves.toBe(true);
       expect(findJsonlFiles(root)).toHaveLength(0);
     } finally {
-      /** @type {any} */ ((releaseDelete) as (() => void) | undefined)?.();
+ ((releaseDelete) as (() => void) | undefined)?.();
       repo.delete = originalDelete;
       await invalidateProviderSession(sessionId).catch(() => {});
       rmSync(root, { recursive: true, force: true });
@@ -1480,7 +1482,7 @@ describe("Sessions", () => {
       const loser = await Promise.race([runA, runB]);
       expect(loser.failureKind).toBe("session_busy");
     } finally {
-      /** @type {any} */ ((release) as (() => void) | undefined)?.();
+ ((release) as (() => void) | undefined)?.();
       await Promise.allSettled([runA, runB]);
     }
     const settled = await Promise.allSettled([runA, runB]);
@@ -1509,7 +1511,7 @@ describe("Sessions", () => {
       const repo = resolveDurableNativeSessionRepo(root);
       assertPresent(repo);
       const originalFind = repo.find.bind(repo);
-      /** @type {(() => void)|undefined} */ let providerStarted: (() => void) | undefined;
+ let providerStarted: (() => void) | undefined;
       const started = new Promise<void>((resolve) => { providerStarted = () => resolve(undefined); });
       let lookups = 0;
       // Exercise a late cold lookup without a wall-clock delay: it must still
@@ -1549,7 +1551,7 @@ describe("Sessions", () => {
         expect(loser.failureKind).toBe("session_busy");
         expect(countJsonlFiles(root)).toBe(1);
       } finally {
-        /** @type {any} */ ((release) as (() => void) | undefined)?.();
+ ((release) as (() => void) | undefined)?.();
         await Promise.allSettled([runA, runB]);
         findSpy.mockRestore();
       }
@@ -1991,7 +1993,7 @@ describe("durable primary sessions through the fallback router", () => {
       expect(first.error).toBeNull();
       expect(first.providerSessionId).toBe(id);
       attempts.length = 0;
-      /** @type {any} */ let primaryContext: TranscriptContext = undefined!;
+ let primaryContext: TranscriptContext = undefined!;
       faux!.setResponses(primaryFailsBackupAnswers((modelId, context) => {
         if (modelId === "faux-model") primaryContext ??= structuredClone(context);
       }));
@@ -2072,7 +2074,7 @@ describe("stable native replay with host envelopes", () => {
     let previous!: Message[];
     try {
       for (let turn = 0; turn < 22; turn += 1) {
-        /** @type {any} */ let captured: TranscriptContext = undefined!;
+ let captured: TranscriptContext = undefined!;
         faux!.setResponses([
           (context) => {
             captured = structuredClone(context);
@@ -2200,9 +2202,7 @@ it.each([true, false])("cleans suspended keep-alive liveness and reopens as susp
 it.each([[false, false], [false, true], [true, false], [true, true]])("rolls a live resumed suspension back like an unreceipted failed turn (durable=%s recovery=%s)", async (durable, recovery) => {
   const model = setup(); const root = mkdtempSync(join(tmpdir(), "suspended-rollback-")); const id = "resumed-suspension-rollback";
   const deferred = { id: "fictional-deferred", provider: model.provider, modelId: model.id, api: model.api };
-  /** @type {any} */
   let baseline: Message[] = undefined!;
-  /** @type {any} */
   let resumed: Message[] = undefined!;
   faux!.setResponses([(context) => { baseline = structuredClone(context.messages); return fauxAssistantMessage([fauxText("Fictional approved baseline.")]); },
     fauxAssistantMessage([], { stopReason: "deferred", deferred }),

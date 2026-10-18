@@ -33,10 +33,6 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-/**
- * @param {{pattern: string, path?: string, limit?: number, offset?: number, max_matches?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, sandboxPolicy?: any, sandboxEngine?: any}} options
- */
 export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }: { pattern: string; path?: string; limit?: number; offset?: number; max_matches?: number; max_output_chars?: number; workdir?: string }, options: { ctx: import("../shared/tool-context.js").ToolContext; sandboxPolicy?: any; sandboxEngine?: any }): Promise<string> {
   const { sandboxPolicy, sandboxEngine, ctx } = options ?? {};
   const cwd = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);

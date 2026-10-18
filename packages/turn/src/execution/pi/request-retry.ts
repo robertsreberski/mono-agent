@@ -31,8 +31,6 @@ const NEVER_RETRY_SUBKINDS = new Set(["context_limit", "subscription_limit", "no
  * (websocket error/close, connection reset, terminated or prematurely closed
  * stream, timeout, overloaded/5xx/429). Auth, quota/usage limits, context
  * limits, safety failures and validation errors are never transient.
- * @param {string|null|undefined} errorText
- * @returns {boolean}
  */
 export function isTransientRequestFailure(errorText: string | null | undefined): boolean {
   const text = normalizePiErrorMessage(errorText);
@@ -45,7 +43,6 @@ export function isTransientRequestFailure(errorText: string | null | undefined):
 /**
  * Driver retry policy for one turn. `piMaxRetries: 0` disables it with the SDK
  * layer; provider checks stay single-shot.
- * @param {{maxRetries: number, maxRetryDelayMs: number, providerCheck: boolean}} params
  */
 export function requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck }: {
     maxRetries: number;
@@ -56,7 +53,6 @@ export function requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck 
     maxRetries: number;
     baseDelayMs: number;
     maxDelayMs: number;
-    /** @param {any} message @param {{responseStarted: boolean}} attempt */
     shouldRetry: (message: any, { responseStarted }: {
         responseStarted: boolean;
     }) => boolean;
@@ -67,7 +63,6 @@ export function requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck 
     maxRetries: enabled ? REQUEST_RETRY_LIMIT : 0,
     baseDelayMs: REQUEST_RETRY_BASE_DELAY_MS,
     maxDelayMs: maxRetryDelayMs,
-    /** @param {any} message @param {{responseStarted: boolean}} attempt */
     shouldRetry: (message: any, { responseStarted }: { responseStarted: boolean; }) => responseStarted && isTransientRequestFailure(message?.errorMessage),
   };
 }

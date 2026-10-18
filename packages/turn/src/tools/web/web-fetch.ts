@@ -33,11 +33,6 @@ class WebFetchError extends Error {
   declare retryable: boolean;
   declare statusCode: number | undefined;
   declare retryAfterMs: number | undefined;
-  /**
-   * @param {string} code
-   * @param {string} message
-   * @param {{retryable?: boolean, statusCode?: number, retryAfterMs?: number}} [options]
-   */
   constructor(code: string, message: string, { retryable = false, statusCode, retryAfterMs }: { retryable?: boolean; statusCode?: number; retryAfterMs?: number; } = {}) {
     super(message);
     this.name = "WebFetchError";
@@ -50,9 +45,6 @@ class WebFetchError extends Error {
 
 /**
  * Compatibility wrapper for direct callers.
- *
- * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
  */
 export async function webFetchToolImpl(params: { url: string; headers?: Record<string, string>; max_output_chars?: number; format?: string; render?: string; start_line?: number; max_lines?: number; focus?: string; include_links?: boolean }, options: { ctx: import("../shared/tool-context.js").ToolContext; documentOnly?: boolean; coordinator?: any; sandboxPolicy?: any; sandboxEngine?: any; signal?: AbortSignal; retryDelaysMs?: number[]; fetchConfig?: any; fetchImpl?: typeof fetch; browserRenderer?: typeof renderWithAgentBrowser; namespace?: string; sessionId?: string; registerCleanup?: (cleanup: () => Promise<void>) => () => void }): Promise<any> {
   return (await performWebFetch(params, options)).text;
@@ -60,9 +52,6 @@ export async function webFetchToolImpl(params: { url: string; headers?: Record<s
 
 /**
  * Fetch and locally extract one public URL.
- *
- * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} options
  */
 export async function performWebFetch(params: { url: string; headers?: Record<string, string>; max_output_chars?: number; format?: string; render?: string; start_line?: number; max_lines?: number; focus?: string; include_links?: boolean }, options: { ctx: import("../shared/tool-context.js").ToolContext; documentOnly?: boolean; coordinator?: any; sandboxPolicy?: any; sandboxEngine?: any; signal?: AbortSignal; retryDelaysMs?: number[]; fetchConfig?: any; fetchImpl?: typeof fetch; browserRenderer?: typeof renderWithAgentBrowser; namespace?: string; sessionId?: string; registerCleanup?: (cleanup: () => Promise<void>) => () => void }): Promise<any> {
   // Direct callers own their context: reject a missing one before any network work.
@@ -83,9 +72,6 @@ export async function performWebFetch(params: { url: string; headers?: Record<st
 
 /**
  * Fetch and locally extract one public URL.
- *
- * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number, focus?: string, include_links?: boolean}} params
- * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: import("../shared/tool-context.js").ToolContext, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, sessionId?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 async function performFetch(
   {
@@ -939,9 +925,6 @@ export function formatWebFetchDocument(document: any, params: any, ctx: any): { 
  * Count the lines of `whole` fully contained in `prefix`. A line counts only
  * when its complete text lies within the prefix, so a line cut mid-budget is
  * excluded and the continuation resumes at it instead of skipping it.
- *
- * @param {string} prefix
- * @param {string} whole
  */
 function countCompleteLines(prefix: string, whole: string) {
   if (!prefix) return 0;

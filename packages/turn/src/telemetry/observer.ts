@@ -17,15 +17,6 @@
 // observer needs to do I/O it must buffer internally (zeroclaw uses the
 // same contract — fan-out is sync, batching is the observer's problem).
 
-/**
- * @typedef Observer
- * @property {string=} name
- * @property {(event: object) => void} recordEvent
- * @property {(event: object) => void=} recordToolLifecycle Synchronous native lifecycle admission before queued persistence.
- * @property {(metric: object) => void=} recordMetric
- * @property {() => (void | Promise<void>)=} flush
- */
-
 export function createObserverHub({ observers = [], onEvent = null }: { observers?: Observer[] | null; onEvent?: ((event: object) => unknown) | null } = {}): {
   emit: (event: object | null | undefined) => void;
   recordMetric: (metric: object | null | undefined) => void;

@@ -38,9 +38,6 @@ function sessionUnavailableResult({
   };
 }
 
-
-/** @param {any} state @param {any} params
- * @returns {Promise<{done:true,result:any}|{done:false}>} */
 export function resolveSession(state: any, params: any): Promise<{
     done: true;
     result: any;
@@ -58,23 +55,18 @@ export async function resolveSession(state: import("./types.js").PiRunState, par
   const { sessionId, message: errorMessage, failureKind, code: piErrorCode } = outcome.unavailable;
   return { done: true, result: sessionUnavailableResult({ ...params, sessionId, errorMessage, failureKind, piErrorCode }) };
 }
-/** @param {any} state @param {any} params */
 export function commitSession(state: any, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs, externalAbort, errorMessage, onEvent }: any): Promise<void>;
 export async function commitSession(state: import("./types.js").PiRunState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs, externalAbort, errorMessage, onEvent }: SessionParams & { externalAbort?: boolean; errorMessage?: string | null; onEvent: import("./types.js").PiEventSink }): Promise<void> {
   const { persistFailure } = await storage.commitSession(state as Parameters<typeof storage.commitSession>[0], { requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
     keepAlive: options.sessionKeepAlive, externalAbort, failed: !!errorMessage } as Parameters<typeof storage.commitSession>[1]);
   if (persistFailure) onEvent({ type: "runtime_warning", warning_kind: "pi_session_persist_failed", message: persistFailure.message });
 }
-/** @param {any} state @param {any} params */
 export function captureSessionRecovery(state: any, { options, providerSessionId, modelKey, model, pending }: any): Promise<{ runId: string; revision: number; providerSessionId: string; modelKey: string; tipId: string }>;
 export async function captureSessionRecovery(state: any, { options, providerSessionId, modelKey, model, pending }: any) {
   const outcome = await storage.captureSessionRecovery(state, { identity: { runId: options.sessionRecovery.runId, revision: options.sessionRecovery.revision, providerSessionId, modelKey },
     model, pending, abortSignal: options.abortSignal });
   return outcome.status === "captured" ? outcome.receipt : undefined;
 }
-/** @param {any} state @param {any} params */
 export async function discardUncommittedSession(state: any, params: any): Promise<void> { await storage.discardUncommittedSession(state, params); }
-/** @param {any} state @param {any} params */
 export async function rollbackAbortedTurn(state: any, params: any): Promise<void> { await storage.rollbackAbortedTurn(state, params); }
-/** @param {any} state @param {any} params */
 export async function cleanupSessionOnThrow(state: any, params: any): Promise<void> { await storage.cleanupSessionOnThrow(state, params); }

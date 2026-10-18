@@ -189,7 +189,6 @@ export function createRunDriver(store: any, options: any): {
     return () => handlers.delete(handler);
   }
   async function hooks(type: any, event: any): Promise<any> {
-    /** @type {any} */
     let merged: any;
     for (const handler of registrations.get(type) || []) {
       const value = await handler(event, { abortSignal: controller?.signal });
@@ -325,7 +324,6 @@ export function createRunDriver(store: any, options: any): {
       const index = reverseIndex < 0 ? -1 : normalized.messages.length - reverseIndex - 1;
       dispatchRequest = { systemPrompt: options.systemPrompt, tools: adaptRequestTools(tools, options.model.api).map(toToolDeclaration),
         messages: normalized.messages.filter((message: Message, at: number) => at !== index && message.role !== "system"), currentInput };
-      /** @type {{status:string, reason?:any}} */
       const fit: {status:string, reason?:any} = checkHandoffDispatch(dispatchRequest, dispatchBudget);
       if (fit.status !== "ready") throw budgetFailure(fit.reason);
     }
@@ -349,7 +347,6 @@ export function createRunDriver(store: any, options: any): {
           : inputKey === initialInputKey ? `input:${createHash("sha256").update(turnId).digest("hex")}` : `synthetic:input:${randomUUID()}`;
         await store.openOperation(id, modelConfig(), "prompt", promptCount === 1 ? "prompt" : "re_prompt"); opened = true;
         const messages = project(await store.getEntries()).messages;
-        /** @type {any[]} */
         const prompts: any[] = [{ role: "user", content: [{ type: "text", text }, ...(promptOptions?.images || [])], timestamp: Date.now() }];
         await runAgentLoop(prompts, { messages, tools }, {
           ...options.streamOptions,
@@ -394,7 +391,7 @@ export function createRunDriver(store: any, options: any): {
             options.onPreparedPayload?.(result?.payload ?? payload, model || options.model);
             return result?.payload;
           },
-        }, emit, controller.signal, (model: Model<Api>, context: TranscriptContext, streamOptions: SimpleStreamOptions | undefined) => /** @type {any} */ ((createRetryStream(
+        }, emit, controller.signal, (model: Model<Api>, context: TranscriptContext, streamOptions: SimpleStreamOptions | undefined) => ((createRetryStream(
           options.models, model, adaptProviderContext(context, tools, model.api), streamOptions, retry, emit,
         )) as any));
         assertHealthy();

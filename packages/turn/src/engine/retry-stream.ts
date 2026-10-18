@@ -96,7 +96,6 @@ export function createRetryStream(models: any, model: any, context: any, options
   // The iterator carries errors too; don't manufacture an unhandled rejection
   // when a caller exits through the iterator rather than calling result().
   void result.catch(() => {});
-  /** @type {any} */
   let last: any;
   let ordinal = 0, hasStart = false;
   void (async () => {

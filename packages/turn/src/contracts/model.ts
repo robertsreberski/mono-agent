@@ -1,6 +1,8 @@
 // Shared turn contracts; no runtime implementation imports.
 
-/** Runtime-result and telemetry label; Pi is the sole runtime bridge. */
+/** Runtime-result and telemetry label; Pi is the sole runtime bridge.
+ * @coreScanRetained
+ */
 export type RuntimeSdkId = "pi";
 
 /** Direct Pi bridge id returned by src/runtime/bridges.js. */

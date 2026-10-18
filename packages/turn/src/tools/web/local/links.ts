@@ -32,10 +32,6 @@ export function sanitizeDocumentLinks(document: any, baseUrl: any): void {
  * links.py (see provenance above) to Mono's bounded flat link contract. Content citations win over earlier chrome links,
  * including duplicates; neither canonical metadata nor host popularity confers
  * source authority. No network work is performed here.
- * @param {unknown} html
- * @param {unknown} baseUrl
- * @param {{limit?: number}} [options]
- * @returns {Array<{url: string, text: string, provenance: string}>}
  */
 export function extractHtmlLinks(html: unknown, baseUrl: unknown, { limit = MAX_WEB_FETCH_LINKS }: { limit?: number } = {}): Array<{ url: string; text: string; provenance: string }> {
   const cap = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, MAX_WEB_FETCH_LINKS) : MAX_WEB_FETCH_LINKS;

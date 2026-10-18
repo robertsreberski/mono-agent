@@ -160,8 +160,6 @@ function piSummaryGenerationLimit(reserveTokens: any, isSplitTurn: any) {
  * history summary and floor(0.5 * reserve) for the turn prefix. Return the
  * largest reserve whose derived generation budget does not exceed the public
  * summaryMaxTokens setting.
- * @param {number} summaryMaxTokens
- * @param {boolean} isSplitTurn
  */
 export function piSummaryReserveTokens(summaryMaxTokens: number, isSplitTurn: boolean): number {
   const budget = Math.max(1, Math.floor(Number(summaryMaxTokens) || 1));
@@ -201,10 +199,6 @@ function finiteTokenCount(value: any) {
   return Number.isFinite(count) && count >= 0 ? count : undefined;
 }
 
-/**
- * @param {((event: any) => void)|undefined} onEvent
- * @param {{operationId: string, status: string, trigger: string, model?: string, tokensBefore?: number|null, tokensAfter?: number|null, reason?: string, message?: string}} event
- */
 function emitCompactionEvent(onEvent: (event: any) => void, {
   operationId,
   status,
@@ -266,8 +260,6 @@ export function createCompactionAccounting(): {
 /**
  * Build the `(observer, event)` emitter that stamps the live accounting
  * snapshot (and elapsed time) onto each lifecycle event.
- * @param {any} accounting
- * @param {number} started
  */
 export function createCompactionEmitter(accounting: any, started: number): (observer: any, event: any) => void {
   return (observer: any, event: any) => emitCompactionEvent((value: any) => observer?.({ ...value,
@@ -292,7 +284,6 @@ export function createCompactionEmitter(accounting: any, started: number): (obse
  * only the raw event (trigger/re-entrancy guards), `beforeSummary` additionally
  * sees Pi's preparation, so a caller can decline a cut that cannot save enough
  * without paying a model call for the proof. The idle path does not use either.
- * @param {any} params
  */
 export function createGuardedCompactionHook({ harness, trigger, operationId, effectivePolicy, compactionSettings, accounting, fixedOverheadTokens, beforeAttempt, beforeSummary, }: any): {
     handler: (event: any) => Promise<{
@@ -337,7 +328,6 @@ export function createGuardedCompactionHook({
   beforeAttempt = null,
   beforeSummary = null,
 }: any):unknown {
-  /** @type {null | {kind: string, reason?: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, retainedTailLength?: number, compaction?: any, error?: any, warn?: boolean, retryAfterMs?: number, growthRequiredTokens?: number}} */
   let decision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; retainedTailLength?: number; compaction?: any; error?: any; warn?: boolean; retryAfterMs?: number; growthRequiredTokens?: number; } | null = null;
   const handler = async (event: any) => {
     decision = null;
@@ -426,7 +416,7 @@ export function createGuardedCompactionHook({
       accounting.afterSource = "preview";
       accounting.fullRequestAfter = fixedOverheadTokens === null || tokensAfter === null ? null : tokensAfter + fixedOverheadTokens;
       accounting.generatedSummaryTokens = accounting.requests.reduce((sum: any, request: any) => sum + (request.generatedSummaryTokens || 0), 0);
-      const lists = /** @type {{readFiles: string[], modifiedFiles: string[]}} */ ((compacted.value.details) as { readFiles: string[]; modifiedFiles: string[]; });
+      const lists = ((compacted.value.details) as { readFiles: string[]; modifiedFiles: string[]; });
       accounting.appendedMetadataBytes = Buffer.byteLength([
         lists.readFiles.length ? `\n\n<read-files>\n${lists.readFiles.join("\n")}\n</read-files>` : "",
         lists.modifiedFiles.length ? `\n\n<modified-files>\n${lists.modifiedFiles.join("\n")}\n</modified-files>` : "",
@@ -469,8 +459,6 @@ export function createGuardedCompactionHook({
  * runtime warning, the terminal `context_compaction` event and the bridge's
  * compaction result. Shared by the idle and mid-run paths so both report
  * skips/failures identically.
- * @param {any} params
- * @returns {{applied: false, tokensBefore: number|null, tokensAfter: number|null, reduced: boolean|null, nothingToCompact: boolean}}
  */
 export function reportGuardedCompactionOutcome({
   decision,
@@ -650,7 +638,6 @@ export async function tryCompact(harness: any, {
     model,
   });
   let effectivePolicy = policy || {};
-  /** @type {null | {kind: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, error?: any}} */
   let hookDecision: { kind: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; error?: any; } | null = null;
   let removeHook = null;
   let readDecision = () => hookDecision;
@@ -786,8 +773,6 @@ function isReactiveCompactionCandidate(errorMessage: any, diagnostics: any) {
  * window - reserve)` with `ratio <= 0.95`), so `reserveTokens >= 2` — never
  * degenerate. `keepRecentTokens` is carried through for a faithful settings
  * object even though `shouldCompact` ignores it.
- * @param {{enabled: boolean, contextWindow: number, triggerTokens: number, keepRecentTokens: number}} policy
- * @returns {{enabled: boolean, reserveTokens: number, keepRecentTokens: number}}
  */
 export function piCompactionSettings(policy: {
     enabled: boolean;
@@ -812,7 +797,6 @@ export function piCompactionSettings(policy: {
  * ceiling learned from a prior overflow). A positive `contextWindowOverride`
  * (from the typed `compaction` policy object) replaces provider metadata, but
  * process-local overflow evidence can still lower it. It drives the proactive trigger and reactive recovery.
- * @param {{harness: any, runtime: any, resolved: any, toolLimits?: any, compaction?: any, contextWindowOverride?: number}} params
  */
 export function resolveLiveCompactionPolicy({ harness, runtime, resolved, toolLimits, compaction, contextWindowOverride }: {
     harness: any;
@@ -831,8 +815,6 @@ export function resolveLiveCompactionPolicy({ harness, runtime, resolved, toolLi
  * BEFORE issuing the request so a long-lived session never overflows. Mutates
  * runState.compaction (applied / compactedThisRun / diagnostics) and re-anchors
  * runState.sessionBaselineCount when it fires.
- * @param {any} runState
- * @param {any} params
  */
 export async function runProactiveCompaction(runState: any, {
   harness,
@@ -938,9 +920,6 @@ export async function runProactiveCompaction(runState: any, {
  * already compacted-and-retried this run, compact once and re-prompt once.
  * Learns the real ceiling from the overflow error. Returns the (possibly
  * re-captured) state + runError.
- * @param {any} runState
- * @param {any} params
- * @returns {Promise<{state: any, runError: any}>}
  */
 export async function runReactiveCompaction(runState: any, {
   harness,

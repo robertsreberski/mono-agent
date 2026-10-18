@@ -20,9 +20,6 @@ import { homedir } from "node:os";
 import { createCountingSemaphore } from "../shared/semaphore.js";
 import { publicBackgroundStartFailure } from "../commands/process-jobs.js";
 
-/** @typedef {import("../../contracts/runtime.js").RuntimeSubagentDefinition} RuntimeSubagentDefinition */
-/** @typedef {import("../../contracts/runtime.js").RuntimeSubagentsOptions} RuntimeSubagentsOptions */
-
 const GENERAL_PURPOSE_SUBAGENT = "general-purpose";
 
 /**
@@ -97,11 +94,7 @@ Hard constraints, plan around them:
 State exactly what you want back ("return a bullet list of file:line and a one-line description each"), or you will get an unusable ramble.`;
 
 /**
- * @param {RuntimeSubagentsOptions} subagents
- * @param {ReadonlyArray<RuntimeSubagentDefinition>} definitions
- * @param {ReadonlyArray<string>|null} ceiling Tools available to the runtime-owned general-purpose or authored profiles, or null when authoring is off.
- * @param {boolean} instancesEnabled
- * @returns {string}
+ * @param ceiling Tools available to the runtime-owned general-purpose or authored profiles, or null when authoring is off.
  */
 function toolDescription(subagents: RuntimeSubagentsOptions, definitions: readonly RuntimeSubagentDefinition[], ceiling: readonly string[] | null, instancesEnabled: boolean) {
   const maxConcurrent = positiveInt(subagents!.maxConcurrent, DEFAULT_MAX_CONCURRENT);
@@ -131,25 +124,21 @@ function toolDescription(subagents: RuntimeSubagentsOptions, definitions: readon
   return `${base}${parallel}${named}${shapes}${inline}`;
 }
 
-/** @param {*} subagents @param {number} maximum @param {string|undefined} parentRunId */
 function slotsForOptions(subagents: any, maximum: number, parentRunId: string | undefined) {
-  const budget = /** @type {*} */ ((budgetForRun(subagents, parentRunId)) as any);
+  const budget = ((budgetForRun(subagents, parentRunId)) as any);
   if (!budget.slots) budget.slots = createCountingSemaphore(maximum);
   return budget.slots;
 }
 
-/** @param {*} value @returns {number} */
 function numberOrZero(value: any) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
-/** @returns {{costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}} */
 function emptyUsage() {
   return { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
 
-/** @param {ReturnType<typeof emptyUsage>} usage */
 function reportedTokens(usage: { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number; }) {
   const { input, output, cacheRead, cacheWrite } = usage;
   const values = [input, output, cacheRead, cacheWrite];
@@ -161,8 +150,7 @@ function reportedTokens(usage: { costUsd: number; input: number; output: number;
  * Per-logical-run call, byte and subagent-usage budget, shared across router
  * attempts. `usage` rides the same entry so delegated spend inherits the
  * existing per-run keying and eviction instead of needing a second store.
- * @param {*} subagents The run-scoped options object, stable across attempts.
- * @param {string|undefined} parentRunId
+ * @param subagents The run-scoped options object, stable across attempts.
  */
 function budgetForRun(subagents: any, parentRunId: string | undefined) {
   const store = subagents!.__budgets instanceof Map ? subagents!.__budgets : new Map();
@@ -192,10 +180,7 @@ function budgetForRun(subagents: any, parentRunId: string | undefined) {
  * registered — a run with no `Agent` tool never creates a budget entry, and that
  * is indistinguishable from one that had the tool and never used it, which is
  * exactly what "no subagent was invoked" means for this signal.
- *
- * @param {*} subagents The run-scoped options object, or undefined.
- * @param {string|undefined} parentRunId
- * @returns {number}
+ * @param subagents The run-scoped options object, or undefined.
  */
 export function subagentInvocationCount(subagents: any, parentRunId: string | undefined): number {
   const store = subagents?.__budgets;
@@ -211,10 +196,7 @@ export function subagentInvocationCount(subagents: any, parentRunId: string | un
  * independent durable accounting and never mutate this budget after handoff.
  * Like `subagentInvocationCount`, this accessor keeps `__budgets` private and
  * returns zeroes when the run has no synchronous child spend.
- *
- * @param {*} subagents The run-scoped options object, or undefined.
- * @param {string|undefined} parentRunId
- * @returns {{costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}}
+ * @param subagents The run-scoped options object, or undefined.
  */
 export function subagentUsageForRun(subagents: any, parentRunId: string | undefined): { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number } {
   const store = subagents?.__budgets;
@@ -228,18 +210,13 @@ export function subagentUsageForRun(subagents: any, parentRunId: string | undefi
   };
 }
 
-/** @param {*} value @param {number} fallback @returns {number} */
 function positiveInt(value: any, fallback: number) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 /**
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
- *
- * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{recoveryAccess?: unknown, instancesEnabled?: boolean, persistentExposure?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
- * @param {{record: import("../../contracts/runtime.js").RuntimeSubagentInstance, close?: boolean, acknowledgement?: import("../../contracts/runtime.js").RuntimeSubagentRecoveryRequest, route?: import("../../contracts/runtime.js").RuntimeSubagentRoute}} [continuation] Internal AgentManage dispatch; never model supplied.
- * @returns {*|null}
+ * @param [continuation] Internal AgentManage dispatch; never model supplied.
  */
 export function createAgentTool(subagents: RuntimeSubagentsOptions | null | undefined, context: { recoveryAccess?: unknown; instancesEnabled?: boolean; persistentExposure?: boolean; model?: any; effort?: string; cwd?: string; parentRunId?: string; sandboxPolicy?: any; sandboxEngine?: any; skills?: { name: string; description?: string }[]; skillsRoot?: string; toolEnvironment?: any; webSearchConfig?: any; webRequestCoordinator?: any; webFetchConfig?: any; onEvent?: (event: any) => void; persistArtifact?: (artifact: { filename: string; buffer: Buffer; toolName: string; toolUseId: string | null }) => string | null } = {}, continuation?: { record: import("../../contracts/runtime.js").RuntimeSubagentInstance; close?: boolean; acknowledgement?: import("../../contracts/runtime.js").RuntimeSubagentRecoveryRequest; route?: import("../../contracts/runtime.js").RuntimeSubagentRoute }): any | null {
   if (!subagents || typeof subagents!.run !== "function") return null;
@@ -346,11 +323,6 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
     // Agent is shareable in safe-parallel mode even when exclusive tools are
     // offered; the harness gate serializes those tools only when invoked.
     executionMode: undefined,
-    /**
-     * @param {string} toolCallId
-     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string, background?: boolean, verification?: {workdir: string, reportPath?: string}}} params
-     * @param {AbortSignal} [signal]
-     */
     async execute(toolCallId: string, params: { prompt: string; name?: string; description?: string; systemPrompt?: string; tools?: ReadonlyArray<string>; effort?: string; model?: string; persist?: boolean; id?: string; background?: boolean; verification?: { workdir: string; reportPath?: string; }; }, signal?: AbortSignal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
 
@@ -400,7 +372,6 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
         ...(override === undefined ? {} : { model: override.model }),
         ...(params.effort === undefined ? {} : { effort: params.effort }),
       };
-      /** @type {import("../../contracts/runtime.js").RuntimeSubagentInstance|undefined} */
       let instance: RuntimeSubagentInstance | undefined;
       const requested = {
         ...(profile.model === undefined ? {} : { model: `${profile.model.provider}:${profile.model.model}` }),
@@ -495,11 +466,6 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
       }
       return await runTurn(signal);
 
-      /**
-       * @param {AbortSignal} [signal]
-       * @param {(event: *) => void} [reportProgress]
-       * @param {{deadlineAt: number, managed?: any}} [execution]
-       */
       async function runTurn(signal?: AbortSignal, reportProgress?: (event: any) => void, execution?: { deadlineAt: number; managed?: any; }) {
         if (!detached && slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
           budget.warnedQueued = true;
@@ -573,7 +539,6 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
           requestDeadline();
         }, timeoutMs);
 
-        /** @type {(() => void)|undefined} */
         let fireDeadline: () => void;
         // A signal only ASKS a runner to stop. A runner that ignores both its
         // abort signal and its deadline would otherwise keep `execute()` pending
@@ -605,9 +570,7 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
         });
         collector.started();
         const startedAt = Date.now();
-        /** @type {*} */
         let result: any;
-        /** @type {unknown} */
         let thrown: unknown;
         let abandoned = false;
         let recoveryUnavailable = false;
@@ -663,8 +626,8 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
          * Runs inside the same wall-clock timeout (the guard timer keeps
          * running; the wrap-up never extends it), on the same instance turn,
          * and never recurses. Returns null when no wrap-up applies.
-         * @param {*} first The main turn's result.
-         * @returns {Promise<*|null>} The wrap-up record, merged onto the result.
+         * @param first The main turn's result.
+         * @returns The wrap-up record, merged onto the result.
          */
         const maybeRunWrapUp = async (first: any) => {
           if (wrapUpAttempted || !isMaxTurnsExhaustion(first)) return null;
@@ -881,9 +844,6 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
  * default rather than every built-in: the same reasoning as `normalizeProfile`,
  * one layer up. Only `enabled: false` turns authoring off, so a bare-kernel
  * caller keeps the capability at its safest setting instead of losing it.
- *
- * @param {{enabled?: boolean, allowedTools?: ReadonlyArray<string>}|undefined} inline
- * @returns {ReadonlyArray<string>|null}
  */
 function inlineCeiling(inline: { enabled?: boolean; allowedTools?: ReadonlyArray<string>; } | undefined) {
   if (inline?.enabled === false) return null;
@@ -900,11 +860,6 @@ function inlineCeiling(inline: { enabled?: boolean; allowedTools?: ReadonlyArray
  * The ceiling is the escalation guard: a child's `allowedTools` become its
  * actual tool set, so without an intersection the model could grant a helper a
  * tool its own policy denies it.
- *
- * @param {{name?: string, systemPrompt?: string, description?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string}} params
- * @param {ReadonlyArray<string>} ceiling
- * @param {ReadonlyArray<string>} configuredNames
- * @returns {{profile: RuntimeSubagentDefinition, droppedTools: string[]}}
  */
 function buildInlineProfile(params: { name?: string; systemPrompt?: string; description?: string; tools?: ReadonlyArray<string>; effort?: string; model?: string; }, ceiling: readonly string[], configuredNames: readonly string[]) {
   const name = typeof params.name === "string" ? params.name.trim() : "";
@@ -939,10 +894,7 @@ function buildInlineProfile(params: { name?: string; systemPrompt?: string; desc
 }
 
 /**
- * @param {ReadonlyArray<RuntimeSubagentDefinition>} definitions
- * @param {string|undefined} name
- * @param {ReadonlyArray<string>|null} ceiling Tool ceiling for the runtime-owned general-purpose profile.
- * @returns {RuntimeSubagentDefinition|null}
+ * @param ceiling Tool ceiling for the runtime-owned general-purpose profile.
  */
 function resolveProfile(definitions: readonly RuntimeSubagentDefinition[], name: string | undefined, ceiling: readonly string[] | null) {
   if (name === undefined || name === null || name === GENERAL_PURPOSE_SUBAGENT) {
@@ -976,9 +928,6 @@ function resolveProfile(definitions: readonly RuntimeSubagentDefinition[], name:
  * supplying a profile without tools would therefore silently get the widest
  * possible child. The hard-deny list is unioned here for the same reason: it
  * must hold on every path, not only the configured-app one.
- *
- * @param {RuntimeSubagentDefinition} definition
- * @returns {RuntimeSubagentDefinition}
  */
 function normalizeProfile(definition: RuntimeSubagentDefinition) {
   const allowed = Array.isArray(definition.allowedTools) && definition.allowedTools.length > 0
@@ -1017,10 +966,9 @@ function appendRouteEntry(entries: any, entry: any, routeState: any) {
   routeState.truncated = true;
 }
 
-/** Drop all provider payloads before the private job callback, especially prompts/results.
- * @param {*} event
- * @param {(event: *) => void} [report]
- * @param {{model?: string, effort?: string}} [launch] The route the child will
+/**
+ * Drop all provider payloads before the private job callback, especially prompts/results.
+ * @param [launch] The route the child will
  *   really run on: explicit pins completed with the inherited parent route.
  *   Reported as the progress `requested` route so the job card badges while
  *   running; the completed bookend's own attribution still wins.
@@ -1082,13 +1030,9 @@ function reportDetachedProgress(event: any, report?: (event: any) => void, launc
  * responder pipes `assistantTextFromRuntimeEvent` straight into the parent's
  * answer body, so forwarding them would splice a subagent's prose into the
  * main agent's reply. Its text reaches the parent through the tool result.
- *
- * @param {{callId: string, profileName: string, callIndex: number, requested?: {model?: string, effort?: string}, launch?: {model?: string, effort?: string}, label?: string | undefined, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
  */
 function createActivityCollector({ callId, profileName, callIndex, requested = {}, launch = {}, label, emit, recordUsage }: { callId: string; profileName: string; callIndex: number; requested?: { model?: string; effort?: string; }; launch?: { model?: string; effort?: string; }; label?: string | undefined; emit?: (event: any) => void; recordUsage?: (usage: { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number; }) => void; }) {
-  /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number | undefined}>} */
   const open: Map<string, { name: string; args: unknown; startedAt: number; ms?: number | undefined; }> = new Map();
-  /** @type {Array<{name: string, args: unknown, ms?: number, isError: boolean}>} */
   const done: { name: string; args: unknown; ms?: number | undefined; isError: boolean; }[] = [];
   /** What the child reported spending, so the parent run can own it. */
   const usage = emptyUsage();
@@ -1100,7 +1044,6 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
   // disposition never verdicts an inherited route as a fallback.
   const routeState = { requested: { ...requested }, launch: { ...launch }, attempted: undefined as { model?: string; effort?: string; effectiveEffort?: string } | undefined, transitions: [], retries: [], truncated: false };
 
-  /** @param {*} event */
   const publish = (event: any) => {
     if (emit === undefined) return;
     try {
@@ -1136,7 +1079,6 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
         ...(launchAttribution === undefined ? {} : { subagent: { ...subagent, attribution: launchAttribution } }),
       });
     },
-    /** @param {{status: string, durationMs: number, result?: *}} outcome */
     finished({ status, durationMs, result }: { status: string; durationMs: number; result?: any; }) {
       // Before the bookend, so the run's own usage report can already include
       // it, and so an abandoned child still hands over whatever it spent.
@@ -1204,7 +1146,6 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       }
       open.clear();
     },
-    /** @param {*} event */
     observe(event: any) {
       const type = event?.type;
       if (type === "provider_execution_config") {
@@ -1332,14 +1273,12 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
   };
 }
 
-/** @param {unknown} value */
 function summarizeForWire(value: unknown) {
   if (value === undefined || value === null) return undefined;
   const text = typeof value === "string" ? value : safeJson(value);
   return text.length <= WIRE_CONTENT_MAX_CHARS ? text : `${text.slice(0, WIRE_CONTENT_MAX_CHARS)}…`;
 }
 
-/** @param {unknown} value */
 function safeJson(value: unknown) {
   try {
     return JSON.stringify(value) ?? String(value);
@@ -1355,8 +1294,6 @@ function safeJson(value: unknown) {
  * text covers host-supplied `run` implementations that do not forward
  * diagnostics. `usage_limit` alone is not enough — it must name the turn
  * budget, not some other quota.
- * @param {*} result
- * @returns {boolean}
  */
 function isMaxTurnsExhaustion(result: any) {
   if (result === null || typeof result !== "object" || result.cancelled === true) return false;
@@ -1368,8 +1305,6 @@ function isMaxTurnsExhaustion(result: any) {
  * Turns the child reports having used, for the truncation marker. The bridge
  * reports it as `numTurns`; fall back to the diagnostic the result builder
  * records alongside `max_turns_hit`.
- * @param {*} result
- * @returns {number|null}
  */
 function turnCountOf(result: any) {
   if (result !== null && typeof result === "object") {
@@ -1386,9 +1321,6 @@ function turnCountOf(result: any) {
  * throws for a settled result; a rejected `run` is handled by the caller as
  * `unavailable`. A wrap-up that exhausts its own budget is `failed`, never
  * re-wrapped: the caller issues exactly one continuation per Agent call.
- * @param {*} wrapResult
- * @param {{turnsUsed: number|null, turnsAllowed: number}} budget
- * @returns {{budget: string, turnsUsed: number|null, turnsAllowed: number, status: string, reason: string, answer: string, wrapUpTurnsUsed: number|null, wrapUpTurnsAllowed: number}}
  */
 function toWrapUpRecord(wrapResult: any, { turnsUsed, turnsAllowed }: { turnsUsed: number | null; turnsAllowed: number; }) {
   const base = {
@@ -1443,8 +1375,6 @@ function toWrapUpRecord(wrapResult: any, { turnsUsed, turnsAllowed }: { turnsUse
  * without the prior transcript — and a resumed persistent session was rolled
  * back to its pre-turn leaf, so neither wrap-up can rely on seeing the work
  * in the transcript.
- * @param {{prompt: string, turnsUsed: number|null, turnsAllowed: number, activity: ReadonlyArray<{name: string, args: unknown, isError: boolean}>, cwd?: string, reportPath?: string, persistent: boolean}} input
- * @returns {string}
  */
 function buildWrapUpPrompt({ prompt, turnsUsed, turnsAllowed, activity, cwd, reportPath, persistent }: { prompt: string; turnsUsed: number | null; turnsAllowed: number; activity: ReadonlyArray<{ name: string; args: unknown; isError: boolean; }>; cwd?: string; reportPath?: string; persistent: boolean; }) {
   const used = turnsUsed ?? "all";
@@ -1486,10 +1416,9 @@ function buildWrapUpPrompt({ prompt, turnsUsed, turnsAllowed, activity, cwd, rep
  * — never for a merely failed or unavailable wrap-up. `wrapUsage` is the
  * wrap-up's raw usage bag for the instance-outcome sum; it is not surfaced in
  * `details.subagent.wrapUp`, which keeps its fixed seven fields.
- * @param {*} record The record from `toWrapUpRecord` or the unavailable path.
- * @param {*} first The main turn's result.
- * @param {*} wrapResult The wrap-up run's raw result, or undefined when it never started.
- * @returns {*}
+ * @param record The record from `toWrapUpRecord` or the unavailable path.
+ * @param first The main turn's result.
+ * @param wrapResult The wrap-up run's raw result, or undefined when it never started.
  */
 function attachWrapUpSignals(record: any, first: any, wrapResult: any) {
   const wrapObject = wrapResult !== null && typeof wrapResult === "object" ? wrapResult : null;
@@ -1509,9 +1438,6 @@ function attachWrapUpSignals(record: any, first: any, wrapResult: any) {
  * accumulate, so an unexpected shape never corrupts the total; keys present in
  * only one bag pass through. The bridge reports both runs in the same
  * spelling, which is the case that matters (instance token/cost accounting).
- * @param {*} firstUsage
- * @param {*} secondUsage
- * @returns {Record<string, *>}
  */
 function sumRunUsage(firstUsage: any, secondUsage: any) {
   const base = firstUsage !== null && typeof firstUsage === "object" ? { ...firstUsage } : {};
@@ -1524,10 +1450,6 @@ function sumRunUsage(firstUsage: any, secondUsage: any) {
   return base;
 }
 
-/**
- * @param {{result: *, thrown: unknown, timedOut: boolean, abandoned?: boolean}} input
- * @returns {{status: string, answer: string, reason?: string, question?: {question: string, options?: string[]}}}
- */
 function classifyOutcome({ result, thrown, timedOut, abandoned = false }: { result: any; thrown: unknown; timedOut: boolean; abandoned?: boolean; }) {
   if (abandoned) {
     return {
@@ -1571,9 +1493,6 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }: { resu
  * The reference sits directly under the header so the final byte cap can never
  * cut it off. Without a sink (or when the write fails) the text says so instead,
  * so the caller does not go looking for a file that was never written.
- *
- * @param {{profileName: string, instance?: {id: string, turns: number, status: string}, label?: string, routeLabel?: string, outcome: {status: string, answer: string, reason?: string}, wrapUpNote?: string, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
- * @returns {{text: string, savedPath: string|null, truncated: boolean}}
  */
 function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, wrapUpNote, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }: { profileName: string; instance?: { id: string; turns: number; status: string; }; label?: string | undefined; routeLabel?: string; outcome: { status: string; answer: string; reason?: string; }; wrapUpNote?: string; durationMs: number; activity: ReadonlyArray<{ name: string; args: unknown; ms?: number | undefined; isError: boolean; }>; maxBytes?: number; cwd?: string; notice?: string; persist?: (fullText: string) => string | null; }) {
   const seconds = (durationMs / 1000).toFixed(1);
@@ -1588,7 +1507,7 @@ function formatSubagentResult({ profileName, instance, label, routeLabel, outcom
     // much of it was used, and what the single wrap-up continuation achieved.
     ...(wrapUpNote === undefined ? [] : [`wrap-up: ${truncate(wrapUpNote, 500)}`]),
   ];
-  const body = (/** @type {string} */ answer: string, /** @type {string[]} */ activityLines: string[]) => [
+  const body = (answer: string, activityLines: string[]) => [
     ...(answer.length > 0 ? ["", answer] : []),
     ...(activityLines.length > 0 ? ["", "<activity>", ...activityLines, "</activity>"] : []),
   ];
@@ -1619,12 +1538,9 @@ function formatSubagentResult({ profileName, instance, label, routeLabel, outcom
 /**
  * Head-and-tail elision: the informative parts of a delegation trace are what
  * it opened with and what it concluded with; the middle is usually a read loop.
- * @param {ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>} activity
- * @param {string} [cwd]
- * @returns {string[]}
  */
 function renderActivity(activity: readonly { name: string; args: unknown; ms?: number | undefined; isError: boolean; }[], cwd?: string) {
-  const line = (/** @type {{name: string, args: unknown, ms?: number, isError: boolean}} */ entry: { name: string; args: unknown; ms?: number | undefined; isError: boolean }, /** @type {number} */ index: number) =>
+  const line = (entry: { name: string; args: unknown; ms?: number | undefined; isError: boolean }, index: number) =>
     activityLine(entry, index, cwd);
   if (activity.length <= LOG_MAX_LINES) return activity.map(line);
   const head = activity.slice(0, LOG_HEAD_LINES).map(line);
@@ -1637,9 +1553,6 @@ function renderActivity(activity: readonly { name: string; args: unknown; ms?: n
 /**
  * One activity line. Shared by the retained (elided) log and the persisted
  * full log so both render a call identically.
- * @param {{name: string, args: unknown, ms?: number, isError: boolean}} entry
- * @param {number} index
- * @param {string} [cwd]
  */
 function activityLine(entry: { name: string; args: unknown; ms?: number | undefined; isError: boolean; }, index: number, cwd?: string) {
   const args = summarizeArgs(entry.name, entry.args, cwd);
@@ -1654,11 +1567,6 @@ function activityLine(entry: { name: string; args: unknown; ms?: number | undefi
  * contract the bloat guard uses, so the file lands beside every other spilled
  * tool output under the run's tool-output directory. Best-effort: a missing
  * sink, a rejected filename or a failed write all yield null.
- * @param {unknown} persistArtifact
- * @param {string} toolCallId
- * @param {string} fullText
- * @param {string} toolName
- * @returns {string|null}
  */
 function persistSubagentResult(persistArtifact: unknown, toolCallId: string, fullText: string, toolName: string) {
   if (typeof persistArtifact !== "function") return null;
@@ -1676,7 +1584,6 @@ function persistSubagentResult(persistArtifact: unknown, toolCallId: string, ful
   }
 }
 
-/** @param {number} ms */
 function formatMs(ms: number) {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
@@ -1692,10 +1599,6 @@ const ARGV_PREVIEW_MAX_CHARS = 200;
  *
  * Duplicated rather than imported: `@mono-agent/turn` deliberately has
  * no internal dependencies, so it cannot reach `agent-contracts`.
- *
- * @param {string} value
- * @param {string|undefined} cwd
- * @returns {string}
  */
 function relativizePaths(value: string, cwd: string | undefined) {
   let result = value;
@@ -1707,7 +1610,6 @@ function relativizePaths(value: string, cwd: string | undefined) {
   return result;
 }
 
-/** @returns {string|undefined} */
 function safeHomedir() {
   try {
     return homedir();
@@ -1719,14 +1621,11 @@ function safeHomedir() {
 /**
  * Tool-aware one-liners keep the log readable where a generic JSON dump would
  * blow the per-line budget on a single Write payload.
- * @param {string} name
- * @param {unknown} args
- * @param {string} [cwd] Agent root; paths are shown relative to it.
- * @returns {string}
+ * @param [cwd] Agent root; paths are shown relative to it.
  */
 function summarizeArgs(name: string, args: unknown, cwd?: string) {
   if (args === null || typeof args !== "object") return "";
-  const record = /** @type {Record<string, unknown>} */ ((args) as Record<string, unknown>);
+  const record = ((args) as Record<string, unknown>);
   const pick = (key: any) => (typeof record[key] === "string" ? relativizePaths(String(record[key]), cwd) : undefined);
   switch (name) {
     case "Read":
@@ -1763,10 +1662,6 @@ function summarizeArgs(name: string, args: unknown, cwd?: string) {
  * line it stands in for. A non-string element ends the run: a hole makes the
  * rest of an argv positionally meaningless, and a truthful prefix beats a
  * spliced line.
- *
- * @param {Record<string, unknown>} record
- * @param {string|undefined} cwd
- * @returns {string}
  */
 function execArgv(record: Record<string, unknown>, cwd: string | undefined) {
   const executable = typeof record.executable === "string" ? record.executable : "";
@@ -1781,13 +1676,11 @@ function execArgv(record: Record<string, unknown>, cwd: string | undefined) {
   return relativizePaths(parts.join(" "), cwd);
 }
 
-/** @param {string} value */
 function quote(value: string) {
   const trimmed = truncate(value.replace(/\s+/gu, " ").trim(), 60);
   return trimmed.length === 0 ? "" : `"${trimmed}"`;
 }
 
-/** @param {string} value @param {number} max */
 function truncate(value: string, max: number) {
   const text = String(value ?? "");
   if (text.length <= max) return text;
@@ -1797,7 +1690,6 @@ function truncate(value: string, max: number) {
 /**
  * Final backstop so a pathological subagent cannot push the tool result into
  * bloat-guard territory, where the whole payload would be replaced.
- * @param {string} value @param {number} maxBytes
  */
 function capBytes(value: string, maxBytes: number) {
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;

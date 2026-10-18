@@ -704,7 +704,7 @@ describe("managed web-research contract", () => {
       res.end("missing");
     });
     await new Promise((resolvePromise: any) => { server.listen(0, "127.0.0.1", resolvePromise); });
-    port = /** @type {any} */ ((server.address()) as any).port;
+    port = ((server.address()) as any).port;
     try {
       // No fetchImpl override: this exercises the real transport, sandbox
       // policy, and response parsing through the actual controller.
@@ -728,7 +728,7 @@ describe("managed web-research contract", () => {
       expect(fetchPayload).toMatchObject({ tool: "WebFetch", status: "partial" });
       expect(fetchPayload.content).toContain("Alpha paragraph");
       expect(fetchPayload.content).not.toContain("gardening");
-      expect(fetchPayload.links.map((/** @type {any} */ entry: any) => entry.url)).toContain(`http://127.0.0.1:${port}/related`);
+      expect(fetchPayload.links.map((entry: any) => entry.url)).toContain(`http://127.0.0.1:${port}/related`);
       assertValidNextActions(fetchPayload.next_actions);
       expect(fetchPayload.next_actions[0].args).toMatchObject({
         url: articleUrl, focus: "paragraph", include_links: true,

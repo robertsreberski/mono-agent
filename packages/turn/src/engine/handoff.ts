@@ -8,7 +8,9 @@ export const estimateHandoffTokens = (value: any) => Math.ceil(Buffer.byteLength
 const positive = (n: number) => Number.isSafeInteger(n) && n > 0;
 const failure = (reason: string) => ({ status: "budget_failure", reason });
 
-/** Freeze the host bound BEFORE any producer call. @param {any} input */
+/**
+ * Freeze the host bound BEFORE any producer call.
+ */
 export function createHandoffBudget(input: any) {
   if (!positive(input?.contextWindow) || !positive(input.outputReserve) || !Number.isSafeInteger(input.inputTokens) || input.inputTokens < 0) throw new TypeError("Invalid handoff budget");
   const hostTokens = estimateHandoffTokens(input.hostContext ?? {});
@@ -18,7 +20,9 @@ export function createHandoffBudget(input: any) {
     inputTokens: input.inputTokens, hostCap, hostContextDigest: evidenceDigest(input.hostContext ?? {}), safety, historyAllowance: input.contextWindow - hostCap - input.inputTokens - input.outputReserve - safety });
 }
 
-/** Check the complete normalized request, including late host extensions. No repair. @param {any} request @param {any} budget */
+/**
+ * Check the complete normalized request, including late host extensions. No repair.
+ */
 export function checkHandoffDispatch(request: any, budget: any): {
   status: string;
   reason: any;
@@ -39,7 +43,9 @@ export function checkHandoffDispatch(request: any, budget: any) {
   return { status: "ready", historyTokens };
 }
 
-/** Strict structured prose. It cannot replace the deterministic ledger. @param {any} value */
+/**
+ * Strict structured prose. It cannot replace the deterministic ledger.
+ */
 export function validateHandoffSummary(value: any) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || Object.keys(value).length !== HANDOFF_SUMMARY_FIELDS.length
@@ -59,10 +65,11 @@ export function renderHandoffMessage(message: any) {
         : { label: "opaque_native_reference", type: part.type, digest: evidenceDigest(part) }) };
 }
 
-/** Genuinely unresolved work only: outcome-unknown or unplaced calls from the
+/**
+ * Genuinely unresolved work only: outcome-unknown or unplaced calls from the
  * whole epoch (never dropped), turns/calls interrupted since the last completed
  * turn and unconsumed inputs. Failures the model already saw are history.
- * @param {any} view */
+ */
 export function buildOpenWorkLedger(view: any) {
   assertEvidenceView(view); const ledger = view.gaps.map((gap: any) => ({ kind: "coverage_gap", reference: gap.reference, reason: gap.reason, afterJournalId: gap.afterJournalId, data: gap.messages.map(renderHandoffMessage) }));
   for (const segment of view.segments) {
@@ -144,9 +151,9 @@ function logicalHandoffTurns(view: any) {
   return groups.filter((group) => group.messages.length);
 }
 
-/** Select whole logical turns. Required latest turn and ledger are never clipped.
+/**
+ * Select whole logical turns. Required latest turn and ledger are never clipped.
  * Returned input is for ONE no-tools producer; orchestration/billing belongs to the host.
- * @param {any} view @param {any} options
  */
 export function prepareHandoff(view: any, options: any): {
   status: string;
@@ -199,11 +206,11 @@ export function prepareHandoff(view: any, options: any): ReturnType<typeof prepa
   return { status: "prepared", checkpoints, ledger, recent, older, prior, coverage: view.segments.map((s: any) => s.descriptor) };
 }
 
-/** Pure artifact proposal. The host publishes the sole immutable content authority.
+/**
+ * Pure artifact proposal. The host publishes the sole immutable content authority.
  * Without a new summary, the only checkpoint is the exact prior accepted handoff
  * with a validated structured summary, plus the complete current journal suffix.
  * A suffix alone is text-only replay, never a handoff. No chunking or clipping.
- * @param {any} view @param {any} options
  */
 export function buildHandoff(view: any, options: any): {
   status: string;

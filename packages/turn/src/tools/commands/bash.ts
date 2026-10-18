@@ -18,9 +18,6 @@ import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy
 
 /**
  * Compatibility wrapper retained for direct callers and tests.
- *
- * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: import("./process-jobs.js").ProcessJobsController}} options
  */
 export async function bashToolImpl(params: { command: string; description?: string; timeout?: number; timeout_ms?: number; max_output_chars?: number; workdir?: string; background?: boolean; wake_on_completion?: boolean }, options: { ctx: import("../shared/tool-context.js").ToolContext; signal?: AbortSignal; sandboxPolicy?: any; sandboxEngine?: any; toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits; toolCallId?: string; ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController; processJobsController?: import("./process-jobs.js").ProcessJobsController }): Promise<any> {
   return (await bashToolRun(params, options)).text;
@@ -28,9 +25,6 @@ export async function bashToolImpl(params: { command: string; description?: stri
 
 /**
  * Structured Bash execution used by the Pi bridge.
- *
- * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: import("./process-jobs.js").ProcessJobsController}} options
  */
 export async function bashToolRun(
   {

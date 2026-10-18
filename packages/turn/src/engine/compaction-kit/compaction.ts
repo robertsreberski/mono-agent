@@ -399,7 +399,6 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
     return ok({ text: textContent, usage: response.usage });
 }
 /** Prepare session entries for compaction, or return undefined when compaction is not applicable. */
-/** @returns {{ok:boolean, value?:any, error?:any}} */
 export function prepareCompaction(pathEntries: any, settings: any, { nonRetainablePrefixLength = 0 }: { nonRetainablePrefixLength?: number } = {}): { ok: boolean; value?: any; error?: any; } {
     if (!Number.isSafeInteger(nonRetainablePrefixLength) || nonRetainablePrefixLength < 0
         || nonRetainablePrefixLength > pathEntries.length) return err(new CompactionError("invalid_cut", "Invalid non-retainable compaction prefix"));

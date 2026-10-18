@@ -1,18 +1,16 @@
 // Internal per-execution evidence. Never seed this from host/provider options.
-/** @returns {import("../../contracts/runtime.js").RuntimeDispatchProgress} */
 export function createDispatchProgress(): import("../../contracts/runtime.js").RuntimeDispatchProgress {
   return { version: 1, armed: false, toolAdmitted: false, liveInputTaken: false };
 }
 
-/** @param {unknown} value @returns {value is import("../../contracts/runtime.js").RuntimeDispatchProgress} */
 export function isDispatchProgress(value: unknown): value is import("../../contracts/runtime.js").RuntimeDispatchProgress {
   return value !== null && typeof value === "object" && (value as Record<string, unknown>)["version"] === 1
     && ["armed", "toolAdmitted", "liveInputTaken"].every((key) => typeof (value as Record<string, unknown>)[key] === "boolean");
 }
 
-/** Preserve side-effect evidence even when native teardown itself throws.
- * @param {unknown} error @param {import("../../contracts/runtime.js").RuntimeDispatchProgress} progress
- * @returns {Error & {dispatchProgress: import("../../contracts/runtime.js").RuntimeDispatchProgress}} */
+/**
+ * Preserve side-effect evidence even when native teardown itself throws.
+ */
 export function withDispatchProgress(error: unknown, progress: import("../../contracts/runtime.js").RuntimeDispatchProgress): Error & {
     dispatchProgress: import("../../contracts/runtime.js").RuntimeDispatchProgress;
 } {
@@ -22,7 +20,7 @@ export function withDispatchProgress(error: unknown, progress: import("../../con
   if (error !== null && (typeof error === "object" || typeof error === "function")) {
     try {
       Object.defineProperty(error, "dispatchProgress", { value: snapshot, configurable: true, enumerable: true });
-      return /** @type {Error & {dispatchProgress: import("../../contracts/runtime.js").RuntimeDispatchProgress}} */ ((error) as Error & {dispatchProgress: import("../../contracts/runtime.js").RuntimeDispatchProgress});
+      return ((error) as Error & {dispatchProgress: import("../../contracts/runtime.js").RuntimeDispatchProgress});
     } catch { /* retain the original as cause below */ }
   }
   return Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), { dispatchProgress: snapshot });

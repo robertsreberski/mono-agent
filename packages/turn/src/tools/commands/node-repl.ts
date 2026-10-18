@@ -31,7 +31,7 @@ function nodeReplWorkerMain(frameToken: any) {
     terminal: false,
     useGlobal: false,
   });
-  const replServer = /** @type {any} */ ((server) as any);
+  const replServer = ((server) as any);
   let active: { id: any; output: string; stdout: string; stderr: string; bytes: number; [key: string]: any } | null = null;
   let protocolBuffer = Buffer.alloc(0);
 
@@ -94,8 +94,8 @@ function nodeReplWorkerMain(frameToken: any) {
       const resolvedEncoding = typeof encoding === "string" ? encoding : "utf8";
       const resolvedCallback = typeof encoding === "function" ? encoding : callback;
       const buffer = typeof chunk === "string"
-        ? Buffer.from(chunk, /** @type {any} */ ((resolvedEncoding) as any))
-        : Buffer.from(/** @type {any} */ ((chunk) as any));
+        ? Buffer.from(chunk, ((resolvedEncoding) as any))
+        : Buffer.from(((chunk) as any));
       active.bytes += buffer.length;
       if (active.bytes > MAX_BUFFER_BYTES) {
         finish(false, `Node REPL output exceeded ${MAX_BUFFER_BYTES} bytes.`, true);
@@ -308,14 +308,13 @@ function consumeWorkerFrames(record: any, chunk: any, onMessage: any) {
 }
 
 function codedError(message: any, code: any) {
-  const error = /** @type {Error & {code?: string}} */ ((new Error(message)) as Error & {code?: string});
+  const error = ((new Error(message)) as Error & {code?: string});
   error.code = code;
   return error;
 }
 
 /**
  * One lazy Node REPL process owned by a single Pi run.
- * @param {{cwd?: string, maxOutputChars?: number, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
  */
 export function createNodeReplController({
   cwd,
@@ -443,10 +442,6 @@ export function createNodeReplController({
     pending.reject(codedError(`${message} Session state was reset.`, code));
   }
 
-  /**
-   * @param {{code: string}} params
-   * @param {{signal?: AbortSignal}} [execution]
-   */
   async function execute({ code }: { code: string; }, { signal }: { signal?: AbortSignal; } = {}): Promise<any> {
     if (typeof code !== "string" || code.trim().length === 0) {
       throw codedError("Node REPL code must not be empty.", "invalid_code");

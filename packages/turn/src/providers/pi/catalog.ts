@@ -124,107 +124,10 @@ export type PiProviderAuthInteraction = {
 };
 
 /**
- * @typedef {{
- *   id: string,
- *   name: string,
- *   api: string,
- *   provider: string,
- *   baseUrl: string,
- *   reasoning: boolean,
- *   input: Array<"text"|"image">,
- *   cost: {
- *     input: number,
- *     output: number,
- *     cacheRead: number,
- *     cacheWrite: number,
- *     tiers?: Array<{
- *       inputTokensAbove: number,
- *       input: number,
- *       output: number,
- *       cacheRead: number,
- *       cacheWrite: number
- *     }>
- *   },
- *   contextWindow: number,
- *   maxTokens: number,
- *   thinkingLevelMap?: Object<string, string|null>,
- *   compat?: Object<string, *>,
- *   headers?: Object<string, string>,
- *   [key: string]: *
- * }} PiBuiltinModelSnapshot
- */
-
-/**
- * @typedef {"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"} PiReasoningLevel
- */
-
-/**
- * @typedef {{
- *   id: string,
- *   label: string
- * }} PiBuiltinProviderSnapshot
- */
-
-/**
- * @typedef {{
- *   refresh: string,
- *   access: string,
- *   expires: number,
- *   [key: string]: *
- * }} PiOAuthCredentialsSnapshot
- */
-
-/**
- * @typedef {Object} PiOAuthLoginCallbacks
- * @property {(info: {url: string, instructions?: string}) => void} onAuth
- * @property {(info: {userCode: string, verificationUri: string, intervalSeconds?: number, expiresInSeconds?: number}) => void} onDeviceCode
- * @property {(prompt: {message: string, placeholder?: string, allowEmpty?: boolean}) => Promise<string>} onPrompt
- * @property {(message: string) => void} [onProgress]
- * @property {() => Promise<string>} [onManualCodeInput]
- * @property {(prompt: {message: string, options: Array<{id: string, label: string}>}) => Promise<string|undefined>} onSelect
- * @property {AbortSignal} [signal]
- */
-
-/**
- * @typedef {{
- *   providerId: string,
- *   label: string,
- *   methods: Array<{type: "oauth"|"api_key", label: string, interactive: boolean}>
- * }} PiProviderAuthDescription
- */
-
-/**
- * @typedef {{source: "stored"|"environment"|"ambient", type: "oauth"|"api_key"}} PiProviderAuthCheck
- */
-
-/**
- * @typedef {{
- *   type: "text"|"secret"|"select"|"manual_code",
- *   message: string,
- *   placeholder?: string,
- *   allowEmpty?: boolean,
- *   options?: ReadonlyArray<{id: string, label: string, description?: string}>,
- *   signal?: AbortSignal
- * }} PiProviderAuthPrompt
- */
-
-/**
- * @typedef {{
- *   signal?: AbortSignal,
- *   prompt: (prompt: PiProviderAuthPrompt) => Promise<string>,
- *   notify: (event: *) => void
- * }} PiProviderAuthInteraction
- */
-
-/**
  * Clone provider-owned data before it crosses the public runtime boundary.
  * Pi's built-in models and OAuth credentials are structured data on the
  * supported version, and the package requires a Node release with
  * `structuredClone`.
- *
- * @template T
- * @param {T} value
- * @returns {T}
  */
 function cloneInteropValue<T>(value: T): T {
   return structuredClone(value);
@@ -233,31 +136,24 @@ function cloneInteropValue<T>(value: T): T {
 /**
  * List defensive snapshots of Pi's built-in chat models for one provider.
  * Callers cannot mutate the upstream catalog's shared state.
- *
- * @param {string} providerId
- * @returns {PiBuiltinModelSnapshot[]}
  */
 export function listPiBuiltinModels(providerId: string): PiBuiltinModelSnapshot[] {
-  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(
-    getBuiltinModels(/** @type {any} */ (providerId) as any),
+  return (cloneInteropValue(
+    getBuiltinModels((providerId) as any),
   ));
 }
 
 /**
  * Read a defensive snapshot of one Pi built-in chat model.
- *
- * @param {string} providerId
- * @param {string} modelId
- * @returns {PiBuiltinModelSnapshot|undefined}
  */
 export function getPiBuiltinModel(providerId: string, modelId: string): PiBuiltinModelSnapshot | undefined {
   const model = getBuiltinModel(
-    /** @type {any} */ (providerId) as any,
-    /** @type {any} */ (modelId) as any,
+ (providerId) as any,
+ (modelId) as any,
   );
   return model === undefined
     ? undefined
-    : /** @type {PiBuiltinModelSnapshot} */ (cloneInteropValue(model)) as PiBuiltinModelSnapshot;
+    : (cloneInteropValue(model)) as PiBuiltinModelSnapshot;
 }
 
 let builtinProviderLabels: Map<string, string> | undefined;
@@ -282,8 +178,6 @@ function builtinProviderLabelMap(): Map<string, string> {
 /**
  * List defensive snapshots of Pi's static built-in providers (id + display
  * label), gated on the generated catalog set above.
- *
- * @returns {PiBuiltinProviderSnapshot[]}
  */
 export function listPiBuiltinProviders(): PiBuiltinProviderSnapshot[] {
   const labels = builtinProviderLabelMap();
@@ -297,8 +191,6 @@ export function listPiBuiltinProviders(): PiBuiltinProviderSnapshot[] {
  * Pi 0.99's OpenAI ChatGPT sign-in requires a stable installation device ID.
  * App owners supply a stable installation ID when initiating OpenAI OAuth.
  * The built-in method remains visible to callers choosing their auth type.
- * @param {string} providerId
- * @returns {boolean}
  */
 export function isPiOAuthLoginEnabled(providerId: string): boolean {
   return true;
@@ -307,9 +199,6 @@ export function isPiOAuthLoginEnabled(providerId: string): boolean {
 /**
  * Describe one provider's supported authentication methods without exposing
  * Pi provider objects across the runtime boundary.
- *
- * @param {string} providerId
- * @returns {PiProviderAuthDescription|undefined}
  */
 export function describePiProviderAuth(providerId: string): PiProviderAuthDescription | undefined {
   let provider;
@@ -322,14 +211,14 @@ export function describePiProviderAuth(providerId: string): PiProviderAuthDescri
   const methods: PiProviderAuthDescription["methods"] = [];
   if (isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined) {
     methods.push({
-      type: /** @type {const} */ ("oauth"),
+      type: ("oauth"),
       label: provider.auth.oauth.loginLabel ?? provider.auth.oauth.name,
       interactive: true,
     });
   }
   if (provider.auth.apiKey !== undefined) {
     methods.push({
-      type: /** @type {const} */ ("api_key"),
+      type: ("api_key"),
       label: provider.auth.apiKey.name,
       interactive: typeof provider.auth.apiKey.login === "function",
     });
@@ -341,12 +230,6 @@ export function describePiProviderAuth(providerId: string): PiProviderAuthDescri
  * Run Pi's side-effect-free `Models.checkAuth()` against a caller-provided
  * credential/environment snapshot. OAuth refresh and live provider requests do
  * not occur. Only the non-secret source/type result crosses this facade.
- *
- * @param {string} providerId
- * @param {*} credential
- * @param {Readonly<Record<string, string|undefined>>} [environment]
- * @param {AbortSignal} [signal]
- * @returns {Promise<PiProviderAuthCheck|undefined>}
  */
 export async function checkPiProviderAuth(providerId: string, credential: any, environment: Readonly<Record<string, string | undefined>> = {}, signal?: AbortSignal): Promise<PiProviderAuthCheck | undefined> {
   const credentials = memoryCredentialStore(credential === undefined ? {} : { [providerId]: credential });
@@ -386,12 +269,6 @@ export async function checkPiProviderAuth(providerId: string, credential: any, e
  * Run a provider-owned Pi login into a process-local store. The returned
  * credential is a defensive snapshot; the caller remains responsible for its
  * hardened durable transaction.
- *
- * @param {string} providerId
- * @param {"oauth"|"api_key"} type
- * @param {PiProviderAuthInteraction} interaction
- * @param {{getDeviceId?: () => string}} [options]
- * @returns {Promise<*>}
  */
 export async function loginPiProviderAuth(providerId: string, type: "oauth" | "api_key", interaction: PiProviderAuthInteraction, options?: {
     getDeviceId?: () => string;
@@ -414,7 +291,6 @@ export async function loginPiProviderAuth(providerId: string, type: "oauth" | "a
   return cloneInteropValue(credential);
 }
 
-/** @param {Record<string, *>} initial */
 function memoryCredentialStore(initial: Record<string, any>): import("@earendil-works/pi-ai").CredentialStore {
   const held = new Map(Object.entries(initial));
   return {
@@ -436,21 +312,14 @@ function memoryCredentialStore(initial: Record<string, any>): import("@earendil-
 
 /**
  * Translate Pi's model-native thinking levels to mono-agent effort spelling.
- *
- * @param {PiBuiltinModelSnapshot} model
- * @returns {PiReasoningLevel[]}
  */
 export function reasoningLevelsForPiModel(model: PiBuiltinModelSnapshot): PiReasoningLevel[] {
-  return /** @type {PiReasoningLevel[]} */ (resolveReasoningLevels(model)) as PiReasoningLevel[];
+  return (resolveReasoningLevels(model)) as PiReasoningLevel[];
 }
 
 /**
  * Resolve an OAuth-backed API key without allowing Pi to mutate the caller's
  * credential record or returning Pi-owned credential objects.
- *
- * @param {string} providerId
- * @param {Object<string, PiOAuthCredentialsSnapshot>} credentials
- * @returns {Promise<{apiKey: string, newCredentials: PiOAuthCredentialsSnapshot}|null>}
  */
 export async function resolvePiOAuthApiKey(providerId: string, credentials: {
     [x: string]: PiOAuthCredentialsSnapshot;
@@ -460,7 +329,7 @@ export async function resolvePiOAuthApiKey(providerId: string, credentials: {
 } | null> {
   const result = await resolveOAuthApiKey(
     providerId,
-    /** @type {any} */ (cloneInteropValue(credentials)),
+ (cloneInteropValue(credentials)),
   );
   if (!result) return null;
   return {
@@ -472,11 +341,6 @@ export async function resolvePiOAuthApiKey(providerId: string, credentials: {
 /**
  * Run a supported Pi OAuth login flow without exposing Pi's mutable provider
  * registry or provider instances.
- *
- * @param {string} providerId
- * @param {PiOAuthLoginCallbacks} callbacks
- * @param {{getDeviceId?: () => string}} [options]
- * @returns {Promise<PiOAuthCredentialsSnapshot>}
  */
 export async function loginPiOAuth(providerId: string, callbacks: PiOAuthLoginCallbacks, options?: {
     getDeviceId?: () => string;
@@ -494,7 +358,7 @@ export async function loginPiOAuth(providerId: string, callbacks: PiOAuthLoginCa
     }
   }
   const credentials = await oauth.login(
-    toAuthInteraction(/** @type {any} */ ({ ...callbacks })),
+    toAuthInteraction(({ ...callbacks })),
     providerId === "openai" ? { getDeviceId: options!.getDeviceId! } : undefined,
   );
   return cloneInteropValue(credentials);

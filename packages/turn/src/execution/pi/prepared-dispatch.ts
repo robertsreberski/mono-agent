@@ -4,17 +4,15 @@ export type NativePreparedDispatch = import("../../contracts/runtime.js").Native
 
 export { copy as copyDispatchData };
 
-/** Validate and copy before consuming either a direct or routed lease.
- * @param {any} [input] @returns {any} */
+/**
+ * Validate and copy before consuming either a direct or routed lease.
+ */
 export function prepareNativeDispatchBinding(input: any = {}): any {
   if (!input || typeof input !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Reflect.ownKeys(input).some((key) => typeof key !== "string" || !bindingKeys.has(key))) {
     throw new TypeError("Prepared dispatch accepts only host session binding fields");
   }
   return snapshotNativeDispatchOptions(input);
 }
-
-/** @typedef {import("../../contracts/runtime.js").NativeDispatchBinding} NativeDispatchBinding */
-/** @typedef {import("../../contracts/runtime.js").NativePreparedDispatch} NativePreparedDispatch */
 
 const bindingKeys = new Set(["sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive",
   "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"]);
@@ -23,8 +21,9 @@ const dataKeys = ["model", "messages", "outputSchema", "mcpServers", "skills", "
   "context1MModels", "customProvider", "additionalReadRoots", "additionalWriteRoots", "toolRiskTiers", "approvalAlwaysAllowTools", "processJobsAvailability",
   "webSearchConfig", "webFetchConfig", "subagents", "prompts", ...bindingKeys];
 
-/** Copy plain data while preserving privileged callback/controller identity.
- * @param {any} value @returns {any} */
+/**
+ * Copy plain data while preserving privileged callback/controller identity.
+ */
 function copy(value: any): any {
   if (Array.isArray(value)) return value.map(copy);
   if (value && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
@@ -32,7 +31,9 @@ function copy(value: any): any {
   }
   return value;
 }
-/** Snapshot synchronously, before tool/MCP/auth awaits. @param {any} options */
+/**
+ * Snapshot synchronously, before tool/MCP/auth awaits.
+ */
 export function snapshotNativeDispatchOptions(options: any): any {
   const output = { ...options };
   for (const key of dataKeys) if (key in options) output[key] = copy(options[key]);
@@ -41,7 +42,6 @@ export function snapshotNativeDispatchOptions(options: any): any {
     sandboxPolicy: copy(options.toolContext.sandboxPolicy), toolEnvironment: copy(options.toolContext.toolEnvironment) };
   return output;
 }
-/** @param {any} value @returns {any} */
 export function freezeDispatchData(value: any): any {
   if (value && typeof value === "object") {
     for (const key of Reflect.ownKeys(value)) freezeDispatchData(value[key]);
@@ -50,9 +50,10 @@ export function freezeDispatchData(value: any): any {
   return value;
 }
 
-/** Check ordinary provider availability without retaining credentials. Every
+/**
+ * Check ordinary provider availability without retaining credentials. Every
  * actual summary/turn request resolves auth through the original Models collection.
- * @param {any} models @param {any} model @param {AbortSignal|undefined} signal */
+ */
 export async function prepareDispatchAuth(models: any, model: any, signal: AbortSignal | undefined): Promise<{
     models: any;
     model: any;
@@ -73,12 +74,11 @@ export async function prepareDispatchAuth(models: any, model: any, signal: Abort
     provenance: { provider: model.provider, api: model.api, model: model.id, account: null } };
 }
 
-/** Suspend the real orchestrator after native preparation but before ANY session
+/**
+ * Suspend the real orchestrator after native preparation but before ANY session
  * resolution. Its original runState/tool closures and finally own resources.
  * Host must hold its concurrency permit until run/close settles. No fallback.
- * @param {(control: {ready: (snapshot: any, producer?: {assertReady: () => void, check: (input: any) => any, run: (input: any) => Promise<any>}) => Promise<any>}) => Promise<any>} execute
- * @param {AbortSignal|undefined} signal
- * @returns {Promise<NativePreparedDispatch>} */
+ */
 export function createPreparedDispatchLease(execute: (control: {
     ready: (snapshot: any, producer?: {
         assertReady: () => void;
@@ -87,16 +87,16 @@ export function createPreparedDispatchLease(execute: (control: {
     }) => Promise<any>;
 }) => Promise<any>, signal: AbortSignal | undefined): Promise<NativePreparedDispatch>;
 export function createPreparedDispatchLease(execute: (control: import("./types.js").PiPreparedControl) => Promise<any>, signal: AbortSignal | undefined): Promise<NativePreparedDispatch> {
-  /** @type {(value: NativePreparedDispatch) => void} */ let resolvePrepared!: (value: NativePreparedDispatch) => void;
-  /** @type {(error: any) => void} */ let rejectPrepared!: (error: unknown) => void;
+ let resolvePrepared!: (value: NativePreparedDispatch) => void;
+ let rejectPrepared!: (error: unknown) => void;
   const prepared = new Promise<NativePreparedDispatch>((resolve, reject) => { resolvePrepared = resolve; rejectPrepared = reject; });
-  /** @type {(value: any) => void} */ let resume!: (value: NativeDispatchBinding) => void;
-  /** @type {(error: any) => void} */ let stop!: (error: unknown) => void;
+ let resume!: (value: NativeDispatchBinding) => void;
+ let stop!: (error: unknown) => void;
   const binding = new Promise<NativeDispatchBinding>((resolve, reject) => { resume = resolve; stop = reject; });
   // Cancellation during async initialization may reject before ready awaits it.
   void binding.catch(() => {});
   let state = "preparing", producerUsed = false, producerBusy = false;
-  /** @type {Promise<any>|undefined} */ let producerWork: Promise<any> | undefined;
+ let producerWork: Promise<any> | undefined;
   const cancel = () => { if (state === "preparing" || state === "prepared") { state = "closed"; const finish = () => stop(signal?.reason ?? new Error("Prepared dispatch closed"));
     if (producerBusy) void producerWork?.catch(() => {}).then(finish); else finish(); } };
   signal?.addEventListener("abort", cancel, { once: true });

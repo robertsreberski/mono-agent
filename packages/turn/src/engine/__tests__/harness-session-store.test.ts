@@ -116,7 +116,7 @@ describe("mono-agent harness session store", () => {
     const pending = s.appendMessage(message);
     const commit = s.sync().then(() => order.push("host-history-commit"));
     await vi.waitFor(() => expect(order).toEqual(["append"]));
-    /** @type {any} */ (((release) as any))?.(); await pending; await commit;
+ (((release) as any))?.(); await pending; await commit;
     expect(order).toEqual(["append", "file+directory-sync", "host-history-commit"]);
     await s.close();
   });
@@ -247,7 +247,7 @@ it("retires a local writer only after draining storage and holds its lock until 
   const append = session.io.append; session.io.append = async (text: any) => { started(); await gate; return append(text); };
   const pending = session.appendMessage(message); await admitted;
   const retired = repo.retire(session.metadata); expect(await stat(session.metadata.path)).toBeTruthy();
-  /** @type {any} */ (((release) as any))?.(); await pending; await retired;
+ (((release) as any))?.(); await pending; await retired;
   await expect(stat(session.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(session.appendMessage(message)).rejects.toThrow("retired");
   expect((await readdir(join(r, "locks"))).length).toBe(2);

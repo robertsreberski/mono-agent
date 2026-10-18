@@ -13,10 +13,6 @@
  * or run `prompts.structuredOutputInstruction(systemPrompt)` override, when
  * supplied, replaces the default instruction text (it receives the raw system
  * prompt and returns the augmented one); otherwise the default below is used.
- * @param {string} systemPrompt
- * @param {unknown} outputSchema
- * @param {import("../../contracts/policy.js").RuntimePromptOverrides} [prompts]
- * @returns {string}
  */
 export function appendStructuredOutputInstruction(systemPrompt: string, outputSchema: unknown, prompts?: import("../../contracts/policy.js").RuntimePromptOverrides): string {
   if (!outputSchema) return systemPrompt;
@@ -36,8 +32,6 @@ export function appendStructuredOutputInstruction(systemPrompt: string, outputSc
  * The finalization re-prompt issued when a turn ended without submitting the
  * required structured result. A `prompts.structuredOutputFinalization()`
  * override, when supplied, replaces the default text.
- * @param {import("../../contracts/policy.js").RuntimePromptOverrides} [prompts]
- * @returns {string}
  */
 export function structuredOutputFinalizationPrompt(prompts?: import("../../contracts/policy.js").RuntimePromptOverrides): string {
   if (typeof prompts?.structuredOutputFinalization === "function") {
@@ -56,8 +50,6 @@ export function structuredOutputFinalizationPrompt(prompts?: import("../../contr
  * schema is active, no structured result was produced, the turn ended with no
  * text, the run was not aborted / did not hit max turns, and the stop reason is
  * not an error/abort.
- * @param {{outputSchema: unknown, structuredResult: unknown, finalText: unknown, stopReason: unknown, externalAbort: boolean, maxTurnsHit: boolean}} params
- * @returns {boolean}
  */
 export function shouldRetryStructuredOutputFinalization({
   outputSchema,
@@ -84,10 +76,6 @@ export function shouldRetryStructuredOutputFinalization({
 /**
  * The structured-output finalization diagnostics spread into the run's
  * diagnostics/errorDetails. Empty when no retry was attempted.
- * @param {number} attempts
- * @param {string|null} reason
- * @param {boolean} failed
- * @returns {Record<string, unknown>}
  */
 export function structuredOutputRetryDiagnostics(attempts: number, reason: string | null, failed: boolean): Record<string, unknown> {
   if (!attempts) return {};
@@ -108,8 +96,6 @@ export function structuredOutputRetryDiagnostics(attempts: number, reason: strin
  *
  * Returns the retry bookkeeping ({attempts, reason}); the caller computes
  * `failed` from the (closure-owned) structuredResult after re-capturing state.
- * @param {{harness: any, structuredTool: {name: string}|null, runtimeWarnings: Array<Record<string, unknown>>, prompts?: import("../../contracts/policy.js").RuntimePromptOverrides}} deps
- * @returns {Promise<{attempts: number, reason: string}>}
  */
 export async function runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings, prompts }: {
     harness: any;
@@ -129,7 +115,7 @@ export async function runStructuredOutputFinalizationRetry({ harness, structured
     reason,
     message: "Pi stopped without text or structured output; retrying once in the same session with only StructuredOutput enabled.",
   });
-  const previousActive = harness.getActiveTools().map((/** @type {{name: string}} */ toolDef: { name: string; }) => toolDef.name);
+  const previousActive = harness.getActiveTools().map((toolDef: { name: string; }) => toolDef.name);
   try {
     await harness.setActiveTools(structuredTool ? [structuredTool.name] : []);
     await harness.prompt(structuredOutputFinalizationPrompt(prompts));
@@ -138,7 +124,7 @@ export async function runStructuredOutputFinalizationRetry({ harness, structured
     runtimeWarnings.push({
       warning_kind: "structured_output_finalization_retry_failed",
       source: "pi",
-      message: (/** @type {any} */ (((err)) as any))?.message || String(err),
+      message: ((((err)) as any))?.message || String(err),
     });
   } finally {
     try { await harness.setActiveTools(previousActive); } catch { /* best-effort */ }

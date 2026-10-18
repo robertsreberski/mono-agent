@@ -50,7 +50,7 @@ export async function extractLocalHtml(html: any, url: any, {
     return chars > 0 && !(regionChars >= 200 && chars < Math.min(80, regionChars / 4));
   };
   try {
-    const parsed = await primary(/** @type {any} */ ((cleanedDocument(source, url)) as any), url);
+    const parsed = await primary(((cleanedDocument(source, url)) as any), url);
     const markdown = String(parsed.contentMarkdown || parsed.content || "").trim();
     if (useful(markdown)) {
       title = String(parsed.title || title).trim();
@@ -59,7 +59,7 @@ export async function extractLocalHtml(html: any, url: any, {
   } catch { /* Try the next native parser; never hide total extraction failure. */ }
   failures.push("defuddle");
   try {
-    const parsed = await article(/** @type {any} */ ((cleanedDocument(source, url)) as any));
+    const parsed = await article(((cleanedDocument(source, url)) as any));
     if (parsed) {
       title ||= String(parsed.title || "").trim();
       const markdown = htmlToMarkdown(parsed.content || "", url);

@@ -41,11 +41,6 @@ export async function prepareMcpStdioCommand(cfg: any = {}, { cwd = null, sandbo
   });
 }
 
-/**
- * @param {any} name
- * @param {any} cfg
- * @param {{cwd?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, mcpApps?: any}} [options]
- */
 export function connectMcpClient(name: any, cfg: any, { cwd, sandboxPolicy, sandboxEngine, ctx, mcpApps }?: { cwd?: any; sandboxPolicy?: any; sandboxEngine?: any; ctx?: any; mcpApps?: any; }): Promise<{ name: any; client: McpClient<{ method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }>; transport: StreamableHTTPClientTransport | SSEClientTransport | StdioClientTransport; connectionId: `${string}-${string}-${string}-${string}-${string}`; retainedByMcpApps: boolean; privateCapabilityUrl: boolean; closed: boolean; inFlight: Set<any>; }>;
 export async function connectMcpClient(name: any, cfg: any, { cwd, sandboxPolicy, sandboxEngine, ctx, mcpApps }: { cwd?: any; sandboxPolicy?: any; sandboxEngine?: any; ctx?: any; mcpApps?: any } = {}) {
   const brand = (requireToolContext(ctx)).runtimeBrand;
@@ -75,7 +70,7 @@ export async function connectMcpClient(name: any, cfg: any, { cwd, sandboxPolicy
       transport = new SSEClientTransport(new URL(cfg.url), {
         // SSE EventSourceInit's typed shape omits `headers`, but the transport
         // forwards them to the underlying EventSource — keep the header pass-through.
-        eventSourceInit: /** @type {any} */ (({ headers: cfg.headers || {} }) as any),
+        eventSourceInit: (({ headers: cfg.headers || {} }) as any),
         requestInit: { headers: cfg.headers || {} },
       });
     } else {
@@ -90,7 +85,7 @@ export async function connectMcpClient(name: any, cfg: any, { cwd, sandboxPolicy
         env: { ...process.env, ...(prepared.env || {}) } as Record<string, string>,
       });
       // Monkey-patched cleanup handle: not part of the MCP transport's typed shape.
-      /** @type {any} */ ((transport) as any).__monoSandboxCleanup = prepared.cleanup;
+ ((transport) as any).__monoSandboxCleanup = prepared.cleanup;
       if (prepared.sandboxed) {
         captureStderr = (chunk: any) => {
           // Preserve inherited-stderr operator visibility, including startup bytes.
@@ -120,7 +115,7 @@ export async function connectMcpClient(name: any, cfg: any, { cwd, sandboxPolicy
     };
   } catch (error) {
     try { await transport?.close?.(); } catch { /* best-effort */ }
-    try { await /** @type {any} */ ((transport) as any)?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+    try { await ((transport) as any)?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
     if (captureStderr && transport instanceof StdioClientTransport) transport.stderr?.removeListener("data", captureStderr);
     if (privateCapabilityUrl) throw new Error("Private request-scoped MCP server connection failed.");
     const diagnostic = sandboxFailureDiagnostic(preparedStdio?.sandboxed, startupStderr);
@@ -128,7 +123,7 @@ export async function connectMcpClient(name: any, cfg: any, { cwd, sandboxPolicy
       // This message becomes model-facing runtime_warning content. Neither raw
       // stderr nor transport errors are safe to publish (paths, env secrets).
       const failure = new Error(`${diagnostic.prefix}Stdio MCP startup failed.`);
-      /** @type {any} */ ((failure) as any).code = diagnostic.code ?? "sandboxed_mcp_startup_failed";
+ ((failure) as any).code = diagnostic.code ?? "sandboxed_mcp_startup_failed";
       throw failure;
     }
     throw error;

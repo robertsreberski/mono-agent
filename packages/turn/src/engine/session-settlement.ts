@@ -1,9 +1,6 @@
 import type { NativeSessionState } from "./session-lifecycle.js";
 // @ts-check
 import { repairInterruptedSession } from "./interruption.js";
-/** @param {import("./session-lifecycle.js").NativeSessionState} state
- * @param {{action:"sync"|"repair-interrupted"|"fail-suspended"}} options
- * @returns {Promise<{status:"synced"|"repaired"|"sealed"}>} */
 export async function settleNativeSession(state: NativeSessionState, { action }: { action: "sync" | "repair-interrupted" | "fail-suspended"; }): Promise<{
     status: "synced" | "repaired" | "sealed";
 }> {

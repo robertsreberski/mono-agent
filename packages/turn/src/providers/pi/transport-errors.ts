@@ -29,7 +29,6 @@ const MAX_RECORDED = 32;
 const DEFAULT_CORRELATION_WINDOW_MS = 5_000;
 const MAX_CAUSE_DEPTH = 5;
 
-/** @type {{code: string, at: number, origin: string|null}[]} */
 const recorded: { code: string; at: number; origin: string | null }[] = [];
 let installed = false;
 
@@ -46,11 +45,8 @@ function codeFromError(error: any): string | null {
 /**
  * Walk an error's `cause` chain and return the first transport-level code found.
  * Returns null when the chain carries no code (i.e. nothing worth appending).
- * @param {unknown} error
- * @returns {string|null}
  */
 export function describeErrorCause(error: unknown): string | null {
-  /** @type {any} */
   let current: any = error;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && current; depth += 1) {
     // Skip the outermost error: its code (if any) is what the caller already
@@ -72,11 +68,10 @@ export function installTransportErrorProbe(): void {
   if (installed) return;
   installed = true;
   try {
-    diagnosticsChannel.subscribe("undici:request:error", (/** @type {any} */ message: any) => {
+    diagnosticsChannel.subscribe("undici:request:error", (message: any) => {
       const error = message?.error;
       const code = codeFromError(error) || describeErrorCause(error);
       if (!code) return;
-      /** @type {string|null} */
       let origin: string | null = null;
       try {
         const raw = message?.request?.origin;
@@ -97,8 +92,6 @@ export function installTransportErrorProbe(): void {
  * Most recent transport error code seen within the correlation window.
  * `ambiguous` is true when the window holds more than one distinct code, in
  * which case attribution to a specific run would be a guess.
- * @param {{withinMs?: number, now?: number}} [opts]
- * @returns {{code: string, ambiguous: boolean}|null}
  */
 export function recentTransportErrorCode(opts: {
     withinMs?: number;
@@ -121,10 +114,8 @@ export function recentTransportErrorCode(opts: {
  * Append the underlying transport reason to an otherwise contentless provider
  * error. Descriptive messages, and messages that already name their cause, are
  * returned unchanged.
- *
- * @param {string|null} message normalized provider error text
- * @param {unknown} [error] the original Error, when it survived
- * @returns {{message: string|null, causeCode: string|null, causeSource: "cause_chain"|"transport_probe"|null}}
+ * @param message normalized provider error text
+ * @param [error] the original Error, when it survived
  */
 export function annotateProviderErrorMessage(message: string | null, error?: unknown): {
     message: string | null;

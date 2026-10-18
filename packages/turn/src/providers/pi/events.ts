@@ -62,11 +62,6 @@ export function compactToolRawResult(result: any, resultContent: any): {
   };
 }
 
-/**
- * @param {any} toolName
- * @param {any} args
- * @param {{cwd?: any, toolLimits?: any}} [options]
- */
 export function eventToolArgs(toolName: any, args: any, { cwd, toolLimits }: {
     cwd?: any;
     toolLimits?: any;

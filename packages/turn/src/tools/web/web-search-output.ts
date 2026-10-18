@@ -7,12 +7,13 @@ export const WEB_SEARCH_SNIPPET_MAX_CHARS = 4_000;
 export const WEB_SEARCH_BODY_MAX_BYTES = 64 * 1024;
 export const WEB_SEARCH_SNIPPET_TRUNCATION_MARKER = "[snippet truncated; use WebFetch for full source]";
 
-/** @param {unknown} value */
 function collapseWhitespace(value: unknown) {
   return toWellFormedText(value).replace(/\s+/gu, " ").trim();
 }
 
-/** Replace isolated UTF-16 surrogates while preserving valid astral pairs. @param {unknown} value */
+/**
+ * Replace isolated UTF-16 surrogates while preserving valid astral pairs.
+ */
 export function toWellFormedText(value: unknown): string {
   let out = "";
   for (const point of String(value || "")) {
@@ -22,12 +23,10 @@ export function toWellFormedText(value: unknown): string {
   return out;
 }
 
-/** @param {unknown} value @param {number} maxChars */
 export function sliceWellFormedCodePoints(value: unknown, maxChars: number): string {
   return [...toWellFormedText(value)].slice(0, Math.max(0, maxChars)).join("");
 }
 
-/** @param {string} value @param {number} maxBytes */
 export function sliceUtf8(value: string, maxBytes: number): string {
   const budget = Math.max(0, Math.floor(maxBytes));
   const text = toWellFormedText(value);
@@ -43,7 +42,6 @@ export function sliceUtf8(value: string, maxBytes: number): string {
   return out;
 }
 
-/** @param {unknown} value @param {number} [maxChars] */
 export function boundWebSearchSnippet(value: unknown, maxChars: number = WEB_SEARCH_SNIPPET_MAX_CHARS): { text: string; truncated: boolean } {
   const text = collapseWhitespace(value);
   if ([...text].length <= maxChars) return { text, truncated: false };
@@ -56,7 +54,6 @@ export function boundWebSearchSnippet(value: unknown, maxChars: number = WEB_SEA
   };
 }
 
-/** @param {unknown} value */
 function boundTitle(value: unknown) {
   const text = collapseWhitespace(value);
   if ([...text].length <= WEB_SEARCH_TITLE_MAX_CHARS) return { text, truncated: false };
@@ -66,10 +63,6 @@ function boundTitle(value: unknown) {
   };
 }
 
-/**
- * @param {string} value
- * @param {number} maxBytes
- */
 function truncateSnippetToBytes(value: string, maxBytes: number) {
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
   const markerBytes = Buffer.byteLength(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER, "utf8");
@@ -88,9 +81,6 @@ function truncateSnippetToBytes(value: string, maxBytes: number) {
  * first, then whole trailing results are omitted. JSON measurement includes
  * escaping and multibyte expansion, so quoted, backslashed, and astral content
  * is budgeted truthfully.
- *
- * @param {Array<{title?: unknown, url?: unknown, snippet?: unknown, snippetTruncated?: boolean, publishDate?: string}>} results
- * @param {{maxBytes?: number}} [options]
  */
 export function boundWebSearchEntries(results: Array<{ title?: unknown; url?: unknown; snippet?: unknown; snippetTruncated?: boolean; publishDate?: string }>, { maxBytes = WEB_SEARCH_BODY_MAX_BYTES }: { maxBytes?: number } = {}): { entries: { snippet: string; published?: string; title: string; url: string }[]; resultCount: number; truncated: boolean; omittedCount: number } {
   const budget = Math.max(0, Math.floor(maxBytes));
@@ -117,7 +107,6 @@ export function boundWebSearchEntries(results: Array<{ title?: unknown; url?: un
     return { entries: [], resultCount: 0, truncated: false, omittedCount: 0 };
   }
 
-  /** @param {{title: string, url: string, published?: string, snippet: string}} entry @param {string} snippet */
   const toOutput = (entry: { title: string; url: string; published?: string; snippet: string; }, snippet: string) => ({
     title: entry.title,
     url: entry.url,

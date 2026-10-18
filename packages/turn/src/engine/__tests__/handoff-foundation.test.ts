@@ -10,14 +10,12 @@ import { createHandoffBudget, buildHandoff, buildOpenWorkLedger, renderHandoffMe
 
 const provenance = { provider: "fictional", api: "fictional-api", account: "fixture-account" };
 const target = { ...provenance, model: "A" };
-/** @type {import("../header-authority.js").HostJournalAuthority} */
 const hostAuthority: import("../header-authority.js").HostJournalAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const hostContext = { systemPrompt: "Current fictional rules", tools: [{ name: "Read", parameters: { type: "object" } }] };
 const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext });
 const options = { target, budget, hostContext, timestamp: 17, producer: "outgoing" };
 const text = (value: any) => ({ role: "user", content: value, timestamp: 1 });
 const summary = { intent: ["Fictional goal"], constraints: ["No deployment approval"], decisions: [], completedWork: [], failures: [], openWork: ["Inspect result"], nextActions: ["Wait"], references: [] };
-/** @param {string} id @param {any[]} [messages] */
 async function segment(id: string, messages: any[] = [text(id)], guarded: any = false) {
   const repo = new MemorySessionRepo(); const store = await repo.create({ id, cwd: "/fictional", ...(guarded ? { hostAuthority, assertOwned: async () => {} } : {}) });
   await (store as FixtureStore).beginTurn(`turn-${id}`);

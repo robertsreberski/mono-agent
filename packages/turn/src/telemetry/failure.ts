@@ -1,38 +1,5 @@
 // @ts-check
 
-/**
- * @typedef {Object} RetryableProviderFailureInfo
- * @property {boolean} retryable
- * @property {string|null} subkind
- * @property {string|null} requestId
- */
-
-/**
- * @typedef {"spawn" | "timeout" | "stall" | "context_limit" | "usage_limit" | "invalid_result"
- *   | "invalid_delegation" | "tool_failure" | "provider_unavailable"
- *   | "provider_unavailable_exhausted" | "provider_auth" | "provider_protocol"
- *   | "skipped_capability_mismatch" | "cancelled" | "cancelled_user"
- *   | "cancelled_shutdown" | "cancelled_signal" | "abandoned"
- *   | "session_not_found" | "session_busy" | (string & {})} FailureKind
- * OPEN string union. The literals above are the CORE taxonomy the kernel itself
- * derives from provider/runtime signals in `classifyFailure` /
- * `retryableProviderFailureInfo` (and `provider_unavailable_exhausted`, produced
- * by the router on chain exhaustion). The union is intentionally open
- * (`string & {}`) because `FAILURE_KINDS` also transports HOST-TAXONOMY kinds
- * the kernel never originates on its own:
- *   - `child_failed`, `budget_exceeded` — `classifyFailure` only returns these
- *     when the HOST passes the matching `childFailed` / `budgetExceeded` (or a
- *     `cancelInitiator: "budget"`) input; the kernel never infers them from a
- *     provider signal.
- *   - `delegation_agent_not_in_team`, `delegation_team_roster_empty`,
- *     `invalid_delegation`, `cancelled_stale` (`stale_reconcile`) — set by a
- *     host coordinator (planner/roster/reconcile logic) and merely carried
- *     through `FAILURE_KINDS` / the `hint` passthrough; the kernel transports
- *     them in the result contract but never emits them from its own paths.
- * Hosts (e.g. worklab's coordinator) validate against `FAILURE_KINDS` and may
- * define additional kinds — accepting them at the type level is deliberate.
- */
-
 // FAILURE_KINDS is the runtime vocabulary: `classifyFailure`'s `hint`
 // passthrough accepts any member, and hosts validate `task_runs.failure_kind`
 // against it. See the `FailureKind` typedef above for which members the kernel
@@ -106,10 +73,6 @@ const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?o
 // message_stop"): the transport dropped mid-response, not a request fault.
 const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|(?:websocket )?stream (?:ended|closed) before|socket hang up|und_err_socket|econnreset|premature close)\b/i;
 
-/**
- * @param {string} text
- * @returns {boolean}
- */
 export function isProviderAuthFailureText(text: string = ""): boolean {
   return PROVIDER_AUTH_RE.test(text || "");
 }
@@ -119,8 +82,6 @@ export function isProviderAuthFailureText(text: string = ""): boolean {
  * throttling or output-token ceilings. Context overflows are route-local: a
  * fallback model may have a larger usable window, while rate/quota/max-turn
  * failures retain the terminal `usage_limit` classification.
- * @param {string} text
- * @returns {boolean}
  */
 export function isContextLimitFailureText(text: string = ""): boolean {
   const value = String(text || "");
@@ -151,25 +112,11 @@ function retryableProviderSubkind(text: string) {
   return null;
 }
 
-/**
- * @param {Object} [options]
- * @param {string} [options.errorText]
- * @param {string} [options.stderrTail]
- * @param {string|null} [options.failureKind]
- * @returns {RetryableProviderFailureInfo}
- */
 export function retryableProviderFailureInfo({ errorText, stderrTail, failureKind, }?: {
   errorText?: string;
   stderrTail?: string;
   failureKind?: string | null;
 }): RetryableProviderFailureInfo;
-/**
- * @param {Object} [options]
- * @param {string} [options.errorText]
- * @param {string} [options.stderrTail]
- * @param {string|null} [options.failureKind]
- * @returns {RetryableProviderFailureInfo}
- */
 export function retryableProviderFailureInfo({
   errorText = "",
   stderrTail = "",
@@ -211,20 +158,7 @@ export function retryableProviderFailureInfo({
 // path should funnel through this so the values in `task_runs.failure_kind`
 // stay coherent.
 /**
- * @param {Object} [options]
- * @param {number|null} [options.exitCode]
- * @param {string|null} [options.signal]
- * @param {string} [options.errorText]
- * @param {string} [options.stderrTail]
- * @param {boolean} [options.timedOut]
- * @param {boolean} [options.cancelRequested]
- * @param {string|null} [options.cancelInitiator]
- * @param {boolean} [options.resultParseError]
- * @param {boolean} [options.mcpInitFailed]
- * @param {boolean} [options.budgetExceeded]
- * @param {boolean} [options.childFailed]
- * @param {string|null} [options.hint]
- * @returns {FailureKind|null} One of FAILURE_KINDS, or null for a clean exit.
+ * @returns One of FAILURE_KINDS, or null for a clean exit.
  */
 export function classifyFailure({ exitCode, signal, errorText, stderrTail, timedOut, cancelRequested, cancelInitiator, resultParseError, mcpInitFailed, budgetExceeded, childFailed, hint, }?: {
   exitCode?: number | null;
@@ -241,20 +175,7 @@ export function classifyFailure({ exitCode, signal, errorText, stderrTail, timed
   hint?: string | null;
 }): FailureKind | null;
 /**
- * @param {Object} [options]
- * @param {number|null} [options.exitCode]
- * @param {string|null} [options.signal]
- * @param {string} [options.errorText]
- * @param {string} [options.stderrTail]
- * @param {boolean} [options.timedOut]
- * @param {boolean} [options.cancelRequested]
- * @param {string|null} [options.cancelInitiator]
- * @param {boolean} [options.resultParseError]
- * @param {boolean} [options.mcpInitFailed]
- * @param {boolean} [options.budgetExceeded]
- * @param {boolean} [options.childFailed]
- * @param {string|null} [options.hint]
- * @returns {FailureKind|null} One of FAILURE_KINDS, or null for a clean exit.
+ * @returns One of FAILURE_KINDS, or null for a clean exit.
  */
 export function classifyFailure({
   exitCode = null,
@@ -311,11 +232,6 @@ export function classifyFailure({
 // of stderr; we only want the last few KB for diagnostics. Returns a string
 // guaranteed to be ≤ `limit` bytes, with a `[truncated …]` marker if anything
 // was dropped.
-/**
- * @param {Object} [options]
- * @param {number} [options.limit]
- * @returns {{push: (chunk: (string|Buffer|null|undefined)) => void, toString: () => string, readonly bytesDropped: number}}
- */
 export function createStderrTail({ limit }?: {
   limit?: number;
 }): {
@@ -323,11 +239,6 @@ export function createStderrTail({ limit }?: {
   toString: () => string;
   readonly bytesDropped: number;
 };
-/**
- * @param {Object} [options]
- * @param {number} [options.limit]
- * @returns {{push: (chunk: (string|Buffer|null|undefined)) => void, toString: () => string, readonly bytesDropped: number}}
- */
 export function createStderrTail({ limit = 8 * 1024 }: { limit?: number | undefined; } | undefined = {}): { push: (chunk: (string | Buffer | null | undefined)) => void; toString: () => string; readonly bytesDropped: number; } {
   let buffer = "";
   let dropped = 0;

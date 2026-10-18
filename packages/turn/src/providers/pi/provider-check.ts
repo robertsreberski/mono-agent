@@ -12,23 +12,10 @@ export type ProviderCheckCode = "passed" | "credential_rejected" | "provider_una
 const SYSTEM_PROMPT = "Provider connectivity check. Reply OK.";
 const USER_PROMPT = "OK";
 
-/** @typedef {"passed"|"auth_failed"|"network_failed"|"quota_limited"|"model_not_entitled"|"inconclusive"} ProviderCheckOutcome */
-/** @typedef {"passed"|"credential_rejected"|"provider_unavailable"|"quota_limited"|"model_not_entitled"|"forbidden"|"inconclusive"|"cancelled"} ProviderCheckCode */
-
 /**
  * Execute one target-only Pi request. This intentionally bypasses the router:
  * a different provider or model must never prove the requested target healthy.
  * Provider output and raw errors are consumed here and never returned.
- *
- * @param {{
- *   model: {provider: string, model: string, reference?: string},
- *   resolvePiApiKey?: Function,
- *   runtimeOptions?: Record<string, unknown>,
- *   environment?: Readonly<Record<string, string|undefined>>,
- *   abortSignal?: AbortSignal,
- *   execute?: typeof generateEngineTurnResponse,
- * }} input
- * @returns {Promise<{state: ProviderCheckOutcome, code: ProviderCheckCode, message: string}>}
  */
 export async function runPiProviderCheck(input: {
     model: {
@@ -101,9 +88,6 @@ export async function runPiProviderCheck(input: {
 /**
  * Classify raw provider text inside the runtime boundary. The returned strings
  * are closed, fixed projections and contain no provider-controlled content.
- * @param {string} text
- * @param {string|undefined} failureKind
- * @returns {{state: ProviderCheckOutcome, code: ProviderCheckCode, message: string}}
  */
 export function classifyProviderCheckFailure(text: string, failureKind: string | undefined): {
     state: ProviderCheckOutcome;
@@ -136,8 +120,6 @@ export function classifyProviderCheckFailure(text: string, failureKind: string |
  * Keep the public check facade isolated from ordinary run state. These are the
  * only provider/model construction seams required by configured local
  * providers and deterministic faux-provider tests.
- * @param {Record<string, unknown>|undefined} options
- * @returns {Record<string, unknown>}
  */
 function providerConstructionOptions(options: Record<string, unknown> | undefined): Record<string, unknown> {
   if (options === undefined) return {};

@@ -21,9 +21,6 @@ import { structuredOutputRetryDiagnostics } from "./structured-output.js";
  * a mid-run compaction has since summarized out of the transcript: those tokens
  * were billed and are still this run's, so dropping them would under-report the
  * run (see execution/pi/compaction/mid-run-compaction.js).
- * @param {Array<any>} [messages]
- * @param {{input?: number, output?: number, cacheRead?: number, cacheWrite?: number, cost?: number}|null} [carried]
- * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}}
  */
 export function usageFromMessages(messages: Array<any> = [], carried: {
     input?: number;
@@ -61,7 +58,6 @@ export function usageFromMessages(messages: Array<any> = [], carried: {
  * Pi initializes failed assistant messages with an all-zero usage object before
  * any provider telemetry arrives. A successful response makes those zeros
  * measured; a failed response is measured only when real usage is non-zero.
- * @param {Array<any>} [messages]
  */
 export function hasMeasuredUsage(messages: Array<any> = []): boolean {
   return messages.some((message: any) => {
@@ -91,11 +87,6 @@ export function hasMeasuredUsage(messages: Array<any> = []): boolean {
  * priced nothing (subscription auth). Adding to the raw `cost` alone in that
  * case would have replaced this agent's cost with the subagent's rather than
  * summing them.
- *
- * @param {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}} usage
- * @param {{costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}} delegated
- * @param {number} estimatedCost
- * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}}
  */
 export function withSubagentUsage(usage: {
     input: number;
@@ -149,8 +140,6 @@ export function withSubagentUsage(usage: {
  * Unlike usageFromMessages(), this deliberately does not aggregate earlier
  * requests in the run: the last assistant usage is the same provider-counted
  * value Pi's compaction logic trusts, so it can decrease after compaction.
- * @param {any} assistantMessage
- * @returns {{input: number, output: number, cacheRead: number, cacheCreation: number, total: number, costUsd: number}|null}
  */
 export function contextUsageFromAssistantMessage(assistantMessage: any): {
     input: number;
@@ -179,10 +168,6 @@ export function contextUsageFromAssistantMessage(assistantMessage: any): {
  * overflows map to context_limit so the router can try the configured fallback;
  * max-turns terminations remain usage_limit. Credential/config auth failures
  * map to provider_auth; everything else to provider_unavailable. Null message → null.
- * @param {string|null} message
- * @param {Record<string, unknown>} diagnostics
- * @param {{maxTurnsHit?: boolean}} [opts]
- * @returns {string|null}
  */
 export function failureKindForPiError(message: string | null, diagnostics: Record<string, unknown>, { maxTurnsHit = false }: {
     maxTurnsHit?: boolean;
@@ -198,7 +183,6 @@ export function failureKindForPiError(message: string | null, diagnostics: Recor
 
 /**
  * Emit the per-run cache / cost / provider-completed events.
- * @param {{onEvent: (event: any) => void, reference: string, usage: {input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}, estimatedCost: number, start: number, externalAbort: boolean}} params
  */
 export function emitUsageCostEvents({ onEvent, reference, usage, estimatedCost, start, externalAbort, }: {
     onEvent: (event: any) => void;
@@ -266,8 +250,6 @@ export function emitUsageCostEvents({
 
 /**
  * Emit the capabilities_resolved event.
- * @param {(event: any) => void} onEvent
- * @param {{sdk: string, model: string, capabilitiesUsed: any}} payload
  */
 export function emitCapabilitiesResolved(onEvent: (event: any) => void, { sdk, model, capabilitiesUsed }: {
     sdk: string;
@@ -279,7 +261,6 @@ export function emitCapabilitiesResolved(onEvent: (event: any) => void, { sdk, m
 
 /**
  * The aborted-run result (entry pre-check / pre-request abort). Pure factory.
- * @param {{resolved: any, options: any, events: any[], runtimeWarnings: any[], start: number, providerSessionId: string, piTransport: string}} params
  */
 export function abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport }: {
     resolved: any;
@@ -340,7 +321,6 @@ export function abortedResult({ resolved, options, events, runtimeWarnings, star
 /**
  * The verbatim success-path result object (also carries a run-level error when
  * a turn ended in an error/max-turns/abort without throwing). Pure assembly.
- * @param {object} params
  */
 export function buildSuccessResult(params: object): {
     structuredResult: any;
@@ -431,7 +411,6 @@ export function buildSuccessResult(params: object) {
 
 /**
  * The verbatim outer-catch error result. Pure assembly.
- * @param {object} params
  */
 export function buildErrorResult(params: object): {
     text: any;
@@ -528,8 +507,6 @@ export function buildErrorResult(params: object) {
 
 /**
  * Assemble the success-path diagnostics object. Pure.
- * @param {object} params
- * @returns {Record<string, unknown>}
  */
 export function buildDiagnostics(params: object): Record<string, unknown>;
 export function buildDiagnostics(params: object) {
@@ -583,8 +560,6 @@ export function buildDiagnostics(params: object) {
 
 /**
  * Assemble the success-path errorDetails object (or null when no error). Pure.
- * @param {object} params
- * @returns {Record<string, unknown>|null}
  */
 export function buildErrorDetails(params: object): Record<string, unknown> | null;
 export function buildErrorDetails(params: object) {

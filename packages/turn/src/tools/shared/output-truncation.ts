@@ -23,11 +23,6 @@ function sanitizeName(value: any) {
  *
  * Null when neither is available or the write fails; callers then omit the
  * "saved to" line rather than naming a file that does not exist.
- *
- * @param {string} label
- * @param {string} text
- * @param {any} [ctx]
- * @returns {{path: string, bytes: number}|null}
  */
 export function writeToolArtifact(label: string, text: string, ctx?: any): { path: string; bytes: number } | null {
   const { toolArtifactDir, runId, persistArtifact } = ctx ?? {};
@@ -68,10 +63,6 @@ function truncationSuffix({ label, shown, total, artifact, hint }: { label: any;
   ].filter(Boolean).join("\n");
 }
 
-/**
- * @param {string} text
- * @param {{label?: string, maxChars?: number, strategy?: string, hint?: string, ctx?: any}} [options]
- */
 export function capChars(text: string, {
   label = "tool",
   maxChars = DEFAULT_MAX_TOOL_OUTPUT_CHARS,

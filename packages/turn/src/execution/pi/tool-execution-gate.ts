@@ -6,7 +6,6 @@ const SHARED_TOOLS = new Set([
   "Agent", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "ReadSkill",
 ]);
 
-/** @param {{name?: string, executionMode?: string}} tool */
 export function isSharedTool(tool: {
     name?: string;
     executionMode?: string;
@@ -23,7 +22,6 @@ export function createToolExecutionGate(): {
   let active = 0;
   let exclusive = false;
   let stopped = false;
-  /** @type {Array<{shared: boolean, resolve: (release: () => void) => void, reject: (error: Error) => void, signal?: AbortSignal, onAbort: () => void}>} */
   const pending: Array<{ shared: boolean; resolve: (release: () => void) => void; reject: (error: Error) => void; signal: AbortSignal | undefined; onAbort: () => void }> = [];
 
   const drain = () => {
@@ -51,11 +49,9 @@ export function createToolExecutionGate(): {
     }
   };
 
-  /** @param {boolean} shared @param {AbortSignal} [signal] */
   const acquire = (shared: boolean, signal?: AbortSignal) => {
     if (stopped || signal?.aborted) return Promise.reject(new Error("tool execution aborted"));
     return new Promise<() => void>((resolve, reject) => {
-      /** @type {any} */
       const waiter = {
         shared, signal, resolve, reject,
         onAbort: () => {

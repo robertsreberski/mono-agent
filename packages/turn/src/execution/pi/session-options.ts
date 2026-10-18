@@ -8,9 +8,9 @@ const onlyKeys = (value: unknown, allowed: readonly string[]) => value !== null 
   && Object.keys(value).every((key) => allowed.includes(key));
 const coverageId = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 512;
 const failure = () => Object.assign(new Error("Invalid protected native session authority"), { code: "ERR_NATIVE_SESSION_AUTHORITY" });
-/** Host-only opt-in. The callback proves current canonical handle, ready artifact
+/**
+ * Host-only opt-in. The callback proves current canonical handle, ready artifact
  * and held conversation ownership; catalogue presence is never that proof.
- * @param {any} options @param {string} handleId @param {string|null} requestedId
  */
 export function validateNativeSessionAuthority(options: any, handleId: string, requestedId: string | null): void;
 export function validateNativeSessionAuthority(options: import("./types.js").PiOptions, handleId: string, requestedId: string | null): void {

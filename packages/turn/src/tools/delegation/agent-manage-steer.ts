@@ -1,14 +1,11 @@
 // @ts-check
 
-/** Steering offers text to a turn already in progress. It is a host-owned
+/**
+ * Steering offers text to a turn already in progress. It is a host-owned
  * operation, never a new child turn, and never a claim that the child obeyed.
- * @param {import("../../contracts/runtime.js").RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{id: string, steer?: string}} params
- * @param {AbortSignal} [signal]
  */
 export async function steerSubagent(subagents: import("../../contracts/runtime.js").RuntimeSubagentsOptions | null | undefined, params: { id: string; steer?: string }, signal?: AbortSignal): Promise<any> {
   let jobId: string | null = null;
-  /** @param {string} code @param {string} [message] */
   const error = (code: string, message?: string) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId,
     status: "not_applied", applied: false, ...(message === undefined ? {} : { message }) }, true);
   // Bounded independently of the contracts package, which tool files do not

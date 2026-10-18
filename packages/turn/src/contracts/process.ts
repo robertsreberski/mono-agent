@@ -1,44 +1,9 @@
 // Shared structural contract; no host implementation or process runner imports.
 
-/** @typedef {Readonly<import("../agent/sandbox-seam.js").PreparedSandboxCommand>} PreparedSandboxCommand */
-/** @typedef {import("@mono-agent/contracts").ProcessJobState} ProcessJobState */
-
 /** False only when bounded termination settled without proof that the owned group disappeared. */
-/** @typedef {{
- *     readonly code: number | null;
- *     readonly signal: NodeJS.Signals | null;
- *     readonly stdout: string;
- *     readonly stderr: string;
- *     readonly aborted: boolean;
- *     readonly timedOut: boolean;
- *     readonly bufferExceeded: boolean;
- *     readonly truncated: boolean;
- *     readonly bytes: number;
- *     readonly storedBytes: number;
- *     readonly spawnError: Error | null;
- *     readonly groupExitConfirmed?: boolean;
- *     readonly durationMs: number;
- * }} ProcessJobProcessResult */
-
-
-/** @typedef {{
- *     readonly timeoutMs?: number;
- *     readonly signal?: AbortSignal;
- *     readonly maxBufferBytes?: number;
- *     readonly onStdout?: (chunk: Buffer) => void;
- *     readonly onStderr?: (chunk: Buffer) => void;
- * }} ProcessJobLaunchOptions */
 
 /** Release the gated target only after PID/PGID/incarnation ownership is durable. */
 /** Send SIGTERM to the owned group and escalate to SIGKILL after one second. */
-/** @typedef {{
- *     readonly pid: number | null;
- *     readonly pgid: number | null;
- *     readonly startedAt: string;
- *     readonly completion: Promise<ProcessJobProcessResult>;
- *     readonly release: () => Promise<void>;
- *     readonly cancel: () => void;
- * }} ProcessJobProcessHandle */
 
 /**
    * Exact sandbox-prepared command. The controller takes ownership before
@@ -56,16 +21,6 @@
 /** Explicit per-call narrowing; omission delegates to compiled host config. */
 /** Explicit per-call preview narrowing; omission delegates to host config. */
 /** One-shot launcher bound to the exact prepared command and POSIX group wait. */
-/** @typedef {{
- *     readonly tool: "Exec" | "Bash";
- *     readonly prepared: PreparedSandboxCommand;
- *     readonly summary: string;
- *     readonly description?: string;
- *     readonly wakeOnCompletion?: boolean;
- *     readonly timeoutMs?: number;
- *     readonly maxOutputChars?: number;
- *     readonly launch: (options?: ProcessJobLaunchOptions) => ProcessJobProcessHandle;
- * }} ProcessJobStartRequest */
 
 /**
    * Runtime budget the host actually granted, after its own `maxRuntimeMs`
@@ -75,20 +30,8 @@
    * requested one.
    */
 /** Admission-time snapshot; later cancellations may change the position. */
-/** @typedef {{
- *     readonly jobId: string;
- *     readonly state: Extract<ProcessJobState, "queued" | "starting" | "running">;
- *     readonly startedAt: string | null;
- *     readonly maxRuntimeMs?: number;
- *     readonly queuePosition?: number;
- *     readonly queueDeadlineAt?: string;
- * }} ProcessJobStartResult */
 
 /** Host budget a background job is bounded by, independent of any one request. */
-/** @typedef {{
- *     readonly maxRuntimeMs: number;
- *     readonly maxOutputBytes: number;
- * }} ProcessJobControllerLimits */
 
 /** Request-scoped host controller injected only into Pi-native Exec/Bash. */
 /**
@@ -96,36 +39,12 @@
    * before a job is launched. Optional: a controller that omits it simply
    * leaves the limit unstated rather than failing the contract.
    */
-/** @typedef {{
- *     readonly limits?: ProcessJobControllerLimits;
- *     start(request: ProcessJobStartRequest): Promise<ProcessJobStartResult>;
- * }} ProcessJobsController */
 
 /** Exact prepared command; the host owns cleanup from run() invocation onward. */
 /** Provider call identity within the host-bound attempt, never a model argument. */
 /** One-shot gated launch. The host must persist incarnation before release(). */
-/** @typedef {{
- *     readonly tool: "Exec" | "Bash";
- *     readonly callId: string;
- *     readonly prepared: PreparedSandboxCommand;
- *     readonly timeoutMs: number;
- *     readonly signal?: AbortSignal;
- *     readonly launch: (options?: {
- *         timeoutMs?: number;
- *         signal?: AbortSignal;
- *         maxBufferBytes?: number;
- *     }) => ProcessJobProcessHandle;
- * }} OwnedForegroundProcessRequest */
-
-
-/** @typedef {{
- *     run(request: OwnedForegroundProcessRequest): Promise<ProcessJobProcessResult>;
- * }} OwnedForegroundProcessController */
 
 /** A turn-scoped owner mints an isolated attempt capability for each Pi invocation. */
-/** @typedef {{
- *     forAttempt(): OwnedForegroundProcessController;
- * }} OwnedForegroundProcesses */
 
 export type PreparedSandboxCommand = Readonly<import("../agent/sandbox-seam.js").PreparedSandboxCommand>;
 

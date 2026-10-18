@@ -6,7 +6,6 @@ import { markdownToText } from "./web-markdown-text.js";
  * Reject empty extraction, not short documents. Two letters/numbers are enough
  * (e.g. an HTML "OK" response); URL/title echoes are not document evidence.
  * Plain text/Markdown, JSON, XML and PDF retain their extraction contracts.
- * @param {{kind: string, text?: string, url?: string, title?: string}} input
  */
 export function assertWebReadableEvidence({ kind, text, url, title }: { kind: string; text?: string; url?: string; title?: string }): void {
   if (!["html", "rendered", "remote-markdown"].includes(kind)) return;

@@ -54,7 +54,7 @@ it("preserving detach leaves exact journal bytes, missing-current detach never d
 
 it("refuses preserving detach during real native dispatch, then detaches the idle registry without changing bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "native-detach-busy-fixture-")); roots.push(root);
-  const faux = fauxProvider({ provider: "detach-fixture", models: [{ id: "fixture" }] }); const models = createModels(); /** @type {Promise<any>} */ let attempt: Promise<{ result?: unknown; error?: { code: string } }>;
+  const faux = fauxProvider({ provider: "detach-fixture", models: [{ id: "fixture" }] }); const models = createModels(); let attempt: Promise<{ result?: unknown; error?: { code: string } }>;
   models.setProvider({ ...faux.provider, streamSimple(selected, context, options) {
     attempt = detachDurableNativeSession("busy-fixture", root).then((result) => ({ result }), (error) => ({ error }));
     return faux.provider.streamSimple(selected, context, options);
@@ -63,7 +63,7 @@ it("refuses preserving detach during real native dispatch, then detaches the idl
   const result = await generateEngineTurnResponse("Fictional rules", { model: { provider: "detach-fixture", model: "fixture", reference: "detach-fixture:fixture" },
     piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "busy-fixture", sessionsRoot: root,
     sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
-  expect(result.error).toBeNull(); expect(/** @type {any} */ (await attempt!).error!.code).toBe("ERR_HARNESS_WRITER_BUSY");
+  expect(result.error).toBeNull(); expect((await attempt!).error!.code).toBe("ERR_HARNESS_WRITER_BUSY");
   const metadata = (await resolveDurableNativeSessionRepo(root).list())[0]; const before = await readFile(metadata.path);
   await detachDurableNativeSession("busy-fixture", root); expect(await readFile(metadata.path)).toEqual(before);
 });

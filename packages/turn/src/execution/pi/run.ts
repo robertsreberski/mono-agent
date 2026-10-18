@@ -171,7 +171,7 @@ function isCredential(credential: any): credential is PiCredential {
 export function createDynamicCredentialStore(apiKeys: any, resolvePiApiKey: any, runtimeWarnings: any): any;
 export function createDynamicCredentialStore(apiKeys: Map<string, string> | undefined, resolvePiApiKey: PiApiKeyResolver | undefined, runtimeWarnings: PiWarning[]) {
   const read = async (providerId: string) => readCredential(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
-  return /** @type {any} */ (({
+  return (({
     read,
     // The callback-only fallback below can derive auth but cannot persist an
     // OAuth rotation. Ordinary refresh requires a persisting resolver.
@@ -250,10 +250,6 @@ const PROVIDER_CHECK_REQUEST_METHODS = new Set([
  * request or the intended output limit used to classify length stops. Cap both
  * re-resolution and dispatch, leaving the shared model collection unchanged.
  * This wrapper is activated only for explicit provider checks.
- *
- * @param {import("@earendil-works/pi-ai").Models} models
- * @param {unknown} requestedCap
- * @returns {import("@earendil-works/pi-ai").Models}
  */
 function withProviderCheckOutputCap(models: Models, requestedCap: unknown): Models {
   const cap = Number(requestedCap);
@@ -264,7 +260,7 @@ function withProviderCheckOutputCap(models: Models, requestedCap: unknown): Mode
     return { ...model, maxTokens: Number.isFinite(current) && current > 0 ? Math.min(current, cap) : cap };
   };
   const wrappers = new Map<string, (...args: any[]) => any>();
-  return /** @type {import("@earendil-works/pi-ai").Models} */ ((new Proxy(models, {
+  return ((new Proxy(models, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
       if (typeof property !== "string" || typeof value !== "function") return value;
@@ -412,7 +408,6 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
   let mcpClients: PiMcpClient[] = [];
   let closeRunTools = async () => {};
   let harness: (Omit<Awaited<ReturnType<typeof buildTurnHarness>>, "endTurn"> & { compactionFailureKey?: string; endTurn: (status: string, result?: any) => Promise<void> }) | null = null;
-  /** @type {null | {disarm: () => Promise<void>}} */
   let midRunCompaction = null;
   // The ONE explicit runState the extracted modules (stream subscriber, session
   // lifecycle, compaction driver, turn runner, result builder) read/write.
@@ -830,7 +825,6 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
         runState.removeAbortHandler = () => options.abortSignal!.removeEventListener?.("abort", abortManual);
         if (options.abortSignal.aborted) throw new Error("Manual compaction was cancelled.");
       }
-      /** @type {{status: string, operationId: string, reason?: string, tokensBefore?: number, tokensAfter?: number, tokenCountsExact?: boolean}|undefined} */
       let terminal: { status: string; operationId: string; reason?: string; tokensBefore?: number; tokensAfter?: number; tokenCountsExact?: boolean } | undefined = tooSmall
         ? { status: "skipped", operationId: randomUUID(), reason: "nothing_to_compact" }
         : undefined;

@@ -26,6 +26,71 @@ const paths = Object.fromEntries([
 // taggedNames is enforced by the focused policy test; no file-wide export ignores.
 export const retainedExports = [
   {
+    "file": "packages/turn/src/contracts/events.ts",
+    "names": [
+      "RuntimeObserver"
+    ],
+    "reason": "deferred: only references were redundant JSDoc removed by PR 12; kept so PR 12 stays declaration-preserving; removal candidate for PR 13's dead-code closure",
+    "citation": "packages/turn/src/contracts/events.ts",
+    "taggedNames": [
+      "RuntimeObserver"
+    ],
+    "declarationPreserving": true
+  },
+  {
+    "file": "packages/turn/src/providers/pi/oauth-compat.ts",
+    "names": [
+      "AuthPrompt",
+      "AuthEvent"
+    ],
+    "reason": "deferred: only references were redundant JSDoc removed by PR 12; kept so PR 12 stays declaration-preserving; removal candidate for PR 13's dead-code closure",
+    "citation": "packages/turn/src/providers/pi/oauth-compat.ts",
+    "taggedNames": [
+      "AuthPrompt",
+      "AuthEvent"
+    ],
+    "declarationPreserving": true
+  },
+  {
+    "file": "packages/turn/src/contracts/model.ts",
+    "names": [
+      "RuntimeSdkId"
+    ],
+    "reason": "consumed: named by retained runtime result declarations",
+    "citation": "packages/turn/src/contracts/runtime.ts",
+    "taggedNames": [
+      "RuntimeSdkId"
+    ],
+    "declarationPreserving": true
+  },
+  {
+    "file": "packages/turn/src/contracts/runtime.ts",
+    "names": [
+      "AgentRuntimeInstance"
+    ],
+    "reason": "consumed: test-only native preparation runtime view",
+    "citation": "packages/turn/src/__tests__/ai/native-prepared-dispatch.test.ts",
+    "taggedNames": [
+      "AgentRuntimeInstance"
+    ],
+    "declarationPreserving": true
+  },
+  {
+    "file": "packages/turn/src/contracts/runtime.ts",
+    "names": [
+      "RuntimeBridge",
+      "RuntimeBridgeDescriptor"
+    ],
+    "reason": "documented extension: public compatibility types via ./ai",
+    "citation": "packages/turn/src/ai/index.ts",
+    "taggedNames": [
+      "RuntimeBridge",
+      "RuntimeBridgeDescriptor"
+    ],
+    "declarationPreserving": true
+  },
+
+  {
     "file": "packages/turn/src/__tests__/fixtures/prepared-host-runtime.mts",
     "names": ["preparedHostFixture"],
     "reason": "indirect: authored fixture loaded through a computed Vite source URL",

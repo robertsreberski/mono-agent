@@ -148,6 +148,13 @@ name is justified solely by a generated inventory. The unused named stream and
 provider-projection types lacking authored documentation were cut; declarations
 required by retained function/class signatures remain private.
 
+PR 12 also registers seven exact compatibility type aliases after removing
+redundant JSDoc-only uses. Public aliases cite their exporting entry; signature
+and test-only aliases cite the declaration or test consumer. The remaining
+private aliases are explicit PR 13 dead-code closure candidates. The policy
+test checks each registered name is still exported at its exact source owner;
+no file-level or all-types exception is used.
+
 The five core packages must have zero findings in all three modes. Cycle findings
 remain visible until the separate structural cleanup; exceptions do not hide
 cycles or turn a nonzero tool result into success.

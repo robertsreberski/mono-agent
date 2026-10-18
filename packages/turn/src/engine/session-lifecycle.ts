@@ -2,22 +2,6 @@ import { assertNativeSessionAccess, assertNativeSessionHeader, assertNativeProje
 import { inspectCurrentEvidence, inspectCurrentLifecycle, projectContext } from "./request-projection.js";
 // @ts-check
 // Native session ownership, liveness and persistence; no runtime presentation.
-/**
- * @typedef {object} NativeSessionState
- * @property {any} [session]
- * @property {any} [sessionEntry]
- * @property {any} [registeredSessionEntry]
- * @property {any} [reservation]
- * @property {any} [ephemeralSessionRepo]
- * @property {boolean} [createdOnMiss]
- * @property {string|null} [baselineLeafId]
- * @property {boolean} [hasBaselineLeaf]
- * @property {boolean} [preserveTurnEvidence]
- * @property {boolean} [retainRecoveryTail]
- * @property {string[]} [recoveryInputIds]
- * @property {string} [recoveryOperationId]
- * @property {string|null} [recoveryBaselineTipId]
- */
 import { JsonlSessionRepo, MemorySessionRepo } from "./session-store.js";
 import { JournalStorageError, isJournalStorageError } from "./storage-error.js";
 import { validRecoveryProjection } from "./terminal-recovery.js";
@@ -81,9 +65,6 @@ async function invalidateNativeSession(entry: any): Promise<void> {
  * Release a session handle and remove its repository record as independent
  * best-effort operations. A close failure must not prevent deletion of a fresh
  * or otherwise poisoned transcript.
- * @param {any} session
- * @param {any} repo
- * @param {any} [knownMetadata]
  */
 async function closeAndDeleteSession(session: any, repo: any, knownMetadata?: any): Promise<void> {
   let metadata = knownMetadata;
@@ -200,20 +181,15 @@ async function reopenDurableNativeSession(repo: any, sessionId: any, context: ty
   }
 }
 
-/** @param {any} error */
 const isJournalCorruption = (error: any) => error instanceof SyntaxError || (error as { code?: string; message?: string; sessionId?: string })?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
 
-/** @param {string} sessionId @param {string} message @param {string} failureKind @param {string} code */
-const unavailable = (sessionId: string, message: string, failureKind: string, code: string) => ({ status: /** @type {const} */ (("unavailable") as const), unavailable: { failureKind, code, sessionId, message } });
+const unavailable = (sessionId: string, message: string, failureKind: string, code: string) => ({ status: (("unavailable") as const), unavailable: { failureKind, code, sessionId, message } });
 
 /**
  * Resolve the session for this run: warm registry hit, durable cold reopen,
  * create-on-miss (durable resume only), or fresh create. Mutates runState
  * (session / sessionEntry / createdOnMiss / reservation). Returns
  * Return a storage-only unavailable outcome or readiness to proceed.
- * @param {NativeSessionState} runState
- * @param {{requestedSessionId:string|null,providerSessionId:string,durableRepo:any,sessionTtlMs?:number,cwd?:string,access?:any,projection?:any,waitSignal?:AbortSignal,keepAlive?:boolean,requireExisting?:boolean}} params
- * @returns {Promise<{status:"ready"} | {status:"unavailable", unavailable:{failureKind:string,code:string,sessionId:string,message:string}}> }
  */
 export async function resolveSession(runState: NativeSessionState, {
   requestedSessionId,
@@ -278,7 +254,7 @@ export async function resolveSession(runState: NativeSessionState, {
           busy: true,
         }, sessionTtlMs);
         if (!reservation.ok) {
-          entry = /** @type {{entry: any}} */ ((reservation) as {entry: any}).entry;
+          entry = ((reservation) as {entry: any}).entry;
         } else {
           runState.reservation = reservation;
           runState.session = createPiSessionAdapter(await durableRepo.create(
@@ -294,9 +270,9 @@ export async function resolveSession(runState: NativeSessionState, {
       }
     }
     if (entry && !runState.createdOnMiss) {
-      const claimed = entry.recoveryPending ? { ok: /** @type {const} */ ((false) as const), reason: "busy" } : liveness.claim(requestedSessionId);
+      const claimed = entry.recoveryPending ? { ok: ((false) as const), reason: "busy" } : liveness.claim(requestedSessionId);
       if (!claimed.ok) {
-        const missing = /** @type {{reason: string}} */ ((claimed) as {reason: string}).reason === "missing";
+        const missing = ((claimed) as {reason: string}).reason === "missing";
         return unavailable(requestedSessionId, missing ? `Session ${requestedSessionId} is not live` : `Session ${requestedSessionId} is busy with another turn`,
           missing ? "session_not_found" : "session_busy", missing ? "pi_session_not_found" : "pi_session_busy");
       }
@@ -334,15 +310,13 @@ export async function resolveSession(runState: NativeSessionState, {
     runState.session = createPiSessionAdapter(await (runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo)
       .create({ id: providerSessionId, cwd: cwd || process.cwd() }, waitContext));
   }
-  return { status: /** @type {const} */ (("ready") as const) };
+  return { status: (("ready") as const) };
 }
 
 /**
  * Drop an uncommitted fresh session (and any create-on-miss reservation) on the
  * pre-request abort path. A resumed (user-owned) session is NEVER deleted
  * (guarded `session && !sessionEntry`).
- * @param {NativeSessionState} runState
- * @param {{durableRepo: any}} params
  */
 /** Detach opted-in state without rewind/deletion, even after poison or cancellation. */
 async function preserveNativeTurnEvidence(runState: any): Promise<void> {
@@ -355,7 +329,6 @@ async function preserveNativeTurnEvidence(runState: any): Promise<void> {
   }
 }
 
-/** @returns {Promise<{status:"settled"}>} */
 export async function discardUncommittedSession(runState: any, { durableRepo }: { durableRepo: any; }): Promise<{
     status: "settled";
 }> {
@@ -376,9 +349,6 @@ export async function discardUncommittedSession(runState: any, { durableRepo }: 
  * transcript; this tracks LIVENESS so disposeProviderSession / idle-TTL
  * eviction can reach native sessions, and rolls a failed/aborted resumed turn
  * back to its pre-turn leaf.
- * @param {NativeSessionState} runState
- * @param {{requestedSessionId:string|null,providerSessionId:string,durableRepo:any,sessionTtlMs?:number,keepAlive?:boolean,externalAbort?:boolean,failed?:boolean}} params
- * @returns {Promise<{status:"settled",persistFailure:null|{code:string|null,message:string}}>}
  */
 export async function commitSession(runState: NativeSessionState, {
   keepAlive,
@@ -452,10 +422,7 @@ export async function commitSession(runState: NativeSessionState, {
  * deletes its jsonl. The orchestrator keeps the abort re-check + return inline
  * so no await sits between the re-check and the return (I10); this only runs the
  * rollback body when the guard fires.
- * @param {NativeSessionState} runState
- * @param {{requestedSessionId: string|null, providerSessionId: string, durableRepo: any}} params
  */
-/** @returns {Promise<{status:"settled"}>} */
 export async function rollbackAbortedTurn(runState: any, { requestedSessionId, providerSessionId, durableRepo }: { requestedSessionId: any; providerSessionId: any; durableRepo: any; }): Promise<{
     status: "settled";
 }> {
@@ -480,10 +447,7 @@ export async function rollbackAbortedTurn(runState: any, { requestedSessionId, p
  * pre-turn leaf for host/runtime-side throws that landed after the harness
  * already mutated the live session. Resumed handles are always closed here so
  * setup failures before a harness is returned cannot leave the repo wedged.
- * @param {NativeSessionState} runState
- * @param {{durableRepo: any}} params
  */
-/** @returns {Promise<{status:"settled"}>} */
 export async function cleanupSessionOnThrow(runState: any, { durableRepo }: { durableRepo: any; }): Promise<{
     status: "settled";
 }> {
@@ -502,10 +466,8 @@ export async function cleanupSessionOnThrow(runState: any, { durableRepo }: { du
   return { status: "settled" };
 }
 
-/** Capture only after close; pending entries cannot be driven by another turn.
- * @param {NativeSessionState} runState
- * @param {{identity:{runId:string,revision:number,providerSessionId:string,modelKey:string},model:any,pending:boolean,abortSignal?:AbortSignal}} params
- * @returns {Promise<{status:"not_durable"}|{status:"captured",receipt:{runId:string,revision:number,providerSessionId:string,modelKey:string,tipId:string}}>}
+/**
+ * Capture only after close; pending entries cannot be driven by another turn.
  */
 export async function captureSessionRecovery(runState: NativeSessionState, { identity, model, pending, abortSignal }: { identity: { runId: string; revision: number; providerSessionId: string; modelKey: string; }; model: any; pending: boolean; abortSignal?: AbortSignal; }): Promise<{
     status: "not_durable";

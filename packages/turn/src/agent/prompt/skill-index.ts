@@ -7,9 +7,6 @@ import { resolve } from "node:path";
 
 const SKILL_PATH_RULE = "Path rule: Files referenced by SKILL.md are bundled with the skill. Resolve `scripts/...`, `references/...`, and `assets/...` relative to that skill's directory; resolve `<skill-directory-name>/...` relative to the configured skills root.";
 
-/**
- * @param {{assetsPath?: string, skillsRoot?: any}} [options]
- */
 function buildSkillPathNote({ assetsPath, skillsRoot }: { assetsPath?: string | undefined; skillsRoot?: any; } | undefined = {}) {
   const lines = [];
   if (skillsRoot) lines.push(`Configured skills root: ${resolve(skillsRoot)}`);
@@ -22,7 +19,6 @@ function buildSkillPathNote({ assetsPath, skillsRoot }: { assetsPath?: string | 
  * Render a complete skill body plus its path note. Omitting `maxChars` returns
  * the full text; pass a positive `maxChars` only when explicit truncation is
  * required by the caller.
- * @param {{body?: string, assetsPath?: string, skillsRoot?: any, maxChars?: number}} [options]
  */
 export function formatSkillBodyWithPathNote({ body, assetsPath, skillsRoot, maxChars }?: {
   body?: string;
@@ -34,7 +30,6 @@ export function formatSkillBodyWithPathNote({ body, assetsPath, skillsRoot, maxC
  * Render a complete skill body plus its path note. Omitting `maxChars` returns
  * the full text; pass a positive `maxChars` only when explicit truncation is
  * required by the caller.
- * @param {{body?: string, assetsPath?: string, skillsRoot?: any, maxChars?: number}} [options]
  */
 export function formatSkillBodyWithPathNote({ body, assetsPath, skillsRoot, maxChars }: { body?: string; assetsPath?: string | undefined; skillsRoot?: any; maxChars?: number; } | undefined = {}): string {
   const text = [

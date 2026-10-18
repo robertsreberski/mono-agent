@@ -1579,7 +1579,6 @@ describe("createRouterRuntime — tools are never re-run", () => {
   const toolResult = { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "call-1", content: "hi" }] } };
   const failure = (events: TestEvent[]) => ({ text: null, error: "Connection error.", failureKind: "provider_unavailable", cancelled: false, events });
 
-  /** @param {Array<*>} events */
   function blockedWarnings(events: TestEvent[]) {
     return events.filter((event) => event.type === "runtime_warning" && event.warning_kind === "provider_failover_blocked");
   }

@@ -14,7 +14,6 @@ const freeze = (value: any) => { if (value && typeof value === "object") { Objec
  * handoff) plus the records cited by genuinely unresolved work: outcome-unknown
  * or unplaced calls from anywhere in the epoch (never dropped), and turns/calls
  * interrupted since the last completed turn.
- * @param {{descriptor:any, header:any}} source @param {{ownerKey:string, historyBucket:string}} owner @param {number} maxBytes
  */
 function segmentScanner({ descriptor, header }: { descriptor: any; header: any; }, owner: { ownerKey: string; historyBucket: string; }, maxBytes: number) {
   validateJournalHeader(header);
@@ -26,7 +25,6 @@ function segmentScanner({ descriptor, header }: { descriptor: any; header: any; 
   let count = 0, bytes = 0, from = 1, settled = false, calls: any[] = [], visible = new Set(), open = new Set();
   const chain: string[] = [], cited = new Set(), causes = new Set(), returned = new Set();
   return {
-    /** @param {any} record */
     validate(record: any) {
       digest.update(`${count++ ? "," : ""}${JSON.stringify(record)}`); validator.apply(record);
       const binding = record.payload.binding;
@@ -50,7 +48,6 @@ function segmentScanner({ descriptor, header }: { descriptor: any; header: any; 
       for (const call of calls) { cited.add(call.messageId); causes.add(call.turnId); returned.add(`${call.operationId}\0${call.callId}`); }
       for (const id of open) causes.add(id);
     },
-    /** @param {any} record @param {number} [size] */
     retain(record: any, size: number = 0) {
       const p = record.payload;
       if (!(record.seq >= from || cited.has(record.id) || (record.kind === "interruption" && causes.has(record.turnId))
@@ -74,8 +71,6 @@ function segmentScanner({ descriptor, header }: { descriptor: any; header: any; 
 /**
  * Stream one frozen journal with the caller's reader (`each` visits every record
  * after the header, once per call). Only the selected records are retained.
- * @param {{descriptor:any, header:any}} source @param {{ownerKey:string, historyBucket:string}} owner
- * @param {(visit:(record:any, bytes:number) => void) => Promise<void>} each @param {number} [maxBytes]
  */
 export async function scanEvidenceSegment(source: { descriptor: any; header: any; }, owner: { ownerKey: string; historyBucket: string; }, each: (visit: (record: any, bytes: number) => void) => Promise<void>, maxBytes: number = Infinity) {
   const scanner = segmentScanner(structuredClone(source), owner, maxBytes);
@@ -89,7 +84,6 @@ export async function scanEvidenceSegment(source: { descriptor: any; header: any
  * current journal (or none when it is definitively missing) as a streamed
  * segment or raw records, canonical gaps and the prior accepted handoff it
  * inherits. Nothing is opened for writing.
- * @param {{ownerKey:string, historyBucket:string, segments:any[], gaps?:any[], prior?:any}} input
  */
 export function createEvidenceView(input: { ownerKey: string; historyBucket: string; segments: any[]; gaps?: any[]; prior?: any; }) {
   if (!input?.ownerKey || !input.historyBucket || !Array.isArray(input.segments) || input.segments.length > 1) fail("owner/segments");
@@ -120,5 +114,4 @@ export function createEvidenceView(input: { ownerKey: string; historyBucket: str
   views.add(view); return view;
 }
 
-/** @param {any} view */
 export function assertEvidenceView(view: any) { if (!views.has(view)) fail("unvalidated view"); }

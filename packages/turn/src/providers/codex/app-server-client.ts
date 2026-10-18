@@ -172,7 +172,7 @@ function redactCodexPayload(value: any, sensitiveValues: readonly string[], seen
   if (typeof value === "string") return redactCodexDiagnostic(value, sensitiveValues);
   if (value === null || typeof value !== "object") return value;
   if (value instanceof Error) {
-    const errorCode = /** @type {any} */ ((value) as Error & { code?: unknown }).code;
+    const errorCode = ((value) as Error & { code?: unknown }).code;
     return {
       name: redactCodexDiagnostic(value.name || "Error", sensitiveValues),
       message: sanitizeCodexDiagnostic(value.message || value, sensitiveValues),
@@ -328,9 +328,6 @@ function isCodexRequestTimeout(error: any, method: string | null = null): boolea
     && (!method || error.method === method);
 }
 
-/**
- * @param {{command?: string, args?: string[], cwd?: any, env?: any, redactionValues?: string[], onNotification?: (msg: any) => void, onServerRequest?: (msg: any) => Promise<any> | any, shutdownGraceMs?: number, killGraceMs?: number}} [options]
- */
 export function createCodexAppServerClient({
   command = "codex",
   // project_doc_max_bytes=0 keeps codex from injecting its own project docs;
@@ -384,7 +381,6 @@ export function createCodexAppServerClient({
   let closed = false;
   let processSettled = false;
   let closing = false;
-  /** @type {Promise<void> | null} */
   let closePromise: Promise<void> | null = null;
   let resolveClosed: (value: any) => void;
   const closedPromise = new Promise<any>((resolve) => { resolveClosed = resolve; });

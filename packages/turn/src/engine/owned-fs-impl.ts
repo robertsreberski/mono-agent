@@ -9,7 +9,6 @@ import { lstat, open, readdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
-/** @typedef {{dev:number, ino:number}} Identity */
 
 /** Typed per-entry refusal: only the conversation owning the entry is refused. */
 export class OwnedFileDamagedError extends Error {
@@ -17,7 +16,6 @@ export class OwnedFileDamagedError extends Error {
   declare code: string;
   declare entryName: string;
 
-  /** @param {string} name @param {unknown} [cause] */
   constructor(name: string, cause?: unknown) {
     super(`Owned storage entry unavailable: damaged identity, ownership or permissions (${name})`, { cause });
     this.name = "OwnedFileDamagedError";
@@ -25,12 +23,11 @@ export class OwnedFileDamagedError extends Error {
     this.entryName = name;
   }
 }
-/** @param {Identity} a @param {Identity} b */
 export const sameIdentity = (a: Identity, b: Identity) => a.dev === b.dev && a.ino === b.ino;
-/** @param {import("node:fs").Stats} a @param {import("node:fs").Stats} b */
 export const unchanged = (a: Stats, b: Stats) => sameIdentity(a, b) && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
-/** `foreign` (read-only legacy Pi input) relaxes only the mode and link count.
- * @param {import("node:fs").Stats} stat @param {boolean} [directory] @param {boolean} [foreign] */
+/**
+ * `foreign` (read-only legacy Pi input) relaxes only the mode and link count.
+ */
 export function isOwned(stat: Stats, directory: boolean = false, foreign: boolean = false): boolean {
   if (!(directory ? stat.isDirectory() : stat.isFile())) return false;
   if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return false;
@@ -38,14 +35,14 @@ export function isOwned(stat: Stats, directory: boolean = false, foreign: boolea
   if (!directory && stat.nlink !== 1) return false;
   return process.platform === "win32" || (stat.mode & 0o777) === (directory ? 0o700 : 0o600);
 }
-/** Re-check a pinned path; any drift is fatal for whoever pinned it.
- * @param {string} path @param {Identity} identity @param {() => never} fail @param {boolean} [directory] */
+/**
+ * Re-check a pinned path; any drift is fatal for whoever pinned it.
+ */
 export async function assertIdentity(path: string, identity: Identity, fail: () => never, directory: boolean = true): Promise<Stats> {
   const current = await lstat(path);
   if (!isOwned(current, directory) || !sameIdentity(current, identity)) fail();
   return current;
 }
-/** @param {string} path @param {Identity|undefined} identity @param {() => never} fail */
 export async function syncDir(path: string, identity: Identity | undefined, fail: () => never): Promise<void> {
   if (identity) await assertIdentity(path, identity, fail);
   const handle = await open(path, constants.O_RDONLY | NOFOLLOW);
@@ -53,17 +50,17 @@ export async function syncDir(path: string, identity: Identity | undefined, fail
   finally { await handle.close(); }
   if (identity) await assertIdentity(path, identity, fail);
 }
-/** Stable bytes of one owned file. ENOENT propagates as absence; anything else
+/**
+ * Stable bytes of one owned file. ENOENT propagates as absence; anything else
  * wrong with the entry itself is an OwnedFileDamagedError.
- * @param {string} path @param {number} [maxBytes] */
+ */
 export async function readOwned(path: string, maxBytes: number = Infinity): Promise<{ bytes: NonSharedBuffer; stat: Stats; }> {
-  /** @param {unknown} [cause] */
   const damaged = (cause?: unknown) => new OwnedFileDamagedError(basename(path), cause);
   const before = await lstat(path);
   if (!isOwned(before) || before.size > maxBytes) throw damaged();
   let handle;
   try { handle = await open(path, constants.O_RDONLY | NOFOLLOW); }
-  catch (error) { if (/** @type {any} */ ((error) as NodeJS.ErrnoException)?.code === "ENOENT") throw error; throw damaged(error); }
+  catch (error) { if (((error) as NodeJS.ErrnoException)?.code === "ENOENT") throw error; throw damaged(error); }
   try {
     // Check the descriptor before reading so a swapped pathname never bypasses the size bound.
     const opened = await handle.stat();
@@ -73,19 +70,20 @@ export async function readOwned(path: string, maxBytes: number = Infinity): Prom
     return { bytes, stat: named };
   } finally { await handle.close(); }
 }
-/** Names failing `pattern` (`.DS_Store`, foreign temps, subdirectories) are
+/**
+ * Names failing `pattern` (`.DS_Store`, foreign temps, subdirectories) are
  * skipped: never read, charged or deleted. Matching entries that fail the owned
  * rule are returned `damaged` with their bytes so callers charge them and refuse
  * only their owner. A missing or unreadable directory is the caller's concern.
  * `prefix` scopes the listing to one owner before any entry is stat'ed.
- * @param {string} directory @param {RegExp} pattern @param {number} [maxBytes] @param {string} [prefix] */
+ */
 export async function listOwned(directory: string, pattern: RegExp, maxBytes: number = Infinity, prefix: string = ""): Promise<{ name: string; match: RegExpExecArray; stat: Stats; bytes: number; damaged: boolean; }[]> {
   const entries = [];
   for (const name of (await readdir(directory)).sort()) {
     const match = name.startsWith(prefix) ? pattern.exec(name) : null; if (!match) continue;
     let stat;
     try { stat = await lstat(join(directory, name)); }
-    catch (error) { if (/** @type {any} */ ((error) as NodeJS.ErrnoException)?.code === "ENOENT") continue; throw error; }
+    catch (error) { if (((error) as NodeJS.ErrnoException)?.code === "ENOENT") continue; throw error; }
     entries.push({ name, match, stat, bytes: stat.size, damaged: !isOwned(stat) || stat.size > maxBytes });
   }
   return entries;
@@ -94,9 +92,6 @@ export async function listOwned(directory: string, pattern: RegExp, maxBytes: nu
  * temp → fsync → rename → directory fsync. `check` runs before the rename and
  * before removing a failed temp; a failure before rename removes only the temp
  * this call created (cleanup failure leaves it charged, never masks the cause).
- * @param {{path:string, temporary:string, bytes:Uint8Array, fail:() => never,
- *   sync:() => Promise<void>, check?:() => Promise<void>,
- *   phase?:(step:"created"|"written"|"file_synced"|"renamed"|"directory_synced") => Promise<void>}} options
  */
 export async function publishAtomic({ path, temporary, bytes, fail, sync, check = async () => {}, phase = async () => {} }: { path: string; temporary: string; bytes: Uint8Array; fail: () => never; sync: () => Promise<void>; check?: () => Promise<void>; phase?: (step: "created" | "written" | "file_synced" | "renamed" | "directory_synced") => Promise<void>; }): Promise<void> {
   if (dirname(path) !== dirname(temporary)) fail();

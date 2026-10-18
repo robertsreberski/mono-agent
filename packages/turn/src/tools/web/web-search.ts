@@ -30,9 +30,6 @@ const runProviderFailures = new WeakMap();
 
 /**
  * Compatibility wrapper for direct callers.
- *
- * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, country?: string, time_range?: string}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, sandboxPolicy?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch}} options
  */
 export async function webSearchToolImpl(params: { query: string; limit?: number; alternate_queries?: string[]; domains?: string[]; exclude_domains?: string[]; language?: string; country?: string; time_range?: string }, options: { ctx: import("../shared/tool-context.js").ToolContext; sandboxPolicy?: any; signal?: AbortSignal; coordinator?: any; searchConfig?: any; fetchImpl?: typeof fetch }): Promise<any> {
   return (await performWebSearch(params, options)).text;
@@ -42,9 +39,6 @@ export async function webSearchToolImpl(params: { query: string; limit?: number;
  * Search through an explicitly selected Ollama endpoint, an operator-owned
  * SearXNG endpoint, ChatGPT-subscription Codex search, and/or the keyless HTML fallback chain. Returns a structured
  * internal outcome for the Pi bridge.
- *
- * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, country?: string, time_range?: string}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, sandboxPolicy?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, searchState?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} options
  */
 export async function performWebSearch(params: { query: string; limit?: number; alternate_queries?: string[]; domains?: string[]; exclude_domains?: string[]; language?: string; country?: string; time_range?: string }, options: { ctx: import("../shared/tool-context.js").ToolContext; sandboxPolicy?: any; signal?: AbortSignal; coordinator?: any; searchConfig?: any; searchState?: any; fetchImpl?: typeof fetch; codexSearch?: typeof searchCodexSubscription }): Promise<any> {
   const resolvedCtx = requireToolContext(options?.ctx);
@@ -56,9 +50,6 @@ export async function performWebSearch(params: { query: string; limit?: number; 
  * Search through an operator-owned SearXNG endpoint, ChatGPT-subscription
  * Codex search, and/or the keyless HTML fallback chain. Returns a structured
  * internal outcome for the Pi bridge.
- *
- * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, country?: string, time_range?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, searchState?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
  */
 async function performSearch(
   {
@@ -115,7 +106,6 @@ async function performSearch(
   // the host. Alternate queries are explicit model input, not host-generated
   // substitutions for the user's exact primary query.
   const initialQueries = uniqueStrings([normalizedQuery, ...alternate_queries], 4);
-  /** @type {Array<Array<{title: string, url: string, snippet: string, backend: string}>>} */
   const rankedLists: Array<Array<{title: string, url: string, snippet: string, backend: string}>> = [];
   const providerFailures: any[] = [];
   const engineOutcomes: any[] = [];
@@ -534,7 +524,6 @@ function normalizeSearchConfig(input: any) {
   if (!Number.isSafeInteger(maxRequestsPerRun) || maxRequestsPerRun < 1 || maxRequestsPerRun > MAX_WEB_SEARCH_REQUESTS_PER_RUN) {
     return { error: `Web search maxRequestsPerRun must be an integer from 1 to ${MAX_WEB_SEARCH_REQUESTS_PER_RUN}.` };
   }
-  /** @type {{backend: string | string[], maxRequestsPerRun: number, [key: string]: any}} */
   const config: {backend: string | string[], maxRequestsPerRun: number, [key: string]: any} = { backend, maxRequestsPerRun };
   for (const provider of webSearchProviders.values()) {
     const result = provider.configure(input, names.includes(provider.name));

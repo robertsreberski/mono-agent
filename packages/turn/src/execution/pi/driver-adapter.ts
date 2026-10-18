@@ -8,7 +8,6 @@ import { createRunDriver } from "../../engine/run-driver.js";
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
 import { createToolExecutionGate, isSharedTool } from "./tool-execution-gate.js";
 
-/** @param {any} session @param {any} options */
 export function createHarnessAdapter(session: any, options: any): Promise<{
     models: any;
     getPromptCacheRequest: () => any;

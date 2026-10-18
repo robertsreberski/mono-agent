@@ -49,8 +49,6 @@ function customCompat(capabilities: any, isPrivate: boolean) {
  * spelling. Pi calls the disabled level `off`; mono-agent calls it `none`.
  * Keeping this derived from the model lets new native levels (such as `max`)
  * flow through without maintaining a second hard-coded catalog.
- * @param {any} model
- * @returns {string[]}
  */
 export function reasoningLevelsForPiModel(model: any): string[] {
   return getSupportedThinkingLevels(model).map((level) => level === "off" ? "none" : level);
@@ -164,7 +162,7 @@ export function resolvePiRuntimeModel(resolved: any, options: any): {
     throw new Error("invalid pi model reference: provider and model are required");
   }
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
-  const catalogModel = getPiModel(/** @type {*} */ (provider) as any, model);
+  const catalogModel = getPiModel((provider) as any, model);
   if (!catalogModel) {
     // Phrasing matters: this must match telemetry/failure.js's NON_RETRYABLE_PROVIDER_RE
     // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss

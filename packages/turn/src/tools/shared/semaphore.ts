@@ -7,22 +7,11 @@
 // @ts-check
 
 /**
- * @typedef {Object} CountingSemaphore
- * @property {(signal?: AbortSignal) => Promise<() => void>} acquire Resolves with
- *   a single-use release function once a slot is free. Rejects if `signal`
- *   aborts while queued; an already-acquired slot is never leaked.
- * @property {() => number} inFlight Slots currently held.
- * @property {() => number} queued Waiters not yet admitted.
- */
-
-/**
- * @param {number} limit Maximum simultaneous holders. Values below 1 are clamped.
- * @returns {CountingSemaphore}
+ * @param limit Maximum simultaneous holders. Values below 1 are clamped.
  */
 export function createCountingSemaphore(limit: number): CountingSemaphore {
   const max = Number.isInteger(limit) && limit > 0 ? limit : 1;
   let active = 0;
-  /** @type {Array<{resolve: (release: () => void) => void, reject: (error: Error) => void, settled: boolean}>} */
   const waiters: { resolve: (release: () => void) => void; reject: (error: Error) => void; settled: boolean; }[] = [];
 
   const release = () => {
@@ -39,7 +28,7 @@ export function createCountingSemaphore(limit: number): CountingSemaphore {
 
   const pump = () => {
     while (active < max && waiters.length > 0) {
-      const waiter = /** @type {*} */ ((waiters.shift()) as any);
+      const waiter = ((waiters.shift()) as any);
       if (waiter.settled) continue;
       waiter.settled = true;
       active += 1;
@@ -57,7 +46,6 @@ export function createCountingSemaphore(limit: number): CountingSemaphore {
         return Promise.resolve(release());
       }
       return new Promise((resolve, reject) => {
-        /** @type {*} */
         const waiter: any = { resolve, reject, settled: false };
         waiters.push(waiter);
         signal?.addEventListener("abort", () => {

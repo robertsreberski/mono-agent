@@ -8,7 +8,7 @@ import { managedJournalId } from "../managed-journal.js";
 import { JournalReader } from "../journal-reader.js";
 
 vi.mock("node:fs/promises", async (original) => {
-  const fs = /** @type {typeof import("node:fs/promises")} */ ((await original()) as typeof import("node:fs/promises"));
+  const fs = ((await original()) as typeof import("node:fs/promises"));
   return { ...fs, readdir: vi.fn(fs.readdir) };
 });
 const roots: string[] = [];

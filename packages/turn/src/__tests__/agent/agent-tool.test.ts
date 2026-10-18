@@ -109,7 +109,6 @@ describe("Agent tool budgets", () => {
   it("never exceeds maxConcurrent in-flight subagents", async () => {
     let inFlight = 0;
     let peak = 0;
-    /** @type {Array<() => void>} */
     const pending: any = [];
     const run = vi.fn(() => new Promise((resolve: any) => {
       inFlight += 1;

@@ -27,30 +27,20 @@ export type OAuthCredential = import("@earendil-works/pi-ai").OAuthCredential;
 
 export type ProviderAuthInteraction = import("@earendil-works/pi-ai").ProviderAuthInteraction;
 
+/** @coreScanRetained */
 export type AuthPrompt = import("@earendil-works/pi-ai").AuthPrompt;
 
+/** @coreScanRetained */
 export type AuthEvent = import("@earendil-works/pi-ai").AuthEvent;
 
 export type OAuthLoginCallbacks = import("@earendil-works/pi-ai/oauth").OAuthLoginCallbacks;
 
-/**
- * @typedef {import("@earendil-works/pi-ai").OAuthAuth} OAuthAuth
- * @typedef {import("@earendil-works/pi-ai").OAuthCredential} OAuthCredential
- * @typedef {import("@earendil-works/pi-ai").ProviderAuthInteraction} ProviderAuthInteraction
- * @typedef {import("@earendil-works/pi-ai").AuthPrompt} AuthPrompt
- * @typedef {import("@earendil-works/pi-ai").AuthEvent} AuthEvent
- * @typedef {import("@earendil-works/pi-ai/oauth").OAuthLoginCallbacks} OAuthLoginCallbacks
- */
-
-/** @type {Map<string, import("@earendil-works/pi-ai").Provider>|undefined} */
 let providerIndexCache: Map<string, import("@earendil-works/pi-ai").Provider> | undefined;
 
 /**
  * `builtinProviders()` freshly constructs every provider (~41 objects) on each
  * call, and `providers/pi/auth.js` sits on the per-request credential path. The catalog is
  * static for the process lifetime, so index it once.
- *
- * @returns {Map<string, import("@earendil-works/pi-ai").Provider>}
  */
 function providerIndex(): Map<string, import("@earendil-works/pi-ai").Provider> {
   if (providerIndexCache === undefined) {
@@ -67,9 +57,6 @@ export function resetPiProviderIndexForTests(): void {
 /**
  * The OAuth implementation for a Pi provider id, or undefined when the provider
  * is unknown or supports only API-key auth (e.g. `opencode-go`).
- *
- * @param {string} providerId
- * @returns {OAuthAuth|undefined}
  */
 export function getPiOAuthAuth(providerId: string): OAuthAuth | undefined {
   if (typeof providerId !== "string" || providerId.length === 0) return undefined;
@@ -89,11 +76,7 @@ export function getPiOAuthAuth(providerId: string): OAuthAuth | undefined {
  * The refresh trigger is deliberately the old exact-expiry check. pi's own
  * `Models.getAuth()` refreshes five minutes ahead of expiry; matching that would
  * change live token rotation timing, which this migration does not intend.
- *
- * @param {string} providerId
- * @param {Record<string, *>|undefined} credentials Provider-keyed credential map.
- * @param {AbortSignal} [signal]
- * @returns {Promise<{newCredentials: OAuthCredential, apiKey: string|undefined}|null>}
+ * @param credentials Provider-keyed credential map.
  */
 export async function resolveOAuthApiKey(providerId: string, credentials: Record<string, any> | undefined, signal?: AbortSignal): Promise<{
     newCredentials: OAuthCredential;
@@ -110,7 +93,7 @@ export async function resolveOAuthApiKey(providerId: string, credentials: Record
   // 0.83.0's OAuthCredential carries a `type: "oauth"` discriminant that the
   // 0.80.6 shape did not. Stored entries written by mono-agent already have it;
   // tag defensively so hand-edited or externally written files still work.
-  let credential = /** @type {OAuthCredential} */ ({ ...stored, type: "oauth" });
+  let credential = ({ ...stored, type: "oauth" });
 
   if (Date.now() >= credential.expires) {
     try {
@@ -139,9 +122,6 @@ export async function resolveOAuthApiKey(providerId: string, credentials: Record
  * `manual_code` must stay wired to `onManualCodeInput`: Anthropic races its
  * localhost callback against a pasted redirect URL, and that path is the reason
  * `agent-app`'s `runPiOAuthLogin` exists at all.
- *
- * @param {OAuthLoginCallbacks} callbacks
- * @returns {ProviderAuthInteraction}
  */
 export function toAuthInteraction(callbacks: OAuthLoginCallbacks): ProviderAuthInteraction {
   if (callbacks === null || typeof callbacks !== "object") {
@@ -151,7 +131,6 @@ export function toAuthInteraction(callbacks: OAuthLoginCallbacks): ProviderAuthI
   return {
     signal: callbacks.signal ?? new AbortController().signal,
 
-    /** @param {AuthPrompt} prompt */
     async prompt(prompt) {
       if (prompt.type === "select") {
         const selected = await callbacks.onSelect({
@@ -176,7 +155,6 @@ export function toAuthInteraction(callbacks: OAuthLoginCallbacks): ProviderAuthI
       });
     },
 
-    /** @param {AuthEvent} event */
     notify(event) {
       if (event.type === "auth_url") {
         callbacks.onAuth({

@@ -1,7 +1,5 @@
 // @ts-check
 
-/** @typedef {import("../contracts/model.js").RuntimeModelRef} RuntimeModelRef */
-
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
@@ -18,10 +16,6 @@ const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  */
 const UNQUOTABLE_REFERENCE_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
-/**
- * @param {string} provider
- * @param {string} model
- */
 function rejectRemovedRuntimeReference(provider: string, model: string) {
   if (provider === "codex") {
     throw new Error(`codex is no longer a runtime backend; use openai-codex:${model}`);
@@ -46,14 +40,12 @@ function rejectRemovedRuntimeReference(provider: string, model: string) {
   }
 }
 
-/** @param {string} provider */
 function requireProvider(provider: string) {
   if (!PROVIDER_ID_RE.test(provider)) {
     throw new Error("invalid provider id; expected [A-Za-z0-9][A-Za-z0-9._-]*");
   }
 }
 
-/** @param {string} model */
 function requireModel(model: string) {
   if (!model || model.trim() !== model) {
     throw new Error("model id must be a non-empty trimmed string");
@@ -96,7 +88,6 @@ function requireModel(model: string) {
  * concrete repair named (`codex:x` -> `openai-codex:x`) instead of a generic shape complaint.
  * Rejection messages are operator-supplied text too, and are bounded where they are rendered.
  *
- * @param {string} reference
  */
 function requireQuotableReference(reference: string) {
   if (UNQUOTABLE_REFERENCE_CHARACTERS.test(reference)) {
@@ -108,11 +99,8 @@ function requireQuotableReference(reference: string) {
  * Parse the provider/model pair after the optional legacy `pi:` wrapper has
  * been removed. Pi model ids are opaque and commonly contain further colons,
  * so only the first colon is structural.
- *
- * @param {string} value
- * @returns {RuntimeModelRef}
  */
-function parseCanonicalReference(value: string): import("../contracts/model.js").RuntimeModelRef {
+function parseCanonicalReference(value: string): RuntimeModelRef {
   const separator = value.indexOf(":");
   if (separator <= 0 || separator === value.length - 1) {
     throw new Error("invalid model reference; expected <provider>:<model>");
@@ -129,11 +117,7 @@ function parseCanonicalReference(value: string): import("../contracts/model.js")
   return { provider, model, reference };
 }
 
-/**
- * @param {string} value
- * @returns {RuntimeModelRef}
- */
-export function parseRuntimeModelReference(value: string): import("../contracts/model.js").RuntimeModelRef {
+export function parseRuntimeModelReference(value: string): RuntimeModelRef {
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
     throw new Error("model reference must be a non-empty trimmed string");
   }

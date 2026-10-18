@@ -1,7 +1,6 @@
 // @ts-check
 // One bounded, same-session plain-text finalization after normal settlement.
 
-/** @param {import("../../contracts/policy.js").RuntimePromptOverrides} [prompts] */
 export function emptyReplyFinalizationPrompt(prompts?: import("../../contracts/policy.js").RuntimePromptOverrides): string {
   if (typeof prompts?.emptyReplyFinalization === "function") return prompts.emptyReplyFinalization();
   return [
@@ -11,9 +10,6 @@ export function emptyReplyFinalizationPrompt(prompts?: import("../../contracts/p
   ].join("\n");
 }
 
-/**
- * @param {{finalText: string, stopReason: unknown, outputSchema: unknown, runError: unknown, externalAbort: boolean, maxTurnsHit: boolean, silent: boolean, invalidatedSilentCompletion?: boolean, pendingQuestion: boolean}} state
- */
 export function shouldRetryEmptyReply(state: {
     finalText: string;
     stopReason: unknown;
@@ -38,8 +34,6 @@ export function shouldRetryEmptyReply(state: {
  * The prompt is persisted only in the native provider session, just like the
  * structured-output finalization prompt. The subscriber does not project user
  * text messages into runtime events. Keep all tools disabled during this prompt.
- * @param {{harness: any, runtimeWarnings: Array<Record<string, unknown>>, abortSignal?: AbortSignal, prompts?: import("../../contracts/policy.js").RuntimePromptOverrides}} deps
- * @returns {Promise<{attempted: boolean, error?: unknown}>}
  */
 export async function runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal, prompts }: {
     harness: any;
@@ -51,7 +45,7 @@ export async function runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal
     error?: unknown;
 }> {
   if (abortSignal?.aborted) return { attempted: false };
-  const previousActive = harness.getActiveTools().map((/** @type {{name: string}} */ tool: { name: string; }) => tool.name);
+  const previousActive = harness.getActiveTools().map((tool: { name: string; }) => tool.name);
   let attempted = false;
   try {
     await harness.setActiveTools([]);

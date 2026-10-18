@@ -2,11 +2,6 @@
 import { DEFAULT_PROCESS_BUFFER_BYTES, runPreparedProcess } from "./process-runner.js";
 import { runOwnedForegroundProcess } from "./owned-foreground-process.js";
 
-/**
- * @param {{prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand,
- * controller?: import("./owned-foreground-process.js").OwnedForegroundProcessController,
- * tool: "Bash"|"Exec", callId?: string, timeoutMs: number, signal?: AbortSignal}} options
- */
 export async function runForegroundCommand({ prepared, controller, tool, callId, timeoutMs, signal }: { prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand; controller?: import("./owned-foreground-process.js").OwnedForegroundProcessController; tool: "Bash" | "Exec"; callId?: string; timeoutMs: number; signal?: AbortSignal }): Promise<{ failure: { text: string; code: string }; result?: undefined; cleanupError?: undefined } | { result: import("../../contracts/process.js").ProcessJobProcessResult; cleanupError: any; failure?: undefined }> {
   let result;
   let cleanupError;

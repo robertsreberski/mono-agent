@@ -33,24 +33,8 @@ export type PiApiKeyResolver = ((provider: string, options?: {
   deleteCredential?: (provider: string) => Promise<void>;
 };
 
-/**
- * @typedef {{type: "api_key", key?: string, env?: Object<string, *>}} PiApiKeyCredential
- * @typedef {{type: "oauth", access?: string, refresh?: string, expires: number, [key: string]: *}} PiOAuthCredential
- * @typedef {PiApiKeyCredential|PiOAuthCredential} PiCredential
- * @typedef {((provider: string, options?: {rejectedAccessToken?: string, signal?: AbortSignal}) => Promise<string|undefined>) & {
- *   readCredential?: (provider: string) => Promise<PiCredential|undefined>,
- *   modifyCredential?: (provider: string, fn: (current: PiCredential|undefined) => Promise<PiCredential|undefined>) => Promise<PiCredential|undefined>,
- *   deleteCredential?: (provider: string) => Promise<void>
- * }} PiApiKeyResolver
- */
-
 const authFileChains = new Map<string, Promise<unknown>>();
 
-/**
- * @param {Object} [options]
- * @param {string} [options.path] Path to the pi auth.json credentials file.
- * @returns {PiApiKeyResolver}
- */
 export function createPiOAuthApiKeyResolver(options: {
     path?: string;
 } = {}): PiApiKeyResolver {
@@ -143,11 +127,6 @@ export function createPiOAuthApiKeyResolver(options: {
   return resolvePiOAuthApiKey;
 }
 
-/**
- * @param {string} path
- * @param {() => Promise<*>} task
- * @returns {Promise<*>}
- */
 function enqueueAuthFile<T>(path: string, task: () => Promise<T>): Promise<T> {
   const previous = authFileChains.get(path) ?? Promise.resolve();
   const next = (async () => {
@@ -158,10 +137,6 @@ function enqueueAuthFile<T>(path: string, task: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/**
- * @param {string} path
- * @returns {string}
- */
 function canonicalizeAuthPath(path: string): string {
   const resolved = resolve(path);
   try {
@@ -179,18 +154,10 @@ function canonicalizeAuthPath(path: string): string {
   }
 }
 
-/**
- * @param {*} error
- * @returns {boolean}
- */
 function isMissingPathError(error: NodeJS.ErrnoException): boolean {
   return error && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
 
-/**
- * @param {Object<string, *>} auth
- * @returns {Object<string, *>}
- */
 function cloneAuth(auth: Record<string, any>): Record<string, any> {
   return Object.fromEntries(
     Object.entries(auth).map(([provider, credentials]) => [
@@ -200,20 +167,12 @@ function cloneAuth(auth: Record<string, any>): Record<string, any> {
   );
 }
 
-/**
- * @param {*} credential
- * @returns {*}
- */
 function cloneCredential(credential: any): any {
   return credential && typeof credential === "object" && !Array.isArray(credential)
     ? { ...credential }
     : credential;
 }
 
-/**
- * @param {string} path
- * @returns {Promise<Object<string, *>|undefined>}
- */
 async function readAuthFile(path: string): Promise<Record<string, any> | undefined> {
   let raw;
   try {
@@ -240,11 +199,6 @@ async function readAuthFile(path: string): Promise<Record<string, any> | undefin
 // writers in the same millisecond never collide on the temp path.
 let atomicWriteSequence = 0;
 
-/**
- * @param {string} path
- * @param {Object<string, *>} auth
- * @returns {Promise<void>}
- */
 async function writeAuthFile(path: string, auth: Record<string, any>): Promise<void> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });

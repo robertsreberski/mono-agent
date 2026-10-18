@@ -6,10 +6,8 @@ import { createHash } from "node:crypto";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { isOwned, sameIdentity as same } from "./owned-fs-impl.js";
-/** @returns {never} */
 const fail = (): never => { throw new Error("Harness journal read unavailable"); };
 const decoder = new TextDecoder("utf-8", { fatal: true });
-/** @param {import("node:fs").Stats} stat @param {boolean} directory */
 const secure = (stat: Stats, directory: boolean, ownerOnly: boolean = true) => { if (!isOwned(stat, directory, !ownerOnly)) fail(); };
 function parse(bytes: any): any {
   if (!bytes.length) fail();
@@ -33,7 +31,6 @@ export class JournalReader {
     this.identity = identity; this.directories = directories; this.ownerOnly = ownerOnly;
     this.cache = new Map(); this.cacheBytes = 0; this.cacheVersion = identity; this.cacheLimit = 8 * 1024 * 1024;
   }
-  /** @param {string} filename @param {string} sessionsRoot @param {{ownerOnly?:boolean}} [options] */
   static async open(filename: string, sessionsRoot: string, { ownerOnly = true }: { ownerOnly?: boolean; } = {}): Promise<JournalReader> {
     const path = resolve(filename), root = resolve(sessionsRoot);
     if (!path.startsWith(`${root}${sep}`)) fail();
@@ -83,7 +80,6 @@ export class JournalReader {
   /**
    * Consume records one at a time. The callback may retain small catalogs of
    * IDs/offsets; retaining native envelopes would defeat the storage boundary.
-   * @param {(record:any, address:{offset:number, length:number}) => Promise<void>|void} visit
    */
   async scan(visit: (record: any, address: { offset: number; length: number; }) => Promise<void> | void): Promise<{ identity: any; completeBytes: number; torn: boolean; }> {
     const before = await this.assertIdentity();
@@ -124,7 +120,6 @@ export class JournalReader {
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail();
     return { dev: before.dev, ino: before.ino, size: before.size, mtimeMs: before.mtimeMs, sha256: hash.digest("hex") };
   }
-  /** @param {{allowIncomplete?: boolean}} [options] */
   async readHeader({ allowIncomplete = false }: { allowIncomplete?: boolean; } = {}): Promise<any> {
     const before = await this.assertIdentity();
     let offset = 0, parts = [];
@@ -142,7 +137,6 @@ export class JournalReader {
     if (allowIncomplete) { await this.assertIdentity(); return undefined; }
     fail();
   }
-  /** @param {{offset:number,length:number}} address */
   async read(address: { offset: number; length: number; }): Promise<any> {
     const stat = await this.assertIdentity();
     if (stat.size !== this.cacheVersion.size || stat.mtimeMs !== this.cacheVersion.mtimeMs || stat.ctimeMs !== this.cacheVersion.ctimeMs) this.clearCache();

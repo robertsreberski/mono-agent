@@ -30,9 +30,6 @@ import { createStreamSubscriber } from "./events.js";
  * event stream and runtimeWarnings. Returns the assembled tools plus the MCP
  * clients (closed by the caller's finally), run-owned tool cleanup, and the
  * structured tool.
- * @param {any} runState
- * @param {any} params
- * @returns {Promise<{tools: any[], structuredTool: any, mcpClients: any[], closeRunTools: () => Promise<void>}>}
  */
 export function buildTurnTools(runState: any, { options, capabilities, toolLimits, approvalManager, runtime, resolved, onEvent, runtimeWarnings, toolExecutionMode, }: any): Promise<{
     tools: any[];
@@ -115,10 +112,10 @@ export async function buildTurnTools(runState: PiRunState, {
   try {
     const builtIns = capabilities.tool_use === false
       ? []
-      : getPiBuiltinTools(options.allowedTools, /** @type {any} */ (({
+      : getPiBuiltinTools(options.allowedTools, (({
         // deny-wins filter applied over the built-ins + ReadSkill inside pi-tools.
         disallowedTools: options.disallowedTools,
-        skillNames: (options.skills || []).map((/** @type {{name: string}} */ skill) => skill.name),
+        skillNames: (options.skills || []).map((skill) => skill.name),
         // Full skill objects so ReadSkill can honor pi's neutral Skill shape
         // ({name, filePath, ...}) and derive each skill's root from its own
         // filePath when no shared skillsRoot is threaded.
@@ -183,14 +180,14 @@ export async function buildTurnTools(runState: PiRunState, {
     const structuredTool = createStructuredOutputTool(options.outputSchema, (value: unknown) => {
       runState.structuredResult = value;
     });
-    const reservedNames = new Set(builtIns.map((/** @type {{name: string}} */ toolDef) => toolDef.name));
+    const reservedNames = new Set(builtIns.map((toolDef) => toolDef.name));
     if (structuredTool) reservedNames.add(structuredTool.name);
 
     // REUSED MCP tool bridge: same initPiMcpTools sandboxing path (see the cast
     // note above — the option bag crosses the same untyped tool-builder boundary).
     const mcpInit = capabilities.tool_use === false
       ? { clients: [], tools: [], warnings: [] }
-      : await initPiMcpTools(options.mcpServers || {}, reservedNames, /** @type {any} */ (({
+      : await initPiMcpTools(options.mcpServers || {}, reservedNames, (({
         cwd: options.cwd,
         persistArtifact,
         qaOutputDir,
@@ -239,9 +236,6 @@ export async function buildTurnTools(runState: PiRunState, {
 /**
  * Map an effort level to the harness thinkingLevel, respecting model reasoning
  * capability (no reasoning / reasoning_mode "none" → "off").
- * @param {string} effort
- * @param {any} capabilities
- * @returns {string}
  */
 export function thinkingLevelForEffort(effort: string, capabilities: any): string {
   if (!capabilities?.reasoning || capabilities.reasoning_mode === "none") return "off";
@@ -267,9 +261,6 @@ export function thinkingLevelForEffort(effort: string, capabilities: any): strin
  * wire the external abort handler. Sets runState.harness and
  * runState.removeAbortHandler; the abort handler sets runState.externalAbort and
  * aborts the harness. Returns the harness.
- * @param {any} runState
- * @param {any} params
- * @returns {any}
  */
 /**
  * Restore the error flag on a tool result pi resolved successfully.
@@ -277,9 +268,7 @@ export function thinkingLevelForEffort(effort: string, capabilities: any): strin
  * pi hardcodes `isError: false` for every `execute()` that returns rather than
  * throws, so any tool that reports failure in its payload needs this hook or
  * the model is told the call succeeded.
- *
- * @param {*} details Tool-result details recorded by the bridge.
- * @returns {{isError: true}|undefined}
+ * @param details Tool-result details recorded by the bridge.
  */
 export function toolResultErrorOverride(details: any): {
     isError: true;
@@ -417,8 +406,6 @@ export async function buildTurnHarness(runState: PiRunState, {
  * Subscribe only after prior history has been seeded. Pi emits message
  * lifecycle events for manual appendMessage() calls; subscribing earlier makes
  * restored assistant messages look like fresh output boundaries.
- * @param {any} runState
- * @param {{harness: any, onEvent: (event: any) => void, options: any, toolLimits: any, sdk: string, reference: string, runtimeWarnings?: any[]}} deps
  */
 export function activateTurnHarness(runState: any, { harness, onEvent, options, toolLimits, sdk, reference, runtimeWarnings, }: {
     harness: any;
@@ -469,8 +456,6 @@ export function activateTurnHarness(runState: PiRunState, {
  * the harness mid-run; the consumer is tied to run completion (an internal
  * runComplete flag) so it stops steering once the run finishes and does not
  * swallow a follow-up meant for a later turn. Returns a `stop()` teardown.
- * @param {{harness: any, options: any, onEvent: (event: any) => void, promptEpoch?: any, dispatchProgress?: any}} deps
- * @returns {{stop: () => Promise<void>}}
  */
 export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatchProgress }: {
     harness: any;
@@ -487,10 +472,8 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatc
     ? (options.liveInput as AsyncIterable<RuntimeLiveInputMessage>)[Symbol.asyncIterator]()
     : options.liveInput as AsyncIterator<RuntimeLiveInputMessage>;
   let runComplete = false;
-  /** @type {() => void} */
   let signalStop = () => {};
   const stopped = new Promise<void>((resolve) => { signalStop = () => resolve(); });
-  /** @type {Array<{entryId: string, message: any}>} */
   const acceptedEntries: Array<{ entryId: string; message: RuntimeLiveInputMessage }> = [];
   const task = (async () => {
     try {
@@ -527,11 +510,10 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatc
       onEvent({
         type: "runtime_warning",
         warning_kind: "live_input_failed",
-        message: (/** @type {any} */ (((err)) as any))?.message || String(err),
+        message: ((((err)) as any))?.message || String(err),
       });
     }
   })();
-  /** @type {Promise<void>|undefined} */
   let stopPromise: Promise<void> | undefined;
   return {
     // The run is done: stop the live-steering consumer so it cannot steer a
@@ -592,7 +574,6 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatc
 
 /**
  * Own exact Pi run/entry correlation for the one main prompt in this Mono run.
- * @param {{harness: any, onEvent: (event: any) => void}} deps
  */
 export function createLiveInputPromptEpoch({ harness, onEvent }: {
     harness: any;
@@ -616,18 +597,14 @@ export function createLiveInputPromptEpoch({ harness, onEvent }: {
 };
 export function createLiveInputPromptEpoch({ harness, onEvent }: { harness: Harness; onEvent: PiEventSink }) {
   const BUFFER_LIMIT = 101;
-  /** @type {string|undefined} */
   let runId: string | undefined;
   let eventWindowClosed = false;
   let invalid = false;
-  /** @type {Array<{entryId: string, runId: string}>} */
   const buffered: Array<{ entryId: string; runId: string }> = [];
-  /** @type {Map<string, {message: any, observed: boolean, consumed: boolean}>} */
   const entries = new Map<string, { message: RuntimeLiveInputMessage; observed: boolean; consumed: boolean }>();
   // The operation id Pi admitted for the main prompt (via confirm) or that the
   // settled prompt reported (via finish). Consumption is only acknowledged once
   // the observed main-lane run_start carries this exact id.
-  /** @type {string|undefined} */
   let admittedOperationId: string | undefined;
   let operationConfirmed = false;
 
@@ -731,10 +708,10 @@ export function createLiveInputPromptEpoch({ harness, onEvent }: { harness: Harn
   };
 
   function silenceRefusalReason() {
-    if (invalid) return /** @type {const} */ (("live_input_uncertain") as const);
+    if (invalid) return (("live_input_uncertain") as const);
     return [...entries.values()].some((entry) => entry.observed
       && (!entry.consumed || entry.message.kind !== "process_job"))
-      ? /** @type {const} */ (("live_input_consumed") as const) : null;
+      ? (("live_input_consumed") as const) : null;
   }
 
   function consumeBuffered() {

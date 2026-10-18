@@ -63,7 +63,6 @@ function checkRecordAuthority(session: any, record: any): void {
 }
 const clone = (v: any) => structuredClone(v);
 const ordered = (v: any): any => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((key: string) => [key, ordered(v[key])])) : v;
-/** @returns {never} */
 const fail = (): never => { throw new Error("Invalid mono-agent harness session"); };
 const corruptBinding = () => { throw Object.assign(new Error("Invalid mono-agent harness session binding"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
 const safeId = (id: any) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) && !id.includes("..");
@@ -95,7 +94,7 @@ export class SessionStore {
     this.onClose = onClose;
     this.records = io?.read ? null as unknown as any[] : [];
     this.retired = false;
-    /** @type {string|undefined} */ this.continuity = undefined;
+ this.continuity = undefined;
     this.entries = new Map();
     this.outcomes = new Map();
     this.interruptions = new Map();
@@ -105,8 +104,8 @@ export class SessionStore {
     this.seq = 0; this.durableSeq = 0;
     this.line = Promise.resolve();
     this.closed = false;
-    /** @type {Error|null} */ this.failure = null;
-    /** @type {Promise<void>|null} */ this.closePromise = null;
+ this.failure = null;
+ this.closePromise = null;
     if (!io?.read && metadata.hostAuthority !== undefined) acceptHeader(this, metadata);
     for (const record of records) (this.apply as (record: any) => void)(record);
   }
@@ -149,11 +148,9 @@ export class SessionStore {
     this.line = result.catch(() => {});
     return result;
   }
-  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2, timestamp?:number}} [identity] */
   write(kind: any, payload: any, identity: { turnId?: string; operationId?: string; id?: string; schemaVersion?: 2; timestamp?: number; } = {}): Promise<any> {
     return this.enqueue(() => this.writeRecord(kind, payload, identity));
   }
-  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2, timestamp?:number}} [identity] */
   async writeRecord(kind: any, payload: any, { turnId = this.activeTurnId(), operationId, id = randomUUID(), schemaVersion = 2, timestamp = Date.now() }: { turnId?: string; operationId?: string; id?: string; schemaVersion?: 2; timestamp?: number; } = {}): Promise<any> {
       const record = { schemaVersion, id, parentId: this.validator.parentId,
         seq: this.seq + 1, timestamp, turnId, kind,
@@ -198,7 +195,6 @@ export class SessionStore {
     return result;
     });
   }
-  /** @param {any} message @param {string} [id] */
   async appendMessage(message: any, id: string = randomUUID(), input: { id: any; complete: boolean; } = { id: null, complete: true }): Promise<any> {
     return this.scopedWrite(async () => {
       const config = this.validator.operations.get(this.activeOperationId())?.start.payload.config;
@@ -342,7 +338,6 @@ export class MemorySessionRepo {
 
   #headers = new Map();
   constructor() { this.sessions = new Map(); this.openSessions = new Map(); }
-  /** @param {{id?: string, cwd?: string, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] */
   async create({ id = randomUUID(), cwd = process.cwd(), hostAuthority, assertOwned }: { id?: string; cwd?: string; hostAuthority?: import("./header-authority.js").HostJournalAuthority; assertOwned?: () => Promise<void>; } = {}): Promise<SessionStore> {
     if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned!(); }
     if (this.sessions.has(id)) throw new Error("Harness session already exists");
@@ -379,7 +374,6 @@ export class MemorySessionRepo {
       : clone(header);
   }
   async list(): Promise<any[]> { return [...this.sessions.keys()].map((id: any) => this.#publicMetadata(this.#headers.get(id))); }
-  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
   async delete(metadata: any, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
     const options = deletionOptions(contextOrOptions, explicitOptions);
     validateDeletionDisposition(options);
@@ -392,10 +386,11 @@ export class MemorySessionRepo {
 }
 
 const syncPath = (path: any) => syncDir(path, undefined, fail);
-/** The single journal-directory naming rule shared by every catalogue walk and
+/**
+ * The single journal-directory naming rule shared by every catalogue walk and
  * retention inventory: anything else (`.DS_Store`, temp files, subdirectories)
  * is not a journal and is never read, charged, reclaimed or deleted.
- * @param {string} name */
+ */
 export function journalEntrySuffix(name: string): string;
 export function journalEntrySuffix(name: string): string | undefined {
   return [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((suffix: string) => name.endsWith(suffix));
@@ -450,7 +445,9 @@ export class JsonlSessionRepo {
       || dirname(resolve(metadata.path)) !== this.directory
       || ![`${metadata.journalId}.jsonl`, `${metadata.journalId}.jsonl.importing`, `${metadata.journalId}.jsonl.creating`].includes(metadata.path.split(/[\\/]/).at(-1))) fail();
   }
-  /** @param {{id?: string, cwd?: string, staging?: boolean, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] @param {{abortSignal?:AbortSignal}} [context] cancels only the lock waits */
+  /**
+   * @param [context] cancels only the lock waits
+   */
   async create({ id = randomUUID(), cwd = process.cwd(), staging = false, hostAuthority, assertOwned }: { id?: string; cwd?: string; staging?: boolean; hostAuthority?: import("./header-authority.js").HostJournalAuthority; assertOwned?: () => Promise<void>; } = {}, context: { abortSignal?: AbortSignal; } | undefined = undefined): Promise<SessionStore> {
     const signal = contextSignal(context);
     if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned!(); }
@@ -492,8 +489,9 @@ export class JsonlSessionRepo {
     }
   }
   static guardedEpochPlan(options: any): { header: { format: string; version: number; ownershipSchemaVersion: number; ownership: { kind: string; }; initialHandle: { id: any; }; id: any; cwd: string; createdAt: any; journalId: string; hostAuthority: { version: any; rootId: any; authorityId: any; ownerKey: any; historyBucket: any; }; }; records: JournalEntry[]; bytes: Buffer<ArrayBuffer>; } { return guardedEpochPlan(options); }
-  /** Atomic, idempotent host epoch initialization; ordinary create stays unchanged.
-   * @param {any} options */
+  /**
+   * Atomic, idempotent host epoch initialization; ordinary create stays unchanged.
+   */
   async createGuardedEpoch(options: any): Promise<any> {
     validateHeaderUpgradeOptions(options); const plan = guardedEpochPlan(options);
     const metadata = { ...plan.header, path: join(this.directory, `${plan.header.journalId}.jsonl`) };
@@ -540,8 +538,9 @@ export class JsonlSessionRepo {
       await options.assertOwned(); await this.assertDirectory(); return metadata;
     }); } finally { writer.release(); }
   }
-  /** Direct current-journal lookup; only a missing path needs legacy/damage discovery.
-   * @param {string} id @param {{abortSignal?:AbortSignal}} [context] */
+  /**
+   * Direct current-journal lookup; only a missing path needs legacy/damage discovery.
+   */
   find(id: string, context?: { abortSignal?: AbortSignal }): any;
   async find(id: string, context: { abortSignal?: AbortSignal; } | undefined = undefined): Promise<any> {
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
@@ -631,7 +630,7 @@ export class JsonlSessionRepo {
           if (!sameIdentity(stat, expectedStat) || stat.size !== expectedSize || stat.mtimeMs !== expectedStat.mtimeMs) fail();
           expectedStat = stat; reader.cacheVersion = stat;
         },
-        prepareReconciliation: async (/** @type {Buffer|undefined} */ expectedTail: Buffer<ArrayBufferLike> | undefined = undefined) => {
+        prepareReconciliation: async (expectedTail: Buffer<ArrayBufferLike> | undefined = undefined) => {
           await verify();
           if (pendingTornTail !== null) {
             if (expectedTail !== undefined) {
@@ -689,7 +688,7 @@ export class JsonlSessionRepo {
         session.restore(warm.state); Object.assign(storeMetadata, warm.metadata, { path: metadata.path });
         await verify();
       } else {
-        /** @type {any} */ let header: any;
+ let header: any;
         const evidence = await reader.scan((record: any, address: { offset: number; length: number; }) => {
           if (!header) { acceptHeader(session, record); header = record; validatedHeader = clone(record); validateHeader?.(clone(validatedHeader)); }
           else session.apply(record, address);
@@ -903,14 +902,15 @@ export class JsonlSessionRepo {
     return { owned: native.owned, unattributed: [...native.unattributed, ...legacy.unattributed] };
   }
   async listOwnedUnlocked(includeStaging: boolean = false): Promise<any[]> { return (await this.catalogueUnlocked(includeStaging)).owned; }
-  /** Catalogue walk shared by list/create/import/retire. Names without a
-   * journal suffix (`.DS_Store`, temp files, subdirectories) are not journals
-   * and are ignored. A journal-named entry whose header cannot be read or
-   * validated is reported as unattributed (with its handle when a parsed header
-   * names one) and skipped: it is never reclaimed, rewritten or deleted, and it
-   * never blocks another handle's valid journal. Callers refuse any handle it
-   * is attributable to, exactly as the whole-catalogue failure used to.
-   * @returns {Promise<{owned:any[], unattributed:{name:string, id?:string}[]}>} */
+  /**
+   * Catalogue walk shared by list/create/import/retire. Names without a
+   *  journal suffix (`.DS_Store`, temp files, subdirectories) are not journals
+   *  and are ignored. A journal-named entry whose header cannot be read or
+   *  validated is reported as unattributed (with its handle when a parsed header
+   *  names one) and skipped: it is never reclaimed, rewritten or deleted, and it
+   *  never blocks another handle's valid journal. Callers refuse any handle it
+   *  is attributable to, exactly as the whole-catalogue failure used to.
+   */
   async catalogueUnlocked(includeStaging: boolean = false): Promise<{ owned: any[]; unattributed: { name: string; id?: string; }[]; }> {
     let files;
     try { files = await readdir(this.directory, { withFileTypes: true }); }
@@ -996,7 +996,6 @@ export class JsonlSessionRepo {
       writer.release(); await unlink(writer.path); await locks.syncDirectory();
     } finally { writer.release(); }
   }
-  /** @param {unknown} [_filter] @param {{abortSignal?:AbortSignal}} [context] */
   async list(_filter: unknown | undefined = undefined, context: { abortSignal?: AbortSignal; } | undefined = undefined): Promise<any[]> {
     const owned = await this.listOwned({ signal: contextSignal(context) });
     const { sessions } = await listLegacySessions(this.root);
@@ -1019,7 +1018,6 @@ export class JsonlSessionRepo {
     }
     return true;
   }
-  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
   async removeOwned(metadata: any, options: HostJournalDeletion | undefined = undefined): Promise<void> {
     validateDeletionDisposition(options);
     await this.assertDirectory();
@@ -1062,7 +1060,6 @@ export class JsonlSessionRepo {
     } finally { await reader.close(); }
     await syncPath(parent); await syncPath(this.root); await this.assertDirectory();
   }
-  /** @param {string} id @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
   async retireByHandle(id: string, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
     const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
@@ -1094,7 +1091,6 @@ export class JsonlSessionRepo {
   clearWarm(id: any): void { if (this.warm?.metadata.id === id) { this.warm.cache.clear(); this.warm = null as unknown as typeof this.warm; } }
   retireHandle(id: any): void { this.retiredHandles.add(id); this.clearWarm(id); }
   finishRetirement(id: any): void { if (!this.openSessions.has(id)) this.retiredHandles.delete(id); }
-  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
   async retire(metadata: any, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
     const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
@@ -1114,7 +1110,6 @@ export class JsonlSessionRepo {
     await locks.withCatalog(() => this.removeOwned(metadata, options), { signal });
     // Keep its already-held writer lock until the provider's close/unwind.
   }
-  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
   async delete(metadata: any, contextOrOptions: HostJournalDeletion | { abortSignal: AbortSignal; } | undefined = undefined, explicitOptions: HostJournalDeletion | undefined = undefined): Promise<void> {
     const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);

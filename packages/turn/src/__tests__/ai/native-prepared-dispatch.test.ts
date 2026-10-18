@@ -46,14 +46,13 @@ async function mcp() {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
   cleanups.push(() => new Promise((resolve) => { server.closeAllConnections(); server.close(() => resolve(undefined)); }));
-  return { url: `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ ((server.address()) as import("node:net").AddressInfo).port}/mcp`, methods, calls };
+  return { url: `http://127.0.0.1:${ ((server.address()) as import("node:net").AddressInfo).port}/mcp`, methods, calls };
 }
-/** @returns {Promise<import("../../contracts/runtime.js").NativePreparedDispatch & Required<Pick<import("../../contracts/runtime.js").NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>>} */
 async function prepare(f: Awaited<ReturnType<typeof fixture>>, extra: Record<string, unknown> = {}, runtime?: AgentRuntimeInstance): Promise<FullLease> {
   const lease = await (runtime ? runtime.prepareNativeDispatch!("Fictional rules", { ...f.options, ...extra } as unknown as RuntimeRunOptions) : preparePiNativeDispatch("Fictional rules", { ...f.options, ...extra } as unknown as RuntimeRunOptions));
   cleanups.push(() => lease.close());
   if (!lease.produceHandoffSummary || !lease.checkHandoffSummary || !lease.assertReady) throw new Error("Expected prepared producer");
-  return /** @type {import("../../contracts/runtime.js").NativePreparedDispatch & Required<Pick<import("../../contracts/runtime.js").NativePreparedDispatch, 'produceHandoffSummary'|'checkHandoffSummary'|'assertReady'>>} */ ((lease) as FullLease);
+  return ((lease) as FullLease);
 }
 
 it("resolves actual built-in/MCP/StructuredOutput declarations before opening any session and reuses MCP once", async () => {
@@ -123,8 +122,7 @@ it.each(["missing-provider", "missing-auth", "auth-error", "missing-model", "can
 const token = (account: string, generation: number) => `fixture.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account }, generation })).toString("base64url")}.fixture`;
 it.each([false, true])("prepared requests use ordinary OAuth resolution, refreshing expiry=%s", async (expired) => {
   const f = await fixture("openai-codex", "openai-codex-responses"), requests: Array<string | undefined> = [];
-  /** @type {import("@earendil-works/pi-ai").OAuthCredential} */
-  let credential: OAuthCredential = { type: /** @type {const} */ ("oauth") as const, refresh: "fictional-refresh", access: token("fictional-account", 1), expires: Date.now() + 3600000 };
+  let credential: OAuthCredential = { type: ("oauth") as const, refresh: "fictional-refresh", access: token("fictional-account", 1), expires: Date.now() + 3600000 };
   const refresh = vi.fn(async (..._args: unknown[]) => ({ ...credential, access: token("fictional-other", 2), expires: Date.now() + 3600000 }));
   const store = { read: vi.fn(async () => credential), modify: vi.fn(async (_id: string, update: (current: Credential | undefined) => Credential | undefined | Promise<Credential | undefined>) => { credential = await update(credential) as OAuthCredential ?? credential; return credential; }),
     delete: vi.fn(), list: async () => [] };
@@ -188,7 +186,7 @@ it("does not certify an arbitrary router resolver from method presence", async (
 
 it("aborts during auth preparation and cleans already-resolved MCP resources before rejecting", async () => {
   const f = await fixture(), endpoint = await mcp(), controller = new AbortController(), closed = vi.spyOn(Client.prototype, "close");
-  let entered: () => void; /** @type {(value?: any) => void} */ let release = () => {};
+  let entered: () => void; let release = () => {};
   const started = new Promise<void>((resolve) => { entered = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
   f.models.setProvider({ ...f.faux.provider, auth: { apiKey: { name: "Fictional key", resolve: async () => { entered(); await gate; return { auth: {} }; } } } });
   const pending = prepare(f, { abortSignal: controller.signal, mcpServers: { fictional: { type: "http", url: endpoint.url } } });
@@ -198,7 +196,7 @@ it("aborts during auth preparation and cleans already-resolved MCP resources bef
 
 it("close during a running dispatch waits without prematurely closing its MCP client", async () => {
   const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close");
-  let entered: () => void; /** @type {(value?: any) => void} */ let release = () => {};
+  let entered: () => void; let release = () => {};
   const started = new Promise<void>((resolve) => { entered = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
   f.faux.setResponses([async () => { entered(); await gate; return fauxAssistantMessage([fauxText("Completed once")]); }]);
   const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
@@ -302,11 +300,11 @@ it("preserves prototype methods and their original private-field receiver", asyn
 it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations without mutation", async () => {
   const provider = openaiCodexProvider(), model = provider.getModels()[0], schema = Type.Object({ answer: Type.String() }, { additionalProperties: false });
   const legacyKind = Symbol.for("TypeBox.Kind"), declaration = Type.Unsafe(schema) as unknown as { properties: { answer: Record<PropertyKey, unknown> }; [key: symbol]: string };
-  declaration[legacyKind] = "Object"; /** @type {any} */ (declaration).properties.answer[legacyKind] = "String";
+  declaration[legacyKind] = "Object"; (declaration).properties.answer[legacyKind] = "String";
   const parameters = freezeDispatchData(copyDispatchData(declaration));
   expect(parameters[legacyKind]).toBe("Object"); expect(parameters.properties.answer[legacyKind]).toBe("String");
   expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String");
-  const credential = { type: /** @type {const} */ ("oauth") as const, access: token("fictional-account", 1), expires: Date.now() + 3600000, refresh: "fictional-refresh" };
+  const credential = { type: ("oauth") as const, access: token("fictional-account", 1), expires: Date.now() + 3600000, refresh: "fictional-refresh" };
   const models = createModels({ credentials: { read: async () => credential, list: async () => [], delete: vi.fn(), modify: vi.fn() } }); models.setProvider(provider);
   const pin = await prepareDispatchAuth(models, model, undefined), payload = vi.fn();
   const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Fictional transport refusal", { status: 400 }));
@@ -318,7 +316,6 @@ it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations 
   expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String"); expect(Object.isFrozen(parameters.properties.answer)).toBe(true);
 });
 
-/** @returns {import("../../contracts/runtime.js").NativeHandoffProducerRequest} */
 const producerInput = (): NativeHandoffProducerRequest => ({ prepared: { status: "prepared", checkpoints: [], ledger: [{ kind: "tool", outcome: "unknown" }],
   recent: [], older: [], coverage: [] }, outputReserve: 256 });
 const summaryText = () => JSON.stringify(Object.fromEntries(["intent", "constraints", "decisions", "completedWork", "failures", "openWork", "nextActions", "references"]
@@ -356,7 +353,7 @@ it.each(["malformed", "truncated", "error"])("producer rejects %s without automa
 });
 it("close waits for an active producer before closing native/MCP resources; run rejects without consumption", async () => {
   const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close");
-  let enter: () => void; /** @type {(value?: any) => void} */ let release = () => {}; const entered = new Promise<void>((resolve) => { enter = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
+  let enter: () => void; let release = () => {}; const entered = new Promise<void>((resolve) => { enter = resolve; }), gate = new Promise((resolve) => { release = () => resolve(undefined); });
   f.faux.setResponses([async () => { enter(); await gate; return fauxAssistantMessage([fauxText(summaryText())]); }]);
   const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
   const production = lease.produceHandoffSummary(producerInput()); await entered;
@@ -396,8 +393,8 @@ it("installed pi-ai Codex oauth.refresh returns a complete typed OAuth credentia
   const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access_token: access,
     refresh_token: "fictional-rotated", expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } }));
   // @ts-expect-error The installed provider accepts an omitted refresh signal.
-  const refreshed = await provider.auth.oauth.refresh({ type: /** @type {const} */ ("oauth") as const, accountId: "fictional-stock-account", access: token("fictional-stock-account", 1), refresh: "fictional-old", expires: 0 });
-  expect(refreshed).toMatchObject({ type: /** @type {const} */ ("oauth") as const, access, refresh: "fictional-rotated", accountId: "fictional-stock-account" });
+  const refreshed = await provider.auth.oauth.refresh({ type: ("oauth") as const, accountId: "fictional-stock-account", access: token("fictional-stock-account", 1), refresh: "fictional-old", expires: 0 });
+  expect(refreshed).toMatchObject({ type: ("oauth") as const, access, refresh: "fictional-rotated", accountId: "fictional-stock-account" });
   expect(refreshed.expires).toBeGreaterThan(Date.now() + 3500000); expect(fetch).toHaveBeenCalledOnce();
 });
 

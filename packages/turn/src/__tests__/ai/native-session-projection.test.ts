@@ -30,7 +30,7 @@ import { JsonlSessionRepo } from "../../engine/session-store.js";
 const roots: string[] = [];
 afterEach(async () => { await refreshProviderSession(handle); for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }); });
 const handle = "a".repeat(64);
-const hostAuthority = { version: /** @type {1} */ (1) as const, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+const hostAuthority = { version: (1) as const, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const coverage: InheritedCoverage = { version: 1, sources: [{ journalId: "retained-A", sourceTipId: "frozen-tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] };
 const inherited: InheritedProjection = { messages: [{ role: "user", content: "Historical handoff: Morgan chose amber; approval remains read-only; unknown effect requires checking.", timestamp: 1 }], coverage };
 async function setup() {

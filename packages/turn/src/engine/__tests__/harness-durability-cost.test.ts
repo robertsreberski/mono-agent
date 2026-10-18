@@ -2,9 +2,9 @@ import type { FauxProviderHandle, MutableModels } from "@earendil-works/pi-ai";
 import { afterEach, expect, it, vi } from "vitest";
 const meter = vi.hoisted(() => ({ enabled: false, journal: 0, directory: 0, lock: 0, reads: 0 }));
 vi.mock("node:fs/promises", async (original: <T extends unknown = unknown>() => Promise<T>) => {
-  const fs = /** @type {typeof import("node:fs/promises")} */ (((await original()) as typeof import("node:fs/promises")));
+  const fs = (((await original()) as typeof import("node:fs/promises")));
   return { ...fs, open: async (...args: any[]) => {
-    const handle = await fs.open(.../** @type {Parameters<typeof fs.open>} */ (((args) as Parameters<typeof fs.open>))); const path = String(args[0]);
+    const handle = await fs.open(... (((args) as Parameters<typeof fs.open>))); const path = String(args[0]);
     const sync = handle.sync.bind(handle), read = handle.read.bind(handle);
     handle.sync = async (...rest: []) => { if (meter.enabled) meter[path.includes(".jsonl") ? "journal" : String(path).endsWith(".sqlite") ? "lock" : "directory"] += 1; return sync(...rest); };
     handle.read = async (...rest: Parameters<typeof handle.read>) => { if (meter.enabled && path.includes(".jsonl")) meter.reads += 1; return read(...rest); };
@@ -93,7 +93,7 @@ it("serializes verified cache batches against legitimate queued appends instead 
   const waiting = new Promise((resolve: (value: any) => void) => { entered = resolve; }); const gate = new Promise((resolve: (value: any) => void) => { release = resolve; });
   raw.io.verify = async () => { if (once) { once = false; entered?.(); await gate; } return verify(); };
   const read = raw.getEntries(); await waiting; const seq = raw.seq; const append = raw.appendMessage({ role: "user", content: "Fictional concurrent tail." });
-  await new Promise((resolve: (value: any) => void) => setImmediate(resolve)); expect(raw.seq).toBe(seq); /** @type {any} */ (((release) as any))?.();
+  await new Promise((resolve: (value: any) => void) => setImmediate(resolve)); expect(raw.seq).toBe(seq); (((release) as any))?.();
   expect((await read).map((entry: any) => entry.message.content)).toEqual(["Fictional prefix."]); await append;
   expect((await raw.getEntries()).at(-1).message.content).toBe("Fictional concurrent tail."); expect(raw.failure).toBeNull(); await raw.close();
 });
