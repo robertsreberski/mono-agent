@@ -24,7 +24,7 @@ function sanitizeName(value: any) {
  * Null when neither is available or the write fails; callers then omit the
  * "saved to" line rather than naming a file that does not exist.
  */
-export function writeToolArtifact(label: string, text: string, ctx?: any): { path: string; bytes: number } | null {
+export function writeToolArtifact(label: string | undefined, text: string, ctx?: any): { path: string; bytes: number } | null {
   const { toolArtifactDir, runId, persistArtifact } = ctx ?? {};
   const body = String(text || "");
   const filename = `${Date.now()}-${sanitizeName(label)}-${randomUUID()}.txt`;

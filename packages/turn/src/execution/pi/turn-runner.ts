@@ -307,9 +307,9 @@ export function buildTurnHarness(runState: any, { session, piModels, model, thin
     setCompactionSettings(settings: any): Promise<void>;
     setMidRunCompactionArmed(value: any): void;
     appendMessage: (message: any) => any;
-    beginTurn: (id: any, source: any, descriptor: any) => Promise<void>;
-    endTurn: (status: any, result: any) => Promise<void>;
-    prompt(text: any, promptOptions: any): Promise<{
+    beginTurn: (id?: any, source?: any, descriptor?: any) => Promise<void>;
+    endTurn: (status: any, result?: any) => Promise<void>;
+    prompt(text: any, promptOptions?: any): Promise<{
         tipId: any;
         deferred?: any;
         operationId: `${string}-${string}-${string}-${string}-${string}`;
@@ -345,7 +345,8 @@ export async function buildTurnHarness(runState: PiRunState, {
   steeringMode,
   options,
 }: { session: PiSession; piModels: Models; model: PiModel; thinkingLevel: string; systemPrompt: string; outputSchema: any; tools: PiTool[]; toolExecutionMode: string; transport: string; maxRetries: number; maxRetryDelayMs: number; steeringMode: string; options: PiOptions }) {
-  const providerCheck = Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens! > 0;
+  const providerCheckMaxTokens = options.providerCheckMaxTokens;
+  const providerCheck = typeof providerCheckMaxTokens === "number" && Number.isSafeInteger(providerCheckMaxTokens) && providerCheckMaxTokens > 0;
   // Codex auto transport can resend via SSE even with a zero retry budget.
   const harness = await createHarnessAdapter(session, {
     session,
@@ -496,7 +497,7 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatc
           }
           const evidence = {
             providerEntryId: entryId,
-            ...(promptEpoch?.ownedRunId() === undefined ? {} : { providerRunId: promptEpoch.ownedRunId()! }),
+            ...(runEvidence()),
           };
           acceptedEntries.push({ entryId, message: next.value });
           next.value.accepted?.(evidence);
@@ -528,6 +529,11 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatc
     },
   };
 
+  function runEvidence() {
+    const runId = promptEpoch?.ownedRunId();
+    return runId === undefined ? {} : { providerRunId: runId };
+  }
+
   async function performStop() {
       runComplete = true;
       signalStop();
@@ -542,7 +548,7 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatc
             accepted.message.uncertain?.({
               reason: "delivery_uncertain",
               providerEntryId: accepted.entryId,
-              ...(promptEpoch?.ownedRunId() === undefined ? {} : { providerRunId: promptEpoch.ownedRunId()! }),
+              ...(runEvidence()),
             });
             continue;
           }
@@ -553,14 +559,14 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatc
             accepted.message.uncertain?.({
               reason: "delivery_uncertain",
               providerEntryId: accepted.entryId,
-              ...(promptEpoch?.ownedRunId() === undefined ? {} : { providerRunId: promptEpoch.ownedRunId()! }),
+              ...(runEvidence()),
             });
           }
         } catch {
           accepted.message.uncertain?.({
             reason: "delivery_uncertain",
             providerEntryId: accepted.entryId,
-            ...(promptEpoch?.ownedRunId() === undefined ? {} : { providerRunId: promptEpoch.ownedRunId()! }),
+            ...(runEvidence()),
           });
           onEvent({
             type: "runtime_warning",
@@ -575,14 +581,15 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatc
 /**
  * Own exact Pi run/entry correlation for the one main prompt in this Mono run.
  */
+
 export function createLiveInputPromptEpoch({ harness, onEvent }: {
     harness: any;
     onEvent: (event: any) => void;
 }): {
-    ownedRunId: () => string;
-    consumedInputIds: () => any[];
+    ownedRunId: () => string | undefined;
+    consumedInputIds: () => any[] | null;
     silenceEligible: () => boolean;
-    silenceRefusalReason: () => "live_input_consumed" | "live_input_uncertain";
+    silenceRefusalReason: () => "live_input_consumed" | "live_input_uncertain" | null;
     register(entryId: any, message: any): void;
     isConsumed: (entryId: any) => boolean;
     /**

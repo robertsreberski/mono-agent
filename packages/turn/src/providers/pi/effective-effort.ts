@@ -1,5 +1,5 @@
 /** Read only the final provider-shaped effort; never retain payload text. */
-export function effectivePayloadEffort(payload: any, model: any): string;
+
 export function effectivePayloadEffort(payload: any, model: any): string | undefined {
   const bounded = (value: unknown) => typeof value === "string" && /^(none|off|minimal|low|medium|high|xhigh|max|ultra)$/i.test(value)
     ? value.toLowerCase() === "off" ? "none" : value.toLowerCase() : undefined;

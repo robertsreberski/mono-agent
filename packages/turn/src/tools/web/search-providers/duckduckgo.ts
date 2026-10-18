@@ -15,7 +15,9 @@ export const duckduckgoProvider: { name: string; batchesQueries: boolean; filter
 function searchDuckDuckGo(query: any, options: any): Promise<{ ok: boolean; backend: any; message: string; retryAfterMs: number; retryAtMs: number; retryable: boolean; rateLimited: boolean } | { reason?: string; code?: any; ok: boolean; backend: any; message: string; retryable: boolean } | { ok: boolean; backend: any; message: string; retryable: boolean; cooldown: boolean; results?: undefined } | { ok: boolean; backend: any; results: any; message?: undefined; retryable?: undefined; cooldown?: undefined }> {
   const url = new URL("https://html.duckduckgo.com/html/");
   url.searchParams.set("q", query);
-  url.searchParams.set("kl", duckDuckGoRegion(options.country, options.language));
+  const region = duckDuckGoRegion(options.country, options.language);
+  if (region === undefined) return Promise.resolve({ ok: false, backend: "duckduckgo", ...unsupportedCountryFilter("duckduckgo") });
+  url.searchParams.set("kl", region);
   const date = { day: "d", month: "m", year: "y" }[options.timeRange as "day" | "month" | "year"];
   if (date) url.searchParams.set("df", date);
   return keylessHtmlSearch({

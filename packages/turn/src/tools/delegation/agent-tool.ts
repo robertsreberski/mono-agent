@@ -198,7 +198,7 @@ export function subagentInvocationCount(subagents: any, parentRunId: string | un
  * returns zeroes when the run has no synchronous child spend.
  * @param subagents The run-scoped options object, or undefined.
  */
-export function subagentUsageForRun(subagents: any, parentRunId: string | undefined): { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number } {
+export function subagentUsageForRun(subagents: any, parentRunId?: string): { costUsd: number; input: number; output: number; cacheRead: number; cacheWrite: number } {
   const store = subagents?.__budgets;
   const usage = store instanceof Map ? store.get(parentRunId ?? "unkeyed")?.usage : undefined;
   return {

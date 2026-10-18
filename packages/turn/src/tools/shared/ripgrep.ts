@@ -14,7 +14,7 @@ import { writeToolArtifact } from "./output-truncation.js";
 const requireFromHere = createRequire(import.meta.url);
 
 // Lazy so the message respects whatever runtimeBrand the host configured.
-export function ripgrepMissingMessage(ctx: any): string {
+export function ripgrepMissingMessage(ctx?: any): string {
   const brand = ctx?.runtimeBrand ?? DEFAULT_RUNTIME_BRAND;
   return `Error: ripgrep (rg) is not available. Configure ripgrepPath on your runtime or explicit tool context or install ripgrep on PATH; run \`${brand.doctorCommand}\` for details.`;
 }
@@ -93,7 +93,7 @@ export function normalizeGlobPattern(pattern: any): string {
   return raw || "**/*";
 }
 
-export function formatSearchLines(rawLines: any, options?: { label?: string; noMatches?: string; maxLines?: number; maxChars?: number; offset?: number; ctx?: any }): string;
+
 export function formatSearchLines(rawLines: any, {
   label,
   noMatches,
@@ -101,7 +101,7 @@ export function formatSearchLines(rawLines: any, {
   maxChars = DEFAULT_MAX_SEARCH_CHARS,
   offset = 0,
   ctx,
-}: { label?: string; noMatches?: string; maxLines?: number; maxChars?: number; offset?: number; ctx?: any } = {}): string | undefined {
+}: { label?: string | undefined; noMatches?: string | undefined; maxLines?: number; maxChars?: number; offset?: number; ctx?: any } = {}): string | undefined {
   const lines = Array.isArray(rawLines) ? rawLines.filter(Boolean) : String(rawLines || "").trim().split("\n").filter(Boolean);
   if (!lines.length) return noMatches;
   const start = boundedInt(offset, 0, { min: 0 });
@@ -118,7 +118,7 @@ export function formatSearchLines(rawLines: any, {
   }
   if (kept.length === slice.length) return kept.join("\n");
   const fullText = lines.join("\n");
-  const artifact = writeToolArtifact(label!, fullText, ctx);
+  const artifact = writeToolArtifact(label, fullText, ctx);
   const suffix = [
     `[truncated ${label || "search"} result: showing ${kept.length} of ${total} lines after excluding generated/vendor paths.`,
     start ? `Offset ${start} was applied.` : null,
@@ -135,7 +135,7 @@ export function capLines(text: string, {
   maxChars = DEFAULT_MAX_SEARCH_CHARS,
   offset = 0,
   ctx,
-}: { label?: string; noMatches?: string; maxLines?: number; maxChars?: number; offset?: number; ctx?: any } = {}): string {
+}: { label?: string | undefined; noMatches?: string | undefined; maxLines?: number; maxChars?: number; offset?: number; ctx?: any } = {}): string | undefined {
   return formatSearchLines(String(text || "").trim().split("\n").filter(Boolean), {
     label,
     noMatches,
@@ -143,7 +143,7 @@ export function capLines(text: string, {
     maxChars,
     offset,
     ctx,
-  } as Parameters<typeof formatSearchLines>[1]);
+  });
 }
 
 export function excludedPathSummary(): string {

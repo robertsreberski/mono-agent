@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/conversation";
@@ -595,7 +596,7 @@ it.each(["disabled", "failed-start", "undefined-standalone", "retained-history"]
     const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
     const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation", metadata: { channel: "slack" } }, runId: "run", context: { sections: [] } });
     const scoped = extension.runtimeOptions!.subagents as never;
-    await expect(createAgentManageTool(scoped).execute("send", { id: "child", message: "must not run" }))
+    await expect(presentTool(createAgentManageTool(scoped)).execute("send", { id: "child", message: "must not run" }))
       .rejects.toThrow(/busy|subagent_owner_unavailable/u);
     await expect(createAgentTool(scoped).execute("replacement", { persist: true, id: "replacement", prompt: "must not run" }))
       .rejects.toMatchObject({ code: "subagent_owner_unavailable" });
@@ -620,7 +621,7 @@ it("G02: configured no-service composition preserves a clean foreground continua
     responder = await createConfiguredAgentResponderForApp({ config, runtime: runtime as never } as never, {});
     const options = harnessMock.mock.calls[0]![0] as { runtimeOptionsForRequest(input: unknown): Promise<{ runtimeOptions?: { subagents?: unknown } }> };
     const extension = await options.runtimeOptionsForRequest({ request: { conversationId: "conversation" }, runId: "run", context: { sections: [] } });
-    const result = await createAgentManageTool(extension.runtimeOptions!.subagents as never).execute("send", { id: "child", message: "continue" });
+    const result = await presentTool(createAgentManageTool(extension.runtimeOptions!.subagents as never)).execute("send", { id: "child", message: "continue" });
     expect(result.details).toMatchObject({ subagent: { status: "ok" } }); expect(runtime.run).toHaveBeenCalledOnce();
   } finally { await (responder as { dispose?: () => Promise<void> } | undefined)?.dispose?.(); await rm(root, { recursive: true, force: true }); }
 });
@@ -681,13 +682,13 @@ it("reapplies current denies and MCP catalog after registry/config restart while
     const changed = { ...config, tools: { ...config.tools, disallowedTools: ["Read", "mcp__selected__danger"] }, subagents: { ...config.subagents, definitions: [] } } as MonoAgentConfig;
     const extension = createSubagentsRuntimeExtension(changed, { runtime: runtime as never, baseModel: PRIMARY }, registry());
     const resumed = await extension({ request: { conversationId: "c" }, runId: "r2" } as never);
-    await createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0]).execute("b", { id: "research", message: "next" });
+    await presentTool(createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0])).execute("b", { id: "research", message: "next" });
     const [prompt, options] = runtime.run.mock.calls[1]!;
     expect(prompt).toBe(`You research.\n\n${HOST_TURN_CONTEXT_GUIDANCE}`);
     expect(options).toMatchObject({ model: PRIMARY, effort: "high", mcpServers: { selected: { command: "new-server" } } });
     expect(options.disallowedTools).toEqual(expect.arrayContaining(["Read", "mcp__selected__danger", "Agent", "AgentManage"]));
     await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }));
-    const failed = await createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0]).execute("c", { id: "research", message: "next", close: true });
+    const failed = await presentTool(createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0])).execute("c", { id: "research", message: "next", close: true });
     expect(failed.details.subagent.status).toBe("failed");
     expect(runtime.run).toHaveBeenCalledTimes(2);
     expect((await (await registry().open("c")).get("research"))!.status).toBe("idle");
@@ -748,3 +749,8 @@ it.each([undefined, "short", "long"] as const)("forwards resolved %s retention t
   await (subagents?.run as (request: unknown) => Promise<unknown>)({ systemPrompt: "You research.", prompt: "find X", definition: { name: "researcher", allowedTools: ["Read"] }, maxTurns: 1, depth: 1, abortSignal: new AbortController().signal, onEvent: () => {} });
   expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ cacheRetention: expectedRetention, promptCacheDiagnostics: true });
 });
+
+function presentTool(value: ReturnType<typeof createAgentManageTool>) {
+  assert.ok(value);
+  return value;
+}

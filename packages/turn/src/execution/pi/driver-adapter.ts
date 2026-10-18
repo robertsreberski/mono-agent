@@ -19,9 +19,9 @@ export function createHarnessAdapter(session: any, options: any): Promise<{
     setCompactionSettings(settings: any): Promise<void>;
     setMidRunCompactionArmed(value: any): void;
     appendMessage: (message: any) => any;
-    beginTurn: (id: any, source: any, descriptor: any) => Promise<void>;
-    endTurn: (status: any, result: any) => Promise<void>;
-    prompt(text: any, promptOptions: any): Promise<{
+    beginTurn: (id?: any, source?: any, descriptor?: any) => Promise<void>;
+    endTurn: (status: any, result?: any) => Promise<void>;
+    prompt(text: any, promptOptions?: any): Promise<{
         tipId: any;
         deferred?: any;
         operationId: `${string}-${string}-${string}-${string}-${string}`;
@@ -55,7 +55,7 @@ export async function createHarnessAdapter(session: PiSession, options: PiHarnes
     // shared/exclusive admission for dynamically invoked calls.
     executionMode: toolExecution,
     async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: ((update: any) => void) | undefined) {
-      const release = gate ? await gate.acquire(isSharedTool(tool), signal!) : () => {};
+      const release = gate ? await gate.acquire(isSharedTool(tool), signal) : () => {};
       try {
         if (runState.stopping || signal?.aborted) throw new Error("tool execution aborted");
         if (questionState.awaiting) throw new Error("Child turn ended awaiting a parent reply.");
@@ -115,9 +115,9 @@ export async function createHarnessAdapter(session: PiSession, options: PiHarnes
     async setCompactionSettings(settings: any) { driver.setCompactionSettings(settings); },
     setMidRunCompactionArmed(value: boolean) { driver.setMidRunCompactionArmed(value); },
     appendMessage: (message: any) => session.appendMessage(message),
-    beginTurn: (id: any, source: any, descriptor: any) => driver.beginTurn(id, source, descriptor),
-    endTurn: (status: any, result: any) => driver.endTurn(status, result),
-    async prompt(text: any, promptOptions: any) {
+    beginTurn: (id?: any, source?: any, descriptor?: any) => driver.beginTurn(id, source, descriptor),
+    endTurn: (status: any, result?: any) => driver.endTurn(status, result),
+    async prompt(text: any, promptOptions?: any) {
       if (closed) throw new Error("mono-agent harness is closed");
       runState.stopping = false; gate?.resume();
       return driver.prompt(text, promptOptions);

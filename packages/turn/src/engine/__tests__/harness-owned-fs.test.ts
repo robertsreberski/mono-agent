@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { Stats } from "node:fs";
 import { ok as assertPresent } from "node:assert";
 import { mkdtemp, mkdir, copyFile, readFile, writeFile, rm, stat, chmod, readdir, link } from "node:fs/promises";
@@ -44,6 +45,7 @@ it("cancels a catalogue wait, and releases a catalogue acquisition that races ca
   const controller = new AbortController(), waiting = locks.withCatalog(callback, { signal: controller.signal });
   setTimeout(() => controller.abort(), 30);
   await expect(waiting).rejects.toMatchObject(aborted); expect(callback).not.toHaveBeenCalled();
+  assert.ok(held);
   held.release();
   await expect(locks.withCatalog(callback, { signal: AbortSignal.abort() })).rejects.toMatchObject(aborted);
   const race = new AbortController(), tryLock = locks.tryLock.bind(locks);

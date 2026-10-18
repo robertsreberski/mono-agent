@@ -80,7 +80,7 @@ export class JournalLocks {
     return identity;
   }
   /** A failed attempt closes its connection; never retain a SQLite waiter. */
-  tryLock(path: any): Promise<{ path: any; identity: Stats; release(): void; }>;
+
   async tryLock(path: any): Promise<{ path: any; identity: Stats; release(): void; } | null> {
     await this.assertRoot();
     const identity = await lstat(path); secure(identity);
@@ -153,7 +153,7 @@ export class JournalLocks {
       catch { /* keep the lock file */ } finally { lock?.release(); }
     });
   }
-  async releaseWriter(lock: any, dataGone: any): Promise<void> {
+  async releaseWriter(lock: any, dataGone?: () => Promise<boolean>): Promise<void> {
     if (!dataGone) { lock.release(); return; }
     await this.withCatalog(async () => {
       await this.assertRoot();

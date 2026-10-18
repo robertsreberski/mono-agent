@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, it, expect, vi } from "vitest";
 import { createAgentTool, SUBAGENT_HARD_DENY } from "../../tools/delegation/agent-tool.js";
 import { createAgentManageTool } from "../../tools/delegation/agent-manage-tool.js";
@@ -25,7 +26,7 @@ function setup(overrides: any = {}) {
   };
   const options = { instances, run: vi.fn(async () => ({ text: "answer" })), ...overrides };
   const context = { parentRunId: "parent" };
-  return { records, instances, options, agent: createAgentTool(options, context), send: createAgentManageTool(options, context) };
+  return { records, instances, options, agent: createAgentTool(options, context), send: presentTool(createAgentManageTool(options, context)) };
 }
 describe("persistent Agent and AgentManage", () => {
   it("preserves stateless registration and gates persistence and recursion", async () => {
@@ -117,7 +118,7 @@ describe("persistent Agent and AgentManage", () => {
     await agent.execute("a", { prompt: "first", persist: true });
     options.run.mockResolvedValueOnce({ text: "output ".repeat(20_000) });
     const persistArtifact = vi.fn(() => "/artifacts/continued.txt");
-    const send = createAgentManageTool(options, { parentRunId: "next", persistArtifact });
+    const send = presentTool(createAgentManageTool(options, { parentRunId: "next", persistArtifact }));
     const result = await send.execute("send-id", { id: "critic-1", message: "more" });
     expect(persistArtifact).toHaveBeenCalledWith(expect.objectContaining({ filename: "AgentManage__send-id__full.txt", toolName: "AgentManage", toolUseId: "send-id" }));
     expect(result.details.tool_payload_saved_paths).toContain("/artifacts/continued.txt");
@@ -190,7 +191,7 @@ describe("AgentManage recovery boundary", () => {
   it("passes only host access to inspection and never invokes a provider", async () => {
     const f = setup(); const recoveryAccess = { host: true };
     f.instances.inspect = vi.fn(async () => ({ schema: "mono-agent.subagent-recovery.v1", status: "held" }));
-    const send = createAgentManageTool(f.options, { recoveryAccess });
+    const send = presentTool(createAgentManageTool(f.options, { recoveryAccess }));
     const result = await send.execute("inspect", { id: "helper", inspect: true });
     expect(result.details).toMatchObject({ executed: false, recovery: { status: "held" } });
     expect(f.instances.inspect).toHaveBeenCalledWith("helper", recoveryAccess);
@@ -199,7 +200,7 @@ describe("AgentManage recovery boundary", () => {
   it.each([{ message: "next" }, { close: false }, { background: false }, { ack: "token" }, { description: "purpose" }])(
     "rejects mixed inspection semantics %j without execution", async (extra: any) => {
       const f = setup(); f.instances.inspect = vi.fn();
-      await expect(createAgentManageTool(f.options).execute("inspect", { id: "helper", inspect: true, ...extra })).rejects.toThrow("inspect must be used alone");
+      await expect(presentTool(createAgentManageTool(f.options)).execute("inspect", { id: "helper", inspect: true, ...extra })).rejects.toThrow("inspect must be used alone");
       expect(f.instances.inspect).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
     },
   );
@@ -207,7 +208,7 @@ describe("AgentManage recovery boundary", () => {
     "returns typed %s before busy lookup and never replays a receipt", async (code: any) => {
       const f = setup(); f.instances.checkAcknowledgement = vi.fn(async () => { throw Object.assign(new Error(code), { code }); });
       const request = { id: "helper", ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" };
-      const result = await createAgentManageTool(f.options).execute("ack", request);
+      const result = await presentTool(createAgentManageTool(f.options)).execute("ack", request);
       expect(result.details).toEqual({ tool: "AgentManage", recovery: { code }, executed: false });
       expect(f.instances.checkAcknowledgement).toHaveBeenCalledWith("helper", { ack: "token", message: "exact bytes ", background: true, close: false, description: "purpose" }, undefined);
       expect(f.instances.get).not.toHaveBeenCalled(); expect(f.options.run).not.toHaveBeenCalled();
@@ -219,9 +220,9 @@ describe("AgentManage recovery boundary", () => {
 it("keeps optional continuation definitions stable and refuses unavailable operations before instance access", async () => {
   const { options, instances } = setup();
   const context = { persistentExposure: true };
-  const unavailable = createAgentManageTool({ run: options.run }, context);
-  const current = createAgentManageTool(options, context);
-  const capable = createAgentManageTool({ ...options, instances: { ...instances, reserve: vi.fn(), releaseReservation: vi.fn(), inspect: vi.fn(), checkAcknowledgement: vi.fn() }, backgroundSubagentController: {} }, context);
+  const unavailable = presentTool(createAgentManageTool({ run: options.run }, context));
+  const current = presentTool(createAgentManageTool(options, context));
+  const capable = presentTool(createAgentManageTool({ ...options, instances: { ...instances, reserve: vi.fn(), releaseReservation: vi.fn(), inspect: vi.fn(), checkAcknowledgement: vi.fn() }, backgroundSubagentController: {} }, context));
   const definition = ({ name, description, parameters }: any) => JSON.stringify({ name, description, parameters });
   expect(definition(current)).toBe(definition(unavailable)); expect(definition(capable)).toBe(definition(current));
   await expect(unavailable.execute("no", { id: "x", message: "work" })).rejects.toThrow(/unavailable/);
@@ -302,7 +303,7 @@ describe("AgentManage stop", () => {
       f.records.set("helper", { id: "helper", incarnation: "epoch", status: "idle", turns: 1, settledTurnToken: successor ? "successor" : "owned-token" });
       return { jobId: "owned-token", stopRequested: true, childStillBusy: false, resumable: true, disposition: "cancelled" };
     } };
-    const result = await createAgentManageTool(f.options).execute("stop", { id: "helper", stop: true });
+    const result = await presentTool(createAgentManageTool(f.options)).execute("stop", { id: "helper", stop: true });
     if (successor) expect(result).toMatchObject({ isError: true, details: { stop: { code: "subagent_stale_turn" } } });
     else expect(result.details).toEqual({ tool: "AgentManage", executed: false, stop: { instanceId: "helper", jobId: "owned-token", status: "stopped", instanceStatus: "idle", turns: 1, disposition: "cancelled", stopRequested: true, childStillBusy: false, resumable: true } });
     expect(f.options.run).not.toHaveBeenCalled();
@@ -340,7 +341,7 @@ describe("AgentManage stop", () => {
       }
       return await read(id);
     });
-    const result = createAgentManageTool(f.options).execute("stop", { id: "helper", stop: true });
+    const result = presentTool(createAgentManageTool(f.options)).execute("stop", { id: "helper", stop: true });
     try {
       await readEntered;
       await vi.advanceTimersByTimeAsync(6_000);
@@ -459,7 +460,7 @@ describe("AgentManage retarget", () => {
     f.instances.releaseReservation = vi.fn(async (id: any) => { const r = f.records.get(id); r.status = "idle"; delete r.reservation; });
     f.options.backgroundSubagentController ??= { startInternal: vi.fn(async ({ jobId }: any) => { started.push(jobId); return { jobId, state: "queued", startedAt: null }; }) };
     const toolContext = { parentRunId: "parent", ...context };
-    return { ...f, started, agent: createAgentTool(f.options, toolContext), send: createAgentManageTool(f.options, toolContext) };
+    return { ...f, started, agent: createAgentTool(f.options, toolContext), send: presentTool(createAgentManageTool(f.options, toolContext)) };
   }
 
   it("offers model and effort only where the host configured them, without touching the stable description", () => {
@@ -507,7 +508,7 @@ describe("AgentManage retarget", () => {
     f.instances.checkAcknowledgement = vi.fn(async () => undefined);
     await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });
     f.records.get("critic-1").status = "idle";
-    const send = createAgentManageTool(f.options, { parentRunId: "parent" });
+    const send = presentTool(createAgentManageTool(f.options, { parentRunId: "parent" }));
     await send.execute("b", { id: "critic-1", message: "detached", background: true, model: "fable" });
     expect(f.instances.reserve.mock.calls[0][4]).toEqual({ model: FABLE });
     expect(f.records.get("critic-1").definition.model).toEqual(FABLE);
@@ -569,3 +570,8 @@ describe("AgentManage retarget", () => {
       .toThrow('Error: unknown model "sol". Choices: none configured.');
   });
 });
+
+function presentTool(value: ReturnType<typeof createAgentManageTool>) {
+  assert.ok(value);
+  return value;
+}

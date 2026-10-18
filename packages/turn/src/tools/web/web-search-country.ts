@@ -46,10 +46,7 @@ const DDG_REGIONS = new Map(Object.entries({
   VN: [["vi", "vn-vi"]],
 }));
 
-export function normalizeSearchCountry(value: unknown): {
-    value?: string;
-    error?: string;
-};
+
 export function normalizeSearchCountry(value: unknown): { value?: string | undefined; error?: string } {
   if (value === undefined) return { value: undefined };
   if (typeof value !== "string" || !/^[A-Za-z]{2}$/u.test(value.trim())) {
@@ -66,7 +63,7 @@ export function normalizeSearchCountry(value: unknown): { value?: string | undef
  * Return DuckDuckGo's documented region token. Omitted country deliberately
  * selects DDG's documented no-region mode rather than an implicit US locale.
  */
-export function duckDuckGoRegion(country: string | undefined, language: string | undefined): string;
+
 export function duckDuckGoRegion(country: string | undefined, language: string | undefined): string | undefined {
   if (!country) return "wt-wt";
   const choices = DDG_REGIONS.get(country);

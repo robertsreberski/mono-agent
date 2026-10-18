@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
@@ -125,7 +126,7 @@ it("G09: actual AgentManage rejects foreign-conversation and replaced-incarnatio
   const f = await fixture(); const original = await f.handle.inspect(spec.id);
   const request = { id: spec.id, ack: original.ack!, message: "verified new instructions", background: true };
   const run = vi.fn(); const startInternal = vi.fn();
-  const tool = (instances: typeof f.handle) => createAgentManageTool({ instances, run, backgroundSubagentController: { startInternal } });
+  const tool = (instances: typeof f.handle) => presentTool(createAgentManageTool({ instances, run, backgroundSubagentController: { startInternal } }));
   const foreign = await f.registry.open("foreign-conversation");
   const settle = async (handle: typeof f.handle, conversationId: string) => {
     const record = (await handle.get(spec.id))!; const token = randomUUID(); await handle.reserve(spec.id, token); await handle.begin(spec.id, token);
@@ -160,7 +161,7 @@ it("G09: current/previous consumption markers compact; the third-oldest token st
   const current = await f.handle.inspect(spec.id); const before = JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding;
   expect(before.consumed.token).toBe(requests[2]!.ack); expect(before.previous.token).toBe(requests[1]!.ack);
   expect(JSON.stringify(before)).not.toContain(requests[0]!.ack);
-  const run = vi.fn(); const startInternal = vi.fn(); const send = createAgentManageTool({ instances: f.handle, run, backgroundSubagentController: { startInternal } });
+  const run = vi.fn(); const startInternal = vi.fn(); const send = presentTool(createAgentManageTool({ instances: f.handle, run, backgroundSubagentController: { startInternal } }));
   for (const [index, request] of requests.entries()) {
     expect((await send.execute(`old-${index}`, { id: spec.id, ...request })).details).toMatchObject({ executed: false,
       recovery: { code: index === 0 ? "subagent_recovery_ack_stale" : "subagent_recovery_already_consumed" } });
@@ -298,3 +299,8 @@ it("admits an acknowledged continuation that also retargets the instance, and st
   await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
   await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, message: "something else" })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
 });
+
+function presentTool(value: ReturnType<typeof createAgentManageTool>) {
+  assert.ok(value);
+  return value;
+}

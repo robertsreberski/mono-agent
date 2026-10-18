@@ -63,7 +63,7 @@ it("seals and reopens a real suspended tool turn twice without repeating its eff
   const driver = createRunDriver(raw, { models, model, retry: { enabled: false }, tools: [{ name: "Effect", description: "Fictional effect", parameters: { type: "object", properties: {} },
     execute: async () => { effects += 1; return { content: [{ type: "text", text: "Fictional effect" }] }; } }] });
   try {
-    expect((await (driver.prompt as (...args: any[]) => ReturnType<typeof driver.prompt>)("Fictional request")).status).toBe("suspended");
+    expect((await (driver.prompt)("Fictional request")).status).toBe("suspended");
     const state = { session: { rawSession: raw }, sessionEntry: { recoveryPending: true }, retainRecoveryTail: true };
     expect(await settleNativeSession(state, { action: "sync" })).toEqual({ status: "synced" });
     expect(await settleNativeSession(state, { action: "fail-suspended" })).toEqual({ status: "sealed" });

@@ -5,7 +5,7 @@ import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
 import { assertWebReadableEvidence } from "./web-readable-evidence.js";
 import { markdownToText } from "./web-document-extractor.js";
 
-export function unsupportedParallelFetchOption(params: any): string;
+
 export function unsupportedParallelFetchOption(params: any): string | undefined {
   if (params.format === "raw") return "format:raw";
   if (params.headers != null && Object.keys(params.headers).length) return "headers";

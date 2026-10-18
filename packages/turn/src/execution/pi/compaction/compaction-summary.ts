@@ -43,7 +43,11 @@ export function prepareSummaryInput(preparation: any): {
       return [{ ...block, text: replacement }];
     }) };
   };
-  const fileOps: Record<string, Set<unknown>> = Object.fromEntries(["read", "written", "edited"].map((key: string) => [key, new Set(preparation.fileOps[key]!)]));
+  const fileOps = {
+    read: new Set<unknown>(preparation.fileOps.read),
+    written: new Set<unknown>(preparation.fileOps.written),
+    edited: new Set<unknown>(preparation.fileOps.edited),
+  };
   const pending = new Map();
   const attempts = [];
   // Include retained outcomes when a cut lands between a call and its result.
@@ -66,7 +70,7 @@ export function prepareSummaryInput(preparation: any): {
         // against the worker cwd or infer them from Bash/MCP text.
         const resolvedPath = message.details?.tool === attempt.name && typeof message.details?.params?.file_path === "string"
           ? message.details.params.file_path : attempt.path;
-        fileOps[attempt.name === "Read" ? "read" : attempt.name === "Write" ? "written" : "edited"]!.add(resolvedPath);
+        fileOps[attempt.name === "Read" ? "read" : attempt.name === "Write" ? "written" : "edited"].add(resolvedPath);
       }
     }
   }
@@ -74,15 +78,16 @@ export function prepareSummaryInput(preparation: any): {
   // are retained or omitted; truncated paths would invent file identities.
   let remaining = METADATA_LIMIT - 256;
   let omittedFiles = 0;
-  for (const key of ["written", "edited", "read"]) {
+  const metadataKeys: Array<keyof typeof fileOps> = ["written", "edited", "read"];
+  for (const key of metadataKeys) {
     const kept = new Set();
-    for (const path of [...fileOps[key]!].sort()) {
+    for (const path of [...fileOps[key]].sort()) {
       const size = Buffer.byteLength(String(path)) + 1;
       if (size > remaining) { omittedFiles += 1; continue; }
       remaining -= size;
       kept.add(path);
     }
-    fileOps[key]! = kept;
+    fileOps[key] = kept;
   }
   let evidence = "";
   let omittedAttempts = 0;
@@ -106,7 +111,7 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
     evidence?: string;
     requests: any;
     effort?: string;
-    minimumAnswerTokens: any;
+    minimumAnswerTokens?: number;
 }): any {
   return new Proxy(models, {
     get(target: any, key: string | symbol) {

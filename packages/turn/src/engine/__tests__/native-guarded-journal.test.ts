@@ -42,7 +42,7 @@ it("current guarded writer repairs its own torn record only under held native ow
 
 it("guarded headers reject foreign and instance ownership before native admission", async () => {
   const repository = repo(await root()), store = await repository.create({ id: "bound-guard", ...upgrade });
-  await (store.beginTurn as (...args: any[]) => ReturnType<typeof store.beginTurn>)("synthetic-owner-test");
+  await (store.beginTurn)("synthetic-owner-test");
   const before = await readFile(store.metadata.path);
   for (const owner of [{ kind: "instance", ownerKey: authority.ownerKey, historyBucket: null }, { kind: "host", ownerKey: "foreign", historyBucket: authority.historyBucket }]) {
     await expect(store.write("owner_binding", owner)).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });

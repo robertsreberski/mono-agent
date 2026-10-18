@@ -2,26 +2,7 @@ import { validateSessionTurn } from "./journal-schema.js";
 export { digestTurnInput } from "./journal-schema.js";
 
 /** Explicit field builder: protected binding cannot persist arbitrary host options. */
-export function createTurnBinding(descriptor: any, model: any): {
-    version: number;
-    kind: any;
-    ownerKey: any;
-    historyBucket: any;
-    turnId: any;
-    handleId: any;
-    baseRevision: any;
-    reconciliation: {
-        version: number;
-        purpose: any;
-        fenceDigest: any;
-        initialInputId: any;
-    };
-    model: {
-        provider: any;
-        id: any;
-        api: any;
-    };
-};
+
 export function createTurnBinding(descriptor: any, model: any): {
     version: number;
     kind: any;

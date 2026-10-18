@@ -345,8 +345,8 @@ export type StreamSubscriberState = {
     toolExecutionsThisTurn: number;
     toolFailureThisTurn: boolean;
     structuredOutputCompletedThisTurn: boolean;
-    silentCompletedThisTurn: boolean;
-    silentTurn: {
+    silentCompletedThisTurn?: boolean;
+    silentTurn?: {
         soleCall: boolean;
         visibleContent: boolean;
         pendingQuestion: boolean;

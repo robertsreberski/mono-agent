@@ -6,14 +6,14 @@
  *   `onOperationAdmitted` fires as soon as Pi admits the run, before any
  *   provider request, so the live-input epoch can own the operation up front.
  */
-export function runHarnessPrompt(harness: any, promptText: string, promptImages: Array<any>, hooks?: {
+export function runHarnessPrompt(harness: any, promptText: string, promptImages?: Array<any>, hooks?: {
     onOperationAdmitted?: (operationId: string) => void;
 }): Promise<{
     runError: any;
     operationId?: string;
     suspended?: boolean;
 }>;
-export async function runHarnessPrompt(harness: { prompt: (text: string, options?: { images?: any[]; onOperationAdmitted?: (id: string) => void }) => Promise<{ operationId?: string; status: string }>; waitForIdle: () => Promise<void> }, promptText: string, promptImages: any[], hooks?: { onOperationAdmitted?: (operationId: string) => void }) {
+export async function runHarnessPrompt(harness: { prompt: (text: string, options?: { images?: any[]; onOperationAdmitted?: (id: string) => void }) => Promise<{ operationId?: string; status: string }>; waitForIdle: () => Promise<void> }, promptText: string, promptImages?: any[], hooks?: { onOperationAdmitted?: (operationId: string) => void }) {
   let runError: unknown = null;
   let operationId: string | undefined, suspended = false;
   try {

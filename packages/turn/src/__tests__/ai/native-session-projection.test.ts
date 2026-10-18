@@ -236,7 +236,7 @@ it("rejects an invalid inherited cut before the guarded summarizer is called", a
   const guarded = createGuardedCompactionHook({ harness: { models: { completeSimple: complete } }, trigger: "manual", effectivePolicy: {},
     compactionSettings: { enabled: true, keepRecentTokens: 20000, reserveTokens: 4000 }, accounting: createCompactionAccounting() });
   expect(await guarded.handler({ branchEntries: [], nonRetainablePrefixLength: 1 })).toEqual({ cancel: true });
-  expect(guarded.getDecision().kind).toBe("failed"); expect(complete).not.toHaveBeenCalled();
+  expect(guarded.getDecision()?.kind).toBe("failed"); expect(complete).not.toHaveBeenCalled();
 });
 
 it.each(["omitted", "id", "hash", "coverage", "messages"])("durably binds the accepted artifact and refuses %s projection before any checkpoint", async (variant) => {

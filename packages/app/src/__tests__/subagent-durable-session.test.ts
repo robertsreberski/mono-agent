@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
@@ -61,7 +62,7 @@ describe("app persistent subagent durable sessions", () => {
       const options = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
         { conversationId: "foreground-recovery", runId: "parent", instances: handle })!.subagents;
       const context = { model: config.runtime.model, recoveryAccess: access };
-      const agent = createAgentTool(options as Parameters<typeof createAgentTool>[0], context); const send = createAgentManageTool(options as Parameters<typeof createAgentManageTool>[0], context);
+      const agent = createAgentTool(options as Parameters<typeof createAgentTool>[0], context); const send = presentTool(createAgentManageTool(options as Parameters<typeof createAgentManageTool>[0], context));
       expect(options).not.toHaveProperty("backgroundSubagentController");
       faux.setResponses([fauxAssistantMessage([fauxText("first native answer is not continuation authority")])]);
       const failed = await agent.execute("foreground", { id: "critic", persist: true, prompt: "first foreground task" });
@@ -150,7 +151,7 @@ describe("app persistent subagent durable sessions", () => {
       expect(answered).toBe(true);
       expect(first.details.subagent.status).toBe("failed");
       expect((await handle.get("critic"))?.recovery).toMatchObject({ continuity: "unknown" });
-      await expect(createAgentManageTool(subagents as Parameters<typeof createAgentManageTool>[0], { model: config.runtime.model }).execute("unsafe", { id: "critic", message: "continue" })).rejects.toThrow("subagent_recovery_required");
+      await expect(presentTool(createAgentManageTool(subagents as Parameters<typeof createAgentManageTool>[0], { model: config.runtime.model })).execute("unsafe", { id: "critic", message: "continue" })).rejects.toThrow("subagent_recovery_required");
     } finally { await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
   });
   it("creates and resumes a real Pi transcript through AgentManage after warm-session disposal, then retires it", async () => {
@@ -194,7 +195,7 @@ describe("app persistent subagent durable sessions", () => {
       const resumed = await extension({ request: { conversationId: "conversation-1" }, runId: "parent-2" } as never);
       let context: { messages: { role: string; content: unknown }[] } | undefined;
       faux.setResponses([(input: typeof context) => { context = input; return fauxAssistantMessage([fauxText("second-answer")]); }]);
-      const second = await createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0], { parentRunId: "parent-2" }).execute("call-2", { id: "critic", message: "second-task" });
+      const second = await presentTool(createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0], { parentRunId: "parent-2" })).execute("call-2", { id: "critic", message: "second-task" });
       expect(second.details.subagent.status).toBe("ok");
       expect(second.details.subagent.instance.turns).toBe(2);
       expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
@@ -207,7 +208,7 @@ describe("app persistent subagent durable sessions", () => {
       expect(JSON.stringify(users[1])).toContain("second-task");
       expect((await transcript()).length).toBeGreaterThan(before.length);
       expect((await handle.get("critic"))!.usage.input).toBeGreaterThan(0);
-      await createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0]).execute("close", { id: "critic", close: true });
+      await presentTool(createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0])).execute("close", { id: "critic", close: true });
       expect((await handle.get("critic"))!.status).toBe("closed");
       expect(await transcript()).toBe("");
     } finally { await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
@@ -266,7 +267,7 @@ describe("app persistent subagent durable sessions", () => {
       const resumed = await extension({ request: { conversationId: "conversation-1" }, runId: "parent-2" } as never);
       let context: { messages: { role: string; content: unknown }[] } | undefined;
       faux.setResponses([(input: typeof context) => { context = input; return fauxAssistantMessage([fauxText("second-answer")]); }]);
-      const second = await createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0], { parentRunId: "parent-2" }).execute("call-2", { id: "critic", message: "second-task" });
+      const second = await presentTool(createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0], { parentRunId: "parent-2" })).execute("call-2", { id: "critic", message: "second-task" });
       expect(second.details.subagent.status).toBe("ok");
       expect((await handle.get("critic"))?.pendingQuestion).toBeUndefined();
       expect((await handle.get("critic"))?.status).toBe("idle");
@@ -285,7 +286,7 @@ describe("app persistent subagent durable sessions", () => {
       expect(questionResult?.isError).toBe(false);
       expect((await transcript()).length).toBeGreaterThan(before.length);
       expect((await handle.get("critic"))!.usage.input).toBeGreaterThan(0);
-      await createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0]).execute("close", { id: "critic", close: true });
+      await presentTool(createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0])).execute("close", { id: "critic", close: true });
       expect((await handle.get("critic"))!.status).toBe("closed");
       expect(await transcript()).toBe("");
     } finally { await owner.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
@@ -335,3 +336,8 @@ describe("app persistent subagent durable sessions", () => {
   });
 
 });
+
+function presentTool(value: ReturnType<typeof createAgentManageTool>) {
+  assert.ok(value);
+  return value;
+}

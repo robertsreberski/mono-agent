@@ -21,9 +21,13 @@ describe("mono-agent harness session store", () => {
   for (const durable of [false, true]) {
     it(`round-trips messages, compaction, terminal markers and rollback (${durable ? "JSONL" : "memory"})`, async () => {
       const repo = durable ? new JsonlSessionRepo({ sessionsRoot: await root() }) : new MemorySessionRepo();
+      if (repo instanceof JsonlSessionRepo) expect(repo.warm).toBeNull();
       const s = await repo.create({ id: "fictional-session" });
+      expect(s.records === null).toBe(durable);
+      expect(s.tip).toBeNull();
+      expect(s.repairCache).toBeNull();
       const a = await s.appendMessage(message);
-      await (s.beginTurn as (...args: any[]) => ReturnType<typeof s.beginTurn>)("turn-one");
+      await (s.beginTurn)("turn-one");
       await s.openOperation("run-one", { model: { provider: "faux", id: "fictional-model" } });
       await s.appendCompaction({ summary: "Fictional summary.", retainedTail: [message], tokensBefore: 100 });
       await s.closeOperation("run-one", "completed");
@@ -96,7 +100,7 @@ describe("mono-agent harness session store", () => {
   it("repairs a torn owned tail and seals the surviving turn as interrupted without changing native context", async () => {
     const repo = new JsonlSessionRepo({ sessionsRoot: await root() });
     const s = await repo.create({ id: "torn-session" });
-    await (s.beginTurn as (...args: any[]) => ReturnType<typeof s.beginTurn>)("interrupted", {}); await s.appendMessage(message);
+    await (s.beginTurn)("interrupted", {}); await s.appendMessage(message);
     await s.close(); await appendFile(s.metadata.path, '{"kind":"turn_close"');
     const reopened = await repo.open(s.metadata);
     expect(await reopened.getEntries()).toHaveLength(1);
@@ -162,7 +166,7 @@ it("projects only the legacy main branch through its latest compaction", async (
 it("reopens a journal above 32 MiB with records above 2 MiB using offset-backed storage", async () => {
   const repo = new JsonlSessionRepo({ sessionsRoot: await root() });
   const session = await repo.create({ id: "large-session" });
-  await (session.beginTurn as (...args: any[]) => ReturnType<typeof session.beginTurn>)("synthetic:large");
+  await (session.beginTurn)("synthetic:large");
   const native = { role: "assistant", content: [{ type: "thinking", thinking: "x".repeat(3 * 1024 * 1024), thinkingSignature: "opaque" }], additive: { opaque: true } };
   for (let i = 0; i < 12; i++) await session.appendMessage(native);
   await session.endTurn("synthetic:large", "completed"); await session.sync(); await session.close();
@@ -242,7 +246,7 @@ it.each(["journals", "locks"])("rejects replaced %s and symlink files without re
 
 it("retires a local writer only after draining storage and holds its lock until close", async () => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "retiring" });
-  await (session.beginTurn as (...args: any[]) => ReturnType<typeof session.beginTurn>)("synthetic:retire");
+  await (session.beginTurn)("synthetic:retire");
   let release: any, started: any; const gate = new Promise((resolve: (value: any) => void) => { release = resolve; }); const admitted = new Promise((resolve: (value: any) => void) => { started = resolve; });
   const append = session.io.append; session.io.append = async (text: any) => { started(); await gate; return append(text); };
   const pending = session.appendMessage(message); await admitted;
@@ -346,7 +350,7 @@ it("tracks active scopes without iterating complete historical turn/operation ma
   }
   for (let i = 0; i < 1000; i++) {
     const turn = `turn-${i}`, op = `op-${i}`;
-    await (store.beginTurn as (...args: any[]) => ReturnType<typeof store.beginTurn>)(turn); await store.openOperation(op, {});
+    await (store.beginTurn)(turn); await store.openOperation(op, {});
     expect(store.activeTurnId()).toBe(turn); expect(store.activeOperationId()).toBe(op);
     await store.closeOperation(op, "completed"); await store.endTurn(turn, "completed");
   }
@@ -432,7 +436,7 @@ it("ignores stray entries and skips unattributed damaged journal-named files wit
 });
 
 it("rejects pre-write schema validation without I/O or poison and can close the failed operation", async () => {
-  const store = await new MemorySessionRepo().create(); await (store.beginTurn as (...args: any[]) => ReturnType<typeof store.beginTurn>)("validation-turn"); await store.openOperation("validation-op", {});
+  const store = await new MemorySessionRepo().create(); await (store.beginTurn)("validation-turn"); await store.openOperation("validation-op", {});
   const messageId = await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Effect", arguments: {} }], stopReason: "toolUse" });
   let appends = 0; store.io = { append: async () => { appends += 1; }, sync: async () => {} };
   const payload = { callId: "call", name: "Effect", messageId, admission: "observed" };
@@ -440,5 +444,5 @@ it("rejects pre-write schema validation without I/O or poison and can close the 
   await expect(store.write("tool_call", payload, { operationId: "validation-op" })).rejects.toThrow("Invalid session journal");
   expect(store.failure).toBeNull(); expect(store.seq).toBe(seq); expect(appends).toBe(1);
   await store.closeOperation("validation-op", "failed"); await store.endTurn("validation-turn", "failed"); await store.sync();
-  await (store.beginTurn as (...args: any[]) => ReturnType<typeof store.beginTurn>)("next-validation-turn"); await store.endTurn("next-validation-turn", "completed"); await store.close();
+  await (store.beginTurn)("next-validation-turn"); await store.endTurn("next-validation-turn", "completed"); await store.close();
 });

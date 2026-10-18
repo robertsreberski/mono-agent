@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { isPathAllowed, isWorkdirAllowed, workspaceRoot } from "../shared/path-resolver.js";
 
-export function commandAdmission({ background, wakeOnCompletion, processJobsController }: { background: any; wakeOnCompletion: any; processJobsController: any }): { text: string; code: string };
+
 export function commandAdmission({ background, wakeOnCompletion, processJobsController }: { background: any; wakeOnCompletion: any; processJobsController: any }): { text: string; code: string } | undefined {
   if (wakeOnCompletion !== undefined && (background !== true || typeof wakeOnCompletion !== "boolean")) {
     return { text: "Error: wake_on_completion requires background=true and a boolean value.", code: "process_job_invalid" };

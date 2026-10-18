@@ -391,7 +391,7 @@ const syncPath = (path: any) => syncDir(path, undefined, fail);
  * retention inventory: anything else (`.DS_Store`, temp files, subdirectories)
  * is not a journal and is never read, charged, reclaimed or deleted.
  */
-export function journalEntrySuffix(name: string): string;
+
 export function journalEntrySuffix(name: string): string | undefined {
   return [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((suffix: string) => name.endsWith(suffix));
 }
