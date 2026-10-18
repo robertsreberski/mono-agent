@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { finalReplyText, isReplyPresentationTool } from "../../execution/pi/reply-text.js";
 
-const assistant = (text, ...names) => ({
+const assistant = (text: string, ...names: string[]) => ({
   role: "assistant",
   content: [
     { type: "text", text },
@@ -9,7 +9,7 @@ const assistant = (text, ...names) => ({
   ],
 });
 
-const select = (messages) => finalReplyText(messages, ["Unrelated narration", "Approve option A", "Saved."]);
+const select = (messages: ReturnType<typeof assistant>[]) => finalReplyText(messages, ["Unrelated narration", "Approve option A", "Saved."]);
 
 describe("final reply text", () => {
   it("keeps text before SuggestReplies followed by final text in order", () => {

@@ -1,3 +1,4 @@
+import type { Context, FauxResponseFactory, Model, ProviderHeaders, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import {
   createModels,
   fauxAssistantMessage,
@@ -10,14 +11,14 @@ import {
   withOpenCodeSessionHeaders,
 } from "../../execution/pi/provider-attribution.js";
 
-const CONTEXT = { messages: [{ role: "user", content: "hello", timestamp: 1 }] };
+const CONTEXT: Context = { messages: [{ role: "user", content: "hello", timestamp: 1 }] };
 
-function captureProvider(provider = "opencode-go", modelOverrides = {}, authHeaders) {
+function captureProvider(provider = "opencode-go", modelOverrides: Partial<Model<string>> = {}, authHeaders?: ProviderHeaders) {
   const faux = fauxProvider({ provider, models: [{ id: "deepseek-v4-pro" }] });
   const model = { ...faux.getModel(), ...modelOverrides };
-  const calls = [];
+  const calls: Array<SimpleStreamOptions | undefined> = [];
   faux.setResponses([
-    ...Array.from({ length: 4 }, () => (_context, options) => {
+    ...Array.from({ length: 4 }, (): FauxResponseFactory => (_context, options) => {
       calls.push(options);
       return fauxAssistantMessage([fauxText("ok")]);
     }),

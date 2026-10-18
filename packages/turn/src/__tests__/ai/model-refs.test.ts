@@ -1,3 +1,4 @@
+import type { RuntimeModelRef } from "../../contracts/runtime.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,7 +9,7 @@ import {
 } from "../../providers/pi/catalog.js";
 import { parseRuntimeModelReference } from "../../runtime/model-reference.js";
 
-const utf8 = (value) => new TextEncoder().encode(value).length;
+const utf8 = (value: string) => new TextEncoder().encode(value).length;
 
 /** The longest reference in Pi's built-in catalog: 77 bytes across all 1312 entries. */
 const LONGEST_BUILTIN = "cloudflare-ai-gateway:workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct";
@@ -40,7 +41,7 @@ const OLLAMA_168_BYTE_REFERENCE =
   "ollama:hf.co/unsloth/Qwen3.5-Coder-480B-A35B-Instruct-Thinking-2512-Turbo-Preview2-GGUF"
   + ":UD-Q4_K_XL-imatrix-calibration-v3-longcontext-262144-rope-scaled-linear-tuned-v2";
 
-const accepted = [
+const accepted: Array<[string, RuntimeModelRef]> = [
   ["anthropic:claude-opus-5", { provider: "anthropic", model: "claude-opus-5", reference: "anthropic:claude-opus-5" }],
   ["openai:gpt-5.5", { provider: "openai", model: "gpt-5.5", reference: "openai:gpt-5.5" }],
   ["opencode:claude-opus-5", { provider: "opencode", model: "claude-opus-5", reference: "opencode:claude-opus-5" }],
@@ -274,7 +275,7 @@ describe("parseRuntimeModelReference bounds what it accepts", () => {
         provider,
         reasoning: true,
       });
-      expect(reasoningLevelsForPiModel(model)).toEqual(levels);
+      expect(reasoningLevelsForPiModel(model!)).toEqual(levels);
     }
   });
 });

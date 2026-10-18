@@ -1,3 +1,4 @@
+import type { OAuthAuth, OAuthCredential } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const piMocks = vi.hoisted(() => ({ builtinProviders: vi.fn() }));
@@ -14,9 +15,9 @@ const {
 } = await import("../../providers/pi/oauth-compat.js");
 
 /** The stored credential shape mono-agent keeps in auth.json. */
-function credential(overrides = {}) {
+function credential(overrides: Partial<OAuthCredential> = {}) {
   return {
-    type: "oauth",
+    type: "oauth" as const,
     access: "access-token",
     refresh: "refresh-token",
     expires: 4_200_000_000_000,
@@ -75,7 +76,7 @@ describe("resolveOAuthApiKey", () => {
 
   it("refreshes only once the credential has actually expired", async () => {
     const refreshed = credential({ access: "fresh-access", expires: Date.now() + 3_600_000 });
-    const refresh = vi.fn(async () => refreshed);
+    const refresh = vi.fn<OAuthAuth["refresh"]>(async () => refreshed);
     const toAuth = vi.fn(async (cred) => ({ apiKey: cred.access }));
     piMocks.builtinProviders.mockReturnValue(providers({ refresh, toAuth }));
     resetPiProviderIndexForTests();
@@ -85,9 +86,9 @@ describe("resolveOAuthApiKey", () => {
     });
 
     expect(refresh).toHaveBeenCalledOnce();
-    expect(refresh.mock.calls[0][0]).toEqual(expect.objectContaining({ access: "access-token" }));
-    expect(refresh.mock.calls[0][1]).toBeInstanceOf(AbortSignal);
-    expect(refresh.mock.calls[0][1].aborted).toBe(false);
+    expect(refresh.mock.calls[0]![0]).toEqual(expect.objectContaining({ access: "access-token" }));
+    expect(refresh.mock.calls[0]![1]).toBeInstanceOf(AbortSignal);
+    expect(refresh.mock.calls[0]![1].aborted).toBe(false);
     expect(result?.apiKey).toBe("fresh-access");
     // Pure: the refreshed credential comes back for pi-auth.js to persist.
     expect(result?.newCredentials).toBe(refreshed);

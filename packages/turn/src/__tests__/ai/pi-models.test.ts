@@ -28,11 +28,11 @@ describe("Pi 1.2.0 native model integration", () => {
     // Pi 0.99.2 does not expose disabled effort for GPT-6.1 Sol.
     ["openai", "gpt-6.1-sol", 272_000, ["low", "medium", "high", "xhigh", "max"], 2, 10],
     ["openai-codex", "gpt-6.1-sol", 272_000, ["minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],
-  ];
+  ] as const;
 
   for (const [provider, model, contextWindow, levels, input, output] of rows) {
     it(`uses one upstream ${provider}:${model} row for listing, resolution and pricing`, () => {
-      const upstream = getBuiltinModel(provider, model);
+      const upstream = (getBuiltinModel as (provider: string, model: string) => import("@earendil-works/pi-ai").Model<string>)(provider, model);
       expect(upstream).toBeDefined();
       expect(getBuiltinModels(provider).filter((row) => row.id === model)).toHaveLength(1);
       const listed = listPiBuiltinModels(provider).filter((row) => row.id === model);
@@ -77,7 +77,7 @@ describe("Pi 1.2.0 native model integration", () => {
   });
 
   it("honors Pi's >272K request tier for the two Codex models", () => {
-    for (const [model, input, output] of [["gpt-6-sol", 4, 15], ["gpt-6-luna", 0.2, 0.75]]) {
+    for (const [model, input, output] of [["gpt-6-sol", 4, 15], ["gpt-6-luna", 0.2, 0.75]] as const) {
       const upstream = getBuiltinModel("openai-codex", model);
       expect(upstream.cost.tiers).toMatchObject([{ inputTokensAbove: 272_000, input, output }]);
       expect(estimateCost({ model: `openai-codex:${model}`, inputTokens: 1_000_000, outputTokens: 1_000_000 }))

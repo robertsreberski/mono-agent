@@ -1,3 +1,4 @@
+import type { PiWarning } from "../../execution/pi/types.js";
 import { describe, expect, it, vi } from "vitest";
 import { emptyReplyFinalizationPrompt, runEmptyReplyRetry, shouldRetryEmptyReply } from "../../execution/pi/empty-reply.js";
 
@@ -23,7 +24,7 @@ describe("empty reply finalization", () => {
 
   it("disables and restores tools around exactly one prompt", async () => {
     const h = harness();
-    const warnings = [];
+    const warnings: PiWarning[] = [];
     expect(await runEmptyReplyRetry({ harness: h, runtimeWarnings: warnings })).toEqual({ attempted: true });
     expect(h.setActiveTools.mock.calls).toEqual([[[]], [["Read", "SuggestReplies"]]]);
     expect(h.prompt).toHaveBeenCalledExactlyOnceWith(emptyReplyFinalizationPrompt());

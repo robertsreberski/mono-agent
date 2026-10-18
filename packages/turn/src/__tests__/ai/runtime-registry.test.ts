@@ -1,3 +1,4 @@
+import type { RuntimeModelRef } from "../../contracts/runtime.js";
 import ts from "typescript";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -17,7 +18,7 @@ describe("AI runtime bridge registry", () => {
       supports: expect.any(Function),
       capabilities: expect.any(Function),
     });
-    expect(descriptors[0].capabilities()).toEqual(runtimeCapabilities());
+    expect(descriptors[0]!.capabilities()).toEqual(runtimeCapabilities());
   });
 
   it("resolves Pi to the engine turn adapter", async () => {
@@ -34,7 +35,7 @@ describe("AI runtime bridge registry", () => {
     vi.doMock("../../execution/pi/run.js", load);
     try {
       for (const resolve of [resolveEngineTurnAdapter]) {
-        await expect(resolve({ model: "x", reference: "missing:x" })).rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+        await expect(resolve({ model: "x", reference: "missing:x" } as RuntimeModelRef)).rejects.toThrow("unsupported model reference: expected <provider>:<model>");
       }
       expect(load).not.toHaveBeenCalled();
     } finally { vi.doUnmock("../../execution/pi/run.js"); }
@@ -80,7 +81,7 @@ it.each([
   { provider: "faux", model: "x", reference: "different:x" },
 ])("preserves malformed-reference rejection for the canonical resolver (%j)", async (ref) => {
   for (const resolver of [resolveEngineTurnAdapter]) {
-    await expect(resolver(ref)).rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+    await expect(resolver(ref as RuntimeModelRef)).rejects.toThrow("unsupported model reference: expected <provider>:<model>");
   }
 });
 

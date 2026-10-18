@@ -1,15 +1,16 @@
+import type { Context, Model } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
-const context = { systemPrompt: "test", messages: [{ role: "user", content: "hello", timestamp: 1 }] };
+const context: Context = { systemPrompt: "test", messages: [{ role: "user", content: "hello", timestamp: 1 }] };
 
-async function capturedRequest(model, apiKey) {
-  let captured;
-  const result = await builtinModels().streamSimple(model, context, {
+async function capturedRequest(model: Model<string> | undefined, apiKey: string) {
+  let captured: { headers: Headers; body: { model: string } } | undefined;
+  const result = await builtinModels().streamSimple(model!, context, {
     apiKey,
     maxRetries: 0,
     fetch: async (_url, init) => {
-      captured = { headers: new Headers(init.headers), body: JSON.parse(init.body) };
+      captured = { headers: new Headers(init!.headers), body: JSON.parse(init!.body as string) };
       // Intercept Pi's real transport before network; synthetic credentials only.
       return new Response(JSON.stringify({ error: { type: "test_error", message: "intercepted" } }),
         { status: 400, headers: { "content-type": "application/json" } });
@@ -17,7 +18,7 @@ async function capturedRequest(model, apiKey) {
   }).result();
   expect(result.stopReason).toBe("error");
   expect(captured).toBeDefined();
-  return captured;
+  return captured!;
 }
 
 describe("Pi 0.99.2 Anthropic OAuth transport", () => {

@@ -1,3 +1,4 @@
+import type { RuntimeSubagentRunRequest } from "../../contracts/runtime.js";
 import { describe, expect, it } from "vitest";
 
 import { createToolContext } from "../../tools/shared/tool-context.js";
@@ -13,12 +14,12 @@ describe("thinkingLevelForEffort", () => {
 
 
 it("forwards the effective turn model and effort through the real Agent tool builder", async () => {
-  const requests = [];
+  const requests: RuntimeSubagentRunRequest[] = [];
   const model = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
   const built = await buildTurnTools({}, {
     // The Pi provider always hands buildTurnTools an explicit per-run context.
     options: { model, effort: "xhigh", allowedTools: ["Agent"], toolContext: createToolContext(),
-      subagents: { run: async (request) => { requests.push(request); return { text: "ok" }; } },
+      subagents: { run: async (request: RuntimeSubagentRunRequest) => { requests.push(request); return { text: "ok" }; } },
     },
     capabilities: {}, toolLimits: {}, runtime: {}, resolved: model,
     onEvent: () => {}, runtimeWarnings: [],

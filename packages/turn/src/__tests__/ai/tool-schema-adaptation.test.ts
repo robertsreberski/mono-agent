@@ -1,3 +1,5 @@
+import type { Model, SimpleStreamOptions, StreamFunction, SystemMessage, ToolCall } from "@earendil-works/pi-ai";
+type Schema = { properties: { kinds: { anyOf: Array<{ items: { type?: string } }> } } };
 import { expect, it } from "vitest";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
 import { streamSimple as openai } from "@earendil-works/pi-ai/api/openai-completions";
@@ -22,18 +24,18 @@ it("infers only schema nodes and preserves shared definitions and explicit types
 it.each(["openai-completions", "google-generative-ai"])("real %s payload contains missing enum items type", async (api) => {
   const tools = adaptRequestTools([tool], api);
   const context = normalizeContext({ tools: tools.map(toToolDeclaration), messages: [{ role: "user", content: "Find a fictional record", timestamp: 0 }] });
-  let payload;
-  const model = { api, provider: api === "openai-completions" ? "moonshot" : "google", id: "fictional-model", baseUrl: "https://fictional.invalid/v1", reasoning: false, input: ["text"],
-    contextWindow: 200000, maxTokens: 2048, compat: { supportsStrictMode: true }, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-  const stream = (api === "openai-completions" ? openai : google)(model, context, {
-    apiKey: "fictional-test-key", maxRetries: 0, onPayload: (value) => { payload = value; throw new Error("Captured before network"); },
+  let payload: { tools: Array<{ function: { parameters: Schema } }>; config: { tools: Array<{ functionDeclarations: Array<{ parametersJsonSchema: Schema }> }> } } | undefined;
+  const model: Model<string> = { api, provider: api === "openai-completions" ? "moonshot" : "google", id: "fictional-model", baseUrl: "https://fictional.invalid/v1", reasoning: false, input: ["text"],
+    contextWindow: 200000, maxTokens: 2048, compat: { supportsStrictMode: true }, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as Model<string>;
+  const stream = ((api === "openai-completions" ? openai : google) as StreamFunction<string, SimpleStreamOptions>)(model, context, {
+    apiKey: "fictional-test-key", maxRetries: 0, onPayload: (value) => { payload = value as typeof payload; throw new Error("Captured before network"); },
     ...(api === "openai-completions" ? { fetch: () => { throw new Error("Network forbidden"); } } : {}),
   });
   const response = await stream.result();
   expect(response.errorMessage).toContain("Captured before network");
-  const schema = api === "openai-completions" ? payload.tools[0].function.parameters : payload.config.tools[0].functionDeclarations[0].parametersJsonSchema;
-  expect(schema.properties.kinds.anyOf[0].items.type).toBe("string");
-  expect(parameters.properties.kinds.anyOf[0].items.type).toBeUndefined();
+  const schema = api === "openai-completions" ? payload!.tools[0]!.function.parameters : payload!.config.tools[0]!.functionDeclarations[0]!.parametersJsonSchema;
+  expect(schema.properties.kinds.anyOf[0]!.items.type).toBe("string");
+  expect((parameters.properties.kinds.anyOf[0]!.items as { type?: string }).type).toBeUndefined();
 });
 
 it("keeps reference, explicit type and heterogeneous union semantics", () => {
@@ -52,14 +54,14 @@ it("memoizes serialization clones without changing original validation or coerci
     lookup: { properties: { code: { enum: ["x"] } } }, choice: { enum: [1, 2] } } } };
   const tools = [original];
   const args = { lookup: "accepted without an object type", choice: 1 };
-  const call = { type: "toolCall", name: original.name, id: "fictional", arguments: args };
+  const call: ToolCall = { type: "toolCall", name: original.name, id: "fictional", arguments: args };
   const before = validateToolArguments(original, call);
   const context = normalizeContext({ tools: tools.map(toToolDeclaration), messages: [] });
   const adapted = adaptProviderContext(context, tools, "openai-completions");
   expect(adaptRequestTools(tools, "openai-completions")).toBe(adaptRequestTools(tools, "openai-completions"));
   expect(adaptRequestTools(tools, "google-generative-ai")).not.toBe(adaptRequestTools(tools, "openai-completions"));
   expect(adapted.messages[0].toolsAdded[0].parameters.properties.lookup.type).toBe("object");
-  expect(context.messages[0].toolsAdded[0].parameters.properties.lookup.type).toBeUndefined();
+  expect(((context.messages[0] as SystemMessage).toolsAdded![0]!.parameters as { properties: { lookup: { type?: string } } }).properties.lookup.type).toBeUndefined();
   expect(validateToolArguments(original, call)).toEqual(before);
   expect(args).toEqual({ lookup: "accepted without an object type", choice: 1 });
   expect(() => validateToolArguments(original, { ...call, arguments: { lookup: "accepted", choice: "1" } })).toThrow();

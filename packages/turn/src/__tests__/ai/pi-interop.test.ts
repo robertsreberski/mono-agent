@@ -1,3 +1,4 @@
+import type { PiOAuthLoginCallbacks } from "../../providers/pi/catalog.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const piMocks = vi.hoisted(() => ({
@@ -28,7 +29,7 @@ vi.mock("../../providers/pi/oauth-compat.js", () => ({
   getPiOAuthAuth: piMocks.getPiOAuthAuth,
   // The callbacks -> AuthInteraction bridge is covered by its own unit tests;
   // here it stays identity-ish so login assertions still see the callbacks.
-  toAuthInteraction: (callbacks) => callbacks,
+  toAuthInteraction: (callbacks: PiOAuthLoginCallbacks) => callbacks,
 }));
 
 import {
@@ -51,7 +52,7 @@ const rawModel = {
   baseUrl: "https://provider.example/v1",
   reasoning: true,
   thinkingLevelMap: { off: "none" },
-  input: ["text"],
+  input: ["text"] as Array<"text" | "image">,
   cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2 },
   contextWindow: 128_000,
   maxTokens: 16_384,
@@ -78,9 +79,9 @@ describe("Pi interoperability facade", () => {
     expect(listed[0]).not.toBe(rawModel);
     expect(selected).not.toBe(rawModel);
 
-    listed[0].cost.input = 999;
-    listed[0].input.push("image");
-    selected.compat.supportsStore = true;
+    listed[0]!.cost.input = 999;
+    listed[0]!.input.push("image");
+    selected!.compat!.supportsStore = true;
 
     expect(rawModel.cost.input).toBe(1);
     expect(rawModel.input).toEqual(["text"]);
@@ -111,7 +112,7 @@ describe("Pi interoperability facade", () => {
         metadata: { account: "original" },
       },
     };
-    let delegatedCredentials;
+    let delegatedCredentials: typeof credentials | undefined;
     piMocks.resolveOAuthApiKey.mockImplementation(async (_providerId, received) => {
       delegatedCredentials = received;
       received["openai-codex"].access = "access-refreshed";
@@ -137,8 +138,8 @@ describe("Pi interoperability facade", () => {
       }),
     });
 
-    result.newCredentials.metadata.account = "consumer";
-    expect(delegatedCredentials["openai-codex"].metadata.account).toBe("delegated");
+    result!.newCredentials.metadata.account = "consumer";
+    expect(delegatedCredentials!["openai-codex"].metadata.account).toBe("delegated");
   });
 
   it("preserves a null OAuth resolution and propagates refresh failures", async () => {
@@ -156,7 +157,7 @@ describe("Pi interoperability facade", () => {
       expires: 42,
       metadata: { account: "original" },
     };
-    const login = vi.fn(async () => returnedCredentials);
+    const login = vi.fn<(callbacks: PiOAuthLoginCallbacks) => Promise<typeof returnedCredentials>>(async () => returnedCredentials);
     piMocks.getPiOAuthAuth.mockReturnValue({ login });
     const callbacks = {
       onAuth: vi.fn(),
@@ -168,8 +169,8 @@ describe("Pi interoperability facade", () => {
     const result = await loginPiOAuth("openai-codex", callbacks);
 
     expect(login).toHaveBeenCalledOnce();
-    expect(login.mock.calls[0][0]).toEqual(callbacks);
-    expect(login.mock.calls[0][0]).not.toBe(callbacks);
+    expect(login.mock.calls[0]![0]).toEqual(callbacks);
+    expect(login.mock.calls[0]![0]).not.toBe(callbacks);
     expect(result).toEqual(returnedCredentials);
     expect(result).not.toBe(returnedCredentials);
 
@@ -179,12 +180,12 @@ describe("Pi interoperability facade", () => {
 
   it("rejects unavailable providers and missing required callbacks", async () => {
     piMocks.getPiOAuthAuth.mockReturnValueOnce(undefined);
-    await expect(loginPiOAuth("missing", {})).rejects.toThrow(
+    await expect(loginPiOAuth("missing", {} as PiOAuthLoginCallbacks)).rejects.toThrow(
       "Pi OAuth provider is unavailable: missing",
     );
 
     piMocks.getPiOAuthAuth.mockReturnValueOnce({ login: vi.fn() });
-    await expect(loginPiOAuth("openai-codex", {})).rejects.toThrow(
+    await expect(loginPiOAuth("openai-codex", {} as PiOAuthLoginCallbacks)).rejects.toThrow(
       "loginPiOAuth requires callbacks.onAuth()",
     );
   });
@@ -253,7 +254,7 @@ describe("Pi interoperability facade", () => {
   it("requires a stable callback and passes it to both OpenAI OAuth facades", async () => {
     const interaction = { prompt: vi.fn(), notify: vi.fn() };
     await expect(loginPiProviderAuth("openai", "oauth", interaction)).rejects.toThrow(/installation device ID/u);
-    await expect(loginPiOAuth("openai", {})).rejects.toThrow(/installation device ID/u);
+    await expect(loginPiOAuth("openai", {} as PiOAuthLoginCallbacks)).rejects.toThrow(/installation device ID/u);
     const getDeviceId = vi.fn(() => "3e53b686-a244-45b6-8267-4dd9e6dce936");
     const login = vi.fn(async () => ({ type: "oauth", access: "access", refresh: "refresh", expires: 1, clientId: "issued" }));
     piMocks.builtinModels.mockReturnValueOnce({ login });
@@ -262,7 +263,7 @@ describe("Pi interoperability facade", () => {
     expect(login).toHaveBeenCalledWith("openai", "oauth", expect.any(Object), { getDeviceId });
     const oauthLogin = vi.fn(async () => credentials);
     piMocks.getPiOAuthAuth.mockReturnValueOnce({ login: oauthLogin });
-    await loginPiOAuth("openai", { onAuth() {}, onDeviceCode() {}, onPrompt() {}, onSelect() {} }, { getDeviceId });
+    await loginPiOAuth("openai", { onAuth() {}, onDeviceCode() {}, onPrompt() {}, onSelect() {} } as unknown as PiOAuthLoginCallbacks, { getDeviceId });
     expect(oauthLogin).toHaveBeenCalledWith(expect.any(Object), { getDeviceId });
   });
 
@@ -279,7 +280,7 @@ describe("Pi interoperability facade", () => {
   });
 
   it("runs generic provider login against only an in-memory credential store", async () => {
-    let suppliedOptions;
+    let suppliedOptions: { credentials: unknown } | undefined;
     piMocks.builtinModels.mockImplementationOnce((options) => {
       suppliedOptions = options;
       return {
@@ -297,7 +298,7 @@ describe("Pi interoperability facade", () => {
 
     expect(result).toEqual({ type: "api_key", key: "credential" });
     expect(notify).toHaveBeenCalledWith({ type: "progress", message: "Waiting" });
-    expect(suppliedOptions.credentials).toBeDefined();
+    expect(suppliedOptions!.credentials).toBeDefined();
   });
 
   describe("pi catalog reads", () => {
@@ -311,11 +312,11 @@ describe("Pi interoperability facade", () => {
       expect(piMocks.getBuiltinModels).toHaveBeenCalledWith("provider-1");
 
       // Mutating the snapshot never touches the shared upstream row.
-      listed[0].cost.input = 999;
-      listed[0].input.push("video");
+      listed[0]!.cost.input = 999;
+      listed[0]!.input.push("video" as "image");
       expect(listPiBuiltinModels("provider-1")[0]).toMatchObject({
         cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2 },
-        input: ["text"],
+        input: ["text"] as Array<"text" | "image">,
       });
     });
 
@@ -333,7 +334,7 @@ describe("Pi interoperability facade", () => {
     it("leaves unrelated providers untouched", () => {
       piMocks.getBuiltinModels.mockReturnValue([rawModel]);
       expect(listPiBuiltinModels("provider-1")).toHaveLength(1);
-      expect(listPiBuiltinModels("provider-1")[0].id).toBe("model-1");
+      expect(listPiBuiltinModels("provider-1")[0]!.id).toBe("model-1");
     });
   });
 });

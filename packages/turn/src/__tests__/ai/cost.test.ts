@@ -1,3 +1,5 @@
+import type { Model } from "@earendil-works/pi-ai";
+import type { Mock } from "vitest";
 // Pricing precedence for ai/cost.js:
 //   custom (resolveCustomPricing) -> pi catalog (getBuiltinModel) -> unknown.
 //
@@ -12,13 +14,13 @@ vi.mock("@earendil-works/pi-ai/providers/all", () => ({ getBuiltinModel: vi.fn()
 // The REAL catalog fn (importActual bypasses the mock above). Used as the mock's
 // default so the pi-catalog level runs against real data; individual tests force
 // undefined to drive the unknown level.
-const { getBuiltinModel: realGetBuiltinModel } = await vi.importActual("@earendil-works/pi-ai/providers/all");
-const { getBuiltinModel } = await import("@earendil-works/pi-ai/providers/all");
+const { getBuiltinModel: realGetBuiltinModel } = await vi.importActual<typeof import("@earendil-works/pi-ai/providers/all")>("@earendil-works/pi-ai/providers/all");
+const { getBuiltinModel } = await import("@earendil-works/pi-ai/providers/all") as unknown as { getBuiltinModel: Mock<(provider: string, id: string) => Model<string> | undefined> };
 const { resolvePricing, estimateCost } = await import("../../telemetry/cost.js");
 
 beforeEach(() => {
   getBuiltinModel.mockReset();
-  getBuiltinModel.mockImplementation(realGetBuiltinModel);
+  getBuiltinModel.mockImplementation(realGetBuiltinModel as (provider: string, id: string) => Model<string> | undefined);
 });
 
 describe("resolvePricing precedence", () => {

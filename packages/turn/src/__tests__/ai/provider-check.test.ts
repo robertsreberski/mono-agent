@@ -1,3 +1,8 @@
+import type { AssistantMessage, FauxResponseFactory } from "@earendil-works/pi-ai";
+import type { RuntimeEvent } from "../../contracts/events.js";
+import type { PiWarning } from "../../execution/pi/types.js";
+type ProbeOptions = { providerCheckAuthContext: { env(name: string): Promise<string | undefined> }; messages: unknown[] };
+type ProbeExecute = (system: string, options?: {}) => Promise<{ text: string; failureKind: null }>;
 import {
   createModels,
   fauxAssistantMessage,
@@ -12,7 +17,7 @@ import { classifyProviderCheckFailure, runPiProviderCheck } from "../../provider
 describe("provider check", () => {
   it("runs one isolated target request with bounded output and the supplied auth context", async () => {
     const resolver = vi.fn();
-    const execute = vi.fn(async () => ({ text: "OK", failureKind: null }));
+    const execute = vi.fn<ProbeExecute>(async () => ({ text: "OK", failureKind: null }));
     const outcome = await runPiProviderCheck({
       model: { provider: "fixture", model: "cheap", reference: "fixture:cheap" },
       resolvePiApiKey: resolver,
@@ -22,7 +27,7 @@ describe("provider check", () => {
 
     expect(outcome).toEqual({ state: "passed", code: "passed", message: "Provider request succeeded." });
     expect(execute).toHaveBeenCalledOnce();
-    const [system, options] = execute.mock.calls[0];
+    const [system, options] = execute.mock.calls[0]! as [string, ProbeOptions];
     expect(system).toBe("Provider connectivity check. Reply OK.");
     expect(options).toMatchObject({
       model: { provider: "fixture", model: "cheap", reference: "fixture:cheap" },
@@ -43,7 +48,7 @@ describe("provider check", () => {
   });
 
   it("admits only provider-construction seams into the isolated runtime", async () => {
-    const execute = vi.fn(async () => ({ text: "OK", failureKind: null }));
+    const execute = vi.fn<ProbeExecute>(async () => ({ text: "OK", failureKind: null }));
     const supported = {
       customProvider: { id: "fixture" },
       customModel: { provider_id: "fixture", model_name: "cheap" },
@@ -73,7 +78,7 @@ describe("provider check", () => {
       },
     });
 
-    const options = execute.mock.calls[0][1];
+    const options = execute.mock.calls[0]![1] as ProbeOptions;
     expect(options).toMatchObject(supported);
     expect(options).not.toHaveProperty("sessionId");
     expect(options).not.toHaveProperty("providerSessionId");
@@ -89,17 +94,17 @@ describe("provider check", () => {
     expect(options.messages).toEqual([{ role: "user", content: "OK" }]);
   });
 
-  function transportFixture(response, { cancel, contextWindow = 4096 } = {}) {
+  function transportFixture(response: AssistantMessage, { cancel, contextWindow = 4096 }: { cancel?: AbortController; contextWindow?: number } = {}) {
     const faux = fauxProvider({
       provider: "provider-check-fixture",
       models: [{ id: "fixture", maxTokens: 64, contextWindow }],
-      tokensPerSecond: undefined,
+      tokensPerSecond: undefined as unknown as number,
     });
     const models = createModels();
     models.setProvider(faux.provider);
     const model = faux.getModel("fixture");
     if (!model) throw new Error("faux model missing");
-    const dispatch = vi.fn((context, _options, _state, requestModel) => {
+    const dispatch = vi.fn<FauxResponseFactory>((context, _options, _state, requestModel) => {
       // pi-ai 0.86.0 folds request tools into the transcript's leading system
       // message: replay them with getCurrentTools(), not context.tools.
       expect(getCurrentTools(context.messages)).toEqual([]);
@@ -120,13 +125,13 @@ describe("provider check", () => {
     };
   }
 
-  it.each(["stop", "length"])("accepts a real %s terminal response at the four-token cap", async (stopReason) => {
+  it.each(["stop", "length"] as const)("accepts a real %s terminal response at the four-token cap", async (stopReason) => {
     // Faux estimates ceil(text.length / 4): exactly four output tokens.
     const fixture = transportFixture(fauxAssistantMessage("four token reply", { stopReason }));
     const outcome = await runPiProviderCheck(fixture.input);
     expect(outcome).toEqual({ state: "passed", code: "passed", message: "Provider request succeeded." });
     expect(fixture.faux.state.callCount).toBe(1);
-    expect(fixture.dispatch.mock.calls[0][3].maxTokens).toBe(4);
+    expect(fixture.dispatch.mock.calls[0]![3].maxTokens).toBe(4);
     expect(fixture.model.maxTokens).toBe(64); // No mutation of the shared catalog.
   });
 
@@ -145,7 +150,7 @@ describe("provider check", () => {
     expect(outcome.state).toBe(state);
     expect(JSON.stringify(outcome)).not.toContain("RAW_PROVIDER_SECRET_SENTINEL");
     expect(fixture.faux.state.callCount).toBe(1);
-    expect(fixture.dispatch.mock.calls[0][3].maxTokens).toBe(4);
+    expect(fixture.dispatch.mock.calls[0]![3].maxTokens).toBe(4);
   });
 
   it("keeps a premature length stop below the probe cap inconclusive", async () => {
@@ -170,10 +175,10 @@ describe("provider check", () => {
       allowedTools: [], maxTurns: 1, piMaxRetries: 0, effort: "none",
     });
     expect(outcome.failureKind).toBe("context_limit");
-    expect(fixture.dispatch.mock.calls[0][3].maxTokens).toBe(64);
+    expect(fixture.dispatch.mock.calls[0]![3].maxTokens).toBe(64);
     expect(fixture.faux.state.callCount).toBe(1); // Recovery evaluates headroom, but a 64-token model cannot summarize usefully.
-    expect(outcome.runtimeWarnings.some((warning) => warning.warning_kind === "context_compaction_insufficient_headroom")).toBe(true);
-    expect(outcome.events.some((event) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom")).toBe(true);
+    expect(outcome.runtimeWarnings.some((warning: PiWarning) => warning.warning_kind === "context_compaction_insufficient_headroom")).toBe(true);
+    expect(outcome.events.some((event: RuntimeEvent) => event.type === "context_compaction" && event.reason === "insufficient_summary_headroom")).toBe(true);
   });
 
   it("gives cancellation precedence over a real length response", async () => {

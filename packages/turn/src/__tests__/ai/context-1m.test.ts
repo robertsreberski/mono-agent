@@ -1,3 +1,5 @@
+import type { Model, Models } from "@earendil-works/pi-ai";
+import type { RuntimeEvent } from "../../contracts/events.js";
 import { describe, expect, it, vi } from "vitest";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import { CONTEXT_1M_TOKENS, supportsPiContext1M, withContext1MModels } from "../../providers/pi/context-1m.js";
@@ -9,7 +11,7 @@ import { shouldCompact } from "../../engine/compaction-kit/compaction.js";
 import { effectiveContextWindow, resolveLiveCompactionPolicy, piCompactionSettings } from "../../execution/pi/compaction/compaction-driver.js";
 
 const reference = "openai-codex:gpt-6.1-sol";
-const resolved = { provider: "openai-codex", model: "gpt-6.1-sol", reference };
+const resolved = { provider: "openai-codex", model: "gpt-6.1-sol", reference } as const;
 
 describe("GPT 1M context policy", () => {
   it("fails closed outside the inferred built-in long-input catalog", () => {
@@ -36,9 +38,9 @@ describe("GPT 1M context policy", () => {
   it("agrees at collection lookup and dispatch without leaking to another route", () => {
     const model = getBuiltinModel(resolved.provider, resolved.model);
     const other = getBuiltinModel("openai", "gpt-6.1-sol");
-    const complete = vi.fn((selected) => selected.contextWindow);
+    const complete = vi.fn((selected: Model<string>) => selected.contextWindow);
     const collection = { getModel: () => model, complete, otherMethod() { return this; } };
-    const wrapped = withContext1MModels(collection, { [reference]: true });
+    const wrapped = withContext1MModels(collection as unknown as Models, { [reference]: true }) as unknown as typeof collection;
     expect(wrapped.getModel().contextWindow).toBe(CONTEXT_1M_TOKENS);
     expect(wrapped.complete(model)).toBe(CONTEXT_1M_TOKENS);
     expect(wrapped.complete(other)).toBe(272_000);
@@ -49,7 +51,7 @@ describe("GPT 1M context policy", () => {
   it("composes the declared window with global correction", () => {
     const runtime = resolvePiRuntimeModel(resolved, { context1MModels: { [reference]: true } });
     const harness = { getModel: () => runtime.model };
-    expect(effectiveContextWindow(harness, runtime, resolved)).toBe(CONTEXT_1M_TOKENS);
+    expect((effectiveContextWindow as (harness: unknown, runtime: unknown, resolved: unknown) => number)(harness, runtime, resolved)).toBe(CONTEXT_1M_TOKENS);
     expect(effectiveContextWindow(harness, runtime, resolved, 500_000)).toBe(500_000);
     expect(effectiveContextWindow(harness, runtime, resolved, 1_200_000)).toBe(1_200_000);
   });
@@ -61,7 +63,7 @@ describe("native Pi 1M context", () => {
     const faux = fauxProvider({ provider: resolved.provider, models: [{ id: resolved.model, contextWindow: 272_000 }] });
     const models = createModels();
     models.setProvider(faux.provider);
-    const dispatched = [];
+    const dispatched: number[] = [];
     faux.setResponses([true, false, true].map(() => (_context, _options, _state, model) => {
       dispatched.push(model.contextWindow);
       return fauxAssistantMessage(fauxText("synthetic answer"));
@@ -69,16 +71,16 @@ describe("native Pi 1M context", () => {
     let sessionId;
     try {
       for (const context1M of [true, false, true]) {
-        const events = [];
+        const events: RuntimeEvent[] = [];
         const result = await generateEngineTurnResponse("synthetic instructions", {
           model: resolved, piResolvedModel: faux.getModel(), piResolvedModels: models,
           context1MModels: { [reference]: context1M }, effort: "none", allowedTools: [],
           sessionKeepAlive: true, ...(sessionId ? { sessionId } : {}),
-          messages: [{ role: "user", content: "synthetic question" }], onEvent: (event) => events.push(event),
+          messages: [{ role: "user", content: "synthetic question" }], onEvent: (event: RuntimeEvent) => events.push(event),
         });
         expect(result.error).toBeNull();
         sessionId = result.sessionId;
-        expect(events.find((event) => event.type === "context_usage")?.contextWindow).toBe(context1M ? CONTEXT_1M_TOKENS : 272_000);
+        expect((events.find((event) => event.type === "context_usage") as { contextWindow: number } | undefined)?.contextWindow).toBe(context1M ? CONTEXT_1M_TOKENS : 272_000);
       }
       expect(dispatched).toEqual([CONTEXT_1M_TOKENS, 272_000, CONTEXT_1M_TOKENS]);
       expect(faux.getModel().contextWindow).toBe(272_000);

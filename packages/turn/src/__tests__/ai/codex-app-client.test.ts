@@ -195,7 +195,7 @@ describe("Codex app-server client", () => {
     const segmentedEnvSecret = "fixture-segmented-env-sensitive-value-1234567890";
     const compactApiKeySecret = "fixture-compact-apikey-sensitive-value-1234567890";
     const rawPrivateKeySecret = "fixture-raw-private-key-value-1234567890";
-    const notifications = [];
+    const notifications: Array<{ params: { message: string } }> = [];
     const childSource = `
       const readline = require("node:readline");
       const rl = readline.createInterface({ input: process.stdin });
@@ -224,7 +224,7 @@ describe("Codex app-server client", () => {
     try {
       await expect(client.request("probe", {})).resolves.toEqual({ ok: true });
       expect(notifications).toHaveLength(1);
-      const message = notifications[0].params.message;
+      const message = notifications[0]!.params.message;
       expect(message).toContain("Malformed Codex app-server output: not-json [REDACTED]");
       expect(message).toContain("[truncated");
       expect(message).not.toContain(secret);
@@ -239,7 +239,7 @@ describe("Codex app-server client", () => {
   });
 
   it("warns instead of crashing the host when the app-server emits non-object JSON lines", async () => {
-    const notifications = [];
+    const notifications: Array<{ params: { message: string } }> = [];
     // `null` is the dangerous one: it parses cleanly, so it reaches the frame
     // dispatch, where a prototype lookup on it throws inside readline's `line`
     // listener and would take the host process down. Scalars and arrays are
@@ -388,7 +388,7 @@ describe("Codex app-server client", () => {
         killGraceMs: 500,
       });
       const originalKill = client.child.kill.bind(client.child);
-      const signals = [];
+      const signals: Array<NodeJS.Signals | number | undefined> = [];
       client.child.kill = vi.fn((signal) => {
         signals.push(signal);
         if (signal === "SIGTERM") {

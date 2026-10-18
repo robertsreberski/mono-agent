@@ -1,3 +1,4 @@
+import type { PiWarning } from "../../execution/pi/types.js";
 import { describe, expect, it } from "vitest";
 import {
   appendStructuredOutputInstruction,
@@ -31,7 +32,7 @@ describe("shouldRetryStructuredOutputFinalization (predicate table)", () => {
     maxTurnsHit: false,
   };
 
-  const cases = [
+  const cases: Array<[string, Parameters<typeof shouldRetryStructuredOutputFinalization>[0], boolean]> = [
     ["retries on an empty non-error turn with a schema", base, true],
     ["no schema → never retries", { ...base, outputSchema: null }, false],
     ["structured result already present → no retry", { ...base, structuredResult: { ok: true } }, false],
@@ -68,13 +69,13 @@ describe("structuredOutputRetryDiagnostics", () => {
 
 // A minimal harness double: records setActiveTools calls and prompts, lets a
 // test script the prompt to throw so the retry_failed warning path is exercised.
-function fakeHarness({ activeTools = [{ name: "Bash" }, { name: "StructuredOutput" }], promptThrows = null } = {}) {
-  const calls = { setActiveTools: [], prompts: [], waited: 0 };
+function fakeHarness({ activeTools = [{ name: "Bash" }, { name: "StructuredOutput" }], promptThrows = null }: { activeTools?: Array<{ name: string }>; promptThrows?: Error | null } = {}) {
+  const calls: { setActiveTools: string[][]; prompts: string[]; waited: number } = { setActiveTools: [], prompts: [], waited: 0 };
   return {
     calls,
     getActiveTools: () => activeTools,
-    setActiveTools: async (names) => { calls.setActiveTools.push(names); },
-    prompt: async (text) => {
+    setActiveTools: async (names: string[]) => { calls.setActiveTools.push(names); },
+    prompt: async (text: string) => {
       calls.prompts.push(text);
       if (promptThrows) throw promptThrows;
     },
@@ -85,7 +86,7 @@ function fakeHarness({ activeTools = [{ name: "Bash" }, { name: "StructuredOutpu
 describe("runStructuredOutputFinalizationRetry", () => {
   it("narrows to StructuredOutput, re-prompts once, restores the prior tools, and warns", async () => {
     const harness = fakeHarness();
-    const runtimeWarnings = [];
+    const runtimeWarnings: PiWarning[] = [];
     const structuredTool = { name: "StructuredOutput" };
 
     const out = await runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings });
@@ -112,7 +113,7 @@ describe("runStructuredOutputFinalizationRetry", () => {
 
   it("emits a retry_failed warning and still restores tools when the re-prompt throws", async () => {
     const harness = fakeHarness({ promptThrows: new Error("boom") });
-    const runtimeWarnings = [];
+    const runtimeWarnings: PiWarning[] = [];
     await runStructuredOutputFinalizationRetry({ harness, structuredTool: { name: "StructuredOutput" }, runtimeWarnings });
 
     expect(runtimeWarnings).toContainEqual({
