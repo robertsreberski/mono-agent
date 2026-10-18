@@ -1,3 +1,4 @@
+import { costAmount, knownCostAmount } from "./cost-wire.js";
 import { toolNameLeaf } from "@mono-agent/contracts";
 
 import type { WebMessagePart, WebRunActivity } from "./contracts.js";
@@ -24,17 +25,6 @@ export const isAskUserToolName = (toolName: string): boolean =>
  * reconciliation all arrive here. None of them is "this run has cost $0.00",
  * and printing one as if it were would be the console's own invention.
  */
-const reportableCost = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-
-/** The `usage_update` payload the store wraps in a telemetry part. */
-const usageCumulativeUsd = (data: unknown): number | undefined => {
-  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
-  const usage = data as Record<string, unknown>;
-  if (usage.type !== "usage_update") return undefined;
-  return reportableCost(usage.cumulativeUsd);
-};
-
 /**
  * What a running turn's card can say about itself, from its retained parts.
  *
@@ -52,7 +42,8 @@ const usageCumulativeUsd = (data: unknown): number | undefined => {
 export const runActivityFromParts = (parts: readonly WebMessagePart[]): WebRunActivity => {
   let toolCallCount = 0;
   let asking = false;
-  let cumulativeUsd: number | undefined;
+  let cumulativeUsd: number | null | undefined;
+  let knownCostUsd: number | undefined;
   for (const part of parts) {
     if (part.type === "tool-call") {
       toolCallCount += 1;
@@ -62,14 +53,16 @@ export const runActivityFromParts = (parts: readonly WebMessagePart[]): WebRunAc
     if (part.type === "telemetry") {
       // Last one wins: `cumulativeUsd` is cumulative, and the parts array is
       // append-ordered, so the newest reading is the run's total so far.
-      const cost = usageCumulativeUsd(part.data);
-      if (cost !== undefined) cumulativeUsd = cost;
+      if (part.event !== "usage_update") continue;
+      const cost = costAmount(part.data, "cumulativeUsd");
+      if (cost !== undefined) { cumulativeUsd = cost; knownCostUsd = cost === null ? knownCostAmount(part.data) : undefined; }
     }
   }
   return {
     toolCallCount,
     phase: asking ? "asking" : "working",
     ...(cumulativeUsd === undefined ? {} : { cumulativeUsd }),
+    ...(knownCostUsd === undefined ? {} : { knownCostUsd }),
   };
 };
 
@@ -89,4 +82,5 @@ export const sameRunActivity = (
     && right !== undefined
     && left.toolCallCount === right.toolCallCount
     && left.phase === right.phase
-    && left.cumulativeUsd === right.cumulativeUsd);
+    && left.cumulativeUsd === right.cumulativeUsd
+    && left.knownCostUsd === right.knownCostUsd);

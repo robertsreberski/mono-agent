@@ -334,3 +334,14 @@ pnpm --filter @mono-agent/observability run build
 pnpm --filter @mono-agent/observability run typecheck
 pnpm --filter @mono-agent/observability run test
 ```
+
+### Cost completeness
+
+An explicitly unknown run cost defeats older numeric fallback telemetry. Session
+`costUsd` and metrics `cost.totalUsd`/`averageUsdPerRun` are nullable; an aggregate
+containing unpriced work is unknown, not a partial total. `cost.knownUsd` and
+`runsWithUnknownCost` retain known spend and completeness separately; session
+rows use optional `knownCostUsd`. Fully priced output omits redundant subtotals.
+The CLI prints `unknown` with a separately labelled known-cost line. Missing
+observations and legacy numeric records retain their previous meaning;
+only an explicit null marks a total unknown.

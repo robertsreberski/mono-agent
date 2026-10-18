@@ -52,7 +52,7 @@ try {
   }
   // These are the frontend's existing pure server helpers, not a framework build.
   mkdirSync(join(fixture, "packages/web/src"), { recursive: true });
-  for (const file of ["mcp-app-document.ts", "effort-ladder.ts", "message-cost.ts"]) {
+  for (const file of ["mcp-app-document.ts", "effort-ladder.ts", "message-cost.ts", "cost-wire.ts"]) {
     cpSync(resolve(source, "../src", file), join(fixture, "packages/web/src", file));
   }
   const contracts = join(fixture, "packages/contracts/src");

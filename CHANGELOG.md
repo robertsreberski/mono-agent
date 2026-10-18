@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Keep totals unknown when any contributing cost is unpriced, and show known
+  spend separately, including unpriced runs without subagents (formerly $0.00).
+  Cost totals are now nullable across public contracts; strict TypeScript
+  callers must handle null. Upgrade agent/web binaries together. Older binaries
+  must not run against an upgraded state root; rollback requires restoring a
+  pre-upgrade backup.
+
 - Fix `@mono-agent/turn` declarations to include absent pricing, metrics,
   transcript, filesystem-change and session values, and accept supported
   omitted/defaulted arguments. Strict TypeScript callers may need new null or

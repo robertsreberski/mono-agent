@@ -60,6 +60,33 @@ describe("createThreadPersistence", () => {
     await deleteDatabase();
   });
 
+  it("writes marker-only unknown money and restores nullable internal amounts", async () => {
+    const active = thread("synthetic-unknown", "synthetic", { runState: { status: "running", activity: {
+      toolCallCount: 1, phase: "working", cumulativeUsd: null, knownCostUsd: 2,
+    } } });
+    const writer = createThreadPersistence();
+    await writer.save({ entries: [entry(active.id, { thread: active, etag: '"synthetic-unknown"', messages: [message("synthetic-message", [
+      { type: "subagent", toolCallId: "synthetic-call", name: "Synthetic helper", status: "complete", calls: [], costUsd: null, knownCostUsd: 2 },
+    ])] })], snapshot: snapshot() });
+    const raw = await new Promise<unknown>((resolve, reject) => {
+      const open = indexedDB.open(PERSISTENCE_DB_NAME);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const read = db.transaction("threads", "readonly").objectStore("threads").get(active.id);
+        read.onerror = () => { db.close(); reject(read.error); };
+        read.onsuccess = () => { db.close(); resolve(read.result); };
+      };
+    });
+    expect(raw).toMatchObject({ thread: { runState: { activity: { costUnknown: true, knownCostUsd: 2 } } },
+      messages: [{ parts: [{ costUnknown: true, knownCostUsd: 2 }] }] });
+    expect(JSON.stringify(raw)).not.toMatch(/"(?:costUsd|cumulativeUsd)":null/);
+    const restored = await createThreadPersistence().hydrate();
+    expect(restored?.threads[0]?.thread.runState.activity?.cumulativeUsd).toBeNull();
+    expect(restored?.threads[0]?.messages[0]?.parts[0]).toMatchObject({ costUsd: null, knownCostUsd: 2 });
+    expect(restored?.threads[0]?.etag).toBe('"synthetic-unknown"');
+  });
+
   it("does not write a transient manual compaction hint to device cache", async () => {
     const active = thread("alpha-thread", "alpha", { compaction: {
       status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z",

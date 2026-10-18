@@ -95,7 +95,8 @@ export function ProjectPage({
   const meta = [
     conversationCountLabel(project.conversationCount + (project.external === undefined ? 0 : 1)),
     `${String(project.runningCount)} running`,
-    ...(project.monthUsd === undefined ? [] : [`${formatUsd(project.monthUsd)} this month`]),
+    ...(project.monthCostUnknown === true || project.monthUsd === null ? ["cost unknown this month"]
+      : project.monthUsd === undefined ? [] : [`${formatUsd(project.monthUsd)} this month`]),
   ].join(" · ");
   const editSettings = (): void => {
     window.dispatchEvent(new CustomEvent("mono-agent:project-settings", {
@@ -151,6 +152,7 @@ export function ProjectPage({
           </span>
           <h1 className="project-name">{project.name}</h1>
           <p className="project-meta">{meta}</p>
+          {project.monthKnownUsd !== undefined && <p className="project-meta">Known cost {formatUsd(project.monthKnownUsd)} this month</p>}
         </div>
         <div className="project-context-card">
           <div className="project-context-head">

@@ -1,3 +1,4 @@
+import { costAmount, knownCostAmount } from "../../../src/cost-wire.js";
 import { type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
 
 import type { ProcessJobParentCall } from "../process-job-presentation";
@@ -231,10 +232,10 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
   const turns = group.turns.length;
   const turnWords = `${String(turns)} ${turns === 1 ? "turn" : "turns"}`;
   const kindWord = group.family === "peer" ? "peer agent" : "agent";
-  const cost = group.turns.reduce((sum, turn) => {
-    const value = turn.job.kind === "internal" ? turn.job.subagentProgress?.costUsd : undefined;
-    return typeof value === "number" && Number.isFinite(value) && value > 0 ? sum + value : sum;
-  }, 0);
+  const prices = group.turns.flatMap((turn) => turn.job.kind === "internal" && turn.job.subagentProgress !== undefined ? [turn.job.subagentProgress] : []);
+  const unknownCost = prices.some((progress) => costAmount(progress) === null);
+  const hasKnownCost = prices.some((progress) => typeof costAmount(progress) === "number" || knownCostAmount(progress) !== undefined);
+  const cost = prices.reduce((sum, progress) => sum + (costAmount(progress) ?? knownCostAmount(progress) ?? 0), 0);
   const profile = lead.kind === "internal" ? lead.subagentProgress?.profile : undefined;
   const showProfile = profile !== undefined && profile !== "Subagent" && !group.instanceId.includes(profile.toLowerCase());
   const titleId = `${ids}-title`;
@@ -348,7 +349,8 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
           {display.alerts.map((alert) => token(`alert-${alert}`, alert, "process-job-alert"))}
           {open ? <>
             {showProfile ? token("profile", profile) : null}
-            {cost > 0 ? token("cost", `${formatUsd(cost)} ${terminal ? "total" : "so far"}`) : null}
+            {unknownCost ? token("cost", `cost unknown${terminal ? "" : " so far"}`) : cost > 0 ? token("cost", `${formatUsd(cost)} ${terminal ? "total" : "so far"}`) : null}
+            {unknownCost && hasKnownCost ? token("known-cost", `Known cost ${formatUsd(cost)}`) : null}
             {token("since", `since ${clockTime(group.turns[0]?.job.timestamps.admittedAt) ?? ""}`)}
           </> : <>
             {display.notes.map((note) => token(`note-${note}`, note, "process-job-note"))}

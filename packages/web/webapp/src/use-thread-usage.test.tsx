@@ -43,12 +43,13 @@ describe("useThreadUsage", () => {
     const { result, rerender } = renderHook(({ current }) => useThreadUsage("fresh-thread-two", true, false, current),
       { initialProps: { current: detail } });
     await waitFor(() => expect(result.current.error).toBe(true));
-    expect(result.current.usage?.total).toMatchObject({ costUsd: 0, costPartial: true, tokensPartial: true });
+    expect(result.current.usage?.total).toMatchObject({ costUsd: null, knownCostUsd: 0, costPartial: true, tokensPartial: true });
     expect(conversationCacheHitPercent(result.current.usage?.total)).toBe("80%");
     const next = { ...detail!, messages: [{ role: "assistant", parts: [{ type: "telemetry", event: "usage_update",
       data: { cumulativeUsd: 1, tokens: { input: 5, output: 2 } } }] }] } as unknown as typeof detail;
     rerender({ current: next });
-    await waitFor(() => expect(result.current.usage?.total.costUsd).toBe(1));
+    await waitFor(() => expect(result.current.usage?.total.knownCostUsd).toBe(1));
+    expect(result.current.usage?.total.costUsd).toBeNull();
     expect(result.current.loading).toBe(false);
   });
 });

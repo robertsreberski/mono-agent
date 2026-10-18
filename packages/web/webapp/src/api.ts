@@ -1,3 +1,4 @@
+import { normalizeBrowserCosts } from "../../src/cost-wire.js";
 import { parseProviderUsageSnapshot } from "@mono-agent/contracts/provider-usage";
 import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
@@ -73,7 +74,9 @@ export class ApiError extends Error {
 const readJson = async <T>(response: Response): Promise<T> => {
   const text = await response.text();
   recordResponsePayload(response, text);
-  return JSON.parse(text) as T;
+  const parsed: T = JSON.parse(text);
+  normalizeBrowserCosts(parsed);
+  return parsed;
 };
 
 const readError = async (response: Response): Promise<ApiError> => {
@@ -387,7 +390,9 @@ const recordOf = (value: unknown): Record<string, unknown> | null =>
 const safeNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 function validUsageSlice(value: unknown): value is WebUsageSlice {
   const slice = recordOf(value);
-  if (slice === null || (slice.costUsd !== undefined && !safeNumber(slice.costUsd))
+  if (slice === null || (slice.costUsd !== undefined && slice.costUsd !== null && !safeNumber(slice.costUsd))
+    || (slice.knownCostUsd !== undefined && !safeNumber(slice.knownCostUsd))
+    || (slice.costUnknown !== undefined && slice.costUnknown !== true)
     || (slice.tokensPartial !== undefined && slice.tokensPartial !== true)
     || (slice.costPartial !== undefined && slice.costPartial !== true)) return false;
   if (slice.tokens === undefined) return true;
@@ -395,6 +400,7 @@ function validUsageSlice(value: unknown): value is WebUsageSlice {
   return tokens !== null && ["input", "cacheRead", "cacheWrite", "output"].every((key) => Number.isSafeInteger(tokens[key]) && Number(tokens[key]) >= 0);
 }
 export function parseThreadUsage(value: unknown): WebThreadUsage {
+  normalizeBrowserCosts(value);
   const usage = recordOf(value);
   const compaction = recordOf(usage?.compaction);
   if (usage === null || !validUsageSlice(usage.total)

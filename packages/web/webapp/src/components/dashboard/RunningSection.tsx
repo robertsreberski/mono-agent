@@ -1,3 +1,5 @@
+import { costAmount, knownCostAmount } from "../../../../src/cost-wire.js";
+import { formatUsd } from "../../usage";
 import { Fragment } from "react";
 import { Icon } from "../Icon";
 import type { AgentSummary, CatalogModel, ProjectSummary, ThreadSummary } from "../../types";
@@ -29,6 +31,8 @@ function RunningCard({
   readonly onOpen: (thread: ThreadSummary) => void;
 }) {
   const pending = runningCardPending(thread);
+  const activity = thread.runState.status === "running" ? thread.runState.activity : undefined;
+  const knownCost = costAmount(activity, "cumulativeUsd") === null ? knownCostAmount(activity) : undefined;
   // The card's OWN agent, never the selected one: fleet rows span agents.
   const route = resolveThreadRoute(thread, agent, catalogModels);
   // A project's conversations are not in the agent's list any more, so a card
@@ -62,6 +66,7 @@ function RunningCard({
             title={route.title}
           />
         </span>
+        {knownCost !== undefined && <span className="running-card-known-cost">Known cost {formatUsd(knownCost)}</span>}
       </span>
       <time className="running-card-time" dateTime={thread.updatedAt}>
         {relativeTime(thread.updatedAt)}
