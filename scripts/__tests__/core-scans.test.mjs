@@ -4,7 +4,6 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import config, { retainedEntries, retainedExports } from "../core-scans/knip.ts";
 import ts from "typescript";
 import { classifyCycles, cycleExceptions } from "../core-scans/cycle-policy.mjs";
-import { ownedPaths } from "../../packages/turn/scripts/staged-build.mjs";
 import { missingPackageEntryPoints, packages, root, run, scanArguments, summarize } from "../core-scans/run.mjs";
 
 const directories = [];
@@ -19,7 +18,7 @@ function runWith(kind, result, overrides = {}) {
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   const execute = vi.fn(() => ({ status: 0, stdout: "[]", stderr: "", ...result }));
-  return { code: run(kind, { execute, directory, checkBuild: () => [], sourceView: (action) => action(), exceptions: [], ...overrides }), execute, directory };
+  return { code: run(kind, { execute, directory, checkBuild: () => [], exceptions: [], ...overrides }), execute, directory };
 }
 
 describe("core scan policy", () => {
@@ -48,7 +47,6 @@ describe("core scan policy", () => {
     const manifest = JSON.parse(readFileSync(resolve(directory, "package.json"), "utf8"));
     expect(Object.keys(manifest.exports)).toHaveLength(11);
     const entries = config.workspaces["packages/turn"].entry;
-    const products = new Set(ownedPaths().map((path) => `${path}!`));
     const expected = [
       "src/index.ts!", "src/ai/index.ts!", "src/agent/index.ts!",
       "src/host/index.ts!", "src/host/config.ts!", "src/host/types.ts!", "src/host/sandbox/index.ts!",
@@ -83,7 +81,6 @@ describe("core scan policy", () => {
     expect(entries).not.toContain("src/engine/__tests__/fixtures/turn-evidence-worker.mts!");
     for (const entry of expected) {
       expect(entries).toContain(entry);
-      expect(products.has(entry)).toBe(false);
     }
   });
 
@@ -108,9 +105,8 @@ describe("core scan policy", () => {
     expect(config.tags).toEqual(["-coreScanRetained"]);
     const expected = new Set(retainedExports.flatMap((entry) => entry.taggedNames.map((name) => `${entry.file}:${name}`)));
     const actual = new Set();
-    const generated = new Set(ownedPaths().map((path) => `packages/turn/${path}`));
     for (const file of globSync("packages/{contracts,config,turn,conversation,app}/src/**/*.{js,mjs,ts,mts}", { cwd: root })) {
-      if (file.includes("/__tests__/") && !retainedExports.some((entry) => entry.file === file) || generated.has(file)) continue;
+      if (file.includes("/__tests__/") && !retainedExports.some((entry) => entry.file === file)) continue;
       const source = readFileSync(resolve(root, file), "utf8");
       if (!source.includes("@coreScanRetained")) continue;
       const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -134,25 +130,14 @@ describe("core scan policy", () => {
     expect(retainedExports.filter((entry) => entry.reason.startsWith("deferred: turn"))).toEqual([]);
   });
 
-  test("checks built entries before entering the authored-only source view", () => {
+  test("checks built entries before scanning authored source directly", () => {
     const events = [];
-    const { code } = runWith("dead-code", { stdout: '{"files":[],"issues":[]}' }, {
+    const { code } = runWith("dead-code", {}, {
       checkBuild: () => { events.push("preflight"); return []; },
-      sourceView: (action) => { events.push("hide"); try { return action(); } finally { events.push("restore"); } },
+      execute: () => { events.push("scan"); return { status: 0, stdout: '{"files":[],"issues":[]}', stderr: "" }; },
     });
     expect(code).toBe(0);
-    expect(events).toEqual(["preflight", "hide", "restore", "hide", "restore", "hide", "restore"]);
-  });
-
-  test("reports source-view failures without keeping stale scan successes", () => {
-    const { code, execute, directory } = runWith("dead-code", {}, {
-      sourceView: () => { throw new Error("stale staged output"); },
-    });
-    expect(code).toBe(2);
-    expect(execute).not.toHaveBeenCalled();
-    for (const { name } of scanArguments("dead-code")) {
-      expect(JSON.parse(readFileSync(resolve(directory, `${name}.json`), "utf8"))).toEqual({ error: "stale staged output" });
-    }
+    expect(events).toEqual(["preflight", "scan", "scan", "scan"]);
   });
 
   test("summarizes findings without counting consumers", () => {

@@ -406,7 +406,7 @@ describe("Exec", () => {
 
   it("keeps the attestable group leader alive when its owning host pipe disappears", async () => {
     if (process.platform === "win32") return;
-    const runnerUrl = new URL("../../tools/commands/process-runner.js", import.meta.url).href;
+    const runnerUrl = new URL("../../../dist/tools/commands/process-runner.js", import.meta.url).href;
     const parentSource = [
       `import { startPreparedProcess } from ${JSON.stringify(runnerUrl)};`,
       "const target = \"setTimeout(() => process.stdout.write('x'.repeat(65536)), 200); setTimeout(() => {}, 5000)\";",

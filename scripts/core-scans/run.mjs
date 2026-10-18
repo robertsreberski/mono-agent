@@ -1,5 +1,4 @@
 import { classifyCycles, cycleExceptions } from "./cycle-policy.mjs";
-import { withSourceView } from "../../packages/turn/scripts/staged-build.mjs";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -62,9 +61,9 @@ export function scanArguments(kind) {
 
 // Findings are a non-zero result, not a launcher failure. Always finish every
 // mode/package; never make a red baseline look green with --no-exit-code.
-export function run(kind, { execute = spawnSync, directory = outputDirectory, checkBuild = missingPackageEntryPoints, sourceView = withSourceView, exceptions = cycleExceptions } = {}) {
+export function run(kind, { execute = spawnSync, directory = outputDirectory, checkBuild = missingPackageEntryPoints, exceptions = cycleExceptions } = {}) {
   if (kind === "all") {
-    return Math.max(run("dead-code", { execute, directory, checkBuild, sourceView, exceptions }), run("cycles", { execute, directory, checkBuild, sourceView, exceptions }));
+    return Math.max(run("dead-code", { execute, directory, checkBuild, exceptions }), run("cycles", { execute, directory, checkBuild, exceptions }));
   }
   const scans = scanArguments(kind);
   mkdirSync(directory, { recursive: true });
@@ -88,7 +87,7 @@ export function run(kind, { execute = spawnSync, directory = outputDirectory, ch
     let result = { stderr: "" };
     writeFileSync(resolve(directory, `${scan.name}.stderr.txt`), "");
     try {
-      result = sourceView(() => execute("pnpm", scan.args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }));
+      result = execute("pnpm", scan.args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
       writeFileSync(resolve(directory, `${scan.name}.stderr.txt`), result.stderr ?? "");
       if (result.error || result.signal || ![0, 1].includes(result.status)) {
         throw result.error ?? new Error(`Tool exited ${result.status ?? result.signal}`);

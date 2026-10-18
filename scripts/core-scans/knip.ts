@@ -178,7 +178,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/engine/index.js",
+    "file": "packages/turn/src/engine/index.ts",
     "names": [
       "JsonlSessionRepo",
       "MemorySessionRepo",
@@ -204,7 +204,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/engine/sessions.js",
+    "file": "packages/turn/src/engine/sessions.ts",
     "names": [
       "resolveDurableNativeSessionRepo",
       "resolveSession",
@@ -234,7 +234,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/engine/owned-fs.js",
+    "file": "packages/turn/src/engine/owned-fs.ts",
     "names": [
       "OwnedFileDamagedError",
       "assertIdentity",

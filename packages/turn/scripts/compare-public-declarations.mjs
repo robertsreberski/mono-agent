@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -8,8 +8,13 @@ const root = fileURLToPath(new URL("../../../", import.meta.url));
 
 function copyGraph(source, target, label) {
   mkdirSync(target, { recursive: true });
-  cpSync(join(source, "types"), join(target, "types"), { recursive: true });
   const manifest = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+  const declarations = [manifest.types, ...Object.values(manifest.exports).map((entry) => entry.types),
+    ...Object.values(manifest.imports ?? {}).map((entry) => entry.types)];
+  for (const directory of new Set(declarations.map((entry) => entry.split("/")[1]))) {
+    cpSync(join(source, directory), join(target, directory), { recursive: true,
+      filter: (path) => statSync(path).isDirectory() || /\.d\.[cm]?ts$/u.test(path) });
+  }
   // Distinct package IDs prevent TypeScript from redirecting one snapshot to the other.
   manifest.name = `@declaration-comparison/${label}`;
   writeFileSync(join(target, "package.json"), JSON.stringify(manifest));
@@ -132,7 +137,7 @@ function semanticDocumentation(program, checker, attributeDefinitions) {
 export function compareGraphs(baseline, candidate, entries, { documentationMode = "semantic" } = {}) {
   const options = { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
     target: ts.ScriptTarget.ES2022, strict: true, exactOptionalPropertyTypes: true, noEmit: true, skipLibCheck: true };
-  const roots = entries.flatMap(({ types }) => [join(baseline, types), join(candidate, types)]);
+  const roots = entries.flatMap(({ types, candidateTypes = types }) => [join(baseline, types), join(candidate, candidateTypes)]);
   const program = ts.createProgram(roots, options), checker = program.getTypeChecker();
   const diagnostics = ts.getPreEmitDiagnostics(program);
   if (diagnostics.length) throw new Error(ts.formatDiagnostics(diagnostics, {
@@ -141,7 +146,7 @@ export function compareGraphs(baseline, candidate, entries, { documentationMode 
   const baselineDocumentation = semanticDocumentation(program, checker, true);
   const candidateDocumentation = semanticDocumentation(program, checker, false);
   const rows = [];
-  for (const { key, types } of entries) {
+  for (const { key, types, candidateTypes = types } of entries) {
     const errors = [], visited = new Set();
     const fail = (path, message) => errors.push(`${path}: ${message}`);
     const symbolType = (symbol) => checker.getTypeOfSymbolAtLocation(symbol,
@@ -287,8 +292,8 @@ export function compareGraphs(baseline, candidate, entries, { documentationMode 
       signatures(left, right, ts.SignatureKind.Call, path);
       signatures(left, right, ts.SignatureKind.Construct, `${path}.constructor`);
     }
-    const module = (directory) => checker.getSymbolAtLocation(program.getSourceFile(join(directory, types)));
-    const before = checker.getExportsOfModule(module(baseline)), after = new Map(checker.getExportsOfModule(module(candidate)).map((symbol) => [symbol.name, symbol]));
+    const module = (directory, target) => checker.getSymbolAtLocation(program.getSourceFile(join(directory, target)));
+    const before = checker.getExportsOfModule(module(baseline, types)), after = new Map(checker.getExportsOfModule(module(candidate, candidateTypes)).map((symbol) => [symbol.name, symbol]));
     for (const symbol of before) {
       const candidateSymbol = after.get(symbol.name);
       if (!candidateSymbol) { fail(symbol.name, "removed export"); continue; }
@@ -329,8 +334,9 @@ export function compareRevision(revision = "origin/main", { documentationMode = 
   const result = spawnSync("pnpm", ["run", "build"], { cwd: turn, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`Baseline build failed:\n${result.stdout}\n${result.stderr}`);
   copyGraph(turn, join(scratch, "baseline"), "baseline");
-  copyGraph(join(root, "packages/turn"), join(scratch, "candidate"), "candidate");
-  const entries = Object.entries(manifest.exports).map(([key, target]) => ({ key, types: target.types }));
+  const candidateManifest = copyGraph(join(root, "packages/turn"), join(scratch, "candidate"), "candidate");
+  if (JSON.stringify(Object.keys(manifest.exports)) !== JSON.stringify(Object.keys(candidateManifest.exports))) throw new Error("Changed public export keys");
+  const entries = Object.entries(manifest.exports).map(([key, target]) => ({ key, types: target.types, candidateTypes: candidateManifest.exports[key].types }));
   const rows = compareGraphs(join(scratch, "baseline"), join(scratch, "candidate"), entries, { documentationMode });
   const report = { documentationMode, baseline: oid, candidate: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), rows };
   writeFileSync(join(cache, "latest.json"), `${JSON.stringify(report, null, 2)}\n`);

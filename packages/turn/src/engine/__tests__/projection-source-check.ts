@@ -19,17 +19,9 @@ export async function findContextBuilderBypasses(root: string) {
     for (const child of children) if (child.isDirectory()) await scan(join(root, parent, child.name, "src"));
   }
   await scan(join(root, "apps"));
-  // Match the staged build's bounded product inventory, without hiding files
-  // another suite may still be importing. A twin alone does not grant ownership.
-  let inventory = "";
-  try { inventory = await readFile(join(root, "packages/turn/.gitignore"), "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const owned = new Set(inventory.split("\n").filter((line) => /^\/src\/(?:[\w-]+\/)*[\w-]+\.(?:d\.ts|js(?:\.map)?)$/.test(line))
-    .map((line) => `packages/turn${line}`));
-  const authored = new Set(files.map((file) => relative(root, file).split("\\").join("/")));
   const bypasses = [];
   for (const file of files) {
     const path = relative(root, file).split("\\").join("/");
-    if (owned.has(path) && (path.endsWith(".d.ts") || (path.endsWith(".js") && authored.has(path.slice(0, -3) + ".ts")))) continue;
     if (/^packages\/turn\/src\/engine\/(?:session-context|request-projection)\.(?:js|ts)$/.test(path)) continue;
     let text = await readFile(file, "utf8");
     if (/^packages\/turn\/src\/(?:engine\/index|execution\/pi\/driver-adapter)\.(?:js|ts)$/.test(path)) {

@@ -1,18 +1,17 @@
-// Private fault-injection seams load JS source; use the matching generated declarations.
+// Private fault-injection seams share the authored graph used by the fixture;
+// the strict dist declarations provide their erased types.
 import { truncate, writeFile } from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import { validateFrozenHandoffBudget } from "../history/model-switch/contract.js";
 function frozenBudget(f: Awaited<ReturnType<typeof fixture>>) { validateFrozenHandoffBudget(f.budget); return f.budget; }
 import { createPendingInitialInput } from "../history/pending-turn/contract.js";
 import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { fixture, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 
-const engineEntryUrl = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/engine"));
+const engineEntryUrl = new URL("../../../turn/src/engine/index.ts", import.meta.url);
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function root() { const path = await mkdtemp(join(tmpdir(), "mono-prepared-owner-")); roots.push(path); return path; }

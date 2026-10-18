@@ -297,7 +297,7 @@ export function verifyPackedHostTypes(consumerDir, spawn) {
   // Use the repo's compiler, but resolve all framework types from the installed
   // tarballs. Only Node ambient types come from the compiler host.
   run(process.execPath, [path.join(REPO_ROOT, "node_modules/typescript/bin/tsc"),
-    "host-contract.ts", "host-types-only.ts", "engine-contract.ts",
+    "host-contract.ts", "host-types-only.ts", "engine-contract.ts", "turn-all-entries.ts",
     ...(fs.existsSync(installedPackageManifestPath(consumerDir, "@mono-agent/app")) ? ["app-contract.ts"] : []),
     "--module", "NodeNext", "--moduleResolution", "NodeNext",
     "--target", "ES2022", "--strict", "--exactOptionalPropertyTypes", "--skipLibCheck",

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 
 const { compareGraphs } = await import(new URL("../../scripts/compare-public-declarations.mjs", import.meta.url).href) as {
-  compareGraphs(baseline: string, candidate: string, entries: { key: string; types: string }[], options?: { documentationMode: "literal" | "semantic" }): {
+  compareGraphs(baseline: string, candidate: string, entries: { key: string; types: string; candidateTypes?: string }[], options?: { documentationMode: "literal" | "semantic" }): {
     entry: string; exports: number; errors: string[];
   }[];
 };
@@ -165,11 +165,11 @@ it.each(["any", "Record<string, any>"])("detects the real host runtime-options i
   for (const label of ["baseline", "candidate"]) {
     const target = join(directory, label);
     mkdirSync(target);
-    cpSync(join(turn, "types"), join(target, "types"), { recursive: true });
+    cpSync(join(turn, "dist"), join(target, "dist"), { recursive: true });
     writeFileSync(join(target, "package.json"), JSON.stringify({ ...manifest, name: `@mutation/${label}` }));
     symlinkSync(join(turn, "node_modules"), join(target, "node_modules"), "dir");
   }
-  const path = join(directory, "candidate/types/host/runtime-options.d.ts");
+  const path = join(directory, "candidate/dist/host/runtime-options.d.ts");
   const before = readFileSync(path, "utf8");
   expect(before).toContain("Readonly<Record<string, unknown>>");
   const expression = /Readonly<Record<string, unknown>> & \{[^}]+\}/u;
@@ -187,11 +187,11 @@ it("rejects making the real WebFetch output limit required", () => {
   for (const label of ["baseline", "candidate"]) {
     const target = join(directory, label);
     mkdirSync(target);
-    cpSync(join(turn, "types"), join(target, "types"), { recursive: true });
+    cpSync(join(turn, "dist"), join(target, "dist"), { recursive: true });
     writeFileSync(join(target, "package.json"), JSON.stringify({ ...manifest, name: `@mutation/${label}` }));
     symlinkSync(join(turn, "node_modules"), join(target, "node_modules"), "dir");
   }
-  const path = join(directory, "candidate/types/tools/web/web-fetch.d.ts");
+  const path = join(directory, "candidate/dist/tools/web/web-fetch.d.ts");
   const before = readFileSync(path, "utf8");
   expect(before).toContain("max_output_chars?: number;");
   writeFileSync(path, before.replaceAll("max_output_chars?: number;", "max_output_chars: number;"));
@@ -207,11 +207,11 @@ it("rejects making a real type-only host retry policy member required", () => {
   for (const label of ["baseline", "candidate"]) {
     const target = join(directory, label);
     mkdirSync(target);
-    cpSync(join(turn, "types"), join(target, "types"), { recursive: true });
+    cpSync(join(turn, "dist"), join(target, "dist"), { recursive: true });
     writeFileSync(join(target, "package.json"), JSON.stringify({ ...manifest, name: `@mutation/${label}` }));
     symlinkSync(join(turn, "node_modules"), join(target, "node_modules"), "dir");
   }
-  const path = join(directory, "candidate/types/host/runtime-options.d.ts");
+  const path = join(directory, "candidate/dist/host/runtime-options.d.ts");
   const before = readFileSync(path, "utf8");
   expect(before).toContain("readonly backoffMs?: number;");
   writeFileSync(path, before.replace("readonly backoffMs?: number;", "readonly backoffMs: number;"));
@@ -326,4 +326,14 @@ it("diagnoses parent property prose across merged interface declarations", () =>
   expect(compare("export interface Shape {\n /** Merged value guarantee. */ value: string } export interface Shape { other: number }",
     "export interface Shape { value: string }\n /** @property value Merged value guarantee. */ export interface Shape { other: number }"))
     .toContain("Shape.value: candidate prose only in parent @property; move it to the member");
+});
+
+it.each(["types", "dist"])("compares a %s baseline against distinct dist declaration targets", (baselineRoot) => {
+  const directory = comparisonDirectory();
+  for (const [side, output] of [["baseline", baselineRoot], ["candidate", "dist"]]) {
+    mkdirSync(join(directory, side!, output!), { recursive: true });
+    writeFileSync(join(directory, side!, output!, "index.d.ts"), "/** Stable prose. */ export const value: string;");
+  }
+  expect(compareGraphs(join(directory, "baseline"), join(directory, "candidate"),
+    [{ key: ".", types: `${baselineRoot}/index.d.ts`, candidateTypes: "dist/index.d.ts" }])[0]!.errors).toEqual([]);
 });

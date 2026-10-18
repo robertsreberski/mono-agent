@@ -40,9 +40,8 @@ export async function prepareRealBuild(root, head, { exec = execFileSync } = {})
   for (const path of packages) {
     if (!/^(packages|extras)\/[a-z0-9-]+$/u.test(path) || await realpath(join(root, path)) !== join(root, path)) throw new Error("unsafe_build_closure");
   }
-  // agent-runtime ships tracked JavaScript and generates declarations in types/;
-  // the other app-closure packages compile to dist/. Source HEAD pins that JS.
-  const outputRoots = packages.map((path) => `${path}/${path === "packages/turn" ? "types" : "dist"}`);
+  // Every package in this closure emits runtime and declarations to dist/.
+  const outputRoots = packages.map((path) => `${path}/dist`);
   assertSource(root, head, exec);
   // tsc does not remove deleted-source outputs. Clean only this dependency closure's
   // generated dist/types, never benchmark artifacts or unrelated workspace outputs.

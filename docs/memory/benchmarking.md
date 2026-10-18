@@ -618,11 +618,11 @@ the selection invalidates the confirmation. Reports never contain the raw path,
 credential bytes or file metadata.
 
 The direct `--real` command requires a clean, unchanged HEAD and always removes
-and rebuilds only the app dependency closure's generated `dist`/`types` directories
+and rebuilds only the app dependency closure's generated `dist` directories
 before importing production modules. The confirmation digest pins that build
 policy and source revision; the resulting manifest records the build command,
-package closure, source HEAD, Node version and SHA-256 of generated closure bytes. The runtime package ships
-tracked JavaScript, pinned by the source HEAD, plus generated declarations.
+package closure, source HEAD, Node version and SHA-256 of generated closure bytes.
+The runtime package emits JavaScript and declarations together into `dist`.
 HEAD/dirt and output identity are checked again before provider construction for
 each trial. A failed build or changed source/output refuses admission. Building
 does not itself authorize provider calls. Existing offline `dist` remains

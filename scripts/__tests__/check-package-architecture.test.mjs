@@ -205,26 +205,24 @@ describe("staged projection source guard", () => {
     expect(await findContextBuilderBypasses(root)).toEqual([`packages/turn/src/engine/index.${extension}`]);
   });
 
-  it("skips only inventoried JS products with an authored TS twin, not orphan or unowned JS", async () => {
+  it("scans every JS source, including TS twins and orphan files", async () => {
     const root = await sourceRoot({
-      "packages/turn/.gitignore": "/src/engine/product.js\n/src/engine/orphan.js\n",
       "packages/turn/src/engine/product.js": bypass,
       "packages/turn/src/engine/product.ts": "export {};",
       "packages/turn/src/engine/orphan.js": bypass,
       "packages/turn/src/engine/unowned.js": bypass,
       "packages/turn/src/engine/unowned.ts": "export {};",
     });
-    expect(await findContextBuilderBypasses(root)).toEqual(["packages/turn/src/engine/orphan.js", "packages/turn/src/engine/unowned.js"]);
+    expect(await findContextBuilderBypasses(root)).toEqual(["packages/turn/src/engine/orphan.js", "packages/turn/src/engine/product.js", "packages/turn/src/engine/unowned.js"]);
   });
 
-  it("skips inventoried declaration overlays but scans unowned declarations and stray sources", async () => {
+  it("scans every declaration and stray source without overlay exceptions", async () => {
     const root = await sourceRoot({
-      "packages/turn/.gitignore": "/src/engine/overlay.d.ts\n",
       "packages/turn/src/engine/overlay.d.ts": "export declare function buildHarnessSessionContext(): void;",
       "packages/turn/src/engine/unowned.d.ts": "export declare function buildHarnessSessionContext(): void;",
       "packages/turn/src/engine/stray.ts": bypass,
     });
-    expect(await findContextBuilderBypasses(root)).toEqual(["packages/turn/src/engine/stray.ts", "packages/turn/src/engine/unowned.d.ts"]);
+    expect(await findContextBuilderBypasses(root)).toEqual(["packages/turn/src/engine/overlay.d.ts", "packages/turn/src/engine/stray.ts", "packages/turn/src/engine/unowned.d.ts"]);
   });
 });
 

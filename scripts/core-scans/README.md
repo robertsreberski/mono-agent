@@ -49,15 +49,11 @@ exceptions below. Existing findings are deliberately not grandfathered in.
   projects are bounded to `src/` (plus app's proof scripts); build outputs are
   outside discovery, not exceptions. Test directories are non-production inputs,
   so production discovery excludes `src/**/__tests__/` including their helpers.
-- Existing package tsconfigs map normal `dist` exports back to source. Turn's
-  staged build keeps its legacy public paths, with exact compiler-owned products
-  at converted source locations. Architecture and scan commands hide those
-  implementation products for an authored-only view and restore them even when
-  a scanner fails. Strict-check declaration overlays are absent between turn
-  compiler invocations, so dependent packages never discover them accidentally.
-  Knip mappings in `knip.ts` derive all retained entries/private keys from the
-  manifest and prefer authored TS twins. Build preflight happens before hiding
-  runtime products. No export ignores compensate for source-mapping gaps.
+- Package tsconfigs and Knip's manifest-derived mappings resolve built entries
+  to their authored TS/MTS owners. Turn's public and private targets all use
+  dist; scanners read authored source directly, without product overlays or a
+  hide/restore wrapper. Build preflight still validates every runtime/type
+  target. No export ignores compensate for source-mapping gaps.
 - Madge scans production source (`ts,js,mjs,mts`) with `__tests__` excluded.
   Type-only edges are included. It follows reachable source dependencies across
   core packages: repeated cycles with `../../` prefixes are expected. Do not

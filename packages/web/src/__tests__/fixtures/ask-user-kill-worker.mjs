@@ -3,8 +3,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { digestTurnInput } from "@mono-agent/turn/engine";
-import { createTurnBinding } from "../../../../turn/src/engine/turn-evidence.js";
-import { JsonlSessionRepo } from "../../../../turn/src/engine/session-store.js";
+import { createTurnBinding } from "../../../../turn/dist/engine/turn-evidence.js";
+import { JsonlSessionRepo } from "../../../../turn/dist/engine/session-store.js";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { createConversationHarness, createDurableHistoryStore } from "../../../../conversation/dist/index.js";

@@ -19,16 +19,12 @@ agent turn:
 Typed hosts use `@mono-agent/turn/host`; low-level consumers can still
 inject their own sandbox through `createRuntime()` / `createRouterRuntime()`.
 The package depends on contracts for host contracts/errors and owns its isolated
-`src/engine` for native execution/storage. One staged production compiler graph
-emits JavaScript and declarations into `dist`. Host runtime entries remain under
-`dist/host`; the other runtime entries still ship from `src` with declarations in
-`types` until the final artifact transition. Converted implementations and their
-declarations at those legacy paths are copies of that same compiler output,
-never authored forwarding modules. Strict source/test checks emit nothing; a
-separate check-only strict declaration emit must match every authored TS
-declaration in the production output. Its quarantined output is never shipped.
-Private source declaration overlays are owned, temporary inputs to those checks
-and are removed in `finally`, including recovery after interrupted runs.
+`src/engine` for native execution/storage. One strict production compiler pass
+(`tsc -p tsconfig.build.json`) emits JavaScript, declarations and both map kinds
+together under `dist`. All public and private runtime/type targets point there.
+Authored production sources are TS/MTS only; no source products, separate types
+root, declaration overlays or materialization step exist. The source/test
+project is checked separately without emitting.
 The host entrypoints split construction, config validation, contracts and sandbox
 support without adding a forwarding package. Config remains a separate package.
 
@@ -356,64 +352,34 @@ to talk to models through Pi provider dependencies; how tools are
 exposed; how provider failures are normalized; and how enough telemetry is
 returned for a host to make reliable orchestration decisions.
 
-## Staged conversion procedure
+## Build and test artifacts
 
-For each remaining JS-to-TS conversion:
+Keep `.js` import specifiers in authored TypeScript for NodeNext output;
+`verbatimModuleSyntax` preserves import side effects. The shipping build extends
+the strict source configuration, emits runtime and declarations in one pass,
+and excludes every `__tests__` directory. Preserve exported alias/interface,
+optional, readonly, unknown and union contracts when editing sources. Build
+before dependent typechecks and direct parity execution.
 
-1. Start from a completed build/typecheck (recover interrupted views before
-   changing inventory). Rename the authored implementation, retaining its `.js`
-   import specifiers.
-   Preserve exported type-alias versus interface spelling and explicit optional,
-   readonly, unknown and union contracts. Never add runtime initializers to make
-   a type check pass. `verbatimModuleSyntax` preserves import side effects.
-2. Inventory the exact generated legacy `src/<module>.js` and `.js.map` paths in
-   this package's `.gitignore`; do not ignore an entire source tree. Remove the
-   now-unused adjacent `.d.ts` overlay entry. Update any private `paths` target
-   in **both** `tsconfig.json` and `tsconfig.build.json` to the authored `.ts`
-   (a test forbids fallback to old types or generated JS).
-3. Annotate exported TS contracts when inference differs under strict mode.
-   The build compares a strict declaration-only check against the production
-   declarations, including host TS, and refuses to ship weaker inferred output.
-4. Retarget source-path consumers in the same conversion, preserving a single
-   module graph for factories, context state and registries. Do not import a
-   sibling package's TS through its `rootDir`; prefer public entries or an
-   emitted runtime URL with emitted declaration types.
-5. Build before dependent typechecks and parity. Production output is staged,
-   strict-checked and only then published. A journal rolls back an interrupted
-   publication; failed compilers preserve the last good dist/types/products.
-   Strict checks and frozen parity require a fresh source digest. Architecture
-   scans intentionally permit edited sources and inspect the authored view.
-6. Source-view journals hidden products before deletion and restores them even
-   after an interrupted process on the next entry. Signals unwind cleanup; lock
-   ownership includes process start time. A lost cache can adopt only listed,
-   git-untracked products whose bytes match retained compiler output. Modified
-   or unowned files are refused, never automatically removed.
-7. Stage named files while the generated products are hidden with `source-view`.
-   In particular, stage the old JS deletion, not the materialized compiler copy.
-   Run the declaration comparator and applicable source/packed identity tests.
+Test-only fixture output lives under root `.worklab-tmp/turn-test-fixtures`, not
+an installed-dependency or workspace-package tree. Fixtures compile separately;
+raw frozen data is copied unchanged. Bare imports resolve using turn's ESM
+conditions. Only emitted workers' relative production imports are routed to
+`turn/dist`; there is no source-product fallback. Fork/exec callers preload the
+bounded bootstrap with Node `--import` before static linking. Fixture emission
+must leave the runtime dependency digest unchanged.
 
-Test-only fixture output lives under root `.worklab-tmp/turn-test-fixtures`,
-not any installed-dependency or workspace-package tree. Those trees participate
-in runtime build attestation, including package-local caches. Fixture bare-import
-specifiers resolve with turn's ESM import conditions and become file URLs; no
-node_modules symlink is created. Emitting fixtures must leave the runtime
-dependency digest unchanged, so tests cannot poison the next root build.
+Authored workers and the sandbox runner use `.mts`; stable Node launch names
+remain `.mjs`. The production runner and its maps live only beside the sandbox
+implementation in `dist/host/sandbox`. Ordinary source suites use authored
+modules; the entire sandbox implementation subtree uses its built owner so its
+native asset URL stays valid without copying an asset into source. Source MTS
+helper tests remain on their source graph with no compiled-fixture prerequisite.
+Historical parity roots remain explicit, never redirected to current code.
 
-Authored fixture workers and the sandbox embed runner use `.mts`; their stable
-Node launch names remain `.mjs`. The production compiler owns both the dist
-runner and its adjacent source-view launch artifact/maps. All other host TS
-continues using its existing dist output with source/declaration maps.
-
-`test:fixtures` compiles workers/helpers into the test-only tree and copies raw
-data unchanged. Its bounded bootstrap maps emitted workers' relative production
-imports, plus transitive public/private turn imports, onto the same `turn/dist`
-graph. Fork/exec callers preload that bootstrap with Node `--import`, before
-static linking; plain-Node in-process proofs use a native data-URL bootstrap
-before importing the compiled helper. Source suites instead load the authored
-MTS helper through Vite on their existing source graph; they never redirect a
-source test worker to dist or depend on test-only compiler output. Executable
-production dependency copies are removed from fixture output;
-historical parity roots remain explicit and are never redirected to current code.
-The three `packages/turn/scripts/*.mjs` files remain build tooling, not authored
-runtime/test sources. The manual golden writer is compiled but never part of
-normal test execution; see `engine/__tests__/fixtures/PROJECTION-GOLDENS.md`.
+The normal package `test` builds production once, emits fixtures, then runs
+Vitest. For direct frozen-parity tests, run `build` and `test:fixtures` first.
+No test regenerates goldens; the manual writer is separate, as described in
+`engine/__tests__/fixtures/PROJECTION-GOLDENS.md`. The scripts directory contains
+only public-declaration comparison and test-fixture tooling, not shipping build
+wrappers.
