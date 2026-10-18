@@ -7,7 +7,7 @@ import ts from "typescript";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
-function sources(directory) {
+function sources(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     if (entry.name === "__tests__") return [];
     const path = join(directory, entry.name);
@@ -15,7 +15,7 @@ function sources(directory) {
   });
 }
 
-function sourceTarget(target) {
+function sourceTarget(target: string) {
   const source = target.replace(/^\.\/(?:dist|types)\//u, "./src/").replace(/\.d\.ts$/u, ".js");
   const absolute = resolve(root, source);
   if (existsSync(absolute)) return absolute;
@@ -24,7 +24,7 @@ function sourceTarget(target) {
   throw new Error(`Unresolved local contract target: ${source}`);
 }
 
-function dependency(file, specifier) {
+function dependency(file: string, specifier: string) {
   if (specifier.startsWith(".")) {
     const absolute = resolve(dirname(file), specifier);
     if (existsSync(absolute)) return absolute;
@@ -49,22 +49,22 @@ function dependency(file, specifier) {
 }
 
 it("resolves turn-local runtime and erased contract edges without cycles or host facade back edges", () => {
-  const graph = new Map();
+  const graph = new Map<string, string[]>();
   for (const file of sources(join(root, "src"))) {
     const text = readFileSync(file, "utf8");
     const imports = new Set([
       ...ts.preProcessFile(text).importedFiles.map((entry) => entry.fileName),
       // TypeScript's preprocessor omits JSDoc import types. Include those too.
-      ...[...text.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu)].map((match) => match[1]),
+      ...[...text.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu)].map((match) => match[1]!),
     ]);
-    const targets = [...imports].map((specifier) => dependency(file, specifier)).filter(Boolean);
+    const targets = [...imports].map((specifier) => dependency(file, specifier)).filter(Boolean) as string[];
     if (file.includes(`${join("src", "host")}/`) && !file.endsWith("/types.ts")) {
       expect(targets, relative(root, file)).not.toContain(join(root, "src/host/types.ts"));
     }
     graph.set(file, targets.filter((target) => [".js", ".ts", ".mjs", ".mts"].includes(extname(target))));
   }
-  const visited = new Set(), active = [];
-  function visit(file) {
+  const visited = new Set<string>(), active: string[] = [];
+  function visit(file: string) {
     if (active.includes(file)) throw new Error(`Turn dependency cycle: ${[...active.slice(active.indexOf(file)), file].map((path) => relative(root, path)).join(" -> ")}`);
     if (visited.has(file)) return;
     active.push(file);

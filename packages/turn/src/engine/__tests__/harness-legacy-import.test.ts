@@ -16,7 +16,7 @@ async function fixture(version: number = 4): Promise<{ root: string; source: str
 }
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function killed(root: any, phase: any): Promise<void> {
-  const child = fork(new URL("./fixtures/import-worker.mjs", import.meta.url), [root, phase], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const child = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/import-worker.mjs", import.meta.url), [root, phase], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try {
     const notice = await Promise.race([once(child, "message"), once(child, "exit").then(([code]: any[]) => { throw new Error(`Import worker exited: ${code}`); })]);
     expect(notice[0]).toEqual({ phase });

@@ -2,9 +2,9 @@ import { findContextBuilderBypasses } from "../../packages/turn/src/engine/__tes
 import { retiredHostImports } from "../lib/retired-host-boundary.mjs";
 import { activeStaleReferenceLines, engineRuntimeImports } from "../lib/engine-boundary.mjs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { runInNewContext } from "node:vm";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -113,7 +113,7 @@ describe("engine ownership and historical reference guard", () => {
     expect(activeStaleReferenceLines("README.md", oldDirectory, oldDirectory)).toEqual([1]);
   });
   it("exempts only the identified archived import, not additional active lines", () => {
-    const file = "packages/turn/src/engine/__tests__/fixtures/projection-parity-worker.mjs";
+    const file = "packages/turn/src/engine/__tests__/fixtures/projection-parity-worker.mts";
     const historic = `const historicPackage = "${oldPackage}"; // Archived P2b imports only.`;
     expect(activeStaleReferenceLines(file, historic, oldPackage)).toEqual([]);
     expect(activeStaleReferenceLines(file, `${historic}\nimport "${oldPackage}";`, oldPackage)).toEqual([2]);
@@ -131,7 +131,7 @@ describe("engine ownership and historical reference guard", () => {
     `  const archive = execFileSync("git", ["archive", base, "${oldDirectory}/src", "packages/agent-runtime/src"], { cwd: root, maxBuffer: 16 * 1024 * 1024 });`,
     `      join(scratch, "${oldDirectory}/src"), join(scratch, "packages/agent-runtime/src"), storage, legacy], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024 });`,
   ])("exempts only the commit-pinned historical archive line: %s", (line) => {
-    const file = "packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs";
+    const file = "packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mts";
     const pinned = 'const base = "10f501d4f1dc102db9951fcebb09a96001910452";';
     expect(activeStaleReferenceLines(file, `${pinned}\n${line}`, oldDirectory)).toEqual([]);
     expect(activeStaleReferenceLines(file, line, oldDirectory)).toEqual([1]);
@@ -282,5 +282,47 @@ describe("extracted log responsibility guard", () => {
       ]);
       await writeFile(join(root, file), "");
     }
+  });
+});
+
+
+describe("real typed-module architecture walk", () => {
+  const script = readFileSync(new URL("../check-package-architecture.mjs", import.meta.url), "utf8");
+  const referenceLoops = script.slice(script.indexOf("const staleReferences = ["),
+    script.indexOf('for (const file of walkTextFiles(join(root, "packages/turn/src/engine")))'));
+  const walker = script.slice(script.indexOf("function walkTextFiles(dir)"), script.indexOf("function isPackageDirectory(dir)"));
+  function inspect(root) {
+    const errors = [];
+    runInNewContext(`${referenceLoops}\n${walker}`, {
+      root, errors, packageScope: "@mono-agent/", join, relative, readdirSync, readFileSync, statSync, activeStaleReferenceLines, retiredHostImports,
+    });
+    return errors;
+  }
+  async function fixtureRoot() {
+    const directory = join(process.cwd(), ".worklab-tmp", "architecture-walk-tests");
+    await mkdir(directory, { recursive: true });
+    const root = await mkdtemp(join(directory, "walk-"));
+    temporaryRoots.push(root);
+    return root;
+  }
+  it.each(["mts", "cts"])("rejects stale and retired imports in a real .%s file", async (extension) => {
+    const root = await fixtureRoot(), oldPackage = `@mono-agent/${"harness"}`, retired = `@mono-agent/${"agent-runtime"}`;
+    await writeFile(join(root, `active.${extension}`), `// ${oldPackage}\nimport "${retired}";\n`);
+    const errors = inspect(root);
+    expect(errors).toContain(`active.${extension} still references ${oldPackage}.`);
+    expect(errors).toContain(`active.${extension} imports removed package ${retired}.`);
+  });
+  it("actually reads both MTS historical exemptions but rejects additional active references", async () => {
+    const root = await fixtureRoot(), directory = "packages/turn/src/engine/__tests__/fixtures";
+    await mkdir(join(root, directory), { recursive: true });
+    const files = ["projection-parity-worker.mts", "regenerate-projection-goldens.mts"];
+    for (const file of files) await writeFile(join(root, directory, file), readFileSync(join(process.cwd(), directory, file), "utf8"));
+    expect(inspect(root)).toEqual([]);
+    const oldPackage = `@mono-agent/${"harness"}`;
+    for (const file of files) {
+      const path = join(root, directory, file);
+      await writeFile(path, readFileSync(path, "utf8") + `\n// ${oldPackage}\n`);
+    }
+    for (const file of files) expect(inspect(root)).toContain(`${directory}/${file} still references ${oldPackage}.`);
   });
 });

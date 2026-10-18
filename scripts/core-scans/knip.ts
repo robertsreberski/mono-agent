@@ -26,6 +26,13 @@ const paths = Object.fromEntries([
 // taggedNames is enforced by the focused policy test; no file-wide export ignores.
 export const retainedExports = [
   {
+    "file": "packages/turn/src/__tests__/fixtures/prepared-host-runtime.mts",
+    "names": ["preparedHostFixture"],
+    "reason": "indirect: authored fixture loaded through a computed Vite source URL",
+    "citation": "packages/conversation/src/__tests__/host-runtime-preparation.test.ts",
+    "taggedNames": ["preparedHostFixture"]
+  },
+  {
     "file": "packages/contracts/src/bearer.ts",
     "names": [
       "generateBearerToken"
@@ -334,9 +341,21 @@ export default {
       entry: [
         ...Object.values(turnManifest.exports).flatMap((target) => sourceTarget(target.default))
           .map((path) => `${relative(resolve(root, "packages/turn"), path)}!`),
-        "src/host/sandbox/srt-embed-runner.mjs!",
-        "src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs",
-        "src/engine/__tests__/fixtures/projection-parity-worker.mjs",
+        "src/host/sandbox/srt-embed-runner.mts!",
+        "src/engine/__tests__/fixtures/regenerate-projection-goldens.mts",
+        "src/engine/__tests__/fixtures/projection-parity-worker.mts",
+        "src/__tests__/fixtures/prepared-host-runtime.mts",
+        "src/__tests__/ai/fixtures/native-journal-storage-worker.mts",
+        "src/__tests__/ai/fixtures/native-lifecycle-storage-worker.mts",
+        "src/__tests__/ai/fixtures/native-writer-holder.mts",
+        "src/engine/__tests__/fixtures/append-worker.mts",
+        "src/engine/__tests__/fixtures/checkpoint-worker.mts",
+        "src/engine/__tests__/fixtures/effect-worker.mts",
+        "src/engine/__tests__/fixtures/import-worker.mts",
+        "src/engine/__tests__/fixtures/lock-worker.mts",
+        "src/engine/__tests__/fixtures/native-create-worker.mts",
+        "src/engine/__tests__/fixtures/store-owner-worker.mts",
+        "src/engine/__tests__/fixtures/turn-evidence-worker.mts",
       ],
       project: ["src/**/*.{js,mjs,ts,mts}!", "!src/**/__tests__/**!"],
       ignoreDependencies: ["@vscode/ripgrep"],

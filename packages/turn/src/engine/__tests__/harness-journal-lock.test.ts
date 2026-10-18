@@ -9,7 +9,7 @@ import { JournalLocks } from "../journal-lock.js";
 const roots: string[] = [];
 async function root(): Promise<string> { const r = await mkdtemp(join(tmpdir(), "harness-lock-")); roots.push(r); return r; }
 afterEach(async () => { for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true }); });
-function child(root: any): ChildProcess { return fork(new URL("./fixtures/lock-worker.mjs", import.meta.url), [root], { stdio: ["ignore", "ignore", "ignore", "ipc"] }); }
+function child(root: any): ChildProcess { return fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/lock-worker.mjs", import.meta.url), [root], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] }); }
 function phase(worker: any, name: any): Promise<any> { return new Promise((resolve: (value: any) => void, reject: (reason?: any) => void) => {
   const message = (event: any) => { if (event.phase === name) { cleanup(); resolve(event); } };
   const exit = (code: any) => { cleanup(); reject(new Error(`Lock worker exited before ${name}: ${code}`)); };

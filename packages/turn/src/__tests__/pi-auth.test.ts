@@ -7,12 +7,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const resolveOAuthApiKeyMock = vi.fn();
 
 vi.mock("../providers/pi/oauth-compat.js", () => ({
-  resolveOAuthApiKey: (...args) => resolveOAuthApiKeyMock(...args),
+  resolveOAuthApiKey: (...args: unknown[]) => resolveOAuthApiKeyMock(...args),
 }));
 
-const { createPiOAuthApiKeyResolver } = await import("../providers/pi/auth.js");
+type OAuthCredential = { type: "oauth"; access: string; refresh: string; expires: number; clientId?: string; scopes?: string[] };
+type OAuthFixtureResolver = ((provider: string, options?: { rejectedAccessToken?: string; signal?: AbortSignal }) => Promise<string | undefined>) & {
+  readCredential(provider: string): Promise<OAuthCredential>;
+  modifyCredential(provider: string, fn: (current: OAuthCredential) => Promise<OAuthCredential>): Promise<OAuthCredential>;
+  deleteCredential(provider: string): Promise<void>;
+};
+const { createPiOAuthApiKeyResolver } = await import("../providers/pi/auth.js") as unknown as {
+  createPiOAuthApiKeyResolver(options: { path: string }): OAuthFixtureResolver;
+};
 
-const tempDirs = [];
+const tempDirs: string[] = [];
 
 beforeEach(() => {
   resolveOAuthApiKeyMock.mockReset();
@@ -32,7 +40,7 @@ describe("createPiOAuthApiKeyResolver", () => {
       return { apiKey: "new-token", newCredentials: { ...credentials.anthropic, access: "new-token", expires: 4200000000000 } };
     });
     await expect(resolver("anthropic", { rejectedAccessToken: "old-token", signal })).resolves.toBe("new-token");
-    expect(resolveOAuthApiKeyMock.mock.calls[0][2]).toBe(signal);
+    expect(resolveOAuthApiKeyMock.mock.calls[0]![2]).toBe(signal);
     expect((await resolver.readCredential("anthropic")).expires).toBe(4200000000000);
     expect((await stat(authPath)).mode & 0o777).toBe(0o600);
   });
@@ -265,14 +273,14 @@ async function tempDir() {
   return dir;
 }
 
-async function writeAuth(auth) {
+async function writeAuth(auth: Record<string, unknown>) {
   const dir = await tempDir();
   const authPath = join(dir, "auth.json");
   await writeFile(authPath, `${JSON.stringify(auth, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   return authPath;
 }
 
-function oauthCredentials(access) {
+function oauthCredentials(access: string) {
   return {
     type: "oauth",
     access,
@@ -281,6 +289,6 @@ function oauthCredentials(access) {
   };
 }
 
-function delay(ms) {
+function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

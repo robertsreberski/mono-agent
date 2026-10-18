@@ -27,7 +27,7 @@ it.each([false, true])("replays the exact checkpoint after process reopen includ
   expect(checkpoint).toMatchObject({ version: 1, tokensBefore: 900, tokensAfter: 120, projectionVersion: 1,
     preservedMessageIds: native.map((entry: any) => entry.id), derivedMessages: [derived], coverage: { sourceEntryCount: before.length }, model: { id: "fictional" } });
   const bytes = await readFile(session.metadata.path); await session.close();
-  const child = fork(new URL("./fixtures/checkpoint-worker.mjs", import.meta.url), [root], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const child = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/checkpoint-worker.mjs", import.meta.url), [root], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try { const [reopened] = await once(child, "message"); await once(child, "exit"); expect(reopened).toEqual({ messages, checkpoint }); }
   finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
   expect((await readFile(session.metadata.path)).equals(bytes)).toBe(true); // no fresh timestamp, summary or repair call

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createManagedNativeJournalStorage } from "../../../execution/pi/storage-capability.js";
-const [root, stop] = process.argv.slice(2);
+const [root, stop] = process.argv.slice(2) as [string, string, string, string];
 const { context } = JSON.parse(await readFile(join(root, "native-proof.json"), "utf8"));
 const storage = createManagedNativeJournalStorage({ sessionsRoot: root, onPhase: async (phase) => {
   if (phase === stop) { process.send?.({ phase }); await new Promise(() => { setInterval(() => {}, 1_000); }); }

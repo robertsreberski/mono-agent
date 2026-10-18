@@ -22,7 +22,7 @@ it("cancels a run waiting behind another process's native writer lock", async ()
     const first = await generateEngineTurnResponse("stable", options({ messages: [{ role: "user", content: "Fictional first ask." }] }));
     sessionId = first.providerSessionId; expect(first.error).toBeNull();
     await disposeProviderSession(sessionId); // drop liveness only; the journal stays durable
-    holder = fork(new URL("./fixtures/native-writer-holder.mjs", import.meta.url), [root, sessionId], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    holder = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/__tests__/ai/fixtures/native-writer-holder.mjs", import.meta.url), [root, sessionId], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "pipe", "ipc"] });
     await Promise.race([once(holder, "message"), once(holder, "exit").then(([code]) => { throw new Error(`Writer holder exited: ${code}`); })]);
 
     const controller = new AbortController(), started = Date.now();

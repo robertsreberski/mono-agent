@@ -5,29 +5,36 @@ const adapterLoadMock = vi.fn();
 const assertEngineTurnModelRefMock = vi.fn();
 
 vi.mock("../execution/pi/model-ref.js", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
+  const actual = await importOriginal<typeof import("../execution/pi/model-ref.js")>();
+  return { assertEngineTurnModelRef: (ref: unknown) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref as Parameters<typeof actual.assertEngineTurnModelRef>[0]); } };
 });
 
 vi.mock("../execution/pi/run.js", async (importOriginal) => {
   adapterLoadMock();
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import("../execution/pi/run.js")>();
   return {
     ...actual,
-    engineTurnAdapter: { id: "stub", execute: (...args) => executeMock(...args) },
+    engineTurnAdapter: { id: "stub", execute: (...args: unknown[]) => executeMock(...args) },
   };
 });
 
 const resolverMock = vi.fn(() => { throw new Error("Runtime must not dispatch through a resolver"); });
 vi.mock("../runtime/bridges.js", () => ({
-  resolveEngineTurnAdapter: (...args) => resolverMock(...args),
-  resolveEngineTurnAdapter: (...args) => resolverMock(...args),
+  resolveEngineTurnAdapter: (...args: []) => resolverMock(...args),
+  // @ts-expect-error Preserve the baseline duplicate mock key verbatim.
+  resolveEngineTurnAdapter: (...args: []) => resolverMock(...args),
 }));
 
-const { createRuntime } = await import("../runtime/create-runtime.js");
+type FixtureRuntime = Omit<ReturnType<typeof import("../runtime/create-runtime.js").createRuntime>, "run" | "configureTools"> & {
+  run(system: string, options: Record<string, unknown>): ReturnType<ReturnType<typeof import("../runtime/create-runtime.js").createRuntime>["run"]>;
+  configureTools(options: Record<string, unknown>): void;
+};
+const { createRuntime } = await import("../runtime/create-runtime.js") as unknown as {
+  createRuntime(host?: Record<string, unknown>): FixtureRuntime;
+};
 const adapterLoadsAtRuntimeImport = adapterLoadMock.mock.calls.length;
 
-function modelRef(provider, model) {
+function modelRef(provider: string, model: string) {
   return { provider, model, reference: `${provider}:${model}` };
 }
 
@@ -62,7 +69,7 @@ describe("createRuntime", () => {
     await runtime.run("sys", { model: modelRef("anthropic", "x") });
     // The host tool config lives on the per-instance context threaded to the
     // bridge — NOT published to the process-global default context.
-    expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
+    expect(executeMock.mock.calls[0]![1].toolContext).toMatchObject({
       workspace: "/tmp/work",
       repoRoot: "/tmp/repo",
       additionalReadRoots: ["/tmp/read"],
@@ -76,7 +83,7 @@ describe("createRuntime", () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime({ workspace: "/tmp/work", unrelated: "ignored" });
     await runtime.run("sys", { model: modelRef("anthropic", "x") });
-    const { toolContext } = executeMock.mock.calls[0][1];
+    const { toolContext } = executeMock.mock.calls[0]![1];
     expect(toolContext.workspace).toBe("/tmp/work");
     expect(toolContext.unrelated).toBeUndefined();
   });
@@ -89,9 +96,9 @@ describe("createRuntime", () => {
     await runtime.run("first", { model: modelRef("faux", "x"), toolEnvironment });
     await runtime.run("second", { model: modelRef("faux", "x") });
 
-    expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({ toolEnvironment });
-    expect(executeMock.mock.calls[1][1].toolContext).not.toHaveProperty("toolEnvironment");
-    expect(executeMock.mock.calls[0][1].toolContext).not.toBe(executeMock.mock.calls[1][1].toolContext);
+    expect(executeMock.mock.calls[0]![1].toolContext).toMatchObject({ toolEnvironment });
+    expect(executeMock.mock.calls[1]![1].toolContext).not.toHaveProperty("toolEnvironment");
+    expect(executeMock.mock.calls[0]![1].toolContext).not.toBe(executeMock.mock.calls[1]![1].toolContext);
   });
 
   it("rejects removed flat settings before resolving a provider", async () => {
@@ -127,7 +134,7 @@ describe("createRuntime", () => {
 
   it("emits one metadata-only live_input_applied event after a bridge acknowledges guidance", async () => {
     const acknowledge = vi.fn(() => "recorded");
-    const events = [];
+    const events: Array<{ type: string; [key: string]: unknown }> = [];
     executeMock.mockImplementationOnce(async (_systemPrompt, options) => {
       const next = await options.liveInput[Symbol.asyncIterator]().next();
       next.value.acknowledge({ providerEntryId: "entry-1", providerRunId: "run-1" });
@@ -149,7 +156,7 @@ describe("createRuntime", () => {
     await runtime.run("sys", {
       model: modelRef("anthropic", "x"),
       liveInput,
-      onEvent: (event) => events.push(event),
+      onEvent: (event: { type: string; [key: string]: unknown }) => events.push(event),
     });
 
     expect(acknowledge).toHaveBeenCalledTimes(1);
@@ -185,7 +192,7 @@ describe("createRuntime", () => {
 
   it("keeps direct-runtime callback failures and uncertainty terminal without false applied events", async () => {
     const uncertain = vi.fn(() => "recorded");
-    const events = [];
+    const events: Array<{ type: string; [key: string]: unknown }> = [];
     executeMock.mockImplementationOnce(async (_systemPrompt, options) => {
       const iterator = options.liveInput[Symbol.asyncIterator]();
       const consumed = await iterator.next();
@@ -210,7 +217,7 @@ describe("createRuntime", () => {
     await runtime.run("sys", {
       model: modelRef("anthropic", "x"),
       liveInput,
-      onEvent: (event) => events.push(event),
+      onEvent: (event: { type: string; [key: string]: unknown }) => events.push(event),
     });
 
     expect(uncertain).toHaveBeenCalledTimes(1);
@@ -244,7 +251,7 @@ describe("createRuntime", () => {
       cwd: "/work",
     });
     expect(executeMock).toHaveBeenCalledTimes(1);
-    const [systemPrompt, options] = executeMock.mock.calls[0];
+    const [systemPrompt, options] = executeMock.mock.calls[0]!;
     expect(systemPrompt).toBe("sys");
     expect(options).toMatchObject({
       cwd: "/work",
@@ -266,7 +273,7 @@ describe("createRuntime", () => {
       persistArtifact: runSink,
     });
 
-    expect(executeMock.mock.calls[0][1].persistArtifact).toBe(runSink);
+    expect(executeMock.mock.calls[0]![1].persistArtifact).toBe(runSink);
   });
 
   it("run() does not bind host keys the RuntimeRequest shape no longer declares", async () => {
@@ -284,7 +291,7 @@ describe("createRuntime", () => {
     });
     await runtime.run("sys", { model: modelRef("anthropic", "x") });
 
-    const [, options] = executeMock.mock.calls[0];
+    const [, options] = executeMock.mock.calls[0]!;
     expect(options).not.toHaveProperty("resolveAcpProfile");
     expect(options).not.toHaveProperty("onAcpInteractionRequest");
     expect(options).not.toHaveProperty("acpSessionTokenKey");
@@ -300,7 +307,7 @@ describe("createRuntime", () => {
       model: modelRef("anthropic", "x"),
       resolveCustomPricing: callResolver,
     });
-    expect(executeMock.mock.calls[0][1].resolveCustomPricing).toBe(callResolver);
+    expect(executeMock.mock.calls[0]![1].resolveCustomPricing).toBe(callResolver);
   });
 
   it("configureTools() updates the instance context observed by the next run", async () => {
@@ -308,7 +315,7 @@ describe("createRuntime", () => {
     const runtime = createRuntime({ workspace: "/tmp/initial" });
     runtime.configureTools({ workspace: "/tmp/updated", ripgrepPath: "/opt/rg" });
     await runtime.run("sys", { model: modelRef("anthropic", "x") });
-    expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
+    expect(executeMock.mock.calls[0]![1].toolContext).toMatchObject({
       workspace: "/tmp/updated",
       ripgrepPath: "/opt/rg",
     });
@@ -323,7 +330,7 @@ describe("createRuntime", () => {
 
     await runtime.run("sys", { model: modelRef("anthropic", "x"), messages: [] });
 
-    const options = executeMock.mock.calls.at(-1)[1];
+    const options = executeMock.mock.calls.at(-1)![1];
     expect(options.toolContext.sandboxPolicy).toBeUndefined();
     expect(options.toolContext.sandboxEngine).toBeUndefined();
   });
@@ -333,7 +340,7 @@ describe("createRuntime", () => {
     const runtime = createRuntime();
     runtime.configureTools({ workspace: "/w", bogus: "nope" });
     await runtime.run("sys", { model: modelRef("anthropic", "x") });
-    const { toolContext } = executeMock.mock.calls[0][1];
+    const { toolContext } = executeMock.mock.calls[0]![1];
     expect(toolContext.workspace).toBe("/w");
     expect(toolContext.bogus).toBeUndefined();
   });
@@ -353,7 +360,7 @@ describe("createRuntime", () => {
       // Run overrides selected fields; the host's other prompt default survives.
       prompts: { structuredOutputInstruction: runInstruction, emptyReplyFinalization: runEmpty },
     });
-    const { prompts } = executeMock.mock.calls[0][1];
+    const { prompts } = executeMock.mock.calls[0]![1];
     expect(prompts.emptyReplyFinalization).toBe(runEmpty);
     expect(prompts.structuredOutputInstruction).toBe(runInstruction); // run wins
     expect(prompts.structuredOutputFinalization).toBe(hostFinalization); // host fills the rest
@@ -364,14 +371,14 @@ describe("createRuntime", () => {
     const hostGuidance = () => "g";
     const runtime = createRuntime({ prompts: { liveInputGuidance: hostGuidance } });
     await runtime.run("sys", { model: modelRef("faux", "x") });
-    expect(executeMock.mock.calls[0][1].prompts).toEqual({ liveInputGuidance: hostGuidance });
+    expect(executeMock.mock.calls[0]![1].prompts).toEqual({ liveInputGuidance: hostGuidance });
   });
 
   it("omits prompts entirely when neither host nor run supply any", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
     await runtime.run("sys", { model: modelRef("faux", "x") });
-    expect(executeMock.mock.calls[0][1].prompts).toBeUndefined();
+    expect(executeMock.mock.calls[0]![1].prompts).toBeUndefined();
   });
 
   it("two runtime instances keep independent tool contexts (no cross-instance clobber)", async () => {
@@ -383,8 +390,8 @@ describe("createRuntime", () => {
     a.configureTools({ workspace: "/tmp/a-updated" });
     await a.run("sys", { model: modelRef("anthropic", "x") });
     await b.run("sys", { model: modelRef("anthropic", "x") });
-    const ctxA = executeMock.mock.calls[0][1].toolContext;
-    const ctxB = executeMock.mock.calls[1][1].toolContext;
+    const ctxA = executeMock.mock.calls[0]![1].toolContext;
+    const ctxB = executeMock.mock.calls[1]![1].toolContext;
     expect(ctxA).not.toBe(ctxB);
     expect(ctxA.workspace).toBe("/tmp/a-updated");
     expect(ctxB.workspace).toBe("/tmp/b");
@@ -403,7 +410,7 @@ describe("createRuntime subagent seam", () => {
     const runtime = createRuntime();
     await runtime.run("parent", { model, subagents });
 
-    const forwarded = executeMock.mock.calls[0][1];
+    const forwarded = executeMock.mock.calls[0]![1];
     expect(typeof forwarded.subagents.run).toBe("function");
     expect(forwarded.subagents.definitions).toBe(subagents.definitions);
   });
@@ -416,10 +423,10 @@ describe("createRuntime subagent seam", () => {
     executeMock.mockResolvedValue({ text: "ok", events: [] });
     const runtime = createRuntime();
     await runtime.run("parent", { model, subagents });
-    const childRun = executeMock.mock.calls[0][1].subagents.run;
+    const childRun = executeMock.mock.calls[0]![1].subagents.run;
     executeMock.mockClear();
     await childRun({ systemPrompt: "child", prompt: "x", definition, model: modelRef("faux", "parent"), effort: "xhigh" });
-    expect(executeMock.mock.calls[0][1]).toMatchObject({ model: modelRef("faux", expectedModel), effort: expectedEffort });
+    expect(executeMock.mock.calls[0]![1]).toMatchObject({ model: modelRef("faux", expectedModel), effort: expectedEffort });
   });
 
   it("does not overwrite a host-supplied run callback", async () => {
@@ -428,7 +435,7 @@ describe("createRuntime subagent seam", () => {
     const runtime = createRuntime();
     await runtime.run("parent", { model, subagents: { ...subagents, run: hostRun } });
 
-    expect(executeMock.mock.calls[0][1].subagents.run).toBe(hostRun);
+    expect(executeMock.mock.calls[0]![1].subagents.run).toBe(hostRun);
   });
 
   it("runs a child turn one level deeper, with no session or steering state", async () => {
@@ -436,7 +443,7 @@ describe("createRuntime subagent seam", () => {
     const runtime = createRuntime();
     await runtime.run("parent", { model, subagents });
 
-    const childRun = executeMock.mock.calls[0][1].subagents.run;
+    const childRun = executeMock.mock.calls[0]![1].subagents.run;
     executeMock.mockClear();
     const result = await childRun({
       systemPrompt: "child system prompt",
@@ -450,8 +457,8 @@ describe("createRuntime subagent seam", () => {
     });
 
     expect(result.text).toBe("child answer");
-    const childOptions = executeMock.mock.calls[0][1];
-    expect(executeMock.mock.calls[0][0]).toBe("child system prompt");
+    const childOptions = executeMock.mock.calls[0]![1];
+    expect(executeMock.mock.calls[0]![0]).toBe("child system prompt");
     expect(childOptions.messages).toEqual([{ role: "user", content: "do the thing" }]);
     expect(childOptions.maxTurns).toBe(7);
     expect(childOptions.allowedTools).toEqual(["Read"]);
@@ -472,7 +479,7 @@ describe("createRuntime subagent seam", () => {
       model, subagents, webSearchConfig, webFetchConfig, webRequestCoordinator,
     });
 
-    const parentOptions = executeMock.mock.calls[0][1];
+    const parentOptions = executeMock.mock.calls[0]![1];
     const childRun = parentOptions.subagents.run;
     executeMock.mockClear();
     await childRun({
@@ -486,7 +493,7 @@ describe("createRuntime subagent seam", () => {
       onEvent: () => {},
     });
 
-    const childOptions = executeMock.mock.calls[0][1];
+    const childOptions = executeMock.mock.calls[0]![1];
     expect(childOptions).toMatchObject({ webSearchConfig, webFetchConfig, webRequestCoordinator });
     expect(childOptions.webSearchState).not.toBe(parentOptions.webSearchState);
     expect(childOptions.webSearchState).toMatchObject({ maxRequests: 2, requestsUsed: 0 });
@@ -496,7 +503,7 @@ describe("createRuntime subagent seam", () => {
     executeMock.mockResolvedValue({ text: "ok", events: [] });
     const runtime = createRuntime();
     await runtime.run("parent", { model, subagents });
-    const childRun = executeMock.mock.calls[0][1].subagents.run;
+    const childRun = executeMock.mock.calls[0]![1].subagents.run;
 
     executeMock.mockClear();
     const sandboxPolicy = { mode: "read-only", network: { mode: "deny" } };
@@ -513,7 +520,7 @@ describe("createRuntime subagent seam", () => {
       onEvent: () => {},
     });
 
-    expect(executeMock.mock.calls[0][1]).toMatchObject({ sandboxPolicy, sandboxEngine: { id: "srt" } });
+    expect(executeMock.mock.calls[0]![1]).toMatchObject({ sandboxPolicy, sandboxEngine: { id: "srt" } });
   });
 
   it("forwards the parent's skill context to a bare-kernel child", async () => {
@@ -524,7 +531,7 @@ describe("createRuntime subagent seam", () => {
     executeMock.mockResolvedValue({ text: "ok", events: [] });
     const runtime = createRuntime();
     await runtime.run("parent", { model, subagents });
-    const childRun = executeMock.mock.calls[0][1].subagents.run;
+    const childRun = executeMock.mock.calls[0]![1].subagents.run;
 
     executeMock.mockClear();
     const skills = [{ name: "research", description: "Reads the web." }];
@@ -541,7 +548,7 @@ describe("createRuntime subagent seam", () => {
       onEvent: () => {},
     });
 
-    expect(executeMock.mock.calls[0][1]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
+    expect(executeMock.mock.calls[0]![1]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
   });
 });
 });

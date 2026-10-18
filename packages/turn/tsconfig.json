@@ -58,7 +58,8 @@
     "declarationDir": "types"
   },
   "include": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "src/**/*.mts"
   ],
   "exclude": [
     "src/**/__tests__/**"

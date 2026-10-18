@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-function fail(message, code = 78) {
+function fail(message: string, code = 78): never {
   console.error(`srt-embed-runner: ${message}`);
   process.exit(code);
 }
@@ -56,7 +56,11 @@ if (settings.network !== undefined) {
   fail("settings with a network block belong to the SRT CLI launch; refusing to run them without domain filtering");
 }
 
-let SandboxManager;
+let SandboxManager: {
+  initialize(settings: { network: Record<string, never>; filesystem: object }): Promise<void>;
+  wrapWithSandbox(command: string): Promise<string>;
+  cleanupAfterCommand(): void;
+};
 try {
   ({ SandboxManager } = await import(pathToFileURL(entryPath).href));
 } catch (error) {
@@ -127,14 +131,14 @@ const CHILD_KILL_GRACE_MS = 1_000;
 // this only covers the kernel reaping the group.
 const KILL_SETTLE_MS = 50;
 
-let escalation;
-let requestedSignal;
+let escalation: ReturnType<typeof setTimeout> | undefined;
+let requestedSignal: NodeJS.Signals | undefined;
 let finished = false;
 
 // Signal the child's whole process group, falling back to the child alone when
 // the group cannot be addressed. Never throws: this runs from signal handlers
 // and from a timer, where an exception would be fatal.
-function signalChildTree(signal) {
+function signalChildTree(signal: NodeJS.Signals) {
   if (child.pid === undefined) {
     return;
   }
@@ -142,7 +146,7 @@ function signalChildTree(signal) {
     process.kill(-child.pid, signal);
     return;
   } catch (error) {
-    if (error?.code === "ESRCH") {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ESRCH") {
       return;
     }
   }
@@ -165,11 +169,11 @@ function childTreeAlive() {
     process.kill(-child.pid, 0);
     return true;
   } catch (error) {
-    return error?.code === "EPERM";
+    return (error as NodeJS.ErrnoException | null)?.code === "EPERM";
   }
 }
 
-function finish(code, signal) {
+function finish(code: number | null, signal: NodeJS.Signals | null) {
   if (finished) {
     return;
   }
@@ -190,7 +194,7 @@ function finish(code, signal) {
   process.exit(code ?? 0);
 }
 
-function terminateChildTree(signal) {
+function terminateChildTree(signal: NodeJS.Signals) {
   requestedSignal = signal;
   signalChildTree(signal);
   if (escalation !== undefined) {
@@ -223,5 +227,5 @@ child.on("error", (error) => {
   process.exit(1);
 });
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-  process.on(signal, () => terminateChildTree(signal));
+  process.on(signal, () => terminateChildTree(signal as NodeJS.Signals));
 }

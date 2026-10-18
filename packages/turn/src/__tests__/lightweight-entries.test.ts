@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { expect, it } from "vitest";
 
-function resolvedGraph(entry, profile) {
+function resolvedGraph(entry: string, profile: string): string[] {
   return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
     import assert from "node:assert/strict";
     import { registerHooks } from "node:module";

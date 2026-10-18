@@ -163,10 +163,10 @@ it("a damaged legacy source blocks only its own handle's missing verdict", async
   expect(await f.bridge.inspectCurrentJournal({ handleId: "b".repeat(64) })).toEqual({ status: "unreadable", reason: "unattributed" });
   expect(await readFile(join(legacy, `t_${"b".repeat(64)}.jsonl`), "utf8")).toBe("{not json\n");
 });
-const worker = fileURLToPath(new URL("./fixtures/native-journal-storage-worker.mjs", import.meta.url));
+const worker = fileURLToPath(new URL("../../../../../.worklab-tmp/turn-test-fixtures/__tests__/ai/fixtures/native-journal-storage-worker.mjs", import.meta.url));
 it.skipIf(process.platform === "win32").each(["epoch_stage_created", "epoch_stage_synced", "epoch_renamed", "epoch_directory_synced"])("recovers epoch creation twice in fresh processes after SIGKILL at %s", async (phase) => {
   const f = await fixture(); await writeFile(join(f.root, "native-proof.json"), JSON.stringify({ context }), { mode: 0o600 });
-  const child = fork(worker, [f.root, phase], { silent: true }); let error = "";
+  const child = fork(worker, [f.root, phase], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], silent: true }); let error = "";
   child.stderr!.on("data", (bytes) => { error += bytes; });
   const exited = once(child, "exit");
   try {
@@ -175,8 +175,8 @@ it.skipIf(process.platform === "win32").each(["epoch_stage_created", "epoch_stag
     child.kill("SIGKILL"); expect((await exited)[1]).toBe("SIGKILL");
   } finally { if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; } }
   const run = promisify(execFile);
-  const first = JSON.parse((await run(process.execPath, [worker, f.root], { timeout: 30_000 })).stdout);
-  const second = JSON.parse((await run(process.execPath, [worker, f.root], { timeout: 30_000 })).stdout);
+  const first = JSON.parse((await run(process.execPath, ["--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href, worker, f.root], { timeout: 30_000 })).stdout);
+  const second = JSON.parse((await run(process.execPath, ["--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href, worker, f.root], { timeout: 30_000 })).stdout);
   expect(second).toEqual(first); expect(second.inventory.stagedBytes).toBe(0);
   expect((await f.repo.listOwned()).map((row: { id: string }) => row.id).sort()).toEqual([f.metadata.id, context.targetHandleId].sort());
   expect(await readFile(f.metadata.path)).toEqual(f.before);
@@ -214,7 +214,7 @@ it("refuses a foreign live writer and reasserts ownership before each unlink", a
   await expect(f.bridge.deleteJournals([f.journals.target], { ...f.deletion, assertOwned: async () => { throw new Error("Lost fictional owner"); } })).rejects.toThrow("Lost fictional owner");
   expect(await f.bridge.inventory()).toEqual(before); expect(await readdir(f.repo.directory)).toHaveLength(2);
 });
-const lifecycleWorker = fileURLToPath(new URL("./fixtures/native-lifecycle-storage-worker.mjs", import.meta.url));
+const lifecycleWorker = fileURLToPath(new URL("../../../../../.worklab-tmp/turn-test-fixtures/__tests__/ai/fixtures/native-lifecycle-storage-worker.mjs", import.meta.url));
 it.skipIf(process.platform === "win32").each([
   ["cold", "epoch_stage_created"], ["cold", "epoch_renamed"], ["cold", "native_file_removed"], ["cold", "native_members_directory_synced"],
   ["delete", "native_file_removed"], ["delete", "native_member_directory_synced"], ["delete", "native_member_removed"], ["delete", "native_members_directory_synced"],
@@ -223,7 +223,7 @@ it.skipIf(process.platform === "win32").each([
   const cold = { ...context, targetHandleId: "b".repeat(64), timestamp: 23 };
   await writeFile(join(f.root, "lifecycle-proof.json"), JSON.stringify({ current: f.journals.target, cold,
     deletion: { ...f.deletion, disposition: operation === "delete" ? "D" : "C" }, operation }), { mode: 0o600 });
-  const child = fork(lifecycleWorker, [f.root, phase], { silent: true }); let error = "";
+  const child = fork(lifecycleWorker, [f.root, phase], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], silent: true }); let error = "";
   child.stderr!.on("data", (bytes) => { error += bytes; }); const exited = once(child, "exit"); let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([once(child, "message"), exited.then(() => { throw new Error(`Proof owner exited before boundary: ${error}`); }),
@@ -231,8 +231,8 @@ it.skipIf(process.platform === "win32").each([
     child.kill("SIGKILL"); expect((await exited)[1]).toBe("SIGKILL");
   } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; } }
   const run = promisify(execFile);
-  const first = JSON.parse((await run(process.execPath, [lifecycleWorker, f.root], { timeout: 30000 })).stdout);
-  const second = JSON.parse((await run(process.execPath, [lifecycleWorker, f.root], { timeout: 30000 })).stdout);
+  const first = JSON.parse((await run(process.execPath, ["--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href, lifecycleWorker, f.root], { timeout: 30000 })).stdout);
+  const second = JSON.parse((await run(process.execPath, ["--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href, lifecycleWorker, f.root], { timeout: 30000 })).stdout);
   expect(second).toEqual(first); expect(second.inventory.stagedBytes).toBe(0);
   const names = (await readdir(f.repo.directory)).sort();
   if (operation === "cold") expect(names).toEqual([`${f.metadata.journalId}.jsonl`, `${(await f.repo.listOwned()).find((m: { id: string; [key: string]: any }) => m.id === cold.targetHandleId).journalId}.jsonl`].sort());

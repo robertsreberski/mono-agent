@@ -4,8 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunRecorder } from "@mono-agent/observability";
 import type { MonoRuntimeLike, RuntimePreparedHandoff } from "@mono-agent/turn/host/types";
-// @ts-expect-error Fake transport fixture, real native orchestration.
-import { preparedHostFixture } from "../../../turn/src/__tests__/fixtures/prepared-host-runtime.mjs";
+import type { createModels, AssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import type { RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/turn/host/types";
+const { preparedHostFixture } = await import(new URL("../../../turn/src/__tests__/fixtures/prepared-host-runtime.mts", import.meta.url).href) as {
+  preparedHostFixture(workspace: string): { runtime: MonoRuntimeLike; faux: ReturnType<typeof fauxProvider>; models: Omit<ReturnType<typeof createModels>, "setProvider"> & {
+      setProvider(provider: Omit<ReturnType<typeof fauxProvider>["provider"], "auth"> & { auth: { apiKey: { resolve(): Promise<never> } } }): void;
+    };
+    model: RuntimeModelReference; options: RuntimeRunOptions; response(text: string): AssistantMessage };
+};
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "../harness/runtime-execution.js";
 import { UncommittedTurnCollector } from "../harness/turn-continuity.js";
 import { buildAgentContext } from "../context/context-builder.js";

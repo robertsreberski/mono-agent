@@ -30,12 +30,15 @@ run from the repository root:
 
 ```bash
 pnpm --dir packages/turn run test:fixtures
-node packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs
+node .worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/regenerate-projection-goldens.mjs
 pnpm --dir packages/turn run build
 pnpm --filter @mono-agent/turn exec vitest run \
   src/engine/__tests__/projection-default-parity.test.ts
 ```
 
+The authored `regenerate-projection-goldens.mts` is compiled by `test:fixtures`.
+Its canonical data and output directory remains
+`packages/turn/src/engine/__tests__/fixtures`, not the emitted fixture tree.
 The manual generator archives original harness/runtime source into an owned
 `.worklab-tmp` temporary directory, runs the current scenario against those
 original modules, and removes the directory in `finally`. It writes only the

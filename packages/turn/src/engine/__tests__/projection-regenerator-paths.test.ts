@@ -26,7 +26,7 @@ it.each(["src", "dist"])("keeps the %s regenerator's data and compiled worker ro
   const globals = globalThis as typeof globalThis & Record<string, unknown>;
   globals[key] = fake;
   const mock = (names: string[]) => "data:text/javascript," + encodeURIComponent(names.map((name) => `export const ${name} = globalThis[${JSON.stringify(key)}].${name};`).join("\n"));
-  const original = readFileSync(new URL("./fixtures/regenerate-projection-goldens.mjs", import.meta.url), "utf8");
+  const original = readFileSync(new URL("./fixtures/regenerate-projection-goldens.mts", import.meta.url), "utf8");
   try {
     for (const needle of ['"node:child_process"', '"node:fs/promises"', 'import.meta.resolve("@mono-agent/turn/engine")']) {
       expect(original.split(needle), `single source replacement: ${needle}`).toHaveLength(2);

@@ -375,3 +375,5 @@
 /src/tools/web/web-search.js.map
 /src/execution/pi/types.js
 /src/execution/pi/types.js.map
+/src/host/sandbox/srt-embed-runner.mjs
+/src/host/sandbox/srt-embed-runner.mjs.map

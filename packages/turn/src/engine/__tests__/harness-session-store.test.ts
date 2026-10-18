@@ -122,7 +122,7 @@ describe("mono-agent harness session store", () => {
   });
   it("accounts for an unfinished turn after SIGKILL without claiming it completed", async () => {
     const r = await root();
-    const child = fork(new URL("./fixtures/append-worker.mjs", import.meta.url), [r], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    const child = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/append-worker.mjs", import.meta.url), [r], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
     try {
       const [notice] = await once(child, "message");
       expect(notice).toEqual({ phase: "appended-not-synced" });
@@ -261,7 +261,7 @@ it("retires a local writer only after draining storage and holds its lock until 
 it("waits for foreign writer ownership before retirement and reclaims its released lock", async () => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "foreign-owner" });
   await session.appendMessage(message); await session.close();
-  const child = fork(new URL("./fixtures/store-owner-worker.mjs", import.meta.url), [r], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const child = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/store-owner-worker.mjs", import.meta.url), [r], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
   let spy: any;
   try {
     const [notice] = await once(child, "message"); expect(notice.phase).toBe("opened");
@@ -365,7 +365,7 @@ it("publishes concurrent same-handle creations under one catalogue reservation",
 
 it.each(["stage_created", "stage_synced"].flatMap((phase: string) => ["native", "legacy"].map((next: string) => [phase, next])))("reclaims SIGKILLed native %s creation and its writer before %s reuse", async (phase: string, next: string) => {
   const r = await root();
-  const child = fork(new URL("./fixtures/native-create-worker.mjs", import.meta.url), [r, phase], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const child = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/native-create-worker.mjs", import.meta.url), [r, phase], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try {
     const notice = await Promise.race([once(child, "message"), once(child, "exit").then(([code]: any[]) => { throw new Error(`Native creator exited: ${code}`); })]);
     expect(notice[0]).toEqual({ phase }); const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;

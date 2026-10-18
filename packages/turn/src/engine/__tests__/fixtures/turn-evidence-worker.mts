@@ -2,7 +2,7 @@ import { JsonlSessionRepo } from "../../session-store.js";
 import { createRunDriver } from "../../run-driver.js";
 import { readTurnEvidence, matchTurnEvidence, digestTurnInput } from "../../turn-evidence.js";
 import { repairInterruptedSession } from "../../interruption.js";
-const [root, mode] = process.argv.slice(2);
+const [root, mode] = process.argv.slice(2) as [string, string, string, string];
 const model = { provider: "faux", id: "fictional-model", api: "faux" };
 const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "cross-process-turn", handleId: "cross-process-handle", baseRevision: 0,
   reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } };
@@ -13,14 +13,14 @@ if (mode === "admit") {
   raw.sync = async () => {
     await sync();
     if (raw.validator.turns.get(descriptor.turnId)?.start && raw.seq === raw.validator.turns.get(descriptor.turnId).start.seq) {
-      process.send({ phase: "inline-start-synced" }); await new Promise(() => { setInterval(() => {}, 1_000); });
+      process.send!({ phase: "inline-start-synced" }); await new Promise(() => { setInterval(() => {}, 1_000); });
     }
   };
   const driver = createRunDriver(raw, { model, tools: [], systemPrompt: "Fictional contract." });
   await driver.beginTurn(descriptor.turnId, "host", descriptor);
   throw new Error("Worker passed the controlled first-sync barrier");
 } else {
-  const metadata = (await repo.listOwned()).find((item) => item.id === descriptor.handleId);
+  const metadata = (await repo.listOwned()).find((item: { id: string }) => item.id === descriptor.handleId);
   const raw = await repo.open(metadata, { repair: false });
   const query = { descriptor, purpose: "execution", expectedModel: model, expectedBaseTip: null,
     expectedInputs: [{ id: "fictional-input", placement: "initial", requestDigest: digestTurnInput("Fictional request.") }] };
@@ -30,6 +30,6 @@ if (mode === "admit") {
   await raw.prepareReconciliation(); await repairInterruptedSession(raw);
   const after = await readTurnEvidence(raw, descriptor.turnId);
   await raw.close();
-  process.send({ phase: "storage-only-recovery", evidence: after, beforeStatus: before.status });
-  process.disconnect(); process.exit(0);
+  process.send!({ phase: "storage-only-recovery", evidence: after, beforeStatus: before.status });
+  process.disconnect!(); process.exit(0);
 }

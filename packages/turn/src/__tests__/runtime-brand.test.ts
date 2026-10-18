@@ -4,15 +4,15 @@ const executeMock = vi.fn();
 const assertEngineTurnModelRefMock = vi.fn();
 
 vi.mock("../execution/pi/model-ref.js", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
+  const actual = await importOriginal<typeof import("../execution/pi/model-ref.js")>();
+  return { assertEngineTurnModelRef: (ref: unknown) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref as Parameters<typeof actual.assertEngineTurnModelRef>[0]); } };
 });
 
 vi.mock("../execution/pi/run.js", async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import("../execution/pi/run.js")>();
   return {
     ...actual,
-    engineTurnAdapter: { id: "stub", execute: (...args) => executeMock(...args) },
+    engineTurnAdapter: { id: "stub", execute: (...args: unknown[]) => executeMock(...args) },
   };
 });
 
@@ -31,8 +31,8 @@ beforeEach(() => {
 describe("resolveRuntimeBrand", () => {
   it("returns the defaults when input is missing or not an object", () => {
     expect(resolveRuntimeBrand()).toEqual(DEFAULT_RUNTIME_BRAND);
-    expect(resolveRuntimeBrand(null)).toEqual(DEFAULT_RUNTIME_BRAND);
-    expect(resolveRuntimeBrand(42)).toEqual(DEFAULT_RUNTIME_BRAND);
+    expect(resolveRuntimeBrand(null as never)).toEqual(DEFAULT_RUNTIME_BRAND);
+    expect(resolveRuntimeBrand(42 as never)).toEqual(DEFAULT_RUNTIME_BRAND);
   });
 
   it("applies recognised string overrides and ignores everything else", () => {
@@ -41,13 +41,13 @@ describe("resolveRuntimeBrand", () => {
       mcpClientName: "demo-host",
       tempdirPrefix: "demo-cli-",
       unknownKey: "ignored",
-      mcpClientVersion: 7, // non-string is ignored
-    });
+      mcpClientVersion: 7 as never, // non-string is ignored
+    } as unknown as Parameters<typeof resolveRuntimeBrand>[0]);
     expect(brand.schemaPrefix).toBe("demo");
     expect(brand.mcpClientName).toBe("demo-host");
     expect(brand.tempdirPrefix).toBe("demo-cli-");
     expect(brand.mcpClientVersion).toBe(DEFAULT_RUNTIME_BRAND.mcpClientVersion);
-    expect(brand.unknownKey).toBeUndefined();
+    expect((brand as unknown as { unknownKey?: unknown }).unknownKey).toBeUndefined();
   });
 
   it("trims whitespace and rejects empty strings", () => {
@@ -75,7 +75,7 @@ describe("createRuntime + runtimeBrand", () => {
       },
     });
     await runtime.run("sys", { model: TEST_MODEL });
-    const brand = executeMock.mock.calls[0][1].toolContext.runtimeBrand;
+    const brand = executeMock.mock.calls[0]![1].toolContext.runtimeBrand;
     expect(brand.schemaPrefix).toBe("demo");
     expect(brand.mcpClientName).toBe("demo-host");
     expect(brand.doctorCommand).toBe("demo doctor");
@@ -87,7 +87,7 @@ describe("createRuntime + runtimeBrand", () => {
     const runtime = createRuntime({ runtimeBrand: { schemaPrefix: "demo" } });
     await runtime.run("sys", { model: TEST_MODEL });
     expect(executeMock).toHaveBeenCalledTimes(1);
-    const [, options] = executeMock.mock.calls[0];
+    const [, options] = executeMock.mock.calls[0]!;
     expect(options.runtimeBrand?.schemaPrefix).toBe("demo");
     expect(options.toolContext?.runtimeBrand?.schemaPrefix).toBe("demo");
   });
@@ -114,7 +114,7 @@ describe("brand-aware modules", () => {
 
   it("ripgrep error message uses the immutable default brand when no context is supplied", async () => {
     const { ripgrepMissingMessage } = await import("../tools/shared/ripgrep.js");
-    expect(ripgrepMissingMessage()).toContain(`\`${DEFAULT_RUNTIME_BRAND.doctorCommand}\``);
+    expect((ripgrepMissingMessage as () => string)()).toContain(`\`${DEFAULT_RUNTIME_BRAND.doctorCommand}\``);
   });
 
   it("default brand uses neutral schema strings", async () => {

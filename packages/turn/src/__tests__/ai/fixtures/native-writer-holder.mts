@@ -1,8 +1,8 @@
 // Holds one durable native session's writer lock from another process until killed.
 import { JsonlSessionRepo } from "../../../engine/session-store.js";
-const [root, sessionId] = process.argv.slice(2);
+const [root, sessionId] = process.argv.slice(2) as [string, string, string, string];
 const repo = new JsonlSessionRepo({ sessionsRoot: root });
-const metadata = (await repo.listOwned()).find((entry) => entry.id === sessionId);
+const metadata = (await repo.listOwned()).find((entry: { id: string }) => entry.id === sessionId);
 await repo.open(metadata, { repair: false, wait: false });
 process.send?.({ held: true });
 process.on("disconnect", () => process.exit(0)); // never outlive the test process
