@@ -20,7 +20,7 @@ interface InstanceDefinition {
 
 export interface SubagentQuestion { question: string; options?: string[] }
 
-export interface InstanceUsage { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number }
+export interface InstanceUsage { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number | null; knownCostUsd?: number }
 
 export interface SubagentInstance {
   id: string;

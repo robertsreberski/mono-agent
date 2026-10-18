@@ -69,6 +69,7 @@ function renderMetricsReport(report: RecordedRunMetricsReport): string {
       out += `, failed ${group.statusCounts.failed} (${formatPercent(group.statusRates.failed)})`;
       out += `, p90 ${formatDuration(group.durationMs.p90)}`;
       out += `, cost ${formatUsd(group.cost.totalUsd)}\n`;
+      if (group.cost.knownUsd !== undefined) out += `    Known cost ${formatUsd(group.cost.knownUsd)}\n`;
     }
   }
   if (report.parseFailures.length > 0) {
@@ -101,6 +102,7 @@ function renderBucket(bucket: RecordedRunMetricsBucket): string {
   out += `  max: ${formatDuration(bucket.durationMs.max)}\n`;
   out += "\nCost\n";
   out += `  total: ${formatUsd(bucket.cost.totalUsd)}\n`;
+  if (bucket.cost.knownUsd !== undefined) out += `  Known cost ${formatUsd(bucket.cost.knownUsd)}\n`;
   out += `  average/run: ${formatUsd(bucket.cost.averageUsdPerRun)}\n`;
   out += `  runs with cost: ${bucket.cost.runsWithCost}\n`;
   out += "\nFailure kinds\n";
@@ -123,7 +125,8 @@ function formatDuration(value: number | null): string {
   return value === null ? "n/a" : `${formatNumber(value)} ms`;
 }
 
-function formatUsd(value: number): string {
+function formatUsd(value: number | null): string {
+  if (value === null) return "unknown";
   return `$${formatNumber(value, 6)}`;
 }
 

@@ -1871,9 +1871,11 @@ describe("managed detached production execution", () => {
   }, 30_000);
 
   it.each([
-    { scenario: "token-only unpriced", price: 0, existingCost: undefined },
-    { scenario: "price already present", price: 0.08, existingCost: 0.03 },
-  ])("backfills $scenario tokens without overwriting cost", async ({ price, existingCost }) => {
+    { scenario: "token-only zero", price: 0, existingCost: undefined, lateKnown: undefined, existingKnown: undefined },
+    { scenario: "price already present", price: 0.08, existingCost: 0.03, lateKnown: undefined, existingKnown: undefined },
+    { scenario: "explicit unknown already present", price: 0.08, existingCost: null, lateKnown: undefined, existingKnown: 2 },
+    { scenario: "explicit unknown late fill", price: null, existingCost: undefined, lateKnown: 2, existingKnown: undefined },
+  ])("backfills $scenario tokens without overwriting cost", async ({ price, existingCost, lateKnown, existingKnown }) => {
     const surfaceUpdate = vi.fn(async (_job: ProcessJobProjection) => {});
     const f = await managedFixture(undefined, {}, false, undefined, surfaceUpdate);
     const gate = deferred<any>();
@@ -1884,17 +1886,18 @@ describe("managed detached production execution", () => {
     await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     if (existingCost !== undefined) await f.store.mutate((records) => {
       const record = records.get(receipt.details.jobId)!;
-      record.subagentProgress = { ...record.subagentProgress!, costUsd: existingCost };
+      record.subagentProgress = { ...record.subagentProgress!, costUsd: existingCost, ...(existingKnown === undefined ? {} : { knownCostUsd: existingKnown }) };
     });
     const before = (await f.store.get(receipt.details.jobId))!.subagentProgress!;
     expect(before).not.toHaveProperty("usage");
-    gate.resolve({ text: "late", usage: { input_tokens: 9 }, cost: { total: price } });
+    gate.resolve({ text: "late", usage: { input_tokens: 9 }, cost: { total: price, ...(lateKnown === undefined ? {} : { knownCostUsd: lateKnown }) } });
     await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentProgress?.usage?.input).toBe(9),
       { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const after = (await f.store.get(receipt.details.jobId))!.subagentProgress!;
     expect(after.revision).toBe(before.revision + 1);
-    if (existingCost === undefined) expect(after).not.toHaveProperty("costUsd");
-    else expect(after.costUsd).toBe(existingCost);
+    if (existingCost === undefined && price !== null) expect(after).not.toHaveProperty("costUsd");
+    else expect(after.costUsd).toBe(existingCost ?? null);
+    expect(after.knownCostUsd).toBe(existingKnown ?? lateKnown);
     await vi.waitFor(() => expect(surfaceUpdate.mock.calls.some(([job]) =>
       job.kind === "internal" && job.subagentProgress?.usage?.input === 9)).toBe(true),
     { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
@@ -2905,3 +2908,41 @@ function presentTool(value: ReturnType<typeof createAgentManageTool>) {
   assert.ok(value);
   return value;
 }
+
+it("round-trips an unknown detached turn through ownership, publication and reopened job progress", async () => {
+  const f = await managedFixture();
+  const { agent } = tools(f, async () => ({ text: "Synthetic reply", usage: { input_tokens: 3, cost_usd: null, known_cost_usd: 2 } }));
+  const receipt = await agent.execute("synthetic-unknown", { persist: true, background: true, id: "helper", prompt: "Synthetic task" });
+  const job = await done(f.service, receipt.details.jobId);
+  expect(job).toMatchObject({ state: "succeeded", subagentProgress: { costUsd: null, knownCostUsd: 2 } });
+  const stored = await f.store.get(receipt.details.jobId);
+  expect(stored?.subagentOwnership?.usage).toMatchObject({ costUsd: null, knownCostUsd: 2 });
+  const reopened = await openProcessJobStore(f.root, f.options.settings.stateDir);
+  expect((await reopened.get(receipt.details.jobId))?.subagentProgress).toMatchObject({ costUsd: null, knownCostUsd: 2 });
+  expect(await f.instances.get("helper")).toMatchObject({ turns: 1, usage: { costUsd: null, knownCostUsd: 2 } });
+}, 30_000);
+
+it.each([undefined, 0])("round-trips legacy job cost %s byte-stably and rejects contradictory known spend", async (costUsd) => {
+  const f = await managedFixture();
+  const { agent } = tools(f, async () => ({ text: "Synthetic zero", usage: { cost_usd: 0 } }));
+  const receipt = await agent.execute("synthetic-legacy", { persist: true, background: true, id: "helper", prompt: "Synthetic task" });
+  await done(f.service, receipt.details.jobId);
+  await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+  await f.store.mutate((records) => {
+    const record = records.get(receipt.details.jobId);
+    if (record?.subagentProgress === undefined) throw new Error("Missing synthetic progress");
+    const { costUsd: _old, knownCostUsd: _known, ...progress } = record.subagentProgress;
+    record.subagentProgress = { ...progress, ...(costUsd === undefined ? {} : { costUsd }) };
+  });
+  const file = resolve(f.store.recordsDir, `${receipt.details.jobId}.json`);
+  const before = await readFile(file, "utf8");
+  const reopened = await openProcessJobStore(f.root, f.options.settings.stateDir);
+  expect((await reopened.get(receipt.details.jobId))?.subagentProgress?.costUsd).toBe(costUsd);
+  expect(await readFile(file, "utf8")).toBe(before);
+  await expect(f.store.mutate((records) => {
+    const record = records.get(receipt.details.jobId);
+    if (record?.subagentProgress === undefined) throw new Error("Missing synthetic progress");
+    record.subagentProgress = { ...record.subagentProgress, costUsd: 1, knownCostUsd: 2 };
+  })).rejects.toThrow();
+  expect(await readFile(file, "utf8")).toBe(before);
+}, 30_000);

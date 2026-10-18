@@ -283,3 +283,15 @@ describe("awaiting child questions", () => {
     expect((await handle.get(id))?.pendingQuestion).toBeUndefined();
   });
 });
+
+it("persists an unknown lifetime total and preserves later known spend exactly once", async () => {
+  const { handle, root, retireSession } = await setup();
+  const created = await handle.create(spec);
+  await handle.begin(created.id);
+  await handle.finish(created.id, { status: "ok", usage: { input: 2, costUsd: null, knownCostUsd: 2 } });
+  const restarted = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
+  expect((await restarted.get(created.id))?.usage).toMatchObject({ input: 2, costUsd: null, knownCostUsd: 2 });
+  await restarted.begin(created.id);
+  await restarted.finish(created.id, { status: "ok", usage: { costUsd: 3 } });
+  expect((await restarted.get(created.id))?.usage).toMatchObject({ input: 2, costUsd: null, knownCostUsd: 5 });
+});

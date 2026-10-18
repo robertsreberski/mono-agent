@@ -624,7 +624,8 @@ export function streamEventFromRuntimeEvent(
     return {
       type: "usage_update",
       ...(model === undefined ? {} : { model }),
-      ...(typeof event.cumulativeUsd === "number" ? { cumulativeUsd: event.cumulativeUsd } : {}),
+      ...(event.cumulativeUsd === null || typeof event.cumulativeUsd === "number" ? { cumulativeUsd: event.cumulativeUsd } : {}),
+      ...(event.cumulativeUsd === null && typeof event.knownCostUsd === "number" && Number.isFinite(event.knownCostUsd) && event.knownCostUsd >= 0 ? { knownCostUsd: event.knownCostUsd } : {}),
       ...(tokens === undefined ? {} : { tokens }),
       ...(Number.isSafeInteger(event.contextTokens) && Number(event.contextTokens) >= 0 ? { contextTokens: Number(event.contextTokens) } : {}),
     };

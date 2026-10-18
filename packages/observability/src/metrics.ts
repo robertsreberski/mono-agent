@@ -1,5 +1,5 @@
+import { recordedCost } from "./recorded-cost.js";
 import { readArtifactSummaryRecords } from "./artifact-summaries.js";
-import { isRecord } from "./artifact-fs.js";
 import {
   RUN_SUMMARY_STATUSES,
   isRunSummaryStatus,
@@ -30,9 +30,11 @@ export interface RecordedRunDurationMetrics {
 }
 
 export interface RecordedRunCostMetrics {
-  readonly totalUsd: number;
-  readonly averageUsdPerRun: number;
+  readonly totalUsd: number | null;
+  readonly averageUsdPerRun: number | null;
   readonly runsWithCost: number;
+  readonly knownUsd?: number;
+  readonly runsWithUnknownCost?: number;
 }
 
 export interface RecordedRunFailureKindMetric {
@@ -118,6 +120,8 @@ function buildBucket(key: string, summaries: readonly Record<string, unknown>[])
   const durations: number[] = [];
   let totalUsd = 0;
   let runsWithCost = 0;
+  let runsWithUnknownCost = 0;
+  let hasKnownCost = false;
 
   for (const summary of summaries) {
     if (isRunSummaryStatus(summary.status)) {
@@ -130,11 +134,11 @@ function buildBucket(key: string, summaries: readonly Record<string, unknown>[])
     if (typeof summary.durationMs === "number" && Number.isFinite(summary.durationMs)) {
       durations.push(summary.durationMs);
     }
-    const costUsd = costUsdFor(summary);
-    if (costUsd !== undefined) {
-      totalUsd += costUsd;
-      runsWithCost += 1;
-    }
+    const cost = recordedCost(summary);
+    if (cost.total === null) runsWithUnknownCost += 1;
+    else if (cost.total !== undefined) runsWithCost += 1;
+    const known = cost.total ?? cost.known;
+    if (known !== undefined) { totalUsd += known; hasKnownCost = true; }
   }
 
   const roundedTotalUsd = roundMetric(totalUsd);
@@ -146,9 +150,10 @@ function buildBucket(key: string, summaries: readonly Record<string, unknown>[])
     failureKindRates: failureKindRates(failureKindCounts, summaries.length),
     durationMs: durationMetrics(durations),
     cost: {
-      totalUsd: roundedTotalUsd,
-      averageUsdPerRun: summaries.length === 0 ? 0 : roundedTotalUsd / summaries.length,
+      totalUsd: runsWithUnknownCost > 0 ? null : roundedTotalUsd,
+      averageUsdPerRun: runsWithUnknownCost > 0 ? null : summaries.length === 0 ? 0 : roundedTotalUsd / summaries.length,
       runsWithCost,
+      ...(runsWithUnknownCost > 0 ? { runsWithUnknownCost, ...(hasKnownCost ? { knownUsd: roundedTotalUsd } : {}) } : {}),
     },
   };
 }
@@ -223,13 +228,7 @@ function percentile(sorted: readonly number[], q: number): number | null {
   return low + (high - low) * (rank - lo);
 }
 
-function costUsdFor(summary: Record<string, unknown>): number | undefined {
-  const cost = isRecord(summary.cost) ? summary.cost : {};
-  const usage = isRecord(summary.usage) ? summary.usage : {};
-  return finiteNumber(cost.cumulativeUsd)
-    ?? finiteNumber(cost.totalUsd)
-    ?? finiteNumber(usage.cost_usd);
-}
+
 
 function normalizeWindow(options: RecordedRunMetricsOptions): {
   readonly active: boolean;
@@ -280,10 +279,6 @@ function parseIsoWindow(value: string | undefined, field: "since" | "until"): nu
     throw new Error(`${field} must be a valid ISO date/time.`);
   }
   return parsed;
-}
-
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

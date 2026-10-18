@@ -248,3 +248,14 @@ function metricSummary(overrides: Record<string, unknown>): Record<string, unkno
     ...overrides,
   };
 }
+
+it("counts only explicit unknown runs and preserves measured known zero in metrics", async () => {
+  const dir = await tempDir();
+  for (const [index, fields] of [
+    { status: "running" }, { status: "failed", usage: {} }, { status: "succeeded", usage: { cost_usd: 0 } },
+    { status: "succeeded", usage: { cost_usd: null, known_cost_usd: 0 } },
+  ].entries()) await writeSummary(dir, `${index}.summary.json`, { runId: `synthetic-${index}`, conversationId: "web:synthetic",
+    startedAt: "2026-01-01T00:00:00Z", eventCount: 0, artifactPaths: [], ...fields });
+  const report = await summarizeRecordedRunMetrics({ artifactDir: dir });
+  expect(report.overall.cost).toEqual({ totalUsd: null, averageUsdPerRun: null, knownUsd: 0, runsWithCost: 1, runsWithUnknownCost: 1 });
+});

@@ -183,19 +183,23 @@ function routePart(
 }
 
 /** Keep only an honestly priced, contract-bounded detached turn cost. */
-function pricedSubagentCostUsd(value: unknown): number | undefined {
+function pricedSubagentCostUsd(value: unknown): number | null | undefined {
+  if (value === null) return null;
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= Number.MAX_SAFE_INTEGER
     ? value
     : undefined;
 }
 
 /** Read only the settled child turn, never the persistent instance's cumulative totals. */
-export function subagentProgressUsage(value?: Partial<InstanceUsage>): Pick<ProcessJobSubagentProgress, "costUsd" | "usage"> {
+export function subagentProgressUsage(value?: Partial<InstanceUsage>): Pick<ProcessJobSubagentProgress, "costUsd" | "knownCostUsd" | "usage"> {
   const costUsd = pricedSubagentCostUsd(value?.costUsd);
   const usage = normalizeProcessJobSubagentUsage(value === undefined ? undefined : {
     input: value.input, output: value.output, cacheRead: value.cacheRead, cacheWrite: value.cacheWrite,
   });
-  return { ...(costUsd === undefined ? {} : { costUsd }), ...(usage === undefined ? {} : { usage }) };
+  const knownCostUsd = value?.knownCostUsd;
+  return { ...(costUsd === undefined ? {} : { costUsd }),
+    ...(costUsd === null && typeof knownCostUsd === "number" && Number.isFinite(knownCostUsd) && knownCostUsd >= 0 && knownCostUsd <= Number.MAX_SAFE_INTEGER ? { knownCostUsd } : {}),
+    ...(usage === undefined ? {} : { usage }) };
 }
 
 /** Keeps only safe snapshots. The child collector owns exactly-once call events. */

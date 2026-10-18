@@ -940,7 +940,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               if (outcome.question) record.subagentQuestion = outcome.question;
             }
           }
-          if (outcome?.usage) owner.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
+          if (outcome?.usage) owner.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: null, ...outcome.usage };
           // A child may outlive the cancellation grace. Backfill only this job's
           // eventual child-turn usage, never the instance's accumulated lifetime.
           const reported = subagentProgressUsage(owner.usage);
@@ -951,7 +951,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             const missingTokens = progress.usage === undefined ? reported.usage : undefined;
             if (missingCost !== undefined || missingTokens !== undefined) {
               record.subagentProgress = { ...progress, revision: progress.revision + 1,
-                ...(missingCost === undefined ? {} : { costUsd: missingCost }),
+                ...(missingCost === undefined ? {} : { costUsd: missingCost, ...(reported.knownCostUsd === undefined ? {} : { knownCostUsd: reported.knownCostUsd }) }),
                 ...(missingTokens === undefined ? {} : { usage: missingTokens }) };
               progressUsageAdded = true;
             }
@@ -998,7 +998,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const record = requireRecord(records, jobId);
       const current = record.subagentOwnership!;
       if (!current.disposition?.reason || resumeAfterStop || certifiedTimeout) current.disposition = disposition;
-      if (outcome.usage) current.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
+      if (outcome.usage) current.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: null, ...outcome.usage };
       if (outcome.question) record.subagentQuestion = outcome.question;
       current.revoked = true;
       current.publication.sequence++; current.publication.state = "pending";
