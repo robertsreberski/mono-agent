@@ -24,7 +24,6 @@ const SHARED_SEARCH_TTL_MS = 15 * 60_000;
 // Only completed results are shared. In-flight promises stay per-controller on
 // purpose: they carry the originating run's AbortSignal, and handing that to a
 // sibling would let one turn's cancellation fail another turn's search.
-/** @type {Map<string, {value: any, expiresAt: number}>} */
 const sharedSearchCache: Map<string, {value: any, expiresAt: number}> = new Map();
 
 /**
@@ -32,8 +31,6 @@ const sharedSearchCache: Map<string, {value: any, expiresAt: number}> = new Map(
  * deduplication, the fetch result cache, anonymous browser namespaces, and
  * cleanup. Search results are the exception: they live in the process-wide
  * cache above so sibling subagents and later turns can reuse them.
- *
- * @param {{coordinator?: any, searchConfig?: any, searchState?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any, codexSearch?: any}} [options]
  */
 export function createWebToolController({
   coordinator,
@@ -64,12 +61,6 @@ export function createWebToolController({
     return () => cleanups.delete(cleanup);
   }
 
-  /**
-   * @param {Map<string, any>} cache
-   * @param {Map<string, Promise<any>>} inFlight
-   * @param {string} key
-   * @param {() => Promise<any>} execute
-   */
   async function cachedRun(cache: Map<string, any>, inFlight: Map<string, Promise<any>>, key: string, execute: () => Promise<any>) {
     if (closed) return closedResult("WebFetch");
     const cached = cache.get(key);
@@ -92,10 +83,6 @@ export function createWebToolController({
     }
   }
 
-  /**
-   * @param {string} key
-   * @param {() => Promise<any>} execute
-   */
   async function cachedSearch(key: string, query: any, execute: () => Promise<any>) {
     if (closed) return closedResult("WebSearch");
     const cached = readSharedSearch(key);

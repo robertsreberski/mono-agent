@@ -1153,7 +1153,7 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     const prepareCommand = vi.fn();
     const sandbox = { ...passthroughSandbox, prepareCommand };
 
-    await expect(bashToolRun({ command: /** @type {any} */ ((null) as any) }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext }))
+    await expect(bashToolRun({ command: ((null) as any) }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext }))
       .resolves.toMatchObject({ error: true, outcome: { code: "invalid_command" } });
     await expect(bashToolRun({ command: "printf\0unsafe" }, { ctx: { workspace, sandbox } as unknown as import("../../tools/shared/tool-context.js").ToolContext }))
       .resolves.toMatchObject({ error: true, outcome: { code: "invalid_command" } });

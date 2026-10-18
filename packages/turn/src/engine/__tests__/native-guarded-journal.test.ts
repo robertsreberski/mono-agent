@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonlSessionRepo, MemorySessionRepo } from "../session-store.js";
 import { validateJournalHeader } from "../journal-schema.js";
-/** @type {import("../header-authority.js").HostJournalAuthority} */
 const authority: import("../header-authority.js").HostJournalAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const upgrade = { hostAuthority: authority, assertOwned: async () => {} };
 const roots: string[] = [], repos: any[] = [];
@@ -73,7 +72,7 @@ it("guarded deletion refuses stale/uncoordinated/P/U callbacks and requires held
   expect(assertOwned).toHaveBeenCalled(); expect(await repository.list()).toEqual([]);
   // D is the native primitive for a host-authorized reset member.
   const next = await repository.create({ id: "reset-member", ...upgrade }); await next.close();
-  await repository.retireByHandle(next.metadata.id, { ...upgrade, disposition: /** @type {"D"} */ ((("D") as "D")) });
+  await repository.retireByHandle(next.metadata.id, { ...upgrade, disposition: ((("D") as "D")) });
   expect(await repository.list()).toEqual([]);
 });
 
@@ -125,8 +124,8 @@ it("memory metadata cannot forge or downgrade its private validated native heade
   reopenedGuard.metadata.hostAuthority.ownerKey = "forged-owner";
   expect((await repository.list())[0].hostAuthority.ownerKey).toBe(authority.ownerKey);
   await reopenedGuard.close();
-  await expect(repository.delete(header, { ...upgrade, disposition: /** @type {"D"} */ ((("D") as "D")), hostAuthority: { ...authority, ownerKey: "forged-owner" } })).rejects.toThrow("authorized C/D");
-  await repository.delete(header, { ...upgrade, disposition: /** @type {"D"} */ ((("D") as "D")) }); expect(await repository.list()).toEqual([]);
+  await expect(repository.delete(header, { ...upgrade, disposition: ((("D") as "D")), hostAuthority: { ...authority, ownerKey: "forged-owner" } })).rejects.toThrow("authorized C/D");
+  await repository.delete(header, { ...upgrade, disposition: ((("D") as "D")) }); expect(await repository.list()).toEqual([]);
 });
 
 
@@ -137,7 +136,7 @@ it("keeps cancellation context separate from guarded deletion authority", async 
     const plain = await repository.create({ id: "context-plain" }); await plain.close();
     await repository.delete(plain.metadata, context); expect(await repository.list()).toEqual([]);
     const guard = await repository.create({ id: "context-guard", ...upgrade }); await guard.close();
-    const deletion = { ...upgrade, disposition: /** @type {"D"} */ ((("D") as "D")) };
+    const deletion = { ...upgrade, disposition: ((("D") as "D")) };
     await expect(repository.delete(guard.metadata, context)).rejects.toThrow("authority");
     await expect(repository.delete(guard.metadata, { ...context, ...deletion })).rejects.toThrow("Ambiguous");
     await expect(repository.delete(guard.metadata, deletion, deletion)).rejects.toThrow("Ambiguous");

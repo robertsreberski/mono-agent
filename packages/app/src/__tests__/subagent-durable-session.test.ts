@@ -13,8 +13,7 @@ import { createSubagentInstanceRegistry, subagentConversationRoot } from "../sub
 const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"));
 const { createAgentTool } = await import(new URL("./delegation/agent-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-tool.js");
 const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
-// @ts-expect-error Private provider seam uses the real Pi harness and durable repository.
-import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
+import { generateEngineTurnResponse } from "@mono-agent/turn/ai";
 
 const piPath: string = fileURLToPath(new URL("../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
 const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentTools } = await import(piPath);

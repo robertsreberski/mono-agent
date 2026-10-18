@@ -1,8 +1,7 @@
 // @ts-check
 
-/** A wrapped exit alone (including 127/ENOENT) is not evidence of a denial.
- * @param {boolean | undefined} sandboxed
- * @param {string} diagnostic
+/**
+ * A wrapped exit alone (including 127/ENOENT) is not evidence of a denial.
  */
 export function sandboxFailureDiagnostic(sandboxed: boolean | undefined, diagnostic: string): { code: string; prefix: string };
 export function sandboxFailureDiagnostic(sandboxed: boolean | undefined, diagnostic: string): { code: string | undefined; prefix: string } | undefined {

@@ -1,6 +1,8 @@
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { MonoRuntimeLike, RuntimeRunOptions, SandboxEngine, SandboxPolicy, RuntimeToolOptions } from "@mono-agent/turn/host/types";
@@ -31,8 +33,9 @@ vi.mock(processRunnerPath, async (importOriginal) => {
 // This deliberately crosses the package-private boundary: the regression is
 // deciding only when the actual session turn builder creates Read/Write/Bash with
 // the fallback attempt's projected sandbox context.
-// @ts-expect-error -- package-private JavaScript deciding sink has no public declaration.
-import { buildTurnTools } from "../../../turn/src/execution/pi/turn-runner.js";
+const { buildTurnTools } = await import(
+  new URL("../execution/pi/turn-runner.js", pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/ai"))).href
+) as typeof import("../../../turn/dist/execution/pi/turn-runner.js");
 import { loadAppCoreConfig } from "../composition/app-config.js";
 import { createConfiguredAgentResponder } from "../composition/configured-agent.js";
 import { configuredRuntimeFallbackModels } from "../composition/runtime-routes.js";

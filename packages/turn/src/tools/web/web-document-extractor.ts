@@ -101,7 +101,7 @@ async function extractPdf(bytes: any) {
     if (!body) throw extractionError("extraction_failed", "PDF contained no readable text.");
     return { body, readableText: body, title: "", extractionStage: "pdf", parserFailureCount: 0, parserFailures: [] };
   } finally {
-    try { await /** @type {any} */ ((pdf) as any).destroy?.(); } catch { /* best effort */ }
+    try { await ((pdf) as any).destroy?.(); } catch { /* best effort */ }
   }
 }
 

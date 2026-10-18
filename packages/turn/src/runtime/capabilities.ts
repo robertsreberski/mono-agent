@@ -28,9 +28,6 @@ const RUNTIME_CAPABILITIES = {
   },
 };
 
-/**
- * @returns {{kind: "pi"} & typeof RUNTIME_CAPABILITIES.pi}
- */
 export function runtimeCapabilities(): { kind: "pi"; } & { supports_session_resume: boolean; supports_native_subagents: boolean; supports_request_tool_environment: boolean; supports_mcp_apps: boolean; tool_policy: "projected"; streaming: boolean; structured_output: boolean; native_runtime_config: any; supports_mcp: boolean; supports_skills: boolean; supports_builtin_tools: boolean; supports_live_input: boolean; runtime: string; } {
   // Capability lookup describes the sole runtime; it does not select a backend.
   return { kind: "pi", ...RUNTIME_CAPABILITIES.pi };

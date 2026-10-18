@@ -3,7 +3,6 @@ import { projectInheritedContext } from "./request-projection.js";
 import { evidenceDigest } from "./evidence-view.js";
 import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 const failure = () => Object.assign(new Error("Invalid protected native session authority"), { code: "ERR_NATIVE_SESSION_AUTHORITY" });
-/** @param {any} access @param {string} action */
 export async function assertNativeSessionAccess(access: any, action: string, sessionsRoot: any): Promise<void> {
   if (access === undefined) return;
   try {
@@ -13,7 +12,9 @@ export async function assertNativeSessionAccess(access: any, action: string, ses
   }
   catch (cause) { throw Object.assign(failure(), { cause }); }
 }
-/** Must precede an open that could repair bytes. @param {any} access @param {any} metadata */
+/**
+ * Must precede an open that could repair bytes.
+ */
 export function assertNativeSessionHeader(access: any, metadata: any): void {
   if (access === undefined && metadata.hostAuthority === undefined) return;
   if (access === undefined) throw failure();
@@ -21,9 +22,9 @@ export function assertNativeSessionHeader(access: any, metadata: any): void {
     .some((key: string) => metadata.hostAuthority?.[key] !== access.hostAuthority[key])) throw failure();
 }
 
-/** Pin the first accepted projection until a composed checkpoint subsumes it.
+/**
+ * Pin the first accepted projection until a composed checkpoint subsumes it.
  * Header/claim validation happens first; this check precedes repair and new turns.
- * @param {any} raw @param {any} projection
  */
 export async function assertNativeProjectionBinding(raw: any, projection: any): Promise<void> {
   const binding = raw.validator.projectionBinding;

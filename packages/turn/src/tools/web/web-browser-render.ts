@@ -40,9 +40,6 @@ const BLOCKED_BROWSER_ENV_KEYS = [
 
 /**
  * Render one public page in a fresh anonymous agent-browser session.
- *
- * @param {string} url
- * @param {{browserCommand?: string, namespace?: string, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function renderWithAgentBrowser(
   url: string,
@@ -87,11 +84,6 @@ export async function renderWithAgentBrowser(
     unregister();
   }
 
-  /**
-   * @param {string[]} commandArgs
-   * @param {number} [timeoutMs]
-   * @param {AbortSignal|null} [abortSignal]
-   */
   async function run(commandArgs: string[], timeoutMs: number = BROWSER_TIMEOUT_MS, abortSignal: AbortSignal | null | undefined = signal) {
     if (tempDir === null) throw new Error("agent-browser isolated config is not initialized");
     const configPath = join(tempDir, "agent-browser.json");
@@ -186,7 +178,6 @@ function validateFinalUrl(value: any, requested: any, sandbox: any, policy: any)
 }
 
 function isolatedBrowserEnvironment(source: NodeJS.ProcessEnv = process.env, configPath?: any) {
-  /** @type {Record<string, string|undefined>} */
   const env: Record<string, string|undefined> = {};
   for (const key of BROWSER_HOST_ENV_KEYS) {
     const value = source?.[key];

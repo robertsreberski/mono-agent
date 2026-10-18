@@ -29,11 +29,6 @@ function withTimeout(promise: any, timeoutMs: any, signal: any, label: any, regi
   return Promise.race([promise, timer]).finally(() => clearTimeout(timeout));
 }
 
-/**
- * @param {any} mcpConfig
- * @param {Set<any>} [reservedNames]
- * @param {{limits?: any, mcpCallNoTotalTimeoutTools?: readonly string[], cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any, mcpApps?: any, onRichOutput?: () => void, runId?: string}} [options]
- */
 export function initPiMcpTools(mcpConfig: any, reservedNames?: Set<any>, { limits, mcpCallNoTotalTimeoutTools, cwd, persistArtifact, qaOutputDir, onTruncate, toolPayloadMaxBytes, sandboxPolicy, sandboxEngine, onToolProgress, ctx, mcpApps, onRichOutput, runId, }?: { limits?: any; mcpCallNoTotalTimeoutTools?: readonly string[]; cwd?: any; persistArtifact?: any; qaOutputDir?: any; onTruncate?: any; toolPayloadMaxBytes?: number; sandboxPolicy?: any; sandboxEngine?: any; onToolProgress?: any; ctx?: any; mcpApps?: any; onRichOutput?: () => void; runId?: string; }): Promise<{ clients: { name: any; client: import("@modelcontextprotocol/sdk/client").Client<{ method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { method: string; params?: { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }; }, { [x: string]: unknown; _meta?: { [x: string]: unknown; progressToken?: string | number; "io.modelcontextprotocol/related-task"?: { taskId: string; }; }; }>; transport: import("@modelcontextprotocol/sdk/client/streamableHttp").StreamableHTTPClientTransport | import("@modelcontextprotocol/sdk/client/sse").SSEClientTransport | import("@modelcontextprotocol/sdk/client/stdio").StdioClientTransport; connectionId: `${string}-${string}-${string}-${string}-${string}`; retainedByMcpApps: boolean; privateCapabilityUrl: boolean; closed: boolean; inFlight: Set<any>; }[]; tools: any[]; warnings: { server: string; message: any; code?: string; type: string; warning_kind: string; }[]; }>;
 export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = new Set(), {
   limits = {},
@@ -115,7 +110,7 @@ export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = n
         name,
         label: sourceTool.title || sourceTool.name,
         description: sourceTool.description || `${serverName}:${sourceTool.name}`,
-        parameters: sourceTool.inputSchema || /** @type {any} */ ((sourceTool) as any).input_schema || objectSchema({}),
+        parameters: sourceTool.inputSchema || ((sourceTool) as any).input_schema || objectSchema({}),
         async execute(toolCallId: any, params: any, signal: any) {
           if (signal?.aborted) throw new Error("tool execution aborted");
           // OWN this request's abort signal rather than forwarding the caller's

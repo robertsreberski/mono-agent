@@ -16,7 +16,6 @@ export function digestTurnInput(content: any) {
   return createHash("sha256").update(JSON.stringify(typeof content === "string" ? [{ type: "text", text: content }] : content)).digest("hex");
 }
 
-/** @param {any} header */
 export function validateJournalHeader(header: any): void;
 export function validateJournalHeader(header: JournalHeader) {
   requireValue(object(header) && header.format === JOURNAL_FORMAT && header.version === JOURNAL_VERSION
@@ -101,11 +100,11 @@ export class JournalValidator {
   constructor() {
     this.seq = 0;
     this.projectionBinding = null;
-    /** @type {string|null} */ this.parentId = null;
+ this.parentId = null;
     this.ids = new Set();
     this.contextIds = new Set();
     this.contextInfo = new Map();
-    /** @type {string|null} */ this.tip = null;
+ this.tip = null;
     this.turns = new Map();
     this.openTurns = new Set();
     this.openOperations = new Set();
@@ -114,9 +113,8 @@ export class JournalValidator {
     this.inputs = new Map();
     this.handles = new Set();
     this.handleBindings = new Map();
-    /** @type {any} */ this.owner = { kind: "unbound" };
+ this.owner = { kind: "unbound" };
   }
-  /** @param {import('./journal-types.js').JournalEntry} record */
   validate(record: JournalEntry): void;
   validate(record: JournalEntry & { payload: { provenance?: Provenance } }) {
     requireValue(object(record) && record.schemaVersion === JOURNAL_VERSION
@@ -283,7 +281,6 @@ export class JournalValidator {
       }
     }
   }
-  /** @param {import('./journal-types.js').JournalEntry} record */
   apply(record: JournalEntry) {
     this.validate(record);
     const p = record.payload;

@@ -27,9 +27,6 @@ const OUTPUT_MIME_BY_FORMAT: Record<string, string> = {
  * `{ data, mimeType }` on success — with `data` being the source buffer itself when
  * it already fits, so callers can skip a pointless re-encode — or `{ reason }` when
  * the bytes could not be decoded. Never mutates the source.
- *
- * @param {Buffer} source
- * @param {string} imageMime
  */
 export async function normalizeImageForModel(source: Buffer, imageMime: string): Promise<{ data: Buffer<ArrayBufferLike>; mimeType: string; reason?: undefined } | { data: Buffer<ArrayBuffer>; mimeType: any; reason?: undefined } | { reason: string; data?: undefined; mimeType?: undefined }> {
   const inputOptions = { animated: ANIMATED_IMAGE_MIME_TYPES.has(imageMime) };

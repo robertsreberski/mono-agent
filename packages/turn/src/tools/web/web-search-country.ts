@@ -46,10 +46,6 @@ const DDG_REGIONS = new Map(Object.entries({
   VN: [["vi", "vn-vi"]],
 }));
 
-/**
- * @param {unknown} value
- * @returns {{value?: string, error?: string}}
- */
 export function normalizeSearchCountry(value: unknown): {
     value?: string;
     error?: string;
@@ -69,9 +65,6 @@ export function normalizeSearchCountry(value: unknown): { value?: string | undef
 /**
  * Return DuckDuckGo's documented region token. Omitted country deliberately
  * selects DDG's documented no-region mode rather than an implicit US locale.
- *
- * @param {string | undefined} country
- * @param {string | undefined} language
  */
 export function duckDuckGoRegion(country: string | undefined, language: string | undefined): string;
 export function duckDuckGoRegion(country: string | undefined, language: string | undefined): string | undefined {
@@ -84,7 +77,6 @@ export function duckDuckGoRegion(country: string | undefined, language: string |
   return choices.find(([candidate]: string[]) => candidate === requestedLanguage)?.[1] ?? choices[0]![1];
 }
 
-/** @param {string} backend */
 export function unsupportedCountryFilter(backend: string): { code: string; message: string; retryable: boolean; preflightSkipped: boolean } {
   return {
     code: "unsupported_country_filter",

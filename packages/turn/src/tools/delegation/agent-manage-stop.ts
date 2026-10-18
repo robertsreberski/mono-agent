@@ -1,16 +1,11 @@
 // @ts-check
 
-/** Stop is a host-owned operation, not a new child turn. Never accept job ids from tool input.
- * @param {import("../../contracts/runtime.js").RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{id: string, stop?: boolean, description?: string}} params
- * @param {AbortSignal} [signal]
- * @param {unknown} [recoveryAccess]
+/**
+ * Stop is a host-owned operation, not a new child turn. Never accept job ids from tool input.
  */
 export async function stopSubagent(subagents: import("../../contracts/runtime.js").RuntimeSubagentsOptions | null | undefined, params: { id: string; stop?: boolean; description?: string }, signal?: AbortSignal, recoveryAccess?: unknown): Promise<any> {
   let jobId: string | null = null;
-  /** @type {boolean|"unknown"} */
   let stopRequested: boolean | "unknown" = false;
-  /** @param {string} code @param {string} [message] */
   const error = (code: string, message?: string) => receipt({ code, instanceId: typeof params.id === "string" ? params.id : null, jobId, stopRequested,
     ...(message === undefined ? {} : { message }) }, true);
   if (params.stop !== true) return error("subagent_stop_not_requested", "stop must be exactly true.");
@@ -67,7 +62,7 @@ export async function stopSubagent(subagents: import("../../contracts/runtime.js
     } catch (cause: any) {
       const code = cause && typeof cause === "object" && "code" in cause ? String(cause.code) : "";
       if (cause && typeof cause === "object" && "stopRequested" in cause
-        && [true, false, "unknown"].includes(cause.stopRequested as boolean | "unknown")) stopRequested = /** @type {boolean|"unknown"} */ ((cause.stopRequested) as boolean|"unknown");
+        && [true, false, "unknown"].includes(cause.stopRequested as boolean | "unknown")) stopRequested = ((cause.stopRequested) as boolean|"unknown");
       return error(["subagent_stale_turn", "subagent_stop_unavailable"].includes(code) ? code : "subagent_stop_unavailable");
     }
   };

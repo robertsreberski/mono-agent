@@ -12,7 +12,6 @@ import { listLegacySessions } from "./legacy-import.js";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { resolveDurableNativeSessionRepo, detachDurableNativeSession } from "./session-lifecycle.js";
 import { normalizeDurableSessionsRoot } from "./sessions-root.js";
-/** @returns {never} */
 function fail(): never { throw new Error("Managed native journal evidence changed or is unavailable"); }
 const ordered = (v: any): any => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k: string) => [k, ordered(v[k])])) : v;
 // Matches the host's 16 MiB switch-payload ceiling. It bounds the evidence
@@ -33,21 +32,21 @@ const hex64 = (value: any) => typeof value === "string" && /^[a-f0-9]{64}$/.test
 const same = (a: any, b: any) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 const missing = (error: any) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 const STAGES = ["", ".creating", ".importing", ".upgrading"];
-/** @param {{sessionsRoot:string, onPhase?:(phase:string)=>Promise<void>}} options */
 export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = async () => {} }: { sessionsRoot: string; onPhase?: (phase: string) => Promise<void>; }) {
   if (typeof sessionsRoot !== "string" || !isAbsolute(sessionsRoot.trim())) throw new TypeError("Managed native root must be absolute");
   const root = normalizeDurableSessionsRoot(sessionsRoot), repo = resolveDurableNativeSessionRepo(root);
   const phase = async (name: any) => { await onPhase(name); };
   const path = (id: any) => { if (!/^[A-Za-z0-9_-]+$/.test(id)) fail(); return join(root, "journals", `${id}.jsonl`); };
-  /** Streaming digest of one exact journal; no record is retained.
-   * @param {any} coordinate */
+  /**
+   * Streaming digest of one exact journal; no record is retained.
+   */
   const snapshot = async (coordinate: any) => {
     const journalId = managedJournalId(coordinate.handleId);
     if (coordinate.journalId && coordinate.journalId !== journalId) fail();
     const meta = { id: coordinate.handleId, journalId, path: path(journalId) }, reader = await JournalReader.open(meta.path, root);
     try {
-      /** @type {any} */ let header: any;
-      /** @type {any} */ let handleBinding: any;
+ let header: any;
+ let handleBinding: any;
       const validator = new JournalValidator(), full = createHash("sha256").update("[");
       let first = true;
       const evidence = await reader.scan((record: any) => {
@@ -78,7 +77,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   // creations are ignored, never unlinked; contextual/future stages refuse absence.
   // Legacy discovery runs only on miss, never for an existing native journal.
   const handleCatalogue = async (handleId: any) => {
-    const found = { published: /** @type {any[]} */ (([]) as any[]), staged: 0, legacy: 0, archived: 0, unattributed: 0 };
+    const found = { published: (([]) as any[]), staged: 0, legacy: 0, archived: 0, unattributed: 0 };
     const journalId = managedJournalId(handleId);
     let reader;
     try { await lstat(path(journalId)); reader = await JournalReader.open(path(journalId), root); }
@@ -146,11 +145,12 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   };
   return {
     createBudget: createHandoffBudget, prepareHandoff, buildHandoff,
-    /** Read only: no detach/open-for-writing, repair, import or publication.
-     * Caller first freezes the current coordinate under its settled claim. A null
-     * source means the current journal is definitively missing: canonical gaps
-     * then carry the history through the same approved handoff order.
-     * @param {any} source @param {any} context */
+    /**
+     * Read only: no detach/open-for-writing, repair, import or publication.
+     *   Caller first freezes the current coordinate under its settled claim. A null
+     *   source means the current journal is definitively missing: canonical gaps
+     *   then carry the history through the same approved handoff order.
+     */
     async captureEvidence(source: any, context: any): Promise<any> {
       if (typeof context?.assertOwned !== "function" || !source && !context.gaps?.length) fail();
       await context.assertOwned();
@@ -164,7 +164,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         try {
           const header = await reader.readHeader();
           if (header?.hostAuthority !== undefined && !same(header.hostAuthority, context.hostAuthority)) fail();
-          /** @type {any} */ let identity: any;
+ let identity: any;
           segments.push(await scanEvidenceSegment({ descriptor, header }, context, async (visit: (record: any, bytes: number) => void) => {
             let first = true;
             const scan = await reader.scan((record: any, address: { offset: number; length: number; }) => { if (first) first = false; else visit(record, address.length); });
@@ -176,7 +176,6 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       await context.assertOwned();
       return createEvidenceView({ ownerKey: context.ownerKey, historyBucket: context.historyBucket, segments, gaps: context.gaps ?? [], prior: context.prior ?? null });
     },
-    /** @param {any} coordinates */
     async freeze(coordinates: any): Promise<any> {
       await detachDurableNativeSession(coordinates.handleId, root);
       const frozen = await snapshot(coordinates);
@@ -188,18 +187,20 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         || binding?.handleId !== coordinates.handleId || !model || [model.provider, model.api, model.id].some((value: any) => typeof value !== "string" || !value.length)) fail();
       return { ...frozen.descriptor, provenance: { provider: model.provider, api: model.api, model: model.id, account: null } };
     },
-    /** Deterministic guarded epoch for a switch target or cold rotation. Idempotent
-     * across crashes; an existing exact initializer is the only acceptable state.
-     * @param {any} context */
+    /**
+     * Deterministic guarded epoch for a switch target or cold rotation. Idempotent
+     *   across crashes; an existing exact initializer is the only acceptable state.
+     */
     async createEpoch(context: any): Promise<void> {
       await context.assertOwned();
       await repo.createGuardedEpoch({ id: context.targetHandleId, timestamp: context.timestamp, hostAuthority: context.hostAuthority,
         assertOwned: context.assertOwned, onPhase: phase });
       await context.assertOwned();
     },
-    /** Read-only retention eligibility probe, not deletion authority. A live
-     * writer or contradictory header protects the owner before reservation.
-     * @param {any[]} journals @param {any} authority */
+    /**
+     * Read-only retention eligibility probe, not deletion authority. A live
+     *   writer or contradictory header protects the owner before reservation.
+     */
     async deletionBlocked(journals: any[], authority: any): Promise<any> {
       const locks = await repo.ensureDirectory();
       try { return await locks.withCatalog(async () => {
@@ -237,17 +238,18 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         } finally { for (const writer of writers) writer.release(); }
       }, { wait: false }); } catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ERR_HARNESS_WRITER_BUSY") return true; throw error; }
     },
-    /** Read-only O(1) presence probe under the held host claim. Never opens for
-     * writing, repairs, imports, creates or deletes. `missing` requires a
-     * definitive absence: no published/staged file for an exact journal ID, or
-     * no catalogue entry (owned or legacy) for the handle. Any other doubt is
-     * `unreadable`, never cold authority. Only the header is read here; record
-     * damage is refused by the existing open/repair path.
-     * @param {{handleId:string, journalId?:string}} coordinates */
+    /**
+     * Read-only O(1) presence probe under the held host claim. Never opens for
+     *   writing, repairs, imports, creates or deletes. `missing` requires a
+     *   definitive absence: no published/staged file for an exact journal ID, or
+     *   no catalogue entry (owned or legacy) for the handle. Any other doubt is
+     *   `unreadable`, never cold authority. Only the header is read here; record
+     *   damage is refused by the existing open/repair path.
+     */
     async inspectCurrentJournal(coordinates: { handleId: string; journalId?: string; }): Promise<{ status: "unreadable"; reason: any; } | { status: string; }> {
       const { handleId, journalId } = coordinates ?? {};
       if (!hex64(handleId) || journalId !== undefined && (typeof journalId !== "string" || !/^[A-Za-z0-9_-]+$/.test(journalId))) fail();
-      const unreadable = (reason: any) => ({ status: /** @type {const} */ ("unreadable"), reason });
+      const unreadable = (reason: any) => ({ status: ("unreadable"), reason });
       let meta;
       try {
         if (journalId !== undefined) {
@@ -277,10 +279,11 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         return unreadable((error as NodeJS.ErrnoException)?.code === "ENOENT" ? "changed" : error instanceof SyntaxError ? "malformed" : "invalid");
       }
     },
-    /** Exact host-listed journals (C retires one superseded journal, D a whole
-     * conversation). Missing members are idempotent success, not creation
-     * eligibility. Host retains its intent until every barrier wins.
-     * @param {any[]} entries @param {any} context */
+    /**
+     * Exact host-listed journals (C retires one superseded journal, D a whole
+     *   conversation). Missing members are idempotent success, not creation
+     *   eligibility. Host retains its intent until every barrier wins.
+     */
     async deleteJournals(entries: any[], context: any): Promise<void> {
       if (!["C", "D"].includes(context?.disposition) || typeof context.assertOwned !== "function"
         || entries.some((entry: any) => !hex64(entry?.handleId) || !/^[A-Za-z0-9_-]+$/.test(entry.journalId))) fail();
@@ -294,15 +297,15 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       }
       await context.assertOwned(); await phase("native_members_directory_synced");
     },
-    /** Only guarded managed journals, plus exact IDs enrolled by durable host
-     * intents. Legacy provider journals never receive implicit charge/credit.
-     * An enrolled journal that cannot be opened (or is hard-linked) is damage:
-     * its row is `damaged`, charged its named bytes, never credited or deleted.
-     * Unreadable canonicals still charge independently attested schema-2
-     * evidence for those exact buckets in this pinned root, never legacy files
-     * or journals belonging to another root/bucket.
-     * @param {string[]} [managedJournalIds]
-     * @param {{rootId:string,conversationKeys:string[]}} [unreadableOwners] */
+    /**
+     * Only guarded managed journals, plus exact IDs enrolled by durable host
+     *   intents. Legacy provider journals never receive implicit charge/credit.
+     *   An enrolled journal that cannot be opened (or is hard-linked) is damage:
+     *   its row is `damaged`, charged its named bytes, never credited or deleted.
+     *   Unreadable canonicals still charge independently attested schema-2
+     *   evidence for those exact buckets in this pinned root, never legacy files
+     *   or journals belonging to another root/bucket.
+     */
     async inventory(managedJournalIds: string[] | undefined = undefined, unreadableOwners: { rootId: string; conversationKeys: string[]; } | undefined = undefined): Promise<any> {
       const scope = managedJournalIds === undefined ? null : new Set(managedJournalIds);
       if (scope && [...scope].some((id: string) => !/^[A-Za-z0-9_-]+$/.test(id))) fail();
@@ -312,7 +315,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const directory = join(root, "journals");
       try { await lstat(directory); } catch (error) { if (missing(error)) { if (repo.directoryIdentity) fail(); return { bytes: 0, stagedBytes: 0, journals: {} }; } throw error; }
       const locks = await repo.ensureDirectory(); return locks.withCatalog(async () => { let bytes = 0, stagedBytes = 0;
-      /** @type {Record<string,{retainedBytes:number,stagedBytes:number,damaged?:true}>} */ const journals: Record<string,{retainedBytes:number,stagedBytes:number,damaged?:true}> = Object.create(null);
+ const journals: Record<string,{retainedBytes:number,stagedBytes:number,damaged?:true}> = Object.create(null);
       for (const name of await readdir(directory)) {
         // Shared skip rule: non-journal names and unattributed journal-named
         // entries are neither charged nor credited, and retention never deletes them.

@@ -1,0 +1,140 @@
+import { createHash, randomUUID } from "node:crypto";
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
+
+const activeRequests = new WeakMap<object, { phase: string; requestId: string }>();
+export const promptCacheRequest = (harness: any): any => activeRequests.get(harness);
+
+const MAX_MESSAGE_FINGERPRINTS = 128;
+const safeString = (value: any) => typeof value === "string" ? value.slice(0, 160) : undefined;
+const serialized = (value: any) => JSON.stringify(value) ?? "null";
+const fingerprint = (value: any) => createHash("sha256").update(serialized(value)).digest("hex").slice(0, 16);
+const bytes = (value: any) => value == null ? 0 : Buffer.byteLength(typeof value === "string" ? value : serialized(value));
+const record = (value: any) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+const list = (value: any) => Array.isArray(value) ? value : [];
+
+function normalizedPayload(event: any) {
+  const payload = record(event?.payload);
+  if (!payload) return { family: "unsupported", reason: "payload_not_object" };
+  const api = safeString(event?.model?.api) ?? "unknown";
+  if (api === "google-generative-ai" || api === "google-vertex") {
+    const config = record(payload.config) ?? {};
+    const tools = list(config.tools).flatMap((tool: any) => list(record(tool)?.functionDeclarations).length > 0
+      ? list(record(tool)?.functionDeclarations) : [tool]);
+    return { family: "google", system: config.systemInstruction ?? null, tools, messages: list(payload.contents), payload };
+  }
+  if (api === "pi-messages") {
+    const context = record(payload.context);
+    if (context && ("messages" in context || "systemPrompt" in context || "tools" in context)) {
+      // pi-ai 0.86.0 folds the request prompt and tools into the transcript's
+      // leading system message: replay them from the messages, falling back to
+      // the legacy Context fields only when the transcript carries neither.
+      const messages = list(context.messages);
+      const prompt = getCurrentSystemPrompt(messages);
+      const replayedTools = getCurrentTools(messages);
+      return {
+        family: "pi-messages",
+        system: prompt === ""
+          ? (typeof context.systemPrompt === "string" ? context.systemPrompt : null)
+          : prompt,
+        tools: replayedTools.length > 0 ? replayedTools : list(context.tools),
+        messages,
+        payload,
+      };
+    }
+  }
+  if (api === "bedrock-converse-stream") {
+    return { family: "bedrock", system: payload.system ?? null, tools: list(record(payload.toolConfig)?.tools), messages: list(payload.messages), payload };
+  }
+  if (api === "anthropic-messages") {
+    return { family: "anthropic", system: payload.system ?? null, tools: list(payload.tools), messages: list(payload.messages), payload };
+  }
+  if (["openai-responses", "azure-openai-responses", "openai-codex-responses"].includes(api)) {
+    const input = list(payload.input);
+    // pi-ai 0.86.0 no longer sends `instructions` for openai/azure-responses (the
+    // prompt is folded into `input`): replay it from the messages the same way
+    // the pi-messages branch does, falling back to the converted instruction item
+    // for provider-shaped payloads whose messages carry no transcript metadata
+    // (notably the `timestamp` Pi's transcript helpers require). An explicit
+    // `instructions` (openai-codex-responses always sets it) still wins.
+    const replayed = getCurrentSystemPrompt(input);
+    const converted = input
+      .map((message: any) => record(message))
+      .filter((message: any) => message !== undefined && (message.role === "system" || message.role === "developer") && typeof message.content === "string" && message.content.length > 0)
+      .map((message: any) => message.content)
+      .join("\n\n");
+    const prompt = payload.instructions ?? (replayed !== "" ? replayed : converted);
+    return { family: api === "openai-codex-responses" ? "openai-codex" : "openai-responses", system: prompt === "" ? null : prompt, tools: list(payload.tools), messages: input, payload };
+  }
+  return { family: "unsupported", reason: `unrecognized_api:${api}` };
+}
+
+function cacheMetadata(payload: any, family: any) {
+  const disabled = payload.prompt_cache_retention === "none" || record(payload.options)?.cacheRetention === "none";
+  const key = payload.prompt_cache_key ?? payload.cache_key ?? payload.cachedContent
+    ?? (family === "pi-messages" ? record(payload.options)?.sessionId : undefined);
+  let explicit = false;
+  const ttls = new Set();
+  const pending = [{ value: payload, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0 && visited < 10_000) {
+    const { value, depth } = pending.pop()!;
+    visited += 1;
+    if (depth > 12 || value === null || typeof value !== "object") continue;
+    for (const [name, child] of Object.entries(value)) {
+      if (["cache_control", "cachePoint", "cache_point", "prompt_cache_retention", "prompt_cache_options"].includes(name) && child != null) explicit = true;
+      if (family === "anthropic" && name === "cache_control" && record(child)?.type === "ephemeral") {
+        // Anthropic's omitted ephemeral TTL is the documented five-minute TTL.
+        if ((child as { ttl?: unknown }).ttl === undefined || (child as { ttl?: unknown }).ttl === "5m") ttls.add("5m");
+        else if ((child as { ttl?: unknown }).ttl === "1h") ttls.add("1h");
+      }
+      if (typeof child === "object" && child !== null) pending.push({ value: child, depth: depth + 1 });
+    }
+  }
+  return {
+    observedCacheTtls: [...ttls].sort(),
+    cacheMode: disabled ? "disabled" : [key === undefined ? "" : "keyed", explicit ? "explicit" : ""].filter(Boolean).join("+") || "provider-default",
+    ...(disabled || key === undefined ? {} : { cacheKeyFingerprint: fingerprint(key) }),
+  };
+}
+
+/** Install a metadata-only, request-lifecycle-bounded Pi payload diagnostic. */
+export function installPromptCacheDiagnostics(harness: any, options: any): () => void {
+  if (options.promptCacheDiagnostics !== true || typeof options.onEvent !== "function") return () => {};
+  let ordinal = 0;
+  const remove = harness.hooks.on("before_payload", (event: any) => {
+    const correlation = { phase: "assistant", requestId: randomUUID() };
+    activeRequests.set(harness, correlation);
+    const normalized = normalizedPayload(event);
+    const model = event?.model ?? options.model ?? {};
+    const base = {
+      type: "prompt_cache_diagnostic",
+      ...correlation,
+      requestOrdinal: ++ordinal,
+      model: [safeString(model.provider), safeString(model.id)].filter(Boolean).join(":") || "unknown",
+      api: safeString(model.api) ?? "unknown",
+      payloadFamily: normalized.family,
+      requestedCacheRetention: ["short", "long"].includes(options.cacheRetention) ? options.cacheRetention : "unset",
+    };
+    if (normalized.family === "unsupported") {
+      options.onEvent({ ...base, supported: false, unsupportedReason: normalized.reason });
+      return;
+    }
+    const messages = normalized.messages!;
+    const logicalInputInterpretation = normalized.payload.previous_response_id === undefined ? "full" : "delta";
+    const codexWireUnknown = normalized.family === "openai-codex" && logicalInputInterpretation === "full";
+    options.onEvent({
+      ...base,
+      supported: true,
+      systemBytes: bytes(normalized.system), systemFingerprint: fingerprint(normalized.system),
+      toolDefinitionCount: normalized.tools!.length, toolDefinitionsFingerprint: fingerprint(normalized.tools),
+      messageCount: messages.length,
+      messageFingerprints: messages.slice(0, MAX_MESSAGE_FINGERPRINTS).map(fingerprint),
+      messageFingerprintsTruncated: messages.length > MAX_MESSAGE_FINGERPRINTS,
+      ...cacheMetadata(normalized.payload, normalized.family),
+      logicalInputInterpretation,
+      inputInterpretation: codexWireUnknown ? "unavailable" : logicalInputInterpretation,
+      inputInterpretationSource: codexWireUnknown ? "pre_transport_payload" : "provider_payload",
+    });
+  }, { id: "mono-agent-prompt-cache-diagnostics" });
+  return () => { activeRequests.delete(harness); remove(); };
+}

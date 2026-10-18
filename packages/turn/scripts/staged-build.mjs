@@ -25,7 +25,8 @@ export function ownedPaths(directory = packageDirectory) {
   return readFileSync(resolve(directory, ".gitignore"), "utf8").split("\n")
     .filter((line) => line.startsWith("/src/"))
     .map((line) => {
-      if (!/^\/src\/(?:[\w-]+\/)*[\w-]+\.(?:d\.ts|js(?:\.map)?)$/u.test(line)) {
+      if (!/^\/src\/(?:[\w-]+\/)*[\w-]+\.(?:d\.ts|js(?:\.map)?)$/u.test(line)
+        && !/^\/src\/host\/sandbox\/srt-embed-runner\.mjs(?:\.map)?$/u.test(line)) {
         throw new Error(`Invalid staged product: ${line}`);
       }
       return line.slice(1);
@@ -45,7 +46,7 @@ function sourceDigest(directory, owned) {
   const inputs = ["package.json", ".gitignore", "tsconfig.build.json", "tsconfig.json", "tsconfig.test.json", "scripts/staged-build.mjs"]
     .map((path) => resolve(directory, path)).filter(existsSync);
   inputs.push(...files(resolve(directory, "src")).filter((path) => !path.includes("/__tests__/")
-    && !owned.includes(relative(directory, path)) && /\.(?:ts|js|mjs)$/u.test(path)));
+    && !owned.includes(relative(directory, path)) && /\.(?:ts|mts|js|mjs)$/u.test(path)));
   for (const path of inputs.sort()) hash.update(relative(directory, path)).update("\0").update(readFileSync(path)).update("\0");
   return hash.digest("hex");
 }
@@ -273,8 +274,8 @@ function* checkGraphs(directory, owned, state, execute, compiled = resolve(direc
     rmSync(strict, { recursive: true, force: true });
     yield execute([compiler, "--noEmit", "false", "--declaration", "--emitDeclarationOnly", "--declarationMap", "false", "--sourceMap", "false",
       "--outDir", strict, "--declarationDir", strict, "-p", projects[0]], directory);
-    for (const path of files(resolve(directory, "src")).filter((path) => path.endsWith(".ts") && !path.endsWith(".d.ts") && !path.includes("/__tests__/"))) {
-      const name = relative(resolve(directory, "src"), path).replace(/\.ts$/u, ".d.ts");
+    for (const path of files(resolve(directory, "src")).filter((path) => /\.(?:ts|mts)$/u.test(path) && !/\.d\.(?:ts|mts)$/u.test(path) && !path.includes("/__tests__/"))) {
+      const name = relative(resolve(directory, "src"), path).replace(/\.(ts|mts)$/u, ".d.$1");
       const normalize = (path) => readFileSync(path, "utf8").replace(/^\/\/# sourceMappingURL=.*$/mu, "").trim();
       if (normalize(resolve(strict, name)) !== normalize(resolve(compiled, name))) {
         throw new Error(`Strict declaration mismatch: ${name}. Annotate exported TS contracts so strict and production declarations agree.`);
@@ -350,15 +351,13 @@ export function build(directory = packageDirectory, execute = run) {
           mkdirSync(dirname(target), { recursive: true });
           writeFileSync(target, readFileSync(path));
         }
-        if (!/\.js(?:\.map)?$/u.test(name) || name.startsWith("host/")
-          || !existsSync(resolve(directory, "src", name.replace(/\.js(?:\.map)?$/u, ".ts")))) continue;
+        const runner = /^host\/sandbox\/srt-embed-runner\.mjs(?:\.map)?$/u.test(name);
+        if ((!/\.js(?:\.map)?$/u.test(name) || name.startsWith("host/")) && !runner) continue;
+        if (!existsSync(resolve(directory, "src", runner ? "host/sandbox/srt-embed-runner.mts" : name.replace(/\.js(?:\.map)?$/u, ".ts")))) continue;
         const product = `src/${name}`;
         if (!owned.includes(product)) throw new Error(`Unregistered compiler product: ${product}`);
         products[product] = digest(readFileSync(path));
       }
-      const runner = "host/sandbox/srt-embed-runner.mjs";
-      mkdirSync(dirname(resolve(compiled, runner)), { recursive: true });
-      writeFileSync(resolve(compiled, runner), readFileSync(resolve(directory, "src", runner)));
       yield* checkGraphs(directory, owned, before, execute, compiled, stagedProjects(directory, stage));
       if (snapshot !== sourceDigest(directory, owned)) throw new Error(`Sources changed during staged build; ${rebuild}.`);
       // All compiler/checker work succeeded. Journal the small publication phase

@@ -54,6 +54,32 @@ describe("core scan policy", () => {
       "src/engine/index.ts!", "src/engine/sessions.ts!", "src/engine/owned-fs.ts!", "src/tools/index.ts!",
     ];
     expect(expected).toHaveLength(11);
+    expect(entries).toContain("src/engine/__tests__/fixtures/projection-parity-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/projection-parity-worker.mts!");
+    expect(entries).toContain("src/__tests__/fixtures/prepared-host-runtime.mts");
+    expect(entries).not.toContain("src/__tests__/fixtures/prepared-host-runtime.mts!");
+    expect(entries).toContain("src/__tests__/ai/fixtures/native-journal-storage-worker.mts");
+    expect(entries).not.toContain("src/__tests__/ai/fixtures/native-journal-storage-worker.mts!");
+    expect(entries).toContain("src/__tests__/ai/fixtures/native-lifecycle-storage-worker.mts");
+    expect(entries).not.toContain("src/__tests__/ai/fixtures/native-lifecycle-storage-worker.mts!");
+    expect(entries).toContain("src/__tests__/ai/fixtures/native-writer-holder.mts");
+    expect(entries).not.toContain("src/__tests__/ai/fixtures/native-writer-holder.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/append-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/append-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/checkpoint-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/checkpoint-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/effect-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/effect-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/import-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/import-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/lock-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/lock-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/native-create-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/native-create-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/store-owner-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/store-owner-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/turn-evidence-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/turn-evidence-worker.mts!");
     for (const entry of expected) {
       expect(entries).toContain(entry);
       expect(products.has(entry)).toBe(false);
@@ -82,8 +108,8 @@ describe("core scan policy", () => {
     const expected = new Set(retainedExports.flatMap((entry) => entry.taggedNames.map((name) => `${entry.file}:${name}`)));
     const actual = new Set();
     const generated = new Set(ownedPaths().map((path) => `packages/turn/${path}`));
-    for (const file of globSync("packages/{contracts,config,turn,conversation,app}/src/**/*.{js,ts}", { cwd: root })) {
-      if (file.includes("/__tests__/") || generated.has(file)) continue;
+    for (const file of globSync("packages/{contracts,config,turn,conversation,app}/src/**/*.{js,mjs,ts,mts}", { cwd: root })) {
+      if (file.includes("/__tests__/") && !retainedExports.some((entry) => entry.file === file) || generated.has(file)) continue;
       const source = readFileSync(resolve(root, file), "utf8");
       if (!source.includes("@coreScanRetained")) continue;
       const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -223,4 +249,26 @@ describe("core scan policy", () => {
     expect(execute).toHaveBeenCalledTimes(3);
     expect(JSON.parse(readFileSync(resolve(directory, "knip-default.json"), "utf8"))).toHaveProperty("error");
   });
+});
+
+test("retains only exact existing declaration-preservation aliases at their registered owners", () => {
+  const aliases = retainedExports.filter((entry) => entry.declarationPreserving);
+  expect(aliases.flatMap((entry) => entry.names.map((name) => `${entry.file}:${name}`)).sort()).toEqual([
+    "packages/turn/src/contracts/events.ts:RuntimeObserver",
+    "packages/turn/src/providers/pi/oauth-compat.ts:AuthPrompt",
+    "packages/turn/src/providers/pi/oauth-compat.ts:AuthEvent",
+    "packages/turn/src/contracts/model.ts:RuntimeSdkId",
+    "packages/turn/src/contracts/runtime.ts:AgentRuntimeInstance",
+    "packages/turn/src/contracts/runtime.ts:RuntimeBridge",
+    "packages/turn/src/contracts/runtime.ts:RuntimeBridgeDescriptor",
+  ].sort());
+  for (const entry of aliases) {
+    const ast = ts.createSourceFile(entry.file, readFileSync(resolve(root, entry.file), "utf8"), ts.ScriptTarget.Latest, true);
+    const exports = ast.statements.filter((node) => ts.isTypeAliasDeclaration(node)
+      && node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)).map((node) => node.name.text);
+    for (const name of entry.names) expect(exports, `${entry.file}:${name}`).toContain(name);
+    expect(entry.taggedNames).toEqual(entry.names);
+    const citation = readFileSync(resolve(root, entry.citation), "utf8");
+    for (const name of entry.names) expect(citation, entry.citation).toContain(name);
+  }
 });

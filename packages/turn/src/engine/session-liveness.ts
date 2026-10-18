@@ -14,32 +14,10 @@
 // reserve / release / adoptIfPresent seam that Pi's session lifecycle consumes.
 
 /**
- * @typedef {object} SessionRegistryLike
- * @property {(id: string) => any} get
- * @property {(id: string, value: any, opts?: {idleTimeoutMs?: number}) => void} set
- * @property {(id: string) => boolean} delete
- */
-
-/**
- * @typedef {{ok: true, entry: any} | {ok: false, reason: "busy" | "missing"}} ClaimResult
- * @typedef {{ok: true, id: string, release: () => void, commit: (entry: any) => void} | {ok: false, entry: any}} ReserveResult
- */
-
-/**
- * @typedef {object} SessionLiveness
- * @property {(id: string) => ClaimResult} claim
- * @property {(id: string) => any} adoptIfPresent
- * @property {(id: string, seed: any, ttl: number|undefined) => ReserveResult} reserve
- * @property {(id: string) => void} release
- */
-
-/**
  * Wrap a session registry with the synchronous liveness primitives. The
  * explicit return typedef pins the claim/reserve discriminated unions so
  * callers narrow on `ok` (object-literal inference would otherwise widen `ok`
  * to boolean and break narrowing).
- * @param {SessionRegistryLike} registry
- * @returns {SessionLiveness}
  */
 export function createSessionLiveness(registry: SessionRegistryLike): SessionLiveness {
   return {
@@ -47,8 +25,6 @@ export function createSessionLiveness(registry: SessionRegistryLike): SessionLiv
      * Claim a live entry for a turn. The registry get -> busy check -> set-busy
      * span is await-free (I1): a concurrent claim of a busy entry loses and is
      * told `busy`, never adopting the session mid-turn.
-     * @param {string} id
-     * @returns {{ok: true, entry: any} | {ok: false, reason: "busy" | "missing"}}
      */
     claim(id: string): { ok: true; entry: any; } | { ok: false; reason: "busy" | "missing"; } {
       const entry = registry.get(id);
@@ -63,8 +39,6 @@ export function createSessionLiveness(registry: SessionRegistryLike): SessionLiv
      * resume could have reopened+inserted its own entry in the await window, so
      * the caller adopts whatever is present (possibly busy) instead of racing a
      * second insert. Returns null when nothing is present.
-     * @param {string} id
-     * @returns {any | null}
      */
     adoptIfPresent(id: string): any {
       return registry.get(id) ?? null;
@@ -76,10 +50,8 @@ export function createSessionLiveness(registry: SessionRegistryLike): SessionLiv
      * observes the placeholder (busy) and loses the reservation — exactly one
      * create per durable id. On loss the concurrent entry is returned so the
      * caller can fall into the busy-claim path.
-     * @param {string} id
-     * @param {any} seed BUSY placeholder entry to insert.
-     * @param {number|undefined} ttl per-entry idle timeout.
-     * @returns {{ok: true, id: string, release: () => void, commit: (entry: any) => void} | {ok: false, entry: any}}
+     * @param seed BUSY placeholder entry to insert.
+     * @param ttl per-entry idle timeout.
      */
     reserve(id: string, seed: any, ttl: number | undefined): { ok: true; id: string; release: () => void; commit: (entry: any) => void; } | { ok: false; entry: any; } {
       const concurrent = registry.get(id);
@@ -100,7 +72,6 @@ export function createSessionLiveness(registry: SessionRegistryLike): SessionLiv
     /**
      * Release a session's liveness (remove without running onEvict — the caller
      * has already cleaned up, or is dropping an uncommitted session).
-     * @param {string} id
      */
     release(id: string): void {
       registry.delete(id);

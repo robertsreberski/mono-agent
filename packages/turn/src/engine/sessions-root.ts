@@ -16,12 +16,10 @@ export function assertSupportedSessionsRoot(root: any): void {
     { code: "ERR_SESSIONS_ROOT_UNSUPPORTED" });
 }
 
-/** @param {string} root */
 function unsupportedRootPath(root: string): string { return join(root, "mono-v2"); }
 
-/** Read-only presence probe; lstat deliberately counts dangling symlinks as present.
- * @param {string} root
- * @returns {Promise<string|undefined>}
+/**
+ * Read-only presence probe; lstat deliberately counts dangling symlinks as present.
  */
 export async function probeUnsupportedSessionsRoot(root: string): Promise<string | undefined> {
   const path = unsupportedRootPath(root);
@@ -30,7 +28,6 @@ export async function probeUnsupportedSessionsRoot(root: string): Promise<string
   return path;
 }
 
-/** @param {string} root @returns {string|undefined} */
 function probeUnsupportedSessionsRootSync(root: string): string | undefined {
   const path = unsupportedRootPath(root);
   try { lstatSync(path); }

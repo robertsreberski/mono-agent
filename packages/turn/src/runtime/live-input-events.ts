@@ -10,23 +10,9 @@
 const LIVE_INPUT_INSTRUMENTED = Symbol("mono-agent.live-input-instrumented");
 const MAX_DIAGNOSTICS_PER_KIND = 100;
 
-/**
- * @typedef {{providerEntryId?: string, providerRunId?: string}} RuntimeLiveInputEvidence
- * @typedef {{reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}} RuntimeLiveInputUncertainty
- * @typedef {{body: string, kind?: "process_job"|"user", id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: RuntimeLiveInputEvidence) => unknown, acknowledge?: (evidence?: RuntimeLiveInputEvidence) => unknown, uncertain?: (details: RuntimeLiveInputUncertainty) => unknown, reject?: (reason?: unknown) => unknown}} RuntimeLiveInputMessage
- * @typedef {{message: RuntimeLiveInputMessage, callbackMessage: RuntimeLiveInputMessage, logicalOwner?: object, inputId: string, receivedAt?: string, phase: "available"|"leased"|"native_accepted"|"consumed"|"uncertain", attempt: number, generation: number}} LiveInputOwner
- * @typedef {{type: string, [key: string]: unknown}} LiveInputEvent
- */
-
-/**
- * @param {AsyncIterable<RuntimeLiveInputMessage>|undefined} liveInput
- * @param {(event: LiveInputEvent) => void} onEvent
- * @returns {AsyncIterable<RuntimeLiveInputMessage>|undefined}
- */
 export function instrumentLiveInputAppliedEvents(liveInput: AsyncIterable<RuntimeLiveInputMessage> | undefined, onEvent: (event: LiveInputEvent) => void): AsyncIterable<RuntimeLiveInputMessage> | undefined {
   if (liveInput === undefined || isInstrumented(liveInput)) return liveInput;
 
-  /** @type {Map<string, LiveInputOwner>} */
   const owners: Map<string, LiveInputOwner> = new Map();
   const diagnosticCounts = new Map();
   let generation = 0;
@@ -111,9 +97,8 @@ export function instrumentLiveInputAppliedEvents(liveInput: AsyncIterable<Runtim
     },
   };
 
-  return /** @type {AsyncIterable<RuntimeLiveInputMessage>} */ ((instrumented) as AsyncIterable<RuntimeLiveInputMessage>);
+  return ((instrumented) as AsyncIterable<RuntimeLiveInputMessage>);
 
-  /** @param {RuntimeLiveInputMessage} message @param {string} inputId @param {number} ownerGeneration */
   function createOwner(message: RuntimeLiveInputMessage, inputId: string, ownerGeneration: number) {
     const receivedAt = validString(message?.receivedAt);
     const logicalOwner = validLogicalOwner(message?.logicalOwner);
@@ -123,13 +108,12 @@ export function instrumentLiveInputAppliedEvents(liveInput: AsyncIterable<Runtim
       ...(logicalOwner === undefined ? {} : { logicalOwner }),
       inputId,
       ...(receivedAt === undefined ? {} : { receivedAt }),
-      phase: /** @type {const} */ (("available") as const),
+      phase: (("available") as const),
       attempt: 0,
       generation: ownerGeneration,
     };
   }
 
-  /** @param {LiveInputOwner} owner */
   function lease(owner: LiveInputOwner) {
     owner.phase = "leased";
     owner.attempt += 1;
@@ -137,7 +121,6 @@ export function instrumentLiveInputAppliedEvents(liveInput: AsyncIterable<Runtim
     const host = owner.callbackMessage;
     const base = eventBase(owner);
 
-    /** @type {RuntimeLiveInputMessage} */
     const wrapped: RuntimeLiveInputMessage = {
       ...owner.message,
       accepted(evidence) {
@@ -176,7 +159,7 @@ export function instrumentLiveInputAppliedEvents(liveInput: AsyncIterable<Runtim
         if (!isCurrent(owner, attempt, "leased", "native_accepted")) return "ignored";
         owner.phase = "uncertain";
         const normalized = {
-          reason: /** @type {const} */ (("delivery_uncertain") as const),
+          reason: (("delivery_uncertain") as const),
           ...safeEvidence(details),
         };
         const disposition = callHost(host.uncertain, host, normalized);
@@ -205,7 +188,6 @@ export function instrumentLiveInputAppliedEvents(liveInput: AsyncIterable<Runtim
     return wrapped;
   }
 
-  /** @param {string} kind @param {LiveInputEvent} event */
   function emitBounded(kind: string, event: LiveInputEvent) {
     const count = diagnosticCounts.get(kind) ?? 0;
     if (count >= MAX_DIAGNOSTICS_PER_KIND) return;
@@ -213,13 +195,11 @@ export function instrumentLiveInputAppliedEvents(liveInput: AsyncIterable<Runtim
     emit(event);
   }
 
-  /** @param {LiveInputEvent} event */
   function emit(event: LiveInputEvent) {
     try { onEvent(event); } catch { /* telemetry never changes delivery */ }
   }
 }
 
-/** @param {unknown} callback @param {RuntimeLiveInputMessage} receiver @param {unknown} argument */
 function callHost(callback: unknown, receiver: RuntimeLiveInputMessage, argument: unknown) {
   if (typeof callback !== "function") return "unconfirmed";
   try {
@@ -230,12 +210,10 @@ function callHost(callback: unknown, receiver: RuntimeLiveInputMessage, argument
   }
 }
 
-/** @param {string} disposition */
 function publicDisposition(disposition: string) {
   return disposition === "recorded" || disposition === "ignored" ? disposition : undefined;
 }
 
-/** @param {LiveInputOwner} owner */
 function eventBase(owner: LiveInputOwner) {
   return {
     inputId: owner.inputId,
@@ -243,46 +221,39 @@ function eventBase(owner: LiveInputOwner) {
   };
 }
 
-/** @param {LiveInputOwner} owner @param {number} attempt @param  {...string} phases */
 function isCurrent(owner: LiveInputOwner, attempt: number, ...phases: string[]) {
   return owner.attempt === attempt && phases.includes(owner.phase);
 }
 
-/** @param {unknown} value */
 function normalizedStableId(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
-/** @param {unknown} value */
 function validLogicalOwner(value: unknown) {
   return value !== null && (typeof value === "object" || typeof value === "function")
     ? value
     : undefined;
 }
 
-/** @param {unknown} value */
 function validString(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/** @param {unknown} value */
 function safeEvidence(value: unknown) {
   if (typeof value !== "object" || value === null) return {};
-  const evidence = /** @type {{providerEntryId?: unknown, providerRunId?: unknown}} */ ((value) as { providerEntryId?: unknown; providerRunId?: unknown; });
+  const evidence = ((value) as { providerEntryId?: unknown; providerRunId?: unknown; });
   return {
     ...(validString(evidence.providerEntryId) === undefined ? {} : { providerEntryId: evidence.providerEntryId }),
     ...(validString(evidence.providerRunId) === undefined ? {} : { providerRunId: evidence.providerRunId }),
   };
 }
 
-/** @param {unknown} reason */
 function isNativeQueueRemoved(reason: unknown) {
   return typeof reason === "object"
     && reason !== null
-    && /** @type {{code?: unknown}} */ ((reason) as { code?: unknown; }).code === "native_queue_removed";
+    && ((reason) as { code?: unknown; }).code === "native_queue_removed";
 }
 
-/** @param {unknown} value */
 function isInstrumented(value: unknown) {
   return typeof value === "object"
     && value !== null

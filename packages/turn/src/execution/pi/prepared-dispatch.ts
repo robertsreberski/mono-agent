@@ -1,0 +1,140 @@
+export type NativeDispatchBinding = import("../../contracts/runtime.js").NativeDispatchBinding;
+export type NativePreparedDispatch = import("../../contracts/runtime.js").NativePreparedDispatch;
+// @ts-check
+
+export { copy as copyDispatchData };
+
+/**
+ * Validate and copy before consuming either a direct or routed lease.
+ */
+export function prepareNativeDispatchBinding(input: any = {}): any {
+  if (!input || typeof input !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Reflect.ownKeys(input).some((key) => typeof key !== "string" || !bindingKeys.has(key))) {
+    throw new TypeError("Prepared dispatch accepts only host session binding fields");
+  }
+  return snapshotNativeDispatchOptions(input);
+}
+
+const bindingKeys = new Set(["sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive",
+  "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"]);
+const dataKeys = ["model", "messages", "outputSchema", "mcpServers", "skills", "allowedTools", "disallowedTools",
+  "toolLimits", "compaction", "sandboxPolicy", "toolEnvironment", "hostCapabilities", "toolExposure", "piResolvedModel",
+  "context1MModels", "customProvider", "additionalReadRoots", "additionalWriteRoots", "toolRiskTiers", "approvalAlwaysAllowTools", "processJobsAvailability",
+  "webSearchConfig", "webFetchConfig", "subagents", "prompts", ...bindingKeys];
+
+/**
+ * Copy plain data while preserving privileged callback/controller identity.
+ */
+function copy(value: any): any {
+  if (Array.isArray(value)) return value.map(copy);
+  if (value && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    return Object.fromEntries(Reflect.ownKeys(value).map((key) => [key, copy(value[key])]));
+  }
+  return value;
+}
+/**
+ * Snapshot synchronously, before tool/MCP/auth awaits.
+ */
+export function snapshotNativeDispatchOptions(options: any): any {
+  const output = { ...options };
+  for (const key of dataKeys) if (key in options) output[key] = copy(options[key]);
+  if (options.toolContext) output.toolContext = { ...options.toolContext,
+    additionalReadRoots: copy(options.toolContext.additionalReadRoots), additionalWriteRoots: copy(options.toolContext.additionalWriteRoots),
+    sandboxPolicy: copy(options.toolContext.sandboxPolicy), toolEnvironment: copy(options.toolContext.toolEnvironment) };
+  return output;
+}
+export function freezeDispatchData(value: any): any {
+  if (value && typeof value === "object") {
+    for (const key of Reflect.ownKeys(value)) freezeDispatchData(value[key]);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * Check ordinary provider availability without retaining credentials. Every
+ * actual summary/turn request resolves auth through the original Models collection.
+ */
+export async function prepareDispatchAuth(models: any, model: any, signal: AbortSignal | undefined): Promise<{
+    models: any;
+    model: any;
+    provenance: {
+        provider: any;
+        api: any;
+        model: any;
+        account: any;
+    };
+}> {
+  model = freezeDispatchData(copy(model));
+  if (!models.getProvider(model.provider)) throw new Error("Prepared dispatch provider is unavailable");
+  const selected = models.getModel(model.provider, model.id);
+  if (!selected || selected.provider !== model.provider || selected.id !== model.id || selected.api !== model.api) throw new Error("Prepared dispatch model disagrees with provider collection");
+  if (!await models.getAuth(model, { signal })) throw new Error("Prepared dispatch provider authentication is unavailable");
+  signal?.throwIfAborted();
+  return { models, model,
+    provenance: { provider: model.provider, api: model.api, model: model.id, account: null } };
+}
+
+/**
+ * Suspend the real orchestrator after native preparation but before ANY session
+ * resolution. Its original runState/tool closures and finally own resources.
+ * Host must hold its concurrency permit until run/close settles. No fallback.
+ */
+export function createPreparedDispatchLease(execute: (control: {
+    ready: (snapshot: any, producer?: {
+        assertReady: () => void;
+        check: (input: any) => any;
+        run: (input: any) => Promise<any>;
+    }) => Promise<any>;
+}) => Promise<any>, signal: AbortSignal | undefined): Promise<NativePreparedDispatch>;
+export function createPreparedDispatchLease(execute: (control: import("./types.js").PiPreparedControl) => Promise<any>, signal: AbortSignal | undefined): Promise<NativePreparedDispatch> {
+ let resolvePrepared!: (value: NativePreparedDispatch) => void;
+ let rejectPrepared!: (error: unknown) => void;
+  const prepared = new Promise<NativePreparedDispatch>((resolve, reject) => { resolvePrepared = resolve; rejectPrepared = reject; });
+ let resume!: (value: NativeDispatchBinding) => void;
+ let stop!: (error: unknown) => void;
+  const binding = new Promise<NativeDispatchBinding>((resolve, reject) => { resume = resolve; stop = reject; });
+  // Cancellation during async initialization may reject before ready awaits it.
+  void binding.catch(() => {});
+  let state = "preparing", producerUsed = false, producerBusy = false;
+ let producerWork: Promise<any> | undefined;
+  const cancel = () => { if (state === "preparing" || state === "prepared") { state = "closed"; const finish = () => stop(signal?.reason ?? new Error("Prepared dispatch closed"));
+    if (producerBusy) void producerWork?.catch(() => {}).then(finish); else finish(); } };
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  const outcome = execute({ ready: async (snapshot, producer) => {
+    if (state === "closed") throw new Error("Prepared dispatch closed before readiness");
+    state = "prepared";
+    const producerInput = (input: import("../../contracts/runtime.js").NativeHandoffProducerRequest) => {
+      if (state !== "prepared" || producerUsed) throw new Error("Prepared handoff producer is no longer available");
+      if (!input || typeof input !== "object" || Object.keys(input).some((key) => !["prepared", "outputReserve"].includes(key))) throw new TypeError("Invalid prepared handoff producer request");
+      return structuredClone(input);
+    };
+    resolvePrepared({ snapshot: freezeDispatchData(snapshot),
+      ...(producer ? {
+        assertReady: () => { if (state !== "prepared" || producerBusy) throw new Error("Prepared dispatch is no longer available"); producer.assertReady(); },
+        checkHandoffSummary: (input) => producer.check(producerInput(input)),
+        produceHandoffSummary: (input) => {
+          let captured;
+          try { captured = producerInput(input); } catch (error) { return Promise.reject(error); }
+          let fit; try { fit = producer.check(captured); } catch (error) { return Promise.reject(error); } if (fit.status !== "ready") return Promise.resolve(fit);
+          producerUsed = true; producerBusy = true;
+          producerWork = Promise.resolve().then(() => { if (state !== "prepared") throw new Error("Prepared producer closed before dispatch"); return producer.run(captured); }).finally(() => { producerBusy = false; });
+          return producerWork;
+        },
+      } : {}),
+      run: (input = {}) => {
+        if (state !== "prepared") return Promise.reject(new Error("Prepared dispatch is no longer available"));
+        if (producerBusy) return Promise.reject(new Error("Prepared handoff producer is still running"));
+        let frozen;
+        try { frozen = prepareNativeDispatchBinding(input); } catch (error) { return Promise.reject(error); }
+        state = "running"; resume(frozen); return outcome;
+      },
+      close: async () => { cancel(); await producerWork?.catch(() => {}); await outcome.catch(() => {}); },
+    });
+    return await binding;
+  } });
+  void outcome.then((result) => {
+    if (state === "preparing" || state === "closed") rejectPrepared(new Error(result?.error ?? "Native dispatch preparation did not complete"));
+  }, (error) => rejectPrepared(error)).finally(() => { state = "closed"; signal?.removeEventListener("abort", cancel); });
+  return prepared;
+}

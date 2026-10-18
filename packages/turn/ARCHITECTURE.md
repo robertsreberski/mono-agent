@@ -398,3 +398,22 @@ in runtime build attestation, including package-local caches. Fixture bare-impor
 specifiers resolve with turn's ESM import conditions and become file URLs; no
 node_modules symlink is created. Emitting fixtures must leave the runtime
 dependency digest unchanged, so tests cannot poison the next root build.
+
+Authored fixture workers and the sandbox embed runner use `.mts`; their stable
+Node launch names remain `.mjs`. The production compiler owns both the dist
+runner and its adjacent source-view launch artifact/maps. All other host TS
+continues using its existing dist output with source/declaration maps.
+
+`test:fixtures` compiles workers/helpers into the test-only tree and copies raw
+data unchanged. Its bounded bootstrap maps emitted workers' relative production
+imports, plus transitive public/private turn imports, onto the same `turn/dist`
+graph. Fork/exec callers preload that bootstrap with Node `--import`, before
+static linking; plain-Node in-process proofs use a native data-URL bootstrap
+before importing the compiled helper. Source suites instead load the authored
+MTS helper through Vite on their existing source graph; they never redirect a
+source test worker to dist or depend on test-only compiler output. Executable
+production dependency copies are removed from fixture output;
+historical parity roots remain explicit and are never redirected to current code.
+The three `packages/turn/scripts/*.mjs` files remain build tooling, not authored
+runtime/test sources. The manual golden writer is compiled but never part of
+normal test execution; see `engine/__tests__/fixtures/PROJECTION-GOLDENS.md`.

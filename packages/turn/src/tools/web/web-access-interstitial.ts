@@ -6,9 +6,6 @@ const MAX_BROAD_HUMAN_CHECK_CHARS = 500;
 /**
  * Classify access and authentication interstitials without treating incidental
  * words such as "captcha" or "access denied" as conclusive evidence.
- *
- * @param {{url?: string, text?: string, statusCode?: number, headers?: Headers}} input
- * @returns {{code: "access_challenge"|"authentication_required", message: string}|undefined}
  */
 export function classifyWebAccessInterstitial({ url, text, statusCode, headers }: { url?: string; text?: string; statusCode?: number; headers?: Headers } = {}): { code: "access_challenge" | "authentication_required"; message: string } | undefined {
   const finalUrl = String(url || "");
@@ -75,9 +72,6 @@ function urlPathname(value: any) {
   catch { return ""; }
 }
 
-/**
- * @param {{url?: string, text?: string, statusCode?: number, headers?: Headers}} input
- */
 export function assertNoWebAccessInterstitial(input: { url?: string; text?: string; statusCode?: number; headers?: Headers }): void {
   const classified = classifyWebAccessInterstitial(input);
   if (classified) throw Object.assign(new Error(classified.message), { code: classified.code });

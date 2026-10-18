@@ -14,19 +14,13 @@ const FAILURE_KINDS = new Set([
 const HOST_HISTORY_METADATA = Symbol("mono-agent.host-tool-history");
 const HOST_TOOL_LIFECYCLE_METADATA = Symbol("mono-agent.host-tool-lifecycle");
 
-/**
- * @param {{sink?: (event: any) => Promise<any>, onObserve?: (event: any) => void, onLifecycleAdmitted?: (event: any) => void, onEvent?: (event: any) => void, abortSignal?: AbortSignal}} options
- */
 export function createToolLifecycleEventGate({ sink, onObserve, onLifecycleAdmitted, onEvent, abortSignal }: { sink?: (event: any) => Promise<any>; onObserve?: (event: any) => void; onLifecycleAdmitted?: (event: any) => void; onEvent?: (event: any) => void; abortSignal?: AbortSignal | undefined; }): {
   emit: (event: Parameters<typeof stripProviderLifecycleMetadata>[0]) => void;
   flush(): Promise<void>;
 } {
-  /** @type {Promise<void>} */
   let tail: Promise<void> = Promise.resolve();
   let pendingDeliveries = 0;
-  /** @type {Map<string, any>} */
   const timing: Map<string, any> = new Map();
-  /** @type {Map<string, any>} */
   const approvals: Map<string, any> = new Map();
   const preparedBlocks = new WeakSet();
 
@@ -67,7 +61,6 @@ export function createToolLifecycleEventGate({ sink, onObserve, onLifecycleAdmit
   };
 }
 
-/** @param {any} event */
 function eventNeedsPersistence(event: any) {
   if (!record(event) || (event.type !== "assistant" && event.type !== "user")) return false;
   const message = event.message;
@@ -88,7 +81,6 @@ function eventNeedsPersistence(event: any) {
  * Pi-native exact classifier. It consumes structured tool result details, not
  * error text, so timeout/signal/non-zero/cancellation fidelity cannot drift
  * with provider wording.
- * @param {{result?: any,isError?: boolean,aborted?: boolean,approval?: any}} input
  */
 export function classifyPiToolResult(input: { result?: any; isError?: boolean; aborted?: boolean; approval?: any; }): {
   detailCode?: string;
@@ -122,7 +114,6 @@ export function classifyPiToolResult(input: { result?: any; isError?: boolean; a
   return terminal("success", undefined, undefined);
 }
 
-/** @param {any} event @param {Map<string,any>} timing @param {Map<string,any>} approvals */
 function observeClassification(event: any, timing: Map<string, any>, approvals: Map<string, any>) {
   if (!record(event)) return;
   if (event.type === "tool_timing" && typeof event.tool_use_id === "string") {
@@ -133,7 +124,6 @@ function observeClassification(event: any, timing: Map<string, any>, approvals: 
   }
 }
 
-/** @param {any} event @param {{timing:Map<string,any>,approvals:Map<string,any>,abortSignal?:AbortSignal}} context @param {WeakSet<object>} preparedBlocks */
 function prepareEvent(event: any, context: { timing: Map<string, any>; approvals: Map<string, any>; abortSignal?: AbortSignal | undefined; }, preparedBlocks: WeakSet<any>) {
   const writes: Array<{ block: Parameters<typeof record>[0]; lifecycle: Record<string, unknown>; state: string | undefined }> = [];
   if (!record(event) || (event.type !== "assistant" && event.type !== "user")) return writes;
@@ -180,7 +170,6 @@ function prepareEvent(event: any, context: { timing: Map<string, any>; approvals
   return writes;
 }
 
-/** @param {any} block @param {any} timing @param {any} approval @param {AbortSignal|undefined} abortSignal */
 function classifyGenericResult(block: any, timing: any, approval: any, abortSignal: AbortSignal | undefined) {
   const explicit = hostToolLifecycleMetadata(block.tool_lifecycle)
     ? block.tool_lifecycle
@@ -224,7 +213,6 @@ function classifyGenericResult(block: any, timing: any, approval: any, abortSign
   return terminal("success", undefined, undefined);
 }
 
-/** @param {(event:any)=>Promise<any>} sink @param {any} event */
 async function safePersist(sink: (event: any) => Promise<any>, event: any) {
   try {
     return await sink(event) ?? { persistence: "failed", errorCode: "history_writer_unavailable" };
@@ -233,7 +221,6 @@ async function safePersist(sink: (event: any) => Promise<any>, event: any) {
   }
 }
 
-/** @param {any} persisted @param {string|undefined} terminalStateValue */
 function historyMetadata(persisted: any, terminalStateValue: string | undefined) {
   const metadata = {
     ...(typeof persisted?.recordId === "string" ? { recordId: persisted.recordId } : {}),
@@ -253,14 +240,18 @@ function historyMetadata(persisted: any, terminalStateValue: string | undefined)
   return metadata;
 }
 
-/** Mark a provider adapter's host-derived structured outcome as trusted input to the gate. @param {any} value */
+/**
+ * Mark a provider adapter's host-derived structured outcome as trusted input to the gate.
+ */
 export function toolLifecycleMetadata(value: any): any {
   const metadata = record(value) ? { ...value } : {};
   Object.defineProperty(metadata, HOST_TOOL_LIFECYCLE_METADATA, { value: true });
   return metadata;
 }
 
-/** Provider payloads cannot assert host persistence or choose a terminal state. @param {any} event */
+/**
+ * Provider payloads cannot assert host persistence or choose a terminal state.
+ */
 function stripProviderLifecycleMetadata(event: any) {
   if (!record(event) || !record(event.message) || !Array.isArray(event.message.content)) return;
   for (const block of event.message.content) {
@@ -272,29 +263,25 @@ function stripProviderLifecycleMetadata(event: any) {
   }
 }
 
-/** @param {any} value */
 function hostHistoryMetadata(value: any) {
   return record(value) && value[HOST_HISTORY_METADATA] === true;
 }
 
-/** @param {any} value */
 function hostToolLifecycleMetadata(value: any) {
   return record(value) && value[HOST_TOOL_LIFECYCLE_METADATA] === true;
 }
 
-/** @param {any} event @param {unknown} error */
 function attachPersistenceFailure(event: any, error: unknown) {
   if (!record(event) || !record(event.message) || !Array.isArray(event.message.content)) return;
   for (const block of event.message.content) {
     if (record(block) && (block.type === "tool_use" || block.type === "tool_result")) {
-      const candidate = /** @type {any} */ ((error) as any);
+      const candidate = ((error) as any);
       const code = record(candidate) && typeof candidate.code === "string" ? candidate.code : "history_write_failed";
       block.history = historyMetadata({ persistence: "failed", errorCode: code }, undefined);
     }
   }
 }
 
-/** @param {any} block */
 function artifactPaths(block: any) {
   const paths = new Set<string>();
   collectPaths(block.raw_result?.details?.tool_payload_saved_paths, paths);
@@ -303,13 +290,11 @@ function artifactPaths(block: any) {
   return [...paths].slice(0, 32).map((path) => ({ path }));
 }
 
-/** @param {any} value @param {Set<string>} paths */
 function collectPaths(value: any, paths: Set<string>) {
   if (typeof value === "string" && value.length > 0) paths.add(value);
   else if (Array.isArray(value)) for (const item of value) collectPaths(item, paths);
 }
 
-/** @param {string} state @param {string|undefined} failureKindValue @param {string|undefined} detailCode */
 function terminal(state: string, failureKindValue: string | undefined, detailCode: string | undefined) {
   return {
     state,
@@ -318,25 +303,21 @@ function terminal(state: string, failureKindValue: string | undefined, detailCod
   };
 }
 
-/** @param {any} value */
 function failureKind(value: any) {
   return typeof value === "string" && FAILURE_KINDS.has(value) ? value : "runtime_error";
 }
 
-/** @param {string} state @param {any} value */
 function lifecycleFailureKind(state: string, value: any) {
   if (typeof value === "string" && FAILURE_KINDS.has(value)) return value;
   if (state === "signal" || state === "interrupted") return "process_death";
   return state === "cancelled" ? "cancelled" : "runtime_error";
 }
 
-/** @param {any} value */
 function failureOutranksAbort(value: any) {
   const kind = failureKind(value);
   return kind !== "runtime_error" && !kind.startsWith("cancelled");
 }
 
-/** @param {AbortSignal} signal */
 function cancellationFailureKind(signal: AbortSignal) {
   const reason = signal.reason;
   if (typeof reason !== "object" || reason === null || nodeUtilTypes.isProxy(reason)) {
@@ -352,17 +333,14 @@ function cancellationFailureKind(signal: AbortSignal) {
   }
 }
 
-/** @param {any} value */
 function terminalState(value: any) {
   return ["success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted"].includes(value);
 }
 
-/** @param {any} value */
 function boundedCode(value: any) {
   return String(value || "unknown").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 160) || "unknown";
 }
 
-/** @param {any} value */
 function record(value: any) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

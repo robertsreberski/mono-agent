@@ -17,21 +17,12 @@ import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy
 
 const MAX_EXEC_ARGS = 256;
 
-/** @typedef {import("./process-jobs.js").ProcessJobsController} ProcessJobsController */
-
-/**
- * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
- */
 export async function execToolImpl(params: { executable: string; args?: string[]; workdir?: string; description?: string; timeout_ms?: number; max_output_chars?: number; background?: boolean; wake_on_completion?: boolean }, options: { ctx: import("../shared/tool-context.js").ToolContext; signal?: AbortSignal; sandboxPolicy?: any; sandboxEngine?: any; toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits; toolCallId?: string; ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController; processJobsController?: ProcessJobsController }): Promise<any> {
   return (await execToolRun(params, options)).text;
 }
 
 /**
  * Execute an argv vector directly, without shell parsing.
- *
- * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
- * @param {{ctx: import("../shared/tool-context.js").ToolContext, signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, toolLimits?: import("../../contracts/policy.js").RuntimeToolLimits, toolCallId?: string, ownedForegroundProcessController?: import("./owned-foreground-process.js").OwnedForegroundProcessController, processJobsController?: ProcessJobsController}} options
  */
 export async function execToolRun(
   {

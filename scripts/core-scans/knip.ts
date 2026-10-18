@@ -26,6 +26,78 @@ const paths = Object.fromEntries([
 // taggedNames is enforced by the focused policy test; no file-wide export ignores.
 export const retainedExports = [
   {
+    "file": "packages/turn/src/contracts/events.ts",
+    "names": [
+      "RuntimeObserver"
+    ],
+    "reason": "deferred: only references were redundant JSDoc removed by PR 12; kept so PR 12 stays declaration-preserving; removal candidate for PR 13's dead-code closure",
+    "citation": "packages/turn/src/contracts/events.ts",
+    "taggedNames": [
+      "RuntimeObserver"
+    ],
+    "declarationPreserving": true
+  },
+  {
+    "file": "packages/turn/src/providers/pi/oauth-compat.ts",
+    "names": [
+      "AuthPrompt",
+      "AuthEvent"
+    ],
+    "reason": "deferred: only references were redundant JSDoc removed by PR 12; kept so PR 12 stays declaration-preserving; removal candidate for PR 13's dead-code closure",
+    "citation": "packages/turn/src/providers/pi/oauth-compat.ts",
+    "taggedNames": [
+      "AuthPrompt",
+      "AuthEvent"
+    ],
+    "declarationPreserving": true
+  },
+  {
+    "file": "packages/turn/src/contracts/model.ts",
+    "names": [
+      "RuntimeSdkId"
+    ],
+    "reason": "consumed: named by retained runtime result declarations",
+    "citation": "packages/turn/src/contracts/runtime.ts",
+    "taggedNames": [
+      "RuntimeSdkId"
+    ],
+    "declarationPreserving": true
+  },
+  {
+    "file": "packages/turn/src/contracts/runtime.ts",
+    "names": [
+      "AgentRuntimeInstance"
+    ],
+    "reason": "consumed: test-only native preparation runtime view",
+    "citation": "packages/turn/src/__tests__/ai/native-prepared-dispatch.test.ts",
+    "taggedNames": [
+      "AgentRuntimeInstance"
+    ],
+    "declarationPreserving": true
+  },
+  {
+    "file": "packages/turn/src/contracts/runtime.ts",
+    "names": [
+      "RuntimeBridge",
+      "RuntimeBridgeDescriptor"
+    ],
+    "reason": "documented extension: public compatibility types via ./ai",
+    "citation": "packages/turn/src/ai/index.ts",
+    "taggedNames": [
+      "RuntimeBridge",
+      "RuntimeBridgeDescriptor"
+    ],
+    "declarationPreserving": true
+  },
+
+  {
+    "file": "packages/turn/src/__tests__/fixtures/prepared-host-runtime.mts",
+    "names": ["preparedHostFixture"],
+    "reason": "indirect: authored fixture loaded through a computed Vite source URL",
+    "citation": "packages/conversation/src/__tests__/host-runtime-preparation.test.ts",
+    "taggedNames": ["preparedHostFixture"]
+  },
+  {
     "file": "packages/contracts/src/bearer.ts",
     "names": [
       "generateBearerToken"
@@ -205,7 +277,7 @@ export const retainedExports = [
     "taggedNames": []
   },
   {
-    "file": "packages/turn/src/providers/codex/app-server-client.js",
+    "file": "packages/turn/src/providers/codex/app-server-client.ts",
     "names": [
       "createCodexAppServerClient"
     ],
@@ -258,13 +330,13 @@ export const retainedExports = [
     ]
   },
   {
-    "file": "packages/turn/src/providers/pi/transport-errors.js",
+    "file": "packages/turn/src/providers/pi/transport-errors.ts",
     "names": [
       "resetTransportErrorProbeForTests",
       "recordTransportErrorForTests"
     ],
     "reason": "test isolation control for process-global transport error probe",
-    "citation": "packages/turn/src/providers/pi/transport-errors.js",
+    "citation": "packages/turn/src/providers/pi/transport-errors.ts",
     "taggedNames": [
       "resetTransportErrorProbeForTests",
       "recordTransportErrorForTests"
@@ -334,8 +406,21 @@ export default {
       entry: [
         ...Object.values(turnManifest.exports).flatMap((target) => sourceTarget(target.default))
           .map((path) => `${relative(resolve(root, "packages/turn"), path)}!`),
-        "src/host/sandbox/srt-embed-runner.mjs!",
-        "src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs",
+        "src/host/sandbox/srt-embed-runner.mts!",
+        "src/engine/__tests__/fixtures/regenerate-projection-goldens.mts",
+        "src/engine/__tests__/fixtures/projection-parity-worker.mts",
+        "src/__tests__/fixtures/prepared-host-runtime.mts",
+        "src/__tests__/ai/fixtures/native-journal-storage-worker.mts",
+        "src/__tests__/ai/fixtures/native-lifecycle-storage-worker.mts",
+        "src/__tests__/ai/fixtures/native-writer-holder.mts",
+        "src/engine/__tests__/fixtures/append-worker.mts",
+        "src/engine/__tests__/fixtures/checkpoint-worker.mts",
+        "src/engine/__tests__/fixtures/effect-worker.mts",
+        "src/engine/__tests__/fixtures/import-worker.mts",
+        "src/engine/__tests__/fixtures/lock-worker.mts",
+        "src/engine/__tests__/fixtures/native-create-worker.mts",
+        "src/engine/__tests__/fixtures/store-owner-worker.mts",
+        "src/engine/__tests__/fixtures/turn-evidence-worker.mts",
       ],
       project: ["src/**/*.{js,mjs,ts,mts}!", "!src/**/__tests__/**!"],
       ignoreDependencies: ["@vscode/ripgrep"],

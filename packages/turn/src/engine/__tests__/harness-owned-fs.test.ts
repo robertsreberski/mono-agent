@@ -154,7 +154,7 @@ it("settles a create cancelled behind the catalogue promptly, releasing its writ
   try {
     expect(settled).toBe("AbortError"); // settled while the catalogue is still held
   assertPresent(held);
-  } finally { /** @type {any} */ (((held) as any))?.release(); vi.restoreAllMocks(); }
+  } finally { (((held) as any))?.release(); vi.restoreAllMocks(); }
   for (let i = 0; i < 50 && (await readdir(locks.directory)).length > 1; i += 1) await new Promise((resolve: (value: any) => void) => setTimeout(resolve, 20));
   expect(await readdir(locks.directory)).toEqual(["catalog.sqlite"]);
   expect(await repo.list()).toEqual([]);

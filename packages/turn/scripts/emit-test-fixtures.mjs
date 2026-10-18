@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
+const isFixture = (path) => /(?:^|\/)__tests__\/(?:[^/]+\/)*fixtures\//u.test(path);
 const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
 
 function visit(path, action) {
@@ -45,12 +46,12 @@ export function emitTestFixtures(directory = packageDirectory) {
   const bootstrap = pathToFileURL(join(output, "resolve-fixture-imports.mjs")).href;
   // Dependency closure is compiler input, never another executable production graph.
   visit(output, (path) => {
-    if (!relative(output, path).includes("__tests__/fixtures/")) rmSync(path);
+    if (!isFixture(relative(output, path))) rmSync(path);
     else if (/\.(?:js|mjs)$/u.test(path)) resolveFixtureImports(path, bootstrap);
   });
   visit(join(directory, "src"), (path) => {
     const name = relative(join(directory, "src"), path);
-    if (!name.includes("__tests__/fixtures/") || /\.(?:js|mjs|ts|mts)$/u.test(name)) return;
+    if (!isFixture(name) || /\.(?:js|mjs|ts|mts)$/u.test(name)) return;
     const target = join(output, name);
     mkdirSync(dirname(target), { recursive: true });
     cpSync(path, target);
@@ -59,13 +60,26 @@ export function emitTestFixtures(directory = packageDirectory) {
   // covers runtime template/expression imports without rewriting their values.
   writeFileSync(join(output, "resolve-fixture-imports.mjs"), `
 import { registerHooks } from "node:module";
+import { fileURLToPath } from "node:url";
 const prefix = ${JSON.stringify(pathToFileURL(`${output}/`).href)};
 const anchor = ${JSON.stringify(import.meta.url)};
+const source = ${JSON.stringify(pathToFileURL(join(directory, "src/")).href)};
+const production = ${JSON.stringify(pathToFileURL(join(directory, "dist/")).href)};
 registerHooks({ resolve(specifier, context, nextResolve) {
-  if (context.parentURL?.startsWith(prefix) && !/^(?:\\.|\\/|[a-z]+:)/u.test(specifier)) {
-    return nextResolve(specifier, { ...context, parentURL: anchor });
+  if (context.parentURL?.startsWith(prefix)) {
+    if (!/^(?:\\.|\\/|[a-z]+:)/u.test(specifier)) context = { ...context, parentURL: anchor };
+    else if (specifier.startsWith(".")) {
+      const target = new URL(specifier, context.parentURL).href;
+      if (target.startsWith(prefix) && !target.slice(prefix.length).includes("__tests__/")) {
+        specifier = production + target.slice(prefix.length);
+      }
+    }
   }
-  return nextResolve(specifier, context);
+  const resolved = nextResolve(specifier, context);
+  if (resolved.url.startsWith(source) && !resolved.url.slice(source.length).includes("__tests__/")) {
+    return nextResolve(fileURLToPath(production + resolved.url.slice(source.length)), context);
+  }
+  return resolved;
 } });
 `);
   if (!existsSync(join(output, "engine/__tests__/fixtures/projection-parity-worker.mjs"))) throw new Error("Missing emitted parity worker");

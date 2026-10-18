@@ -1,7 +1,6 @@
 // @ts-check
 // One pure selection plan for durable stores and frozen evidence views. Outcome
 // materialization stays with the caller (queued I/O versus already-read bytes).
-/** @param {{tip:string|null, visible:Set<string>, interruptions:Iterable<any>, validator:any, timestamp:(id:string)=>number}} input */
 export function planRepairEntries({ tip, visible, interruptions, validator, timestamp }: { tip: string | null; visible: Set<string>; interruptions: Iterable<any>; validator: any; timestamp: (id: string) => number; }): {
   repairs: any[];
   additions: {

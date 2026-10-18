@@ -33,22 +33,25 @@ function fixture() {
     mkdirSync(dirname(resolve(directory, name)), { recursive: true });
     writeFileSync(resolve(directory, name), text);
   }
-  put(".gitignore", "/src/model.js\n/src/leaf.d.ts\n");
+  put(".gitignore", "/src/model.js\n/src/leaf.d.ts\n/src/host/sandbox/srt-embed-runner.mjs\n");
   put("package.json", '{"type":"module"}');
   put("tsconfig.build.json", "{}");
   put("tsconfig.json", "{}");
   put("tsconfig.test.json", "{}");
   put("src/model.ts", 'export const model = "fixture";');
   put("src/leaf.js", 'export const leaf = "authored";');
-  put("src/host/sandbox/srt-embed-runner.mjs", "// fixture runner\n");
+  put("src/host/sandbox/srt-embed-runner.mts", "// fixture runner\n");
   const commands: string[][] = [];
   function execute(args: string[]) {
     commands.push(args);
     const output = args[args.indexOf("--outDir") + 1];
     if (args.includes("--emitDeclarationOnly")) {
+      put(join(output!, "host/sandbox/srt-embed-runner.d.mts"), "export {};\n");
       put(join(output!, "model.d.ts"), 'export declare const model = "fixture";\n');
     } else if (args.at(-1) === "tsconfig.build.json") {
+      put(join(output!, "host/sandbox/srt-embed-runner.mjs"), "// compiler runner\nexport {};\n");
       put(join(output!, "model.js"), 'export const model = "fixture";\n');
+      put(join(output!, "host/sandbox/srt-embed-runner.d.mts"), "export {};\n");
       put(join(output!, "model.d.ts"), 'export declare const model = "fixture";\n');
       put(join(output!, "leaf.js"), 'export const leaf = "authored";\n');
       put(join(output!, "leaf.d.ts"), 'export declare const leaf = "authored";\n');
@@ -65,6 +68,8 @@ it("emits production once, materializes identical bytes/hashes and repeats witho
     expect(readFileSync(join(f.directory, "types/model.d.ts"))).toEqual(readFileSync(join(f.directory, "dist/model.d.ts")));
     expect(hashes["src/model.js"]).toBe(createHash("sha256").update(readFileSync(join(f.directory, "dist/model.js"))).digest("hex"));
     expect(readFileSync(join(f.directory, "src/leaf.js"), "utf8")).toContain("authored");
+    expect(readFileSync(join(f.directory, "src/host/sandbox/srt-embed-runner.mjs"))).toEqual(readFileSync(join(f.directory, "dist/host/sandbox/srt-embed-runner.mjs")));
+    expect(readFileSync(join(f.directory, "types/host/sandbox/srt-embed-runner.d.mts"))).toEqual(readFileSync(join(f.directory, "dist/host/sandbox/srt-embed-runner.d.mts")));
   }
   expect(f.commands.map((args) => args.at(-1)!.split("/").at(-1))).toEqual([
     "tsconfig.build.json", "tsconfig.json", "tsconfig.test.json", "tsconfig.json",
@@ -199,7 +204,7 @@ it("preserves an authored overlay and cleans other owned overlays without maskin
   expect(() => build(f.directory, f.execute)).toThrow(/unowned or modified overlay/);
   expect(readFileSync(join(f.directory, "src/leaf.d.ts"), "utf8")).toBe("// authored declaration");
   rmSync(join(f.directory, "src/leaf.d.ts"));
-  f.put(".gitignore", "/src/model.js\n/src/leaf.d.ts\n/src/other.d.ts\n");
+  f.put(".gitignore", "/src/model.js\n/src/leaf.d.ts\n/src/host/sandbox/srt-embed-runner.mjs\n/src/other.d.ts\n");
   const execute = (args: string[]) => {
     f.execute(args);
     if (args.at(-1) === "tsconfig.build.json") f.put(join(args[args.indexOf("--outDir") + 1]!, "other.d.ts"), "export {};\n");
@@ -296,8 +301,8 @@ it("requires private strict and production paths to follow authored implementati
 it("rejects non-strict inferred TS declarations and accepts explicit strict-correct annotations", async () => {
   const f = fixture();
   const common = { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", skipLibCheck: true, rootDir: "src" };
-  f.put("tsconfig.build.json", JSON.stringify({ compilerOptions: { ...common, allowJs: true, checkJs: true, declaration: true }, include: ["src/model.ts", "src/leaf.js"] }));
-  f.put("tsconfig.json", JSON.stringify({ compilerOptions: { ...common, strict: true, noEmit: true }, include: ["src/model.ts"] }));
+  f.put("tsconfig.build.json", JSON.stringify({ compilerOptions: { ...common, allowJs: true, checkJs: true, declaration: true }, include: ["src/model.ts", "src/leaf.js", "src/host/sandbox/srt-embed-runner.mts"] }));
+  f.put("tsconfig.json", JSON.stringify({ compilerOptions: { ...common, strict: true, noEmit: true }, include: ["src/model.ts", "src/host/sandbox/srt-embed-runner.mts"] }));
   f.put("tsconfig.test.json", JSON.stringify({ extends: "./tsconfig.json" }));
   await build(f.directory);
   const good = readFileSync(join(f.directory, "dist/model.js"));
@@ -366,6 +371,7 @@ it("restores a durably hidden source product after uncatchable source-view termi
     expect(existsSync(join(f.directory, "src/model.js"))).toBe(false);
     const state = JSON.parse(readFileSync(join(f.directory, "node_modules/.cache/staged-build.json"), "utf8")) as { hidden: string[] };
     expect(state.hidden).toContain("src/model.js");
+    expect(state.hidden).toContain("src/host/sandbox/srt-embed-runner.mjs");
     child.kill("SIGKILL");
     await exit;
     typecheck(f.directory, f.execute);
@@ -376,12 +382,12 @@ it("restores a durably hidden source product after uncatchable source-view termi
 it("journals ownership before publication and rolls back a killed publication on next entry", () => {
   const f = fixture();
   build(f.directory, f.execute);
-  const good = ["dist/model.js", "types/model.d.ts", "src/model.js"].map((path) => readFileSync(join(f.directory, path)));
+  const good = ["dist/model.js", "types/model.d.ts", "src/model.js", "src/host/sandbox/srt-embed-runner.mjs"].map((path) => readFileSync(join(f.directory, path)));
   const helper = new URL("../../scripts/staged-build.mjs", import.meta.url).href;
   const result = spawnSyncPublication(f.directory, helper);
   expect(result).toBe(77);
   typecheck(f.directory, f.execute);
-  expect(["dist/model.js", "types/model.d.ts", "src/model.js"].map((path) => readFileSync(join(f.directory, path)))).toEqual(good);
+  expect(["dist/model.js", "types/model.d.ts", "src/model.js", "src/host/sandbox/srt-embed-runner.mjs"].map((path) => readFileSync(join(f.directory, path)))).toEqual(good);
 });
 
 function spawnSyncPublication(directory: string, helper: string) {
@@ -406,6 +412,8 @@ function spawnSyncPublication(directory: string, helper: string) {
         }else if(args.includes('--emitDeclarationOnly')){
           const out=args[args.indexOf('--outDir')+1];fs.mkdirSync(out,{recursive:true});
           write(path.join(out,'model.d.ts'),fs.readFileSync(path.join(directory,'dist/model.d.ts')));
+          fs.mkdirSync(path.join(out,'host/sandbox'),{recursive:true});
+          write(path.join(out,'host/sandbox/srt-embed-runner.d.mts'),fs.readFileSync(path.join(directory,'dist/host/sandbox/srt-embed-runner.d.mts')));
         }
       });
     `, directory], { stdio: "ignore" });
@@ -428,6 +436,7 @@ it("deletes superseded previous products after a successful publication", () => 
   const f = fixture();
   build(f.directory, f.execute);
   rmSync(join(f.directory, "src/model.ts"));
+  rmSync(join(f.directory, "src/host/sandbox/srt-embed-runner.mts"));
   const products = build(f.directory, (args) => {
     if (args.at(-1) === "tsconfig.build.json") {
       const out = args[args.indexOf("--outDir") + 1]!;
@@ -458,4 +467,26 @@ it("works without ps, recovering proven stale identities but refusing unproven l
     console.log('fallback and conservative live-owner refusal passed');
   `, f.directory], { encoding: "utf8", env: { ...process.env, PATH: "" } });
   expect(result).toContain("fallback and conservative live-owner refusal passed");
+});
+
+it("owns only compiler-emitted runner bytes, including freshness, source-view and declaration mirroring", () => {
+  const f = fixture(), runner = "host/sandbox/srt-embed-runner";
+  build(f.directory, f.execute);
+  expect(readFileSync(join(f.directory, `src/${runner}.mjs`), "utf8")).toContain("compiler runner");
+  withSourceView(() => {
+    expect(existsSync(join(f.directory, `src/${runner}.mjs`))).toBe(false);
+    expect(existsSync(join(f.directory, `src/${runner}.mts`))).toBe(true);
+  }, f.directory);
+  f.put(`src/${runner}.mts`, "// changed typed runner\n");
+  expect(() => typecheck(f.directory, f.execute)).toThrow(/outputs are stale/);
+  build(f.directory, f.execute);
+  f.put(`src/${runner}.mjs`, "// changed generated runner\n");
+  expect(() => withSourceView(() => 0, f.directory)).toThrow(/modified staged product/);
+  rmSync(join(f.directory, `src/${runner}.mjs`));
+  build(f.directory, f.execute);
+  expect(() => build(f.directory, (args) => {
+    f.execute(args);
+    if (args.includes("--emitDeclarationOnly")) f.put(join(args[args.indexOf("--outDir") + 1]!, `${runner}.d.mts`), "export declare const changed: true;\n");
+  })).toThrow(/Strict declaration mismatch.*srt-embed-runner.d.mts/);
+  expect(readFileSync(join(f.directory, `src/${runner}.mjs`), "utf8")).toContain("compiler runner");
 });

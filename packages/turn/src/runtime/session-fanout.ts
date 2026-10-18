@@ -1,7 +1,7 @@
 import { createSessionRegistry as createRegistry } from "../engine/session-registry.js";
 import { nativeSessionRegistry } from "../engine/session-lifecycle.js";
 const allRegistries = new Set([nativeSessionRegistry]);
-/** @param {Parameters<typeof createRegistry>[0]} [options]
+/**
  * @coreScanRetained
  */
 export function createSessionRegistry(options?: Parameters<typeof createRegistry>[0]): ReturnType<typeof createRegistry> {

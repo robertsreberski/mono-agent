@@ -10,14 +10,13 @@ import { projectContext } from "./request-projection.js";
 import { syncDir } from "./owned-fs-impl.js";
 
 const object = (v: any) => v && typeof v === "object" && !Array.isArray(v);
-/** @returns {never} */
 const fail = (): never => { throw new Error("Invalid legacy session"); };
-/** Valid legacy sources plus damaged legacy-named entries (unreadable,
+/**
+ * Valid legacy sources plus damaged legacy-named entries (unreadable,
  * malformed or of unknown format). Damage is never imported, archived or
  * deleted. Pi names sources `<time>_<id>.jsonl`, which attributes damage to that
  * handle; an entry without that shape (or an unreadable directory) has no owner.
- * @param {string} root @param {{includeArchives?:boolean, id?:string}} [options]
- * @returns {Promise<{sessions:any[], unattributed:{name:string, id?:string}[]}>} */
+ */
 export async function listLegacySessions(root: string, { includeArchives = false, id: requestedId }: { includeArchives?: boolean; id?: string; } = {}): Promise<{ sessions: any[]; unattributed: { name: string; id?: string; }[]; }> {
   assertSupportedSessionsRoot(root);
   const sessions: any[] = [], unattributed: {name: string; id?: string}[] = [];
@@ -61,7 +60,7 @@ function projectLegacyContext(entries: any): { messages: any[] } {
 export async function readLegacySession(metadata: any, root: any): Promise<{ status: string; reason: string; evidence: { identity: any; completeBytes: number; torn: boolean; }; messages?: undefined; } | { status: string; messages: any[]; evidence: { identity: any; completeBytes: number; torn: boolean; }; reason?: undefined; }> {
   const reader = await JournalReader.open(metadata.path, root, { ownerOnly: false });
   let evidence: Awaited<ReturnType<JournalReader["scan"]>>;
-  /** @type {any} */ let header: any;
+ let header: any;
   const records: any[] = [];
   try {
     evidence = await reader.scan((record: any) => { if (!header) header = record; else records.push(record); });

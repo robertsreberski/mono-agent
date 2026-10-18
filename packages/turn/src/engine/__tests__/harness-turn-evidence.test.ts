@@ -148,13 +148,13 @@ it("matches before repairing a torn native tail and leaves mismatched evidence b
 });
 it("survives SIGKILL at first bound-start fsync and reconciles idempotently in empty fresh processes", async () => {
   const root = await mkdtemp(join(tmpdir(), "turn-evidence-kill-")); roots.push(root);
-  const start = fork(new URL("./fixtures/turn-evidence-worker.mjs", import.meta.url), [root, "admit"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const start = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/turn-evidence-worker.mjs", import.meta.url), [root, "admit"], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try {
     const [notice] = await Promise.race([once(start, "message"), once(start, "exit").then(([code]: any) => { throw new Error(`Admission worker exited before barrier: ${code}`); })]);
     expect(notice).toEqual({ phase: "inline-start-synced" }); const exited = once(start, "exit"); start.kill("SIGKILL"); await exited;
   } finally { if (start.exitCode === null && start.signalCode === null) { const exited = once(start, "exit"); start.kill("SIGKILL"); await exited; } }
   async function recover() {
-    const child = fork(new URL("./fixtures/turn-evidence-worker.mjs", import.meta.url), [root, "inspect"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    const child = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/turn-evidence-worker.mjs", import.meta.url), [root, "inspect"], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
     const exited = once(child, "exit");
     try { const [notice] = await Promise.race([once(child, "message"), exited.then(([code]: any) => { throw new Error(`Recovery worker exited before report: ${code}`); })]); expect((await exited)[0]).toBe(0); return notice; }
     finally { if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; } }

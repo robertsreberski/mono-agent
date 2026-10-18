@@ -4,24 +4,9 @@ import { types as nodeUtilTypes } from "node:util";
 
 import { startPreparedProcess } from "./process-runner.js";
 
-/** @typedef {import("../../contracts/process.js").ProcessJobsController} ProcessJobsController */
-
 /**
  * Transfer one prepared command to the injected host controller. From the
  * instant `start()` is invoked, the controller owns cleanup on every path.
- *
- * @param {{
- *   controller: ProcessJobsController,
- *   tool: "Exec"|"Bash",
- *   prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand,
- *   summary: string,
- *   description?: string,
- *   wakeOnCompletion?: boolean,
- *   timeoutMs?: number,
- *   maxOutputChars?: number,
- *   startedAt: number,
- *   failed: (text: string, code: string, startedAt: number) => any,
- * }} input
  */
 export async function handOffProcessJob({
   controller,
@@ -192,7 +177,6 @@ function mergedProcessEnvironment(overrides: Record<string, string | undefined> 
 
 function withCleanupOnce(prepared: any) {
   if (typeof prepared.cleanup !== "function") return prepared;
-  /** @type {Promise<void>|undefined} */
   let cleanup: Promise<void>;
   const original = prepared.cleanup;
   return {

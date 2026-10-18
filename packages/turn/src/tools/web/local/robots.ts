@@ -8,7 +8,7 @@ import { withWebDeadline } from "../web-request.js";
 
 // robots-parser's legacy ambient-module declaration is ambiguous under NodeNext;
 // the CJS default is callable at runtime. Pin the narrow parser contract here.
-const parseRobots = /** @type {(url: string, text: string) => {isAllowed(url: string, ua: string): boolean | undefined, getCrawlDelay(ua: string): number | undefined}} */ (/** @type {unknown} */ ((((robotsParser)) as unknown)) as (url: string, text: string) => {isAllowed(url: string, ua: string): boolean | undefined, getCrawlDelay(ua: string): number | undefined});
+const parseRobots = (((((robotsParser)) as unknown)) as (url: string, text: string) => {isAllowed(url: string, ua: string): boolean | undefined, getCrawlDelay(ua: string): number | undefined});
 const caches = new WeakMap();
 const TTL = 3_600_000;
 const LIMIT = 64;

@@ -1,0 +1,294 @@
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const resolveOAuthApiKeyMock = vi.fn();
+
+vi.mock("../providers/pi/oauth-compat.js", () => ({
+  resolveOAuthApiKey: (...args: unknown[]) => resolveOAuthApiKeyMock(...args),
+}));
+
+type OAuthCredential = { type: "oauth"; access: string; refresh: string; expires: number; clientId?: string; scopes?: string[] };
+type OAuthFixtureResolver = ((provider: string, options?: { rejectedAccessToken?: string; signal?: AbortSignal }) => Promise<string | undefined>) & {
+  readCredential(provider: string): Promise<OAuthCredential>;
+  modifyCredential(provider: string, fn: (current: OAuthCredential) => Promise<OAuthCredential>): Promise<OAuthCredential>;
+  deleteCredential(provider: string): Promise<void>;
+};
+const { createPiOAuthApiKeyResolver } = await import("../providers/pi/auth.js") as unknown as {
+  createPiOAuthApiKeyResolver(options: { path: string }): OAuthFixtureResolver;
+};
+
+const tempDirs: string[] = [];
+
+beforeEach(() => {
+  resolveOAuthApiKeyMock.mockReset();
+});
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe("createPiOAuthApiKeyResolver", () => {
+  it("forces only the rejected token through the existing refresh path and passes cancellation", async () => {
+    const authPath = await writeAuth({ anthropic: oauthCredentials("old-token") });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+    const signal = new AbortController().signal;
+    resolveOAuthApiKeyMock.mockImplementation(async (_provider, credentials) => {
+      expect(credentials.anthropic.expires).toBe(0);
+      return { apiKey: "new-token", newCredentials: { ...credentials.anthropic, access: "new-token", expires: 4200000000000 } };
+    });
+    await expect(resolver("anthropic", { rejectedAccessToken: "old-token", signal })).resolves.toBe("new-token");
+    expect(resolveOAuthApiKeyMock.mock.calls[0]![2]).toBe(signal);
+    expect((await resolver.readCredential("anthropic")).expires).toBe(4200000000000);
+    expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("uses an already replaced token rather than forcing a second refresh", async () => {
+    const authPath = await writeAuth({ anthropic: oauthCredentials("replacement") });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+    resolveOAuthApiKeyMock.mockImplementation(async (_provider, credentials) => {
+      expect(credentials.anthropic.expires).not.toBe(0);
+      return { apiKey: "replacement", newCredentials: credentials.anthropic };
+    });
+    await expect(resolver("anthropic", { rejectedAccessToken: "old-token" })).resolves.toBe("replacement");
+  });
+
+  it("does not persist forced expiry or results from failed/cancelled refresh", async () => {
+    const authPath = await writeAuth({ anthropic: oauthCredentials("old-token") });
+    const before = await readFile(authPath, "utf8");
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+    resolveOAuthApiKeyMock.mockRejectedValueOnce(new Error("fixture failure"));
+    await expect(resolver("anthropic", { rejectedAccessToken: "old-token" })).rejects.toThrow();
+    expect(await readFile(authPath, "utf8")).toBe(before);
+    const controller = new AbortController();
+    resolveOAuthApiKeyMock.mockImplementationOnce(async (_provider, credentials) => {
+      controller.abort();
+      return { apiKey: "new", newCredentials: { ...credentials.anthropic, access: "new" } };
+    });
+    await expect(resolver("anthropic", { rejectedAccessToken: "old-token", signal: controller.signal })).rejects.toThrow();
+    expect(await readFile(authPath, "utf8")).toBe(before);
+  });
+
+  it("preserves OpenAI's issued clientId and provider fields through refresh and a fresh resolver", async () => {
+    const authPath = await writeAuth({ openai: {
+      type: "oauth", access: "old", refresh: "refresh-old", expires: 1,
+      clientId: "issued-client", scopes: ["resource.invoke"],
+    } });
+    resolveOAuthApiKeyMock.mockImplementation(async (_provider, credentials) => ({
+      apiKey: "new", newCredentials: { ...credentials.openai, access: "new", refresh: "refresh-new", expires: 4_200_000_000_000 },
+    }));
+    expect(await createPiOAuthApiKeyResolver({ path: authPath })("openai")).toBe("new");
+    expect(await createPiOAuthApiKeyResolver({ path: authPath }).readCredential("openai")).toMatchObject({
+      clientId: "issued-client", access: "new", scopes: ["resource.invoke"],
+    });
+    const before = await readFile(authPath, "utf8");
+    resolveOAuthApiKeyMock.mockResolvedValue({ apiKey: "invalid", newCredentials: {
+      access: "invalid", refresh: "invalid", expires: 1,
+    } });
+    await expect(createPiOAuthApiKeyResolver({ path: authPath })("openai")).rejects.toThrow(/client ID/u);
+    expect(await readFile(authPath, "utf8")).toBe(before);
+  });
+
+  it("returns undefined when the auth file is missing", async () => {
+    const dir = await tempDir();
+    const resolver = createPiOAuthApiKeyResolver({ path: join(dir, "auth.json") });
+
+    await expect(resolver("openai-codex")).resolves.toBeUndefined();
+    expect(resolveOAuthApiKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("returns undefined when the provider is not present", async () => {
+    const authPath = await writeAuth({ "github-copilot": oauthCredentials("github-token") });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+
+    await expect(resolver("openai-codex")).resolves.toBeUndefined();
+    expect(resolveOAuthApiKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves and persists refreshed OAuth credentials with protected file mode", async () => {
+    const authPath = await writeAuth({
+      "openai-codex": oauthCredentials("old-token"),
+      "github-copilot": oauthCredentials("github-token"),
+    });
+    resolveOAuthApiKeyMock.mockResolvedValue({
+      apiKey: "new-token",
+      newCredentials: {
+        access: "new-token",
+        refresh: "new-refresh",
+        expires: 4_200_000_000_000,
+      },
+    });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+
+    await expect(resolver("openai-codex")).resolves.toBe("new-token");
+    expect(resolveOAuthApiKeyMock).toHaveBeenCalledWith(
+      "openai-codex",
+      expect.objectContaining({
+        "openai-codex": expect.objectContaining({ access: "old-token" }),
+      }),
+    );
+
+    const auth = JSON.parse(await readFile(authPath, "utf8"));
+    expect(auth).toMatchObject({
+      "openai-codex": {
+        type: "oauth",
+        access: "new-token",
+        refresh: "new-refresh",
+        expires: 4_200_000_000_000,
+      },
+      "github-copilot": {
+        type: "oauth",
+        access: "github-token",
+      },
+    });
+    expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("exposes credential-store methods that preserve OAuth credential shape", async () => {
+    const authPath = await writeAuth({
+      "openai-codex": oauthCredentials("old-token"),
+      "github-copilot": oauthCredentials("github-token"),
+    });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+
+    await expect(resolver.readCredential("openai-codex")).resolves.toMatchObject({
+      type: "oauth",
+      access: "old-token",
+      refresh: "old-token-refresh",
+    });
+
+    const updated = await resolver.modifyCredential("openai-codex", async (current) => ({
+      ...current,
+      access: "new-token",
+      refresh: "new-refresh",
+      expires: 4_200_000_000_000,
+    }));
+
+    expect(updated).toMatchObject({
+      type: "oauth",
+      access: "new-token",
+      refresh: "new-refresh",
+      expires: 4_200_000_000_000,
+    });
+    const auth = JSON.parse(await readFile(authPath, "utf8"));
+    expect(auth["openai-codex"]).toMatchObject({ type: "oauth", access: "new-token" });
+
+    await resolver.deleteCredential("openai-codex");
+    const afterDelete = JSON.parse(await readFile(authPath, "utf8"));
+    expect(afterDelete["openai-codex"]).toBeUndefined();
+    expect(afterDelete["github-copilot"]).toMatchObject({ type: "oauth", access: "github-token" });
+  });
+
+  it("persists credentials when refreshes write concurrently", async () => {
+    const authPath = await writeAuth({ "openai-codex": oauthCredentials("old-token") });
+    resolveOAuthApiKeyMock.mockResolvedValue({
+      apiKey: "new-token",
+      newCredentials: {
+        access: "new-token",
+        refresh: "new-refresh",
+        expires: 4_200_000_000_000,
+      },
+    });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+
+    const results = await Promise.all(Array.from({ length: 8 }, () => resolver("openai-codex")));
+
+    expect(results).toEqual(Array.from({ length: 8 }, () => "new-token"));
+    const auth = JSON.parse(await readFile(authPath, "utf8"));
+    expect(auth["openai-codex"]).toMatchObject({ access: "new-token" });
+  });
+
+  it("serializes concurrent credential writes across providers in the same auth file", async () => {
+    const authPath = await writeAuth({
+      "openai-codex": oauthCredentials("openai-old"),
+      "github-copilot": oauthCredentials("github-old"),
+    });
+    const firstResolver = createPiOAuthApiKeyResolver({ path: authPath });
+    const secondResolver = createPiOAuthApiKeyResolver({ path: authPath });
+
+    await Promise.all([
+      firstResolver.modifyCredential("openai-codex", async (current) => {
+        await delay(20);
+        return { ...current, access: "openai-new" };
+      }),
+      secondResolver.modifyCredential("github-copilot", async (current) => ({
+        ...current,
+        access: "github-new",
+      })),
+    ]);
+
+    const auth = JSON.parse(await readFile(authPath, "utf8"));
+    expect(auth["openai-codex"]).toMatchObject({ access: "openai-new" });
+    expect(auth["github-copilot"]).toMatchObject({ access: "github-new" });
+  });
+
+  it("serializes concurrent credential writes when auth file paths are aliases", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, `${JSON.stringify({
+      "openai-codex": oauthCredentials("openai-old"),
+      "github-copilot": oauthCredentials("github-old"),
+    }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const relativeResolver = createPiOAuthApiKeyResolver({ path: "auth.json" });
+      const absoluteResolver = createPiOAuthApiKeyResolver({ path: authPath });
+
+      await Promise.all([
+        relativeResolver.modifyCredential("openai-codex", async (current) => {
+          await delay(20);
+          return { ...current, access: "openai-new" };
+        }),
+        absoluteResolver.modifyCredential("github-copilot", async (current) => ({
+          ...current,
+          access: "github-new",
+        })),
+      ]);
+    } finally {
+      process.chdir(cwd);
+    }
+
+    const auth = JSON.parse(await readFile(authPath, "utf8"));
+    expect(auth["openai-codex"]).toMatchObject({ access: "openai-new" });
+    expect(auth["github-copilot"]).toMatchObject({ access: "github-new" });
+  });
+
+  it("throws when the auth file is not valid JSON", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, "{not-json", "utf8");
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+
+    await expect(resolver("openai-codex")).rejects.toThrow(/Unable to parse Pi auth file/u);
+  });
+});
+
+async function tempDir() {
+  const dir = await mkdtemp(join(tmpdir(), "mono-agent-pi-auth-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+async function writeAuth(auth: Record<string, unknown>) {
+  const dir = await tempDir();
+  const authPath = join(dir, "auth.json");
+  await writeFile(authPath, `${JSON.stringify(auth, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  return authPath;
+}
+
+function oauthCredentials(access: string) {
+  return {
+    type: "oauth",
+    access,
+    refresh: `${access}-refresh`,
+    expires: 4_100_000_000_000,
+  };
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

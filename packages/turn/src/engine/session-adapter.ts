@@ -1,7 +1,6 @@
 // @ts-check
 import { projectContext, projectInheritedContext, inspectCurrentEvidence } from "./request-projection.js";
 
-/** @param {any} rawSession */
 export function createPiSessionAdapter(rawSession: any): {
     rawSession: any;
     readonly metadata: any;

@@ -31,9 +31,6 @@ const RISK_TIERS = Object.freeze(["low", "medium", "high"]);
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-/**
- * @param {{onToolApprovalRequest?: any, defaultRiskTier?: string, timeoutMs?: number, onEvent?: (event: any) => void, riskTiersByTool?: any, alwaysAllowTools?: any, autoApproveLowRisk?: boolean}} [options]
- */
 export function createApprovalManager({
   onToolApprovalRequest = null,
   defaultRiskTier = "medium",

@@ -27,12 +27,6 @@ function artifactFilename(filename: any, outputDir: any) {
   return target;
 }
 
-/**
- * @param {any} _serverName
- * @param {any} toolName
- * @param {any} params
- * @param {{qaOutputDir?: any, ctx?: any}} [options]
- */
 export function normalizeMcpToolParams(_serverName: any, toolName: any, params: any, { qaOutputDir, ctx }: { qaOutputDir?: any; ctx?: any } = {}): any {
   if (!params || typeof params !== "object" || Array.isArray(params)) return params;
   if (!PLAYWRIGHT_FILENAME_TOOLS.has(toolName) || !params.filename || isAbsolute(String(params.filename))) return params;

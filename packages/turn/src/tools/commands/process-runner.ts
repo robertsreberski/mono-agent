@@ -134,9 +134,6 @@ input.once("end", () => {
  * The result is deliberately loss-aware: stdout/stderr are retained up to the
  * shared byte cap even when the child times out, is aborted, exits by signal,
  * or exceeds that cap.
- *
- * @param {{command: string, args?: readonly string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
- * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer, exactEnvironment?: boolean}} [options]
  */
 export function runPreparedProcess(
   commandSpec: { command: string; args?: readonly string[]; cwd?: string; env?: Record<string, string | undefined> },
@@ -164,8 +161,7 @@ export function runPreparedProcess(
  * retain their exact leader/stdio completion semantics. Process jobs enable it
  * through their bound launcher: sandbox cleanup must not run while a detached
  * descendant in the owned group is still alive.
- *
- * @param {{command: string, args?: readonly string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
+ * @param commandSpec
  * `outputMode` selects how output is handled. "buffer" (default) accumulates it
  * under `maxBufferBytes` and terminates the process when that bound is crossed —
  * the right contract for a job whose whole output is the result. "stream" hands
@@ -173,13 +169,10 @@ export function runPreparedProcess(
  * long watch is never killed for producing output and the caller owns the only
  * copy. Buffering stderr as well would hand a streaming caller two overlapping
  * views of it: the runner's bounded PREFIX plus the caller's own tail.
- *
- * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer, waitForProcessGroup?: boolean, exactEnvironment?: boolean, outputMode?: "buffer"|"stream", onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}} [options]
+ * @param [options]
  * For process jobs, `release()` is the persistence fence: the target cannot
  * spawn until the host has durably recorded the returned ownership metadata.
  * Foreground handles expose a harmless no-op release for one structural shape.
- *
- * @returns {import("../../contracts/process.js").ProcessJobProcessHandle}
  */
 export function startPreparedProcess(
   commandSpec: { command: string; args?: readonly string[]; cwd?: string; env?: Record<string, string | undefined> },
@@ -213,11 +206,9 @@ export function startPreparedProcess(
   if (launchPayload !== null && launchPayload.byteLength > PROCESS_JOB_LAUNCH_PAYLOAD_BYTES) {
     throw new RangeError("Process-job launch payload exceeds the safe in-memory gate limit.");
   }
-  /** @type {import("node:child_process").ChildProcess|null} */
   let child: import("node:child_process").ChildProcess | null = null;
   let cancel = () => {};
   let release = async () => {};
-  /** @type {Promise<import("../../contracts/process.js").ProcessJobProcessResult>} */
   const completion: Promise<import("../../contracts/process.js").ProcessJobProcessResult> = new Promise((resolve) => {
     try {
       child = spawn(
@@ -401,8 +392,8 @@ export function startPreparedProcess(
     cancel = terminate;
 
     if (gated) {
-      const gate = /** @type {import("node:stream").Writable|undefined} */ ((child.stdio?.[3]) as import("node:stream").Writable|undefined);
-      const status = /** @type {import("node:stream").Readable|undefined} */ ((child.stdio?.[4]) as import("node:stream").Readable|undefined);
+      const gate = ((child.stdio?.[3]) as import("node:stream").Writable|undefined);
+      const status = ((child.stdio?.[4]) as import("node:stream").Readable|undefined);
       let releasePromise;
       release = async () => {
         releasePromise ??= new Promise<void>((resolveRelease, rejectRelease) => {
@@ -556,7 +547,6 @@ function createOwnedProcessGroupAttestation(pgid: any) {
     leaderExited: false,
     observedAfterLeaderExit: false,
     ownershipLost: false,
-    /** @type {number|null} */
     lastObservedAt: null as number | null,
   };
 }
@@ -652,7 +642,6 @@ function mergedProcessEnv(overrides: any) {
 }
 
 function exactProcessEnv(values: any = {}) {
-  /** @type {Record<string, string>} */
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries<string | undefined>(values)) {
     if (value !== undefined) env[key] = value;
@@ -660,11 +649,6 @@ function exactProcessEnv(values: any = {}) {
   return env;
 }
 
-/**
- * @param {import("node:child_process").ChildProcess} child
- * @param {NodeJS.Signals} signal
- * @param {{fallbackToChildPid?: boolean}} [options]
- */
 export function killProcessGroup(child: import("node:child_process").ChildProcess, signal: NodeJS.Signals, { fallbackToChildPid = false }: { fallbackToChildPid?: boolean } = {}): void {
   if (!child?.pid) return;
   try {
@@ -683,9 +667,6 @@ function processLeaderExited(child: any) {
     || (child.signalCode !== null && child.signalCode !== undefined);
 }
 
-/**
- * @param {{stdout?: string, stderr?: string}} result
- */
 export function combinedProcessOutput(result: { stdout?: string; stderr?: string }): string {
   const stdout = String(result.stdout || "");
   const stderr = String(result.stderr || "");

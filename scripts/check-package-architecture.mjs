@@ -365,7 +365,7 @@ function isTextFile(path) {
   if (statSync(path).size > 1_000_000) {
     return false;
   }
-  return /\.(?:cjs|css|html|js|json|md|mjs|ts|tsx|yaml|yml)$/u.test(path);
+  return /\.(?:cjs|css|cts|html|js|json|md|mjs|mts|ts|tsx|yaml|yml)$/u.test(path);
 }
 
 function isPackageDirectory(dir) {

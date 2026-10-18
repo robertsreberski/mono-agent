@@ -5,7 +5,6 @@ import { prepareCompaction } from "../compaction-kit/compaction.js";
 import { createHandoffBudget } from "../handoff.js";
 import { projectInheritedContext } from "../request-projection.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-/** @type {import("../header-authority.js").HostJournalAuthority} */
 const authority: import("../header-authority.js").HostJournalAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const coverage = { version: 1, sources: [{ journalId: "frozen", sourceTipId: "tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] };
 const inherited = { messages: [{ role: "user", content: "Fictional latest turn and outcome-unknown ledger", timestamp: 1 }], coverage };

@@ -21,19 +21,13 @@ const SEARCH_ONLY_INSTRUCTIONS = [
   "Do not ask questions. The host consumes only the structured webSearch results and ignores your prose.",
 ].join(" ");
 
-/** @type {{client: any, directory: string, models: Set<string>} | null} */
 let broker: {client: any, directory: string, models: Set<string>} | null = null;
-/** @type {Promise<any> | null} */
 let brokerOpening: Promise<any> | null = null;
-/** @type {Promise<void>} */
 let serial: Promise<void> = Promise.resolve();
-/** @type {NodeJS.Timeout | null} */
 let idleTimer: NodeJS.Timeout | null = null;
 
 /**
  * Inspect the installed Codex app-server without reading or exporting tokens.
- *
- * @param {{model?: string, clientFactory?: typeof createCodexAppServerClient}} [options]
  */
 export async function inspectCodexSubscriptionSearch(options: { model?: string; clientFactory?: typeof createCodexAppServerClient } = {}): Promise<{ ok: boolean; code: string; reason: string; model: any }> {
   const model = normalizeModel(options.model);
@@ -59,9 +53,6 @@ export async function inspectCodexSubscriptionSearch(options: { model?: string; 
  * Execute one subscription-backed live search through Codex app-server.
  * Calls are serialized process-wide so one agent cannot fan out subscription
  * turns or cross-wire app-server notifications between requests.
- *
- * @param {string} query
- * @param {{model?: string, signal?: AbortSignal, clientFactory?: typeof createCodexAppServerClient, coordinator?: any, language?: string, timeRange?: string, claimRequest?: () => void}} [options]
  */
 export function searchCodexSubscription(query: string, options: { model?: string; signal?: AbortSignal; clientFactory?: typeof createCodexAppServerClient; coordinator?: any; language?: string; timeRange?: string; claimRequest?: () => void } = {}): any {
   let executing = false;
@@ -183,7 +174,6 @@ async function getBroker(model: any, clientFactory: any, signal: any) {
 
 async function openBroker(clientFactory: typeof createCodexAppServerClient = createCodexAppServerClient, signal?: any) {
   const directory = await mkdtemp(join(tmpdir(), "mono-agent-codex-search-"));
-  /** @type {{handler: (message: any) => void}} */
   const target: {handler: (message: any) => void} = { handler: () => {} };
   let client;
   try {
@@ -275,7 +265,7 @@ async function readModels(client: any, signal: any) {
 
 async function runSearch(current: any, query: any, model: any, signal: any, preferences: any = {}) {
   signal?.throwIfAborted();
-  const state = /** @type {any} */ (({
+  const state = (({
     threadId: "",
     turnId: "",
     completed: false,

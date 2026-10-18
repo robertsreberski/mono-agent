@@ -68,9 +68,6 @@ function rgFromPath() {
   return null;
 }
 
-/**
- * @param {{refresh?: boolean, ctx?: any}} [options]
- */
 export function resolveRgPath({ refresh = false, ctx }: { refresh?: boolean; ctx?: any } = {}): any {
   if (!refresh && cachedRgPath.value !== undefined) return cachedRgPath.value;
   const { ripgrepPath } = ctx ?? {};
@@ -96,10 +93,6 @@ export function normalizeGlobPattern(pattern: any): string {
   return raw || "**/*";
 }
 
-/**
- * @param {any} rawLines
- * @param {{label?: string, noMatches?: string, maxLines?: number, maxChars?: number, offset?: number, ctx?: any}} [options]
- */
 export function formatSearchLines(rawLines: any, options?: { label?: string; noMatches?: string; maxLines?: number; maxChars?: number; offset?: number; ctx?: any }): string;
 export function formatSearchLines(rawLines: any, {
   label,
@@ -135,10 +128,6 @@ export function formatSearchLines(rawLines: any, {
   return `${kept.join("\n")}\n\n${suffix}`;
 }
 
-/**
- * @param {string} text
- * @param {{label?: string, noMatches?: string, maxLines?: number, maxChars?: number, offset?: number, ctx?: any}} [options]
- */
 export function capLines(text: string, {
   label,
   noMatches,

@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "allowJs": true,
@@ -12,6 +13,6 @@
     "outDir": "../../.worklab-tmp/turn-test-fixtures"
   },
   "include": [
-    "src/**/__tests__/fixtures/**/*.mjs"
+    "src/**/__tests__/**/fixtures/**/*.mts"
   ]
 }

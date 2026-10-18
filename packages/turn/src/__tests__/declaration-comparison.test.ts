@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 
 const { compareGraphs } = await import(new URL("../../scripts/compare-public-declarations.mjs", import.meta.url).href) as {
-  compareGraphs(baseline: string, candidate: string, entries: { key: string; types: string }[]): {
+  compareGraphs(baseline: string, candidate: string, entries: { key: string; types: string }[], options?: { documentationMode: "literal" | "semantic" }): {
     entry: string; exports: number; errors: string[];
   }[];
 };
@@ -12,9 +12,15 @@ const directories: string[] = [];
 afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
-function compare(before: string, after: string) {
-  const directory = mkdtempSync(fileURLToPath(new URL("../../node_modules/declaration-test-", import.meta.url)));
+function comparisonDirectory() {
+  const root = fileURLToPath(new URL("../../../../.worklab-tmp/turn-declaration-tests/", import.meta.url));
+  mkdirSync(root, { recursive: true });
+  const directory = mkdtempSync(join(root, "comparison-"));
   directories.push(directory);
+  return directory;
+}
+function compare(before: string, after: string) {
+  const directory = comparisonDirectory();
   for (const [name, text] of [["baseline", before], ["candidate", after]] as const) {
     mkdirSync(join(directory, name));
     writeFileSync(join(directory, name, "index.d.ts"), text);
@@ -32,6 +38,17 @@ it.each([
   ["optional inline input member", 'export function run(options: { value?: number }): void;', 'export function run(options: { value: number }): void;', "optional became required"],
   ["optional interface input member", 'interface Options { value?: number } export function run(options: Options): void;', 'interface Options { value: number } export function run(options: Options): void;', "optional became required"],
   ["optional nested input member", 'export function run(options: { nested?: { value?: number } }): void;', 'export function run(options: { nested?: { value: number } }): void;', "optional became required"],
+  ["unconsumed exported interface member", 'export interface Shape { value?: number }', 'export interface Shape { value: number }', "optional became required"],
+  ["unconsumed exported alias member", 'export type Shape = { value?: number };', 'export type Shape = { value: number };', "optional became required"],
+  ["unconsumed nested member", 'export interface Shape { nested: { value?: number } }', 'export interface Shape { nested: { value: number } }', "optional became required"],
+  ["unconsumed array element member", 'export type Shape = { value?: number }[];', 'export type Shape = { value: number }[];', "optional became required"],
+  ["unconsumed promise member", 'export type Shape = Promise<{ value?: number }>;', 'export type Shape = Promise<{ value: number }>;', "optional became required"],
+  ["unconsumed intersection member", 'export type Shape = { value?: number } & { other: string };', 'export type Shape = { value: number } & { other: string };', "optional became required"],
+  ["unconsumed union member", 'export type Shape = { kind: "one"; value?: number } | { kind: "two" };', 'export type Shape = { kind: "one"; value: number } | { kind: "two" };', "optional became required"],
+  ["unconsumed generic member", 'interface Box<T> { item: T }; export interface Shape { first: Box<string>; second: Box<{ value?: number }> }', 'interface Box<T> { item: T }; export interface Shape { first: Box<string>; second: Box<{ value: number }> }', "optional became required"],
+  ["dual-use exported member", 'export interface Shape { value?: number } export function run(value: Shape): Shape;', 'export interface Shape { value: number } export function run(value: Shape): Shape;', "optional became required"],
+  ["optional output member", 'export function run(): { value?: number };', 'export function run(): { value: number };', "optional became required"],
+  ["conservative callback parameter", 'export function run(callback: (value: string) => void): void;', 'export function run(callback: (value: string | number) => void): void;', "widened union"],
   ["narrowed any parameter", 'export function run(value: any): void;', 'export function run(value: string): void;', "changed baseline any"],
   ["narrowed any return", 'export function run(): any;', 'export function run(): string;', "changed baseline any"],
   ["narrowed any property", 'export interface Shape { value: any }', 'export interface Shape { value: null }', "changed baseline any"],
@@ -62,6 +79,14 @@ it.each([
   ["generic instantiations", 'interface Box<T> { value: T }; export interface Shape { first: Box<string>; second: Box<unknown> }', 'interface Box<T> { value: T }; export interface Shape { first: Box<string>; second: Box<any> }', "introduced any"],
 ])("rejects a seeded %s regression", (_name, before, after, message) => {
   expect(compare(before!, after!).some((error) => error.includes(message!))).toBe(true);
+});
+
+it.each([
+  'export interface Shape { value?: number }',
+  'export type Shape = Readonly<{ nested?: { value?: number } }[]>;',
+  'export function run(callback: (value?: number) => void): { value?: number };',
+])("accepts unchanged optional guarantees in %s", (declaration) => {
+  expect(compare(declaration, declaration)).toEqual([]);
 });
 
 it.each(["export", "member"] as const)("compares normalized %s documentation text", (position) => {
@@ -135,8 +160,7 @@ it("allows paragraph and tag re-wrapping without flattening their structure", ()
 
 it.each(["any", "Record<string, any>"])("detects the real host runtime-options intersection changed to %s", (replacement) => {
   const turn = fileURLToPath(new URL("../../", import.meta.url));
-  const directory = mkdtempSync(join(turn, "node_modules/declaration-test-"));
-  directories.push(directory);
+  const directory = comparisonDirectory();
   const manifest = JSON.parse(readFileSync(join(turn, "package.json"), "utf8")) as { name: string; exports: Record<string, { types: string }> };
   for (const label of ["baseline", "candidate"]) {
     const target = join(directory, label);
@@ -158,8 +182,7 @@ it.each(["any", "Record<string, any>"])("detects the real host runtime-options i
 
 it("rejects making the real WebFetch output limit required", () => {
   const turn = fileURLToPath(new URL("../../", import.meta.url));
-  const directory = mkdtempSync(join(turn, "node_modules/declaration-test-"));
-  directories.push(directory);
+  const directory = comparisonDirectory();
   const manifest = JSON.parse(readFileSync(join(turn, "package.json"), "utf8")) as { exports: Record<string, { types: string }> };
   for (const label of ["baseline", "candidate"]) {
     const target = join(directory, label);
@@ -175,4 +198,110 @@ it("rejects making the real WebFetch output limit required", () => {
   const rows = compareGraphs(join(directory, "baseline"), join(directory, "candidate"),
     [{ key: "./tools", types: manifest.exports["./tools"]!.types }]);
   expect(rows.some((row) => row.errors.some((error) => error.includes("max_output_chars: optional became required")))).toBe(true);
+});
+
+it("rejects making a real type-only host retry policy member required", () => {
+  const turn = fileURLToPath(new URL("../../", import.meta.url));
+  const directory = comparisonDirectory();
+  const manifest = JSON.parse(readFileSync(join(turn, "package.json"), "utf8")) as { exports: Record<string, { types: string }> };
+  for (const label of ["baseline", "candidate"]) {
+    const target = join(directory, label);
+    mkdirSync(target);
+    cpSync(join(turn, "types"), join(target, "types"), { recursive: true });
+    writeFileSync(join(target, "package.json"), JSON.stringify({ ...manifest, name: `@mutation/${label}` }));
+    symlinkSync(join(turn, "node_modules"), join(target, "node_modules"), "dir");
+  }
+  const path = join(directory, "candidate/types/host/runtime-options.d.ts");
+  const before = readFileSync(path, "utf8");
+  expect(before).toContain("readonly backoffMs?: number;");
+  writeFileSync(path, before.replace("readonly backoffMs?: number;", "readonly backoffMs: number;"));
+  const rows = compareGraphs(join(directory, "baseline"), join(directory, "candidate"),
+    [{ key: "./host/types", types: manifest.exports["./host/types"]!.types }]);
+  expect(rows.some((row) => row.errors.some((error) => error.includes("backoffMs: optional became required")))).toBe(true);
+});
+
+it.each([
+  ["type annotation", "/** @type {string} */ export const value: string;", "export const value: string;"],
+  ["empty parameter/return tags", "/** @param {string} value\n * @returns {string}\n */ export function run(value: string): string;", "export function run(value: string): string;"],
+  ["property attribution", "/** @typedef {Object} Shape\n * @property {string} value Public value.\n */ export const sentinel: number;\n export type Shape = { value: string };", "export const sentinel: number;\n export type Shape = {\n /** Public value. */\n value: string };"],
+  ["SearchProvider attribution", "/** Source-level provider contract.\n * @typedef {Object} SearchProvider\n * @property {string} name\n */ export const providers: Map<string, SearchProvider>;\n export type SearchProvider = { name: string };", "export const providers: Map<string, SearchProvider>;\n /** Source-level provider contract. */\n export type SearchProvider = { name: string };"],
+  ["callback attribution", "/** Completion callback.\n * @callback Done\n * @param {string} value Input value.\n */ export const sentinel: number;\n export type Done = (value: string) => void;", "export const sentinel: number;\n /** Completion callback.\n * @param value Input value.\n */ export type Done = (value: string) => void;"],
+])("semantically accepts %s cleanup", (_name, before, after) => {
+  expect(compare(before!, after!)).toEqual([]);
+});
+
+it.each([
+  ["parameter", "/** @param {string} value Input value. */", ""],
+  ["return", "/** @returns {string} Output value. */", ""],
+  ["type prose", "/** @type {Function} Public call. */", ""],
+  ["deprecated marker", "/** @deprecated */", ""],
+  ["example braces", "/** @example const x = { value: 1 }; */", "/** @example const x = { value: 2 }; */"],
+  ["unknown prose tag", "/** @custom Original prose. */", "/** @custom Changed prose. */"],
+  ["throws prose", "/** @throws {Error} Original failure. */", "/** @throws {Error} Changed failure. */"],
+])("rejects removed/changed %s prose", (_name, before, after) => {
+  const declaration = "export function run(value: string): string;";
+  expect(compare(`${before} ${declaration}`, `${after} ${declaration}`).some((error) => error.includes("documentation"))).toBe(true);
+});
+
+it("rejects prose moved to another symbol, including a wrong typedef target", () => {
+  const declarations = "export type First = { value: string };\n export type Second = { value: string };";
+  expect(compare(`/** Original prose. */ ${declarations}`, `export type First = { value: string };\n /** Original prose. */ export type Second = { value: string };`)).toContain("First: lost documentation");
+  expect(compare(`/** Original prose.\n * @typedef {Object} First\n */ export const sentinel: number;\n ${declarations}`,
+    `/** Original prose.\n * @typedef {Object} Second\n */ export const sentinel: number;\n ${declarations}`)).toContain("First: lost documentation");
+});
+
+it.each([
+  ["bar", "export const bar: number;"],
+  ["Baz", "export type Baz = { value: number };"],
+])("rejects candidate prose left only in a dead typedef above %s", (_name, unrelated) => {
+  const shape = "export type Foo = { value: string };";
+  const before = `/** Foo is the record. */ ${shape}\n ${unrelated}`;
+  const after = `${shape}\n /** @typedef {object} Foo Foo is the record. */ ${unrelated}`;
+  expect(compare(before, after)).toContain("Foo: lost documentation");
+});
+
+it("rejects candidate prose left only in a dead callback", () => {
+  const shape = "export type Foo = () => void;";
+  expect(compare(`/** Foo is the callback. */ ${shape}\n export const bar: number;`,
+    `${shape}\n /** @callback Foo Foo is the callback. */ export const bar: number;`)).toContain("Foo: lost documentation");
+});
+
+it("retains literal documentation comparison for type-only tags", () => {
+  const directory = comparisonDirectory();
+  for (const name of ["baseline", "candidate"]) {
+    mkdirSync(join(directory, name));
+    writeFileSync(join(directory, name, "index.d.ts"), `${name === "baseline" ? "/** @type {string} */" : ""} export const value: string;`);
+  }
+  expect(compareGraphs(join(directory, "baseline"), join(directory, "candidate"), [{ key: ".", types: "index.d.ts" }],
+    { documentationMode: "literal" })[0]!.errors).toContain("value: lost documentation tags");
+});
+
+it("ignores JSDoc overload type syntax but preserves nested descriptions", () => {
+  const declaration = "export function run(value: string): string;";
+  expect(compare(`/** @overload\n * @param {string} value\n * @returns {string}\n */ ${declaration}`, declaration)).toEqual([]);
+  expect(compare(`/** @overload\n * @param {string} value Input value.\n * @returns {string} Output value.\n */ ${declaration}`,
+    `/** @param value Input value.\n * @returns Output value.\n */ ${declaration}`)).toEqual([]);
+  expect(compare(`/** @overload\n * @param {string} value Input value.\n */ ${declaration}`, declaration).some((error) => error.includes("lost documentation tags"))).toBe(true);
+});
+
+it("treats inline scoped package names as prose without swallowing property tags", () => {
+  const before = "/** @typedef {Object} Policy\n * Defined by @scope/package.\n * @property {string} mode\n * @property {boolean} trusted Trusted capability.\n */ export const sentinel: number;\n export type Policy = { mode?: string; trusted?: boolean };";
+  const after = "export const sentinel: number;\n /** Defined by @scope/package. */ export type Policy = { mode?: string;\n /** Trusted capability. */ trusted?: boolean };";
+  expect(compare(before, after)).toEqual([]);
+  expect(compare(before, after.replace("@scope/package", "@scope/other")).some((error) => error.includes("changed documentation"))).toBe(true);
+  expect(compare(before, after.replace("Trusted capability.", "Different capability.")).some((error) => error.includes("changed documentation"))).toBe(true);
+});
+
+it("preserves property prose when the baseline type is opaque", () => {
+  const before = "/** @typedef {Object} Policy\n * @property {string} mode Mode description.\n */ export const sentinel: number;\n export type Policy = any;";
+  const after = "export const sentinel: number;\n /** @property mode Mode description. */ export type Policy = any;";
+  expect(compare(before, after)).toEqual([]);
+  expect(compare(before, after.replace("Mode description.", "Changed description.")).some((error) => error.includes("documentation tags"))).toBe(true);
+});
+
+it("deduplicates a copied typedef description prefix only within its named owner", () => {
+  const before = "/** Complete prose with details.\n * @typedef {Object} Shape\n */ export const sentinel: number;\n /** Complete prose */ export type Shape = { value: string };";
+  const after = "export const sentinel: number;\n /** Complete prose with details. */ export type Shape = { value: string };";
+  expect(compare(before, after)).toEqual([]);
+  expect(compare(before, after.replace("with details.", "with changes.")).some((error) => error.includes("changed documentation"))).toBe(true);
 });

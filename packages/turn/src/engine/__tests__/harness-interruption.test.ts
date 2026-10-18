@@ -11,13 +11,13 @@ const roots: any[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function notice(child: any) { return Promise.race([once(child, "message"), once(child, "exit").then(([code]: any) => { throw new Error(`Effect worker exited: ${code}`); })]); }
 async function reopen(root: any) {
-  const child = fork(new URL("./fixtures/effect-worker.mjs", import.meta.url), [root, "reopen"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const child = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/effect-worker.mjs", import.meta.url), [root, "reopen"], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try { const [result] = await notice(child); await once(child, "exit"); return result; }
   finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
 }
 it("survives SIGKILL after returned outcome sync before envelope placement; repeated process reopen repairs once with zero effects", async () => {
   const root = await mkdtemp(join(tmpdir(), "effect-repair-")); roots.push(root);
-  const child = fork(new URL("./fixtures/effect-worker.mjs", import.meta.url), [root, "run"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const child = fork(new URL("../../../../../.worklab-tmp/turn-test-fixtures/engine/__tests__/fixtures/effect-worker.mjs", import.meta.url), [root, "run"], { execArgv: [...process.execArgv, "--import", new URL("../../../../../.worklab-tmp/turn-test-fixtures/resolve-fixture-imports.mjs", import.meta.url).href], stdio: ["ignore", "ignore", "ignore", "ipc"] });
   try { expect((await notice(child))[0]).toEqual({ phase: "returned-outcome-synced" }); const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
   finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
   const directory = join(root, "journals"); const path = join(directory, (await readdir(directory))[0]!); const before = await readFile(path);

@@ -7,7 +7,6 @@ export class RetiredRunOptionError extends TypeError {
 }
 
 // Direct turn callers cannot depend on config's host-level diagnostics.
-/** @param {object} options */
 export function assertNoRetiredRunOptions(options: any): void {
   if (Object.hasOwn(options, "piToolParallelismMode")) {
     throw new RetiredRunOptionError();

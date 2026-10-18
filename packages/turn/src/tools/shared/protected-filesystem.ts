@@ -10,11 +10,6 @@ import { requireToolContext, resolveSandboxPolicy } from "./tool-context.js";
 
 const PROTECTED_OPERATION_TIMEOUT_MS = 15_000;
 
-/**
- * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} command
- * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, input?: string|Buffer, maxBufferBytes?: number}} [options]
- * @returns {Promise<any|null>}
- */
 export async function runProtectedFilesystemCommand(command: { command: string; args?: string[]; cwd?: string; env?: Record<string, string | undefined> }, {
   sandboxPolicy,
   sandboxEngine,
@@ -45,7 +40,6 @@ export async function runProtectedFilesystemCommand(command: { command: string; 
   }
 }
 
-/** @param {any} policy */
 function hasProtectedRoots(policy: any) {
   return policy !== undefined
     && Array.isArray(policy.protectedRoots)
@@ -57,10 +51,6 @@ function hasProtectedRoots(policy: any) {
  * Search tools keep the model-controlled target as an argument; file helpers
  * use the stable cwd with their absolute target. In both cases the host avoids
  * target metadata and target-derived cwd resolution before SRT enforces policy.
- *
- * @param {string} target
- * @param {{sandboxPolicy?: any, ctx?: any}} [options]
- * @returns {{cwd: string, searchTarget: string}|null}
  */
 export function protectedFilesystemTargetPlan(target: string, { sandboxPolicy, ctx }: { sandboxPolicy?: any; ctx?: any } = {}): { cwd: string; searchTarget: string } | null {
   const resolvedCtx = requireToolContext(ctx);
@@ -86,15 +76,12 @@ export function protectedFilesystemTargetPlan(target: string, { sandboxPolicy, c
   return { cwd, searchTarget };
 }
 
-/** @param {string} searchTarget */
 export function protectedDirectorySearchTarget(searchTarget: string): string {
   return searchTarget.endsWith(sep) ? searchTarget : `${searchTarget}${sep}`;
 }
 
 /**
  * Scope a target-relative user glob to ripgrep's stable host cwd.
- * @param {string} pattern
- * @param {string} searchTarget
  */
 export function scopeProtectedSearchGlob(pattern: string, searchTarget: string): string {
   const normalizedTarget = normalizeSearchPath(searchTarget);
@@ -111,8 +98,6 @@ export function scopeProtectedSearchGlob(pattern: string, searchTarget: string):
 /**
  * Restore the historical target-relative search output after ripgrep runs from
  * the stable policy root.
- * @param {string} line
- * @param {string} searchTarget
  */
 export function normalizeProtectedSearchLine(line: string, searchTarget: string): string {
   const normalizedLine = normalizeSearchPath(line).replace(/^\.\//u, "");
@@ -128,7 +113,6 @@ export function normalizeProtectedSearchLine(line: string, searchTarget: string)
   return normalizedLine;
 }
 
-/** @param {any} result */
 export function protectedCommandSucceeded(result: any): boolean {
   return result !== null
     && result.code === 0

@@ -4,8 +4,6 @@ import { buildHarnessSessionContext } from "./session-context.js";
 /**
  * The sole request-context seam. Arrays preserve the v2 contract byte for byte.
  * Validated evidence views feed handoffs only; they are never projected natively.
- * @param {any[]} source
- * @param {any} [options]
  */
 export function projectContext(source: any[], options: any = {}): {
   entries: any[];
@@ -32,8 +30,9 @@ export function projectContext(source: any[], options: any = {}): {
     coverage: { source: "native", repair: options.repairs?.length ? "prompt-only" : "none", entryCount: source.length } };
 }
 
-/** A composed checkpoint summarizes exactly the frozen prefix it names.
- * @param {any} coverage @param {any[]} descriptors */
+/**
+ * A composed checkpoint summarizes exactly the frozen prefix it names.
+ */
 function validateComposedCoverage(coverage: any, descriptors: any[]) {
   if (coverage?.version !== 1 || !Array.isArray(coverage.sources) || coverage.sources.length !== descriptors.length
     || coverage.sources.some((s: any, i: number) => ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"].some((key) => s[key] !== descriptors[i][key]))) {
@@ -42,23 +41,23 @@ function validateComposedCoverage(coverage: any, descriptors: any[]) {
   return coverage;
 }
 
-/** Raw current-journal references for P2 matching; no filtering or ancestry merging.
- * @param {any} store
+/**
+ * Raw current-journal references for P2 matching; no filtering or ancestry merging.
  */
 export async function inspectCurrentEvidence(store: any) {
   return { entries: await store.getEntries(), ...inspectCurrentLifecycle(store) };
 }
 
-/** Synchronous current-journal lifecycle references; deliberately no payload I/O.
- * @param {any} store
+/**
+ * Synchronous current-journal lifecycle references; deliberately no payload I/O.
  */
 export function inspectCurrentLifecycle(store: any) {
   return { turns: [...store.validator.turns.values()], calls: [...store.validator.calls.values()] };
 }
 
-/** Host-accepted inherited projection plus this epoch's delta. Content stays in
+/**
+ * Host-accepted inherited projection plus this epoch's delta. Content stays in
  * the host artifact/predecessors, never seeded into the current native journal.
- * @param {any[]} entries @param {any} inherited @param {any} [options]
  */
 export function projectInheritedContext(entries: any[], inherited: any, options: any = {}): {
   nonRetainablePrefixLength: number;

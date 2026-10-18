@@ -74,8 +74,21 @@ below. There are no package-wide, all-types, or public-barrel ignores.
 
 | Exact path / dependency | Reason and treatment |
 | --- | --- |
-| `packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs` | By-path proof tool; regeneration workflow in [PROJECTION-GOLDENS.md](../../packages/turn/src/engine/__tests__/fixtures/PROJECTION-GOLDENS.md). Non-production entry. |
-| `packages/turn/src/host/sandbox/srt-embed-runner.mjs` | Worker loaded with `new URL` in `src/host/sandbox/index.ts`; production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mts` | By-path proof tool; regeneration workflow in [PROJECTION-GOLDENS.md](../../packages/turn/src/engine/__tests__/fixtures/PROJECTION-GOLDENS.md). Non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/projection-parity-worker.mts` | Forked from the test-only compiler output by frozen parity and the manual regeneration tool; non-production entry. |
+| `packages/turn/src/__tests__/fixtures/prepared-host-runtime.mts` | Authored fixture loaded by Vite source URL; separately compiled for plain-Node proofs. Non-production entry. |
+| `packages/turn/src/__tests__/ai/fixtures/native-journal-storage-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/__tests__/ai/fixtures/native-lifecycle-storage-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/__tests__/ai/fixtures/native-writer-holder.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/append-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/checkpoint-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/effect-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/import-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/lock-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/native-create-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/store-owner-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/turn-evidence-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/host/sandbox/srt-embed-runner.mts` | Worker loaded with `new URL` in `src/host/sandbox/index.ts`; production entry. |
 | `packages/turn/package.json`: `@vscode/ripgrep` | String-resolved dependency in `src/tools/shared/ripgrep.ts` via `createRequire().resolve`; exact dependency exception, not an unused package. |
 | `packages/conversation/src/tool-history/writer-worker.ts` | Worker loaded with `new URL` in `src/tool-history/writer.ts`; production entry. |
 | `packages/conversation/src/__tests__/fixtures/canonical-v5-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; non-production entry, with only declaration exports exempted (they describe JS, not independent runtime values). |
@@ -134,6 +147,13 @@ test enforces exact agreement between annotations and the register. No ignored
 name is justified solely by a generated inventory. The unused named stream and
 provider-projection types lacking authored documentation were cut; declarations
 required by retained function/class signatures remain private.
+
+PR 12 also registers seven exact compatibility type aliases after removing
+redundant JSDoc-only uses. Public aliases cite their exporting entry; signature
+and test-only aliases cite the declaration or test consumer. The remaining
+private aliases are explicit PR 13 dead-code closure candidates. The policy
+test checks each registered name is still exported at its exact source owner;
+no file-level or all-types exception is used.
 
 The five core packages must have zero findings in all three modes. Cycle findings
 remain visible until the separate structural cleanup; exceptions do not hide

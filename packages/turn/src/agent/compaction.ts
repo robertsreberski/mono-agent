@@ -5,28 +5,6 @@ import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "../tools/mcp/timeouts.js"
 // Pure runtime compaction policy and context-pressure heuristics.
 // The engine owns compaction execution over native session evidence.
 
-/**
- * @typedef {Object} AgentCompactionPolicy
- * @property {string} effort
- * @property {number} failureCooldownMs
- * @property {boolean} enabled
- * @property {number} contextWindow
- * @property {number} triggerRatio
- * @property {number} triggerTokens
- * @property {number} keepRecentTokens
- * @property {number} summaryMaxTokens
- * @property {boolean} fixedOverheadEnabled
- * @property {number} compactionMinSavingsTokens
- * @property {number} toolTextLimitChars
- * @property {number} bashOutputLimitChars
- * @property {number} mcpTextLimitChars
- * @property {number} searchResultLimit
- * @property {number} imageInlineMaxBytes
- * @property {number} toolPayloadMaxBytes
- * @property {number} mcpCallTimeoutMs
- * @property {number} mcpCallMaxTotalTimeoutMs
- */
-
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_TRIGGER_RATIO = 0.90;
 // intelligence-ramp Phase 3: lifted from 16K/20K/12K. Mid-task tool reads
@@ -46,49 +24,22 @@ const DEFAULT_IMAGE_INLINE_MAX_BYTES = 5_000_000;
 const DEFAULT_TOOL_PAYLOAD_MAX_BYTES = 262144;
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 120000;
 
-
-/**
- * @param {*} value
- * @param {number} fallback
- * @param {number} min
- * @param {number} max
- * @returns {number}
- */
 function clampNumber(value: any, fallback: number, min: number, max: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
 }
 
-/**
- * @param {*} value
- * @param {number} fallback
- * @param {number} min
- * @param {number} max
- * @returns {number}
- */
 function clampInteger(value: any, fallback: number, min: number, max: number): number {
   return Math.floor(clampNumber(value, fallback, min, max));
 }
 
-/**
- * @param {{toolLimits?: import("../contracts/policy.js").RuntimeToolLimits, compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy}} [options]
- * @param {Object} [model]
- * @param {number} [model.contextWindow]
- * @returns {AgentCompactionPolicy}
- */
 export function resolveAgentCompactionPolicy({ toolLimits, compaction }?: {
   toolLimits?: import("../contracts/policy.js").RuntimeToolLimits;
   compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy;
 }, model?: {
   contextWindow?: number;
 }): AgentCompactionPolicy;
-/**
- * @param {{toolLimits?: import("../contracts/policy.js").RuntimeToolLimits, compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy}} [options]
- * @param {Object} [model]
- * @param {number} [model.contextWindow]
- * @returns {AgentCompactionPolicy}
- */
 export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} }: { toolLimits?: import("../contracts/policy.js").RuntimeToolLimits; compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy; } | undefined = {}, model: { contextWindow?: number | undefined; } | null | undefined = {}): AgentCompactionPolicy {
   const contextWindow = clampInteger(model?.contextWindow, DEFAULT_CONTEXT_WINDOW, 32000, 10_000_000);
   const triggerRatio = clampNumber(
@@ -167,13 +118,6 @@ export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} 
 //
 // Uses Math.ceil(len/4) to mirror pi-ai's chars/4 heuristic — consistency with
 // the transcript estimate matters more than precision. Pure + dependency-free.
-/**
- * @param {Object} [options]
- * @param {string} [options.systemPrompt]
- * @param {Array<Object>} [options.tools]
- * @param {Array<Object>} [options.messages]
- * @returns {{systemPromptTokens: number, toolSchemaTokens: number, userMessageTokens: number, fixedOverheadTokens: number}}
- */
 export function estimateFixedOverheadTokens({ systemPrompt, tools, messages }: { systemPrompt?: string | undefined; tools?: any[] | undefined; messages?: any[] | undefined; } | undefined = {}): { systemPromptTokens: number; toolSchemaTokens: number; userMessageTokens: number; fixedOverheadTokens: number; } {
   const tokensForChars = (value: unknown) => Math.ceil(String(value ?? "").length / 4);
 
@@ -210,11 +154,6 @@ export function estimateFixedOverheadTokens({ systemPrompt, tools, messages }: {
   };
 }
 
-/**
- * @param {string} message
- * @param {Object<string, *>} [diagnostics]
- * @returns {boolean}
- */
 export function isLikelyContextTermination(message: string, diagnostics: { [x: string]: any; } | undefined = {}): boolean {
   const text = String(message || "");
   if (!/terminated|aborted before final output|aborted before final|stream.*aborted|context window|context budget/i.test(text)) return false;

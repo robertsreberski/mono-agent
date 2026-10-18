@@ -6,11 +6,6 @@ export { digestTurnInput as digestNativeTurnInput } from "../engine/turn-evidenc
 
 // A host or run `prompts.liveInputGuidance(body)` override, when supplied,
 // replaces the default guidance wrapper below; otherwise the default is used.
-/**
- * @param {string} text
- * @param {import("../contracts/policy.js").RuntimePromptOverrides} [prompts]
- * @returns {string}
- */
 export function formatLiveInputGuidance(text: string, prompts?: import("../contracts/policy.js").RuntimePromptOverrides | undefined): string {
   if (typeof prompts?.liveInputGuidance === "function") {
     return prompts.liveInputGuidance(String(text || ""));

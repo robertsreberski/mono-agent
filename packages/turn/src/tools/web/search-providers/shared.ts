@@ -41,11 +41,14 @@ const RATE_LIMIT_STATUSES = new Set([202, 403, 429]);
 
 let keylessThrottle = { ...KEYLESS_DEFAULT_THROTTLE };
 let keylessSemaphore = createCountingSemaphore(keylessThrottle.maxConcurrency);
-/** @type {Map<string, number>} Backend -> epoch ms until which it is skipped. */
+/**
+ * Backend -> epoch ms until which it is skipped.
+ */
 const backendCooldownUntil: Map<string, number> = new Map();
-/** @type {Map<string, number>} Backend -> epoch ms its next request may start. */
+/**
+ * Backend -> epoch ms its next request may start.
+ */
 const backendNextAvailableAt: Map<string, number> = new Map();
-/** @type {Map<string, ReturnType<typeof createCountingSemaphore>>} */
 const processProviderSemaphores: Map<string, ReturnType<typeof createCountingSemaphore>> = new Map();
 const TRACKING_PARAMETERS = new Set([
   "dclid",
@@ -84,8 +87,7 @@ function processCooldownRemaining(backend: any, key: any = backend) {
  * Atomically claims this backend's next send slot and reports how long the
  * caller must wait for it. Synchronous on purpose: concurrent callers each
  * reserve a distinct slot instead of all reading the same "last sent at".
- *
- * @returns {number} Milliseconds to wait before sending.
+ * @returns Milliseconds to wait before sending.
  */
 function reserveKeylessSlot(backend: any) {
   const now = Date.now();
@@ -118,9 +120,7 @@ function sleep(ms: any, signal: any) {
 /**
  * Test hook: restores the shipped throttle values and clears cooldown/spacing
  * state. Module-scoped state would otherwise leak between test cases.
- *
- * @param {{maxConcurrency?: number, minSpacingMs?: number, cooldownMs?: number}} [overrides]
-  * @coreScanRetained
+ * @coreScanRetained
  */
 export function __resetWebSearchThrottleForTests(overrides: { maxConcurrency?: number; minSpacingMs?: number; cooldownMs?: number } = {}): void {
   keylessThrottle = { ...KEYLESS_DEFAULT_THROTTLE, ...overrides };

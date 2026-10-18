@@ -2,16 +2,10 @@
 
 import { startPreparedProcess } from "./process-runner.js";
 
-/** @typedef {import("../../contracts/process.js").OwnedForegroundProcessController} OwnedForegroundProcessController */
-/** @typedef {import("../../contracts/process.js").OwnedForegroundProcesses} OwnedForegroundProcesses */
-
 /**
  * Transfer cleanup and launch authority before awaiting a foreground result.
  * The target remains gated until the host records process-incarnation evidence.
  * No error in this lane may fall back to an untracked foreground process.
- * @param {{controller: OwnedForegroundProcessController, tool: "Exec"|"Bash", callId?: string,
- * prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand,
- * timeoutMs: number, signal?: AbortSignal}} input
  */
 export async function runOwnedForegroundProcess({ controller, tool, callId, prepared, timeoutMs, signal }: { controller: OwnedForegroundProcessController; tool: "Exec" | "Bash"; callId?: string; prepared: import("../../agent/sandbox-seam.js").PreparedSandboxCommand; timeoutMs: number; signal?: AbortSignal }): Promise<import("../../contracts/process.js").ProcessJobProcessResult> {
   if (typeof callId !== "string" || !callId.trim() || Buffer.byteLength(callId, "utf8") > 256

@@ -10,12 +10,11 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { assertIdentity, isOwned, sameIdentity as same, syncDir } from "./owned-fs-impl.js";
 
-/** @returns {never} */
 const fail = (): never => { throw new Error("Harness journal ownership unavailable"); };
-/** @param {import("node:fs").Stats} stat */
 const secure = (stat: Stats, directory: boolean = false) => { if (!isOwned(stat, directory)) fail(); };
-/** Abortable poll; a cancelled waiter rejects with its signal's reason.
- * @param {AbortSignal|undefined} signal */
+/**
+ * Abortable poll; a cancelled waiter rejects with its signal's reason.
+ */
 const pause = (signal: AbortSignal | undefined) => delay(10, undefined, signal && { signal }).catch(() => signal?.throwIfAborted());
 const busy = (error: any) => (error as NodeJS.ErrnoException)?.code === "ERR_SQLITE_ERROR"
   && ((error as {errcode?: number}).errcode === 5 || (error as {errcode?: number}).errcode === 6);
@@ -33,7 +32,6 @@ export class JournalLocks {
     this.directory = join(root, "locks");
     this.catalogPath = join(this.directory, "catalog.sqlite");
   }
-  /** @param {string} sessionsRoot */
   static async open(sessionsRoot: string, onRootPermissionsTightened: () => void = () => {}): Promise<JournalLocks> {
     const root = resolve(sessionsRoot);
     assertSupportedSessionsRoot(root);
@@ -104,9 +102,10 @@ export class JournalLocks {
       throw error;
     }
   }
-  /** `signal` cancels only the wait: an acquisition that races cancellation is
-   * released before the callback runs, and the callback itself is never cancelled.
-   * @template T @param {() => Promise<T>} callback @param {{wait?:boolean, signal?:AbortSignal}} [options] */
+  /**
+   * `signal` cancels only the wait: an acquisition that races cancellation is
+   *  released before the callback runs, and the callback itself is never cancelled.
+   */
   async withCatalog<T>(callback: () => Promise<T>, { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined; } = {}): Promise<T> {
     for (;;) {
       signal?.throwIfAborted();
@@ -119,7 +118,6 @@ export class JournalLocks {
       try { return await callback(); } finally { lock.release(); }
     }
   }
-  /** @param {string} journalId @param {{wait?:boolean, signal?:AbortSignal}} [options] */
   async acquireWriter(journalId: string, { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined; } = {}): Promise<{ path: any; identity: Stats; release(): void; }> {
     if (!/^[A-Za-z0-9_-]+$/.test(journalId)) throw new TypeError("Unsafe harness journal ID");
     const path = join(this.directory, `${journalId}.sqlite`);
@@ -142,13 +140,12 @@ export class JournalLocks {
   /**
    * Only the already-owning writer can release/reclaim. The caller's predicate
    * must attest that matching data and aliases are durably gone under this mutex.
-   * @param {any} lock
-   * @param {() => Promise<boolean>} [dataGone]
    */
-  /** Off-path reclamation after a cancelled, pre-mutation acquisition (the
-   * caller already released its writer): never blocks cancellation; on any
-   * failure the lock file simply stays, pinning no data.
-   * @param {string} path @param {() => Promise<boolean>} dataGone */
+  /**
+   * Off-path reclamation after a cancelled, pre-mutation acquisition (the
+   *  caller already released its writer): never blocks cancellation; on any
+   *  failure the lock file simply stays, pinning no data.
+   */
   reclaimLater(path: string, dataGone: () => Promise<boolean>): void {
     setImmediate(async () => {
       let lock;

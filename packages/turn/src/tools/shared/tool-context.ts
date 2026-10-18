@@ -40,40 +40,10 @@ import { delimiter } from "node:path";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../runtime-brand.js";
 
-/** @typedef {import('../../runtime-brand.js').RuntimeBrand} RuntimeBrand */
-/** @typedef {import('../../agent/sandbox-seam.js').SandboxPolicy} SandboxPolicy */
-/** @typedef {import('../../agent/sandbox-seam.js').RuntimeSandboxEngine} RuntimeSandboxEngine */
-/** @typedef {import('../../agent/sandbox-seam.js').RuntimeSandbox} RuntimeSandbox */
-
-/**
- * @typedef {Object} ToolContext
- * @property {string} [workspace]
- * @property {string} [repoRoot]
- * @property {ReadonlyArray<string>} [additionalReadRoots]
- * @property {ReadonlyArray<string>} [additionalWriteRoots]
- * @property {string} [runId]
- * @property {string} [toolArtifactDir]
- * @property {string} [ripgrepPath]
- * @property {string} [qaOutputDir]
- * @property {SandboxPolicy} [sandboxPolicy]
- * @property {RuntimeSandboxEngine} [sandboxEngine]
- * @property {RuntimeSandbox} sandbox
- * @property {RuntimeBrand} runtimeBrand
- * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment]
- * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null} [persistArtifact]
- *   Run-scoped host artifact sink. Not a configurable key: the turn runner
- *   attaches it to a per-run copy of the context so per-tool output caps can
- *   spill their full text into the run's tool-output directory.
- */
-
-/**
- * @typedef {Omit<Partial<ToolContext>, 'runtimeBrand'> & {runtimeBrand?: Partial<RuntimeBrand>}} ToolContextOptions
- */
-
 // The data keys (everything except the always-resolved runtimeBrand). A fixed
 // list — not `Object.keys(ctx)` — so an unknown key on `next` is ignored, matching
 // the supported tool-context contract.
-const TOOL_CONTEXT_KEYS = /** @type {const} */ (([
+const TOOL_CONTEXT_KEYS = (([
   "workspace",
   "repoRoot",
   "additionalReadRoots",
@@ -90,11 +60,8 @@ const TOOL_CONTEXT_KEYS = /** @type {const} */ (([
  * Build a fresh ToolContext from a partial input. `runtimeBrand` is always
  * resolved (to the defaults when absent); the remaining keys default to
  * undefined and are copied from `input` when present.
- * @param {ToolContextOptions} [input]
- * @returns {ToolContext}
  */
 export function createToolContext(input: ToolContextOptions = {}): ToolContext {
-  /** @type {ToolContext} */
   const ctx: { [K in keyof ToolContext]: ToolContext[K] | undefined } = {
     workspace: undefined,
     repoRoot: undefined,
@@ -118,16 +85,13 @@ export function createToolContext(input: ToolContextOptions = {}): ToolContext {
  * copy) is deliberate: `createRuntime` threads a single context object to its
  * bridges and `configureTools` updates that same reference so subsequent runs
  * observe the change — the configuration owned by this runtime.
- * @param {ToolContext} ctx
- * @param {ToolContextOptions} [next]
- * @returns {ToolContext}
  */
 export function updateToolContext(ctx: ToolContext, next: ToolContextOptions = {}): ToolContext {
   for (const key of TOOL_CONTEXT_KEYS) {
     // Per-key assignment across a heterogeneous record: TS can't correlate the
     // looked-up value type with `key` across two independent indexed accesses
     // (a known structural limitation, not a real type hazard here).
-    if (key in next) ctx[key] = /** @type {any} */ ((next) as any)[key];
+    if (key in next) ctx[key] = ((next) as any)[key];
   }
   if ("toolEnvironment" in next) {
     const environment = next.toolEnvironment;
@@ -148,8 +112,6 @@ export function updateToolContext(ctx: ToolContext, next: ToolContextOptions = {
 
 /**
  * Reject missing execution context before a tool can drop host policy.
- * @param {ToolContext|null|undefined} ctx
- * @returns {ToolContext}
  */
 export function requireToolContext(ctx: ToolContext | null | undefined): ToolContext {
   if (!ctx) {
@@ -164,11 +126,6 @@ export function requireToolContext(ctx: ToolContext | null | undefined): ToolCon
 // host-configured policy but never weaken or disable it. The merge itself is
 // delegated to `ctx.sandbox.mergePolicies` (defaulting to passthroughSandbox)
 // so the actual algorithm is host-injected, not hard-coded here.
-/**
- * @param {ToolContext|undefined} ctx
- * @param {SandboxPolicy} [requestPolicy]
- * @returns {SandboxPolicy|undefined}
- */
 export function resolveSandboxPolicy(ctx: ToolContext | undefined, requestPolicy: SandboxPolicy = undefined): SandboxPolicy | undefined {
   const sandbox = ctx?.sandbox ?? passthroughSandbox;
   const merged = sandbox.mergePolicies(ctx?.sandboxPolicy ?? undefined, requestPolicy ?? undefined);
@@ -179,10 +136,6 @@ export function resolveSandboxPolicy(ctx: ToolContext | undefined, requestPolicy
  * Compose the process environment overlay for Bash/Exec. The caller-supplied
  * base carries each tool's own hardening values; request values are applied
  * only at this final process boundary. No global environment is mutated.
- *
- * @param {ToolContext|undefined} ctx
- * @param {Record<string, string|undefined>} [base]
- * @returns {Record<string, string|undefined>|undefined}
  */
 export function requestToolProcessEnvironment(ctx: ToolContext | undefined, base: Record<string, string | undefined> | undefined = undefined): Record<string, string | undefined> | undefined {
   const request = ctx?.toolEnvironment;

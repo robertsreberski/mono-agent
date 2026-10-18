@@ -15,7 +15,6 @@ const safeId = /^[A-Za-z0-9_-]+$/u;
 const valid = (value: any) => value !== null && typeof value === "object" && !Array.isArray(value);
 const fail = (): never => { throw new Error("Session salvage unavailable"); };
 
-/** @returns {Promise<{completed: {name:string, result:string}[], outcomeUnknown: {name:string}[], omittedCompleted:number, omittedUnknown:number, draftText?:string, additionalOutcomesUnknown:boolean}>} */
 export async function salvageDurableNativeSession(sessionId: any, sessionsRoot: any): Promise<{
     completed: {
         name: string;
