@@ -20,17 +20,17 @@ import { contextUsageFromAssistantMessage } from "./result-builder.js";
 import { classifyPiToolResult, toolLifecycleMetadata } from "../../runtime/tool-lifecycle.js";
 import { retryableProviderFailureInfo } from "../../telemetry/failure.js";
 
-function toolResultFileChange(result) {
+function toolResultFileChange(result: any) {
   const fileChange = result?.details?.file_change;
   return fileChange && typeof fileChange === "object" && !Array.isArray(fileChange)
     ? jsonSerializable(fileChange, null)
     : null;
 }
 
-function toolResultOutcome(result) {
+function toolResultOutcome(result: any) {
   const source = result?.details?.outcome;
   if (!source || typeof source !== "object" || Array.isArray(source)) return null;
-  const bounded = {};
+  const bounded: Record<string, string | number | boolean> = {};
   const strings = {
     status: "status",
     code: "code",
@@ -115,9 +115,17 @@ function toolResultOutcome(result) {
  * @param {{onEvent: (event: any) => void, options: any, toolLimits: any, harness: any, sdk: string, model: string, runtimeWarnings?: any[]}} deps
  * @returns {(event: any) => void}
  */
-export function createStreamSubscriber(runState, { onEvent, options, toolLimits, harness, sdk, model, runtimeWarnings }) {
+export function createStreamSubscriber(runState: StreamSubscriberState, { onEvent, options, toolLimits, harness, sdk, model, runtimeWarnings }: {
+    onEvent: (event: any) => void;
+    options: any;
+    toolLimits: any;
+    harness: any;
+    sdk: string;
+    model: string;
+    runtimeWarnings?: any[];
+}): (event: any) => void {
   const requestRetry = runState.requestRetry ??= { retries: 0, failedAttempts: null, textMark: 0, thinkingMark: 0 };
-  return (event) => {
+  return (event: any) => {
     if (event.type === "message_start" && event.message?.role === "assistant") {
       requestRetry.textMark = runState.assistantTexts.length;
       requestRetry.thinkingMark = runState.assistantThinking.length;
@@ -203,7 +211,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
         });
       }
       const hasVisibleContent = Array.isArray(event.message?.content)
-        && event.message.content.some((block) => block
+        && event.message.content.some((block: any) => block
           && typeof block === "object"
           && ((block.type === "text"
             && typeof block.text === "string"
@@ -344,3 +352,41 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
     }
   };
 }
+
+/**
+ * The slice of run state the stream subscriber reads and mutates. A structural
+ * subset of the orchestrator's runState.
+ */
+export type StreamSubscriberState = {
+    assistantTexts: string[];
+    dispatchProgress?: import("../../contracts/runtime.js").RuntimeDispatchProgress;
+    assistantThinking: string[];
+    textDeltaIndexes: Set<unknown>;
+    thinkingDeltaIndexes: Set<unknown>;
+    toolStartTimes: Map<string, number>;
+    toolApprovals: Map<string, any>;
+    turnCount: number;
+    toolResultsSeen: number;
+    lastToolName: string | null;
+    maxTurnsHit: boolean;
+    toolExecutionsThisTurn: number;
+    toolFailureThisTurn: boolean;
+    structuredOutputCompletedThisTurn: boolean;
+    silentCompletedThisTurn: boolean;
+    silentTurn: {
+        soleCall: boolean;
+        visibleContent: boolean;
+        pendingQuestion: boolean;
+        failed: boolean;
+        accepted: boolean;
+        completed: boolean;
+        liveInputRefusalReason?: () => ("live_input_consumed" | "live_input_uncertain" | null);
+    };
+    structuredResult: unknown;
+    requestRetry?: {
+        retries: number;
+        failedAttempts: number | null;
+        textMark: number;
+        thinkingMark: number;
+    };
+};

@@ -1,3 +1,5 @@
+/** @typedef {(input: {request: object, runId: string, context: object}) => ({runtimeOptions?: object, cleanup?: () => unknown} | Promise<{runtimeOptions?: object, cleanup?: () => unknown}>)} RuntimeExtension */
+/** @typedef {{composeHostTurnEnvelope: (context: string, message: string) => string, formatHostCapabilities: (options: Partial<import("@mono-agent/turn/host/types").RuntimeRunOptions>) => string}} EnvelopeModule */
 // Cross-boundary proof: real host assembly -> native session -> real OpenAI
 // request builder. fetch is fully replaced; no network/authentication is used.
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -6,11 +8,12 @@ import { tmpdir } from 'node:os';
 import { createModels, fauxProvider, normalizeContext } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createConversationHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../conversation/src/index.ts';
-import { resolveJsonMonoAgentConfig } from '../../../../config/src/index.ts';
 import { generateEngineTurnResponse } from '../../execution/pi/run.js';
 import { disposeProviderSession } from '../../runtime/session-fanout.js';
 import { createToolContext } from "../../tools/shared/tool-context.js";
+
+const { createConversationHarness, createInMemoryHistoryStore, createToolPolicy } = (await import(new URL('../../../../conversation/src/index.ts', import.meta.url).href));
+const { resolveJsonMonoAgentConfig } = (await import(new URL('../../../../config/src/index.ts', import.meta.url).href));
 
 // Direct tool construction in this file binds one explicit context.
 const ctx = createToolContext();
@@ -164,7 +167,7 @@ it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered nati
 
 it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays byte-identical across admission changes within each profile', async (api) => {
   const { getPiBuiltinTools } = await import("../../tools/pi-tools.js");
-  const { composeHostTurnEnvelope, formatHostCapabilities } = await import('../../../../conversation/src/context/turn-envelope.ts');
+  const { composeHostTurnEnvelope, formatHostCapabilities } = /** @type {EnvelopeModule} */ (await import(new URL('../../../../conversation/src/context/turn-envelope.ts', import.meta.url).href));
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const model = { ...fauxProvider({ provider: 'wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
   const processJobs = { start: async () => { throw new Error('must not start'); }, limits: { maxRuntimeMs: 10000 } };
@@ -255,14 +258,14 @@ it.each([
 it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MCP and builtin %s definitions stable on real request-scoped endpoints', async (api) => {
   const { getPiBuiltinTools } = await import("../../tools/pi-tools.js");
   const { initPiMcpTools, closePiMcpClients } = await import("../../tools/mcp/tools.js");
-  const { createSetConversationTitleRuntimeExtension } = await import('../../../../app/src/request-tools/conversation-title.ts');
-  const { createConsoleProjectsRuntimeExtension } = await import('../../../../app/src/request-tools/console-projects.ts');
-  const { createMemoryRememberRuntimeExtension } = await import('../../../../app/src/memory/memory-remember.ts');
-  const { createAdapterSendToolsServer } = await import('../../../../app/src/delivery/send-tools/server.ts');
+  const { createSetConversationTitleRuntimeExtension } = /** @type {{createSetConversationTitleRuntimeExtension: () => RuntimeExtension}} */ (await import(new URL('../../../../app/src/request-tools/conversation-title.ts', import.meta.url).href));
+  const { createConsoleProjectsRuntimeExtension } = /** @type {{createConsoleProjectsRuntimeExtension: (options?: object) => RuntimeExtension}} */ (await import(new URL('../../../../app/src/request-tools/console-projects.ts', import.meta.url).href));
+  const { createMemoryRememberRuntimeExtension } = /** @type {{createMemoryRememberRuntimeExtension: (options: object) => RuntimeExtension}} */ (await import(new URL('../../../../app/src/memory/memory-remember.ts', import.meta.url).href));
+  const { createAdapterSendToolsServer } = /** @type {{createAdapterSendToolsServer: (settings: object, clients: object, indexing?: object, options?: object) => Promise<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>}} */ (await import(new URL('../../../../app/src/delivery/send-tools/server.ts', import.meta.url).href));
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
-  const { composeRuntimeOptionExtensions } = await import('../../../../app/src/composition/runtime-option-extensions.ts');
-  const { composeHostTurnEnvelope, formatHostCapabilities } = await import('../../../../conversation/src/context/turn-envelope.ts');
+  const { composeRuntimeOptionExtensions } = /** @type {{composeRuntimeOptionExtensions: (extensions: ReadonlyArray<RuntimeExtension | undefined>, options?: object) => RuntimeExtension | undefined}} */ (await import(new URL('../../../../app/src/composition/runtime-option-extensions.ts', import.meta.url).href));
+  const { composeHostTurnEnvelope, formatHostCapabilities } = /** @type {EnvelopeModule} */ (await import(new URL('../../../../conversation/src/context/turn-envelope.ts', import.meta.url).href));
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const model = { ...fauxProvider({ provider: 'app-wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
   const mutations = vi.fn(); const bridgeFetch = vi.fn();

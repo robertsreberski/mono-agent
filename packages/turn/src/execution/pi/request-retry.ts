@@ -34,7 +34,7 @@ const NEVER_RETRY_SUBKINDS = new Set(["context_limit", "subscription_limit", "no
  * @param {string|null|undefined} errorText
  * @returns {boolean}
  */
-export function isTransientRequestFailure(errorText) {
+export function isTransientRequestFailure(errorText: string | null | undefined): boolean {
   const text = normalizePiErrorMessage(errorText);
   if (!text || NEVER_RETRY_RE.test(text)) return false;
   if (failureKindForPiError(text, {}) !== "provider_unavailable") return false;
@@ -47,7 +47,20 @@ export function isTransientRequestFailure(errorText) {
  * layer; provider checks stay single-shot.
  * @param {{maxRetries: number, maxRetryDelayMs: number, providerCheck: boolean}} params
  */
-export function requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck }) {
+export function requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck }: {
+    maxRetries: number;
+    maxRetryDelayMs: number;
+    providerCheck: boolean;
+}): {
+    enabled: boolean;
+    maxRetries: number;
+    baseDelayMs: number;
+    maxDelayMs: number;
+    /** @param {any} message @param {{responseStarted: boolean}} attempt */
+    shouldRetry: (message: any, { responseStarted }: {
+        responseStarted: boolean;
+    }) => boolean;
+} {
   const enabled = maxRetries > 0 && !providerCheck;
   return {
     enabled,
@@ -55,6 +68,6 @@ export function requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck 
     baseDelayMs: REQUEST_RETRY_BASE_DELAY_MS,
     maxDelayMs: maxRetryDelayMs,
     /** @param {any} message @param {{responseStarted: boolean}} attempt */
-    shouldRetry: (message, { responseStarted }) => responseStarted && isTransientRequestFailure(message?.errorMessage),
+    shouldRetry: (message: any, { responseStarted }: { responseStarted: boolean; }) => responseStarted && isTransientRequestFailure(message?.errorMessage),
   };
 }

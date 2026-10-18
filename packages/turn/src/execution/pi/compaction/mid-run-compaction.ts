@@ -28,12 +28,12 @@ const MID_RUN_TRIGGER = "proactive";
 // large window does not re-attempt after a trivial amount of new context.
 const FLOOR_GROWTH_TOKENS = 1_000;
 
-function transcriptTokensOf(messages) {
-  return messages.reduce((total, message) => total + (Number(estimateTokens(message)) || 0), 0);
+function transcriptTokensOf(messages: any) {
+  return messages.reduce((total: any, message: any) => total + (Number(estimateTokens(message)) || 0), 0);
 }
 
-function assistantCountOf(messages) {
-  return messages.reduce((total, message) => total + (message?.role === "assistant" ? 1 : 0), 0);
+function assistantCountOf(messages: any) {
+  return messages.reduce((total: any, message: any) => total + (message?.role === "assistant" ? 1 : 0), 0);
 }
 
 /**
@@ -53,7 +53,7 @@ function assistantCountOf(messages) {
  * @param {number} fixedOverheadTokens
  * @returns {number|null} null when the trigger is not expressible in this window
  */
-export function midRunReserveTokens(piWindow, triggerTokens, fixedOverheadTokens) {
+export function midRunReserveTokens(piWindow: number, triggerTokens: number, fixedOverheadTokens: number): number | null {
   const window = Number(piWindow) || 0;
   const transcriptTrigger = Math.max(1, Math.floor((Number(triggerTokens) || 0) - (Number(fixedOverheadTokens) || 0)));
   if (window <= 0 || transcriptTrigger > window) return null;
@@ -67,7 +67,7 @@ export function midRunReserveTokens(piWindow, triggerTokens, fixedOverheadTokens
  * back to the bridge's live model.
  * @param {any} harness
  */
-function piThresholdWindow(harness) {
+function piThresholdWindow(harness: any) {
   const live = typeof harness?.getModel === "function" ? harness.getModel() : null;
   let fromCollection;
   try {
@@ -95,7 +95,17 @@ function piThresholdWindow(harness) {
  * @param {number} baseline
  * @param {number} retainedTailLength
  */
-export function midRunBaselineAdjustment(contextBefore, baseline, retainedTailLength) {
+export function midRunBaselineAdjustment(contextBefore: Array<any>, baseline: number, retainedTailLength: number): {
+    baselineAfter: number;
+    lostMessages: any[];
+    carriedUsage: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        cost: number;
+    };
+} {
   const before = contextBefore.length;
   const anchor = Math.min(Math.max(0, Number(baseline) || 0), before);
   const runOwned = before - anchor;
@@ -109,7 +119,7 @@ export function midRunBaselineAdjustment(contextBefore, baseline, retainedTailLe
   };
 }
 
-function addCarriedUsage(target, addition) {
+function addCarriedUsage(target: any, addition: any) {
   const base = target || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   return {
     input: base.input + addition.input,
@@ -127,7 +137,25 @@ function addCarriedUsage(target, addition) {
  * @param {any} runState
  * @param {{harness: any, options: any, reference: string, onEvent: (event: any) => void, runtimeWarnings: Array<any>}} deps
  */
-export async function armMidRunCompaction(runState, { harness, options, reference, onEvent, runtimeWarnings }) {
+export async function armMidRunCompaction(runState: any, { harness, options, reference, onEvent, runtimeWarnings }: {
+    harness: any;
+    options: any;
+    reference: string;
+    onEvent: (event: any) => void;
+    runtimeWarnings: Array<any>;
+}): Promise<{
+    readonly armed: boolean;
+    stats: {
+        evaluations: number;
+        attempts: number;
+        applied: number;
+        skipped: number;
+        failed: number;
+        ineffective: number;
+    };
+    arm(): Promise<boolean>;
+    disarm(): Promise<void>;
+}> {
   const controller = createMidRunCompaction(runState, { harness, options, reference, onEvent, runtimeWarnings });
   await controller.arm();
   return controller;
@@ -137,7 +165,25 @@ export async function armMidRunCompaction(runState, { harness, options, referenc
  * @param {any} runState
  * @param {{harness: any, options: any, reference: string, onEvent: (event: any) => void, runtimeWarnings: Array<any>}} deps
  */
-export function createMidRunCompaction(runState, { harness, options, reference, onEvent, runtimeWarnings }) {
+export function createMidRunCompaction(runState: any, { harness, options, reference, onEvent, runtimeWarnings }: {
+    harness: any;
+    options: any;
+    reference: string;
+    onEvent: (event: any) => void;
+    runtimeWarnings: Array<any>;
+}): {
+    readonly armed: boolean;
+    stats: {
+        evaluations: number;
+        attempts: number;
+        applied: number;
+        skipped: number;
+        failed: number;
+        ineffective: number;
+    };
+    arm(): Promise<boolean>;
+    disarm(): Promise<void>;
+} {
   const policy = runState.compaction?.policy || null;
   const diagnostics = runState.compaction?.diagnostics || {};
   // The transcript estimate already contains this run's user turn, so only the
@@ -156,14 +202,14 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
   let armed = false;
   let disposed = false;
   /** @type {null | (() => void)} */
-  let removeHook = null;
+  let removeHook: (() => void) | null = null;
   /** @type {null | (() => void)} */
-  let unsubscribe = null;
+  let unsubscribe: (() => void) | null = null;
   let inFlight = false;
   /** @type {null | {transcriptTokens: number, assistantCount: number}} */
-  let lastAttempt = null;
+  let lastAttempt: { transcriptTokens: number; assistantCount: number; } | null = null;
   /** @type {null | any} */
-  let pending = null;
+  let pending: any = null;
   let warnedIneffective = false;
   const stats = { evaluations: 0, attempts: 0, applied: 0, skipped: 0, failed: 0, ineffective: 0 };
 
@@ -174,7 +220,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
    * @param {number} projectedSavings
    * @param {number} summarizableTokens
    */
-  function warnIneffectiveOnce(projectedSavings, summarizableTokens) {
+  function warnIneffectiveOnce(projectedSavings: number, summarizableTokens: number) {
     stats.ineffective += 1;
     diagnostics.context_compaction_midrun_ineffective = stats.ineffective;
     if (warnedIneffective) return;
@@ -211,7 +257,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
    * @param {any} event
    * @param {{contextBefore: Array<any>, transcriptTokens: number, assistantCount: number}} measured
    */
-  function veto(event, measured) {
+  function veto(event: any, measured: { contextBefore: Array<any>; transcriptTokens: number; assistantCount: number; }) {
     if (options.abortSignal?.aborted || event?.signal?.aborted) return { reason: "aborted" };
     if (inFlight || pending) return { reason: "attempt_in_flight" };
     // Re-check the real trigger in this bridge's own terms. Pi's checkpoint may
@@ -219,20 +265,20 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
     // learned ceiling, usage-based counting); a summary is a paid request, so it
     // is only worth issuing once the bridge's own trigger is actually crossed.
     if (!shouldCompact(
-      measured.transcriptTokens + fixedOverheadTokens,
+      (measured as { transcriptTokens: number }).transcriptTokens + fixedOverheadTokens,
       policy.contextWindow,
       piCompactionSettings(policy),
     )) return { reason: "below_trigger" };
     if (lastAttempt) {
-      if (measured.assistantCount <= lastAttempt.assistantCount) return { reason: "no_new_assistant" };
-      if (measured.transcriptTokens - lastAttempt.transcriptTokens < growthRequirement) {
+      if ((measured as { assistantCount: number }).assistantCount <= lastAttempt.assistantCount) return { reason: "no_new_assistant" };
+      if ((measured as { transcriptTokens: number }).transcriptTokens - lastAttempt.transcriptTokens < growthRequirement) {
         return { reason: "insufficient_growth" };
       }
     }
     return undefined;
   }
 
-  async function handler(event) {
+  async function handler(event: any) {
     if (!armed || disposed) return { cancel: true };
     // Only Pi's in-run threshold task belongs to this controller. Anything else
     // (a manual `harness.compact()` driven by tryCompact) is deferred to the
@@ -242,16 +288,16 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
 
     const operationId = randomUUID();
     const started = performance.now();
-    const accounting = createCompactionAccounting();
+    const accounting: ReturnType<typeof createCompactionAccounting> & { midRun?: boolean } = createCompactionAccounting();
     accounting.midRun = true;
     accounting.policy = Object.fromEntries(
       ["contextWindow", "triggerTokens", "keepRecentTokens", "summaryMaxTokens", "compactionMinSavingsTokens"]
-        .map((key) => [key, Number.isFinite(Number(policy[key])) ? Number(policy[key]) : null]),
+        .map((key: string) => [key, Number.isFinite(Number(policy[key])) ? Number(policy[key]) : null]),
     );
     const emit = createCompactionEmitter(accounting, started);
 
     /** @type {null | {contextBefore: Array<any>, transcriptTokens: number, assistantCount: number}} */
-    let measured = null;
+    let measured: { contextBefore: Array<any>; transcriptTokens: number; assistantCount: number; } | null = null;
     const guarded = createGuardedCompactionHook({
       harness,
       trigger: MID_RUN_TRIGGER,
@@ -260,8 +306,8 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
       compactionSettings,
       accounting,
       fixedOverheadTokens,
-      beforeAttempt: (hookEvent) => {
-        const contextBefore = projectContext(hookEvent.branchEntries || [], { includeFailed: true }).messages;
+      beforeAttempt: (hookEvent: any) => {
+        const contextBefore = projectContext(hookEvent.branchEntries || [], { includeFailed: true }).messages!;
         measured = {
           contextBefore,
           transcriptTokens: transcriptTokensOf(contextBefore),
@@ -276,7 +322,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
       // in the retained tail cannot be reduced no matter what the summary says.
       // Catching that from the preparation alone avoids paying for a summary
       // that the savings guard would then reject.
-      beforeSummary: ({ prepared }) => {
+      beforeSummary: ({ prepared }: { prepared: any; }) => {
         const summarizable = transcriptTokensOf([
           ...(prepared.messagesToSummarize || []),
           ...(prepared.turnPrefixMessages || []),
@@ -294,7 +340,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
     let result;
     try {
       result = await guarded.handler(event);
-    } catch (error) {
+    } catch (error: any) {
       // createGuardedCompactionHook never throws; this is belt-and-braces so a
       // hook fault can never reach Pi as "undefined" (which would hand the
       // compaction to Pi's own summariser).
@@ -323,7 +369,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
       if (decision.reason === "projected_savings" && measured) {
         // Real (unpaid) work happened, and the shape will not change until the
         // transcript grows, so hold off until it does.
-        lastAttempt = { transcriptTokens: measured.transcriptTokens, assistantCount: measured.assistantCount };
+        lastAttempt = { transcriptTokens: (measured as { transcriptTokens: number }).transcriptTokens, assistantCount: (measured as { assistantCount: number }).assistantCount };
       }
       return { cancel: true };
     }
@@ -359,7 +405,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
     });
     // A skipped or failed attempt still consumed real work, so require fresh
     // assistant progress AND meaningful growth before paying again.
-    if (measured) lastAttempt = { transcriptTokens: measured.transcriptTokens, assistantCount: measured.assistantCount };
+    if (measured) lastAttempt = { transcriptTokens: (measured as { transcriptTokens: number }).transcriptTokens, assistantCount: (measured as { assistantCount: number }).assistantCount };
     recordDiagnostics();
     return { cancel: true };
   }
@@ -371,7 +417,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
    * leaves nothing half-applied.
    * @param {any} event
    */
-  function onCompactionEnd(event) {
+  function onCompactionEnd(event: any) {
     if (!event || event.type !== "compaction_end" || event.reason !== "threshold") return;
     if (event.lane !== undefined && event.lane !== "main") return;
     const attempt = pending;
@@ -450,7 +496,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
           status: "succeeded",
           created_at: Date.now(),
         });
-      } catch (err) {
+      } catch (err: any) {
         runtimeWarnings?.push({
           warning_kind: "context_compaction_record_failed",
           source: "pi",
@@ -502,7 +548,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
         armed = true;
         diagnostics.context_compaction_midrun_armed = true;
         return true;
-      } catch (err) {
+      } catch (err: any) {
         armed = false;
         try { removeHook?.(); } catch { /* best-effort */ }
         try { unsubscribe?.(); } catch { /* best-effort */ }

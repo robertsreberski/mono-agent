@@ -18,7 +18,7 @@
  * @param {import("../../contracts/policy.js").RuntimePromptOverrides} [prompts]
  * @returns {string}
  */
-export function appendStructuredOutputInstruction(systemPrompt, outputSchema, prompts) {
+export function appendStructuredOutputInstruction(systemPrompt: string, outputSchema: unknown, prompts?: import("../../contracts/policy.js").RuntimePromptOverrides): string {
   if (!outputSchema) return systemPrompt;
   if (typeof prompts?.structuredOutputInstruction === "function") {
     return prompts.structuredOutputInstruction(systemPrompt);
@@ -39,7 +39,7 @@ export function appendStructuredOutputInstruction(systemPrompt, outputSchema, pr
  * @param {import("../../contracts/policy.js").RuntimePromptOverrides} [prompts]
  * @returns {string}
  */
-export function structuredOutputFinalizationPrompt(prompts) {
+export function structuredOutputFinalizationPrompt(prompts?: import("../../contracts/policy.js").RuntimePromptOverrides): string {
   if (typeof prompts?.structuredOutputFinalization === "function") {
     return prompts.structuredOutputFinalization();
   }
@@ -66,7 +66,14 @@ export function shouldRetryStructuredOutputFinalization({
   stopReason,
   externalAbort,
   maxTurnsHit,
-}) {
+}: {
+    outputSchema: unknown;
+    structuredResult: unknown;
+    finalText: unknown;
+    stopReason: unknown;
+    externalAbort: boolean;
+    maxTurnsHit: boolean;
+}): boolean {
   if (!outputSchema) return false;
   if (structuredResult !== null && structuredResult !== undefined) return false;
   if (String(finalText || "").trim()) return false;
@@ -82,7 +89,7 @@ export function shouldRetryStructuredOutputFinalization({
  * @param {boolean} failed
  * @returns {Record<string, unknown>}
  */
-export function structuredOutputRetryDiagnostics(attempts, reason, failed) {
+export function structuredOutputRetryDiagnostics(attempts: number, reason: string | null, failed: boolean): Record<string, unknown> {
   if (!attempts) return {};
   return {
     structured_output_finalization_retry_attempts: attempts,
@@ -104,7 +111,17 @@ export function structuredOutputRetryDiagnostics(attempts, reason, failed) {
  * @param {{harness: any, structuredTool: {name: string}|null, runtimeWarnings: Array<Record<string, unknown>>, prompts?: import("../../contracts/policy.js").RuntimePromptOverrides}} deps
  * @returns {Promise<{attempts: number, reason: string}>}
  */
-export async function runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings, prompts }) {
+export async function runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings, prompts }: {
+    harness: any;
+    structuredTool: {
+        name: string;
+    } | null;
+    runtimeWarnings: Array<Record<string, unknown>>;
+    prompts?: import("../../contracts/policy.js").RuntimePromptOverrides;
+}): Promise<{
+    attempts: number;
+    reason: string;
+}> {
   const reason = "empty_final_output";
   runtimeWarnings.push({
     warning_kind: "structured_output_finalization_retry",
@@ -112,7 +129,7 @@ export async function runStructuredOutputFinalizationRetry({ harness, structured
     reason,
     message: "Pi stopped without text or structured output; retrying once in the same session with only StructuredOutput enabled.",
   });
-  const previousActive = harness.getActiveTools().map((/** @type {{name: string}} */ toolDef) => toolDef.name);
+  const previousActive = harness.getActiveTools().map((/** @type {{name: string}} */ toolDef: { name: string; }) => toolDef.name);
   try {
     await harness.setActiveTools(structuredTool ? [structuredTool.name] : []);
     await harness.prompt(structuredOutputFinalizationPrompt(prompts));
@@ -121,7 +138,7 @@ export async function runStructuredOutputFinalizationRetry({ harness, structured
     runtimeWarnings.push({
       warning_kind: "structured_output_finalization_retry_failed",
       source: "pi",
-      message: (/** @type {any} */ (err))?.message || String(err),
+      message: (/** @type {any} */ (((err)) as any))?.message || String(err),
     });
   } finally {
     try { await harness.setActiveTools(previousActive); } catch { /* best-effort */ }

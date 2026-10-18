@@ -75,6 +75,7 @@ below. There are no package-wide, all-types, or public-barrel ignores.
 | Exact path / dependency | Reason and treatment |
 | --- | --- |
 | `packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs` | By-path proof tool; regeneration workflow in [PROJECTION-GOLDENS.md](../../packages/turn/src/engine/__tests__/fixtures/PROJECTION-GOLDENS.md). Non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/projection-parity-worker.mjs` | Forked from the test-only compiler output by frozen parity and the manual regeneration tool; non-production entry. |
 | `packages/turn/src/host/sandbox/srt-embed-runner.mjs` | Worker loaded with `new URL` in `src/host/sandbox/index.ts`; production entry. |
 | `packages/turn/package.json`: `@vscode/ripgrep` | String-resolved dependency in `src/tools/shared/ripgrep.ts` via `createRequire().resolve`; exact dependency exception, not an unused package. |
 | `packages/conversation/src/tool-history/writer-worker.ts` | Worker loaded with `new URL` in `src/tool-history/writer.ts`; production entry. |

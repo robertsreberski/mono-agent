@@ -1,3 +1,5 @@
+import type { RuntimePromptOverrides } from "../contracts/policy.js";
+import type { RuntimeSubagentRunRequest, NativePreparedDispatch } from "../contracts/runtime.js";
 import { assertNoRetiredRunOptions } from "./retired-options.js";
 // Top-level runtime factory.
 //
@@ -84,8 +86,8 @@ const TOOL_RUNTIME_KEYS = [
  * @param {Array<string>} keys
  * @returns {Object<string, *>}
  */
-function pickDefined(source, keys) {
-  const out = {};
+function pickDefined(source: { [x: string]: any; }, keys: string[]): { [x: string]: any; } {
+  const out: Record<string, any> = {};
   for (const key of keys) {
     if (source && source[key] !== undefined) out[key] = source[key];
   }
@@ -100,8 +102,8 @@ function pickDefined(source, keys) {
  * @param {Array<string>} keys
  * @returns {Object<string, *>}
  */
-function pickPresent(source, keys) {
-  const out = {};
+function pickPresent(source: { [x: string]: any; }, keys: string[]): { [x: string]: any; } {
+  const out: Record<string, any> = {};
   for (const key of keys) {
     if (source && key in source) out[key] = source[key];
   }
@@ -120,12 +122,12 @@ const PROMPT_OVERRIDE_KEYS = ["structuredOutputInstruction", "structuredOutputFi
  * @param {import("../contracts/policy.js").RuntimePromptOverrides} [runPrompts]
  * @returns {import("../contracts/policy.js").RuntimePromptOverrides|undefined}
  */
-function resolvePrompts(hostPrompts, runPrompts) {
+function resolvePrompts(hostPrompts?: RuntimePromptOverrides, runPrompts?: RuntimePromptOverrides): RuntimePromptOverrides | undefined {
   if (!hostPrompts && !runPrompts) return undefined;
   /** @type {Record<string, *>} */
-  const merged = {};
+  const merged: Record<string, any> = {};
   for (const key of PROMPT_OVERRIDE_KEYS) {
-    const value = /** @type {any} */ (runPrompts)?.[key] ?? /** @type {any} */ (hostPrompts)?.[key];
+    const value = /** @type {any} */ ((runPrompts) as any)?.[key] ?? /** @type {any} */ ((hostPrompts) as any)?.[key];
     if (value !== undefined) merged[key] = value;
   }
   return merged;
@@ -135,7 +137,7 @@ function resolvePrompts(hostPrompts, runPrompts) {
  * @param {TurnHostOptions} [host]
  * @returns {AgentRuntimeInstance}
  */
-export function createRuntime(host = {}) {
+export function createRuntime(host: TurnHostOptions = {}): AgentRuntimeInstance {
   const hostDefaults = pickDefined(host, HOST_KEYS);
   const toolRuntime = pickDefined(host, TOOL_RUNTIME_KEYS);
   const runtimeBrand = resolveRuntimeBrand(host.runtimeBrand);
@@ -148,7 +150,7 @@ export function createRuntime(host = {}) {
   const toolContext = createToolContext({ ...toolRuntime, runtimeBrand });
 
   /** @type {*} */
-  let self;
+  let self: any;
 
   /**
    * Kernel fallback for `subagents.run`, so the `Agent` built-in works from a
@@ -164,7 +166,7 @@ export function createRuntime(host = {}) {
    * callback cannot produce a grandchild even if it ignores the rest.
    * @param {*} request
    */
-  const defaultSubagentRun = async (request) => self.run(request.systemPrompt, {
+  const defaultSubagentRun = async (request: any) => self.run(request.systemPrompt, {
     // The tool merges call-time overrides into the definition; otherwise inherit.
     model: request.definition?.model ?? request.model,
     // A child must never be less confined than its parent. The policy is a
@@ -200,7 +202,7 @@ export function createRuntime(host = {}) {
   });
 
   /** @param {string} systemPrompt @param {Partial<RuntimeRunOptions>} options @param {boolean} prepare */
-  const executeRequest = async (systemPrompt, options = {}, prepare = false) => {
+  const executeRequest = async (systemPrompt: string, options: Partial<RuntimeRunOptions> = {}, prepare: boolean = false) => {
     if (Object.hasOwn(options, "settings")) {
       throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
     }
@@ -218,11 +220,11 @@ export function createRuntime(host = {}) {
       sink: options.toolLifecycleSink,
       // Observer delivery keeps the runtime's synchronous contract. Only the
       // client-facing lifecycle event waits for its serialized persistence.
-      onObserve: (event) => hub.emit(event),
-      onLifecycleAdmitted: (event) => hub.recordToolLifecycle(event),
+      onObserve: (event: any) => hub.emit(event),
+      onLifecycleAdmitted: (event: any) => hub.recordToolLifecycle(event),
       onEvent: options.onEvent,
       abortSignal: options.abortSignal,
-    });
+    } as Parameters<typeof createToolLifecycleEventGate>[0]);
     const liveInput = instrumentLiveInputAppliedEvents(options.liveInput, lifecycleGate.emit);
     const prompts = resolvePrompts(host.prompts, options.prompts);
     // A request-scoped environment must never mutate the long-lived runtime's
@@ -238,7 +240,7 @@ export function createRuntime(host = {}) {
       ? undefined
       : {
           ...options.subagents,
-          run: options.subagents.run ?? ((request) => defaultSubagentRun({
+          run: options.subagents.run ?? ((request: RuntimeSubagentRunRequest) => defaultSubagentRun({
             ...request,
             ...(options.webSearchConfig === undefined ? {} : { webSearchConfig: options.webSearchConfig }),
             ...(options.webRequestCoordinator === undefined ? {} : { webRequestCoordinator: options.webRequestCoordinator }),
@@ -266,7 +268,7 @@ export function createRuntime(host = {}) {
         // wins over either bag's whole-object `prompts`.
         ...(prompts === undefined ? {} : { prompts }),
     };
-    /** @type {Promise<void>|undefined} */ let flushed;
+    /** @type {Promise<void>|undefined} */ let flushed: Promise<void>;
     const flush = () => flushed ??= (async () => { await lifecycleGate.flush(); await hub.flush(); })();
     if (prepare) {
       try {
@@ -285,34 +287,34 @@ export function createRuntime(host = {}) {
      *   real caller must supply a model (see AgentRuntimeInstance.run).
      * @returns {Promise<RuntimeResult>}
      */
-    run: (systemPrompt, options) => /** @type {Promise<RuntimeResult>} */ (executeRequest(systemPrompt, options)),
-    prepareNativeDispatch: (systemPrompt, options) => /** @type {Promise<import("../contracts/runtime.js").NativePreparedDispatch>} */ (
-      executeRequest(systemPrompt, snapshotNativeDispatchOptions(options), true)),
-    configureTools(next = {}) {
+    run: (systemPrompt: string, options?: Partial<RuntimeRunOptions>): Promise<RuntimeResult> => /** @type {Promise<RuntimeResult>} */ ((executeRequest(systemPrompt, options)) as Promise<RuntimeResult>),
+    prepareNativeDispatch: (systemPrompt: any, options: any) => /** @type {Promise<import("../contracts/runtime.js").NativePreparedDispatch>} */ (
+      (executeRequest(systemPrompt, snapshotNativeDispatchOptions(options), true)) as Promise<NativePreparedDispatch>),
+    configureTools(next: TurnToolOptions = {}) {
       updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));
     },
     sessionTurnReconciliation: "v1",
-    async reconcileSessionTurn(request) { return reconcileNativeSessionTurn(request); },
-    async recoverSession(receipt, context) {
+    async reconcileSessionTurn(request: any) { return reconcileNativeSessionTurn(request); },
+    async recoverSession(receipt: any, context: any) {
       return recoverDurableNativeSession(receipt, context);
     },
-    async syncSession(providerSessionId) {
+    async syncSession(providerSessionId: any) {
       return syncProviderSession(providerSessionId);
     },
-    async refreshSession(providerSessionId) {
+    async refreshSession(providerSessionId: any) {
       return refreshProviderSession(providerSessionId);
     },
-    async salvageDurableSession(providerSessionId, sessionsRoot) {
+    async salvageDurableSession(providerSessionId: any, sessionsRoot: any) {
       return salvageDurableNativeSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId, sessionsRoot, deletionOptions) {
+    async retireDurableSession(providerSessionId: any, sessionsRoot: any, deletionOptions: any) {
       return deletionOptions === undefined ? retireDurableNativeSession(providerSessionId, sessionsRoot)
         : retireDurableNativeSession(providerSessionId, sessionsRoot, deletionOptions);
     },
-    async disposeSession(providerSessionId) {
+    async disposeSession(providerSessionId: any) {
       return disposeProviderSession(providerSessionId);
     },
-    async invalidateSession(providerSessionId) {
+    async invalidateSession(providerSessionId: any) {
       return invalidateProviderSession(providerSessionId);
     },
     async disposeAllSessions() {
@@ -322,3 +324,9 @@ export function createRuntime(host = {}) {
 
   return self;
 }
+
+export type TurnHostOptions = import("../contracts/runtime.js").TurnHostOptions;
+export type TurnToolOptions = import("../contracts/runtime.js").TurnToolOptions;
+export type AgentRuntimeInstance = import("../contracts/runtime.js").AgentRuntimeInstance;
+export type RuntimeRunOptions = import("../contracts/runtime.js").RuntimeRunOptions;
+export type RuntimeResult = import("../contracts/runtime.js").RuntimeResult;

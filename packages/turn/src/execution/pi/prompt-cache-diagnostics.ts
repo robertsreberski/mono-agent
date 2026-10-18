@@ -1,24 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 
-const activeRequests = new WeakMap();
-export const promptCacheRequest = (harness) => activeRequests.get(harness);
+const activeRequests = new WeakMap<object, { phase: string; requestId: string }>();
+export const promptCacheRequest = (harness: any): any => activeRequests.get(harness);
 
 const MAX_MESSAGE_FINGERPRINTS = 128;
-const safeString = (value) => typeof value === "string" ? value.slice(0, 160) : undefined;
-const serialized = (value) => JSON.stringify(value) ?? "null";
-const fingerprint = (value) => createHash("sha256").update(serialized(value)).digest("hex").slice(0, 16);
-const bytes = (value) => value == null ? 0 : Buffer.byteLength(typeof value === "string" ? value : serialized(value));
-const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
-const list = (value) => Array.isArray(value) ? value : [];
+const safeString = (value: any) => typeof value === "string" ? value.slice(0, 160) : undefined;
+const serialized = (value: any) => JSON.stringify(value) ?? "null";
+const fingerprint = (value: any) => createHash("sha256").update(serialized(value)).digest("hex").slice(0, 16);
+const bytes = (value: any) => value == null ? 0 : Buffer.byteLength(typeof value === "string" ? value : serialized(value));
+const record = (value: any) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+const list = (value: any) => Array.isArray(value) ? value : [];
 
-function normalizedPayload(event) {
+function normalizedPayload(event: any) {
   const payload = record(event?.payload);
   if (!payload) return { family: "unsupported", reason: "payload_not_object" };
   const api = safeString(event?.model?.api) ?? "unknown";
   if (api === "google-generative-ai" || api === "google-vertex") {
     const config = record(payload.config) ?? {};
-    const tools = list(config.tools).flatMap((tool) => list(record(tool)?.functionDeclarations).length > 0
+    const tools = list(config.tools).flatMap((tool: any) => list(record(tool)?.functionDeclarations).length > 0
       ? list(record(tool)?.functionDeclarations) : [tool]);
     return { family: "google", system: config.systemInstruction ?? null, tools, messages: list(payload.contents), payload };
   }
@@ -58,9 +58,9 @@ function normalizedPayload(event) {
     // `instructions` (openai-codex-responses always sets it) still wins.
     const replayed = getCurrentSystemPrompt(input);
     const converted = input
-      .map((message) => record(message))
-      .filter((message) => message !== undefined && (message.role === "system" || message.role === "developer") && typeof message.content === "string" && message.content.length > 0)
-      .map((message) => message.content)
+      .map((message: any) => record(message))
+      .filter((message: any) => message !== undefined && (message.role === "system" || message.role === "developer") && typeof message.content === "string" && message.content.length > 0)
+      .map((message: any) => message.content)
       .join("\n\n");
     const prompt = payload.instructions ?? (replayed !== "" ? replayed : converted);
     return { family: api === "openai-codex-responses" ? "openai-codex" : "openai-responses", system: prompt === "" ? null : prompt, tools: list(payload.tools), messages: input, payload };
@@ -68,7 +68,7 @@ function normalizedPayload(event) {
   return { family: "unsupported", reason: `unrecognized_api:${api}` };
 }
 
-function cacheMetadata(payload, family) {
+function cacheMetadata(payload: any, family: any) {
   const disabled = payload.prompt_cache_retention === "none" || record(payload.options)?.cacheRetention === "none";
   const key = payload.prompt_cache_key ?? payload.cache_key ?? payload.cachedContent
     ?? (family === "pi-messages" ? record(payload.options)?.sessionId : undefined);
@@ -77,15 +77,15 @@ function cacheMetadata(payload, family) {
   const pending = [{ value: payload, depth: 0 }];
   let visited = 0;
   while (pending.length > 0 && visited < 10_000) {
-    const { value, depth } = pending.pop();
+    const { value, depth } = pending.pop()!;
     visited += 1;
     if (depth > 12 || value === null || typeof value !== "object") continue;
     for (const [name, child] of Object.entries(value)) {
       if (["cache_control", "cachePoint", "cache_point", "prompt_cache_retention", "prompt_cache_options"].includes(name) && child != null) explicit = true;
       if (family === "anthropic" && name === "cache_control" && record(child)?.type === "ephemeral") {
         // Anthropic's omitted ephemeral TTL is the documented five-minute TTL.
-        if (child.ttl === undefined || child.ttl === "5m") ttls.add("5m");
-        else if (child.ttl === "1h") ttls.add("1h");
+        if ((child as { ttl?: unknown }).ttl === undefined || (child as { ttl?: unknown }).ttl === "5m") ttls.add("5m");
+        else if ((child as { ttl?: unknown }).ttl === "1h") ttls.add("1h");
       }
       if (typeof child === "object" && child !== null) pending.push({ value: child, depth: depth + 1 });
     }
@@ -98,10 +98,10 @@ function cacheMetadata(payload, family) {
 }
 
 /** Install a metadata-only, request-lifecycle-bounded Pi payload diagnostic. */
-export function installPromptCacheDiagnostics(harness, options) {
+export function installPromptCacheDiagnostics(harness: any, options: any): () => void {
   if (options.promptCacheDiagnostics !== true || typeof options.onEvent !== "function") return () => {};
   let ordinal = 0;
-  const remove = harness.hooks.on("before_payload", (event) => {
+  const remove = harness.hooks.on("before_payload", (event: any) => {
     const correlation = { phase: "assistant", requestId: randomUUID() };
     activeRequests.set(harness, correlation);
     const normalized = normalizedPayload(event);
@@ -119,14 +119,14 @@ export function installPromptCacheDiagnostics(harness, options) {
       options.onEvent({ ...base, supported: false, unsupportedReason: normalized.reason });
       return;
     }
-    const messages = normalized.messages;
+    const messages = normalized.messages!;
     const logicalInputInterpretation = normalized.payload.previous_response_id === undefined ? "full" : "delta";
     const codexWireUnknown = normalized.family === "openai-codex" && logicalInputInterpretation === "full";
     options.onEvent({
       ...base,
       supported: true,
       systemBytes: bytes(normalized.system), systemFingerprint: fingerprint(normalized.system),
-      toolDefinitionCount: normalized.tools.length, toolDefinitionsFingerprint: fingerprint(normalized.tools),
+      toolDefinitionCount: normalized.tools!.length, toolDefinitionsFingerprint: fingerprint(normalized.tools),
       messageCount: messages.length,
       messageFingerprints: messages.slice(0, MAX_MESSAGE_FINGERPRINTS).map(fingerprint),
       messageFingerprintsTruncated: messages.length > MAX_MESSAGE_FINGERPRINTS,

@@ -29,13 +29,15 @@ first if local Git history no longer contains it, install dependencies, then
 run from the repository root:
 
 ```bash
+pnpm --dir packages/turn run test:fixtures
 node packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs
+pnpm --dir packages/turn run build
 pnpm --filter @mono-agent/turn exec vitest run \
-  src/engine/__tests__/projection-default-parity.test.js
+  src/engine/__tests__/projection-default-parity.test.ts
 ```
 
 The manual generator archives original harness/runtime source into an owned
-`node_modules` temporary directory, runs the current scenario against those
+`.worklab-tmp` temporary directory, runs the current scenario against those
 original modules, and removes the directory in `finally`. It writes only the
 two golden files. Inspect the diff and keep the base/scenario provenance above
 accurate; do not regenerate from changed production code merely to turn a

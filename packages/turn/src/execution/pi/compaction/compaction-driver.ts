@@ -28,9 +28,9 @@ import { runHarnessPrompt } from "../prompt-operation.js";
 // Per-process cache of real context-window ceilings discovered from overflow
 // errors, keyed by model reference/id. The long-running host re-learns quickly
 // after a restart; this just spares repeated first-overflow round-trips.
-const discoveredContextWindows = new Map();
+const discoveredContextWindows = new Map<string, number>();
 
-function modelWindowKey(harness, runtime, resolved) {
+function modelWindowKey(harness: any, runtime: any, resolved: any) {
   const live = typeof harness?.getModel === "function" ? harness.getModel() : null;
   return resolved?.reference || runtime?.model?.id || live?.id || "unknown";
 }
@@ -38,30 +38,30 @@ function modelWindowKey(harness, runtime, resolved) {
 // The window of the model that ACTUALLY serves this request: prefer the harness's
 // live model (authoritative for native pi models), fall back to the resolved
 // runtime model. Returns 0 when unknown so callers can skip the proactive trigger.
-function liveModelContextWindow(harness, runtime) {
+function liveModelContextWindow(harness: any, runtime: any) {
   const live = typeof harness?.getModel === "function" ? harness.getModel() : null;
   const win = Number(live?.contextWindow) || Number(runtime?.model?.contextWindow) || 0;
   return win > 0 ? win : 0;
 }
 
-export function effectiveContextWindow(harness, runtime, resolved, contextWindowOverride) {
+export function effectiveContextWindow(harness: any, runtime: any, resolved: any, contextWindowOverride: any): any {
   const override = Number(contextWindowOverride);
   const declared = Number.isFinite(override) && override > 0
     ? override
     : liveModelContextWindow(harness, runtime);
   const discovered = discoveredContextWindows.get(modelWindowKey(harness, runtime, resolved));
-  if (Number.isFinite(discovered) && discovered > 0) {
-    return declared > 0 ? Math.min(declared, discovered) : discovered;
+  if (Number.isFinite(discovered) && discovered! > 0) {
+    return declared > 0 ? Math.min(declared, discovered!) : discovered;
   }
   return declared;
 }
 
-function recordDiscoveredContextWindow(harness, runtime, resolved, limit) {
+function recordDiscoveredContextWindow(harness: any, runtime: any, resolved: any, limit: any) {
   const n = Number(limit);
   if (!Number.isFinite(n) || n <= 0) return;
   const key = modelWindowKey(harness, runtime, resolved);
   const existing = discoveredContextWindows.get(key);
-  discoveredContextWindows.set(key, Number.isFinite(existing) && existing > 0 ? Math.min(existing, n) : n);
+  discoveredContextWindows.set(key, Number.isFinite(existing) && existing! > 0 ? Math.min(existing!, n) : n);
 }
 
 // Best-effort estimate of the current session's context size. The last assistant
@@ -88,7 +88,10 @@ function recordDiscoveredContextWindow(harness, runtime, resolved, limit) {
 // `usageIncrementTokens` adds that new turn without double-counting the stable
 // system/tool portion. With stale/0 usage and a seeded session the estimate
 // branch wins, and without this the trigger under-counts the real request.
-export async function estimateCurrentContextTokens(session, fixedOverheadTokens = 0, usageIncrementTokens = 0) {
+export async function estimateCurrentContextTokens(session: any, fixedOverheadTokens: number = 0, usageIncrementTokens: number = 0): Promise<{
+    tokens: number;
+    source: string;
+}> {
   let usageTokens = 0;
   let rawTokens = 0;
   try {
@@ -108,7 +111,7 @@ export async function estimateCurrentContextTokens(session, fixedOverheadTokens 
     // Keep the independent transcript branch genuinely usage-free. Calling
     // estimateContextTokens() here would fold provider usage in a second time,
     // then adding fixed overhead would double-count prior system/tool tokens.
-    rawTokens = messages.reduce((total, message) => total + (Number(estimateTokens(message)) || 0), 0);
+    rawTokens = messages.reduce((total: any, message: any) => total + (Number(estimateTokens(message)) || 0), 0);
   } catch { /* ignore — usage-based estimate stands */ }
   // Apply the fixed overhead to the transcript estimate only (see note above).
   rawTokens += Number(fixedOverheadTokens) || 0;
@@ -125,21 +128,21 @@ export async function estimateCurrentContextTokens(session, fixedOverheadTokens 
 // the old large value even after the transcript prefix was summarized. Summing
 // pi's per-message estimator gives a stable before/after comparison over the
 // actual context the session will build next.
-export async function estimateSessionMessageTokens(session) {
+export async function estimateSessionMessageTokens(session: any): Promise<any> {
   if (!session || typeof session.buildContext !== "function") return null;
   try {
     const context = await session.buildContext();
-    return (context?.messages || []).reduce((total, message) => total + (Number(estimateTokens(message)) || 0), 0);
+    return (context?.messages || []).reduce((total: any, message: any) => total + (Number(estimateTokens(message)) || 0), 0);
   } catch {
     return null;
   }
 }
 
-async function estimateBuiltContextTokens(branchEntries) {
+async function estimateBuiltContextTokens(branchEntries: any) {
   try {
     const messages = projectContext(branchEntries).messages;
-    return messages.reduce(
-      (total, message) => total + (Number(estimateTokens(message)) || 0),
+    return messages!.reduce(
+      (total: any, message: any) => total + (Number(estimateTokens(message)) || 0),
       0,
     );
   } catch {
@@ -147,7 +150,7 @@ async function estimateBuiltContextTokens(branchEntries) {
   }
 }
 
-function piSummaryGenerationLimit(reserveTokens, isSplitTurn) {
+function piSummaryGenerationLimit(reserveTokens: any, isSplitTurn: any) {
   return Math.floor(0.8 * reserveTokens) + (isSplitTurn ? Math.floor(0.5 * reserveTokens) : 0);
 }
 
@@ -160,7 +163,7 @@ function piSummaryGenerationLimit(reserveTokens, isSplitTurn) {
  * @param {number} summaryMaxTokens
  * @param {boolean} isSplitTurn
  */
-export function piSummaryReserveTokens(summaryMaxTokens, isSplitTurn) {
+export function piSummaryReserveTokens(summaryMaxTokens: number, isSplitTurn: boolean): number {
   const budget = Math.max(1, Math.floor(Number(summaryMaxTokens) || 1));
   const factor = isSplitTurn ? 1.3 : 0.8;
   let reserve = Math.max(1, Math.floor(budget / factor));
@@ -169,7 +172,7 @@ export function piSummaryReserveTokens(summaryMaxTokens, isSplitTurn) {
   return reserve;
 }
 
-async function previewCompactedContext(branchEntries, result) {
+async function previewCompactedContext(branchEntries: any, result: any) {
   const timestamp = Date.now();
   const previewEntry = {
     type: "compaction",
@@ -188,11 +191,11 @@ async function previewCompactedContext(branchEntries, result) {
   return estimateBuiltContextTokens([...branchEntries, previewEntry]);
 }
 
-function canonicalCompactionTrigger(trigger) {
+function canonicalCompactionTrigger(trigger: any) {
   return trigger === "reactive_overflow" ? "overflow" : trigger;
 }
 
-function finiteTokenCount(value) {
+function finiteTokenCount(value: any) {
   if (value === null || value === undefined) return undefined;
   const count = Number(value);
   return Number.isFinite(count) && count >= 0 ? count : undefined;
@@ -202,7 +205,7 @@ function finiteTokenCount(value) {
  * @param {((event: any) => void)|undefined} onEvent
  * @param {{operationId: string, status: string, trigger: string, model?: string, tokensBefore?: number|null, tokensAfter?: number|null, reason?: string, message?: string}} event
  */
-function emitCompactionEvent(onEvent, {
+function emitCompactionEvent(onEvent: (event: any) => void, {
   operationId,
   status,
   trigger,
@@ -211,7 +214,7 @@ function emitCompactionEvent(onEvent, {
   tokensAfter,
   reason,
   message,
-}) {
+}: { operationId: string; status: string; trigger: string; model?: string; tokensBefore?: number | null; tokensAfter?: number | null; reason?: string; message?: string; }) {
   const before = finiteTokenCount(tokensBefore);
   const after = finiteTokenCount(tokensAfter);
   try {
@@ -239,7 +242,22 @@ function emitCompactionEvent(onEvent, {
  * event. One object per compaction attempt; `requests` is appended to by the
  * summary-model facade.
  */
-export function createCompactionAccounting() {
+export function createCompactionAccounting(): {
+    version: number;
+    usageIncluded: boolean;
+    requests: any[];
+    splitTurn: any;
+    generatedSummaryTokens: any;
+    appendedMetadataBytes: any;
+    tailEstimateTokens: any;
+    transcriptBefore: any;
+    transcriptAfter: any;
+    fullRequestBefore: any;
+    fullRequestAfter: any;
+    afterSource: any;
+    policy: any;
+    preparation: any;
+} {
   return { version: 2, usageIncluded: true, requests: [], splitTurn: null, generatedSummaryTokens: null,
     appendedMetadataBytes: null, tailEstimateTokens: null, transcriptBefore: null, transcriptAfter: null,
     fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null };
@@ -251,11 +269,11 @@ export function createCompactionAccounting() {
  * @param {any} accounting
  * @param {number} started
  */
-export function createCompactionEmitter(accounting, started) {
-  return (observer, event) => emitCompactionEvent((value) => observer?.({ ...value,
-    tokenCountsExact: false, accounting: { ...accounting, requests: accounting.requests.map((row) => ({ ...row })),
+export function createCompactionEmitter(accounting: any, started: number): (observer: any, event: any) => void {
+  return (observer: any, event: any) => emitCompactionEvent((value: any) => observer?.({ ...value,
+    tokenCountsExact: false, accounting: { ...accounting, requests: accounting.requests.map((row: any) => ({ ...row })),
       durationMs: Math.round(performance.now() - started),
-      generatedSummaryTokens: accounting.requests.length && accounting.requests.every((row) => row.generatedSummaryTokens !== null) ? accounting.requests.reduce((sum, row) => sum + row.generatedSummaryTokens, 0) : null } }), event);
+      generatedSummaryTokens: accounting.requests.length && accounting.requests.every((row: any) => row.generatedSummaryTokens !== null) ? accounting.requests.reduce((sum: any, row: any) => sum + row.generatedSummaryTokens, 0) : null } }), event);
 }
 
 /**
@@ -276,6 +294,38 @@ export function createCompactionEmitter(accounting, started) {
  * without paying a model call for the proof. The idle path does not use either.
  * @param {any} params
  */
+export function createGuardedCompactionHook({ harness, trigger, operationId, effectivePolicy, compactionSettings, accounting, fixedOverheadTokens, beforeAttempt, beforeSummary, }: any): {
+    handler: (event: any) => Promise<{
+        cancel: boolean;
+        compaction?: undefined;
+    } | {
+        compaction: {
+            summary: string;
+            tokensBefore: any;
+            usage: any;
+            retainedTail: any;
+            details: {
+                readFiles: any[];
+                modifiedFiles: any[];
+            };
+        };
+        cancel?: undefined;
+    }>;
+    getDecision: () => {
+        kind: string;
+        reason?: string;
+        tokensBefore?: number | null;
+        tokensAfter?: number | null;
+        savings?: number | null;
+        firstKeptEntryId?: string | null;
+        retainedTailLength?: number;
+        compaction?: any;
+        error?: any;
+        warn?: boolean;
+        retryAfterMs?: number;
+        growthRequiredTokens?: number;
+    };
+};
 export function createGuardedCompactionHook({
   harness,
   trigger,
@@ -286,10 +336,10 @@ export function createGuardedCompactionHook({
   fixedOverheadTokens = null,
   beforeAttempt = null,
   beforeSummary = null,
-}) {
+}: any):unknown {
   /** @type {null | {kind: string, reason?: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, retainedTailLength?: number, compaction?: any, error?: any, warn?: boolean, retryAfterMs?: number, growthRequiredTokens?: number}} */
-  let decision = null;
-  const handler = async (event) => {
+  let decision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; retainedTailLength?: number; compaction?: any; error?: any; warn?: boolean; retryAfterMs?: number; growthRequiredTokens?: number; } | null = null;
+  const handler = async (event: any) => {
     decision = null;
     let failureGuard = null;
     try {
@@ -327,8 +377,8 @@ export function createGuardedCompactionHook({
       }
       if (event.nonRetainablePrefixLength > 0) {
         const prefix = new Set(event.branchEntries.slice(0, event.nonRetainablePrefixLength)
-          .filter((entry) => entry.type === "message").map((entry) => JSON.stringify(entry.message)));
-        if (prepared.value.retainedTail.some((message) => prefix.has(JSON.stringify(message)))) {
+          .filter((entry: any) => entry.type === "message").map((entry: any) => JSON.stringify(entry.message)));
+        if (prepared.value.retainedTail.some((message: any) => prefix.has(JSON.stringify(message)))) {
           decision = { kind: "guard_skipped", reason: "inherited_prefix_not_reducible" };
           return { cancel: true };
         }
@@ -350,7 +400,7 @@ export function createGuardedCompactionHook({
         failureGuard.suppress();
         return { cancel: true };
       }
-      accounting.tailEstimateTokens = prepared.value.retainedTail.reduce((sum, message) => sum + estimateTokens(message), 0);
+      accounting.tailEstimateTokens = prepared.value.retainedTail.reduce((sum: any, message: any) => sum + estimateTokens(message), 0);
       const input = prepareSummaryInput(prepared.value);
       accounting.preparation = input.metadata;
       const compacted = await compactPreparedContext(
@@ -375,8 +425,8 @@ export function createGuardedCompactionHook({
       accounting.transcriptAfter = tokensAfter;
       accounting.afterSource = "preview";
       accounting.fullRequestAfter = fixedOverheadTokens === null || tokensAfter === null ? null : tokensAfter + fixedOverheadTokens;
-      accounting.generatedSummaryTokens = accounting.requests.reduce((sum, request) => sum + (request.generatedSummaryTokens || 0), 0);
-      const lists = /** @type {{readFiles: string[], modifiedFiles: string[]}} */ (compacted.value.details);
+      accounting.generatedSummaryTokens = accounting.requests.reduce((sum: any, request: any) => sum + (request.generatedSummaryTokens || 0), 0);
+      const lists = /** @type {{readFiles: string[], modifiedFiles: string[]}} */ ((compacted.value.details) as { readFiles: string[]; modifiedFiles: string[]; });
       accounting.appendedMetadataBytes = Buffer.byteLength([
         lists.readFiles.length ? `\n\n<read-files>\n${lists.readFiles.join("\n")}\n</read-files>` : "",
         lists.modifiedFiles.length ? `\n\n<modified-files>\n${lists.modifiedFiles.join("\n")}\n</modified-files>` : "",
@@ -384,7 +434,7 @@ export function createGuardedCompactionHook({
       const savings = tokensBefore === null || tokensAfter === null ? null : tokensBefore - tokensAfter;
       const firstRetainedMessage = prepared.value.retainedTail[0];
       const firstKeptEntryId = firstRetainedMessage
-        ? event.branchEntries.find((entry) => entry?.type === "message" && entry.message === firstRetainedMessage)?.id || null
+        ? event.branchEntries.find((entry: any) => entry?.type === "message" && entry.message === firstRetainedMessage)?.id || null
         : null;
       if (savings === null || savings <= 0) {
         decision = { kind: "not_reducible", tokensBefore, tokensAfter, savings };
@@ -432,7 +482,13 @@ export function reportGuardedCompactionOutcome({
   onEvent,
   runtimeWarnings,
   effectivePolicy,
-}) {
+}: any): {
+    applied: false;
+    tokensBefore: number | null;
+    tokensAfter: number | null;
+    reduced: boolean | null;
+    nothingToCompact: boolean;
+} {
   if (decision?.kind === "headroom_unavailable") {
     runtimeWarnings?.push({ warning_kind: "context_compaction_insufficient_headroom", source: "pi", trigger,
       message: "Summary cannot fit a useful answer within the model/context ceiling; provider was not invoked." });
@@ -544,7 +600,24 @@ export function reportGuardedCompactionOutcome({
 // waitForIdle first). Never throws — classifies engine compaction errors into a warning
 // and reports back whether anything was compacted. Fires onCompactionRecorded on
 // success so a host can persist the compaction row.
-export async function tryCompact(harness, {
+export function tryCompact(harness: any, { trigger, onEvent, runtimeWarnings, onCompactionRecorded, runId, model, session, policy, fixedOverheadTokens, }: {
+    trigger: any;
+    onEvent: any;
+    runtimeWarnings: any;
+    onCompactionRecorded: any;
+    runId: any;
+    model: any;
+    session: any;
+    policy: any;
+    fixedOverheadTokens?: any;
+}): Promise<{
+    applied: boolean;
+    tokensBefore: number;
+    tokensAfter: any;
+    reduced: boolean;
+    nothingToCompact: boolean;
+}>;
+export async function tryCompact(harness: any, {
   trigger,
   onEvent,
   runtimeWarnings,
@@ -554,7 +627,17 @@ export async function tryCompact(harness, {
   session,
   policy,
   fixedOverheadTokens = null,
-}) {
+}: {
+    trigger: any;
+    onEvent: any;
+    runtimeWarnings: any;
+    onCompactionRecorded: any;
+    runId: any;
+    model: any;
+    session: any;
+    policy: any;
+    fixedOverheadTokens?: any;
+}):Promise<unknown> {
   const operationId = randomUUID();
   const started = performance.now();
   const accounting = createCompactionAccounting();
@@ -568,7 +651,7 @@ export async function tryCompact(harness, {
   });
   let effectivePolicy = policy || {};
   /** @type {null | {kind: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, error?: any}} */
-  let hookDecision = null;
+  let hookDecision: { kind: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; error?: any; } | null = null;
   let removeHook = null;
   let readDecision = () => hookDecision;
   try {
@@ -576,7 +659,7 @@ export async function tryCompact(harness, {
       contextWindow: typeof harness?.getModel === "function" ? harness.getModel()?.contextWindow : undefined,
     });
     effectivePolicy = { ...adaptivePolicy, ...(policy || {}) };
-    accounting.policy = Object.fromEntries(["contextWindow", "triggerTokens", "keepRecentTokens", "summaryMaxTokens", "compactionMinSavingsTokens"].map((key) => [key, finiteTokenCount(effectivePolicy[key]) ?? null]));
+    accounting.policy = Object.fromEntries(["contextWindow", "triggerTokens", "keepRecentTokens", "summaryMaxTokens", "compactionMinSavingsTokens"].map((key: string) => [key, finiteTokenCount(effectivePolicy[key]) ?? null]));
     const compactionSettings = {
       enabled: true,
       reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, false),
@@ -644,7 +727,7 @@ export async function tryCompact(harness, {
           status: "succeeded",
           created_at: Date.now(),
         });
-      } catch (err) {
+      } catch (err: any) {
         runtimeWarnings?.push({
           warning_kind: "context_compaction_record_failed",
           source: "pi",
@@ -680,7 +763,7 @@ export async function tryCompact(harness, {
   }
 }
 
-function isReactiveCompactionCandidate(errorMessage, diagnostics) {
+function isReactiveCompactionCandidate(errorMessage: any, diagnostics: any) {
   if (!errorMessage) return false;
   return isContextLimitError(errorMessage) || isLikelyContextTermination(errorMessage, diagnostics);
 }
@@ -706,7 +789,16 @@ function isReactiveCompactionCandidate(errorMessage, diagnostics) {
  * @param {{enabled: boolean, contextWindow: number, triggerTokens: number, keepRecentTokens: number}} policy
  * @returns {{enabled: boolean, reserveTokens: number, keepRecentTokens: number}}
  */
-export function piCompactionSettings(policy) {
+export function piCompactionSettings(policy: {
+    enabled: boolean;
+    contextWindow: number;
+    triggerTokens: number;
+    keepRecentTokens: number;
+}): {
+    enabled: boolean;
+    reserveTokens: number;
+    keepRecentTokens: number;
+} {
   return {
     enabled: !!policy.enabled,
     reserveTokens: policy.contextWindow - policy.triggerTokens + 1,
@@ -722,7 +814,14 @@ export function piCompactionSettings(policy) {
  * process-local overflow evidence can still lower it. It drives the proactive trigger and reactive recovery.
  * @param {{harness: any, runtime: any, resolved: any, toolLimits?: any, compaction?: any, contextWindowOverride?: number}} params
  */
-export function resolveLiveCompactionPolicy({ harness, runtime, resolved, toolLimits, compaction, contextWindowOverride }) {
+export function resolveLiveCompactionPolicy({ harness, runtime, resolved, toolLimits, compaction, contextWindowOverride }: {
+    harness: any;
+    runtime: any;
+    resolved: any;
+    toolLimits?: any;
+    compaction?: any;
+    contextWindowOverride?: number;
+}): import("../../../agent/compaction.js").AgentCompactionPolicy {
   const contextWindow = effectiveContextWindow(harness, runtime, resolved, contextWindowOverride);
   return resolveAgentCompactionPolicy({ toolLimits, compaction }, { contextWindow });
 }
@@ -735,7 +834,7 @@ export function resolveLiveCompactionPolicy({ harness, runtime, resolved, toolLi
  * @param {any} runState
  * @param {any} params
  */
-export async function runProactiveCompaction(runState, {
+export async function runProactiveCompaction(runState: any, {
   harness,
   systemPrompt,
   options,
@@ -745,7 +844,7 @@ export async function runProactiveCompaction(runState, {
   reference,
   onEvent,
   runtimeWarnings,
-}) {
+}: any): Promise<void> {
   const policy = runState.compaction.policy;
   if (!(policy.enabled && policy.contextWindow > 0 && !options.abortSignal?.aborted)) return;
   // Fixed per-request overhead the provider meters but the raw transcript
@@ -843,7 +942,7 @@ export async function runProactiveCompaction(runState, {
  * @param {any} params
  * @returns {Promise<{state: any, runError: any}>}
  */
-export async function runReactiveCompaction(runState, {
+export async function runReactiveCompaction(runState: any, {
   harness,
   runtime,
   resolved,
@@ -856,7 +955,10 @@ export async function runReactiveCompaction(runState, {
   state,
   runError,
   captureState,
-}) {
+}: any): Promise<{
+    state: any;
+    runError: any;
+}> {
   const c = runState.compaction;
   if (!(
     c.policy?.enabled
@@ -898,7 +1000,7 @@ export async function runReactiveCompaction(runState, {
     let staleMidRunCompaction = false;
     if (c.lastMidRunCompaction) {
       const messages = (await runState.session.buildContext()).messages;
-      const transcriptTokens = messages.reduce((total, message) => total + (Number(estimateTokens(message)) || 0), 0);
+      const transcriptTokens = messages.reduce((total: any, message: any) => total + (Number(estimateTokens(message)) || 0), 0);
       staleMidRunCompaction = transcriptTokens - c.lastMidRunCompaction.transcriptTokens
         >= c.lastMidRunCompaction.growthRequirement;
     }

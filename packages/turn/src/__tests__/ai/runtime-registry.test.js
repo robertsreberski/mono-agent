@@ -85,7 +85,7 @@ it.each([
 });
 
 it("omits retired aliases from freshly emitted declarations", () => {
-  const files = ["runtime/bridges.js", "execution/pi/run.js"].map((file) => fileURLToPath(new URL(`../../${file}`, import.meta.url)));
+  const files = ["runtime/bridges.ts", "execution/pi/run.ts"].map((file) => fileURLToPath(new URL(`../../${file}`, import.meta.url)));
   const program = ts.createProgram(files, { allowJs: true, declaration: true, emitDeclarationOnly: true, skipLibCheck: true,
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext });
   for (const path of files) {

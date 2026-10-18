@@ -1,3 +1,4 @@
+import type { PiOptions, PiWarning } from "./types.js";
 // @ts-check
 // Result assembly for the pi-native bridge.
 //
@@ -24,7 +25,19 @@ import { structuredOutputRetryDiagnostics } from "./structured-output.js";
  * @param {{input?: number, output?: number, cacheRead?: number, cacheWrite?: number, cost?: number}|null} [carried]
  * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}}
  */
-export function usageFromMessages(messages = [], carried = null) {
+export function usageFromMessages(messages: Array<any> = [], carried: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    cost?: number;
+} | null = null): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+} {
   const usage = {
     input: Number(carried?.input) || 0,
     output: Number(carried?.output) || 0,
@@ -50,15 +63,15 @@ export function usageFromMessages(messages = [], carried = null) {
  * measured; a failed response is measured only when real usage is non-zero.
  * @param {Array<any>} [messages]
  */
-export function hasMeasuredUsage(messages = []) {
-  return messages.some((message) => {
+export function hasMeasuredUsage(messages: Array<any> = []): boolean {
+  return messages.some((message: any) => {
     if (message?.role !== "assistant" || !message.usage) return false;
     if (message.stopReason !== "error" && message.stopReason !== "aborted") return true;
     const usage = message.usage;
     return [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.totalTokens,
       usage.cost?.input, usage.cost?.output, usage.cost?.cacheRead,
       usage.cost?.cacheWrite, usage.cost?.total]
-      .some((value) => Number.isFinite(Number(value)) && Number(value) > 0);
+      .some((value: any) => Number.isFinite(Number(value)) && Number(value) > 0);
   });
 }
 
@@ -84,13 +97,50 @@ export function hasMeasuredUsage(messages = []) {
  * @param {number} estimatedCost
  * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}}
  */
-export function withSubagentUsage(usage, delegated, estimatedCost) {
+export function withSubagentUsage(usage: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+}, delegated: {
+    costUsd: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+}, estimatedCost: number): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+};
+export function withSubagentUsage(usage: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+}, delegated: {
+    costUsd: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+}, estimatedCost: number | null): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+} {
   return {
     input: usage.input + delegated.input,
     output: usage.output + delegated.output,
     cacheRead: usage.cacheRead + delegated.cacheRead,
     cacheWrite: usage.cacheWrite + delegated.cacheWrite,
-    cost: delegated.costUsd > 0 ? (usage.cost || estimatedCost) + delegated.costUsd : usage.cost,
+    cost: delegated.costUsd > 0 ? (usage.cost || estimatedCost)! + delegated.costUsd : usage.cost,
   };
 }
 
@@ -102,7 +152,14 @@ export function withSubagentUsage(usage, delegated, estimatedCost) {
  * @param {any} assistantMessage
  * @returns {{input: number, output: number, cacheRead: number, cacheCreation: number, total: number, costUsd: number}|null}
  */
-export function contextUsageFromAssistantMessage(assistantMessage) {
+export function contextUsageFromAssistantMessage(assistantMessage: any): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheCreation: number;
+    total: number;
+    costUsd: number;
+} | null {
   if (assistantMessage?.role !== "assistant" || !assistantMessage.usage) return null;
   if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") return null;
   const total = Number(calculateContextTokens(assistantMessage.usage)) || 0;
@@ -127,7 +184,9 @@ export function contextUsageFromAssistantMessage(assistantMessage) {
  * @param {{maxTurnsHit?: boolean}} [opts]
  * @returns {string|null}
  */
-export function failureKindForPiError(message, diagnostics, { maxTurnsHit = false } = {}) {
+export function failureKindForPiError(message: string | null, diagnostics: Record<string, unknown>, { maxTurnsHit = false }: {
+    maxTurnsHit?: boolean;
+} = {}): string | null {
   if (!message) return null;
   if (message.startsWith("Handoff dispatch budget exceeded:")) return "safety_handoff_dispatch_budget";
   if (message.startsWith("Invalid protected native session authority")) return "safety_native_session_authority";
@@ -141,6 +200,20 @@ export function failureKindForPiError(message, diagnostics, { maxTurnsHit = fals
  * Emit the per-run cache / cost / provider-completed events.
  * @param {{onEvent: (event: any) => void, reference: string, usage: {input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}, estimatedCost: number, start: number, externalAbort: boolean}} params
  */
+export function emitUsageCostEvents({ onEvent, reference, usage, estimatedCost, start, externalAbort, }: {
+    onEvent: (event: any) => void;
+    reference: string;
+    usage: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        cost: number;
+    };
+    estimatedCost: number;
+    start: number;
+    externalAbort: boolean;
+}): void;
 export function emitUsageCostEvents({
   onEvent,
   reference,
@@ -148,7 +221,20 @@ export function emitUsageCostEvents({
   estimatedCost,
   start,
   externalAbort,
-}) {
+}: {
+    onEvent: (event: any) => void;
+    reference: string;
+    usage: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        cost: number;
+    };
+    estimatedCost: number | null;
+    start: number;
+    externalAbort: boolean;
+}): void {
   if (usage.cacheRead > 0) {
     onEvent({ type: "cache_hit", sdk: "pi", model: reference, tokens: usage.cacheRead, source: "prompt_cache" });
   }
@@ -183,7 +269,11 @@ export function emitUsageCostEvents({
  * @param {(event: any) => void} onEvent
  * @param {{sdk: string, model: string, capabilitiesUsed: any}} payload
  */
-export function emitCapabilitiesResolved(onEvent, { sdk, model, capabilitiesUsed }) {
+export function emitCapabilitiesResolved(onEvent: (event: any) => void, { sdk, model, capabilitiesUsed }: {
+    sdk: string;
+    model: string;
+    capabilitiesUsed: any;
+}): void {
   onEvent({ type: "capabilities_resolved", sdk, model, capabilitiesUsed });
 }
 
@@ -191,7 +281,37 @@ export function emitCapabilitiesResolved(onEvent, { sdk, model, capabilitiesUsed
  * The aborted-run result (entry pre-check / pre-request abort). Pure factory.
  * @param {{resolved: any, options: any, events: any[], runtimeWarnings: any[], start: number, providerSessionId: string, piTransport: string}} params
  */
-export function abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport }) {
+export function abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport }: {
+    resolved: any;
+    options: any;
+    events: any[];
+    runtimeWarnings: any[];
+    start: number;
+    providerSessionId: string;
+    piTransport: string;
+}): {
+    text: any;
+    thinking: string;
+    events: any[];
+    usage: {};
+    durationMs: number;
+    numTurns: number;
+    model: any;
+    effort: any;
+    sdk: string;
+    cancelled: boolean;
+    error: any;
+    failureKind: any;
+    providerSessionId: string;
+    runtimeWarnings: any[];
+    diagnostics: {
+        provider_session_id: string;
+        pi_stop_reason: string;
+        pi_engine: string;
+        pi_transport_requested: string;
+        external_abort: boolean;
+    };
+} {
   return {
     text: null,
     thinking: "",
@@ -222,7 +342,36 @@ export function abortedResult({ resolved, options, events, runtimeWarnings, star
  * a turn ended in an error/max-turns/abort without throwing). Pure assembly.
  * @param {object} params
  */
-export function buildSuccessResult(params) {
+export function buildSuccessResult(params: object): {
+    structuredResult: any;
+    structuredResultSource: string;
+    text: any;
+    thinking: any;
+    events: any;
+    usage: {
+        input_tokens: any;
+        output_tokens: any;
+        cache_read_tokens: any;
+        cache_creation_tokens: any;
+        cache_write_tokens: any;
+        cost_usd: any;
+    };
+    durationMs: number;
+    numTurns: any;
+    model: any;
+    effort: any;
+    effectiveEffort: any;
+    sdk: string;
+    cancelled: any;
+    error: any;
+    errorDetails: any;
+    failureKind: string;
+    providerSessionId: any;
+    runtimeWarnings: any;
+    diagnostics: any;
+    capabilitiesUsed: any;
+};
+export function buildSuccessResult(params: object) {
   const {
     finalText,
     finalThinking,
@@ -245,7 +394,7 @@ export function buildSuccessResult(params) {
     structuredResult,
     usageMeasured = true,
     effectiveEffort,
-  } = params;
+  } = params as ResultSuccess;
   return {
     text: finalText,
     thinking: finalThinking,
@@ -284,7 +433,43 @@ export function buildSuccessResult(params) {
  * The verbatim outer-catch error result. Pure assembly.
  * @param {object} params
  */
-export function buildErrorResult(params) {
+export function buildErrorResult(params: object): {
+    text: any;
+    events: any;
+    usage: {};
+    durationMs: number;
+    numTurns: any;
+    model: any;
+    effort: any;
+    effectiveEffort: any;
+    sdk: string;
+    cancelled: any;
+    error: any;
+    errorDetails: {
+        pi_stop_reason: string;
+        last_tool_name: any;
+        tool_results_seen: any;
+        turn_count: any;
+        max_turns_hit: any;
+        provider_session_id: any;
+        pi_engine: string;
+        pi_transport_requested: any;
+        pi_error_retryable: any;
+    };
+    failureKind: string;
+    providerSessionId: any;
+    runtimeWarnings: any;
+    diagnostics: {
+        provider_session_id: any;
+        pi_stop_reason: string;
+        pi_engine: string;
+        pi_transport_requested: any;
+        max_turns_hit: any;
+        turn_count: any;
+        external_abort: any;
+    };
+};
+export function buildErrorResult(params: object) {
   const {
     assistantTexts,
     events,
@@ -302,7 +487,7 @@ export function buildErrorResult(params) {
     isRetryable,
     piTransport,
     effectiveEffort,
-  } = params;
+  } = params as ResultError;
   return {
     text: assistantTexts.join("") || null,
     events,
@@ -346,7 +531,8 @@ export function buildErrorResult(params) {
  * @param {object} params
  * @returns {Record<string, unknown>}
  */
-export function buildDiagnostics(params) {
+export function buildDiagnostics(params: object): Record<string, unknown>;
+export function buildDiagnostics(params: object) {
   const {
     providerSessionId,
     stopReason,
@@ -363,7 +549,7 @@ export function buildDiagnostics(params) {
     transportErrorCode,
     transportErrorSource,
     requestRetries = 0,
-  } = params;
+  } = params as DiagnosticInput;
   return {
     provider_session_id: providerSessionId,
     pi_stop_reason: stopReason,
@@ -400,7 +586,8 @@ export function buildDiagnostics(params) {
  * @param {object} params
  * @returns {Record<string, unknown>|null}
  */
-export function buildErrorDetails(params) {
+export function buildErrorDetails(params: object): Record<string, unknown> | null;
+export function buildErrorDetails(params: object) {
   const {
     errorMessage,
     stopReason,
@@ -412,7 +599,7 @@ export function buildErrorDetails(params) {
     providerSessionId,
     structuredRetry,
     contextCompactionDiagnostics,
-  } = params;
+  } = params as ErrorDetailInput;
   if (!errorMessage) return null;
   return {
     pi_stop_reason: stopReason || "error",
@@ -430,3 +617,10 @@ export function buildErrorDetails(params) {
     ...contextCompactionDiagnostics,
   };
 }
+
+type ResultUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+type ResultCommon = { events: any[]; start: number; turnCount: number; resolved: { reference?: string; provider: string; model: string }; options: PiOptions; externalAbort: boolean; maxTurnsHit: boolean; providerSessionId: string; runtimeWarnings: PiWarning[]; effectiveEffort?: string | undefined };
+type ResultSuccess = ResultCommon & { finalText: string; finalThinking: string; usage: ResultUsage; estimatedCost: number | null; runAssistantCount: number; errorMessage: string | null; errorDetails: Record<string, unknown> | null; diagnostics: Record<string, unknown>; capabilitiesUsed: unknown; structuredResult: unknown; usageMeasured?: boolean };
+type ResultError = ResultCommon & { assistantTexts: string[]; errorMessage: string | null; lastToolName: string | null; toolResultsSeen: number; isRetryable: boolean; piTransport: string };
+type DiagnosticInput = { providerSessionId: string; stopReason: string | null; maxTurnsHit: boolean; maxTurns: unknown; turnCount: number; runAssistantCount: number; externalAbort: boolean; maxRetries: number; piTransport: string; lastToolName: string | null; structuredRetry: { attempts: number; reason: string | null; failed: boolean }; contextCompactionDiagnostics: Record<string, unknown>; transportErrorCode: string | null; transportErrorSource: string | null; requestRetries?: number };
+type ErrorDetailInput = Pick<DiagnosticInput, "providerSessionId" | "stopReason" | "maxTurnsHit" | "turnCount" | "runAssistantCount" | "lastToolName" | "structuredRetry" | "contextCompactionDiagnostics"> & { errorMessage: string | null; toolResultsSeen: number };

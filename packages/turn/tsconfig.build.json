@@ -51,10 +51,10 @@
         "./src/contracts/policy.ts"
       ],
       "#turn/runtime/create-runtime": [
-        "./src/runtime/create-runtime.js"
+        "./src/runtime/create-runtime.ts"
       ],
       "#turn/runtime/router": [
-        "./src/runtime/router.js"
+        "./src/runtime/router.ts"
       ],
       "#turn/runtime/model-reference": [
         "./src/runtime/model-reference.ts"

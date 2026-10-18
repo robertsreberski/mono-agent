@@ -2,7 +2,7 @@
 // One bounded, same-session plain-text finalization after normal settlement.
 
 /** @param {import("../../contracts/policy.js").RuntimePromptOverrides} [prompts] */
-export function emptyReplyFinalizationPrompt(prompts) {
+export function emptyReplyFinalizationPrompt(prompts?: import("../../contracts/policy.js").RuntimePromptOverrides): string {
   if (typeof prompts?.emptyReplyFinalization === "function") return prompts.emptyReplyFinalization();
   return [
     "The previous assistant turn ended without a user-facing reply.",
@@ -14,7 +14,17 @@ export function emptyReplyFinalizationPrompt(prompts) {
 /**
  * @param {{finalText: string, stopReason: unknown, outputSchema: unknown, runError: unknown, externalAbort: boolean, maxTurnsHit: boolean, silent: boolean, invalidatedSilentCompletion?: boolean, pendingQuestion: boolean}} state
  */
-export function shouldRetryEmptyReply(state) {
+export function shouldRetryEmptyReply(state: {
+    finalText: string;
+    stopReason: unknown;
+    outputSchema: unknown;
+    runError: unknown;
+    externalAbort: boolean;
+    maxTurnsHit: boolean;
+    silent: boolean;
+    invalidatedSilentCompletion?: boolean;
+    pendingQuestion: boolean;
+}): boolean {
   return !state.finalText.trim()
     && (state.stopReason === "stop" || state.stopReason === "length"
       // A terminal silence tool is not a no-reply exemption if its admission
@@ -31,9 +41,17 @@ export function shouldRetryEmptyReply(state) {
  * @param {{harness: any, runtimeWarnings: Array<Record<string, unknown>>, abortSignal?: AbortSignal, prompts?: import("../../contracts/policy.js").RuntimePromptOverrides}} deps
  * @returns {Promise<{attempted: boolean, error?: unknown}>}
  */
-export async function runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal, prompts }) {
+export async function runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal, prompts }: {
+    harness: any;
+    runtimeWarnings: Array<Record<string, unknown>>;
+    abortSignal?: AbortSignal;
+    prompts?: import("../../contracts/policy.js").RuntimePromptOverrides;
+}): Promise<{
+    attempted: boolean;
+    error?: unknown;
+}> {
   if (abortSignal?.aborted) return { attempted: false };
-  const previousActive = harness.getActiveTools().map((/** @type {{name: string}} */ tool) => tool.name);
+  const previousActive = harness.getActiveTools().map((/** @type {{name: string}} */ tool: { name: string; }) => tool.name);
   let attempted = false;
   try {
     await harness.setActiveTools([]);

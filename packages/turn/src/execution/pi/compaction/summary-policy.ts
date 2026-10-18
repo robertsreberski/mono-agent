@@ -3,13 +3,13 @@ import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/
 import { adjustMaxTokensForThinking, clampMaxTokensToContext, MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 
 /** Resolve summary policy independently of conversation reasoning. */
-export function summaryThinkingLevel(model, effort = "auto") {
+export function summaryThinkingLevel(model: any, effort: string = "auto"): "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "off" {
   if (!model?.reasoning) return "off";
   const levels = getSupportedThinkingLevels(model);
   const requested = effort === "auto"
     ? levels.includes("off") ? "off" : levels.includes("low") ? "low" : levels[0]
     : effort === "none" ? "off" : effort === "ultra" ? "max" : effort;
-  return clampThinkingLevel(model, /** @type {import('@earendil-works/pi-ai').ModelThinkingLevel} */ (requested));
+  return clampThinkingLevel(model, /** @type {import('@earendil-works/pi-ai').ModelThinkingLevel} */ ((requested) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"));
 }
 
 /** The kit supplies the text target (including its existing split-turn division).
@@ -18,7 +18,19 @@ export function summaryThinkingLevel(model, effort = "auto") {
  * the answer below that target, or below Pi's minimum for larger targets.
  * @param {any} model @param {any} context @param {any} options @param {string} effort @param {number|undefined} minimumUsefulAnswer
  */
-export function summaryRequestOptions(model, context, options = {}, effort = "auto", minimumUsefulAnswer = undefined) {
+export function summaryRequestOptions(model: any, context: any, options: any = {}, effort: string = "auto", minimumUsefulAnswer: number | undefined = undefined): {
+    canDispatch: boolean;
+    options: any;
+    metadata: {
+        requestedEffort: string;
+        effectiveEffort: string;
+        textTargetTokens: any;
+        minimumAnswerTokens: number;
+        reasoningAllowance: number;
+        providerMaxTokens: number;
+        availableProviderTokens: number;
+    };
+} {
   const level = summaryThinkingLevel(model, effort);
   const textTargetTokens = options.maxTokens ?? model.maxTokens;
   const minimumAnswerTokens = Math.max(minimumUsefulAnswer ?? 0, Math.min(MIN_ANSWER_TOKENS, textTargetTokens));
@@ -41,7 +53,7 @@ export function summaryRequestOptions(model, context, options = {}, effort = "au
     canDispatch: providerMaxTokens >= requiredTokens && providerMaxTokens <= availableProviderTokens
       && (!legacy || reasoningAllowance >= MIN_ANSWER_TOKENS),
     options: { ...options,
-      ...(googleBudgetBased ? { thinkingBudgets: Object.fromEntries(["minimal", "low", "medium", "high"].map((key) => [key, googleBudget])) } : {}),
+      ...(googleBudgetBased ? { thinkingBudgets: Object.fromEntries(["minimal", "low", "medium", "high"].map((key: string) => [key, googleBudget])) } : {}),
       reasoning: level === "off" ? undefined : level, maxTokens,
       transport: "sse", maxRetries: 0 },
     metadata: { requestedEffort: effort, effectiveEffort: level === "off" ? "none" : level,

@@ -54,6 +54,8 @@ describe("core scan policy", () => {
       "src/engine/index.ts!", "src/engine/sessions.ts!", "src/engine/owned-fs.ts!", "src/tools/index.ts!",
     ];
     expect(expected).toHaveLength(11);
+    expect(entries).toContain("src/engine/__tests__/fixtures/projection-parity-worker.mjs");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/projection-parity-worker.mjs!");
     for (const entry of expected) {
       expect(entries).toContain(entry);
       expect(products.has(entry)).toBe(false);

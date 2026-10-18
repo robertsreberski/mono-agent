@@ -336,6 +336,7 @@ export default {
           .map((path) => `${relative(resolve(root, "packages/turn"), path)}!`),
         "src/host/sandbox/srt-embed-runner.mjs!",
         "src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs",
+        "src/engine/__tests__/fixtures/projection-parity-worker.mjs",
       ],
       project: ["src/**/*.{js,mjs,ts,mts}!", "!src/**/__tests__/**!"],
       ignoreDependencies: ["@vscode/ripgrep"],

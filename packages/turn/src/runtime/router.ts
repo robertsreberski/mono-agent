@@ -1,3 +1,7 @@
+import type { RuntimeHandoffProducerRequest } from "../contracts/native-storage.js";
+import type { LiveInputEvent } from "./live-input-events.js";
+import type { TurnToolOptions, RuntimeAttemptRunOptions, RuntimeAttemptResult, RuntimeAttempt, NativeDispatchBinding } from "../contracts/runtime.js";
+import type { RuntimeEvent } from "../contracts/events.js";
 import { assertNoRetiredRunOptions, RetiredRunOptionError } from "./retired-options.js";
 import { DEFAULT_RUNTIME_RETRY_BACKOFF_MS, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS } from "./retry-defaults.js";
 import { isDispatchProgress } from "../execution/pi/dispatch-progress.js";
@@ -126,7 +130,7 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
 
 class ResolverProtectedOptionError extends Error {
   /** @param {string} key */
-  constructor(key) {
+  constructor(key: string) {
     super(`route attempt resolver cannot override ${key}`);
     this.name = "ResolverProtectedOptionError";
   }
@@ -155,19 +159,27 @@ class ResolverProtectedOptionError extends Error {
  * @param {RouterOptions} [options]
  * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
  */
+export function createRouterRuntime(options?: RouterOptions): AgentRuntimeInstance & {
+    chain: () => Array<RouterChainEntry>;
+};
+
 /** @overload
  * @param {HostRouterOptions} options
  * @returns {HostRouterRuntime}
  */
-// Preserve Parameters/ReturnType of the original public signature as well as direct calls.
+export function createRouterRuntime(options: HostRouterOptions): HostRouterRuntime;
+
 /** @overload
  * @param {RouterOptions} [options]
  * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
  */
+export function createRouterRuntime(options?: RouterOptions): AgentRuntimeInstance & {
+    chain: () => Array<RouterChainEntry>;
+};
 /** @param {HostRouterOptions} [options]
  * @returns {HostRouterRuntime}
  */
-export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry, sessionTurnReconciliation } = {}) {
+export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry, sessionTurnReconciliation }: HostRouterOptions = {}): HostRouterRuntime {
   const retryPolicy = normalizeRetryPolicy(retry);
   const entries = normaliseChain(chain);
   if (entries.length === 0) {
@@ -176,7 +188,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
   assertUniqueEntries(entries);
   const inner = createRuntime(host);
   /** @type {import("../contracts/runtime.js").TurnToolOptions|undefined} */
-  let configuredTools;
+  let configuredTools: TurnToolOptions | undefined;
   // The router builds transcript-tail snapshots outside the inner runtime's
   // bridge call (which is where the per-instance toolContext lives), so resolve
   // the host brand here to stamp the snapshot schema id with the same brand the
@@ -186,15 +198,15 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
   // Single ordinary attempt engine. Prepared native dispatch never enters it.
   /** @param {string} systemPrompt @param {Partial<RuntimeRunOptions>} options
    * @returns {Promise<RuntimeResult>} */
-  async function runAttemptLoop(systemPrompt, options, compactionUsage) {
+  async function runAttemptLoop(systemPrompt: string, options: Partial<RuntimeAttemptRunOptions>, compactionUsage: any): Promise<RuntimeAttemptResult> {
       options = {
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
       };
       /** @type {AttemptSideEffects|null} Side-effect evidence of the latest admitted attempt. */
-      let currentAttemptEffects = null;
+      let currentAttemptEffects: AttemptSideEffects | null = null;
       /** @type {Array<{effects: AttemptSideEffects, model: RuntimeModelRef, result: RuntimeResult}>} Failed attempts followed by another. */
-      const failedAttempts = [];
+      const failedAttempts: { effects: AttemptSideEffects; model: RuntimeModelRef; result: RuntimeResult; }[] = [];
       const liveInputHub = options.liveInput === undefined
         ? undefined
         : createObserverHub({
@@ -202,41 +214,41 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               ...(Array.isArray(host.observers) ? host.observers : []),
               ...(Array.isArray(options.observers) ? options.observers : []),
             ],
-            onEvent: options.onEvent,
+            onEvent: options.onEvent as (event: object) => unknown,
           });
       if (options.liveInput !== undefined && liveInputHub !== undefined) {
         options = {
           ...options,
-          liveInput: instrumentLiveInputAppliedEvents(options.liveInput, (event) => {
+          liveInput: instrumentLiveInputAppliedEvents(options.liveInput, (event: LiveInputEvent) => {
             if (currentAttemptEffects !== null && isLiveInputTakenEvent(event)) currentAttemptEffects.liveInput = true;
             liveInputHub.emit(event);
-          }),
+          })!,
         };
       }
       try {
       /** @type {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null|undefined), retryableSubkind?: (string|null|undefined), requirements?: (Object<string,*>|null), retryIndex?: number}>} */
-      const failoverHistory = [];
+      const failoverHistory: { model: RuntimeModelRef; failureKind: (string | null); requestId?: (string | null); retryableSubkind?: (string | null); requirements?: ({ [x: string]: any;} | null); retryIndex?: number; }[] = [];
       /** @type {RuntimeResult|null} */
-      let lastResult = null;
+      let lastResult: RuntimeAttemptResult | null = null;
       /** @type {{descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeResult}|undefined} */
-      let pendingDetach;
-      const markPendingDetach = (model, attemptIndex, retryIndex, result) => {
+      let pendingDetach: { descriptor: any; model: RuntimeModelRef; attemptIndex: number; retryIndex: number; result: RuntimeResult; } | undefined;
+      const markPendingDetach = (model: any, attemptIndex: any, retryIndex: any, result: any) => {
         if (options.sessionTurn?.reconciliation) pendingDetach = {
           descriptor: structuredClone(options.sessionTurn), model, attemptIndex, retryIndex, result,
         };
       };
       let detachedAcknowledged = false;
       /** @type {ReadonlyArray<Object>|undefined} */
-      let detachedMessages;
+      let detachedMessages: readonly any[] | undefined;
       /** @type {RuntimeResult|null} */
-      let lastRouteSkip = null;
+      let lastRouteSkip: RuntimeAttemptResult | null = null;
       const promptBase = systemPrompt;
       /** @type {*} */
-      let pendingSnapshot = null;
+      let pendingSnapshot: any = null;
       let contextFailure = null;
       let lastToolSchemaTokens = 0;
       for (let i = 0; i < entries.length; i += 1) {
-        const entry = entries[i];
+        const entry = entries[i]!;
         const effectiveToolOptions = effectiveRouterToolOptions(host, configuredTools);
         if (!entrySatisfiesRequirements(entry, options)) {
           lastRouteSkip = {
@@ -264,7 +276,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         // the per-attempt bag is mutated in place (effort, session deletes,
         // snapshot seed) and reassigned by mergeAttemptOptions.
         /** @type {*} */
-        const entryOptionsBase = {
+        const entryOptionsBase: any = {
           ...options,
           model: entry.model,
         };
@@ -277,16 +289,16 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           : entryOptionsBase;
 
         /** @type {RuntimeResult|null} A failure that ends the whole logical run. */
-        let terminalResult = null;
+        let terminalResult: RuntimeAttemptResult | null = null;
 
         for (let retryIndex = 0; retryIndex < entry.attempts; retryIndex += 1) {
           /** @type {*} */
-          let callOptions = { ...entryCallBase };
+          let callOptions: any = { ...entryCallBase };
           /** @type {AgentRuntimeInstance} */
           /** @type {import("../contracts/runtime.js").RuntimeAttempt} */
-          let attemptRuntime = inner;
+          let attemptRuntime: RuntimeAttempt = inner;
           /** @type {(() => (void|Promise<void>))|undefined} */
-          let attemptCleanup;
+          let attemptCleanup: (() => (void | Promise<void>)) | undefined;
           // Strip ownership before private resolution: detached retries/backups
           // may select their own native root but never inherit primary authority.
           const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
@@ -337,7 +349,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // Recheck late effects and cancellation after each awaited boundary.
           // Admission itself is synchronous: no await may follow its final check.
           const admitAttempt = () => {
-            const failed = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
+            const failed = failedAttempts.find((attempt: { effects: AttemptSideEffects; model: RuntimeModelRef; result: RuntimeResult; }) => sideEffectReason(attempt.effects) !== null);
             const reason = failed === undefined ? null : sideEffectReason(failed.effects);
             if (failed !== undefined && reason !== null) {
               const blocked = failoverBlockedResult(failed.result, modelKey(failed.model), reason);
@@ -407,9 +419,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               const failure = normalizeAttemptResult(lastResult || lastRouteSkip || { error: "Conversation history unavailable", failureKind: "provider_unavailable", events: [] }, !detachedAcknowledged);
               emit(callOptions, { type: "runtime_warning", ...warning });
               // Opaque host warnings already pass through as iterables; narrowing would change failure behavior.
-              return { ...failure, runtimeWarnings: [.../** @type {ReadonlyArray<unknown>} */ (failure.runtimeWarnings || []), warning], failoverHistory };
+              return { ...failure, runtimeWarnings: [.../** @type {ReadonlyArray<unknown>} */ ((failure.runtimeWarnings || []) as readonly unknown[]), warning], failoverHistory };
             }
-            callOptions.messages = [...detachedMessages, ...options.messages.slice(-1)];
+            callOptions.messages = [...detachedMessages, ...options.messages!.slice(-1)];
           }
           admission = checkedAdmission();
           if (admission) return admission;
@@ -446,7 +458,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             const previous = failoverHistory[failoverHistory.length - 1];
             emit(callOptions, {
               type: "provider_failover_started",
-              from: modelKey(previous?.model),
+              from: modelKey(previous?.model!),
               to: modelKey(entry.model),
               attemptIndex: i,
               // Why the route changed, in the same vocabulary provider_retry_started
@@ -457,10 +469,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           }
 
           /** @type {AttemptSideEffects} */
-          const attemptEffects = { tool: false, liveInput: false };
+          const attemptEffects: AttemptSideEffects = { tool: false, liveInput: false };
           currentAttemptEffects = attemptEffects;
           const hostOnEvent = callOptions.onEvent;
-          callOptions.onEvent = (/** @type {import("../contracts/events.js").RuntimeEvent} */ event) => {
+          callOptions.onEvent = (/** @type {import("../contracts/events.js").RuntimeEvent} */ event: RuntimeEvent) => {
             if (isToolActivityEvent(event)) attemptEffects.tool = true;
             hostOnEvent?.(event);
           };
@@ -468,7 +480,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           let result;
           try {
             result = await attemptRuntime.run(attemptSystemPrompt, callOptions);
-          } catch (err) {
+          } catch (err: any) {
             // The inner runtime usually surfaces errors as structured result
             // fields, but a bridge can still throw synchronously (e.g. spawn
             // failures). Convert to a result-like shape so the chain logic
@@ -498,7 +510,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           const retryability = retryableProviderFailureInfo({
             errorText: result.error || "",
             stderrTail: result.stderrTail || "",
-            failureKind: result.failureKind,
+            failureKind: result.failureKind!,
           });
 
           let routeApi = callOptions.piResolvedModel?.api;
@@ -515,7 +527,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             // Only a genuine route change is a completed failover: succeeding
             // after a same-model retry must not render as "answered by X
             // (failover)" when X is still the route the operator asked for.
-            if (failoverHistory.some((attempt) => modelKey(attempt.model) !== modelKey(entry.model))) {
+            if (failoverHistory.some((attempt: { model: RuntimeModelRef; failureKind: (string | null); requestId?: (string | null | undefined); retryableSubkind?: (string | null); requirements?: ({ [x: string]: any;} | null); retryIndex?: number; }) => modelKey(attempt.model) !== modelKey(entry.model))) {
               emit(callOptions, {
                 // modelKey, not the ModelRef: every consumer of this event reads
                 // `model` as a string (responder.ts's stringField is string-only),
@@ -537,7 +549,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           });
           if (result.failureKind === "skipped_capability_mismatch") {
             const blockedReason = sideEffectReason(attemptEffects);
-            if (blockedReason !== null && entries.slice(i + 1).some((next) => entrySatisfiesRequirements(next, options))) {
+            if (blockedReason !== null && entries.slice(i + 1).some((next: RouterChainEntry) => entrySatisfiesRequirements(next, options))) {
               const blocked = failoverBlockedResult(result, modelKey(entry.model), blockedReason);
               emit(callOptions, { type: "runtime_warning", ...blocked.warning });
               terminalResult = blocked.result;
@@ -577,7 +589,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // same-model retry nor a backup may run: end with this failure.
           const blockedReason = sideEffectReason(attemptEffects);
           if (blockedReason !== null && (sameModelRetryable
-            || entries.slice(i + 1).some((next) => entrySatisfiesRequirements(next, options)))) {
+            || entries.slice(i + 1).some((next: RouterChainEntry) => entrySatisfiesRequirements(next, options)))) {
             const blocked = failoverBlockedResult(result, modelKey(entry.model), blockedReason);
             emit(callOptions, { type: "runtime_warning", ...blocked.warning });
             terminalResult = blocked.result;
@@ -593,7 +605,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // instead of nesting a new <resume_context> block per transition.
           pendingSnapshot = mergeResumeSnapshots(
             pendingSnapshot,
-            buildTranscriptTailSnapshot(result.events, { runtimeBrand }),
+            buildTranscriptTailSnapshot(result.events!, { runtimeBrand }),
           );
 
           if (!sameModelRetryable) break;
@@ -633,7 +645,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       };
       return {
         ...exhaustedResult,
-        failureKind: contextFailure && lastResult === contextFailure ? "context_limit" : lastResult ? "provider_unavailable_exhausted" : exhaustedResult.failureKind,
+        failureKind: contextFailure && lastResult === contextFailure ? "context_limit" : lastResult ? "provider_unavailable_exhausted" : exhaustedResult.failureKind!,
         failoverHistory,
       };
       } finally {
@@ -649,7 +661,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
      *   AgentRuntimeInstance.run for the public, model-required contract).
      * @returns {Promise<RuntimeResult>}
      */
-    async run(systemPrompt, options = {}) {
+    async run(systemPrompt: string, options: Partial<RuntimeAttemptRunOptions> = {}): Promise<RuntimeAttemptResult> {
       if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
       assertNoRetiredRunOptions(options);
       if (options.manualCompaction === true) {
@@ -661,10 +673,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           throw new Error("Manual compaction is unavailable for this session model.");
         }
         /** @type {*} */
-        let attemptOptions = { ...options, model: primary.model };
+        let attemptOptions: any = { ...options, model: primary.model };
         delete attemptOptions.detachedContext;
         /** @type {import("../contracts/runtime.js").RuntimeAttempt} */
-          let attemptRuntime = inner;
+          let attemptRuntime: RuntimeAttempt = inner;
         let cleanup;
         try {
           const resolution = normalizeAttemptResolution(await resolveAttempt?.({
@@ -672,8 +684,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           }));
           cleanup = resolution?.cleanup;
           if (resolution) {
-            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptOptions(attemptOptions, resolution.options));
-            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptPolicyOptions(attemptOptions, resolution.policyOptions));
+            attemptOptions = /** @type {typeof attemptOptions} */ ((mergeAttemptOptions(attemptOptions, resolution.options)) as any);
+            attemptOptions = /** @type {typeof attemptOptions} */ ((mergeAttemptPolicyOptions(attemptOptions, resolution.policyOptions)) as any);
             if (resolution.runtime) {
               assertRuntimeLike(resolution.runtime);
               attemptRuntime = resolution.runtime;
@@ -686,9 +698,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           await cleanup?.();
         }
       }
-      const routeWarnings = [];
+      const routeWarnings: import("../contracts/events.js").RuntimeEvent[] = [];
       const compactionUsage = createCompactionUsage();
-      let result = await runAttemptLoop(systemPrompt, { ...options, onEvent: (event) => {
+      let result = await runAttemptLoop(systemPrompt, { ...options, onEvent: (event: RuntimeEvent) => {
         compactionUsage.observe(event);
         if (event.type === "runtime_warning" && event.warning_kind === "fallback_context_window_skipped") routeWarnings.push(event);
         options.onEvent?.(event);
@@ -699,11 +711,11 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         options.onEvent?.(event);
         result.events = [...(result.events || []), event];
       }
-      return routeWarnings.length ? { ...result, runtimeWarnings: [.../** @type {any[]} */ (result.runtimeWarnings || []), ...routeWarnings] } : result;
+      return routeWarnings.length ? { ...result, runtimeWarnings: [.../** @type {any[]} */ ((result.runtimeWarnings || []) as any[]), ...routeWarnings] } : result;
     },
     // Preparation is a primary-only single attempt, never a routed retry or
     // backup. A custom resolver must explicitly certify native ownership.
-    async prepareNativeDispatch(systemPrompt, options) {
+    async prepareNativeDispatch(systemPrompt: string, options: RuntimeAttemptRunOptions) {
       if (Object.hasOwn(options, "piSessionsRoot")) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
       assertNoRetiredRunOptions(options);
       const primary = entries[0];
@@ -714,9 +726,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       }
       let callOptions = snapshotNativeDispatchOptions({ ...options, model: primary.model });
       /** @type {import("../contracts/runtime.js").RuntimeAttempt} */
-      let attemptRuntime = inner;
+      let attemptRuntime: RuntimeAttempt = inner;
       const capturedTools = snapshotNativeDispatchOptions(effectiveRouterToolOptions(host, configuredTools));
-      /** @type {(() => (void|Promise<void>))|undefined} */ let cleanup;
+      /** @type {(() => (void|Promise<void>))|undefined} */ let cleanup: (() => (void | Promise<void>)) | undefined;
       let cleaned = false;
       const release = async () => { if (!cleaned) { cleaned = true; await cleanup?.(); } };
       try {
@@ -732,17 +744,17 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         const lease = await attemptRuntime.prepareNativeDispatch(systemPrompt, callOptions);
         let available = true, producing = false;
         return { snapshot: lease.snapshot,
-          ...(lease.assertReady ? { assertReady: () => { if (!available || producing) throw new Error("Prepared dispatch is no longer available"); lease.assertReady(); } } : {}),
-          ...(lease.checkHandoffSummary ? { checkHandoffSummary: (input) => { if (!available) throw new Error("Prepared dispatch is no longer available"); return lease.checkHandoffSummary(input); } } : {}),
-          ...(lease.produceHandoffSummary ? { produceHandoffSummary: async (input) => { if (!available || producing) throw new Error("Prepared producer is no longer available"); const captured = structuredClone(input); producing = true; try { return await lease.produceHandoffSummary(captured); } finally { producing = false; } } } : {}),
-          run: async (input) => {
+          ...(lease.assertReady ? { assertReady: () => { if (!available || producing) throw new Error("Prepared dispatch is no longer available"); lease.assertReady!(); } } : {}),
+          ...(lease.checkHandoffSummary ? { checkHandoffSummary: (input: RuntimeHandoffProducerRequest) => { if (!available) throw new Error("Prepared dispatch is no longer available"); return lease.checkHandoffSummary!(input); } } : {}),
+          ...(lease.produceHandoffSummary ? { produceHandoffSummary: async (input: RuntimeHandoffProducerRequest) => { if (!available || producing) throw new Error("Prepared producer is no longer available"); const captured = structuredClone(input); producing = true; try { return await lease.produceHandoffSummary!(captured); } finally { producing = false; } } } : {}),
+          run: async (input: NativeDispatchBinding) => {
             if (!available) throw new Error("Prepared dispatch is no longer available");
             if (producing) throw new Error("Prepared handoff producer is still running");
             const binding = prepareNativeDispatchBinding(input); // Rejection does not consume either lease.
             available = false;
             try {
               const result = normalizeProviderAuthFailure(await lease.run(binding));
-              const retryability = retryableProviderFailureInfo({ errorText: result.error || "", stderrTail: result.stderrTail || "", failureKind: result.failureKind });
+              const retryability = retryableProviderFailureInfo({ errorText: result.error || "", stderrTail: result.stderrTail || "", failureKind: result.failureKind! });
               return { ...result, failoverHistory: result.error || result.failureKind || result.cancelled ? [{ model: primary.model,
                 failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
                 requestId: retryability.requestId, retryableSubkind: retryability.subkind }] : [] };
@@ -752,42 +764,42 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       } catch (error) { await release(); throw error; }
     },
     chain: () => entries.slice(),
-    configureTools(next = {}) {
+    configureTools(next: TurnToolOptions = {}) {
       configuredTools = { ...(configuredTools || {}), ...next };
       inner.configureTools?.(next);
     },
-    sessionTurnReconciliation: resolveAttempt === undefined ? inner.sessionTurnReconciliation : sessionTurnReconciliation,
-    async reconcileSessionTurn(request) {
+    sessionTurnReconciliation: resolveAttempt === undefined ? inner.sessionTurnReconciliation! : sessionTurnReconciliation!,
+    async reconcileSessionTurn(request: { sessionsRoot: string; descriptor: any; purpose: "execution" | "compaction"; expectedModel: { provider: string; id: string; api?: string; }; expectedInputs: ReadonlyArray<{ id: string; requestDigest: string; placement: "initial" | "live"; }>; expectedBaseTip?: string | null; }) {
       if (!inner.reconcileSessionTurn) throw new Error("Native turn reconciliation unavailable");
       return inner.reconcileSessionTurn(request);
     },
-    async recoverSession(receipt, context) {
+    async recoverSession(receipt: { runId: string; revision: number; providerSessionId: string; modelKey: string; tipId: string; }, context: { appliedInputIds: readonly string[]; }) {
       return await inner.recoverSession?.(receipt, context) === true;
     },
-    async syncSession(providerSessionId) {
+    async syncSession(providerSessionId: string) {
       return Boolean(await inner.syncSession?.(providerSessionId));
     },
-    async refreshSession(providerSessionId) {
+    async refreshSession(providerSessionId: string) {
       if (typeof inner.refreshSession !== "function") {
         throw new Error("A routed runtime cannot guarantee a cold provider-session reopen");
       }
       await inner.refreshSession(providerSessionId);
     },
-    async salvageDurableSession(providerSessionId, sessionsRoot) {
+    async salvageDurableSession(providerSessionId: string, sessionsRoot: string) {
       if (typeof inner.salvageDurableSession !== "function") throw new Error("Durable session salvage unavailable");
       return inner.salvageDurableSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId, sessionsRoot, deletionOptions) {
+    async retireDurableSession(providerSessionId: string, sessionsRoot: string, deletionOptions?: { hostAuthority: { version: 1; rootId: string; authorityId: string; ownerKey: string; historyBucket: string; }; disposition: "C" | "D"; assertOwned: () => Promise<void>; }) {
       if (typeof inner.retireDurableSession !== "function") {
         throw new Error("A routed runtime cannot retire durable provider-session state");
       }
       return deletionOptions === undefined ? inner.retireDurableSession(providerSessionId, sessionsRoot)
         : inner.retireDurableSession(providerSessionId, sessionsRoot, deletionOptions);
     },
-    async disposeSession(providerSessionId) {
+    async disposeSession(providerSessionId: string) {
       return Boolean(await inner.disposeSession?.(providerSessionId));
     },
-    async invalidateSession(providerSessionId) {
+    async invalidateSession(providerSessionId: string) {
       return Boolean(await inner.invalidateSession?.(providerSessionId));
     },
     async disposeAllSessions() {
@@ -802,10 +814,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
  *   not something a union type narrows cleanly.
  * @returns {Array<RouterChainEntry>}
  */
-function normaliseChain(chain) {
+function normaliseChain(chain: readonly any[]): RouterChainEntry[] {
   if (!Array.isArray(chain)) return [];
-  return /** @type {Array<RouterChainEntry>} */ (chain
-    .map((entry) => {
+  return /** @type {Array<RouterChainEntry>} */ ((chain
+    .map((entry: any) => {
       if (!entry) return null;
       if (typeof entry.provider === "string" && typeof entry.model === "string") {
         // ModelRef shorthand: { provider, model, reference }
@@ -821,7 +833,7 @@ function normaliseChain(chain) {
       }
       return null;
     })
-    .filter(Boolean));
+    .filter(Boolean)) as RouterChainEntry[]);
 }
 
 /**
@@ -831,7 +843,7 @@ function normaliseChain(chain) {
  * @param {*} attempts
  * @returns {number}
  */
-function normalizeChainAttempts(attempts) {
+function normalizeChainAttempts(attempts: any): number {
   if (attempts === undefined || attempts === null) return 1;
   if (!Number.isInteger(attempts) || attempts < 1 || attempts > 10) {
     throw new Error("createRouterRuntime chain attempts must be an integer between 1 and 10");
@@ -843,14 +855,14 @@ function normalizeChainAttempts(attempts) {
  * @param {Partial<RouterRetryPolicy>|undefined} retry
  * @returns {RouterRetryPolicy}
  */
-function normalizeRetryPolicy(retry) {
+function normalizeRetryPolicy(retry: Partial<RouterRetryPolicy> | undefined): RouterRetryPolicy {
   const backoffMs = normalizeRetryDelay(retry?.backoffMs, DEFAULT_RUNTIME_RETRY_BACKOFF_MS, "backoffMs");
   const maxBackoffMs = normalizeRetryDelay(retry?.maxBackoffMs, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS, "maxBackoffMs");
   return { backoffMs, maxBackoffMs };
 }
 
 /** @param {*} value @param {number} fallback @param {string} name @returns {number} */
-function normalizeRetryDelay(value, fallback, name) {
+function normalizeRetryDelay(value: any, fallback: number, name: string): number {
   if (value === undefined || value === null) return fallback;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new Error(`createRouterRuntime retry.${name} must be a non-negative finite number`);
@@ -865,22 +877,22 @@ function normalizeRetryDelay(value, fallback, name) {
  * @param {AbortSignal} [signal]
  * @returns {Promise<void>}
  */
-function delay(ms, signal) {
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (!(ms > 0)) return Promise.resolve();
-  return new Promise((resolve) => {
+  return new Promise((resolve: (value: void | PromiseLike<void>) => void) => {
     const done = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", done);
       resolve();
     };
     const timer = setTimeout(done, ms);
-    /** @type {*} */ (timer).unref?.();
+    /** @type {*} */ ((timer) as any).unref?.();
     signal?.addEventListener("abort", done, { once: true });
   });
 }
 
 /** @param {*} effort @returns {string|null|undefined} */
-function normalizeChainEffort(effort) {
+function normalizeChainEffort(effort: any): string | null | undefined {
   if (effort === undefined || effort === null) return effort;
   if (typeof effort !== "string" || effort.length === 0 || effort.trim() !== effort) {
     throw new Error("createRouterRuntime chain effort must be a non-empty trimmed string, null, or omitted");
@@ -889,9 +901,9 @@ function normalizeChainEffort(effort) {
 }
 
 /** @param {Array<RouterChainEntry>} entries */
-function assertUniqueEntries(entries) {
+function assertUniqueEntries(entries: RouterChainEntry[]) {
   const seen = new Map();
-  entries.forEach((entry, index) => {
+  entries.forEach((entry: RouterChainEntry, index: number) => {
     const key = modelKey(entry.model);
     const first = seen.get(key);
     if (first !== undefined) {
@@ -902,7 +914,7 @@ function assertUniqueEntries(entries) {
 }
 
 /** @param {RuntimeModelRef} model */
-function modelKey(model) {
+function modelKey(model: RuntimeModelRef) {
   return model.reference;
 }
 
@@ -918,13 +930,13 @@ function modelKey(model) {
  * @param {import("../contracts/runtime.js").TurnToolOptions|undefined} configuredTools
  * @returns {import("../contracts/runtime.js").TurnToolOptions}
  */
-function effectiveRouterToolOptions(host, configuredTools) {
+function effectiveRouterToolOptions(host: TurnHostOptions, configuredTools: TurnToolOptions | undefined): TurnToolOptions {
   /** @type {Object<string, *>} */
-  const effective = {};
+  const effective: { [x: string]: any; } = {};
   for (const key of ROUTER_TOOL_CONTEXT_KEYS) {
     effective[key] = configuredTools !== undefined && Object.hasOwn(configuredTools, key)
-      ? configuredTools[key]
-      : host[key];
+      ? configuredTools[key as keyof TurnToolOptions]
+      : host[key as keyof TurnHostOptions];
   }
   effective.sandbox = configuredTools?.sandbox
     ?? host.sandbox
@@ -941,7 +953,7 @@ function effectiveRouterToolOptions(host, configuredTools) {
  * @param {import("../contracts/runtime.js").RuntimeAttempt} runtime
  * @param {import("../contracts/runtime.js").TurnToolOptions} toolOptions
  */
-function projectPiRuntimeToolContext(runtime, toolOptions) {
+function projectPiRuntimeToolContext(runtime: RuntimeAttempt, toolOptions: TurnToolOptions) {
   if (typeof runtime.configureTools !== "function") {
     throw new Error("route attempt runtime must expose configureTools() for tool-context projection");
   }
@@ -949,7 +961,7 @@ function projectPiRuntimeToolContext(runtime, toolOptions) {
 }
 
 /** @param {HostRouterAttemptResolution|undefined} value */
-function normalizeAttemptResolution(value) {
+function normalizeAttemptResolution(value: HostRouterAttemptResolution | undefined) {
   if (value === undefined) return undefined;
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("route attempt resolver must return an object or undefined");
@@ -970,7 +982,7 @@ function normalizeAttemptResolution(value) {
 
 const ATTEMPT_POLICY_OPTION_KEYS = new Set(["allowedTools", "disallowedTools"]);
 
-function normalizeAttemptPolicyOptions(value) {
+function normalizeAttemptPolicyOptions(value: any) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("route attempt resolver policyOptions must be an object");
   }
@@ -994,7 +1006,7 @@ function normalizeAttemptPolicyOptions(value) {
  * @param {Object<string, *>} base
  * @param {Object<string, *>|undefined} resolved
  */
-function mergeAttemptOptions(base, resolved) {
+function mergeAttemptOptions(base: { [x: string]: any; }, resolved: { [x: string]: any; } | undefined) {
   if (resolved !== undefined) assertNoRetiredRunOptions(resolved);
   const merged = withoutAttemptScopedOptions(base);
   if (resolved === undefined) return merged;
@@ -1007,7 +1019,7 @@ function mergeAttemptOptions(base, resolved) {
   return merged;
 }
 
-function mergeAttemptPolicyOptions(base, policyOptions) {
+function mergeAttemptPolicyOptions(base: any, policyOptions: any) {
   if (policyOptions === undefined) return base;
   const merged = { ...base };
   for (const key of ATTEMPT_POLICY_OPTION_KEYS) {
@@ -1022,21 +1034,21 @@ function mergeAttemptPolicyOptions(base, policyOptions) {
  * @param {Object<string, *>} options
  * @returns {Object<string, *>}
  */
-function withoutAttemptScopedOptions(options) {
+function withoutAttemptScopedOptions(options: { [x: string]: any; }): { [x: string]: any; } {
   const projected = { ...options };
   for (const key of ATTEMPT_SCOPED_OPTION_KEYS) delete projected[key];
   return projected;
 }
 
 /** @param {import("../contracts/runtime.js").RuntimeAttempt} runtime */
-function assertRuntimeLike(runtime) {
+function assertRuntimeLike(runtime: RuntimeAttempt) {
   if (runtime === null || typeof runtime !== "object" || typeof runtime.run !== "function") {
     throw new Error("route attempt resolver runtime must expose run()");
   }
 }
 
 /** @param {Object<string, *>} options @param {string|null|undefined} effort */
-function applyEntryEffort(options, effort) {
+function applyEntryEffort(options: { [x: string]: any; }, effort: string | null | undefined) {
   if (effort === null) {
     delete options.effort;
   } else if (typeof effort === "string") {
@@ -1045,7 +1057,7 @@ function applyEntryEffort(options, effort) {
 }
 
 /** @param {unknown} error @returns {RuntimeResult} */
-function attemptResolutionFailureResult(error) {
+function attemptResolutionFailureResult(error: unknown): RuntimeAttemptResult {
   // Host resolvers may handle credentials. Never echo their exception text
   // into persisted results or route telemetry. ResolverProtectedOptionError is
   // constructed only from a repository-owned allowlist key, so it is safe and
@@ -1075,12 +1087,12 @@ function attemptResolutionFailureResult(error) {
  * @param {*} event
  * @returns {boolean}
  */
-function isToolActivityEvent(event) {
+function isToolActivityEvent(event: any): boolean {
   if (!event || typeof event !== "object") return false;
   const type = event.type;
   if (type === "tool_use" || type === "tool_result" || type === "tool_execution_start") return true;
   if ((type !== "assistant" && type !== "user") || !Array.isArray(event.message?.content)) return false;
-  return event.message.content.some((/** @type {*} */ block) => block?.type === "tool_use" || block?.type === "tool_result");
+  return event.message.content.some((/** @type {*} */ block: any) => block?.type === "tool_use" || block?.type === "tool_result");
 }
 
 const LIVE_INPUT_TAKEN_EVENTS = new Set([
@@ -1095,7 +1107,7 @@ const LIVE_INPUT_TAKEN_EVENTS = new Set([
  * @param {*} event
  * @returns {boolean}
  */
-function isLiveInputTakenEvent(event) {
+function isLiveInputTakenEvent(event: any): boolean {
   return typeof event?.type === "string" && LIVE_INPUT_TAKEN_EVENTS.has(event.type);
 }
 
@@ -1103,7 +1115,7 @@ function isLiveInputTakenEvent(event) {
  * @param {AttemptSideEffects} effects
  * @returns {"tool_already_executed"|"live_input_consumed"|null}
  */
-function sideEffectReason(effects) {
+function sideEffectReason(effects: AttemptSideEffects): "tool_already_executed" | "live_input_consumed" | null {
   if (effects.tool) return "tool_already_executed";
   return effects.liveInput ? "live_input_consumed" : null;
 }
@@ -1114,7 +1126,7 @@ function sideEffectReason(effects) {
  * @param {string} model
  * @param {"tool_already_executed"|"live_input_consumed"} reason
  */
-function failoverBlockedResult(result, model, reason) {
+function failoverBlockedResult(result: RuntimeAttemptResult, model: string, reason: "tool_already_executed" | "live_input_consumed") {
   const effect = reason === "tool_already_executed" ? "a tool already ran" : "a live input was already consumed";
   const warning = {
     warning_kind: "provider_failover_blocked",
@@ -1133,7 +1145,7 @@ function failoverBlockedResult(result, model, reason) {
 }
 
 /** @param {string|null|undefined} failureKind */
-function isMidTurnSafetyFailure(failureKind) {
+function isMidTurnSafetyFailure(failureKind: string | null | undefined) {
   return typeof failureKind === "string"
     && (failureKind.startsWith("sandbox_") || failureKind.startsWith("safety_"));
 }
@@ -1144,7 +1156,7 @@ function isMidTurnSafetyFailure(failureKind) {
  * @param {*} previous
  * @param {*} next
  */
-function mergeResumeSnapshots(previous, next) {
+function mergeResumeSnapshots(previous: any, next: any) {
   if (!next) return previous || null;
   if (!previous) return next;
   const previousTurns = Array.isArray(previous.turns) ? previous.turns : [];
@@ -1155,7 +1167,7 @@ function mergeResumeSnapshots(previous, next) {
   const existingSummaries = [
     ...(Array.isArray(previous.earlier_turn_summaries) ? previous.earlier_turn_summaries : []),
     ...(Array.isArray(next.earlier_turn_summaries) ? next.earlier_turn_summaries : []),
-  ].map((entry) => String(entry?.summary ?? "").slice(0, 320)).filter(Boolean);
+  ].map((entry: any) => String(entry?.summary ?? "").slice(0, 320)).filter(Boolean);
   const droppedSummaries = dropped.map(summarizeSnapshotTurn);
   const summaries = [...existingSummaries, ...droppedSummaries].slice(-9);
   const turnCount = Math.max(
@@ -1165,7 +1177,7 @@ function mergeResumeSnapshots(previous, next) {
   return {
     ...next,
     turn_count: turnCount,
-    earlier_turn_summaries: summaries.map((summary, index) => ({
+    earlier_turn_summaries: summaries.map((summary: string, index: number) => ({
       turn_index: Math.max(1, turnCount - turns.length - summaries.length + index + 1),
       summary,
     })),
@@ -1174,13 +1186,13 @@ function mergeResumeSnapshots(previous, next) {
 }
 
 /** @param {*} turn */
-function summarizeSnapshotTurn(turn) {
+function summarizeSnapshotTurn(turn: any) {
   const assistant = typeof turn?.assistant_text === "string" ? turn.assistant_text.trim() : "";
   const tools = Array.isArray(turn?.tool_uses)
-    ? turn.tool_uses.map((tool) => tool?.name).filter(Boolean).slice(0, 5)
+    ? turn.tool_uses.map((tool: any) => tool?.name).filter(Boolean).slice(0, 5)
     : [];
-  const pieces = [];
-  if (assistant) pieces.push(assistant.split(/\r?\n/u)[0].slice(0, 220));
+  const pieces: string[] = [];
+  if (assistant) pieces.push(assistant.split(/\r?\n/u)[0]!.slice(0, 220));
   if (tools.length > 0) pieces.push(`tools: ${tools.join(", ")}`);
   return (pieces.join("; ") || "provider attempt made progress").slice(0, 320);
 }
@@ -1190,7 +1202,7 @@ function summarizeSnapshotTurn(turn) {
  * @param {Partial<RuntimeRunOptions>} options
  * @returns {boolean}
  */
-function entrySatisfiesRequirements(entry, options) {
+function entrySatisfiesRequirements(entry: RouterChainEntry, options: Partial<RuntimeAttemptRunOptions>): boolean {
   const requires = entry.requires;
   // Synthesize effective requirements: merge the entry's own `requires` with
   // requirements inferred from per-run options, so a chain entry that carries
@@ -1234,7 +1246,7 @@ function entrySatisfiesRequirements(entry, options) {
     return false;
   }
   for (const [key, expected] of Object.entries(effectiveRequires)) {
-    if (caps[key] !== expected) return false;
+    if (caps[key as keyof typeof caps] !== expected) return false;
   }
   return true;
 }
@@ -1247,7 +1259,7 @@ function entrySatisfiesRequirements(entry, options) {
  * @param {RouterChainEntry} entry
  * @returns {boolean}
  */
-function entrySupportsSessionResume(entry) {
+function entrySupportsSessionResume(entry: RouterChainEntry): boolean {
   try {
     return runtimeCapabilities().supports_session_resume === true;
   } catch {
@@ -1260,7 +1272,7 @@ function entrySupportsSessionResume(entry) {
  * @param {import("../contracts/events.js").RuntimeEvent} event
  * @returns {void}
  */
-function emit(callOptions, event) {
+function emit(callOptions: Partial<RuntimeAttemptRunOptions>, event: RuntimeEvent): void {
   try { callOptions.onEvent?.(event); } catch { /* swallow */ }
 }
 
@@ -1268,7 +1280,7 @@ function emit(callOptions, event) {
  * @param {RuntimeResult} result
  * @returns {RuntimeResult}
  */
-function normalizeProviderAuthFailure(result) {
+function normalizeProviderAuthFailure(result: RuntimeAttemptResult): RuntimeAttemptResult {
   if (result.cancelled) return result;
   const failureKind = result.failureKind || null;
   if (failureKind && failureKind !== "provider_unavailable") return result;
@@ -1284,7 +1296,7 @@ function normalizeProviderAuthFailure(result) {
  * @param {boolean} sessionEligibleAttempt
  * @returns {RuntimeResult}
  */
-function normalizeAttemptResult(result, sessionEligibleAttempt) {
+function normalizeAttemptResult(result: RuntimeAttemptResult, sessionEligibleAttempt: boolean): RuntimeAttemptResult {
   const normalized = normalizeProviderAuthFailure(result);
   if (sessionEligibleAttempt) return normalized;
   const { providerSessionRecovery: _receipt, providerSessionId: _sessionId, ...unownedResult } = normalized;
@@ -1293,10 +1305,113 @@ function normalizeAttemptResult(result, sessionEligibleAttempt) {
 
 /** Freeze the private replay snapshot, including nested attachment data.
  * @template T @param {T} value @returns {T} */
-function freezeDetachedContext(value) {
+function freezeDetachedContext<T>(value: T): T {
   if (value && typeof value === "object") {
     Object.values(value).forEach(freezeDetachedContext);
     Object.freeze(value);
   }
   return value;
 }
+
+export type RouterOptions = {
+    host?: TurnHostOptions;
+    chain?: ReadonlyArray<RuntimeModelRef | RouterChainEntryInput>;
+    resolveAttempt?: (input: {
+        model: RuntimeModelRef;
+        attemptIndex: number;
+        retryIndex: number;
+    }) => (RouterAttemptResolution | Promise<RouterAttemptResolution>);
+    /**
+     * Backoff shape for same-model
+     * retries. Per-route retry counts live on each chain entry's `attempts`.
+     */
+    retry?: Partial<RouterRetryPolicy>;
+    /**
+     * Explicit ownership assertion for a custom resolver that preserves the native owner.
+     */
+    sessionTurnReconciliation?: "v1";
+};
+export type HostRouterAttemptResolution = Omit<RouterAttemptResolution, "runtime"> & {
+    runtime?: import("../contracts/runtime.js").RuntimeAttempt;
+};
+export type HostRouterOptions = Omit<RouterOptions, "resolveAttempt"> & {
+    resolveAttempt?: (input: {
+        model: RuntimeModelRef;
+        attemptIndex: number;
+        retryIndex: number;
+    }) => (HostRouterAttemptResolution | undefined | Promise<HostRouterAttemptResolution | undefined>);
+};
+export type HostRouterRuntime = Omit<AgentRuntimeInstance, "run" | "prepareNativeDispatch"> & {
+    run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
+    prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<import("../contracts/runtime.js").RuntimeAttemptPreparedDispatch>;
+    chain(): Array<RouterChainEntry>;
+};
+/**
+ * Evidence that one attempt had effects another attempt would repeat.
+ */
+export type AttemptSideEffects = {
+    tool: boolean;
+    liveInput: boolean;
+};
+export type RuntimeModelRef = import("../contracts/model.js").RuntimeModelRef;
+export type TurnHostOptions = import("../contracts/runtime.js").TurnHostOptions;
+export type AgentRuntimeInstance = import("../contracts/runtime.js").AgentRuntimeInstance;
+export type RuntimeRunOptions = import("../contracts/runtime.js").RuntimeAttemptRunOptions;
+export type RuntimeResult = import("../contracts/runtime.js").RuntimeAttemptResult;
+/**
+ * A chain entry as accepted by createRouterRuntime: either the shorthand bare
+ * RuntimeModelRef, or the full `{model, effort?, requires?, attempts?}` form.
+ */
+export type RouterChainEntryInput = {
+    model: RuntimeModelRef;
+    effort?: string | null;
+    requires?: {
+        [x: string]: any;
+    };
+    attempts?: number;
+};
+export type RouterChainEntry = {
+    model: RuntimeModelRef;
+    effort: string | null | undefined;
+    requires: {
+        [x: string]: any;
+    } | null;
+    /**
+     * Total attempts on this route including the first.
+     */
+    attempts: number;
+};
+export type RouterRetryPolicy = {
+    /**
+     * Delay before the first retry; doubles per retry.
+     */
+    backoffMs: number;
+    /**
+     * Ceiling for the doubled delay.
+     */
+    maxBackoffMs: number;
+};
+/**
+ * Private host seam for route-specific provider options/runtime ownership.
+ * Returned options are never copied into router telemetry.
+ */
+export type RouterAttemptResolution = {
+    /**
+     * Must emit its tool events and
+     * settle every live-input lease before run() returns: the router re-checks a
+     * failed attempt's side effects only until it admits the next attempt.
+     */
+    runtime?: AgentRuntimeInstance;
+    options?: {
+        [x: string]: any;
+    };
+    /**
+     * Provider-specific projection of the logical tool policy. This deliberately
+     * cannot replace any other protected request field.
+     */
+    policyOptions?: {
+        allowedTools?: ReadonlyArray<string>;
+        disallowedTools?: ReadonlyArray<string>;
+    };
+    cleanup?: () => (void | Promise<void>);
+};

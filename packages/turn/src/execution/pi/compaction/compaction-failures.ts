@@ -1,9 +1,31 @@
 import { createHash } from "node:crypto";
-const failures = new Map();
+const failures = new Map<string, { at: number; tokens: number; warned: boolean }>();
 const LIMIT = 2048;
 
 /** Bounded, metadata-only process cache. A restart intentionally clears it. */
-export function compactionFailureGuard({ scope, model, policy, tokens, trigger, now = Date.now() }) {
+export function compactionFailureGuard({ scope, model, policy, tokens, trigger, now }: {
+    scope: any;
+    model: any;
+    policy: any;
+    tokens: any;
+    trigger: any;
+    now?: number;
+}): {
+    suppressed: boolean;
+    warn: boolean;
+    retryAfterMs: number;
+    growthRequiredTokens: number;
+    suppress(): void;
+    settle(outcome: any, attempted: any, reason: any): void;
+};
+export function compactionFailureGuard({ scope, model, policy, tokens, trigger, now = Date.now() }: {
+    scope: any;
+    model: any;
+    policy: any;
+    tokens: any;
+    trigger: any;
+    now?: number;
+}):unknown {
   if (!scope || policy.failureCooldownMs === 0) return null;
   const key = createHash("sha256").update(JSON.stringify([scope, model.provider, model.id, model.api,
     policy.effort, policy.summaryMaxTokens, policy.keepRecentTokens, policy.compactionMinSavingsTokens,
@@ -19,14 +41,14 @@ export function compactionFailureGuard({ scope, model, policy, tokens, trigger, 
     retryAfterMs: suppressed ? Math.max(0, cooldown - (now - previous.at)) : 0,
     growthRequiredTokens: growth,
     suppress() { if (previous) previous.warned = true; },
-    settle(outcome, attempted, reason) {
+    settle(outcome: any, attempted: any, reason: any) {
       if (outcome === "accepted") { failures.delete(key); return; }
       // Local headroom rejections are attempts too, but never billing evidence.
       if (!["failed", "headroom_unavailable"].includes(outcome) || !attempted || suppressed || reason === "aborted") return;
       failures.delete(key);
       failures.set(key, { at: now, tokens, warned: false });
       for (const [id, value] of failures) if (now - value.at >= 86400000) failures.delete(id);
-      while (failures.size > LIMIT) failures.delete(failures.keys().next().value);
+      while (failures.size > LIMIT) failures.delete(failures.keys().next().value!);
     },
   };
 }

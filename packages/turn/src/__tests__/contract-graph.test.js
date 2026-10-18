@@ -11,7 +11,7 @@ function sources(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     if (entry.name === "__tests__") return [];
     const path = join(directory, entry.name);
-    return entry.isDirectory() ? sources(path) : /\.(?:js|mjs|ts)$/u.test(path) ? [path] : [];
+    return entry.isDirectory() ? sources(path) : /\.(?:js|mjs|ts|mts)$/u.test(path) ? [path] : [];
   });
 }
 
@@ -19,7 +19,7 @@ function sourceTarget(target) {
   const source = target.replace(/^\.\/(?:dist|types)\//u, "./src/").replace(/\.d\.ts$/u, ".js");
   const absolute = resolve(root, source);
   if (existsSync(absolute)) return absolute;
-  const typed = absolute.replace(/\.js$/u, ".ts");
+  const typed = absolute.replace(/\.mjs$/u, ".mts").replace(/\.js$/u, ".ts");
   if (existsSync(typed)) return typed;
   throw new Error(`Unresolved local contract target: ${source}`);
 }
@@ -28,7 +28,7 @@ function dependency(file, specifier) {
   if (specifier.startsWith(".")) {
     const absolute = resolve(dirname(file), specifier);
     if (existsSync(absolute)) return absolute;
-    const typed = absolute.replace(/\.js$/u, ".ts");
+    const typed = absolute.replace(/\.mjs$/u, ".mts").replace(/\.js$/u, ".ts");
     if (existsSync(typed)) return typed;
     // Runtime asset URLs are not import edges; a literal import must resolve.
     throw new Error(`Unresolved local import ${relative(root, file)} -> ${specifier}`);
@@ -61,7 +61,7 @@ it("resolves turn-local runtime and erased contract edges without cycles or host
     if (file.includes(`${join("src", "host")}/`) && !file.endsWith("/types.ts")) {
       expect(targets, relative(root, file)).not.toContain(join(root, "src/host/types.ts"));
     }
-    graph.set(file, targets.filter((target) => [".js", ".ts", ".mjs"].includes(extname(target))));
+    graph.set(file, targets.filter((target) => [".js", ".ts", ".mjs", ".mts"].includes(extname(target))));
   }
   const visited = new Set(), active = [];
   function visit(file) {
