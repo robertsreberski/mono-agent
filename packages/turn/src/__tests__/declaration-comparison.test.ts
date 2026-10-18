@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 const { compareGraphs } = await import(new URL("../../scripts/compare-public-declarations.mjs", import.meta.url).href) as {
-  compareGraphs(baseline: string, candidate: string, entries: { key: string; types: string; candidateTypes?: string }[], options?: { documentationMode: "literal" | "semantic" }): {
+  compareGraphs(baseline: string, candidate: string, entries: { key: string; types: string; candidateTypes?: string }[], options?: { documentationMode?: "literal" | "semantic"; onWalk?: () => void }): {
     entry: string; exports: number; errors: string[];
   }[];
 };
@@ -24,13 +24,13 @@ function comparisonDirectory() {
   directories.push(directory);
   return directory;
 }
-function compare(before: string, after: string) {
+function compare(before: string, after: string, options?: { onWalk?: () => void }) {
   const directory = comparisonDirectory();
   for (const [name, text] of [["baseline", before], ["candidate", after]] as const) {
     mkdirSync(join(directory, name));
     writeFileSync(join(directory, name, "index.d.ts"), text);
   }
-  return compareGraphs(join(directory, "baseline"), join(directory, "candidate"), [{ key: ".", types: "index.d.ts" }])[0]!.errors;
+  return compareGraphs(join(directory, "baseline"), join(directory, "candidate"), [{ key: ".", types: "index.d.ts" }], options)[0]!.errors;
 }
 
 // Keep these cases synchronous: resolved promises alone do not let the worker
@@ -358,4 +358,122 @@ it.each(["types", "dist"])("compares a %s baseline against distinct dist declara
   }
   expect(compareGraphs(join(directory, "baseline"), join(directory, "candidate"),
     [{ key: ".", types: `${baselineRoot}/index.d.ts`, candidateTypes: "dist/index.d.ts" }])[0]!.errors).toEqual([]);
+});
+
+it("reports repeated primitive changes at every public path", () => {
+  const errors = compare(
+    'export function first(): number; export function second(): number;',
+    'export function first(): number | undefined; export function second(): number | undefined;',
+  );
+  for (const name of ["first", "second"]) {
+    expect(errors).toContain(`${name}.signature[0].return: widened union with undefined`);
+  }
+});
+
+it("reports shared recursive changes directly or through named references", () => {
+  const declaration = (type: string) => `export {}; interface Node { next?: Node; value: ${type} } export interface Shape { first: Node; second: Node }`;
+  const errors = compare(declaration("number"), declaration("number | undefined"));
+  expect(errors).toContain("Shape.first.value: widened union with undefined");
+  expect(errors).toContain("Shape.second: same changes as Shape.first");
+});
+
+it.each(["string", "unknown", "string | undefined"])("reports required-to-optional parameters even with %s types", (type) => {
+  expect(compare(`export function run(reference: ${type}): void;`,
+    `export function run(reference?: ${type}): void;`))
+    .toContain("run.signature[0].parameter[0]: required became optional");
+});
+
+it.each(["semantic", "literal"] as const)("compares inline parameter documentation in %s mode", (documentationMode) => {
+  for (const after of ["", "/** Changed input. */", "/** @deprecated Use another input. */"]) {
+    const directory = comparisonDirectory();
+    for (const [name, doc] of [["baseline", "/** Original input. */"], ["candidate", after]]) {
+      mkdirSync(join(directory, name!));
+      writeFileSync(join(directory, name!, "index.d.ts"), `export function run(${doc} reference: string): void;`);
+    }
+    const errors = compareGraphs(join(directory, "baseline"), join(directory, "candidate"),
+      [{ key: ".", types: "index.d.ts" }], { documentationMode })[0]!.errors;
+    expect(errors.some((error) => error.startsWith("run.signature[0].parameter[0]: ") && error.includes("documentation"))).toBe(true);
+  }
+});
+
+it.each(["semantic", "literal"] as const)("compares inline parameter tags in %s mode", (documentationMode) => {
+  const directory = comparisonDirectory();
+  for (const [name, doc] of [["baseline", "/** @deprecated Use another input. */"], ["candidate", ""]]) {
+    mkdirSync(join(directory, name!));
+    writeFileSync(join(directory, name!, "index.d.ts"), `export function run(${doc} reference: string): void;`);
+  }
+  expect(compareGraphs(join(directory, "baseline"), join(directory, "candidate"),
+    [{ key: ".", types: "index.d.ts" }], { documentationMode })[0]!.errors)
+    .toContain("run.signature[0].parameter[0]: lost documentation tags");
+});
+
+
+it("reports a shared named change once and refers to its first public path", () => {
+  const declaration = (type: string) => `export {}; interface Shared { value: ${type} } export interface Shape { first: Shared; second: Shared }`;
+  expect(compare(declaration("number"), declaration("number | undefined"))).toEqual([
+    "Shape.first.value: widened union with undefined",
+    "Shape.second: same changes as Shape.first",
+  ]);
+});
+
+it("bounds traversal of a layered shared named graph", () => {
+  const declaration = (type: string) => [
+    `export {}; interface L0 { value: ${type} }`,
+    ...Array.from({ length: 10 }, (_, n) => `interface L${n + 1} { first: L${n}; second: L${n} }`),
+    "export interface Shape { value: L10 }",
+  ].join("\n");
+  let steps = 0;
+  const errors = compare(declaration("number"), declaration("number | undefined"), { onWalk: () => { steps += 1; } });
+  expect(steps).toBeLessThan(40);
+  expect(errors.filter((error) => error.includes("widened union"))).toHaveLength(1);
+  expect(errors.filter((error) => error.includes("same changes as"))).toHaveLength(10);
+});
+
+it("does not memoise a subtree whose cycle cut reached an outside ancestor", () => {
+  const declaration = (type: string) => `export {}; interface A { next: B } interface B { next: A; value: ${type} } export interface Shape { first: A; second: B }`;
+  const errors = compare(declaration("number"), declaration("number | undefined"));
+  expect(errors).toContain("Shape.first.next.value: widened union with undefined");
+  expect(errors).toContain("Shape.second.value: widened union with undefined");
+  expect(errors).not.toContain("Shape.second: same changes as Shape.first.next");
+});
+
+it.each([
+  "interface N { self(): N; value: TYPE }",
+  "interface N { next: M; value: TYPE } interface M { next: N }",
+])("bounds layered sharing mixed with internal recursion: %s", (recursive) => {
+  const declaration = (type: string) => [
+    "export {};", recursive.replace("TYPE", type), "interface L0 { n: N }",
+    ...Array.from({ length: 10 }, (_, n) => `interface L${n + 1} { a: L${n}; b: L${n}; n: N }`),
+    "export interface Shape { value: L10 }",
+  ].join("\n");
+  let steps = 0;
+  const errors = compare(declaration("number"), declaration("number | undefined"), { onWalk: () => { steps += 1; } });
+  expect(steps).toBeGreaterThan(10);
+  expect(steps).toBeLessThan(100);
+  expect(errors.filter((error) => error.includes("widened union"))).toHaveLength(1);
+  expect(errors.filter((error) => error.includes("same changes as")).length).toBeGreaterThanOrEqual(10);
+});
+
+it("does not call a rest parameter required when replacing an optional parameter", () => {
+  const errors = compare("export function run(value?: string[]): void;", "export function run(...value: string[]): void;");
+  expect(errors.some((error) => error.includes("became required") || error.includes("new required parameter"))).toBe(false);
+});
+
+it("compares explicit this parameters as inputs", () => {
+  expect(compare("export function run(this: { value: string | number }): void;",
+    "export function run(this: { value: string }): void;"))
+    .toContain("run.signature[0].this.value: no longer accepts baseline input union");
+});
+
+
+it.each(["interface Shared { value: TYPE }", "class Shared { value: TYPE }", "type Shared = { value: TYPE }"])("memoises a shared named declaration: %s", (shape) => {
+  const declaration = (type: string) => `export {}; ${shape.replace("TYPE", type)}; export interface Shape { first: Shared; second: Shared }`;
+  const errors = compare(declaration("number"), declaration("number | undefined"));
+  expect(errors).toContain("Shape.first.value: widened union with undefined");
+  expect(errors).toContain("Shape.second: same changes as Shape.first");
+});
+
+it("does not confuse a class constructor side with a memoised instance shape", () => {
+  expect(compare("export class Shape { value: string; static value: unknown }",
+    "export class Shape { value: string; static value: any }")).toContain("Shape.value: introduced any");
 });
