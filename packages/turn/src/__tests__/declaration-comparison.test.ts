@@ -1,7 +1,8 @@
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setImmediate } from "node:timers";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 const { compareGraphs } = await import(new URL("../../scripts/compare-public-declarations.mjs", import.meta.url).href) as {
   compareGraphs(baseline: string, candidate: string, entries: { key: string; types: string; candidateTypes?: string }[], options?: { documentationMode: "literal" | "semantic" }): {
@@ -9,8 +10,12 @@ const { compareGraphs } = await import(new URL("../../scripts/compare-public-dec
   }[];
 };
 const directories: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  // Synchronous TypeScript comparisons and filesystem work can keep this entire
+  // file in microtasks. Under load, worker RPC replies were delayed over 60s.
+  // Yield between cases so IPC progresses; a resolved promise is not enough.
+  await new Promise<void>((resolve) => setImmediate(resolve));
 });
 function comparisonDirectory() {
   const root = fileURLToPath(new URL("../../../../.worklab-tmp/turn-declaration-tests/", import.meta.url));
@@ -27,6 +32,23 @@ function compare(before: string, after: string) {
   }
   return compareGraphs(join(directory, "baseline"), join(directory, "candidate"), [{ key: ".", types: "index.d.ts" }])[0]!.errors;
 }
+
+// Keep these cases synchronous: resolved promises alone do not let the worker
+// process IPC replies between tests.
+describe.sequential("declaration comparison worker event-loop fairness", { shuffle: false }, () => {
+  let immediateProcessed = false;
+
+  it("queues work on the worker event loop", () => {
+    setImmediate(() => {
+      immediateProcessed = true;
+    });
+    expect(immediateProcessed).toBe(false);
+  });
+
+  it("processes queued work before the next synchronous test", () => {
+    expect(immediateProcessed).toBe(true);
+  });
+});
 
 it("rejects alias/interface changes despite identical members", () => {
   expect(compare('export type Shape = { readonly value: unknown; optional?: string };',
