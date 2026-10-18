@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix model-router fallback with detached conversation history and no `messages`,
+  allowing backup models to use the replay instead of crashing.
+
 - Build and ship `@mono-agent/turn` runtime and declarations together from `dist`,
   preserving all eleven public entries.
 
