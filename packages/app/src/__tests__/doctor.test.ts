@@ -4,6 +4,11 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
+import { listPiBuiltinModels, listPiBuiltinProviders } from "@mono-agent/turn/ai";
+import { piModelResolutionIssue } from "../doctor/runtime.js";
+
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import * as memoryStore from "@mono-agent/memory/store";
@@ -23,6 +28,25 @@ let dir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agent-app-doctor-"));
+});
+
+describe("doctor Pi provider catalog", () => {
+  it("accepts exact models from every runtime-owned built-in provider", () => {
+    const config = resolveJsonMonoAgentConfig({
+      cwd: dir,
+      json: { runtime: { model: "openai:fictional-model" }, context: { identityPath: "IDENTITY.md" } },
+    });
+    const providers = listPiBuiltinProviders();
+    expect(providers.length).toBeGreaterThan(0);
+    for (const provider of providers) {
+      const models = listPiBuiltinModels(provider.id);
+      for (const model of models) {
+        expect(piModelResolutionIssue(config, parseMonoRuntimeModelReference(`${provider.id}:${model.id}`))).toBeUndefined();
+      }
+      expect(piModelResolutionIssue(config, parseMonoRuntimeModelReference(`${provider.id}:fictional-missing-model`)))
+        .toContain("pi model not found");
+    }
+  });
 });
 
 describe("launchd log doctor section", () => {

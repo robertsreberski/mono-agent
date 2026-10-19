@@ -2,8 +2,7 @@ import { constants as fsConstants } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
-import type { OAuthAuth, ProviderAuthInteraction } from "@earendil-works/pi-ai";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { describePiProviderAuth, loginPiOAuth, type PiOAuthLoginCallbacks } from "@mono-agent/turn/ai";
 import { getOrCreatePiInstallationId } from "./pi-installation-id.js";
 
 interface PiOAuthLoginIo {
@@ -15,18 +14,9 @@ interface RunPiOAuthLoginOptions {
   readonly authPath?: string;
   /** Effective durable Pi auth path; never the temporary staged auth.json. */
   readonly deviceIdAuthPath?: string;
-  readonly provider?: OAuthAuth;
+  readonly login?: typeof loginPiOAuth;
   readonly io?: PiOAuthLoginIo;
   readonly signal?: AbortSignal;
-}
-
-/**
- * pi-ai 0.83.0 removed the standalone OAuth registry (`getOAuthProvider`); a
- * provider's OAuth implementation now hangs off the provider itself. Providers
- * without OAuth support (e.g. `opencode-go`) resolve to undefined.
- */
-function findPiOAuthAuth(providerId: string): OAuthAuth | undefined {
-  return builtinProviders().find((provider) => provider.id === providerId)?.auth.oauth;
 }
 
 /**
@@ -43,10 +33,8 @@ export async function runPiOAuthLogin(
   providerId: string,
   options: RunPiOAuthLoginOptions = {},
 ): Promise<void> {
-  // `OAuthAuth` carries no id of its own — identity is established by the
-  // lookup, which is why the old `provider.id !== providerId` guard is gone.
-  const oauth = options.provider ?? findPiOAuthAuth(providerId);
-  if (oauth === undefined) {
+  const supportsOAuth = describePiProviderAuth(providerId)?.methods.some((method) => method.type === "oauth");
+  if (supportsOAuth !== true) {
     throw new Error(`Unknown bundled Pi OAuth provider: ${providerId}`);
   }
   assertPiOAuthLoginPersistenceSupported(process.platform);
@@ -54,61 +42,54 @@ export async function runPiOAuthLogin(
     throw new Error("ChatGPT sign-in requires the effective durable Pi auth path.");
   }
   const deviceId = providerId === "openai"
-    ? await getOrCreatePiInstallationId(options.deviceIdAuthPath!) : undefined;
+    ? await getOrCreatePiInstallationId(requireDeviceIdAuthPath(options.deviceIdAuthPath)) : undefined;
 
   const readline = options.io === undefined
     ? createInterface({ input: process.stdin, output: process.stdout })
     : undefined;
   const io: PiOAuthLoginIo = options.io ?? {
-    ask: async (question) => await new Promise<string>((resolve) => readline!.question(question, resolve)),
+    ask: async (question) => await new Promise<string>((resolve, reject) => {
+      if (readline === undefined) reject(new Error("OAuth terminal input is unavailable."));
+      else readline.question(question, resolve);
+    }),
     write: (text) => process.stdout.write(text),
   };
 
   try {
-    const interaction: ProviderAuthInteraction = {
+    const callbacks: PiOAuthLoginCallbacks = {
       signal: options.signal ?? new AbortController().signal,
-      notify: (event) => {
-        if (event.type === "auth_url") {
-          io.write(`\nOpen this URL in your browser:\n${event.url}\n`);
-          if (event.instructions !== undefined) io.write(`${event.instructions}\n`);
-          io.write("\n");
-          return;
-        }
-        if (event.type === "device_code") {
-          io.write(`\nOpen this URL in your browser:\n${event.verificationUri}\n`);
-          io.write(`Enter code: ${event.userCode}\n\n`);
-          return;
-        }
-        io.write(`${event.message}\n`);
+      onAuth: (info) => {
+        io.write(`\nOpen this URL in your browser:\n${info.url}\n`);
+        if (info.instructions !== undefined) io.write(`${info.instructions}\n`);
+        io.write("\n");
       },
-      prompt: async (prompt) => {
-        if (prompt.type === "manual_code") {
-          return await io.ask(
-            providerId === "openai"
-              ? "If the localhost:1455 callback does not complete (including remote browsers or a busy port), paste the entire final redirect URL from the browser address bar:\n> "
-              : "Paste the final redirect URL or authorization code " +
-                "(its OAuth state will be validated), or wait for the localhost callback:\n> ",
-          );
-        }
-        if (prompt.type === "select") {
-          io.write(`\n${prompt.message}\n`);
-          prompt.options.forEach((option, index) => io.write(`  ${index + 1}. ${option.label}\n`));
-          const answer = await io.ask(`Enter number (1-${prompt.options.length}): `);
-          const selected = prompt.options[Number.parseInt(answer, 10) - 1]?.id;
-          // The old callback could resolve undefined here; `prompt()` must
-          // return a string and rejects on cancellation instead.
-          if (selected === undefined) throw new Error("No option was selected.");
-          return selected;
-        }
-        return await io.ask(
-          `${prompt.message}${prompt.placeholder === undefined ? "" : ` (${prompt.placeholder})`}: `,
-        );
+      onDeviceCode: (info) => {
+        io.write(`\nOpen this URL in your browser:\n${info.verificationUri}\n`);
+        io.write(`Enter code: ${info.userCode}\n\n`);
       },
+      onProgress: (message) => io.write(`${message}\n`),
+      onManualCodeInput: async () => await io.ask(
+        providerId === "openai"
+          ? "If the localhost:1455 callback does not complete (including remote browsers or a busy port), paste the entire final redirect URL from the browser address bar:\n> "
+          : "Paste the final redirect URL or authorization code " +
+            "(its OAuth state will be validated), or wait for the localhost callback:\n> ",
+      ),
+      onSelect: async (prompt) => {
+        io.write(`\n${prompt.message}\n`);
+        prompt.options.forEach((option, index) => io.write(`  ${index + 1}. ${option.label}\n`));
+        const answer = await io.ask(`Enter number (1-${prompt.options.length}): `);
+        const selected = prompt.options[Number.parseInt(answer, 10) - 1]?.id;
+        if (selected === undefined) throw new Error("No option was selected.");
+        return selected;
+      },
+      onPrompt: async (prompt) => await io.ask(
+        `${prompt.message}${prompt.placeholder === undefined ? "" : ` (${prompt.placeholder})`}: `,
+      ),
     };
     // 0.83.0's OAuthCredential already carries `type: "oauth"`. Drop it from the
     // spread so the tag can stay written first, keeping the on-disk key order
     // byte-identical to what earlier versions produced.
-    const { type: _tagged, ...credentials } = await oauth.login(interaction, deviceId === undefined ? undefined : { getDeviceId: () => deviceId });
+    const { type: _tagged, ...credentials } = await (options.login ?? loginPiOAuth)(providerId, callbacks, deviceId === undefined ? undefined : { getDeviceId: () => deviceId });
     const authPath = options.authPath ?? "auth.json";
     const auth = await readAuth(authPath);
     await writeAuth(authPath, `${JSON.stringify({
@@ -119,6 +100,11 @@ export async function runPiOAuthLogin(
   } finally {
     readline?.close();
   }
+}
+
+function requireDeviceIdAuthPath(path: string | undefined): string {
+  if (path === undefined) throw new Error("ChatGPT sign-in requires the effective durable Pi auth path.");
+  return path;
 }
 
 /** @internal Exported only for deterministic platform-policy tests. */

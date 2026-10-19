@@ -2,6 +2,7 @@ import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { listPiBuiltinModels, listPiBuiltinProviders, reasoningLevelsForPiModel } from "@mono-agent/turn/ai";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -107,6 +108,19 @@ describe("supported wizard model catalog", () => {
     });
 
     const pi = result.candidates.filter((candidate) => candidate.source === "pi");
+    const guidedProviders = new Set(["anthropic", "github-copilot", "openai-codex", "openai", "opencode-go"]);
+    const expectedModels = listPiBuiltinProviders()
+      .filter((provider) => guidedProviders.has(provider.id))
+      .flatMap((provider) => listPiBuiltinModels(provider.id).map((model) => ({ provider, model })));
+    expect(pi.map((candidate) => candidate.value).sort()).toEqual(
+      expectedModels.map(({ model }) => `${model.provider}:${model.id}`).sort(),
+    );
+    for (const { provider, model } of expectedModels) {
+      expect(pi.find((candidate) => candidate.value === `${provider.id}:${model.id}`)).toMatchObject({
+        label: `Pi ${provider.id === "opencode-go" ? "OpenCode-Go" : provider.label} · ${model.name || model.id}`,
+        supportedEfforts: reasoningLevelsForPiModel(model),
+      });
+    }
     expect(pi.length).toBeGreaterThan(20);
     expect(pi.some((candidate) => candidate.value.startsWith("anthropic:"))).toBe(true);
     expect(pi.some((candidate) => candidate.value.startsWith("github-copilot:"))).toBe(true);

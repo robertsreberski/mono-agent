@@ -1,6 +1,5 @@
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
-import { isPiOAuthLoginEnabled } from "@mono-agent/turn/ai";
+import { describePiProviderAuth } from "@mono-agent/turn/ai";
 
 import { PI_API_KEY_PROVIDERS } from "./credential-values.js";
 import { DEFAULT_PI_AUTH_PATH, piAuthPathForSetup, piAuthRecoveryCommand, piAuthWorkingDirectory, piLoginCommand, shellQuote } from "./oauth-command.js";
@@ -16,14 +15,6 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
   const piAuthPath = options.piAuthPath ?? DEFAULT_PI_AUTH_PATH;
   const actionsById = new Map<string, ProviderSetupAction>();
   const detectedModelRefs = new Set<string>();
-  const piProviders = builtinModels();
-  // pi-ai 0.83.0 dropped the standalone OAuth registry; OAuth support is now a
-  // property of the provider itself, alongside the `auth.apiKey` read below.
-  const piOAuthProviders = new Set(
-    piProviders.getProviders()
-      .filter((provider) => isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined)
-      .map((provider) => provider.id),
-  );
   const authAlreadyDetected = (keys: readonly string[]): boolean =>
     options.forceAuthentication !== true && keys.some((key) => {
       const state = options.credentialStates?.[key];
@@ -82,9 +73,10 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       continue;
     }
 
-    const provider = piProviders.getProvider(ref.provider);
-    const supportsOAuth = piOAuthProviders.has(ref.provider);
-    const supportsApiKeyLogin = typeof provider?.auth.apiKey?.login === "function";
+    const provider = describePiProviderAuth(ref.provider);
+    const supportsOAuth = provider?.methods.some((method) => method.type === "oauth") === true;
+    const apiKeyMethod = provider?.methods.find((method) => method.type === "api_key");
+    const supportsApiKeyLogin = apiKeyMethod?.interactive === true;
     const selectedMethod = options.piAuthMethods?.[ref.provider]
       ?? (ref.provider === "openai" ? undefined : supportsOAuth ? "oauth" : supportsApiKeyLogin ? "api-key" : undefined);
 
@@ -100,7 +92,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       add({
         id: `pi-api-key:${ref.provider}`,
         kind: "auth",
-        label: `${provider?.auth.apiKey?.name ?? ref.provider} (${persistence === "secure-store" ? "secure store" : "environment"})`,
+        label: `${apiKeyMethod?.label ?? ref.provider} (${persistence === "secure-store" ? "secure store" : "environment"})`,
         modelRefs: [refKey],
         provider: ref.provider,
         envVar,

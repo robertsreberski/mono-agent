@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import type { OAuthAuth, ProviderAuthInteraction } from "@earendil-works/pi-ai";
+import { loginPiOAuth, type PiOAuthLoginCallbacks } from "@mono-agent/turn/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -41,31 +41,22 @@ describe("Pi OAuth terminal wrapper", () => {
     const redirect = "http://localhost:53692/callback?code=test-code&state=expected-state";
     const questions: string[] = [];
     let received = "";
-    const provider = {
-      name: "Anthropic",
-      login: vi.fn(async (interaction: ProviderAuthInteraction) => {
-        expect(interaction.signal).toBeInstanceOf(AbortSignal);
-        expect(interaction.signal.aborted).toBe(false);
-        interaction.notify({
-          type: "auth_url",
-          url: "https://claude.ai/oauth/authorize?state=expected-state",
-        });
-        received = await interaction.prompt({
-          type: "manual_code",
-          message: "Paste the final redirect URL",
-        });
-        const parsed = new URL(received);
-        if (parsed.searchParams.get("state") !== "expected-state") throw new Error("OAuth state mismatch");
-        if (parsed.searchParams.get("code") === null) throw new Error("Missing authorization code");
-        return { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 60_000 };
-      }),
-      refresh: vi.fn(),
-      toAuth: vi.fn(),
-    } as unknown as OAuthAuth;
+    const login = vi.fn(async (_providerId: string, callbacks: PiOAuthLoginCallbacks) => {
+      expect(callbacks.signal).toBeInstanceOf(AbortSignal);
+      expect(callbacks.signal?.aborted).toBe(false);
+      callbacks.onAuth({
+        url: "https://claude.ai/oauth/authorize?state=expected-state",
+      });
+      received = await callbacks.onManualCodeInput?.() ?? "";
+      const parsed = new URL(received);
+      if (parsed.searchParams.get("state") !== "expected-state") throw new Error("OAuth state mismatch");
+      if (parsed.searchParams.get("code") === null) throw new Error("Missing authorization code");
+      return { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 60_000 };
+    });
 
     await runPiOAuthLogin("anthropic", {
       authPath,
-      provider,
+      login,
       io: {
         ask: async (question) => {
           questions.push(question);
@@ -91,21 +82,46 @@ describe("Pi OAuth terminal wrapper", () => {
     const stagedPath = join(dir, "staged.json");
     const redirect = "http://127.0.0.1:1455/auth/callback?code=fake&state=expected&client_id=fake-issued";
     const ids: string[] = [];
-    const provider = {
-      name: "OpenAI",
-      login: vi.fn(async (interaction: ProviderAuthInteraction, options: { getDeviceId(): string }) => {
-        ids.push(options.getDeviceId());
-        expect(await interaction.prompt({ type: "manual_code", message: "Paste full URL" })).toBe(redirect);
-        return { type: "oauth", access: "fake-access", refresh: "fake-refresh", expires: 4_200_000_000_000, clientId: "fake-issued" };
-      }),
-    } as unknown as OAuthAuth;
+    const login: typeof loginPiOAuth = vi.fn(async (_providerId, callbacks, options) => {
+      if (options?.getDeviceId === undefined) throw new Error("Missing device ID");
+      ids.push(options.getDeviceId());
+      expect(await callbacks.onManualCodeInput?.()).toBe(redirect);
+      return { type: "oauth", access: "fake-access", refresh: "fake-refresh", expires: 4_200_000_000_000, clientId: "fake-issued" };
+    });
     for (let index = 0; index < 2; index += 1) {
       await runPiOAuthLogin("openai", { authPath: stagedPath, deviceIdAuthPath: durablePath,
-        provider, io: { ask: async () => redirect, write: vi.fn() } });
+        login, io: { ask: async () => redirect, write: vi.fn() } });
     }
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(ids[1]);
     expect(JSON.parse(await readFile(stagedPath, "utf8")).openai.clientId).toBe("fake-issued");
+  });
+
+  it.skipIf(process.platform === "win32")("keeps terminal notifications, selections, prompts and cancellation wired to the login facade", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-pi-oauth-callbacks-"));
+    dirs.push(dir);
+    const controller = new AbortController();
+    const questions: string[] = [];
+    const output: string[] = [];
+    const login: typeof loginPiOAuth = async (providerId, callbacks) => {
+      expect(providerId).toBe("anthropic");
+      expect(callbacks.signal).toBe(controller.signal);
+      callbacks.onAuth({ url: "https://example.invalid/login", instructions: "Fictional instructions" });
+      callbacks.onDeviceCode({ verificationUri: "https://example.invalid/device", userCode: "FAKE-CODE" });
+      callbacks.onProgress?.("Fictional progress");
+      expect(await callbacks.onSelect({ message: "Choose flow", options: [{ id: "browser", label: "Browser" }] }))
+        .toBe("browser");
+      expect(await callbacks.onPrompt({ message: "Enter value", placeholder: "example" })).toBe("1");
+      return { access: "fake-access", refresh: "fake-refresh", expires: 4_200_000_000_000 };
+    };
+    await runPiOAuthLogin("anthropic", {
+      authPath: join(dir, "auth.json"), signal: controller.signal, login,
+      io: { ask: async (question) => { questions.push(question); return "1"; }, write: (text) => output.push(text) },
+    });
+    expect(questions).toEqual(["Enter number (1-1): ", "Enter value (example): "]);
+    expect(output.join("")).toContain("Fictional instructions\n\n");
+    expect(output.join("")).toContain("Enter code: FAKE-CODE\n\n");
+    expect(output.join("")).toContain("Fictional progress\n");
   });
 
   it("keeps Anthropic's shipped code/state validation when its fixed callback port is occupied", async () => {
@@ -142,7 +158,7 @@ describe("Pi OAuth terminal wrapper", () => {
     await symlink(victimPath, authPath);
 
     await expect(withCwd(dir, () => runPiOAuthLogin("anthropic", {
-      provider: stubProvider({ access: "new-access", refresh: "new-refresh" }),
+      login: stubLogin({ access: "new-access", refresh: "new-refresh" }),
       io: { ask: async () => "", write: vi.fn() },
     }))).rejects.toMatchObject({
       code: expect.stringMatching(/^(?:ELOOP|EMLINK)$/u),
@@ -159,7 +175,7 @@ describe("Pi OAuth terminal wrapper", () => {
 
     const pending = runPiOAuthLogin("anthropic", {
       authPath,
-      provider: stubProvider({ access: "new-access", refresh: "new-refresh" }),
+      login: stubLogin({ access: "new-access", refresh: "new-refresh" }),
       io: { ask: async () => "", write: vi.fn() },
     });
     let blockTimer: ReturnType<typeof setTimeout> | undefined;
@@ -211,7 +227,7 @@ describe("Pi OAuth terminal wrapper", () => {
 
     const pending = runPiOAuthLogin("anthropic", {
       authPath,
-      provider: stubProvider(credentials),
+      login: stubLogin(credentials),
       io: { ask: async () => "", write: vi.fn() },
     });
     let blockTimer: ReturnType<typeof setTimeout> | undefined;
@@ -250,12 +266,12 @@ describe("Pi OAuth terminal wrapper", () => {
     const credentials = { access: "new-access", refresh: "new-refresh" };
     await runPiOAuthLogin("anthropic", {
       authPath,
-      provider: stubProvider(credentials),
+      login: stubLogin(credentials),
       io: { ask: async () => "", write: vi.fn() },
     });
 
     expect(await readFile(authPath, "utf8")).toBe(`${JSON.stringify({
-      anthropic: { type: "oauth", ...credentials },
+      anthropic: { type: "oauth", expires: 4_200_000_000_000, ...credentials },
     }, null, 2)}\n`);
   });
 
@@ -267,24 +283,19 @@ describe("Pi OAuth terminal wrapper", () => {
 
     await runPiOAuthLogin("anthropic", {
       authPath,
-      provider: stubProvider(credentials),
+      login: stubLogin(credentials),
       io: { ask: async () => "", write: vi.fn() },
     });
 
     expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({
-      anthropic: { type: "oauth", ...credentials },
+      anthropic: { type: "oauth", expires: 4_200_000_000_000, ...credentials },
     });
     expect((await stat(authPath)).mode & 0o777).toBe(0o600);
   });
 });
 
-function stubProvider(credentials: Record<string, unknown>): OAuthAuth {
-  return {
-    name: "Anthropic",
-    login: vi.fn(async () => credentials),
-    refresh: vi.fn(),
-    toAuth: vi.fn(),
-  } as unknown as OAuthAuth;
+function stubLogin(credentials: { access: string; refresh: string; toJSON?: () => unknown }): typeof loginPiOAuth {
+  return vi.fn(async () => ({ expires: 4_200_000_000_000, ...credentials }));
 }
 
 async function withCwd<T>(cwd: string, run: () => Promise<T>): Promise<T> {
