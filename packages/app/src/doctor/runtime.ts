@@ -1,18 +1,10 @@
-// `BuiltinProvider`, not the root `KnownProvider`: the latter also covers
-// providers without a generated catalog entry, so it does not key
-// `getBuiltinModels`. This guard is built from `getBuiltinProviders()`, which
-// is exactly the catalog set.
-import {
-  type BuiltinProvider as PiBuiltinProvider,
-  getBuiltinProviders as getPiBuiltinProviders,
-} from "@earendil-works/pi-ai/providers/all";
 import { describeMonoRuntimeSupport } from "@mono-agent/turn/host";
 import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 import {
   EFFORT_LEVELS,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { getPiBuiltinModel } from "@mono-agent/turn/ai";
+import { getPiBuiltinModel, listPiBuiltinProviders } from "@mono-agent/turn/ai";
 import { runtimeProvenanceDetail } from "../provenance/runtime-provenance.js";
 import { resolveAdvertisedModelEffort } from "../providers/model-effort-capabilities.js";
 import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
@@ -169,6 +161,6 @@ export function piModelResolutionIssue(
   );
 }
 
-function isPiBuiltinProvider(provider: string): provider is PiBuiltinProvider {
-  return (getPiBuiltinProviders() as readonly string[]).includes(provider);
+function isPiBuiltinProvider(provider: string): boolean {
+  return listPiBuiltinProviders().some((candidate) => candidate.id === provider);
 }

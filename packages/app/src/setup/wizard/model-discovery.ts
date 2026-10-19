@@ -1,10 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { EFFORT_LEVELS, type EffortLevel } from "@mono-agent/config";
-import { isPiOAuthLoginEnabled } from "@mono-agent/turn/ai";
+import { describePiProviderAuth, listPiBuiltinModels, listPiBuiltinProviders, reasoningLevelsForPiModel } from "@mono-agent/turn/ai";
 import {
   inspectPiAuthStore as inspectDefaultPiAuthStore,
   type PiAuthStoreInspection,
@@ -49,7 +47,7 @@ export function guidedPiProviderProblem(provider: string): string | undefined {
   if (GUIDED_PI_PROVIDERS.has(provider) || GUIDED_LOCAL_PI_PROVIDERS.has(provider)) {
     return undefined;
   }
-  return builtinModels().getProvider(provider) === undefined
+  return describePiProviderAuth(provider) === undefined
     ? "Custom Pi providers require a hand-authored providers.local[] entry. Guided init supports discovered Ollama and LM Studio routes."
     : "Guided init supports Pi Anthropic, GitHub Copilot, OpenAI, OpenAI Codex, OpenCode-Go, Ollama, and LM Studio. Configure other Pi providers manually.";
 }
@@ -250,18 +248,18 @@ async function discoverPiModels(
   }
 
   const verified = new Set(opts.verifiedModelRefs ?? []);
-  const models = builtinModels();
+  const providers = listPiBuiltinProviders();
   const oauthProviders = new Set(
-    models.getProviders()
-      .filter((provider) => isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined)
+    providers
+      .filter((provider) => describePiProviderAuth(provider.id)?.methods.some((method) => method.type === "oauth"))
       .map((provider) => provider.id),
   );
-  const providerNames = new Map(models.getProviders().map((provider) => [provider.id, provider.name]));
-  const candidates = models.getModels()
+  const providerNames = new Map(providers.map((provider) => [provider.id, provider.label]));
+  const candidates = providers.flatMap((provider) => listPiBuiltinModels(provider.id))
     .filter((model) => GUIDED_PI_PROVIDERS.has(model.provider))
     .map((model): WizardModelCandidate => {
       const value = `${model.provider}:${model.id}`;
-      const supportedEfforts = normalizeEfforts(getSupportedThinkingLevels(model));
+      const supportedEfforts = normalizeEfforts(reasoningLevelsForPiModel(model));
       const authState: WizardModelAuthState = verified.has(value)
         ? "verified"
         : credentialProviders.has(model.provider)

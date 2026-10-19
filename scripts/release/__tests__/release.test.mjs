@@ -341,11 +341,24 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
+        "@mono-agent/app dependencies.@earendil-works/pi-ai must be owned by @mono-agent/turn; test-only Pi dependencies belong in devDependencies",
         "@mono-agent/app dependencies.@earendil-works/pi-ai must pin known-compatible version 1.2.0 exactly; found ^0.80.6",
         "@mono-agent/turn dependencies.@earendil-works/pi-agent-core must pin known-compatible version 1.2.0 exactly; found ~0.80.6",
         "@mono-agent/turn dependencies.@earendil-works/pi-ai must pin known-compatible version 1.2.0 exactly; found 0.80.8",
       ]);
     }
+  });
+
+  test("permits only exact development-only Pi pins outside turn", () => {
+    const app = packageRecord({
+      name: "@mono-agent/app",
+      devDependencies: { "@earendil-works/pi-ai": "1.2.0" },
+    });
+    expect(() => validateRelease({ tag: "v1.2.3", packages: [app], rootPackageJson: rootPackageRecord(), silent: true }))
+      .not.toThrow();
+    app.packageJson.devDependencies["@earendil-works/pi-ai"] = "^1.2.0";
+    expect(() => validateRelease({ tag: "v1.2.3", packages: [app], rootPackageJson: rootPackageRecord(), silent: true }))
+      .toThrow(/devDependencies\.@earendil-works\/pi-ai must pin/u);
   });
 
   test("detects cycles before publishing", () => {
@@ -654,6 +667,11 @@ describe("current launch manifest", () => {
       new URL("../../../packages/turn/MIGRATION.md", import.meta.url),
       "utf8",
     ).replace(/\s+/gu, " ");
+    const app = JSON.parse(fs.readFileSync(
+      new URL("../../../packages/app/package.json", import.meta.url), "utf8",
+    ));
+    expect(app.dependencies).not.toHaveProperty("@earendil-works/pi-ai");
+    expect(app.devDependencies["@earendil-works/pi-ai"]).toBe(PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"]);
     const piAi = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"];
     const piCore = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"];
 

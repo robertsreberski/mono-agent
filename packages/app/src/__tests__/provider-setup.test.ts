@@ -1,3 +1,4 @@
+import { describePiProviderAuth, listPiBuiltinProviders } from "@mono-agent/turn/ai";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmod, link, mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -1369,4 +1370,20 @@ it("requires an explicit OpenAI method for headless setup and preserves OAuth cl
     }) })).rejects.toThrow(/invalid credential/u);
     expect(JSON.parse(await readFile(authPath, "utf8")).openai.clientId).toBe("fake-issued-id");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+describe("runtime-owned Pi setup metadata", () => {
+  it("plans OAuth for every provider advertising that method without requiring an exact model", () => {
+    for (const provider of listPiBuiltinProviders()) {
+      const supportsOAuth = describePiProviderAuth(provider.id)?.methods.some((method) => method.type === "oauth");
+      const plan = planProviderSetup({
+        cwd: process.cwd(),
+        modelRefs: [`${provider.id}:fictional-model`],
+        piAuthMethods: { [provider.id]: "oauth" },
+      });
+      expect(plan.actions.map((action) => action.id)).toEqual(
+        supportsOAuth ? [`pi-login:${provider.id}`] : [],
+      );
+    }
+  });
 });

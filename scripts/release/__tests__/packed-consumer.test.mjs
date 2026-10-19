@@ -349,6 +349,11 @@ describe("packed consumer verification", () => {
     ).not.toThrow();
   });
 
+  test("does not resolve development-only Pi from the packed app", () => {
+    const fixture = packedDependencyFixture({ rootPiVersion: "0.80.8", nestedRuntimePiVersion: "1.2.0" });
+    expect(() => assertPackedDependencyResolution(fixture.consumerDir, fixture.packages)).not.toThrow();
+  });
+
   test("rejects an incompatible host Pi copy that rewires Pi Agent Core", () => {
     const fixture = packedDependencyFixture({
       rootPiVersion: "0.80.8",
@@ -368,12 +373,12 @@ describe("packed consumer verification", () => {
   });
 
   test("rejects a packed manifest that can float to a newer Pi runtime", () => {
-    const fixture = packedDependencyFixture({ appPiRange: "^1.2.0" });
+    const fixture = packedDependencyFixture({ runtimePiRange: "^1.2.0" });
 
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /Packed @mono-agent\/app dependencies\.@earendil-works\/pi-ai must remain 1\.2\.0; found \^1\.2\.0/u,
+      /Packed @mono-agent\/turn dependencies\.@earendil-works\/pi-ai must remain 1\.2\.0; found \^1\.2\.0/u,
     );
   });
 
@@ -390,7 +395,7 @@ describe("packed consumer verification", () => {
 });
 
 function packedDependencyFixture({
-  appPiRange = "1.2.0",
+  runtimePiRange = "1.2.0",
   nestedCorePiVersion = "1.2.0",
   nestedRuntimePiVersion,
   rootPiVersion = "1.2.0",
@@ -402,14 +407,15 @@ function packedDependencyFixture({
   writePackage(modulesDir, {
     name: "@mono-agent/app",
     version: "1.2.3",
-    dependencies: { "@earendil-works/pi-ai": appPiRange },
+    dependencies: { "@mono-agent/turn": "1.2.3" },
+    devDependencies: { "@earendil-works/pi-ai": "1.2.0" },
   });
   const runtimeDir = writePackage(modulesDir, {
     name: "@mono-agent/turn",
     version: "1.2.3",
     dependencies: {
       "@earendil-works/pi-agent-core": "1.2.0",
-      "@earendil-works/pi-ai": "1.2.0",
+      "@earendil-works/pi-ai": runtimePiRange,
     },
   });
   const coreDir = writePackage(modulesDir, {
@@ -440,7 +446,8 @@ function packedDependencyFixture({
       {
         name: "@mono-agent/app",
         packageJson: {
-          dependencies: { "@earendil-works/pi-ai": "1.2.0" },
+          dependencies: { "@mono-agent/turn": "1.2.3" },
+          devDependencies: { "@earendil-works/pi-ai": "1.2.0" },
         },
       },
       {
