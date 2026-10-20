@@ -87,7 +87,7 @@ command.
 | `logs` | Print and optionally follow the macOS log files or Linux user journal. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
 | `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help; managed macOS start also installs its paired fixed-policy log-maintenance helper. | `start`, `restart`, `stop`, `status [--json]`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>`, `--share-tailnet` |
 | `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent runs list` / `mono-agent runs show` (recorded-run diagnostics) or `mono-agent web` (live console). | — |
-| `tui` (removed) | The terminal renderer was removed on the current unreleased source branch; it now errors with migration pointers and exits `2`. | — |
+| `tui` (removed) | The terminal renderer was removed in the published `0.26.0` release; it now errors with migration pointers and exits `2`. | — |
 | `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update`, `--json` (with `--project --check`) |
 | `backfill` (removed) | Fails with migration guidance. Use `runs`, `runs audit`, or `runs report` for retained local artifacts; perform any final legacy export before upgrading with the complete version set you already operate. | — |
 | `runs` | Read-only, offline reporting over local run summaries. `report` (default) aggregates status/failure-kind rates, duration percentiles, and cost totals; `audit` reports parse/status/failure-kind/stale-running totals without rewriting anything. | `report`, `audit`; `--artifacts <path>`, `--consumer <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--stale-after-ms <n>`, `--include-memory`, `--json`, `--config <path>`, `--env-file <path>` |
@@ -681,7 +681,7 @@ than 256 characters exit `2`.
 ## Removed terminal renderer
 
 `mono-agent tui`, `mono-agent help tui`, the standalone `mono-agent-tui` binary,
-and `@mono-agent/tui` are removed on the current unreleased source branch. Use
+and `@mono-agent/tui` are removed in the published `0.26.0` release. Use
 `mono-agent web` for live operation, `mono-agent runs list|show` for bounded
 prior-run diagnostics, and
 `mono-agent config` for resolved configuration. The `tui` config and wire names

@@ -10,7 +10,7 @@ This section takes you from an empty folder to an agent you are talking to in th
 Bare `mono-agent init` on a TTY names the agent, searches the provider catalogs, and runs a real no-tool check for every selected route; on macOS the strict **Agent ready** gate then also starts the managed agent and proves its live snapshot, while other platforms stop at a manual-start handoff; flag/non-TTY init creates a scaffold only. mono-agent remains config-first: one `mono-agent.config.json`, driven by the CLI.
 
 :::note
-These docs describe the current `main` source, while npm publishes the latest release. See [Release status](/reference/release-status/) before you rely on a capability you cannot find in an installed version.
+The latest published release is `0.26.0` (registry checked 2026-10-20; all 20 current catalog packages). These docs follow `main`; there is no package-behavior delta at the audited revision. See [Release status](/reference/release-status/) for the upgrade boundary and any later source-only changes.
 :::
 
 ## The path

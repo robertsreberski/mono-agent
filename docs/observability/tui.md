@@ -5,9 +5,9 @@ sidebar:
   order: 4
 ---
 
-The first-party terminal renderer is retired on the current unreleased source branch. The `mono-agent tui` command, `mono-agent help tui`, standalone `mono-agent-tui` binary, and `@mono-agent/tui` package are no longer active product surfaces.
+The first-party terminal renderer is retired in the published `0.26.0` release. The `mono-agent tui` command, `mono-agent help tui`, standalone `mono-agent-tui` binary, and `@mono-agent/tui` package are no longer active product surfaces.
 
-This source change does not alter already installed releases, migrate consumer folders, or deprecate or remove the historical package from the npm registry. In particular, `0.22.0` still contains the renderer; do not treat that version as evidence that retirement has shipped. Keep the complete known-good version set you already operate until you are ready to migrate.
+Retirement does not alter already installed releases or migrate consumer folders. The historical `@mono-agent/tui` package is deprecated on npm with a pointer to `mono-agent web` from `@mono-agent/app`, but remains installable. Keep the complete known-good version set you already operate until you are ready to migrate. See [Release status](/reference/release-status/) for the registry check date and published baseline.
 
 ## Migrate
 
@@ -18,7 +18,7 @@ This source change does not alter already installed releases, migrate consumer f
 | Resolved configuration view | Use `mono-agent config` or `mono-agent config --json`. |
 | Direct `@mono-agent/tui` imports or `mono-agent-tui` embedding | Remove them and compose against the maintained package that owns the required capability; no renderer compatibility exports were relocated. |
 
-After updating scripts and imports, run `mono-agent validate` before restarting an agent. No consumer files, runtime data, or registry state are changed automatically.
+After updating scripts and imports, run `mono-agent validate` before restarting an agent. Upgrading does not automatically change consumer files or runtime data.
 
 ## Compatibility names that remain
 
