@@ -13,8 +13,8 @@ The shipped command line lives in `@mono-agent/app`: the config-first host that 
 The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to an unrelated `monoagent` package — so the installer follows npm's `create-*` convention (`create-mono-agent`), which `npm create mono-agent` resolves natively.
 :::
 
-:::caution[These docs describe `main`, not the latest release]
-The npm packages publish in lockstep, and the latest published release does not include every capability documented in this site. [Release status](/reference/release-status/) names the current published version, lists the source-only capability groups, and points at the [source build](#run-an-unreleased-build) when you need one before the next release.
+:::note[Published release: 0.26.0]
+All 20 current catalog packages have npm `latest` set to `0.26.0` (registry checked 2026-10-20). These docs follow `main`; there is no package-behavior delta at the audited revision. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
 :::
 
 ## Prerequisites

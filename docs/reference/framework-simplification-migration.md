@@ -138,18 +138,18 @@ tools, and configured external memory services can still use the network.
 
 ## Retired terminal renderer
 
-The first-party terminal renderer is removed on the current unreleased source
-branch: `mono-agent tui`, `mono-agent help tui`, the standalone
+The first-party terminal renderer is removed in the published `0.26.0`
+release: `mono-agent tui`, `mono-agent help tui`, the standalone
 `mono-agent-tui` binary, and direct `@mono-agent/tui` imports no longer provide a
 renderer. Use `mono-agent web run --loopback` for live operation, `mono-agent runs list` and
 `mono-agent runs show <run-id>` for bounded offline run diagnostics, and
 `mono-agent config` for the resolved configuration view.
 
-This source change does not mutate consumer folders or runtime data and does not
-deprecate or remove the historical npm artifact. Version `0.22.0` still contains
-the renderer, so keep the complete known-good version set already in use until
-consumer scripts and imports have been migrated. No compatibility exports were
-relocated merely to preserve old renderer API names.
+The upgrade does not mutate consumer folders or runtime data. The historical
+`@mono-agent/tui` npm package is deprecated with a pointer to `mono-agent web`
+from `@mono-agent/app`, but remains installable. Keep the complete known-good
+version set already in use until consumer scripts and imports have been migrated.
+No compatibility exports were relocated merely to preserve old renderer API names.
 
 The shared endpoint is not retired. Keep `tui.*`, `MONO_AGENT_TUI_*`, the `tui`
 channel/source id, `metadata.channels.tui`, `/gui`, and the public operator wire

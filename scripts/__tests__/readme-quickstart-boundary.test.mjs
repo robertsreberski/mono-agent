@@ -147,7 +147,7 @@ describe("root README Quickstart boundary", () => {
 
     expect(install).toContain("[Release status](/reference/release-status/)");
     expect(referenceIndex).toContain("[Release status](/reference/release-status/)");
-    expect(releaseStatus).toContain("## Source-only capability groups");
+    expect(releaseStatus).toContain("## Source-only delta");
     expect(releaseStatus).toContain("## How this page is kept honest");
     expect(releaseStatus).toContain("/getting-started/install/#run-an-unreleased-build");
   });
@@ -181,8 +181,8 @@ describe("root README Quickstart boundary", () => {
       expect(page, label).not.toMatch(/managed startup also publishes/i);
       expect(page, label).not.toMatch(/claims its own Tailscale Serve/i);
     }
-    expect(readme).toContain("published 0.22.0 release and current source bind a fresh console");
-    expect(home).toContain("latest published npm release is `create-mono-agent@0.22.0`");
+    expect(readme).toContain("published 0.26.0 release and current source bind a fresh console");
+    expect(home).toContain("latest published npm release is `create-mono-agent@0.26.0`");
   });
 
   it("distinguishes exact owned-route removal from unowned proxies", () => {
@@ -195,15 +195,44 @@ describe("root README Quickstart boundary", () => {
     }
   });
 
-  it("records that the browser-first console defaults shipped in 0.22.0", () => {
+  it("records the published baseline without losing the console security boundary", () => {
     const releaseStatus = readRepoFile("docs/reference/release-status.md");
-    expect(releaseStatus).toContain("browser-first onboarding and safer console-network defaults also **shipped in 0.22.0**");
+    expect(releaseStatus).toContain("Browser-first onboarding and the safer console-network defaults are also in the published release:");
     expect(releaseStatus).toContain("fresh foreground and managed consoles default to `127.0.0.1:5050`");
     expect(releaseStatus).toContain("creates a mono-agent-owned route only with `--share-tailnet`");
     expect(releaseStatus).toContain("`mono-agent web status --json` reports the listener and owned route separately");
-    expect(releaseStatus).toContain("Neither the 0.22.0 console nor the current source console has application login");
+    expect(releaseStatus).toContain("Neither the 0.26.0 console nor the current source console has application login");
     expect(releaseStatus).not.toContain("claims a Tailscale Serve HTTPS route automatically");
     expect(releaseStatus).not.toContain("A source build is required for the new flags.");
+  });
+
+  it("keeps release and retirement guidance aligned with the published baseline", () => {
+    const releaseStatus = readRepoFile("docs/reference/release-status.md");
+    expect(releaseStatus).toContain("registry rechecked 2026-10-20");
+    expect(releaseStatus).toContain("All 20 packages in the current release catalog");
+    expect(releaseStatus).toContain("no package-behavior delta after `v0.26.0`");
+    expect(releaseStatus).toContain("no compatibility aliases");
+    expect(releaseStatus).toContain("No published tarballs were inspected for this update.");
+    expect(releaseStatus).not.toContain("Published 0.22.0");
+    for (const path of [
+      "docs/getting-started/index.md",
+      "docs/getting-started/install.md",
+    ]) {
+      const page = readRepoFile(path);
+      expect(page, path).toContain("0.26.0");
+      expect(page, path).toContain("registry checked 2026-10-20");
+      expect(page, path).toContain("no package-behavior delta");
+    }
+    for (const path of [
+      "docs/reference/deprecations.md",
+      "docs/observability/tui.md",
+      "docs/reference/framework-simplification-migration.md",
+    ]) {
+      const page = readRepoFile(path);
+      expect(page, path).toContain("0.26.0");
+      expect(page, path).toMatch(/deprecated[\s\S]*remains? installable/u);
+      expect(page, path).not.toMatch(/current unreleased source|deprecate or remove the historical/u);
+    }
   });
 
   it("separates managed apply commands from the foreground apply path", () => {

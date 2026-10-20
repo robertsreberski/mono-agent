@@ -1,73 +1,68 @@
 ---
 title: "Release status"
-description: "See which documented capabilities are in the current source but not yet in the latest published npm release, and how to run the source build instead."
+description: "Check the latest published npm release, its upgrade boundary, and any changes available only from source."
 sidebar:
   order: 8
 ---
 
-This documentation and this repository describe the current `main` source. The published packages can lag behind it, so check this page before assuming a capability documented here is present in an npm install.
+This documentation follows the current `main` source. Published packages can lag behind it; this page records the checked release boundary rather than inferring publication from source versions.
 
 | | Version |
 | --- | --- |
-| Latest published npm release (registry rechecked 2026-09-21) | `create-mono-agent@0.22.0` and its lockstep `@mono-agent/*` release, published 2026-09-16 |
-| Documented source revision | `main` (comparison audited at [`b8f9c081`](https://github.com/robertsreberski/mono-agent/commit/b8f9c081ddda009c1b1e61eb43c7a11d527c3e03)) |
+| Latest published npm release (registry rechecked 2026-10-20) | `create-mono-agent@0.26.0` and all 19 current `@mono-agent/*` catalog packages, published 2026-10-20 |
+| Documented source revision | `main` (comparison audited at [`4f9b7650`](https://github.com/robertsreberski/mono-agent/commit/4f9b765048fc0c0f6b837bd28fd918f905f773ed)) |
 | Minimum Node.js for both | `>=24.15.0` |
 
 ## Published baseline
 
-An `npm i -g create-mono-agent` install currently gives you the 0.22.0 config-first CLI host, browser console, built-in message channels, memory tiers, native sandbox, local observability, console projects and tags, persistent subagents, and subscription-usage surfaces. The published release catalog contained 23 packages: 16 core packages, 6 optional plugins, and the unscoped installer alias. It still included `@mono-agent/memory-supermemory` and `@mono-agent/tui`; the current 21-package source catalog reflects later retirements and must not be projected backward onto 0.22.0.
+All 20 packages in the current release catalog have npm `latest` set to `0.26.0`. Install the CLI with `npm i -g create-mono-agent`; the installer delegates to `@mono-agent/app`.
 
-The browser-first onboarding and safer console-network defaults also **shipped in 0.22.0**. Static inspection of the pinned published app tarball confirms:
+The published release includes the owned Pi harness, renamed packages, framework contract simplification, and the Phoenix/OTLP, Supermemory, and terminal-renderer retirements. Those retirements are no longer source-only. Local memory tiers, local JSONL observability, the browser console, and bounded `runs list` / `runs show` diagnostics remain available. See the [v0.26.0 release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.26.0) for the breaking changes and complete upgrade notes.
 
-- a custom `mono-agent init` starts with no channel, asks whether to add optional channels/memory/observability, and hands off to `mono-agent web run --loopback`; presets keep their explicitly selected channels;
+Browser-first onboarding and the safer console-network defaults are also in the published release:
+
 - fresh foreground and managed consoles default to `127.0.0.1:5050`;
 - foreground `web run` never manages a Tailscale Serve route;
 - macOS managed `web start` / `restart` creates a mono-agent-owned route only with `--share-tailnet`, while an existing exact owned route can be re-verified; and
 - bare `mono-agent web` is status/help, while `mono-agent web status --json` reports the listener and owned route separately.
 
 :::caution[Trusted network, no application login]
-Neither the 0.22.0 console nor the current source console has application login. Anyone who can reach it can operate discovered agents and complete provider sign-in. A loopback bind limits the listener, but it does not inspect or remove an existing Tailscale handler, reverse proxy, tunnel, or other route. Existing managed definitions can also preserve their configured host. Inspect `mono-agent web`, `mono-agent web status --json`, `tailscale serve status`, and any operator-managed proxies before treating a console as local-only. Widening the listener with `--host` or publishing a route with `--share-tailnet` is an explicit trust decision.
+Neither the 0.26.0 console nor the current source console has application login. Anyone who can reach it can operate discovered agents and complete provider sign-in. A loopback bind limits the listener, but it does not inspect or remove an existing Tailscale handler, reverse proxy, tunnel, or other route. Existing managed definitions can also preserve their configured host. Inspect `mono-agent web`, `mono-agent web status --json`, `tailscale serve status`, and any operator-managed proxies before treating a console as local-only. Widening the listener with `--host` or publishing a route with `--share-tailnet` is an explicit trust decision.
 :::
 
-## Source-only capability groups after 0.22.0
+## Source-only delta
 
-The current source contains the breaking simplification and retirement work below. It is not present in the published 0.22.0 tarballs.
+At the audited revision, there is no package-behavior delta after `v0.26.0`. The only post-release source change adds release tooling to deprecate 32 retired npm names. The registry now marks those names deprecated with migration pointers; their published versions remain installable. Deprecation does not update installed agents or migrate consumer configuration.
 
-| Capability group | Current source | Published 0.22.0 |
-| --- | --- | --- |
-| Framework contract simplification | Removes inert permission/recall settings, prose-triggered effort escalation, legacy flat runtime settings, process-global tool configuration, the legacy memory-write protocol, and the `mono-agent-memory-recall` compatibility binary. Direct runtime consumers use typed policy groups and explicit per-instance `ToolContext`. | Exports `configureToolRuntime`, `readToolRuntime`, `readRuntimeBrand`, and `resetToolRuntime`; the app still ships `mono-agent-memory-recall`. |
-| Phoenix/OTLP retirement | Removes first-party exporter config/env/status, `mono-agent backfill`, `@mono-agent/observability/otel`, and `@mono-agent/observability/run-export`. Local JSONL recording, run history/audit/report, trace-source discovery, and provider-neutral exporter composition remain. | `@mono-agent/observability` exports `./otel` and `./run-export`, depends on OpenTelemetry packages, and the app exposes `backfill`. There is no separately published `@mono-agent/observability-phoenix@0.22.0` package to add as a migration shortcut. |
-| Supermemory retirement | Removes first-party backend/config/env/setup behavior, automatic official MCP injection, and the `@mono-agent/memory-supermemory` workspace package. Generic `MemoryStore`, manually configured MCP servers, and local none/Lite/Journal/BuJo choices remain. | The 23-package release includes `@mono-agent/memory-supermemory@0.22.0` and app-owned Supermemory integration. |
-| Terminal renderer retirement and offline diagnostics | Removes the first-party renderer package, `mono-agent tui`, and `mono-agent-tui`. `mono-agent runs list` and `runs show <run-id>` provide bounded, redacted, provider-free inspection; shared `tui.*` operator wire/config identifiers remain for web, ACP, jobs, and proactive delivery. | The app depends on `@mono-agent/tui@0.22.0`, and that package ships the standalone renderer binary and UI modules. `runs` supports report/audit, not the new list/show diagnostics. |
+## Upgrade boundary: 0.25.x → 0.26.0
 
-At the audited source revision above, package manifests still say `0.22.0` for lockstep development. That does **not** make the source changes part of the immutable npm release already published under that version. Source-built tarballs and release dry runs are source-candidate evidence, not registry publication evidence.
+Upgrade the complete lockstep dependency set together. The package renames have **no compatibility aliases**: update imports, dependencies, and `channels.plugins[].package` using the [rename table in the v0.26.0 notes](https://github.com/robertsreberski/mono-agent/blob/v0.26.0/CHANGELOG.md#0260--owned-pi-harness-renamed-packages-and-core-cleanup-2026-10-20). For example, `@mono-agent/agent-app` becomes `@mono-agent/app`, `agent-harness` becomes `conversation`, `agent-runtime` becomes `turn`, and `runtime-adapter` is folded into the `turn` host subpaths. Old npm names are deprecated, not removed; installing one does not select its replacement automatically.
 
-## Upgrade boundary
+Direct API consumers should read the [turn migration guide](https://github.com/robertsreberski/mono-agent/blob/v0.26.0/packages/turn/MIGRATION.md). Cost totals can now be unknown (`null`): upgrade agent and web binaries together, and do not run older binaries against upgraded state. Rollback requires a pre-upgrade backup.
 
-Do not mix current source packages with a published 0.22.0 dependency set. Keep the complete known-good version set an existing consumer already operates until its imports and configuration are ready for a future release.
+For consumers skipping earlier releases, read [Framework simplification migration](/reference/framework-simplification-migration/) and [Terminal renderer retirement](/observability/tui/). The retirements do not automatically choose a replacement memory backend, export Phoenix data, migrate or delete remote Supermemory data, rewrite consumer configuration, or update installed agents. Active legacy intent fails with migration guidance; inert tombstones are accepted only where the migration guide says so.
 
-The source retirements do not automatically choose a replacement memory backend, export Phoenix data, migrate or delete remote Supermemory data, rewrite consumer configuration, deprecate historical npm artifacts, or update installed agents. Active legacy intent fails with migration guidance; inert tombstones are accepted only where the migration guide says so. Read [Framework simplification migration](/reference/framework-simplification-migration/) and [Terminal renderer retirement](/observability/tui/) before evaluating an upgrade.
+## Run a source build
 
-## Run the source build instead
-
-If you need a source-only capability before the next release, build the workspace from a clone and run that CLI. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. Treat a source build as an evaluation path: it is not the published, versioned artifact that other agents pin.
+A source build is an evaluation path for later unreleased work, not a requirement for the capabilities above. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. A source build is not the published, versioned artifact that other agents pin.
 
 ## How this page is kept honest
 
-The boundary moves with every release, so registry truth and source truth are checked separately:
+Registry truth and source truth are checked separately:
 
 ```bash
-npm view create-mono-agent version engines time
-npm view @mono-agent/agent-app@0.22.0 dependencies bin
-npm pack --dry-run --json @mono-agent/agent-app@0.22.0
-git log --oneline v0.22.0..main
+NPM_CONFIG_USERCONFIG=/dev/null npm view create-mono-agent dist-tags engines time --json --registry https://registry.npmjs.org/
+NPM_CONFIG_USERCONFIG=/dev/null npm view @mono-agent/app@0.26.0 dependencies bin --json --registry https://registry.npmjs.org/
+NPM_CONFIG_USERCONFIG=/dev/null npm view @mono-agent/agent-app deprecated --registry https://registry.npmjs.org/
+NPM_CONFIG_USERCONFIG=/dev/null npm view @mono-agent/tui deprecated --registry https://registry.npmjs.org/
+git log --oneline v0.26.0..main
 ```
 
-For this update, registry metadata for every current catalog package plus the historical TUI package was read on 2026-09-21. Pinned 0.22.0 app, web, observability, Supermemory, TUI, and runtime tarballs were downloaded and unpacked without installing them or executing package scripts. Their manifests, compiled command/default markers, exports, binaries, and UI files were compared with tag `v0.22.0` (`2d433fa8505ceac0e21426696c476ee9a4ca792c`) and current source. The release tag's catalog contains 23 publishable packages; current source contains 21 after the two package retirements.
+For this update, npm metadata for all 20 current catalog packages and all 32 retired names was read on 2026-10-20 from the public registry. Every current package reported `latest: 0.26.0`; every retired name reported a deprecation message. Release contents were checked against tag `v0.26.0` (`be4e4061ac7b2372dd20bd5836b0fe882d92e111`), its changelog, and the post-tag source log. No published tarballs were inspected for this update.
 
 The offline documentation check keeps explicit active published-baseline references in the repository README, documentation home, and this page consistent. It deliberately does not compare them with source manifest versions and cannot prove live registry truth; a registry recheck remains required when the published baseline changes. Historical changelog/version citations are outside that consistency rule.
 
-When a release moves the boundary, update this page together with the short release-status callouts on the [home page](/), in the [install guide](/getting-started/install/), and in the repository `README.md`.
+When a release moves the boundary, update this page together with the short release-status callouts on the [home page](/), in [Getting started](/getting-started/), in the [install guide](/getting-started/install/), and in the repository `README.md`.
 
 ## Related
 

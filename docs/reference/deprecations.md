@@ -76,11 +76,12 @@ reachability checks found no supported caller. Unknown `live` config now fails
 strict validation instead of being ignored. `MONO_AGENT_WEB_AUTH_TOKEN` is no
 longer read by any code; its only reader was the removed `sessions` command.
 
-The terminal-renderer removal is current unreleased source truth. It does not
-change already installed releases, migrate consumer folders, or deprecate or
-remove the historical package from npm. Version `0.22.0` still contains the
-renderer. Direct package/bin consumers must keep a complete known-good version
-set until they remove that integration. The `tui.*`, `MONO_AGENT_TUI_*`,
+The terminal-renderer removal is included in the published `0.26.0` release. It
+does not change already installed releases or migrate consumer folders. The
+historical `@mono-agent/tui` package is deprecated on npm with a pointer to
+`mono-agent web` from `@mono-agent/app`, but remains installable. Direct
+package/bin consumers must keep a complete known-good version set until they
+remove that integration. The `tui.*`, `MONO_AGENT_TUI_*`,
 `metadata.channels.tui`, channel/source id, `/gui`, and public operator wire
 names remain maintained compatibility contracts for web, ACP, and jobs clients.
 

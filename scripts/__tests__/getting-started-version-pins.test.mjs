@@ -129,7 +129,7 @@ describe("published baseline references", () => {
     const result = await checkPublishedBaselineReferences();
     expect(result.issues, result.issues.join("\n")).toEqual([]);
     expect(result.references).toHaveLength(3);
-    expect(new Set(result.references.map((reference) => reference.version))).toEqual(new Set(["0.22.0"]));
+    expect(new Set(result.references.map((reference) => reference.version))).toEqual(new Set(["0.26.0"]));
   });
 
   it("flags contradictory active published baselines", async () => {

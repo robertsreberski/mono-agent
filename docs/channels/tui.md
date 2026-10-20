@@ -7,7 +7,7 @@ sidebar:
 
 The built-in operator endpoint carries authenticated, bounded NDJSON turns for the
 web console and other maintained operator clients. The terminal renderer and
-`mono-agent tui` command are removed on the current unreleased source branch; the protocol remains because
+`mono-agent tui` command are removed in the published `0.26.0` release; the protocol remains because
 web, ACP, and jobs behavior depends on it.
 
 Coverage: **config**. The compatibility identifier remains `tui` in configuration,
