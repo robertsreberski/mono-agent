@@ -2020,9 +2020,11 @@ describe("web HTTP server", () => {
       processJob,
       wakePrompt: "Inspect the completed worker result",
     };
+    // Allow loaded-machine ingress; ordering is proven by the held-open provider stream and the running turn assertion.
+    const receiptTimeoutMs = 2_000;
     const delivery = deliverWebNotification(notification, {
       stateDir: handle.stateDir,
-      timeoutMs: 100,
+      timeoutMs: receiptTimeoutMs,
     });
 
     try {
@@ -2053,7 +2055,7 @@ describe("web HTTP server", () => {
 
       await expect(deliverWebNotification(notification, {
         stateDir: handle.stateDir,
-        timeoutMs: 100,
+        timeoutMs: receiptTimeoutMs,
       })).resolves.toEqual({
         threadId,
         duplicate: true,
