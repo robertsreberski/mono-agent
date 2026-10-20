@@ -32,7 +32,7 @@ Neither the 0.26.0 console nor the current source console has application login.
 
 ## Source-only delta
 
-At the audited revision, there is no package-behavior delta after `v0.26.0`. The only post-release source change adds release tooling to deprecate 32 retired npm names. The registry now marks those names deprecated with migration pointers; their published versions remain installable. Deprecation does not update installed agents or migrate consumer configuration.
+There is no package-behavior delta after `v0.26.0`. Post-release source changes only add release tooling to deprecate 32 retired npm names and stabilize a test. The registry now marks those names deprecated with migration pointers; their published versions remain installable. Deprecation does not update installed agents or migrate consumer configuration.
 
 ## Upgrade boundary: 0.25.x → 0.26.0
 
