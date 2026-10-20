@@ -1,0 +1,47 @@
+name: npm deprecate retired
+
+# Manually dispatched: marks retired @mono-agent package names as deprecated on
+# npm, pointing at their replacements. The list lives in
+# scripts/release/deprecate-retired.mjs. Already-deprecated names are skipped.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List the changes without writing to npm"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-deprecate-retired
+  cancel-in-progress: false
+
+jobs:
+  deprecate:
+    name: Deprecate retired npm packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Deprecate retired packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            node scripts/release/deprecate-retired.mjs --dry-run
+          else
+            node scripts/release/deprecate-retired.mjs
+          fi
