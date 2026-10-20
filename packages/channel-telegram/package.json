@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/channel-telegram",
-  "version": "0.25.1",
+  "version": "0.26.0",
   "description": "Telegram communication adapter for host-compatible runtimes.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@grammyjs/runner": "^2.0.3",
-    "@mono-agent/contracts": "workspace:0.25.1",
+    "@mono-agent/contracts": "workspace:0.26.0",
     "grammy": "^1.44.0",
     "remark-gfm": "^1.0.0",
     "remark-parse": "^9.0.0",

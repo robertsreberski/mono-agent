@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
+
 - Keep totals unknown when any contributing cost is unpriced, and show known
   spend separately, including unpriced runs without subagents (formerly $0.00).
   Cost totals are now nullable across public contracts; strict TypeScript
