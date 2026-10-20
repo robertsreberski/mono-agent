@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, link, lstat, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { openProcessJobStore, PROCESS_JOB_MANIFEST_FILE, PROCESS_JOB_TRANSACTION_FILE, type DurableProcessJobRecord } from "../process-jobs-store.js";
+import { openProcessJobStore, PROCESS_JOB_MANIFEST_FILE, PROCESS_JOB_TRANSACTION_FILE, type DurableProcessJobRecord } from "../process-jobs/process-jobs-store.js";
 
 const unsafeOwner = vi.hoisted(() => ({ path: "" }));
 vi.mock("node:fs/promises", async (importOriginal) => {

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   discoverMemoryEmbeddingModels,
   probeMemoryEmbeddingSelection,
-} from "../memory-embedding-service.js";
+} from "../memory/memory-embedding-service.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

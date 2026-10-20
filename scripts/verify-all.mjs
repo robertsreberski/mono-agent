@@ -171,7 +171,7 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
     { label: "release:consumer", command: "pnpm", args: packedConsumerArgs },
     { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },
     { label: "test", command: "pnpm", args: ["run", "test"] },
-    { label: "git diff --check", command: "git", args: ["diff", "--check"] },
+    { label: "Whitespace against merge base", command: "node", args: ["scripts/check-committed-whitespace.mjs"] },
   ];
 }
 

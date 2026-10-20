@@ -50,6 +50,13 @@ programmatic surfaces are simply no longer exported.
 | BuJo English automatic-recall helpers (`composeRecallBlock`, `selectAutomaticRecallHits`, `hasConflictingAutomaticRecallEvidence`, `isConversationRelativeQuery`, `AUTO_RECALL_MAX_HITS`, `AUTO_RECALL_RELATIVE_SCORE`) | `selectPossiblyRelevantRecallHits` for score-only context; `BujoMemoryStore.recallWithOutcome()` for explicit retrieval |
 | First-party Phoenix/OTLP package, `observability.exporters`, `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status/probing, and `@mono-agent/observability/run-export` | Bounded local JSONL artifacts, `mono-agent runs` / `runs audit` / `runs report`, trace-source discovery, and provider-neutral `RunExporter` composition. Perform any final legacy export before upgrading with the complete working version set already in use. |
 
+Retired npm package names are marked deprecated on the registry and point at
+their replacement: the pre-0.26.0 names (`@mono-agent/agent-app`,
+`agent-harness`, `agent-runtime`, `agent-contracts`, `agent-orchestrator`,
+`runtime-adapter` and the `*-adapter` channel and trigger packages) and older
+packages such as `@mono-agent/tui` and `@mono-agent/session-web`. Their
+published versions stay installable; they receive no further releases.
+
 First-party Phoenix/OTLP support is removed without an automatic replacement.
 Active legacy JSON/env values fail with fixed secret-safe guidance; absent, blank,
 and structurally empty tombstones are accepted only to avoid breaking consumers

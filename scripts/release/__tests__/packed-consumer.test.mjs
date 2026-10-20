@@ -15,6 +15,7 @@ import {
   declaredInternalPackageClosure,
   declaredInternalPackageNames,
   parsePackedConsumerArgs,
+  verifyPackedHostTypes,
 } from "../verify-packed-consumer.mjs";
 import {
   parsePackedSmokeArgs,
@@ -43,6 +44,25 @@ describe("packed consumer verification", () => {
     expect(() => assertMinimumNodeRuntime("24.15.0")).not.toThrow();
     expect(() => assertMinimumNodeRuntime("24.14.0")).toThrow(/must run on Node\.js 24\.15\.0/u);
     expect(() => assertMinimumNodeRuntime("24.0.0")).toThrow(/current Node\.js is 24\.0\.0/u);
+  });
+
+  test.each([false, true])("checks app declarations only in an app-reachable installed consumer (app=%s)", (includeApp) => {
+    const consumerDir = fs.mkdtempSync(path.join(os.tmpdir(), "packed-app-declarations-"));
+    temporaryDirectories.push(consumerDir);
+    fs.mkdirSync(path.join(consumerDir, "host-type-output"));
+    fs.writeFileSync(path.join(consumerDir, "host-type-output/host-types-only.js"), "export {};\n");
+    if (includeApp) {
+      const installedApp = path.join(consumerDir, "node_modules/@mono-agent/app");
+      fs.mkdirSync(installedApp, { recursive: true });
+      fs.writeFileSync(path.join(installedApp, "package.json"), "{}\n");
+    }
+    let compilerArgs;
+    verifyPackedHostTypes(consumerDir, (_command, args) => {
+      compilerArgs = args;
+      return { status: 0 };
+    });
+    expect(compilerArgs).toEqual(expect.arrayContaining(["host-contract.ts", "host-types-only.ts", "engine-contract.ts"]));
+    expect(compilerArgs.includes("app-contract.ts")).toBe(includeApp);
   });
 
   test("builds a deterministic all-tarball consumer manifest", () => {
@@ -126,10 +146,10 @@ describe("packed consumer verification", () => {
   test("ships four concrete host entrypoints without a forwarding package", () => {
     const runtime = JSON.parse(fs.readFileSync(new URL("../../../packages/turn/package.json", import.meta.url), "utf8"));
     for (const [subpath, file] of [["host", "index"], ["host/config", "config"], ["host/types", "types"], ["host/sandbox", "sandbox/index"]]) {
-      expect(runtime.exports[`./${subpath}`]).toEqual({ types: `./types/host/${file}.d.ts`, default: `./dist/host/${file}.js` });
+      expect(runtime.exports[`./${subpath}`]).toEqual({ types: `./dist/host/${file}.d.ts`, default: `./dist/host/${file}.js` });
       expect(Object.keys(runtime.exports[`./${subpath}`])).toEqual(["types", "default"]);
     }
-    expect(runtime.files).toContain("dist/host/sandbox/srt-embed-runner.mjs");
+    expect(runtime.files).toContain("dist/**/*.mjs");
     expect(runtime.dependencies).not.toHaveProperty("@mono-agent/runtime-adapter");
     expect(fs.existsSync(new URL("../../../packages/runtime-adapter", import.meta.url))).toBe(false);
   });
@@ -139,10 +159,14 @@ describe("packed consumer verification", () => {
     const expected = ["./engine", "./engine/sessions.js", "./engine/owned-fs.js"];
     expect(Object.keys(runtime.exports).filter((key) => key.startsWith("./engine"))).toEqual(expected);
     for (const [subpath, file] of [["engine", "index"], ["engine/sessions.js", "sessions"], ["engine/owned-fs.js", "owned-fs"]]) {
-      expect(runtime.exports[`./${subpath}`]).toEqual({ types: `./types/engine/${file}.d.ts`, default: `./src/engine/${file}.js` });
+      expect(runtime.exports[`./${subpath}`]).toEqual({ types: `./dist/engine/${file}.d.ts`, default: `./dist/engine/${file}.js` });
       expect(Object.keys(runtime.exports[`./${subpath}`])).toEqual(["types", "default"]);
     }
-    expect(runtime.files).toContain("!src/engine/__tests__/**");
+    expect(runtime.files).toContain("!dist/**/__tests__/**");
+    for (const entry of [...Object.values(runtime.exports), ...Object.values(runtime.imports)]) {
+      expect(entry.types).toMatch(/^\.\/dist\//);
+      expect(entry.default).toMatch(/^\.\/dist\//);
+    }
   });
 
   test("keeps provider interoperability on the runtime-owned public boundary", async () => {
@@ -325,6 +349,11 @@ describe("packed consumer verification", () => {
     ).not.toThrow();
   });
 
+  test("does not resolve development-only Pi from the packed app", () => {
+    const fixture = packedDependencyFixture({ rootPiVersion: "0.80.8", nestedRuntimePiVersion: "1.2.0" });
+    expect(() => assertPackedDependencyResolution(fixture.consumerDir, fixture.packages)).not.toThrow();
+  });
+
   test("rejects an incompatible host Pi copy that rewires Pi Agent Core", () => {
     const fixture = packedDependencyFixture({
       rootPiVersion: "0.80.8",
@@ -344,12 +373,12 @@ describe("packed consumer verification", () => {
   });
 
   test("rejects a packed manifest that can float to a newer Pi runtime", () => {
-    const fixture = packedDependencyFixture({ appPiRange: "^1.2.0" });
+    const fixture = packedDependencyFixture({ runtimePiRange: "^1.2.0" });
 
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /Packed @mono-agent\/app dependencies\.@earendil-works\/pi-ai must remain 1\.2\.0; found \^1\.2\.0/u,
+      /Packed @mono-agent\/turn dependencies\.@earendil-works\/pi-ai must remain 1\.2\.0; found \^1\.2\.0/u,
     );
   });
 
@@ -366,7 +395,7 @@ describe("packed consumer verification", () => {
 });
 
 function packedDependencyFixture({
-  appPiRange = "1.2.0",
+  runtimePiRange = "1.2.0",
   nestedCorePiVersion = "1.2.0",
   nestedRuntimePiVersion,
   rootPiVersion = "1.2.0",
@@ -378,14 +407,15 @@ function packedDependencyFixture({
   writePackage(modulesDir, {
     name: "@mono-agent/app",
     version: "1.2.3",
-    dependencies: { "@earendil-works/pi-ai": appPiRange },
+    dependencies: { "@mono-agent/turn": "1.2.3" },
+    devDependencies: { "@earendil-works/pi-ai": "1.2.0" },
   });
   const runtimeDir = writePackage(modulesDir, {
     name: "@mono-agent/turn",
     version: "1.2.3",
     dependencies: {
       "@earendil-works/pi-agent-core": "1.2.0",
-      "@earendil-works/pi-ai": "1.2.0",
+      "@earendil-works/pi-ai": runtimePiRange,
     },
   });
   const coreDir = writePackage(modulesDir, {
@@ -416,7 +446,8 @@ function packedDependencyFixture({
       {
         name: "@mono-agent/app",
         packageJson: {
-          dependencies: { "@earendil-works/pi-ai": "1.2.0" },
+          dependencies: { "@mono-agent/turn": "1.2.3" },
+          devDependencies: { "@earendil-works/pi-ai": "1.2.0" },
         },
       },
       {

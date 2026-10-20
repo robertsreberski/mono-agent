@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import config, { retainedEntries, retainedExports } from "../core-scans/knip.ts";
 import ts from "typescript";
+import { classifyCycles, cycleExceptions } from "../core-scans/cycle-policy.mjs";
 import { missingPackageEntryPoints, packages, root, run, scanArguments, summarize } from "../core-scans/run.mjs";
 
 const directories = [];
@@ -17,7 +18,7 @@ function runWith(kind, result, overrides = {}) {
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   const execute = vi.fn(() => ({ status: 0, stdout: "[]", stderr: "", ...result }));
-  return { code: run(kind, { execute, directory, checkBuild: () => [], ...overrides }), execute, directory };
+  return { code: run(kind, { execute, directory, checkBuild: () => [], exceptions: [], ...overrides }), execute, directory };
 }
 
 describe("core scan policy", () => {
@@ -41,6 +42,48 @@ describe("core scan policy", () => {
     expect(() => scanArguments("unknown")).toThrow(/Usage/);
   });
 
+  test("registers all retained turn entries at their single authored source owner", () => {
+    const directory = resolve(root, "packages/turn");
+    const manifest = JSON.parse(readFileSync(resolve(directory, "package.json"), "utf8"));
+    expect(Object.keys(manifest.exports)).toHaveLength(11);
+    const entries = config.workspaces["packages/turn"].entry;
+    const expected = [
+      "src/index.ts!", "src/ai/index.ts!", "src/agent/index.ts!",
+      "src/host/index.ts!", "src/host/config.ts!", "src/host/types.ts!", "src/host/sandbox/index.ts!",
+      "src/engine/index.ts!", "src/engine/sessions.ts!", "src/engine/owned-fs.ts!", "src/tools/index.ts!",
+    ];
+    expect(expected).toHaveLength(11);
+    expect(entries).toContain("src/engine/__tests__/fixtures/projection-parity-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/projection-parity-worker.mts!");
+    expect(entries).toContain("src/__tests__/fixtures/prepared-host-runtime.mts");
+    expect(entries).not.toContain("src/__tests__/fixtures/prepared-host-runtime.mts!");
+    expect(entries).toContain("src/__tests__/ai/fixtures/native-journal-storage-worker.mts");
+    expect(entries).not.toContain("src/__tests__/ai/fixtures/native-journal-storage-worker.mts!");
+    expect(entries).toContain("src/__tests__/ai/fixtures/native-lifecycle-storage-worker.mts");
+    expect(entries).not.toContain("src/__tests__/ai/fixtures/native-lifecycle-storage-worker.mts!");
+    expect(entries).toContain("src/__tests__/ai/fixtures/native-writer-holder.mts");
+    expect(entries).not.toContain("src/__tests__/ai/fixtures/native-writer-holder.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/append-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/append-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/checkpoint-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/checkpoint-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/effect-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/effect-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/import-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/import-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/lock-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/lock-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/native-create-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/native-create-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/store-owner-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/store-owner-worker.mts!");
+    expect(entries).toContain("src/engine/__tests__/fixtures/turn-evidence-worker.mts");
+    expect(entries).not.toContain("src/engine/__tests__/fixtures/turn-evidence-worker.mts!");
+    for (const entry of expected) {
+      expect(entries).toContain(entry);
+    }
+  });
+
   test("limits exceptions to exact fixture paths and the string-loaded dependency", () => {
     expect(Object.keys(config.ignoreIssues)).toEqual([
       "packages/conversation/src/__tests__/fixtures/canonical-v5-fixture.d.mts",
@@ -62,8 +105,8 @@ describe("core scan policy", () => {
     expect(config.tags).toEqual(["-coreScanRetained"]);
     const expected = new Set(retainedExports.flatMap((entry) => entry.taggedNames.map((name) => `${entry.file}:${name}`)));
     const actual = new Set();
-    for (const file of globSync("packages/{contracts,config,turn,conversation,app}/src/**/*.{js,ts}", { cwd: root })) {
-      if (file.includes("/__tests__/")) continue;
+    for (const file of globSync("packages/{contracts,config,turn,conversation,app}/src/**/*.{js,mjs,ts,mts}", { cwd: root })) {
+      if (file.includes("/__tests__/") && !retainedExports.some((entry) => entry.file === file)) continue;
       const source = readFileSync(resolve(root, file), "utf8");
       if (!source.includes("@coreScanRetained")) continue;
       const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -85,6 +128,16 @@ describe("core scan policy", () => {
     }
     expect(retainedEntries).toEqual([]);
     expect(retainedExports.filter((entry) => entry.reason.startsWith("deferred: turn"))).toEqual([]);
+  });
+
+  test("checks built entries before scanning authored source directly", () => {
+    const events = [];
+    const { code } = runWith("dead-code", {}, {
+      checkBuild: () => { events.push("preflight"); return []; },
+      execute: () => { events.push("scan"); return { status: 0, stdout: '{"files":[],"issues":[]}', stderr: "" }; },
+    });
+    expect(code).toBe(0);
+    expect(events).toEqual(["preflight", "scan", "scan", "scan"]);
   });
 
   test("summarizes findings without counting consumers", () => {
@@ -181,5 +234,97 @@ describe("core scan policy", () => {
     expect(code).toBe(2);
     expect(execute).toHaveBeenCalledTimes(3);
     expect(JSON.parse(readFileSync(resolve(directory, "knip-default.json"), "utf8"))).toHaveProperty("error");
+  });
+});
+
+test("retains only exact existing declaration-preservation aliases at their registered owners", () => {
+  const aliases = retainedExports.filter((entry) => entry.declarationPreserving);
+  expect(aliases.flatMap((entry) => entry.names.map((name) => `${entry.file}:${name}`)).sort()).toEqual([
+    "packages/turn/src/contracts/model.ts:RuntimeSdkId",
+    "packages/turn/src/contracts/runtime.ts:AgentRuntimeInstance",
+    "packages/turn/src/contracts/runtime.ts:RuntimeBridge",
+    "packages/turn/src/contracts/runtime.ts:RuntimeBridgeDescriptor",
+  ].sort());
+  for (const entry of aliases) {
+    const ast = ts.createSourceFile(entry.file, readFileSync(resolve(root, entry.file), "utf8"), ts.ScriptTarget.Latest, true);
+    const exports = ast.statements.filter((node) => ts.isTypeAliasDeclaration(node)
+      && node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)).map((node) => node.name.text);
+    for (const name of entry.names) expect(exports, `${entry.file}:${name}`).toContain(name);
+    expect(entry.taggedNames).toEqual(entry.names);
+    const citation = readFileSync(resolve(root, entry.citation), "utf8");
+    for (const name of entry.names) expect(citation, entry.citation).toContain(name);
+  }
+});
+
+describe("exact erased cycle policy", () => {
+  const listed = ["../../web/dist/console-tools.d.ts", "../../web/dist/store.d.ts"];
+  const report = (appCycles) => (_command, args) => ({ status: appCycles.length && args.at(-1) === "packages/app/src" ? 1 : 0,
+    stdout: JSON.stringify(args.at(-1) === "packages/app/src" ? appCycles : []), stderr: "" });
+
+  test("accepts exactly the listed erased cycle while preserving raw findings", () => {
+    const { code, directory } = runWith("cycles", {}, { exceptions: cycleExceptions, execute: report([listed]) });
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(resolve(directory, "madge-app.json"), "utf8"))).toEqual([listed]);
+    const policy = JSON.parse(readFileSync(resolve(directory, "madge-app.policy.json"), "utf8"));
+    expect(policy.matched).toHaveLength(1);
+    expect(policy.matched[0].classification).toBe("erased");
+    expect(policy.unexpected).toEqual([]);
+    expect(policy.stale).toEqual([]);
+  });
+
+  test("fails for a new cycle alongside the listed exception", () => {
+    expect(runWith("cycles", {}, { exceptions: cycleExceptions, execute: report([listed, ["new.ts", "other.ts"]]) }).code).toBe(1);
+  });
+
+  test("fails on a stale listing rather than silently accepting an empty scan", () => {
+    const { code, directory } = runWith("cycles", {}, { exceptions: cycleExceptions });
+    expect(code).toBe(1);
+    expect(JSON.parse(readFileSync(resolve(directory, "madge-app.policy.json"), "utf8")).stale).toEqual(cycleExceptions);
+  });
+
+  test("normalizes only cycle rotation, not different paths or additional edges", () => {
+    expect(classifyCycles("madge-app", [[...listed].reverse()]).matched).toHaveLength(1);
+    for (const cycle of [[listed[0], listed[1], "extra.ts"], ["console-tools.ts", "store.ts"]]) {
+      const result = classifyCycles("madge-app", [cycle]);
+      expect(result.matched).toEqual([]);
+      expect(result.unexpected).toHaveLength(1);
+      expect(result.stale).toHaveLength(1);
+    }
+    expect(() => classifyCycles("madge-app", [[]])).toThrow(/Invalid Madge/);
+    expect(() => classifyCycles("madge-app", [], [...cycleExceptions, ...cycleExceptions])).toThrow(/Duplicate/);
+  });
+
+  test.each([
+    ["static import", 'import "./store.js";'],
+    ["value re-export", 'export { value } from "./store.js";'],
+    ["dynamic import", 'void import("./store.js");'],
+    ["third-module path", 'import "./third.js";'],
+  ])("rejects an emitted %s runtime path under the erased exception", (_name, mutation) => {
+    const parent = resolve(root, ".worklab-tmp");
+    mkdirSync(parent, { recursive: true });
+    const directory = mkdtempSync(resolve(parent, "cycle-runtime-test-"));
+    directories.push(directory);
+    const dist = resolve(directory, "packages/web/dist");
+    mkdirSync(dist, { recursive: true });
+    writeFileSync(resolve(dist, "console-tools.js"), "export const operation = true;");
+    writeFileSync(resolve(dist, "store.js"), 'import "./console-tools.js"; export const value = true;');
+    writeFileSync(resolve(dist, "third.js"), 'export { value } from "./store.js";');
+    expect(classifyCycles("madge-app", [listed], cycleExceptions, directory).matched).toHaveLength(1);
+    writeFileSync(resolve(dist, "console-tools.js"), mutation);
+    expect(() => classifyCycles("madge-app", [listed], cycleExceptions, directory)).toThrow(/emitted runtime path/);
+  });
+
+  test("keeps exact source-edge evidence for the erased classification", () => {
+    expect(cycleExceptions).toHaveLength(1);
+    const entry = cycleExceptions[0];
+    expect(entry.scan).toBe("madge-app");
+    expect(entry.reason.length).toBeGreaterThan(0);
+    expect(entry.edges.map((edge) => edge.kind)).toEqual(["type-only", "runtime"]);
+    for (const edge of entry.edges) {
+      const source = ts.createSourceFile(edge.from, readFileSync(resolve(root, edge.from), "utf8"), ts.ScriptTarget.Latest, true);
+      const imports = source.statements.filter(ts.isImportDeclaration).filter((node) => node.moduleSpecifier.text === `./${edge.to.split("/").at(-1).replace(/\.ts$/, ".js")}`);
+      expect(imports, edge.from).toHaveLength(1);
+      expect(imports[0].importClause.isTypeOnly, edge.from).toBe(edge.kind === "type-only");
+    }
   });
 });

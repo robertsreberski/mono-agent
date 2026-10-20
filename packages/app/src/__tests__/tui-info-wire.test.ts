@@ -8,7 +8,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import { OperatorClient } from "@mono-agent/web";
 
 import type { ChannelStartInput, RunningChannel } from "../channels/types.js";
-import { createTuiChannelDriver } from "../channels.js";
+import { createTuiChannelDriver } from "../channels/channels.js";
 
 /**
  * The `/v1/info` producer and its console consumer, wired end to end over a
@@ -37,7 +37,7 @@ interface WireOptions {
 /**
  * A realistically long canonical reference — a SIZE, not a bound.
  *
- * The parser imposes no length rule (`requireQuotableReference`, agent-runtime's
+ * The parser imposes no length rule (`requireQuotableReference`, turn's
  * `model-refs.js`): what a model may be called is decided by providers. So the fixtures here
  * sit at a length real references reach — `ollama:<model>:<tag>`, whose two halves Ollama
  * validates at 80 bytes each — written as a literal rather than derived from any constant the

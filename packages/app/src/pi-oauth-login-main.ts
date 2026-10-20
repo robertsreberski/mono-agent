@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runPiOAuthLogin } from "./pi-oauth-login.js";
+import { runPiOAuthLogin } from "./providers/pi-oauth-login.js";
 
 const [provider, ...extra] = process.argv.slice(2);
 if (provider === undefined || (provider === "openai" ? extra.length !== 1 : extra.length > 0)) {

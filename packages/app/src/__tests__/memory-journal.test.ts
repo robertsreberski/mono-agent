@@ -21,10 +21,10 @@ import {
   MEMORY_JOURNAL_TOOL_NAME,
   resolveMemoryJournalRange,
   type MemoryJournalCapableStore,
-} from "../memory-journal.js";
-import { createMemoryRecallServer } from "../memory-recall.js";
-import { createRunHistoryServer } from "../run-history.js";
-import { createSessionHistoryServer } from "../session-history.js";
+} from "../memory/memory-journal.js";
+import { createMemoryRecallServer } from "../memory/memory-recall.js";
+import { createRunHistoryServer } from "../request-tools/run-history.js";
+import { createSessionHistoryServer } from "../request-tools/session-history.js";
 
 function memoryRecord(id: string, over: Partial<MemoryRecord> = {}): MemoryRecord {
   return {

@@ -22,7 +22,7 @@ import {
   isSessionHistoryToolAllowed,
   SESSION_HISTORY_MCP_SERVER_NAME,
   SESSION_HISTORY_TOOL_NAME,
-} from "../session-history.js";
+} from "../request-tools/session-history.js";
 
 const tempDirs: string[] = [];
 const STORAGE_TEST_PERSISTENCE_CEILING_MS = 5_000;

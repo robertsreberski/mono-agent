@@ -27,7 +27,7 @@ describe("verify-deep-imports", () => {
     expect(entries.length).toBeGreaterThan(0);
     expect(entries.every((entry) => typeof entry.typesTarget === "string")).toBe(true);
     const root = entries.find((entry) => entry.specifier === "@mono-agent/turn");
-    expect(root?.typesTarget?.endsWith("packages/turn/types/index.d.ts")).toBe(true);
+    expect(root?.typesTarget?.endsWith("packages/turn/dist/index.d.ts")).toBe(true);
   });
 
   it("resolves every mapped subpath (default + types conditions) through real resolution (exit 0)", async () => {
@@ -57,7 +57,7 @@ describe("verify-deep-imports", () => {
       stdout,
       stderr: sink(),
       importFn: () => Promise.resolve({}),
-      fileExists: (path) => !path.includes(`${"types"}/ai/index.d.ts`),
+      fileExists: (path) => !path.includes(`${"dist"}/ai/index.d.ts`),
     });
     expect(exitCode).toBe(1);
     expect(stdout.text).toContain(`FAIL ${missing} (types): types condition target missing on disk`);

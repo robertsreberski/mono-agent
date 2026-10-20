@@ -2,12 +2,14 @@
 // records liveInputTaken when an input is yielded, so its router side-effect
 // gate stops the run before this replay can reach a retry or backup.
 import { describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 import { createLiveInputMailbox } from "@mono-agent/conversation";
 import type { RuntimeLiveInputMessage } from "@mono-agent/turn/host/types";
 
 const { instrumentLiveInputAppliedEvents } = await import(
-  new URL("../../../turn/src/runtime/live-input-events.js", import.meta.url).href
+  new URL("./runtime/live-input-events.js", pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn"))).href
 ) as {
   instrumentLiveInputAppliedEvents(
     input: AsyncIterable<RuntimeLiveInputMessage>,

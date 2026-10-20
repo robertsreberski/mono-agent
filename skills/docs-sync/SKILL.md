@@ -119,12 +119,12 @@ enumerates "what does X reset/purge/survive" — not just the prose.
 v0.11.0 durable conversation-history.
 
 **`config-reference.ts` ⇒ `feature-registry.md` row + prose page.** If a PR
-touches `packages/app/src/config-reference.ts`, grep the new `jsonPath`
+touches `packages/app/src/config-reference/config-reference.ts`, grep the new `jsonPath`
 against the registry and its prose page before calling the PR doc-complete:
 
 ```bash
 comm -23 \
-  <(grep -oE '"[a-z]+\.[a-zA-Z]+"' packages/app/src/config-reference.ts | sort -u) \
+  <(grep -oE '"[a-z]+\.[a-zA-Z]+"' packages/app/src/config-reference/config-reference.ts | sort -u) \
   <(grep -oE '`[a-z]+\.[a-zA-Z]+`' docs/reference/feature-registry.md | tr -d '`' | sort -u)
 ```
 

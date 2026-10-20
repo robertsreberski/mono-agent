@@ -5,3 +5,5 @@ export { isAutodiscoverableProviderId, isPrivateBaseUrl, isPiBuiltinProvider, lo
 export { supportsPiContext1M } from "#turn/providers/pi/context-1m";
 
 export { packageRenameError } from "./package-renames.js";
+
+export { DEFAULT_RUNTIME_RETRY_BACKOFF_MS, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS } from "#turn/runtime/retry-defaults";

@@ -17,8 +17,8 @@ const sessionAuthorizationMock = vi.hoisted(() => ({
   beforeLoad: undefined as (() => Promise<void>) | undefined,
 }));
 
-vi.mock("../acp-session-store.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../acp-session-store.js")>();
+vi.mock("../acp/acp-session-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../acp/acp-session-store.js")>();
   return {
     ...actual,
     async loadAcpSessionAuthorization(
@@ -30,8 +30,8 @@ vi.mock("../acp-session-store.js", async (importOriginal) => {
   };
 });
 
-import { runAcpBridge } from "../acp-bridge.js";
-import { makePeerHandoff } from "../peer-provenance.js";
+import { runAcpBridge } from "../acp/acp-bridge.js";
+import { makePeerHandoff } from "../peers/peer-provenance.js";
 
 const cleanupRoots: string[] = [];
 const cleanupServers: Server[] = [];
@@ -268,7 +268,7 @@ async function writeSourceManifest(options: {
             schema: "mono-agent.acp-source.v1",
             bridgeVersion: 1,
             protocolVersion: 1,
-            installedVersion: "0.25.1",
+            installedVersion: "0.26.0",
             workspacePath: options.workspace,
           },
         },
@@ -337,7 +337,8 @@ describe("ACP bridge", () => {
       contextWindow: undefined,
     },
     { name: "prefers the live corrected ON window for ACP accounting", advertisesToolEnvironment: true, requireToolEnvironment: true, contextWindow: 500_000 },
-  ])("$name", async ({ advertisesToolEnvironment, requireToolEnvironment, contextWindow }) => {
+    { name: "excludes billed compaction tokens from ACP occupancy", advertisesToolEnvironment: true, requireToolEnvironment: true, contextWindow: undefined, summaryTokens: 10000 },
+  ])("$name", async ({ advertisesToolEnvironment, requireToolEnvironment, contextWindow, summaryTokens = 0 }) => {
     let turnBody: Record<string, unknown> | undefined;
     const server = createServer(async (request, response) => {
       if (request.method === "GET" && request.url === "/gui/v1/info") {
@@ -363,7 +364,8 @@ describe("ACP bridge", () => {
               type: "usage_update",
               model: "fixture-model",
               cumulativeUsd: 0.01,
-              tokens: { input: 10, output: 3, cacheRead: 2, cacheCreation: 1 },
+              tokens: { input: 10 + summaryTokens, output: 3, cacheRead: 2, cacheCreation: 1 },
+              ...(summaryTokens ? { contextTokens: 16 } : {}),
             },
           }),
           JSON.stringify({ kind: "append", delta: "hello" }),

@@ -1,0 +1,127 @@
+import type { MonoAgentConfig } from "@mono-agent/config";
+import type { ChannelLogger } from "@mono-agent/contracts";
+
+import {
+  createConfiguredMemory,
+  createConfiguredMemoryForApp,
+} from "../composition/configured-memory.js";
+import { isSharedRecallStore, MemoryRetrievalService } from "../memory/memory-retrieval.js";
+import type { ProcessJobsProtectionPosture } from "../process-jobs/process-jobs-protection.js";
+
+type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
+
+export interface MemoryControllerPort {
+  readonly cwd: string;
+  readonly logger: ChannelLogger | undefined;
+  readonly trustedRuntimeReadRoots: readonly string[];
+  readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
+  sharedMemory: ConfiguredMemory;
+  sharedMemoryRetrieval: MemoryRetrievalService | undefined;
+  sharedMemoryBuilt: boolean;
+  sharedMemoryBuild: Promise<ConfiguredMemory> | undefined;
+  observabilityContext(): Promise<{
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly configPath?: string;
+  }>;
+  ensureSharedMemoryRetrieval(
+    coreConfig: MonoAgentConfig,
+    store: ConfiguredMemory,
+  ): MemoryRetrievalService | undefined;
+}
+
+export async function memoryStore(
+  controller: MemoryControllerPort,
+  coreConfig: MonoAgentConfig,
+): Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> {
+  if (controller.sharedMemoryBuilt) {
+    return controller.sharedMemory;
+  }
+  if (controller.sharedMemoryBuild !== undefined) {
+    return await controller.sharedMemoryBuild;
+  }
+  controller.sharedMemoryBuild = (async () => {
+    const appLogger = controller.logger;
+    const logger = appLogger?.warn !== undefined
+      ? { warn: (message: string) => { appLogger.warn?.(message); } }
+      : undefined;
+    // Preserve the per-app observability context contract across memory and
+    // channel composition while memory LLM runs remain locally recorded (gated
+    // by `memory.llm.trace`, default on). The context is per-app, not per-request,
+    // so caching it into the shared store is correct.
+    //
+    // The channel runtime is intentionally NOT passed: the memory LLM must run
+    // on `config.memory.llm.model`, but the channel runtime carries the channel
+    // fallback chain whose primary is `config.runtime.model` and the fallback
+    // router overrides each run's per-call model. createConfiguredMemory builds
+    // the memory LLM its own fallback-free runtime when no `memoryRuntime` is set.
+    const observabilityContext = await controller.observabilityContext();
+    const observability = {
+      observabilityContext,
+    };
+    const deps = {
+      cwd: controller.cwd,
+      // Only a verified managed runtime has an exact plugin closure beside
+      // app. A systemd worker may publish a secret-free snapshot for
+      // discovery while retaining the unmanaged plugin resolution order.
+
+      ...(logger === undefined ? {} : { logger }),
+      observability,
+    };
+    controller.sharedMemory = controller.processJobsProtectionPosture === undefined
+      ? await createConfiguredMemory(coreConfig, deps)
+      : await createConfiguredMemoryForApp(
+          coreConfig,
+          deps,
+          controller.processJobsProtectionPosture,
+        );
+    controller.ensureSharedMemoryRetrieval(coreConfig, controller.sharedMemory);
+    controller.sharedMemoryBuilt = true;
+    return controller.sharedMemory;
+  })();
+  try {
+    return await controller.sharedMemoryBuild;
+  } finally {
+    controller.sharedMemoryBuild = undefined;
+  }
+}
+
+export async function resetSharedMemory(controller: MemoryControllerPort): Promise<void> {
+  const mem = controller.sharedMemory as
+    | { flush?: () => Promise<void>; close?: () => Promise<void> | void }
+    | undefined;
+  controller.sharedMemory = undefined;
+  controller.sharedMemoryRetrieval?.resetRecallContext();
+  controller.sharedMemoryRetrieval = undefined;
+  controller.sharedMemoryBuilt = false;
+  controller.sharedMemoryBuild = undefined;
+  if (mem?.close !== undefined) {
+    await Promise.resolve(mem.close()).catch(() => undefined);
+  } else if (mem?.flush !== undefined) {
+    // Stores without a lifecycle-aware close retain the legacy best-effort
+    // drain. BuJo close owns its bounded shutdown deadline itself.
+    await Promise.resolve(mem.flush()).catch(() => undefined);
+  }
+}
+
+export function __setSharedMemoryForTest(controller: MemoryControllerPort, store: ConfiguredMemory): void {
+  controller.sharedMemory = store;
+  controller.sharedMemoryRetrieval = undefined;
+  controller.sharedMemoryBuilt = true;
+}
+
+export function ensureSharedMemoryRetrieval(
+  controller: MemoryControllerPort,
+  coreConfig: MonoAgentConfig,
+  store: Awaited<ReturnType<typeof createConfiguredMemory>>,
+): MemoryRetrievalService | undefined {
+  if (controller.sharedMemoryRetrieval !== undefined) return controller.sharedMemoryRetrieval;
+  if (coreConfig.memory === undefined || !isSharedRecallStore(store)) return undefined;
+  controller.sharedMemoryRetrieval = new MemoryRetrievalService(store, {
+    maxBytes: coreConfig.memory.maxBytes,
+    source: "memory-bujo",
+    profileEnabled: coreConfig.memory.mode === "bujo" && coreConfig.memory.profile?.enabled === true,
+    intentExpiry: coreConfig.memory.mode === "bujo" && coreConfig.memory.recall?.intentExpiry === true,
+  });
+  return controller.sharedMemoryRetrieval;
+}

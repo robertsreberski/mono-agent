@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 
 import { ensureStartable } from "../service/start-preflight.js";
-import { parseCliArgs } from "../cli-args.js";
+import { parseCliArgs } from "../cli/cli-args.js";
 
 let dir: string;
 let cwdSpy: ReturnType<typeof vi.spyOn>;

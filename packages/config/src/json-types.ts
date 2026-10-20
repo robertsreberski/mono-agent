@@ -144,6 +144,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly triggerRatio?: number;
       readonly keepRecentTokens?: number;
       readonly summaryMaxTokens?: number;
+      readonly effort?: string;
+      readonly failureCooldownMs?: number;
       readonly minSavingsTokens?: number;
       readonly fixedOverheadEnabled?: boolean;
       readonly contextWindowOverride?: number;

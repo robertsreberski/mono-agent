@@ -4,7 +4,7 @@ export const MEMORY_SYSTEM = "You are the private memory maintenance LLM for mon
 
 /**
  * Canonical runtime failure vocabulary the benchmark may retain, mirroring the
- * core taxonomy in packages/turn/src/telemetry/failure.js (FAILURE_KINDS).
+ * core taxonomy in packages/turn/src/telemetry/failure.ts (FAILURE_KINDS).
  * Membership in this fixed list is the ONLY runtime failure detail that ever
  * enters meter events, trials or reports. Raw error text, errorDetails
  * objects, paths, endpoints and credentials are never serialized.

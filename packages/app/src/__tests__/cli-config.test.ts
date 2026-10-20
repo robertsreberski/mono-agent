@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { renderConfigView } from "../cli-validate-config-command.js";
+import { renderConfigView } from "../cli/commands/cli-validate-config-command.js";
 import { runCli } from "../cli.js";
 import type { ConfigViewSection } from "@mono-agent/config";
 

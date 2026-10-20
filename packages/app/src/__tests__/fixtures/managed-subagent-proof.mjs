@@ -1,21 +1,31 @@
 // Automated built-seam proof. Transport alone is fake; no interactive/live consumer.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
-import { createMonoRuntime } from "@mono-agent/turn/host";
-import { acquireAgentRootOwnership } from "../../../dist/durable-state/agent-root-coordinator.js";
-import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
-import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
-import { PROCESS_JOBS_DEFAULTS } from "../../../dist/process-jobs-config.js";
-import { createSubagentInstanceRegistry } from "../../../dist/subagent-instances.js";
-import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
-import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
-import { createAgentTool } from "../../../../turn/src/tools/delegation/agent-tool.js";
-import { generateEngineTurnResponse } from "../../../../turn/src/execution/pi/run.js";
-import { createToolContext, updateToolContext } from "../../../../turn/src/tools/shared/tool-context.js";
-import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js";
-import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
+import { registerHooks } from "node:module";
+
+const turnSourceRoot = new URL("../../../../turn/src/", import.meta.url).href;
+const turnDistRoot = new URL("../../../../turn/dist/", import.meta.url).href;
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
+  return resolved.url.startsWith(turnSourceRoot)
+    ? { ...resolved, url: turnDistRoot + resolved.url.slice(turnSourceRoot.length) } : resolved;
+} });
+const { resolveJsonMonoAgentConfig } = await import("@mono-agent/config");
+const { createMonoRuntime } = await import("@mono-agent/turn/host");
+const { JsonlSessionRepo, projectContext } = await import("@mono-agent/turn/engine");
+const { acquireAgentRootOwnership } = await import("../../../dist/durable-state/agent-root-coordinator.js");
+const { registerProcessJobsRoot } = await import("../../../dist/process-jobs/process-jobs-root-registry.js");
+const { openProcessJobsService } = await import("../../../dist/process-jobs/process-jobs-service.js");
+const { PROCESS_JOBS_DEFAULTS } = await import("../../../dist/process-jobs/process-jobs-config.js");
+const { createSubagentInstanceRegistry } = await import("../../../dist/subagents/subagent-instances.js");
+const { buildSubagentsOptions } = await import("../../../dist/composition/configured-subagents.js");
+const { openProcessJobStore } = await import("../../../dist/process-jobs/process-jobs-store.js");
+const { createAgentTool } = await import("../../../../turn/dist/tools/delegation/agent-tool.js");
+const { generateEngineTurnResponse } = await import("../../../../turn/dist/execution/pi/run.js");
+const { createToolContext, updateToolContext } = await import("@mono-agent/turn/tools");
+const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import("../../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js");
+const { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } = await import("./verification-scratch.mjs");
 
 const durationMs = Number(process.argv[2] ?? 250);
 assert(Number.isSafeInteger(durationMs) && durationMs >= 1 && durationMs <= 180_000);
@@ -97,8 +107,16 @@ try {
   assert.equal(instance.turns, 1); assert.equal(instance.recovery, undefined);
   const jsonl = (await readdir(instance.sessionsRoot, { recursive: true })).filter((path) => path.endsWith(".jsonl"));
   assert.equal(jsonl.length, 1);
-  const transcript = (await readFile(resolve(instance.sessionsRoot, jsonl[0]), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  const execution = transcript.flat().map((entry) => entry.message).find((message) => message?.role === "toolResult" && message.toolName === "Exec");
+  const repo = new JsonlSessionRepo({ sessionsRoot: instance.sessionsRoot });
+  const metadata = (await repo.list()).find((entry) => entry.path === resolve(instance.sessionsRoot, jsonl[0]));
+  const journal = await repo.open(metadata, { repair: false });
+  let transcript;
+  try {
+    transcript = projectContext(await journal.getEntries()).messages;
+  } finally {
+    await journal.close();
+  }
+  const execution = transcript.find((message) => message?.role === "toolResult" && message.toolName === "Exec");
   assert(execution && execution.isError !== true);
   assert(JSON.stringify(execution.content).includes("owned-proof-completed"));
   const elapsedMs = Date.now() - startedAt;

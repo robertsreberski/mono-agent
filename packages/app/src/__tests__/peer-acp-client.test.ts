@@ -9,12 +9,12 @@ const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { isPeerProcessJobQuestion } from "@mono-agent/contracts";
-import type { InternalProcessJobRequest } from "../process-jobs-internal.js";
-import type { ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import type { InternalProcessJobRequest } from "../process-jobs/process-jobs-internal.js";
+import type { ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createConversationResponder } from "@mono-agent/conversation";
-import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
+import { createProcessJobsRuntimeExtension } from "../process-jobs/process-jobs-runtime.js";
 
 const discovery = vi.hoisted(() => ({ enabled: false, root: "", artifactDir: "", callerArtifactDir: "" }));
 vi.mock("@mono-agent/web", async (importOriginal) => {
@@ -29,9 +29,9 @@ vi.mock("@mono-agent/web", async (importOriginal) => {
   };
 });
 
-import { createPeerAgentRuntimeExtension } from "../peer-agent.js";
-import { PeerSessionGoneError, runPeerAcpTurn } from "../peer-acp-client.js";
-import { verifyPeerOperatorHandoff } from "../peer-provenance.js";
+import { createPeerAgentRuntimeExtension } from "../peers/peer-agent.js";
+import { PeerSessionGoneError, runPeerAcpTurn } from "../peers/peer-acp-client.js";
+import { verifyPeerOperatorHandoff } from "../peers/peer-provenance.js";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -127,7 +127,7 @@ async function fixture(answer = "ok", askUser: boolean | "sensitive" | "long" = 
     ...(expectedKey === undefined ? {} : { configPath }),
     metadata: { channels: { tui: { kind: "running", baseUrl: `http://127.0.0.1:${address.port}/gui`,
       acpBridge: { schema: "mono-agent.acp-source.v1", bridgeVersion: 1, protocolVersion: 1,
-        installedVersion: "0.25.1", workspacePath: root } } },
+        installedVersion: "0.26.0", workspacePath: root } } },
     ...(expectedKey === undefined ? {} : { backgroundSnapshot: {
       schema: "mono-agent.background-snapshot.v1", configPath, configFingerprint: "config-proof",
       dotenvPath, dotenvFingerprint: "dotenv-proof",
@@ -136,7 +136,7 @@ async function fixture(answer = "ok", askUser: boolean | "sensitive" | "long" = 
   return { root, artifactDir, turns, started, submission: () => submission,
     askGets: () => askGets, responseClosed: () => responseClosed,
     turn: (sessionId?: string, signal = new AbortController().signal,
-      onQuestion?: import("../peer-acp-client.js").PeerAcpTurn["onQuestion"]) => runPeerAcpTurn({
+      onQuestion?: import("../peers/peer-acp-client.js").PeerAcpTurn["onQuestion"]) => runPeerAcpTurn({
       sourceId: "peer-test", cliPath, env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: registry,
         ...(expectedKey === undefined ? {} : { MONO_AGENT_TUI_API_KEY: "caller-owned-key" }) },
       workspace: root, artifactDir, caller: "agent-test", conversation: "web:caller",
@@ -421,7 +421,7 @@ describe("peer ACP client over a real spawned bridge", () => {
 
   it("relays a real ACP form into the same parked peer turn and resumes after acceptance", async () => {
     const f = await fixture("continued", true);
-    let question: import("../peer-acp-client.js").PeerAcpQuestion | undefined;
+    let question: import("../peers/peer-acp-client.js").PeerAcpQuestion | undefined;
     let result: Awaited<ReturnType<typeof f.turn>>;
     try { result = await f.turn(undefined, new AbortController().signal, async (form) => {
       question = form;

@@ -8,9 +8,9 @@ import * as bujo from "@mono-agent/memory/bujo";
 import * as store from "@mono-agent/memory/store";
 import * as search from "@mono-agent/memory/search";
 import * as runtime from "@mono-agent/turn/host";
-import * as retrieval from "../memory-retrieval.js";
-import * as journal from "../memory-journal.js";
-import * as extensions from "../runtime-option-extensions.js";
+import * as retrieval from "../memory/memory-retrieval.js";
+import * as journal from "../memory/memory-journal.js";
+import * as extensions from "../composition/runtime-option-extensions.js";
 
 // Non-publishable script modules intentionally have no package exports/declarations.
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -814,7 +814,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
 
   it("enforces the private output cap at real Pi dispatch and tool continuation, without compaction", async () => {
     const input = await fixture();
-    const { generateEngineTurnResponse } = await import(new URL("../../../turn/src/execution/pi/run.js", import.meta.url).href);
+    const { generateEngineTurnResponse } = await import("@mono-agent/turn/ai");
     const faux = fauxProvider({ provider: "faux", models: [{ id: "e2e-cap", maxTokens: 32000, contextWindow: 32000 }] });
     const models = createModels(); models.setProvider(faux.provider);
     const dispatched: Array<{ modelCap: number; outputCap: number | undefined }> = [];

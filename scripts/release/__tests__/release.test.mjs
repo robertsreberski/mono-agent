@@ -341,11 +341,24 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
+        "@mono-agent/app dependencies.@earendil-works/pi-ai must be owned by @mono-agent/turn; test-only Pi dependencies belong in devDependencies",
         "@mono-agent/app dependencies.@earendil-works/pi-ai must pin known-compatible version 1.2.0 exactly; found ^0.80.6",
         "@mono-agent/turn dependencies.@earendil-works/pi-agent-core must pin known-compatible version 1.2.0 exactly; found ~0.80.6",
         "@mono-agent/turn dependencies.@earendil-works/pi-ai must pin known-compatible version 1.2.0 exactly; found 0.80.8",
       ]);
     }
+  });
+
+  test("permits only exact development-only Pi pins outside turn", () => {
+    const app = packageRecord({
+      name: "@mono-agent/app",
+      devDependencies: { "@earendil-works/pi-ai": "1.2.0" },
+    });
+    expect(() => validateRelease({ tag: "v1.2.3", packages: [app], rootPackageJson: rootPackageRecord(), silent: true }))
+      .not.toThrow();
+    app.packageJson.devDependencies["@earendil-works/pi-ai"] = "^1.2.0";
+    expect(() => validateRelease({ tag: "v1.2.3", packages: [app], rootPackageJson: rootPackageRecord(), silent: true }))
+      .toThrow(/devDependencies\.@earendil-works\/pi-ai must pin/u);
   });
 
   test("detects cycles before publishing", () => {
@@ -453,6 +466,25 @@ describe("release pack validation", () => {
     } finally {
       fs.rmSync(packDestination, { recursive: true, force: true });
     }
+  });
+
+  test("keeps turn tarballs dist-only with declarations and the native runner", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-turn-pack-contract-"));
+    try {
+      const filename = path.join(directory, "fictional.tgz");
+      fs.writeFileSync(filename, "fixture archive");
+      const turn = { name: "@mono-agent/turn", relativeDir: "packages/turn" };
+      const runner = "dist/host/sandbox/srt-embed-runner.mjs";
+      const packed = (extra = [], includeRunner = true) => ({ filename,
+        files: ["package.json", "README.md", "dist/index.js", "dist/index.d.ts", "dist/host/sandbox/srt-embed-runner.d.mts",
+          ...(includeRunner ? [runner] : []), ...extra].map((path) => ({ path })) });
+      expect(assertPackResult(turn, packed(), directory, { packageDir: directory }).fileCount).toBe(6);
+      for (const file of ["src/index.js", "types/index.d.ts", "dist/__tests__/test.js", "dist/fixtures/worker.mjs",
+        "dist/index.ts", "dist/worker.mts", "dist/index.js.map", "dist/index.d.ts.map"]) {
+        expect(() => assertPackResult(turn, packed([file]), directory, { packageDir: directory })).toThrow(/non-shipping files/);
+      }
+      expect(() => assertPackResult(turn, packed([], false), directory)).toThrow(/missing the sandbox runner/);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
   test("rejects compiled output whose source was deleted", () => {
@@ -618,7 +650,7 @@ describe("current launch manifest", () => {
 
     expect(version).not.toBeNull();
     if (version === null) {
-      throw new Error(`agent-runtime version is not valid semver: ${runtime.version}`);
+      throw new Error(`turn version is not valid semver: ${runtime.version}`);
     }
     const expectedBaseline = `${version[1]}.${version[2]}.x`;
     expect(migration).toContain(
@@ -635,6 +667,11 @@ describe("current launch manifest", () => {
       new URL("../../../packages/turn/MIGRATION.md", import.meta.url),
       "utf8",
     ).replace(/\s+/gu, " ");
+    const app = JSON.parse(fs.readFileSync(
+      new URL("../../../packages/app/package.json", import.meta.url), "utf8",
+    ));
+    expect(app.dependencies).not.toHaveProperty("@earendil-works/pi-ai");
+    expect(app.devDependencies["@earendil-works/pi-ai"]).toBe(PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"]);
     const piAi = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"];
     const piCore = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"];
 

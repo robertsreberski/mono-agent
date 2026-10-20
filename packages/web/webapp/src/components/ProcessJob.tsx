@@ -1,3 +1,4 @@
+import { costAmount, knownCostAmount } from "../../../src/cost-wire.js";
 import type { DataMessagePartProps } from "@assistant-ui/react";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
@@ -642,10 +643,11 @@ export function ProcessJobCard({
   const preview = processJobPreview(live, now);
   const outcomes = kind === "agent" && !terminal ? processJobCallOutcomes(live) : [];
   const supplements: ReactNode[] = [];
-  if (terminal && progress !== undefined && typeof progress.costUsd === "number"
-    && Number.isFinite(progress.costUsd) && progress.costUsd > 0) {
-    supplements.push(<span key="cost">{formatUsd(progress.costUsd)}</span>);
-  }
+  const cost = costAmount(progress);
+  const knownCost = knownCostAmount(progress);
+  if (terminal && cost === null) supplements.push(<span key="cost">cost unknown</span>);
+  else if (terminal && typeof cost === "number" && cost > 0) supplements.push(<span key="cost">{formatUsd(cost)}</span>);
+  if (terminal && cost === null && knownCost !== undefined) supplements.push(<span key="known-cost">Known cost {formatUsd(knownCost)}</span>);
   if (terminal && (live.wake.attempts > 1 || ["failed", "unknown", "suppressed"].includes(live.wake.state))) {
     supplements.push(<span key="wake">wake {wakeLabel(live.wake)}</span>);
   }

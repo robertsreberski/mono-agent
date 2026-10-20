@@ -7,9 +7,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { createMonoRuntime } from "@mono-agent/turn/host";
-import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../../../dist/configured-agent.js";
-import { createRequestModelOverrideRuntimeExtension } from "../../../dist/request-model-override.js";
-import { loadAppCoreConfig } from "../../../dist/app-config.js";
+import { createConfiguredAgentResponderForApp } from "../../../dist/composition/configured-agent.js";
+import { wrapOwnedConfiguredRuntime } from "../../../dist/composition/runtime-ownership.js";
+import { createRequestModelOverrideRuntimeExtension } from "../../../dist/composition/request-model-override.js";
+import { loadAppCoreConfig } from "../../../dist/composition/app-config.js";
 
 const root = process.argv[2], conversationId = "web:fictional-thread", successorId = "web:fictional-successor";
 const historyRoot = join(root, "history"), nativeRoot = join(root, "native"), callsPath = join(root, "calls.jsonl");

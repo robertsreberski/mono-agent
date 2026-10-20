@@ -1,21 +1,31 @@
 // Opt-in real SRT observation proof; never substitutes an unsandboxed probe.
+import { registerHooks } from "node:module";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile, rm, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSandboxPolicy, createSrtSandboxEngine } from "@mono-agent/turn/host/sandbox";
-import { monoSandboxImpl } from "../../../../turn/dist/host/sandbox/implementation.js";
-import { createToolContext } from "../../../../turn/src/tools/shared/tool-context.js";
-import { getPiBuiltinTools } from "../../../../turn/src/tools/pi-tools.js";
-import { acquireAgentRootOwnership } from "../../../dist/durable-state/agent-root-coordinator.js";
-import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
-import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
-import { PROCESS_JOBS_DEFAULTS } from "../../../dist/process-jobs-config.js";
-import { createSubagentInstanceRegistry } from "../../../dist/subagent-instances.js";
-import { createSubagentRecoveryAccess } from "../../../dist/subagent-recovery-access.js";
-import { resolveSubagentObservationGit } from "../../../dist/subagent-observation-git.js";
-import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
+
+// Keep transitive public/private self imports on the same built graph too.
+const turnSourceRoot = new URL("../../../../turn/src/", import.meta.url).href;
+const turnDistRoot = new URL("../../../../turn/dist/", import.meta.url).href;
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
+  return resolved.url.startsWith(turnSourceRoot)
+    ? { ...resolved, url: turnDistRoot + resolved.url.slice(turnSourceRoot.length) } : resolved;
+} });
+const { createSandboxPolicy, createSrtSandboxEngine } = await import("@mono-agent/turn/host/sandbox");
+const { monoSandboxImpl } = await import("../../../../turn/dist/host/sandbox/implementation.js");
+const { createToolContext } = await import("../../../../turn/dist/tools/shared/tool-context.js");
+const { getPiBuiltinTools } = await import("../../../../turn/dist/tools/pi-tools.js");
+const { acquireAgentRootOwnership } = await import("../../../dist/durable-state/agent-root-coordinator.js");
+const { registerProcessJobsRoot } = await import("../../../dist/process-jobs/process-jobs-root-registry.js");
+const { openProcessJobsService } = await import("../../../dist/process-jobs/process-jobs-service.js");
+const { PROCESS_JOBS_DEFAULTS } = await import("../../../dist/process-jobs/process-jobs-config.js");
+const { createSubagentInstanceRegistry } = await import("../../../dist/subagents/subagent-instances.js");
+const { createSubagentRecoveryAccess } = await import("../../../dist/subagents/subagent-recovery-access.js");
+const { resolveSubagentObservationGit } = await import("../../../dist/subagents/subagent-observation-git.js");
+const { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } = await import("./verification-scratch.mjs");
 const ROOT = fileURLToPath(new URL("../../../../../", import.meta.url)).replace(/\/$/, "");
 assert.equal(process.cwd(), ROOT);
 const local = resolve(ROOT, ".mono-agent/verification/srt-local");
@@ -122,8 +132,8 @@ try {
     if (observed.facts?.status !== "observed") {
       // Failure-only diagnostic, still the real SRT and exact gated process path.
       // It does not replace or pass the primary Pi-bridge assertion below.
-      const { observeSubagentVerification, registerSubagentVerification } = await import("../../../dist/subagent-verification-observer.js");
-      const { startPreparedProcess } = await import("../../../../turn/src/tools/commands/process-runner.js");
+      const { observeSubagentVerification, registerSubagentVerification } = await import("../../../dist/subagents/subagent-verification-observer.js");
+      const { startPreparedProcess } = await import("../../../../turn/dist/tools/commands/process-runner.js");
       const diagnosticAccess = { workspace: worktree, readableRoots: extraReadRoots, sandboxPolicy: policy, sandboxEngine: engine,
         runProbe: async (prepared, timeoutMs) => {
           const handle = startPreparedProcess(prepared, { timeoutMs, maxBufferBytes: 16384, exactEnvironment: true, waitForProcessGroup: true });

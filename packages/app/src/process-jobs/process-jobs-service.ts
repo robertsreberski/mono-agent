@@ -1,0 +1,2833 @@
+import { publishManagedJob } from "./managed-publication.js";
+import { deliverProcessJobWake, MAX_WAKE_ATTEMPTS, type WakeAttempt, type WakeDecision } from "./wake-delivery.js";
+import { ProcessJobServiceError } from "./errors.js";
+import { MAX_IN_MEMORY_RECORDS, conversationSlotAvailable, enforceAdmission, pendingWakeCap, boundedNewestRecords, terminalFromResult, assertAvailable, processJobCapacity } from "./policy.js";
+import { processJobSummary, boundOutput, outputPreview, boundedSafeDiagnostic } from "./presentation.js";
+import { isInternal, type ServiceStartRequest, type ProcessJobWakeInput } from "./types.js";
+import { MAX_WAKE_CERTIFICATES, validWakeToken } from "./process-jobs-wake-fence.js";
+import type { SubagentStopIdentity, SubagentSteerProof, SubagentStopProof } from "./process-jobs-internal.js";
+import { createLiveInputMailbox, type LiveInputMailbox } from "@mono-agent/conversation";
+import type { SubagentVerificationTarget, SubagentVerificationObservation } from "../subagents/subagent-verification-observer.js";
+import type { SubagentCommandReceipts } from "../subagents/types.js";
+import { boundSubagentCommandReceipts } from "./process-jobs-store.js";
+import { emptySubagentCommandReceipts, retainSubagentCommandReceipt, subagentCommandReceipt } from "../subagents/subagent-command-receipts.js";
+import { createSubagentOwnedCommands } from "../subagents/subagent-owned-commands.js";
+import type { ManagedSubagentExecution, ManagedSubagentRegistry, SubagentDisposition, SubagentRegistryPublication } from "../subagents/types.js";
+import type { InstanceOutcome } from "../subagents/types.js";
+import type { SubagentSalvage } from "../subagents/subagent-salvage.js";
+import { isSubagentUuid, sameSubagentOwner, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "../subagents/subagent-registry-ownership.js";
+import { reconcileSubagentExecutionOwnership } from "../subagents/subagent-ownership-recovery.js";
+import type { SubagentKnownOwner } from "../subagents/subagent-registry-ownership.js";
+import { hasPendingSubagentPublication, hasPendingSubagentReleaseReceipt, hasSubagentObligation, hasUnresolvedSubagentOwnership } from "../subagents/subagent-execution-ownership.js";
+import { subagentProgressUsage, SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
+import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+
+import {
+  processJobPublicError,
+  type AgentLiveInputOffer,
+  type ProcessJobErrorCode,
+  type ProcessJobProjection,
+  type ProcessJobState,
+} from "@mono-agent/contracts";
+import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobsController, ProcessJobStartRequest, ProcessJobStartResult } from "@mono-agent/turn/host/types";
+
+import type { NotifyDeliveryResult } from "../channels/types.js";
+import { type ProcessJobsSettings } from "./process-jobs-config.js";
+import { ProcessJobOutputTail } from "./process-job-output-tail.js";
+import { offerClaimedProcessJobLiveInput, recordProcessJobWakeAdmission, revokeProcessJobWakeAdmission } from "./process-jobs-context.js";
+import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "../durable-state/owner-private-lock.js";
+import {
+  attestProcessJobsRootRegistration,
+  type ProcessJobsRootRegistrationProof,
+} from "./process-jobs-root-registry.js";
+import {
+  processDescriptionSecrets,
+  processOutputSecrets,
+  redactProcessOutput as redactOutput,
+} from "./process-output-redaction.js";
+import { cleanupPersistedSandboxSettings } from "../service/sandbox/sandbox-settings-cleanup.js";
+import {
+  currentProcessIncarnation,
+  isSameProcessIncarnation,
+  readProcessIncarnation,
+  type ProcessIncarnation,
+} from "@mono-agent/conversation/process-incarnation";
+import {
+  isTerminalProcessJobState,
+  clearProcessJobHealthIncident,
+  loadOrCreateProcessJobSecret,
+  openProcessJobStore,
+  prepareProcessJobStateDirectory,
+  PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
+  PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
+  PROCESS_JOB_ENV_KEYS_CAPS,
+  projectProcessJob,
+  processJobOperatorToken,
+  recordProcessJobHealthIncident,
+  type DurableProcessJobRecord,
+  type ProcessJobOriginRecord,
+  type ProcessJobStore,
+  type ProcessJobStoreMutationDraft,
+} from "./process-jobs-store.js";
+
+const PROCESS_JOB_OWNER_SCHEMA = "mono-agent.process-jobs-owner.v1";
+const RECOVERY_KILL_GRACE_MS = 1_000;
+const RECOVERY_GROUP_EXIT_POLL_MS = 25;
+const RECOVERY_GROUP_EXIT_POLLS = 40;
+const WAKE_BUSY_REARM_MS = 5_000;
+const INITIAL_SURFACE_UPDATE_WAIT_MS = 250;
+const SHUTDOWN_INTERRUPTED_MESSAGE =
+  "The owning agent stopped after process and sandbox ownership settled; a later start will deliver the recovery wake.";
+
+interface PendingProcessJob {
+  readonly request: ServiceStartRequest;
+  readonly redactionSecrets: readonly string[];
+  cleanup(): Promise<void>;
+}
+
+interface ActiveProcessJob extends PendingProcessJob {
+  readonly handle: Pick<ProcessJobProcessHandle, "cancel" | "completion">;
+  readonly outputTail: ProcessJobOutputTail;
+  groupExitConfirmed?: boolean;
+  progress?: SubagentJobProgress;
+  progressTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface ProcessJobMutationSnapshot {
+  readonly candidates: ReadonlyMap<string, DurableProcessJobRecord>;
+  readonly deletedKeys: readonly string[];
+}
+
+export interface ProcessJobsHealth {
+  readonly state: "ok" | "degraded";
+  readonly quarantinedTransactions: number;
+  readonly failureOperation?: string;
+  readonly failureDetectedAt?: string;
+}
+
+interface MutableProcessJobsHealth {
+  state: "ok" | "degraded";
+  quarantinedTransactions: number;
+  failureOperation?: string;
+  failureDetectedAt?: string;
+}
+
+export interface OpenProcessJobsServiceOptions {
+  readonly onActivityChange?: (count: number) => void;
+  readonly cwd: string;
+  readonly workspace: string;
+  readonly settings: ProcessJobsSettings;
+  /** Durable registration proof which must predate all state-root creation/mutation. */
+  readonly registration: ProcessJobsRootRegistrationProof;
+  /** Deterministic unit-test seam; production always re-attests the durable proof. */
+  readonly attestRegistration?: typeof attestProcessJobsRootRegistration;
+  readonly wake: (input: ProcessJobWakeInput) => Promise<NotifyDeliveryResult>;
+  /** Best-effort retained lifecycle update for the exact originating surface. */
+  /** `retirementOnly`: the update only retires an already-published peer question. */
+  readonly surfaceUpdate?: (projection: ProcessJobProjection, options?: { readonly retirementOnly?: boolean }) => Promise<void>;
+  readonly onHealthChange?: (health: ProcessJobsHealth) => void | Promise<void>;
+  readonly logger?: {
+    info?(message: string, details?: Readonly<Record<string, unknown>>): void;
+    warn?(message: string, details?: Readonly<Record<string, unknown>>): void;
+  };
+  readonly now?: () => Date;
+  readonly platform?: NodeJS.Platform;
+  readonly randomId?: () => string;
+  readonly currentIncarnation?: () => Promise<ProcessIncarnation>;
+  readonly readIncarnation?: typeof readProcessIncarnation;
+  readonly sameIncarnation?: typeof isSameProcessIncarnation;
+  readonly signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
+  readonly processGroupExists?: (pgid: number) => boolean;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+  readonly wakeBusyRearmMs?: number;
+  readonly acquireLock?: () => Promise<OwnerPrivateLock | undefined>;
+  readonly store?: ProcessJobStore;
+}
+
+export interface SubagentRecoverySnapshot {
+  readonly commands?: SubagentCommandReceipts;
+  readonly verification?: SubagentVerificationTarget;
+  readonly observation?: SubagentVerificationObservation;
+}
+export interface ProcessJobsServiceHandle {
+  readonly settings: ProcessJobsSettings;
+  readonly operatorToken: string;
+  readonly health: ProcessJobsHealth;
+  wakeAdmission?: {
+    claim(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
+    release(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
+    offerClaimedLiveInput?(deliveryKey: string, token: string, boundary: string, offer: () => AgentLiveInputOffer): AgentLiveInputOffer;
+  };
+  inspectSubagentRecovery?(identity: SubagentOwnerIdentity): Promise<SubagentRecoverySnapshot | undefined>;
+  recordSubagentObservation?(identity: SubagentOwnerIdentity, observation: SubagentVerificationObservation): Promise<void>;
+  refreshSubagentOwner?(identity: SubagentOwnerIdentity): Promise<void>;
+  bindManagedSubagents?(registry: ManagedSubagentRegistry): void;
+  resolveSubagentOwner?(identity: SubagentOwnerIdentity): Promise<SubagentOwnerResolution>;
+  checkSubagentOwnerIndex?(conversationId: string, known: readonly SubagentKnownOwner[]): Promise<"clear" | "held" | "unavailable">;
+  controller(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): ProcessJobsController;
+  internalController(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): InternalProcessJobsController;
+  /** Retire a previously delivered peer question without replaying a terminal wake. */
+  settlePeerQuestion?(jobId: string, questionId: string, state: "answered" | "expired" | "interrupted"): Promise<void>;
+  list(): Promise<readonly ProcessJobProjection[]>;
+  get(jobId: string): Promise<ProcessJobProjection | undefined>;
+  cancel(jobId: string): Promise<ProcessJobProjection>;
+  /** Synchronous admitted work/wake flights; an AskParent-awaiting child alone is idle. */
+  activeExecutionCount(): number;
+  counts(): Promise<Readonly<Record<ProcessJobState, number>>>;
+  capacity(normalizedReplyTarget: string): Promise<{
+    observedAt: string;
+    perConversation: { running: number; maxActivePerConversation: number; queued: number; availableRunningSlots: number };
+    global: { running: number; maxConcurrent: number; queued: number; maxQueued: number };
+    maxQueueAgeMs: number;
+  }>;
+  activateWakes(): Promise<void>;
+  stop(shutdownDeadline?: number): Promise<void>;
+}
+
+/** Acquire exclusive ownership, recover interrupted work, and expose one host controller. */
+export async function openProcessJobsService(
+  options: OpenProcessJobsServiceOptions,
+): Promise<ProcessJobsServiceHandle> {
+  if (!options.settings.enabled) {
+    throw new ProcessJobServiceError("process_job_disabled", "Process jobs are disabled.");
+  }
+  const platform = options.platform ?? process.platform;
+  if (platform === "win32") {
+    throw new ProcessJobServiceError(
+      "process_job_platform_unsupported",
+      "Process jobs are unsupported on Windows because detached POSIX process-group ownership is required.",
+    );
+  }
+  const attestRegistration = options.attestRegistration ?? attestProcessJobsRootRegistration;
+  await attestRegistration(
+    options.registration,
+    options.workspace,
+    options.settings.stateDir,
+  );
+  const stateDir = await prepareProcessJobStateDirectory(options.cwd, options.settings.stateDir);
+  await attestRegistration(options.registration, options.workspace, stateDir);
+  const normalizedOptions: OpenProcessJobsServiceOptions = stateDir === options.settings.stateDir
+    ? options
+    : { ...options, settings: { ...options.settings, stateDir } };
+  let legacyHolder: LegacyLockHolder | undefined;
+  const lock = await (options.acquireLock?.() ?? acquireOwnerPrivateLock({
+    path: join(stateDir, ".process-jobs-owner"),
+    label: "Process-job state",
+    schemaTag: PROCESS_JOB_OWNER_SCHEMA,
+    ownerlessGraceMs: 1_000,
+    invalidOwner: "error",
+    onLegacyOwnerHeld: (holder) => { legacyHolder = holder; },
+  }));
+  if (lock === undefined) {
+    throw new ProcessJobServiceError(
+      "process_job_controller_unavailable",
+      "Process-job state is owned by another live agent process."
+        + (legacyHolder === undefined ? "" : ` ${legacyLockHolderMessage(legacyHolder)}`),
+    );
+  }
+  let store: ProcessJobStore;
+  try {
+    store = options.store ?? await openProcessJobStore(options.cwd, stateDir);
+  } catch (error) {
+    await lock.release().catch(() => undefined);
+    throw error;
+  }
+  let operatorToken: string;
+  try {
+    operatorToken = processJobOperatorToken(await loadOrCreateProcessJobSecret(stateDir));
+  } catch (error) {
+    await lock.release().catch(() => undefined);
+    throw error;
+  }
+  const service = new ProcessJobsService(normalizedOptions, store, lock, platform, operatorToken);
+  if (store.health.state === "degraded") {
+    options.logger?.warn?.("Process-job store recovered with quarantined transaction incidents.", {
+      quarantinedTransactions: store.health.quarantinedTransactions,
+      stateDir,
+    });
+  }
+  try {
+    await service.recover();
+    await service.applyRetention();
+    if (service.health.failureOperation === undefined) {
+      await clearProcessJobHealthIncident(stateDir);
+    }
+    return service;
+  } catch (error) {
+    await service.stop().catch(() => undefined);
+    throw error;
+  }
+}
+
+class ProcessJobsService implements ProcessJobsServiceHandle {
+  readonly settings: ProcessJobsSettings;
+  readonly operatorToken: string;
+  readonly health: ProcessJobsHealth;
+  private readonly mutableHealth: MutableProcessJobsHealth;
+  // Only in-flight verifier/admission calls, not a historical execution ledger.
+  // Retain through negative publication so a delayed verified call cannot race
+  // around a durable not-admitted tombstone and its registry release.
+  private readonly managedAdmissionTickets = new Set<string>();
+  /** Scoped positive proof from this admission, never inferred from a missing job. */
+  private readonly unadmittedManagedStarts = new Map<string, SubagentOwnerIdentity>();
+  private managedWritesClosed = false;
+  private managedRegistry: ManagedSubagentRegistry | undefined;
+  private readonly managedCommands = new Map<string, ReturnType<typeof createSubagentOwnedCommands>>();
+  // In-process only: a steering mailbox never outlives its detached turn, and a
+  // host restart leaves this map empty so steer answers with a truthful negative.
+  private readonly subagentLiveInput = new Map<string, LiveInputMailbox>();
+  private readonly managedPublications = new Map<string, Promise<void>>();
+  /** Coalesces a durable publication edge observed while this job's publisher is busy. */
+  private readonly managedPublicationRearmPending = new Set<string>();
+  private readonly managedRegistryOperations = new Set<Promise<unknown>>();
+  private readonly startingExecutions = new Set<string>();
+  /** Actual child lifetimes may outlast the bounded reporting/cancellation grace. */
+  private readonly internalExecutionFlights = new Set<string>();
+  private readonly managedExecutionFlights = new Set<string>();
+  private readonly pending = new Map<string, PendingProcessJob>();
+  private readonly active = new Map<string, ActiveProcessJob>();
+  private readonly completionOverlays = new Map<string, ProcessJobProjection>();
+  private readonly recordSnapshot = new Map<string, DurableProcessJobRecord>();
+  /** Cached terminal IDs in oldest-first eviction order. Membership mirrors recordSnapshot exactly. */
+  private readonly terminalSnapshotIds = new Set<string>();
+  private readonly settlements = new Map<string, Promise<void>>();
+  private readonly wakeTasks = new Map<string, Promise<void>>();
+  private readonly wakeRearmTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly wakeRearmPending = new Set<string>();
+  private readonly shutdownFailures: unknown[] = [];
+  private readonly now: () => Date;
+  private readonly platform: NodeJS.Platform;
+  private readonly randomId: () => string;
+  private readonly currentIncarnation: () => Promise<ProcessIncarnation>;
+  private readonly readIncarnation: typeof readProcessIncarnation;
+  private readonly sameIncarnation: typeof isSameProcessIncarnation;
+  private readonly signalProcess: (pid: number, signal: NodeJS.Signals) => void;
+  private readonly processGroupExists: (pgid: number) => boolean;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly wakeBusyRearmMs: number;
+  private tail: Promise<void> = Promise.resolve();
+  private queueTimer: ReturnType<typeof setTimeout> | undefined;
+  private queueTimerGeneration = 0;
+  private wakesActive = false;
+  private storageOperational = true;
+  private stopping = false;
+  private drainingForRestart = false;
+  private stopped = false;
+  private stopPromise: Promise<void> | undefined;
+  private agentIncarnation!: ProcessIncarnation;
+
+  constructor(
+    private readonly options: OpenProcessJobsServiceOptions,
+    private readonly store: ProcessJobStore,
+    private readonly lock: OwnerPrivateLock,
+    platform: NodeJS.Platform,
+    operatorToken: string,
+  ) {
+    this.settings = options.settings;
+    this.operatorToken = operatorToken;
+    this.mutableHealth = { ...store.health };
+    this.health = this.mutableHealth;
+    this.now = options.now ?? (() => new Date());
+    this.platform = platform;
+    this.randomId = options.randomId ?? randomUUID;
+    this.currentIncarnation = options.currentIncarnation ?? currentProcessIncarnation;
+    this.readIncarnation = options.readIncarnation ?? readProcessIncarnation;
+    this.sameIncarnation = options.sameIncarnation ?? isSameProcessIncarnation;
+    this.signalProcess = options.signalProcess ?? ((pid, signal) => process.kill(pid, signal));
+    this.processGroupExists = options.processGroupExists ?? ((pgid) => {
+      try {
+        process.kill(this.platform === "win32" ? pgid : -pgid, 0);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+        return true;
+      }
+    });
+    this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, milliseconds);
+      timer.unref?.();
+    }));
+    this.wakeBusyRearmMs = options.wakeBusyRearmMs ?? WAKE_BUSY_REARM_MS;
+  }
+
+  controller(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): ProcessJobsController {
+    const captured = structuredClone(origin);
+    return Object.freeze({
+      // Published so the tool schema can state the real ceiling up front. A model
+      // that only learns its budget from a start receipt has already committed to
+      // a plan sized for a budget it may not have.
+      limits: Object.freeze({
+        maxRuntimeMs: this.settings.maxRuntimeMs,
+        maxOutputBytes: this.settings.maxOutputBytes,
+      }),
+      start: async (request: ProcessJobStartRequest) => await this.start(
+        captured,
+        typeof chainDepth === "function" ? chainDepth() : chainDepth,
+        request,
+      ),
+    });
+  }
+
+  internalController(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): InternalProcessJobsController {
+    const captured = structuredClone(origin);
+    return Object.freeze({ managed: this.managedRegistry !== undefined, stop: (identity: SubagentStopIdentity) => this.stopSubagent(captured.conversationId, identity), steer: (identity: SubagentStopIdentity, text: string) => this.steerSubagent(captured.conversationId, identity, text), startInternal: (request: InternalProcessJobRequest) => this.start(
+      captured, typeof chainDepth === "function" ? chainDepth() : chainDepth, request,
+    ) });
+  }
+
+  /** In-memory only: a restart already reconciles parked questions as interrupted. */
+  private readonly pendingPeerRetirements = new Map<string, { readonly questionId: string; readonly state: "answered" | "expired" | "interrupted" }>();
+
+  async settlePeerQuestion(jobId: string, questionId: string,
+    state: "answered" | "expired" | "interrupted"): Promise<void> {
+    let changed = false;
+    await this.withLock(async () => {
+      await this.storeMutate("peer.question.settle", (records) => {
+        const record = records.get(jobId);
+        if (record?.tool !== "PeerAgent") return;
+        if (record.peerQuestion === undefined && !isTerminalProcessJobState(record.state)) {
+          // The question result has not been persisted yet; apply on completion.
+          if (this.pendingPeerRetirements.size < 1_024 || this.pendingPeerRetirements.has(jobId)) {
+            this.pendingPeerRetirements.set(jobId, { questionId, state });
+          }
+          return;
+        }
+        if (record.peerQuestion?.questionId !== questionId || record.peerQuestion.state !== "awaiting_answer") return;
+        record.peerQuestion = { ...record.peerQuestion, state };
+        changed = true;
+      });
+    });
+    if (changed) this.scheduleSurfaceUpdate(jobId, true);
+  }
+
+  async list(): Promise<readonly ProcessJobProjection[]> {
+    let records: readonly DurableProcessJobRecord[];
+    try {
+      records = await this.storeList("list");
+    } catch {
+      records = this.snapshotRecords();
+    }
+    return boundedNewestRecords(records.filter((record) => !record.rejectedAdmission))
+      .map((record) => structuredClone(this.projectWithOutput(record)));
+  }
+
+  async get(jobId: string): Promise<ProcessJobProjection | undefined> {
+    try {
+      const record = await this.storeGet(jobId, "get");
+      if (record === undefined || record.rejectedAdmission) return undefined;
+      return structuredClone(this.projectWithOutput(record));
+    } catch {
+      const record = this.recordSnapshot.get(jobId);
+      if (record === undefined || record.rejectedAdmission) return undefined;
+      return structuredClone(this.projectWithOutput(record));
+    }
+  }
+
+  /** Overlay only memory-safe live output; durable lifecycle and refs stay authoritative. */
+  private projectWithOutput(record: DurableProcessJobRecord): ProcessJobProjection {
+    const completion = this.completionOverlays.get(record.jobId);
+    if (completion !== undefined) return completion;
+    let projection = projectProcessJob(record);
+    const progress = this.active.get(record.jobId)?.progress;
+    if (projection.kind === "internal" && projection.tool !== "PeerAgent" && progress) projection = { ...projection, subagentProgress: progress.snapshot() };
+    if (isTerminalProcessJobState(record.state)) return projection;
+    const snapshot = this.active.get(record.jobId)?.outputTail.snapshot();
+    if (snapshot === undefined) return projection;
+    return {
+      ...projection,
+      output: {
+        ...projection.output,
+        stdoutBytes: Math.max(projection.output.stdoutBytes, snapshot.stdoutBytes),
+        stderrBytes: Math.max(projection.output.stderrBytes, snapshot.stderrBytes),
+        truncated: projection.output.truncated || snapshot.truncated,
+        preview: snapshot.preview,
+      },
+    };
+  }
+
+  async applyRetention(): Promise<void> {
+    await this.storeApplyRetention("retention");
+  }
+
+  async cancel(jobId: string): Promise<ProcessJobProjection> {
+    return this.cancelOwned(jobId);
+  }
+
+  private async stopSubagent(conversationId: string, identity: SubagentStopIdentity): Promise<SubagentStopProof> {
+    if (!isSubagentUuid(identity.turnToken) || !isSubagentUuid(identity.instanceIncarnation) || !this.managedRegistry) {
+      throw Object.assign(new Error("subagent_stop_unavailable"), { code: "subagent_stop_unavailable", stopRequested: false });
+    }
+    const ownerIdentity: SubagentOwnerIdentity = { ...identity, conversationId, jobId: identity.turnToken, storeRoot: this.settings.stateDir };
+    const deadline = Date.now() + 4_000;
+    await this.cancelOwned(identity.turnToken, ownerIdentity);
+    for (;;) {
+      const record = await this.storeGet(identity.turnToken, "subagent.stop_proof");
+      if (!record?.subagentOwnership || !sameSubagentOwner(ownerIdentity, this.managedIdentity(record))) {
+        throw Object.assign(new Error("subagent_stale_turn"), { code: "subagent_stale_turn", stopRequested: "unknown" });
+      }
+      const owner = record.subagentOwnership;
+      const busy = !isTerminalProcessJobState(record.state) || hasSubagentObligation(record);
+      if (!busy || Date.now() >= deadline) return { jobId: record.jobId, stopRequested: owner.parentStopRequested === true,
+        childStillBusy: busy, disposition: owner.disposition?.status ?? null,
+        resumable: !busy && owner.disposition?.continuity === "retained"
+          && (owner.disposition.resumeAfterStop === true || owner.disposition.certifiedTimeout === true || !owner.disposition.reason) };
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  /**
+   * Offers text into a running detached turn's model loop. It starts no turn,
+   * forces no answer and changes no ownership: the receipt reports only what
+   * this offer did, so an unconsumed offer stays visibly unconsumed.
+   */
+  private async steerSubagent(conversationId: string, identity: SubagentStopIdentity, text: string): Promise<SubagentSteerProof> {
+    if (!isSubagentUuid(identity.turnToken) || !isSubagentUuid(identity.instanceIncarnation) || !this.managedRegistry) {
+      throw Object.assign(new Error("subagent_steer_unavailable"), { code: "subagent_steer_unavailable" });
+    }
+    const ownerIdentity: SubagentOwnerIdentity = { ...identity, conversationId, jobId: identity.turnToken, storeRoot: this.settings.stateDir };
+    const record = await this.storeGet(identity.turnToken, "subagent.steer");
+    if (!record?.subagentOwnership || !sameSubagentOwner(ownerIdentity, this.managedIdentity(record))) {
+      throw Object.assign(new Error("subagent_stale_turn"), { code: "subagent_stale_turn" });
+    }
+    if (isTerminalProcessJobState(record.state) || record.cancelRequested || record.subagentOwnership.revoked) {
+      return { jobId: record.jobId, delivery: "rejected", reason: "inactive" };
+    }
+    const mailbox = this.subagentLiveInput.get(identity.turnToken);
+    // A queued turn has no provider loop to steer yet: that is a retryable
+    // negative receipt. A turn that already started and has no mailbox (a host
+    // restart dropped it) is inactive instead — telling that caller to retry
+    // would be a lie about a loop that no longer exists.
+    if (mailbox === undefined) return { jobId: record.jobId, delivery: "rejected", reason: record.startedAt ? "inactive" : "not_started" };
+    const offer = mailbox.offer({ conversationId, id: randomUUID(), text, receivedAt: this.now().toISOString(), targetRunId: identity.turnToken });
+    if (offer.status !== "accepted") {
+      return { jobId: record.jobId, delivery: offer.reason === "unsupported" ? "unsupported" : "rejected", reason: offer.reason };
+    }
+    // A bounded wait, because a child mid-tool cannot read its mailbox yet. An
+    // unsettled offer is reported as offered, never as applied.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<undefined>((resolveWait) => { timer = setTimeout(() => resolveWait(undefined), 3_000); });
+    try {
+      const settlement = await Promise.race([offer.settled, waited]);
+      if (settlement === undefined) return { jobId: record.jobId, delivery: "offered", reason: "not_settled" };
+      if (settlement.status === "applied") return { jobId: record.jobId, delivery: "consumed" };
+      // The same fact must read the same whichever side of the offer observed
+      // it: a route that cannot take live input is unsupported, not rejected.
+      return { jobId: record.jobId, delivery: settlement.reason === "unsupported" ? "unsupported" : "rejected", reason: settlement.reason };
+    } finally { clearTimeout(timer); }
+  }
+
+  private async cancelOwned(jobId: string, stopIdentity?: SubagentOwnerIdentity): Promise<ProcessJobProjection> {
+    const overlay = this.completionOverlays.get(jobId);
+    if (overlay !== undefined && !stopIdentity) {
+      if (overlay.state === "cancelled") return structuredClone(overlay);
+      throw new ProcessJobServiceError("process_job_conflict", `Process job is already ${overlay.state}.`);
+    }
+    return await this.withLock(async () => {
+      let cancelled = false;
+      const record = await this.storeMutate("cancel", (records) => {
+        const current = requireRecord(records, jobId);
+        if (stopIdentity && (!this.storageOperational || this.stopping || current.kind !== "internal" || !current.subagentOwnership
+          || current.subagentOwnership.registryRoot !== this.managedRegistry?.root || !sameSubagentOwner(stopIdentity, this.managedIdentity(current)))) {
+          throw Object.assign(new Error("subagent_stale_turn"), { code: "subagent_stale_turn", stopRequested: false });
+        }
+        if (isTerminalProcessJobState(current.state)) {
+          if (stopIdentity) return structuredClone(current);
+          if (current.state !== "cancelled") {
+            throw new ProcessJobServiceError("process_job_conflict", `Process job is already ${current.state}.`);
+          }
+          return structuredClone(current);
+        }
+        // A later parent request must not bless an operator cancellation already
+        // in flight. Repeated parent requests retain their original authority.
+        if (stopIdentity && !current.cancelRequested) current.subagentOwnership!.parentStopRequested = true;
+        current.cancelRequested = true;
+        if (current.state === "queued") {
+          transitionTerminal(
+            current,
+            "cancelled",
+            this.now(),
+            "process_job_cancelled",
+            "Process job was cancelled by the operator before it started.",
+          );
+          cancelled = true;
+        }
+        return structuredClone(current);
+      });
+      if (cancelled) {
+        await this.cleanupPendingAfterTerminal(jobId);
+        this.scheduleWake(jobId);
+        await this.drainQueue();
+      } else {
+        this.managedCommands.get(jobId)?.revoke();
+      this.closeSubagentLiveInput(jobId);
+      this.active.get(jobId)?.handle.cancel();
+      }
+      return structuredClone(this.projectWithOutput(record));
+    });
+  }
+
+  async capacity(normalizedReplyTarget: string) {
+    const records = await this.storeList("capacity.observe");
+    return processJobCapacity(records, normalizedReplyTarget, this.settings, this.now().toISOString());
+  }
+
+  async counts(): Promise<Readonly<Record<ProcessJobState, number>>> {
+    let records: readonly DurableProcessJobRecord[];
+    try {
+      records = await this.storeList("counts");
+    } catch {
+      records = this.snapshotRecords();
+    }
+    const counts: Record<ProcessJobState, number> = {
+      queued: 0,
+      starting: 0,
+      running: 0,
+      succeeded: 0,
+      failed: 0,
+      timed_out: 0,
+      cancelled: 0,
+      spawn_failed: 0,
+      queue_expired: 0,
+      interrupted: 0,
+    };
+    for (const record of records) {
+      if (!record.rejectedAdmission) {
+        const state = this.completionOverlays.get(record.jobId)?.state ?? record.state;
+        counts[state] += 1;
+      }
+    }
+    return counts;
+  }
+
+  readonly wakeAdmission = {
+    claim: async (deliveryKey: string, token: string, boundary: string): Promise<boolean> =>
+      await this.changeWakeBoundary(deliveryKey, token, boundary, false),
+    release: async (deliveryKey: string, token: string, boundary: string): Promise<boolean> =>
+      await this.changeWakeBoundary(deliveryKey, token, boundary, true),
+    offerClaimedLiveInput: (deliveryKey: string, token: string, boundary: string, offer: () => AgentLiveInputOffer): AgentLiveInputOffer => {
+      if (this.stopped || this.stopping || !this.storageOperational) return offer();
+      return offerClaimedProcessJobLiveInput(deliveryKey, token, boundary, offer);
+    },
+  };
+
+  private async changeWakeBoundary(deliveryKey: string, token: string, boundary: string, release: boolean): Promise<boolean> {
+    if (release) revokeProcessJobWakeAdmission(deliveryKey, token, boundary);
+    return await this.withLock(async () => {
+      if (this.stopped || (!release && this.stopping) || !this.storageOperational
+        || !validWakeToken(boundary) || (token !== "" && !validWakeToken(token))
+        || !deliveryKey.startsWith("process-job:")) return false;
+      let changed = false;
+      await this.storeMutate("wake.boundary", (records) => {
+        // App-owned delivery keys encode the primary key. Touch only this job,
+        // not every retained record, for each operator admission/refusal.
+        const record = records.get(deliveryKey.slice("process-job:".length));
+        if (record === undefined || record.wake.deliveryKey !== deliveryKey || record.wake.state !== "pending") return;
+        const fence = record.wake.admission;
+        if (fence === undefined && token === "" && !release) { changed = true; return; }
+        if (fence?.version !== 1) return;
+        // An older console can complete the same live steer-to-follow-up path,
+        // but switching to token-less delivery irrevocably disables recovery.
+        if (token === "") {
+          if (record.origin.channel !== "web" || fence.state === "fenced") return;
+          if (release && fence.legacy !== true) return;
+        } else if (fence.token !== token || fence.legacy === true) return;
+        if (release) {
+          if (fence.state !== "crossed" || fence.boundary !== boundary) return;
+          fence.state = "not_crossed";
+          delete fence.boundary;
+        } else {
+          if (fence.state !== "not_crossed") return;
+          fence.state = "crossed";
+          fence.boundary = boundary;
+          if (token === "") fence.legacy = true;
+        }
+        changed = true;
+      });
+      if (changed && !release) recordProcessJobWakeAdmission(deliveryKey, token, boundary);
+      return changed;
+    }).finally(() => {
+      // A release may have queued behind an in-progress claim whose proof did
+      // not exist at the initial revocation above. Revoke again after the lock.
+      if (release) revokeProcessJobWakeAdmission(deliveryKey, token, boundary);
+    });
+  }
+
+  /** Called only under exclusive store ownership and the service mutation tail. */
+  private async fenceUnadmittedWakes(): Promise<void> {
+    await this.storeMutate("wake.recover", (records) => {
+      for (const record of records.values()) {
+        const fence = record.wake.admission;
+        if (!isTerminalProcessJobState(record.state)
+          || (record.wake.state !== "pending" && record.wake.state !== "unknown")
+          || fence?.version !== 1 || fence.state !== "not_crossed") continue;
+        if (fence.legacy === true) {
+          fence.state = "fenced";
+          record.wake.state = "unknown";
+          record.wake.retrySafe = false;
+          recordWakeFailure(record);
+          continue;
+        }
+        const certificates = record.wake.notCrossed ?? [];
+        // Bounded proof retention is fail-closed, never evicts a proof that web
+        // might still need to reconcile an earlier accepted reservation.
+        if (certificates.length >= MAX_WAKE_CERTIFICATES) {
+          record.wake.state = "unknown";
+          record.wake.retrySafe = false;
+          recordWakeFailure(record);
+          continue;
+        }
+        fence.state = "fenced";
+        record.wake.notCrossed = [...certificates, fence.token];
+        record.wake.state = "pending";
+        record.wake.retrySafe = true;
+        record.wake.attempts = Math.max(0, record.wake.attempts - 1);
+      }
+    });
+  }
+
+  async activateWakes(): Promise<void> {
+    if (this.stopping || this.stopped) return;
+    this.wakesActive = false;
+    let failedWakeJobIds: readonly string[];
+    try {
+      failedWakeJobIds = await this.withLock(async () => {
+        if (this.stopping || this.stopped) return [];
+        const wakeJobIds: string[] = [];
+        const failedJobIds: string[] = [];
+        for (const record of await this.storeList("activate_wakes")) {
+          if (isTerminalProcessJobState(record.state) && record.wake.state === "pending") {
+            const destinationUnavailableExhausted = (record.wake.destinationUnavailableAttempts ?? 0)
+              >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
+            const conversationBusyExhausted = isConversationBusyExhausted(record, this.now());
+            if (!destinationUnavailableExhausted && !conversationBusyExhausted && (record.wake.attempts === 0
+              || (record.wake.retrySafe === true && record.wake.attempts < MAX_WAKE_ATTEMPTS))) {
+              wakeJobIds.push(record.jobId);
+            } else {
+              let failed = false;
+              await this.storeMutate("activate_wakes.fail", (records) => {
+                const current = records.get(record.jobId);
+                if (current?.wake.state === "pending") {
+                  const unavailableExhausted = (current.wake.destinationUnavailableAttempts ?? 0)
+                    >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
+                  const safeRetryExhausted = current.wake.retrySafe === true
+                    && current.wake.attempts >= MAX_WAKE_ATTEMPTS;
+                  const busyExhausted = isConversationBusyExhausted(current, this.now());
+                  current.wake.state = unavailableExhausted || safeRetryExhausted || busyExhausted
+                    ? "failed" : "unknown";
+                  current.wake.retrySafe = false;
+                  recordWakeFailure(current);
+                  failed = true;
+                }
+              });
+              if (failed) failedJobIds.push(record.jobId);
+            }
+          }
+        }
+        if (this.stopping || this.stopped) return [];
+        // Terminal transitions use this same mutation tail. Once this flag is
+        // published, every completion either appeared in the snapshot above or
+        // will observe active wakes while it still owns the serialized mutation.
+        this.wakesActive = true;
+        for (const jobId of wakeJobIds) this.scheduleWake(jobId);
+        return failedJobIds;
+      });
+    } catch (error) {
+      this.wakesActive = false;
+      throw error;
+    }
+    // Adapter publication and retention can be slow or externally blocked.
+    // The snapshot-to-activation transition above is complete, so keep this I/O
+    // outside the service mutation tail and never roll active wakes back after
+    // concurrent completions may already have observed them.
+    for (const jobId of failedWakeJobIds) await this.updateSurfaceById(jobId);
+    if (failedWakeJobIds.length > 0 && !this.stopping && !this.stopped) {
+      await this.storeApplyRetention("activate_wakes.retention");
+    }
+  }
+
+  stop(shutdownDeadline?: number): Promise<void> {
+    this.stopPromise ??= this.stopOnce(shutdownDeadline);
+    return this.stopPromise;
+  }
+
+  private async withManagedLock<T>(operation: () => Promise<T>): Promise<T> {
+    return await this.withLock(async () => {
+      if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+      return await operation();
+    });
+  }
+
+  bindManagedSubagents(registry: ManagedSubagentRegistry): void {
+    if (this.managedRegistry && this.managedRegistry.root !== registry.root) throw new Error("Managed subagent registry root changed while owned.");
+    this.managedRegistry = registry;
+    for (const record of this.recordSnapshot.values()) if (hasPendingSubagentPublication(record) && isTerminalProcessJobState(record.state)) this.scheduleManagedPublication(record.jobId);
+  }
+
+  async inspectSubagentRecovery(identity: SubagentOwnerIdentity): Promise<SubagentRecoverySnapshot | undefined> {
+    return await this.withManagedLock(async () => {
+      if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return undefined;
+      const record = await this.storeGet(identity.jobId, "subagent.inspect");
+      if (!record?.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) return undefined;
+      return { ...(record.subagentCommandReceipts ? { commands: structuredClone(record.subagentCommandReceipts) } : {}),
+        ...(record.subagentVerification ? { verification: structuredClone(record.subagentVerification) } : {}),
+        ...(record.subagentObservation ? { observation: structuredClone(record.subagentObservation) } : {}) };
+    }).catch(() => undefined);
+  }
+
+  async recordSubagentObservation(identity: SubagentOwnerIdentity, observation: SubagentVerificationObservation): Promise<void> {
+    await this.withManagedLock(async () => {
+      if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) throw new Error("Subagent owner unavailable.");
+      await this.storeMutate("subagent.observation", (records) => {
+        const record = requireRecord(records, identity.jobId);
+        if (!record.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) throw new Error("Subagent owner unavailable.");
+        record.subagentObservation = structuredClone(observation);
+      });
+    });
+  }
+
+  async refreshSubagentOwner(identity: SubagentOwnerIdentity): Promise<void> {
+    await this.withManagedLock(async () => {
+      if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return;
+      const record = await this.storeGet(identity.jobId, "subagent.refresh");
+      if (!record?.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record)) || !isTerminalProcessJobState(record.state) || !hasSubagentObligation(record)) return;
+      const ownership = await reconcileSubagentExecutionOwnership(record.subagentOwnership, {
+        currentIncarnation: this.agentIncarnation, readIncarnation: this.readIncarnation,
+        sameIncarnation: async (pid, expected) => await this.sameIncarnation(pid, expected), groupAbsent: (pgid) => this.ownedProcessGroupIsAbsent(pgid),
+        signalGroup: (pgid, signal) => this.signalOwned(pgid, signal), grace: async () => await this.sleep(RECOVERY_KILL_GRACE_MS),
+        waitForGroupExit: async (pgid) => await this.waitForOwnedProcessGroupExit(pgid), cleanup: cleanupPersistedSandboxSettings,
+      });
+      await this.storeMutate("subagent.refresh_observation", (records) => {
+        const current = requireRecord(records, identity.jobId); current.subagentOwnership = ownership;
+        current.childStillBusy = hasUnresolvedSubagentOwnership(current);
+        if (ownership.command) retainSubagentCommandReceipt(current.subagentCommandReceipts ??= emptySubagentCommandReceipts(), subagentCommandReceipt(ownership.command, this.now().getTime()));
+      });
+    });
+    // Inspection holds the registry transaction: publish only after it can return,
+    // never create a store->registry->store lock cycle here.
+    this.scheduleManagedPublication(identity.jobId);
+  }
+
+  async resolveSubagentOwner(identity: SubagentOwnerIdentity): Promise<SubagentOwnerResolution> {
+    return await this.withManagedLock(async (): Promise<SubagentOwnerResolution> => {
+      if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return { state: "unavailable" };
+      const unadmitted = this.unadmittedManagedStarts.get(identity.jobId);
+      if (unadmitted) return sameSubagentOwner(identity, unadmitted)
+        ? { state: "not_admitted", identity, sequence: 1, neverStarted: true, continuity: "retained" }
+        : { state: "unavailable" };
+      const record = await this.storeGet(identity.jobId, "subagent.resolve");
+      if (!record) {
+        // The service still holds this registered root's exclusive lease. Missing
+        // durable bytes cannot certify neverStarted: terminal jobs may be pruned.
+        // Serialize absence with admission, and exclude every live hand-off gap.
+        const jobId = identity.jobId;
+        if (this.managedAdmissionTickets.has(jobId) || this.pending.has(jobId) || this.active.has(jobId)
+          || this.startingExecutions.has(jobId) || this.internalExecutionFlights.has(jobId)
+          || this.managedExecutionFlights.has(jobId) || this.managedPublications.has(jobId)) return { state: "held" };
+        return { state: "orphaned", identity };
+      }
+      if (!record.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) return { state: "unavailable" };
+      const owner = record.subagentOwnership;
+      if (!isTerminalProcessJobState(record.state) || hasUnresolvedSubagentOwnership(record) || owner.publication.state !== "confirmed") return { state: "held" };
+      // Positive job/disposition proof can certify the registry while its durable
+      // acknowledgement still pins retention/capacity. It is not absence evidence.
+      return { state: record.rejectedAdmission ? "not_admitted" : "released", identity, sequence: owner.publication.sequence, receiptPending: hasPendingSubagentReleaseReceipt(record), receiptRecorded: owner.publication.receiptRecorded === owner.publication.sequence, continuity: owner.disposition?.continuity ?? "unknown",
+        ...(this.neverStarted(record) ? { neverStarted: true as const } : {}),
+        ...(owner.disposition?.resumeAfterStop ? { resumeAfterStop: true as const } : {}),
+        ...(owner.disposition?.reason ? { reason: owner.disposition.reason } : {}),
+        ...(owner.disposition?.certifiedTimeout ? { certifiedTimeout: true as const } : {}) };
+    }).catch(() => ({ state: "unavailable" as const }));
+  }
+
+  private neverStarted(record: DurableProcessJobRecord): boolean {
+    const owner = record.subagentOwnership;
+    return owner?.owner.settlement === "not_started" && owner.command === undefined && owner.seenCalls.length === 0;
+  }
+
+  private newManagedOwnership(request: InternalProcessJobRequest): NonNullable<DurableProcessJobRecord["subagentOwnership"]> {
+    if (!this.managedRegistry || !request.managed || !isSubagentUuid(request.managed.instanceIncarnation)
+      || request.managed.turnToken !== request.jobId) throw new ProcessJobServiceError("process_job_controller_unavailable");
+    return { schemaVersion: 1, registryRoot: this.managedRegistry.root, instanceIncarnation: request.managed.instanceIncarnation,
+      turnToken: request.managed.turnToken, owner: { pid: process.pid, incarnation: this.agentIncarnation, settlement: "not_started" },
+      revoked: false, publication: { sequence: 1, state: "pending" }, seenCalls: [] };
+  }
+
+  private managedIdentity(record: DurableProcessJobRecord): SubagentOwnerIdentity {
+    const owner = record.subagentOwnership!;
+    return { storeRoot: this.settings.stateDir, jobId: record.jobId, conversationId: record.origin.conversationId,
+      instanceId: record.instanceId!, instanceIncarnation: owner.instanceIncarnation, turnToken: owner.turnToken };
+  }
+
+  /**
+   * Idempotent. Settles every outstanding offer so a steer can never sit pending
+   * forever, while KEEPING the closed mailbox registered: between the child's
+   * last breath and the durable terminal state, a steer must read the honest
+   * `inactive`, not the retryable `not_started` a missing entry would imply.
+   */
+  private closeSubagentLiveInput(jobId: string): void {
+    this.subagentLiveInput.get(jobId)?.close("closed");
+  }
+
+  /** Terminal removal. Only run once the turn's outcome is durably recorded. */
+  private forgetSubagentLiveInput(jobId: string): void {
+    const mailbox = this.subagentLiveInput.get(jobId);
+    if (mailbox === undefined) return;
+    this.subagentLiveInput.delete(jobId);
+    mailbox.close("closed");
+  }
+
+  private managedExecution(jobId: string, deadlineAt: number): ManagedSubagentExecution {
+    const commands = createSubagentOwnedCommands({ deadlineAt, maxOutputBytes: this.settings.maxOutputBytes, now: () => this.now().getTime(),
+      readIncarnation: this.readIncarnation,
+      mutate: async (operation) => await this.withManagedLock(async () => await this.storeMutate("subagent.command", (records) => {
+        const record = requireRecord(records, jobId);
+        const owner = record.subagentOwnership;
+        if (!owner) throw new Error("Managed subagent ownership is unavailable.");
+        operation(owner, record.subagentCommandReceipts ??= emptySubagentCommandReceipts());
+        if (owner.disposition) { owner.publication.sequence++; owner.publication.state = "pending"; }
+      })),
+      changed: async () => { await this.publishManaged(jobId); },
+    });
+    this.managedCommands.set(jobId, commands);
+    // Keyed on the job id, which is the managed detached turn's token, so an
+    // offer aimed at a superseded turn cannot land in this one.
+    const liveInput = createLiveInputMailbox(jobId);
+    this.subagentLiveInput.set(jobId, liveInput);
+    return { ownedForegroundProcesses: commands.processes, liveInput,
+      started: async () => {
+        this.managedExecutionFlights.add(jobId); this.activityChanged();
+        try {
+          await this.withManagedLock(async () => await this.storeMutate("subagent.provider_start", (records) => {
+            const record = requireRecord(records, jobId);
+            const owner = record.subagentOwnership!;
+            if (record.state !== "running" || record.cancelRequested || owner.revoked || owner.owner.settlement !== "not_started" || this.now().getTime() >= deadlineAt) throw new Error("Managed subagent provider admission is revoked.");
+            owner.owner.settlement = "running";
+          }));
+        } catch (error) {
+          this.managedExecutionFlights.delete(jobId); this.activityChanged(); throw error;
+        }
+      },
+      settled: async (outcome) => {
+        this.managedExecutionFlights.delete(jobId); this.activityChanged();
+        commands.revoke();
+        const settlement = await this.withManagedLock(async () => await this.storeMutate("subagent.true_settlement", (records) => {
+          const record = requireRecord(records, jobId);
+          const owner = record.subagentOwnership!;
+          if (owner.owner.settlement === "settled") return { progressUsageAdded: false, parentStopRequested: owner.parentStopRequested };
+          owner.owner.settlement = "settled"; owner.revoked = true;
+          // Publish the same-turn native timeout certificate WITH true settlement.
+          // A concurrent inspection can schedule publication immediately after
+          // this store mutation; it must never see released ownership paired with
+          // the older provisional unknown disposition and discard activeTurn.
+          if (outcome?.certifiedTimeout === true && outcome.status === "timeout"
+            && outcome.failureKind !== "session_continuity_lost" && !owner.parentStopRequested
+            && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained"
+            && (!owner.disposition?.reason || owner.disposition.reason === "timeout")) {
+            owner.disposition = { status: "timeout", reason: "timeout", continuity: "retained", certifiedTimeout: true };
+          }
+          // The same window exists for a parent stop whose late result proves
+          // retained continuity for this exact turn: settle it with its final
+          // resumable disposition, never the provisional unknown one from the
+          // cancellation grace. Unknown or mismatched continuity still falls
+          // through to reportManaged and fails closed into recovery.
+          if (outcome && owner.parentStopRequested && outcome.continuity?.turnToken === owner.turnToken
+            && outcome.continuity.state === "retained") {
+            const decision = managedDisposition(record, outcome, this.neverStarted(record));
+            if (decision.resumeAfterStop) {
+              owner.disposition = decision.disposition;
+              if (outcome.question) record.subagentQuestion = outcome.question;
+            }
+          }
+          if (outcome?.usage) owner.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: null, ...outcome.usage };
+          // A child may outlive the cancellation grace. Backfill only this job's
+          // eventual child-turn usage, never the instance's accumulated lifetime.
+          const reported = subagentProgressUsage(owner.usage);
+          const progress = record.subagentProgress;
+          let progressUsageAdded = false;
+          if (isTerminalProcessJobState(record.state) && progress !== undefined) {
+            const missingCost = progress.costUsd === undefined ? reported.costUsd : undefined;
+            const missingTokens = progress.usage === undefined ? reported.usage : undefined;
+            if (missingCost !== undefined || missingTokens !== undefined) {
+              record.subagentProgress = { ...progress, revision: progress.revision + 1,
+                ...(missingCost === undefined ? {} : { costUsd: missingCost, ...(reported.knownCostUsd === undefined ? {} : { knownCostUsd: reported.knownCostUsd }) }),
+                ...(missingTokens === undefined ? {} : { usage: missingTokens }) };
+              progressUsageAdded = true;
+            }
+          }
+          if (owner.disposition) { owner.publication.sequence++; owner.publication.state = "pending"; }
+          return { progressUsageAdded, parentStopRequested: owner.parentStopRequested };
+        }));
+        if (outcome && settlement.parentStopRequested) await this.reportManaged(jobId, outcome);
+        else await this.publishManaged(jobId, outcome);
+        if (settlement.progressUsageAdded) this.scheduleSurfaceUpdate(jobId);
+      },
+      report: async (outcome) => { commands.revoke(); await this.reportManaged(jobId, outcome); },
+    };
+  }
+
+  /** Track only entered host registry I/O, never the provider lifetime. */
+  private async withManagedRegistry<T>(operation: (registry: ManagedSubagentRegistry) => Promise<T>): Promise<T> {
+    if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+    const registry = this.managedRegistry;
+    if (!registry) throw new Error("Managed subagent registry is unavailable.");
+    const pending = Promise.resolve().then(async () => {
+      if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+      return await operation(registry);
+    });
+    this.managedRegistryOperations.add(pending);
+    try { return await pending; } finally { this.managedRegistryOperations.delete(pending); }
+  }
+
+  private async reportManaged(jobId: string, outcome: InstanceOutcome): Promise<void> {
+    this.managedCommands.get(jobId)?.revoke();
+    // Before the closed-writes throw below: a finished child must never leave an
+    // accepted offer waiting, which would read as a false pending receipt.
+    this.closeSubagentLiveInput(jobId);
+    if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+    const record = await this.storeGet(jobId, "subagent.report_intent");
+    const owner = record?.subagentOwnership;
+    if (!record || !owner || !this.managedRegistry || owner.registryRoot !== this.managedRegistry.root) throw new Error("Managed subagent registry is unavailable.");
+    const { incomingFailure, certifiedTimeout, resumeAfterStop, disposition } = managedDisposition(record, outcome, this.neverStarted(record));
+    if (owner.disposition && (owner.disposition.resumeAfterStop || owner.disposition.certifiedTimeout
+      || (!resumeAfterStop && !certifiedTimeout && (owner.disposition.reason || !incomingFailure)))) { await this.publishManaged(jobId, outcome); return; }
+    await this.withManagedRegistry(async (registry) => await registry.publish("intent", { identity: this.managedIdentity(record), sequence: owner.publication.sequence + 1,
+      disposition, released: false, ...(this.neverStarted(record) ? { neverStarted: true as const } : {}) }));
+    await this.withManagedLock(async () => await this.storeMutate("subagent.report", (records) => {
+      const record = requireRecord(records, jobId);
+      const current = record.subagentOwnership!;
+      if (!current.disposition?.reason || resumeAfterStop || certifiedTimeout) current.disposition = disposition;
+      if (outcome.usage) current.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: null, ...outcome.usage };
+      if (outcome.question) record.subagentQuestion = outcome.question;
+      current.revoked = true;
+      current.publication.sequence++; current.publication.state = "pending";
+    }));
+    await this.publishManaged(jobId, outcome);
+  }
+
+  private async publishManaged(jobId: string, outcome?: InstanceOutcome): Promise<void> {
+    const previous = this.managedPublications.get(jobId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(async () => {
+      await publishManagedJob(jobId, {
+        assertWritable: () => { if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended."); },
+        read: async (id) => await this.storeGet(id, "subagent.publication"),
+        matchesRegistry: (root) => this.managedRegistry !== undefined && root === this.managedRegistry.root,
+        identity: (record) => this.managedIdentity(record),
+        neverStarted: (record) => this.neverStarted(record),
+        publish: async (phase, publication) => await this.withManagedRegistry(async (registry) => await registry.publish(phase, publication)),
+        confirm: async (id, publication) => await this.confirmManagedPublication(id, publication),
+        recordCertificate: async (id, publication) => await this.recordManagedCertificate(id, publication),
+        acknowledgeReceipt: async (id, publication, record) => await this.acknowledgeManagedReceipt(id, publication, record),
+        discardArtifacts: async (id) => await this.storeDiscardArtifacts(id),
+        finish: (id, released, rejectedAdmission) => {
+          if (released) { this.managedCommands.delete(id); this.closeSubagentLiveInput(id); }
+          if (!rejectedAdmission) this.scheduleWake(id);
+        },
+      });
+    });
+    this.managedPublications.set(jobId, task);
+    try { await task; } finally {
+      if (this.managedPublications.get(jobId) === task) {
+        this.managedPublications.delete(jobId);
+        // A terminal transition can advance publication.sequence while an older
+        // unreleased snapshot is still publishing. Consume the coalesced edge only
+        // after the latest queued publisher leaves the map, then reread durable
+        // state; never recurse inside the service lock or retry an error forever.
+        if (this.managedPublicationRearmPending.delete(jobId)) this.scheduleManagedPublication(jobId);
+      }
+    }
+  }
+
+  private async confirmManagedPublication(jobId: string, publication: SubagentRegistryPublication): Promise<void> {
+    await this.withManagedLock(async () => await this.storeMutate("subagent.publication_confirmed", (records) => {
+      const current = requireRecord(records, jobId).subagentOwnership!;
+      if (current.publication.sequence === publication.sequence) {
+        current.publication.state = "confirmed";
+        current.publication.receiptPending = publication.released;
+      }
+    }));
+  }
+
+  private async recordManagedCertificate(jobId: string, publication: SubagentRegistryPublication): Promise<void> {
+    await this.withManagedLock(async () => await this.storeMutate("subagent.release_certificate_recorded", (records) => {
+      const current = requireRecord(records, jobId);
+      if (!sameSubagentOwner(publication.identity, this.managedIdentity(current))
+        || current.subagentOwnership!.publication.sequence !== publication.sequence) throw new Error("Managed certificate identity changed.");
+      current.subagentOwnership!.publication.receiptRecorded = publication.sequence;
+    }));
+  }
+
+  private async acknowledgeManagedReceipt(jobId: string, publication: SubagentRegistryPublication, record: DurableProcessJobRecord): Promise<void> {
+    await this.withManagedLock(async () => {
+      const occupied = this.runningOccupancy();
+      await this.storeMutate("subagent.release_receipt_acknowledged", (records) => {
+        const current = requireRecord(records, jobId);
+        const owner = current.subagentOwnership!;
+        if (sameSubagentOwner(publication.identity, this.managedIdentity(current))
+          && owner.publication.sequence === publication.sequence && owner.publication.state === "confirmed"
+          && !hasUnresolvedSubagentOwnership(current) && isTerminalProcessJobState(current.state)) owner.publication.receiptPending = false;
+      });
+      // The exact durable acknowledgement owns the capacity transition.
+      if (this.runningOccupancy() < occupied) await this.drainQueue();
+      if (record.rejectedAdmission) await this.storeMutate("admission.release", (records) => {
+        const current = records.get(jobId);
+        if (current?.rejectedAdmission && current.subagentOwnership?.publication.receiptPending === false) records.delete(jobId);
+      });
+    });
+  }
+
+  private scheduleManagedPublication(jobId: string): void {
+    if (this.stopping || this.managedWritesClosed || !this.managedRegistry) return;
+    if (this.managedPublications.has(jobId)) {
+      this.managedPublicationRearmPending.add(jobId);
+      return;
+    }
+    void Promise.resolve().then(async () => {
+      if (this.stopping || this.managedWritesClosed) return;
+      const record = await this.storeGet(jobId, "subagent.pending_publication");
+      if (this.stopping || this.managedWritesClosed) return;
+      if (!record?.subagentOwnership || !isTerminalProcessJobState(record.state)) return;
+      if (!record.subagentOwnership.disposition) await this.reportManaged(jobId, { status: record.state === "timed_out" ? "timeout" : record.state === "cancelled" ? "cancelled" : "interrupted" });
+      else await this.publishManaged(jobId);
+    }).catch(() => { /* P and registry intent remain durable; never replay execution. */ });
+  }
+
+  async checkSubagentOwnerIndex(conversationId: string, known: readonly SubagentKnownOwner[]): Promise<"clear" | "held" | "unavailable"> {
+    return await this.withLock(async () => {
+      if (this.stopping || !this.storageOperational) return "unavailable";
+      const records = await this.storeList("subagent.owner_index");
+      for (const record of records) {
+        if (record.kind !== "internal" || record.origin.conversationId !== conversationId
+          || (isTerminalProcessJobState(record.state) && !hasSubagentObligation(record))) continue;
+        if (!known.some((owner) => owner.instanceId === record.instanceId && owner.jobId === record.jobId
+          && (!record.subagentOwnership || owner.incarnation === record.subagentOwnership.instanceIncarnation))) return "held";
+      }
+      return "clear";
+    }).catch(() => "unavailable" as const);
+  }
+
+  async recover(): Promise<void> {
+    this.agentIncarnation = await this.currentIncarnation();
+    // Fence old tokens before any operator channel can accept late requests.
+    await this.withLock(async () => await this.fenceUnadmittedWakes());
+    const records = await this.storeList("recover");
+    for (const record of records) {
+      if (isTerminalProcessJobState(record.state) && !hasSubagentObligation(record)) continue;
+      if (record.kind === "internal") {
+        const ownership = record.subagentOwnership ? await reconcileSubagentExecutionOwnership(record.subagentOwnership, {
+          currentIncarnation: this.agentIncarnation,
+          readIncarnation: this.readIncarnation,
+          sameIncarnation: async (pid, expected) => await this.sameIncarnation(pid, expected),
+          groupAbsent: (pgid) => this.ownedProcessGroupIsAbsent(pgid),
+          signalGroup: (pgid, signal) => this.signalOwned(pgid, signal),
+          grace: async () => await this.sleep(RECOVERY_KILL_GRACE_MS),
+          waitForGroupExit: async (pgid) => await this.waitForOwnedProcessGroupExit(pgid),
+          cleanup: cleanupPersistedSandboxSettings,
+        }) : undefined;
+        await this.storeMutate("recover.interrupt_internal", (draft) => {
+          const current = draft.get(record.jobId);
+          if (!current || current.generation !== record.generation) return;
+          // Reporting terminality and owner-lock loss never prove an untracked child command exited.
+          // Until exact owner reconciliation supplies proof, retain the original obligation.
+          if (ownership) {
+            if (!isTerminalProcessJobState(current.state)) {
+              ownership.disposition = ownership.disposition?.reason ? ownership.disposition : { status: "interrupted", reason: current.state === "queued" && ownership.owner.settlement === "not_started" ? "continuation_not_started" : "interrupted", continuity: current.state === "queued" && ownership.owner.settlement === "not_started" ? "retained" : ownership.disposition?.continuity ?? "unknown" };
+              ownership.publication.sequence++; ownership.publication.state = "pending";
+            }
+            current.subagentOwnership = ownership;
+            if (ownership.command) retainSubagentCommandReceipt(current.subagentCommandReceipts ??= emptySubagentCommandReceipts(), subagentCommandReceipt(ownership.command, this.now().getTime()));
+          }
+          else if (["starting", "running"].includes(current.state)) current.childStillBusy = true;
+          transitionTerminal(current, "interrupted", this.now(), "process_job_agent_restarted", "Subagent interrupted by restart; never replayed.");
+        });
+        this.scheduleSurfaceUpdate(record.jobId);
+        continue;
+      }
+      let matched = false;
+      let terminated = false;
+      let unreleased = false;
+      let unreleasedSettingsCleaned = false;
+      if (record.pid === null && record.pgid === null && record.processIncarnation === undefined) {
+        // Queued and pre-attestation starting records never crossed the gate's
+        // durable release fence, so no target command can have been spawned.
+        unreleased = true;
+        unreleasedSettingsCleaned = await cleanupPersistedSandboxSettings(record.sandboxSettingsPath);
+      } else if (record.pid !== null && record.processIncarnation !== undefined) {
+        matched = await this.sameIncarnation(record.pid, record.processIncarnation).catch(() => false);
+      }
+      // A detached child created by the kernel is always its own group leader.
+      // Treat any persisted PID/PGID mismatch as corrupt ownership evidence;
+      // matching the PID incarnation alone never authorizes an arbitrary group.
+      if (matched && record.pgid !== null && record.pid === record.pgid) {
+        const termAccepted = this.signalOwned(record.pgid, "SIGTERM");
+        await this.sleep(RECOVERY_KILL_GRACE_MS);
+        let groupExited = termAccepted && this.ownedProcessGroupIsAbsent(record.pgid);
+        let killAccepted = groupExited;
+        if (!groupExited) {
+          // Re-attest the leader immediately before escalation. If it vanished
+          // or its PID was reused during the grace window, never signal that
+          // PGID again: descendants may remain, but an unrelated process is safe.
+          const stillMatched = record.pid !== null
+            && record.processIncarnation !== undefined
+            && await this.sameIncarnation(record.pid, record.processIncarnation).catch(() => false);
+          if (stillMatched) {
+            killAccepted = this.signalOwned(record.pgid, "SIGKILL");
+            groupExited = killAccepted && await this.waitForOwnedProcessGroupExit(record.pgid);
+          }
+        }
+        const settingsCleaned = termAccepted && killAccepted && groupExited
+          ? await cleanupPersistedSandboxSettings(record.sandboxSettingsPath)
+          : false;
+        terminated = termAccepted && killAccepted && groupExited && settingsCleaned;
+      }
+      const message = unreleased
+        ? unreleasedSettingsCleaned
+          ? "The owning agent restarted before the target was ever released; no target was spawned and sandbox settings were removed."
+          : "The owning agent restarted before the target was ever released; no target was spawned, but sandbox settings could not be removed."
+        : terminated
+          ? "The owning agent restarted; the verified process group exited before sandbox cleanup."
+          : "The owning agent restarted without complete proof that the owned process group exited; cleanup was withheld and descendants may remain.";
+      const cleanupComplete = (unreleased && unreleasedSettingsCleaned) || terminated;
+      await this.storeMutate("recover.interrupt", (draft) => {
+        const current = draft.get(record.jobId);
+        if (current === undefined || isTerminalProcessJobState(current.state)) return;
+        transitionTerminal(
+          current,
+          "interrupted",
+          this.now(),
+          cleanupComplete ? "process_job_agent_restarted" : "process_job_cleanup_incomplete",
+          message,
+        );
+      });
+      this.scheduleSurfaceUpdate(record.jobId);
+    }
+    const pending = records
+      .filter((record) => record.wake.state === "pending")
+      .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt)
+        || left.jobId.localeCompare(right.jobId));
+    const overflow = pending.slice(pendingWakeCap(this.settings));
+    if (overflow.length > 0) {
+      this.options.logger?.warn?.("Process-job recovery failed excess pending wake obligations.", {
+        failedWakes: overflow.length,
+        pendingWakeCap: pendingWakeCap(this.settings),
+      });
+      const overflowIds = new Set(overflow.map((record) => record.jobId));
+      await this.storeMutate("recover.bound_pending_wakes", (draft) => {
+        for (const jobId of overflowIds) {
+          const current = draft.get(jobId);
+          if (current?.wake.state !== "pending") continue;
+          current.wake.state = "failed";
+          current.wake.retrySafe = false;
+          recordWakeFailure(current);
+        }
+      });
+    }
+  }
+
+  private async start(
+    origin: ProcessJobOriginRecord,
+    chainDepth: number,
+    request: ServiceStartRequest,
+  ): Promise<ProcessJobStartResult> {
+    let handedOff = false;
+    let admissionTicket: string | undefined;
+    let rejectedManagedJob: string | undefined;
+    let admissionPersistAttempted = false;
+    let verification: SubagentVerificationTarget | undefined;
+    const pending = pendingRequest(isInternal(request) && request.managed ? { ...request, cleanup: async () => {} } : request);
+    try {
+      if (isInternal(request) && request.managed) {
+        const managed = request.managed;
+        if (!this.managedRegistry) throw new ProcessJobServiceError("process_job_controller_unavailable");
+        await this.withManagedLock(async () => {
+          if (this.managedAdmissionTickets.has(request.jobId) || this.managedAdmissionTickets.size >= 128) throw new ProcessJobServiceError("process_job_conflict");
+          this.managedAdmissionTickets.add(request.jobId); admissionTicket = request.jobId;
+          assertAvailable(origin, chainDepth, request, this.settings, this.stopping || this.stopped, this.storageOperational);
+        });
+        const verified = await this.withManagedRegistry(async (registry) => await registry.verify({ storeRoot: this.settings.stateDir, jobId: request.jobId, conversationId: origin.conversationId,
+          instanceId: request.instanceId, instanceIncarnation: managed.instanceIncarnation, turnToken: managed.turnToken }));
+        verification = verified?.verification;
+      }
+      const result = await this.withLock(async () => {
+        assertAvailable(origin, chainDepth, request, this.settings, this.stopping || this.stopped, this.storageOperational);
+        const jobId = isInternal(request) ? request.jobId : this.randomId();
+        const admissionRecords = await this.storeList("admission.list");
+        // Reject before even touching artifact paths owned by an existing job.
+        if (admissionRecords.some((record) => record.jobId === jobId)) throw new ProcessJobServiceError("process_job_conflict");
+        let notAdmitted: ProcessJobServiceError | undefined;
+        try {
+          enforceAdmission(admissionRecords, origin.normalizedReplyTarget, chainDepth, this.settings);
+        } catch (error) {
+          if (!isInternal(request) || !request.managed || !(error instanceof ProcessJobServiceError)) throw error;
+          notAdmitted = error;
+        }
+        this.assertLiveSnapshotAdmissionCapacity();
+        const artifacts = await this.storeEnsureArtifacts(jobId);
+        const admittedAt = this.now();
+        const maxRuntimeMs = Math.min(this.settings.maxRuntimeMs, request.timeoutMs ?? this.settings.maxRuntimeMs);
+        const previewChars = Math.min(this.settings.previewChars, request.maxOutputChars ?? this.settings.previewChars);
+        const summary = processJobSummary(
+          request,
+          processDescriptionSecrets(request.prepared?.env),
+          this.options.workspace,
+        );
+        const record: DurableProcessJobRecord = {
+          schemaVersion: 1,
+          ...(isInternal(request) ? { kind: "internal" as const, instanceId: request.instanceId, childStillBusy: false,
+            ...(request.managed ? { subagentOwnership: this.newManagedOwnership(request), ...(verification ? { subagentVerification: verification } : {}) } : {}) } : {}),
+          generation: randomUUID(),
+          jobId,
+          tool: request.tool,
+          state: "queued",
+          summary,
+          agentIncarnation: this.agentIncarnation,
+          pid: null,
+          pgid: null,
+          sandboxSettingsPath: request.prepared?.sandboxSettingsPath ?? null,
+          argvSummary: summary,
+          cwd: "Working directory (value redacted)",
+          envKeys: effectiveEnvironmentKeys(request.prepared?.env),
+          origin,
+          chainDepth,
+          wakeOnCompletion: notAdmitted ? false : request.wakeOnCompletion ?? true,
+          maxRuntimeMs,
+          maxOutputBytes: this.settings.maxOutputBytes,
+          previewChars,
+          admittedAt: admittedAt.toISOString(),
+          queueDeadlineAt: new Date(admittedAt.getTime() + this.settings.maxQueueAgeMs).toISOString(),
+          startedAt: null,
+          runtimeDeadlineAt: null,
+          completedAt: null,
+          exitCode: null,
+          signal: null,
+          durationMs: null,
+          stdoutBytes: 0,
+          stderrBytes: 0,
+          truncated: false,
+          preview: "",
+          stdoutRef: artifacts.stdoutRef,
+          stderrRef: artifacts.stderrRef,
+          cancelRequested: false,
+          wake: {
+            state: "pending",
+            attempts: 0,
+            deliveryKey: `process-job:${jobId}`,
+            lastAttemptAt: null,
+            retrySafe: false,
+            destinationUnavailableAttempts: 0,
+            conversationBusyAttempts: 0,
+            conversationBusySinceAt: null,
+          },
+          lastError: null,
+        };
+        if (notAdmitted) {
+          transitionTerminal(record, "failed", this.now(), "process_job_failed", "The child drive was not admitted; no provider or command started.");
+          record.wake.state = "failed";
+          record.rejectedAdmission = true;
+          record.subagentOwnership!.revoked = true;
+          record.subagentOwnership!.disposition = { status: "failed", reason: "continuation_not_started", continuity: "retained" };
+        }
+        try {
+          admissionPersistAttempted = true;
+          await this.storeMutate("admission.persist", (records) => {
+            if (records.has(jobId)) throw new ProcessJobServiceError("process_job_conflict");
+            records.set(jobId, record);
+          });
+        } catch (error) {
+          await this.storeDiscardArtifacts(jobId).catch(() => undefined);
+          throw error;
+        }
+        if (notAdmitted) { rejectedManagedJob = jobId; throw notAdmitted; }
+        this.pending.set(jobId, pending);
+        this.activityChanged();
+        handedOff = true;
+        // Drain existing eligible work first; a new request must not overtake it.
+        await this.drainQueue(jobId);
+        const launched = await this.storeGet(jobId, "admission.result");
+        if (!launched || isTerminalProcessJobState(launched.state)) throw new ProcessJobServiceError(launched?.lastError?.code ?? "process_job_store_error");
+        if (launched.state === "running" || launched.state === "starting") return {
+          jobId, state: launched.state, startedAt: launched.startedAt, maxRuntimeMs,
+        };
+        this.armQueueTimer();
+        const waiting = (await this.storeList("admission.position"))
+          .filter((entry) => entry.state === "queued")
+          .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.jobId.localeCompare(right.jobId));
+        return { jobId, state: "queued" as const, startedAt: null, maxRuntimeMs,
+          queuePosition: waiting.findIndex((entry) => entry.jobId === jobId) + 1,
+          queueDeadlineAt: record.queueDeadlineAt };
+      });
+      await this.updateInitialSurface(result.jobId);
+      return result;
+    } catch (error) {
+      if (rejectedManagedJob) await this.publishManaged(rejectedManagedJob).catch(() => undefined); // P remains pinned on publication failure.
+      if (isInternal(request) && request.managed && admissionTicket && !admissionPersistAttempted
+        && this.storageOperational && !this.stopping && !this.managedWritesClosed
+        && !this.recordSnapshot.has(request.jobId) && !this.pending.has(request.jobId) && !this.active.has(request.jobId)
+        && isSubagentUuid(request.managed.instanceIncarnation) && request.managed.turnToken === request.jobId) {
+        // This exact controller call owns the admission ticket and never entered
+        // persistence or handed work off. Keep the positive proof only through
+        // registry rollback. Ambiguous writes, collisions and owner loss stay
+        // fenced; a caller-supplied error/absence is never release authority.
+        const identity = { storeRoot: this.settings.stateDir, jobId: request.jobId,
+          conversationId: origin.conversationId, instanceId: request.instanceId,
+          instanceIncarnation: request.managed.instanceIncarnation, turnToken: request.managed.turnToken };
+        const rollback = await this.withManagedLock(async () => {
+          if (!this.storageOperational || this.stopping) return false;
+          // The snapshot is bounded: an older terminal collision may not be in
+          // memory. Check the owned store as well before issuing this proof.
+          if (await this.storeGet(request.jobId, "admission.rollback")) return false;
+          this.unadmittedManagedStarts.set(request.jobId, identity);
+          return true;
+        }).catch(() => false);
+        if (rollback) {
+          try { await request.cleanup(); }
+          catch { /* The tool's normal release reports any unresolved registry fence. */ }
+          finally { this.unadmittedManagedStarts.delete(request.jobId); }
+        }
+      }
+      let cleanupIncomplete = false;
+      if (!handedOff) {
+        try { await pending.cleanup(); } catch { cleanupIncomplete = true; }
+      }
+      if (cleanupIncomplete) {
+        this.options.logger?.warn?.("Process-job sandbox cleanup was incomplete after rejected admission.", {
+          operation: "admission.reject",
+        });
+        throw new ProcessJobServiceError("process_job_cleanup_incomplete");
+      }
+      if (error instanceof ProcessJobServiceError) throw error;
+      throw new ProcessJobServiceError("process_job_store_error");
+    } finally {
+      if (admissionTicket) this.managedAdmissionTickets.delete(admissionTicket);
+    }
+  }
+
+  activeExecutionCount(): number {
+    // Admitted queued work is lost on stop too. A completion's owed wake stays
+    // busy through pre-delivery work and durable receipt settlement, closing the
+    // hand-off gap before the central responder raises its own turn counter.
+    return new Set([...this.pending.keys(), ...this.startingExecutions, ...this.active.keys(),
+      ...this.internalExecutionFlights, ...this.managedExecutionFlights, ...this.wakeTasks.keys()]).size;
+  }
+
+  private activityChanged(): void {
+    this.options.onActivityChange?.(this.activeExecutionCount());
+  }
+
+  private async launch(jobId: string, scheduleSurface = true): Promise<ProcessJobStartResult> {
+    this.startingExecutions.add(jobId);
+    this.activityChanged();
+    try { return await this.launchExecution(jobId, scheduleSurface); }
+    finally { this.startingExecutions.delete(jobId); this.activityChanged(); }
+  }
+
+  private async launchExecution(jobId: string, scheduleSurface: boolean): Promise<ProcessJobStartResult> {
+    const pending = this.pending.get(jobId);
+    if (pending === undefined) {
+      throw new ProcessJobServiceError("process_job_agent_restarted", "Queued process-job launch ownership was lost.");
+    }
+    const current = await this.storeGet(jobId, "launch.get");
+    if (current === undefined || current.state !== "queued") {
+      throw new ProcessJobServiceError("process_job_conflict", "Process job is no longer queued.");
+    }
+    if (Date.parse(current.queueDeadlineAt) <= this.now().getTime()) {
+      await this.expireJob(jobId);
+      throw new ProcessJobServiceError("process_job_queue_expired", "Process job expired before it could start.");
+    }
+    await this.storeMutate("launch.starting", (records) => {
+      const record = requireRecord(records, jobId);
+      if (record.state !== "queued") throw new ProcessJobServiceError("process_job_conflict", "Process job is no longer queued.");
+      record.state = "starting";
+    });
+
+    const outputTail = new ProcessJobOutputTail({
+      previewChars: current.previewChars,
+      maxOutputBytes: current.maxOutputBytes,
+      secrets: pending.redactionSecrets,
+      onFailure: () => this.options.logger?.warn?.("Process-job live output tail was discarded after an internal failure.", {
+        jobId,
+      }),
+    });
+    if (isInternal(pending.request)) {
+      const startedAt = this.now().toISOString();
+      try {
+        // No runner exists yet. A failed write is recoverable only after a
+        // successful terminal rollback; otherwise the normal degraded fence wins.
+        await this.storeMutate("launch.running_internal", (records) => {
+          const record = requireRecord(records, jobId);
+          record.state = "running";
+          record.startedAt = startedAt;
+          record.runtimeDeadlineAt = new Date(Date.parse(startedAt) + record.maxRuntimeMs).toISOString();
+        }, true);
+      } catch {
+        outputTail.discard();
+        try {
+          await this.storeMutate("launch.internal_rollback", (records) => {
+            const record = requireRecord(records, jobId);
+            if (!isTerminalProcessJobState(record.state)) transitionTerminal(record, "spawn_failed", this.now(),
+              "process_job_store_error", "Subagent was not started because running state could not be persisted.");
+          });
+        } finally { await this.cleanupPendingAfterTerminal(jobId); }
+        this.scheduleSurfaceUpdate(jobId);
+        this.scheduleWake(jobId);
+        throw new ProcessJobServiceError("process_job_store_error");
+      }
+      // PeerAgent reports its answer through output/preview, not subagent telemetry.
+      const progress = pending.request.tool === "PeerAgent" ? undefined : new SubagentJobProgress(pending.redactionSecrets);
+      const internalRequest = pending.request;
+      this.internalExecutionFlights.add(jobId); this.activityChanged();
+      const executionRequest: InternalProcessJobRequest = { ...pending.request,
+        run: async (...args) => {
+          try { return await internalRequest.run(...args); }
+          finally { this.internalExecutionFlights.delete(jobId); this.activityChanged(); }
+        },
+      };
+      const handle = launchInternalProcessJob(executionRequest, current.maxRuntimeMs, current.maxOutputBytes, undefined,
+        (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event), Date.parse(startedAt) + current.maxRuntimeMs,
+        pending.request.managed ? this.managedExecution(jobId, Date.parse(startedAt) + current.maxRuntimeMs) : undefined);
+      this.active.set(jobId, { ...pending, handle, outputTail, ...(progress ? { progress } : {}) });
+      this.activityChanged();
+      const settlement = handle.completion
+        // Settlement closes the mailbox before any reporting can throw, so a
+        // steer that arrives after the turn ends is refused rather than queued.
+        .finally(() => { this.closeSubagentLiveInput(jobId); })
+        .then((result) => this.complete(jobId, result))
+        .catch((error: unknown) => { if (this.stopping) this.shutdownFailures.push(error); })
+        // Removal waits for the durable terminal state, so the window in
+        // between still answers a steer with `inactive` rather than
+        // `not_started`. This chain always settles, so it always runs.
+        .finally(() => { this.forgetSubagentLiveInput(jobId); this.settlements.delete(jobId); });
+      this.settlements.set(jobId, settlement);
+      if (scheduleSurface) this.scheduleSurfaceUpdate(jobId);
+      return { jobId, state: "running", startedAt, maxRuntimeMs: current.maxRuntimeMs };
+    }
+    let handle: ProcessJobProcessHandle | undefined;
+    try {
+      handle = pending.request.launch({
+        timeoutMs: current.maxRuntimeMs,
+        maxBufferBytes: current.maxOutputBytes,
+        onStdout: (chunk: Buffer) => outputTail.writeStdout(chunk),
+        onStderr: (chunk: Buffer) => outputTail.writeStderr(chunk),
+      });
+      assertOwnedProcessHandle(handle);
+    } catch (error) {
+      outputTail.discard();
+      await cancelMalformedHandle(handle);
+      let cleanupIncomplete = false;
+      try { await pending.cleanup(); } catch { cleanupIncomplete = true; }
+      if (cleanupIncomplete) {
+        this.options.logger?.warn?.("Process-job sandbox cleanup was incomplete after launch failure.", {
+          jobId,
+          operation: "launch.cleanup",
+        });
+      }
+      this.pending.delete(jobId);
+      this.activityChanged();
+      await this.storeMutate("launch.spawn_failed", (records) => {
+        const record = requireRecord(records, jobId);
+        if (!isTerminalProcessJobState(record.state)) {
+          transitionTerminal(
+            record,
+            "spawn_failed",
+            this.now(),
+            cleanupIncomplete ? "process_job_cleanup_incomplete" : "process_job_spawn_failed",
+            boundedSafeDiagnostic("The process could not be launched."),
+          );
+        }
+      });
+      this.scheduleSurfaceUpdate(jobId);
+      this.scheduleWake(jobId);
+      throw new ProcessJobServiceError(
+        cleanupIncomplete ? "process_job_cleanup_incomplete" : "process_job_spawn_failed",
+      );
+    }
+    const completion = handle.completion.then(
+      (result) => result,
+      (error) => rejectedProcessResult(error),
+    );
+    const active: ActiveProcessJob = { ...pending, handle, outputTail };
+    this.active.set(jobId, active);
+    this.activityChanged();
+    try {
+      const processIncarnation = await this.readIncarnation(handle.pid);
+      if (processIncarnation === undefined) {
+        throw new Error("The gated process owner incarnation could not be attested.");
+      }
+      // Phase one closes the spawn-to-persistence crash window: the durable
+      // starting record owns only the command-agnostic gate. The raw target is
+      // still blocked on its anonymous pipe at this point.
+      await this.storeMutate("launch.attest", (records) => {
+        const record = requireRecord(records, jobId);
+        if (record.state !== "starting") {
+          throw new ProcessJobServiceError(
+            "process_job_conflict",
+            "Process job left the starting state before ownership metadata was recorded.",
+          );
+        }
+        record.pid = handle.pid;
+        record.pgid = handle.pgid;
+        record.processIncarnation = processIncarnation;
+        record.startedAt = handle.startedAt;
+        record.runtimeDeadlineAt = new Date(Date.parse(handle.startedAt) + record.maxRuntimeMs).toISOString();
+      });
+      await handle.release();
+      // Only the durable owner can release the exact target. A crash after the
+      // release remains recoverable through the already-recorded incarnation.
+      await this.storeMutate("launch.running", (records) => {
+        const record = requireRecord(records, jobId);
+        if (record.state === "starting") record.state = "running";
+      });
+    } catch (error) {
+      // Either the target is still fenced or its attested group is already
+      // durable. In both cases the kernel-owned cancel closure is the only safe
+      // termination authority; never infer or signal a caller-supplied group.
+      try { handle.cancel(); } catch { /* completion/recovery remains authoritative */ }
+      const termination = await completion.catch(() => undefined);
+      if (termination?.groupExitConfirmed !== undefined) {
+        active.groupExitConfirmed = termination.groupExitConfirmed;
+      }
+      active.outputTail.discard();
+      const terminationConfirmed = termination?.groupExitConfirmed !== false;
+      let cleanupIncomplete = !terminationConfirmed;
+      if (cleanupIncomplete) {
+        this.options.logger?.warn?.("Spawn-fence cancellation could not confirm owned process-group exit; sandbox cleanup was withheld.", {
+          jobId,
+        });
+      } else {
+        try { await active.cleanup(); } catch { cleanupIncomplete = true; }
+      }
+      clearTimeout(this.active.get(jobId)?.progressTimer);
+      this.active.delete(jobId);
+      this.activityChanged();
+      this.pending.delete(jobId);
+      this.activityChanged();
+      let failureRecorded = false;
+      try {
+        await this.storeMutate("launch.rollback", (records) => {
+          const record = records.get(jobId);
+          if (record === undefined || isTerminalProcessJobState(record.state)) return;
+          transitionTerminal(
+            record,
+            "spawn_failed",
+            this.now(),
+            cleanupIncomplete ? "process_job_cleanup_incomplete" : "process_job_store_error",
+            terminationConfirmed
+              ? "The spawned process was terminated because its ownership metadata could not be recorded."
+              : "Process-group exit could not be confirmed after the ownership-record failure; sandbox cleanup was withheld.",
+          );
+          failureRecorded = true;
+        });
+      } catch {
+        // The original store failure remains authoritative. Recovery will
+        // interrupt the durable starting record if this fallback cannot land.
+      }
+      if (failureRecorded) {
+        this.scheduleSurfaceUpdate(jobId);
+        this.scheduleWake(jobId);
+      }
+      if (error instanceof ProcessJobServiceError) throw error;
+      throw new ProcessJobServiceError(
+        "process_job_store_error",
+        boundedSafeDiagnostic("Process-job ownership could not be recorded."),
+      );
+    }
+    if (scheduleSurface) this.scheduleSurfaceUpdate(jobId);
+    const settlement = completion.then((result) => {
+      if (result.groupExitConfirmed !== undefined) active.groupExitConfirmed = result.groupExitConfirmed;
+      return this.complete(jobId, result);
+    }).catch((error: unknown) => {
+      if (this.stopping) this.shutdownFailures.push(error);
+      this.options.logger?.warn?.("Process-job completion could not be recorded.", {
+        jobId,
+        reason: boundedSafeDiagnostic("unknown completion failure"),
+      });
+    }).finally(() => this.settlements.delete(jobId));
+    this.settlements.set(jobId, settlement);
+    return { jobId, state: "running", startedAt: handle.startedAt, maxRuntimeMs: current.maxRuntimeMs };
+  }
+
+  /** Coalesce only child telemetry; ordinary command lifecycle scheduling stays unchanged. */
+  private reportSubagentProgress(jobId: string, event: SubagentProgressEvent): void {
+    const active = this.active.get(jobId);
+    if (!active?.progress?.report(event) || active.progressTimer !== undefined) return;
+    active.progressTimer = setTimeout(() => {
+      void this.withLock(async () => {
+        if (this.active.get(jobId) !== active || !this.storageOperational) return;
+        delete active.progressTimer;
+        await this.storeMutate("progress.persist", (records) => {
+          const record = records.get(jobId);
+          if (record?.kind === "internal" && record.tool !== "PeerAgent" && !isTerminalProcessJobState(record.state)) {
+            record.subagentProgress = active.progress!.snapshot();
+          }
+        });
+        this.scheduleSurfaceUpdate(jobId);
+      }).catch(() => {
+        this.options.logger?.warn?.("Subagent progress could not be persisted.", { jobId });
+      });
+    }, 250);
+    active.progressTimer.unref?.();
+  }
+
+  private async complete(jobId: string, result: InternalProcessJobResult): Promise<void> {
+    if (this.recordSnapshot.get(jobId)?.subagentOwnership && (result.timedOut || result.aborted || result.code !== 0)) {
+      await this.reportManaged(jobId, { status: result.timedOut ? "timeout" : result.aborted ? "cancelled" : "failed" });
+    }
+    await this.withLock(async () => {
+      const active = this.active.get(jobId);
+      if (active === undefined) return;
+      try {
+      clearTimeout(active.progressTimer);
+      // Managed ownership stores this exact child turn's settled usage before its
+      // reporting result returns. The instance registry accumulates separately;
+      // never label that cumulative total as this job's cost or token count.
+      const turnUsage = this.recordSnapshot.get(jobId)?.subagentOwnership?.usage;
+      const finalProgress = active.progress?.finish(result.answer, turnUsage);
+      const finalTail = active.outputTail.finalize();
+      let cleanupError: unknown;
+      if (result.groupExitConfirmed === false) {
+        cleanupError = new Error(
+          "Sandbox cleanup was withheld because owned process-group exit was not confirmed.",
+        );
+      } else {
+        try { await active.cleanup(); } catch (error) { cleanupError = error; }
+      }
+      const runnerTruncated = result.truncated || result.bufferExceeded;
+      const stdout = boundOutput(
+        redactOutput(result.stdout, active.redactionSecrets, runnerTruncated),
+        this.settings.maxOutputBytes,
+      );
+      const stderr = boundOutput(
+        redactOutput(result.stderr, active.redactionSecrets, runnerTruncated),
+        Math.max(0, this.settings.maxOutputBytes - Buffer.byteLength(stdout.text, "utf8")),
+      );
+      const artifactWrites = await Promise.allSettled([
+        this.storeWriteArtifact(jobId, "stdout", stdout.text),
+        this.storeWriteArtifact(jobId, "stderr", stderr.text),
+      ]);
+      const artifactError = artifactWrites
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => result.reason)[0];
+      const completionRecord = await this.storeGet(jobId, "complete.get");
+      let transitioned = false;
+      try {
+        await this.storeMutate("complete.persist", (records) => {
+          const record = records.get(jobId);
+          if (record === undefined) return;
+          const alreadyTerminal = isTerminalProcessJobState(record.state);
+          if (record.kind === "internal") {
+            if (record.subagentOwnership && !alreadyTerminal) {
+              record.subagentOwnership.publication.sequence++;
+              record.subagentOwnership.publication.state = "pending";
+            }
+            record.childStillBusy = result.childStillBusy === true;
+            if (record.tool !== "PeerAgent" && finalProgress) record.subagentProgress = finalProgress;
+            if (!result.peerQuestion) this.pendingPeerRetirements.delete(jobId);
+            if (result.peerQuestion && record.tool === "PeerAgent") {
+              const redactQuestionText = (text: string, maxBytes: number): string => {
+                const redacted = redactOutput(text, active.redactionSecrets);
+                const bytes = Buffer.from(redacted, "utf8");
+                return bytes.length <= maxBytes ? redacted
+                  : `${bytes.subarray(0, maxBytes - 20).toString("utf8").replace(/�$/u, "")} [truncated]`;
+              };
+              const schemaText = redactOutput(JSON.stringify(result.peerQuestion.requestedSchema), active.redactionSecrets);
+              let safeSchema: Record<string, unknown> = { type: "object", properties: {},
+                description: "Peer form options redacted or oversized; decline if choices cannot be verified." };
+              if (Buffer.byteLength(schemaText, "utf8") <= 8_192) {
+                try {
+                  const parsed: unknown = JSON.parse(schemaText);
+                  if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) safeSchema = parsed as Record<string, unknown>;
+                } catch { /* keep the bounded redacted fallback */ }
+              }
+              // A retirement that raced ahead of this persist wins over awaiting_answer.
+              const early = this.pendingPeerRetirements.get(jobId);
+              this.pendingPeerRetirements.delete(jobId);
+              record.peerQuestion = { ...result.peerQuestion,
+                ...(early?.questionId === result.peerQuestion.questionId ? { state: early.state } : {}),
+                message: redactQuestionText(result.peerQuestion.message, 2_000), requestedSchema: safeSchema };
+            }
+            if (result.question && record.tool !== "PeerAgent") {
+              const options = [...new Set(result.question.options?.map((option) => redactOutput(option, active.redactionSecrets).slice(0, 200).trim()).filter(Boolean))].slice(0, 5);
+              record.subagentQuestion = {
+                question: redactOutput(result.question.question, active.redactionSecrets).slice(0, 2000) || "Child requested a parent reply (question redacted).",
+                ...(options.length >= 2 ? { options } : {}),
+              };
+            }
+          }
+          record.exitCode = result.code;
+          record.signal = result.signal;
+          record.durationMs = Math.max(0, Math.floor(result.durationMs));
+          record.stdoutBytes = artifactWrites[0]?.status === "fulfilled"
+            ? Buffer.byteLength(stdout.text, "utf8")
+            : 0;
+          record.stderrBytes = artifactWrites[1]?.status === "fulfilled"
+            ? Buffer.byteLength(stderr.text, "utf8")
+            : 0;
+          if (artifactWrites[0]?.status !== "fulfilled") record.stdoutRef = null;
+          if (artifactWrites[1]?.status !== "fulfilled") record.stderrRef = null;
+          record.truncated = result.truncated || result.bufferExceeded
+            || finalTail?.truncated === true
+            || stdout.truncated
+            || stderr.truncated
+            || artifactError !== undefined;
+          // Even when an artifact cannot be published, keep the bounded,
+          // redacted preview in the durable terminal record instead of silently
+          // dropping the process result.
+          record.preview = finalTail?.preview.length
+            ? finalTail.preview
+            : outputPreview(stdout.text, stderr.text, record.previewChars);
+          if (alreadyTerminal) {
+            if (cleanupError !== undefined) {
+              appendOperationalFailure(record, "process_job_cleanup_incomplete");
+            }
+            if (artifactError !== undefined) {
+              appendOperationalFailure(record);
+            }
+            return;
+          }
+          if (this.stopping && !this.drainingForRestart) {
+            transitionTerminal(
+              record,
+              "interrupted",
+              this.now(),
+              "process_job_agent_restarted",
+              record.kind === "internal" && record.childStillBusy
+                ? "The agent stopped reporting this job; childStillBusy:true retains the child lock and generation lease until actual settlement or process death. A later start will deliver the recovery wake."
+                : SHUTDOWN_INTERRUPTED_MESSAGE,
+            );
+            if (cleanupError !== undefined) {
+              appendOperationalFailure(record, "process_job_cleanup_incomplete");
+            }
+            if (artifactError !== undefined) {
+              appendOperationalFailure(record);
+            }
+          } else {
+            const terminal = terminalFromResult(
+              record,
+              result,
+              cleanupError,
+              artifactError,
+            );
+            transitionTerminal(record, terminal.state, this.now(), terminal.code, terminal.message);
+          }
+          transitioned = true;
+        });
+      } catch (error) {
+        // The owner could not durably publish this result (e.g. a peer question);
+        // let an internal owner release anything it still holds for it.
+        if (isInternal(active.request)) {
+          try { active.request.onSettlementFailure?.(); } catch { /* best effort */ }
+        }
+        if (completionRecord !== undefined && !isTerminalProcessJobState(completionRecord.state)) {
+          completionRecord.exitCode = result.code;
+          completionRecord.signal = result.signal;
+          completionRecord.durationMs = Math.max(0, Math.floor(result.durationMs));
+          completionRecord.stdoutBytes = artifactWrites[0]?.status === "fulfilled"
+            ? Buffer.byteLength(stdout.text, "utf8")
+            : 0;
+          completionRecord.stderrBytes = artifactWrites[1]?.status === "fulfilled"
+            ? Buffer.byteLength(stderr.text, "utf8")
+            : 0;
+          if (artifactWrites[0]?.status !== "fulfilled") completionRecord.stdoutRef = null;
+          if (artifactWrites[1]?.status !== "fulfilled") completionRecord.stderrRef = null;
+          completionRecord.truncated = result.truncated || result.bufferExceeded
+            || finalTail?.truncated === true
+            || stdout.truncated
+            || stderr.truncated
+            || artifactError !== undefined;
+          if (completionRecord.kind === "internal" && completionRecord.tool !== "PeerAgent" && finalProgress) completionRecord.subagentProgress = finalProgress;
+          completionRecord.preview = finalTail?.preview.length
+            ? finalTail.preview
+            : outputPreview(stdout.text, stderr.text, completionRecord.previewChars);
+          transitionTerminal(
+            completionRecord,
+            "failed",
+            this.now(),
+            "process_job_store_error",
+            "The process completed, but its terminal state could not be persisted. Wake delivery was withheld; restart recovery will reconcile the durable record.",
+          );
+          if (cleanupError !== undefined) {
+            appendOperationalFailure(completionRecord, "process_job_cleanup_incomplete");
+          }
+          if (artifactError !== undefined) {
+            appendOperationalFailure(completionRecord);
+          }
+          completionRecord.wake.state = "failed";
+          completionRecord.wake.retrySafe = false;
+          this.completionOverlays.set(jobId, projectProcessJob(completionRecord));
+        }
+        this.scheduleSurfaceUpdate(jobId);
+        throw error;
+      }
+      if (this.stopping) {
+        if (cleanupError !== undefined) this.shutdownFailures.push(cleanupError);
+        if (artifactError !== undefined) this.shutdownFailures.push(artifactError);
+      }
+      if (transitioned) {
+        this.scheduleSurfaceUpdate(jobId);
+        this.scheduleWake(jobId);
+      }
+      clearTimeout(this.active.get(jobId)?.progressTimer);
+      this.active.delete(jobId);
+      this.activityChanged();
+      this.pending.delete(jobId);
+      this.activityChanged();
+      await this.storeApplyRetention("complete.retention");
+      await this.drainQueue();
+      } finally {
+        // Retire reporting resources even if the read failed. Durable/snapshot
+        // U/P still occupies the original slot; deleting this map entry is not
+        // evidence of provider or command settlement.
+        clearTimeout(this.active.get(jobId)?.progressTimer);
+        this.active.delete(jobId);
+        this.activityChanged();
+        this.pending.delete(jobId);
+        this.activityChanged();
+      }
+    });
+  }
+
+  private runningOccupancy(): number {
+    return Math.max(this.active.size, [...this.recordSnapshot.values()].filter((record) =>
+      record.state === "starting" || record.state === "running" || (isTerminalProcessJobState(record.state) && hasSubagentObligation(record))).length);
+  }
+
+  private async drainQueue(initialJobId?: string): Promise<void> {
+    while (!this.stopping && this.storageOperational) {
+      const records = await this.storeList("queue.drain");
+      const queued = records.filter((record) => record.state === "queued")
+        .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.jobId.localeCompare(right.jobId));
+      const expired = queued.find((record) => Date.parse(record.queueDeadlineAt) <= this.now().getTime());
+      if (expired) { await this.expireJob(expired.jobId); continue; }
+      if (this.runningOccupancy() >= this.settings.maxConcurrent) break;
+      const eligible = queued.find((record) => conversationSlotAvailable(records, record, this.settings));
+      if (!eligible) break;
+      try { await this.launch(eligible.jobId, eligible.jobId !== initialJobId); }
+      catch (error) {
+        if (eligible.jobId === initialJobId) throw error;
+        // Only a persisted terminal transition permits moving to the next job.
+        if ((await this.storeGet(eligible.jobId, "queue.launch_failure"))?.state === "queued") break;
+      }
+    }
+    this.armQueueTimer();
+  }
+
+  private async expireJob(jobId: string): Promise<void> {
+    let transitioned = false;
+    await this.storeMutate("queue.expire", (records) => {
+      const record = records.get(jobId);
+      if (record?.state !== "queued") return;
+      transitionTerminal(
+        record,
+        "queue_expired",
+        this.now(),
+        "process_job_queue_expired",
+        "Process job exceeded its maximum queue age before spawn.",
+      );
+      transitioned = true;
+    });
+    if (transitioned) {
+      await this.cleanupPendingAfterTerminal(jobId);
+      this.scheduleSurfaceUpdate(jobId);
+      this.scheduleWake(jobId);
+    }
+  }
+
+  private armQueueTimer(): void {
+    const generation = ++this.queueTimerGeneration;
+    if (this.queueTimer !== undefined) clearTimeout(this.queueTimer);
+    this.queueTimer = undefined;
+    if (this.stopping || !this.storageOperational) return;
+    void this.storeList("queue.arm").then((records) => {
+      if (generation !== this.queueTimerGeneration) return;
+      const deadline = records
+        .filter((record) => record.state === "queued")
+        .map((record) => Date.parse(record.queueDeadlineAt))
+        .sort((left, right) => left - right)[0];
+      if (deadline === undefined || this.stopping || !this.storageOperational) return;
+      const timer = setTimeout(() => {
+        if (this.queueTimer === timer) this.queueTimer = undefined;
+        if (generation !== this.queueTimerGeneration || this.stopping || !this.storageOperational) return;
+        void this.withLock(async () => {
+          for (const record of await this.storeList("queue.expiry")) {
+            if (record.state === "queued" && Date.parse(record.queueDeadlineAt) <= this.now().getTime()) {
+              await this.expireJob(record.jobId);
+            }
+          }
+          await this.drainQueue();
+        }).catch((error: unknown) => {
+          this.options.logger?.warn?.("Process-job queue expiry could not be recorded.", {
+            reason: boundedSafeDiagnostic("unknown queue-expiry failure"),
+          });
+        });
+      }, Math.max(0, deadline - this.now().getTime()));
+      this.queueTimer = timer;
+      timer.unref?.();
+    }).catch((error: unknown) => {
+      if (generation !== this.queueTimerGeneration) return;
+      this.options.logger?.warn?.("Process-job queue deadline could not be loaded.", {
+        reason: boundedSafeDiagnostic("unknown queue-deadline failure"),
+      });
+    });
+  }
+
+  private disarmQueueTimer(): void {
+    this.queueTimerGeneration += 1;
+    if (this.queueTimer !== undefined) clearTimeout(this.queueTimer);
+    this.queueTimer = undefined;
+  }
+
+  private scheduleWake(jobId: string): void {
+    const pendingOwner = this.recordSnapshot.get(jobId);
+    if (pendingOwner?.rejectedAdmission) return;
+    if (pendingOwner?.subagentOwnership && hasPendingSubagentPublication(pendingOwner)) {
+      this.scheduleManagedPublication(jobId);
+      return;
+    }
+    if (!this.wakesActive || this.stopping || this.wakeTasks.has(jobId)) return;
+    let task!: Promise<void>;
+    task = Promise.resolve()
+      .then(async () => await this.deliverWake(jobId))
+      .catch((error: unknown) => {
+        this.options.logger?.warn?.("Process-job wake settlement failed.", {
+          jobId,
+          reason: boundedSafeDiagnostic("unknown wake-settlement failure"),
+        });
+      })
+      .finally(() => {
+        if (this.wakeTasks.get(jobId) === task) {
+          this.wakeTasks.delete(jobId);
+          this.activityChanged();
+          if (this.wakeRearmPending.delete(jobId)) this.armWakeRearm(jobId);
+        }
+      });
+    this.wakeTasks.set(jobId, task);
+    this.activityChanged();
+  }
+
+  private armWakeRearm(jobId: string): void {
+    const previous = this.wakeRearmTimers.get(jobId);
+    if (previous !== undefined) clearTimeout(previous);
+    if (!this.wakesActive || this.stopping) {
+      this.wakeRearmTimers.delete(jobId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (this.wakeRearmTimers.get(jobId) !== timer) return;
+      this.wakeRearmTimers.delete(jobId);
+      this.scheduleWake(jobId);
+    }, this.wakeBusyRearmMs);
+    this.wakeRearmTimers.set(jobId, timer);
+    timer.unref?.();
+  }
+
+  private async deliverWake(jobId: string): Promise<void> {
+    await deliverProcessJobWake(jobId, {
+      beginAttempt: async (id) => await this.beginWakeAttempt(id),
+      settleAttempt: async (id, attempt, result, decision, silent) => await this.settleWakeAttempt(id, attempt, result, decision, silent),
+      readSalvage: async (record) => await this.readWakeSalvage(record),
+      updateSurface: async (projection) => await this.updateSurface(projection),
+      updateSurfaceById: async (id) => await this.updateSurfaceById(id),
+      wake: this.options.wake,
+      now: this.now,
+      applyRetention: async () => await this.withLock(async () => await this.storeApplyRetention("wake.retention")),
+      rearm: (id) => { this.wakeRearmPending.add(id); },
+      sleep: this.sleep,
+      isStopping: () => this.stopping,
+    });
+  }
+
+  private async beginWakeAttempt(jobId: string): Promise<WakeAttempt> {
+    let record: DurableProcessJobRecord | undefined;
+    let previousDelivery: { readonly attempts: number; readonly lastAttemptAt: string | null } | undefined;
+    await this.withLock(async () => {
+      await this.storeMutate("wake.attempt", (records) => {
+        const current = records.get(jobId);
+        if (this.stopping || this.stopped || current === undefined
+          || !isTerminalProcessJobState(current.state)
+          || current.wake.state !== "pending"
+          || hasPendingSubagentPublication(current)
+          || current.wake.attempts >= MAX_WAKE_ATTEMPTS) return;
+        previousDelivery = {
+          attempts: current.wake.attempts,
+          lastAttemptAt: current.wake.lastAttemptAt,
+        };
+        // Durably clear the safe-retry proof before crossing the external
+        // delivery boundary. A crash from here through receipt persistence is
+        // ambiguous and must never be replayed automatically.
+        current.wake.retrySafe = false;
+        if (current.origin.channel === "web") {
+          current.wake.admission = { version: 1, token: randomUUID(), state: "not_crossed" };
+        }
+        current.wake.attempts += 1;
+        current.wake.lastAttemptAt = this.now().toISOString();
+        record = structuredClone(current);
+      });
+    });
+    return { record, previousDelivery };
+  }
+
+  private async settleWakeAttempt(jobId: string, attempt: WakeAttempt, result: NotifyDeliveryResult, decision: WakeDecision, silent: boolean): Promise<void> {
+    const { record, previousDelivery } = attempt;
+    const { conversationBusy, destinationUnavailable, nextConversationBusyAttempts, conversationBusySinceAt, conversationBusyExhausted, nextDestinationUnavailableAttempts, destinationUnavailableExhausted, safeRetry } = decision;
+    await this.withLock(async () => {
+      await this.storeMutate("wake.settle", (records) => {
+        const current = records.get(jobId);
+        if (current?.wake.state !== "pending"
+          || current.wake.admission?.token !== record?.wake.admission?.token
+          || current.wake.admission?.state === "fenced") return;
+        if (!result.delivered && !silent && current.wake.admission !== undefined) {
+          const fence = current.wake.admission;
+          // Neither a transport code nor a supposedly safe adapter receipt
+          // can override an instrumented may-have-crossed boundary.
+          if (fence.state === "crossed" || fence.legacy === true) {
+            current.wake.state = "unknown";
+            current.wake.retrySafe = false;
+            recordWakeFailure(current);
+            return;
+          }
+          if (result.retryable === true && result.ambiguous !== true) {
+            const certificates = current.wake.notCrossed ?? [];
+            if (certificates.length >= MAX_WAKE_CERTIFICATES) {
+              current.wake.state = "unknown";
+              current.wake.retrySafe = false;
+              recordWakeFailure(current);
+              return;
+            }
+            fence.state = "fenced";
+            current.wake.notCrossed = [...certificates, fence.token];
+          }
+        }
+        if (result.delivered || silent) {
+          clearConversationBusyDeferral(current);
+          current.wake.state = silent ? "suppressed" : "delivered";
+          current.wake.retrySafe = false;
+        } else if (conversationBusy) {
+          // Busy admission does not spend the external delivery-attempt
+          // budget, but it has its own durable attempt and age bound.
+          current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
+          current.wake.lastAttemptAt = previousDelivery === undefined
+            ? current.wake.lastAttemptAt
+            : previousDelivery.lastAttemptAt;
+          current.wake.conversationBusyAttempts = nextConversationBusyAttempts;
+          current.wake.conversationBusySinceAt = conversationBusySinceAt;
+          if (conversationBusyExhausted) {
+            current.wake.state = "failed";
+            current.wake.retrySafe = false;
+            recordWakeFailure(current);
+          } else {
+            current.wake.retrySafe = true;
+          }
+        } else if (destinationUnavailable) {
+          clearConversationBusyDeferral(current);
+          // Destination absence is also pre-dispatch, but unlike conversation
+          // capacity it has its own durable bound so disabled channels cannot
+          // retain terminal records and artifacts forever.
+          current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
+          current.wake.lastAttemptAt = previousDelivery === undefined
+            ? current.wake.lastAttemptAt
+            : previousDelivery.lastAttemptAt;
+          current.wake.destinationUnavailableAttempts = nextDestinationUnavailableAttempts;
+          if (destinationUnavailableExhausted) {
+            current.wake.state = "failed";
+            current.wake.retrySafe = false;
+            recordWakeFailure(current);
+          } else {
+            current.wake.retrySafe = true;
+          }
+        } else if (safeRetry) {
+          clearConversationBusyDeferral(current);
+          // This receipt proves no native delivery was accepted. Preserve
+          // that fact so shutdown/restart can safely resume the same stable
+          // delivery key without confusing it with an ambiguous attempt.
+          current.wake.retrySafe = true;
+        } else {
+          clearConversationBusyDeferral(current);
+          current.wake.state = result.ambiguous === true ? "unknown" : "failed";
+          current.wake.retrySafe = false;
+          const reason = result.reason ?? "Process-job wake was not delivered.";
+          recordWakeFailure(current);
+        }
+      });
+    });
+  }
+
+  private async readWakeSalvage(record: DurableProcessJobRecord): Promise<SubagentSalvage | undefined> {
+    // External read after the durable release acknowledgement, never inside the
+    // process-job service lock. The snapshot is not persisted or projected.
+    let salvage: SubagentSalvage | undefined;
+    if (record.kind === "internal" && record.state === "interrupted"
+      && record.subagentOwnership?.disposition?.continuity === "unknown"
+      && record.subagentOwnership.owner.settlement !== "not_started"
+      && record.subagentOwnership.publication.state === "confirmed"
+      && record.subagentOwnership.publication.receiptPending === false
+      && !hasUnresolvedSubagentOwnership(record)) {
+      try { salvage = await this.managedRegistry?.salvage?.(this.managedIdentity(record)); }
+      catch { /* A failed reader cannot suppress an already owed wake. */ }
+    }
+    return salvage;
+  }
+
+  private async stopOnce(shutdownDeadline?: number): Promise<void> {
+    if (this.stopped) return;
+    this.stopping = true;
+    const failures: unknown[] = [];
+    try { await this.withLock(async () => await this.fenceUnadmittedWakes()); }
+    catch (error) { failures.push(error); }
+    // Admission is closed before draining. Leave at least three seconds of the
+    // supervised window for cancellation, durable settlement and owner cleanup.
+    if (shutdownDeadline !== undefined && this.settlements.size > 0) {
+      this.drainingForRestart = true;
+      const drainMs = Math.min(1_500, Math.max(0, shutdownDeadline - performance.now() - 3_000));
+      if (drainMs > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            Promise.allSettled([...this.settlements.values()]),
+            new Promise<void>((resolve) => { timer = setTimeout(resolve, drainMs); }),
+          ]);
+        } finally { if (timer !== undefined) clearTimeout(timer); }
+      }
+    }
+    this.drainingForRestart = false;
+    for (const commands of this.managedCommands.values()) commands.revoke();
+    for (const jobId of [...this.subagentLiveInput.keys()]) this.forgetSubagentLiveInput(jobId);
+    this.wakesActive = false;
+    this.wakeRearmPending.clear();
+    for (const timer of this.wakeRearmTimers.values()) clearTimeout(timer);
+    this.wakeRearmTimers.clear();
+    this.disarmQueueTimer();
+    try {
+      try {
+        await this.withLock(async () => {
+          await this.storeMutate("stop.cancel", (records) => {
+            // Deliberate shutdown cold path: cancellation must touch every live
+            // record once before process ownership can be released.
+            for (const record of records.values()) {
+              if (!isTerminalProcessJobState(record.state)) record.cancelRequested = true;
+            }
+          });
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+      for (const active of this.active.values()) {
+        try { active.handle.cancel(); } catch (error) { failures.push(error); }
+      }
+      const queuedToCleanup = [...this.pending.keys()].filter((jobId) => !this.active.has(jobId));
+      for (const jobId of queuedToCleanup) {
+        let cleaned = false;
+        try {
+          await this.cleanupPending(jobId);
+          cleaned = true;
+        } catch (error) {
+          failures.push(error);
+        }
+        if (cleaned) {
+          try {
+            await this.withLock(async () => {
+              await this.storeMutate("stop.interrupt_queued", (records) => {
+                const record = records.get(jobId);
+                if (record !== undefined && !isTerminalProcessJobState(record.state)) {
+                  if (record.state === "queued" && this.neverStarted(record)) {
+                    const owner = record.subagentOwnership!;
+                    owner.revoked = true;
+                    owner.disposition = { status: "interrupted", reason: "continuation_not_started", continuity: "retained" };
+                    owner.publication.sequence++; owner.publication.state = "pending";
+                  }
+                  transitionTerminal(
+                    record,
+                    "interrupted",
+                    this.now(),
+                    "process_job_agent_restarted",
+                    SHUTDOWN_INTERRUPTED_MESSAGE,
+                  );
+                }
+              });
+            });
+          } catch (error) {
+            failures.push(error);
+          }
+        }
+      }
+      await Promise.allSettled([...this.settlements.values()]);
+      failures.push(...this.shutdownFailures.splice(0));
+      try {
+        await this.withLock(async () => {
+          // A defensive fallback for a custom launcher whose completion handler
+          // rejected before it could retire ownership. Completion has settled,
+          // so sandbox cleanup is now safe and remains exactly-once wrapped.
+          for (const [jobId, active] of this.active) {
+            let cleaned = false;
+            if (active.groupExitConfirmed === false) {
+              failures.push(new Error(
+                `Sandbox cleanup for process job ${jobId} was withheld because owned process-group exit was not confirmed.`,
+              ));
+            } else {
+              try {
+                await active.cleanup();
+                cleaned = true;
+              } catch (error) {
+                failures.push(error);
+              }
+            }
+            if (cleaned) {
+              try {
+                await this.storeMutate("stop.interrupt_active", (records) => {
+                  const record = records.get(jobId);
+                  if (record !== undefined && !isTerminalProcessJobState(record.state)) {
+                    transitionTerminal(
+                      record,
+                      "interrupted",
+                      this.now(),
+                      "process_job_agent_restarted",
+                      SHUTDOWN_INTERRUPTED_MESSAGE,
+                    );
+                  }
+                });
+              } catch (error) {
+                failures.push(error);
+              }
+            }
+            active.outputTail.discard();
+            clearTimeout(this.active.get(jobId)?.progressTimer);
+            this.active.delete(jobId);
+            this.activityChanged();
+            this.pending.delete(jobId);
+            this.activityChanged();
+          }
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+      await Promise.allSettled([...this.wakeTasks.values()]);
+    } finally {
+      await this.withLock(async () => { this.managedWritesClosed = true; });
+      this.managedPublicationRearmPending.clear();
+      // Entered registry transactions may call back into service proof lookup.
+      // Drain them outside the service lock, before transferring the owner lock.
+      // Closed admission above makes this a stable set; provider promises are not included.
+      await Promise.allSettled([...this.managedRegistryOperations]);
+      try { await this.lock.release(); } catch (error) { failures.push(error); }
+      this.stopped = true;
+    }
+    if (failures.length > 0) throw new AggregateError(failures, "Process-job shutdown encountered failures.");
+  }
+
+  private async cleanupPending(jobId: string): Promise<void> {
+    const pending = this.pending.get(jobId);
+    this.pending.delete(jobId);
+    this.activityChanged();
+    if (pending !== undefined) await pending.cleanup();
+  }
+
+  private async cleanupPendingAfterTerminal(jobId: string): Promise<void> {
+    try {
+      await this.cleanupPending(jobId);
+    } catch (error) {
+      this.options.logger?.warn?.("Queued process-job sandbox cleanup failed.", {
+        jobId,
+        reason: boundedSafeDiagnostic("Queued process-job sandbox cleanup failed."),
+      });
+      await this.storeMutate("cleanup.record_failure", (records) => {
+        const record = records.get(jobId);
+        if (record !== undefined && isTerminalProcessJobState(record.state)) {
+          record.lastError = processJobPublicError("process_job_cleanup_incomplete");
+        }
+      }).catch(() => undefined);
+    }
+  }
+
+  private signalOwned(pgid: number, signal: NodeJS.Signals): boolean {
+    try {
+      this.signalProcess(this.platform === "win32" ? pgid : -pgid, signal);
+      return true;
+    } catch (error) {
+      // ESRCH means the attested group is already gone. Any other failure is
+      // not proof of termination and must keep recovery wording conservative.
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  }
+
+  private ownedProcessGroupIsAbsent(pgid: number): boolean {
+    try { return !this.processGroupExists(pgid); }
+    catch { return false; }
+  }
+
+  private async waitForOwnedProcessGroupExit(pgid: number): Promise<boolean> {
+    for (let attempt = 0; attempt < RECOVERY_GROUP_EXIT_POLLS; attempt += 1) {
+      if (this.ownedProcessGroupIsAbsent(pgid)) return true;
+      if (attempt + 1 < RECOVERY_GROUP_EXIT_POLLS) await this.sleep(RECOVERY_GROUP_EXIT_POLL_MS);
+    }
+    return false;
+  }
+
+  private async withLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>((resolvePromise) => { release = resolvePromise; });
+    await previous;
+    try { return await operation(); }
+    finally { release(); }
+  }
+
+  private async storeGet(
+    jobId: string,
+    operation: string,
+  ): Promise<DurableProcessJobRecord | undefined> {
+    try {
+      const record = await this.store.get(jobId);
+      this.reconcileRecord(jobId, record);
+      return record;
+    } catch (error) {
+      await this.degradeStorage(operation, error);
+      throw error;
+    }
+  }
+
+  private async storeList(operation: string): Promise<readonly DurableProcessJobRecord[]> {
+    try {
+      const records = await this.store.list();
+      this.reconcileRecords(records);
+      return records;
+    } catch (error) {
+      await this.degradeStorage(operation, error);
+      throw error;
+    }
+  }
+
+  private async storeMutate<T>(
+    operation: string,
+    mutate: (records: ProcessJobStoreMutationDraft) => T | Promise<T>,
+    deferDegradation = false,
+  ): Promise<T> {
+    let callbackFailed = false;
+    let desired: ProcessJobMutationSnapshot | undefined;
+    try {
+      const result = await this.store.mutate(async (records) => {
+        try {
+          const value = await mutate(records);
+          // Bounding is a write concern for touched records only. Iterating the
+          // draft's Map view would clone every retained record, destroy the
+          // proportional mutation contract and misclassify every terminal row
+          // as a failed overlay when the eventual commit rejects.
+          for (const [, record] of records.candidateEntries()) {
+            if (record.subagentCommandReceipts || record.subagentObservation) boundSubagentCommandReceipts(record);
+          }
+          desired = captureMutationSnapshot(records);
+          return value;
+        } catch (error) {
+          callbackFailed = true;
+          throw error;
+        }
+      });
+      if (desired !== undefined) this.reconcileMutation(desired);
+      return result;
+    } catch (error) {
+      if (!callbackFailed && !deferDegradation) {
+        if (desired !== undefined) this.rememberFailedTerminalMutations(desired.candidates);
+        await this.degradeStorage(operation, error);
+      }
+      throw error;
+    }
+  }
+
+  private async storeEnsureArtifacts(
+    jobId: string,
+  ): Promise<{ readonly stdoutRef: string; readonly stderrRef: string }> {
+    try {
+      return await this.store.ensureArtifacts(jobId);
+    } catch (error) {
+      await this.degradeStorage("ensure_artifacts", error);
+      throw error;
+    }
+  }
+
+  private async storeDiscardArtifacts(jobId: string): Promise<void> {
+    try {
+      await this.store.discardArtifacts(jobId);
+    } catch (error) {
+      await this.degradeStorage("discard_artifacts", error);
+      throw error;
+    }
+  }
+
+  private async storeWriteArtifact(
+    jobId: string,
+    stream: "stdout" | "stderr",
+    contents: string,
+  ): Promise<void> {
+    try {
+      await this.store.writeArtifact(jobId, stream, contents);
+    } catch (error) {
+      await this.degradeStorage(`write_${stream}`, error);
+      throw error;
+    }
+  }
+
+  private async storeApplyRetention(operation: string): Promise<void> {
+    let retentionFailed = false;
+    let retentionError: unknown;
+    try {
+      await this.store.applyRetention(this.settings, this.now());
+    } catch (error) {
+      retentionFailed = true;
+      retentionError = error;
+      await this.degradeStorage(operation, error);
+    }
+    // applyRetention may fail after its record transaction committed (for
+    // example during periodic orphan reconciliation). Always attempt readback
+    // so the cache reflects committed truth before propagating the degradation.
+    try {
+      await this.storeList(`${operation}.readback`);
+    } catch (readbackError) {
+      if (retentionFailed) {
+        throw new AggregateError(
+          [retentionError, readbackError],
+          "Process-job retention and its committed-state readback both failed.",
+        );
+      }
+      throw readbackError;
+    }
+    if (retentionFailed) throw retentionError;
+  }
+
+  private reconcileRecords(records: readonly DurableProcessJobRecord[]): void {
+    const bounded = boundedNewestRecords(records);
+    this.recordSnapshot.clear();
+    this.terminalSnapshotIds.clear();
+    // ProcessJobStore.list() already returns caller-owned clones. Keep those
+    // isolated objects directly instead of cloning the bounded readback again.
+    for (const record of bounded) this.recordSnapshot.set(record.jobId, record);
+    // boundedNewestRecords is newest-first. Reverse only this bounded rebuild
+    // so the Set's O(1) first entry is the oldest cached terminal victim.
+    for (let index = bounded.length - 1; index >= 0; index -= 1) {
+      const record = bounded[index]!;
+      if (isTerminalProcessJobState(record.state) && !hasSubagentObligation(record)) this.terminalSnapshotIds.add(record.jobId);
+    }
+    const durableIds = new Set(records.map((record) => record.jobId));
+    for (const jobId of this.completionOverlays.keys()) {
+      if (!durableIds.has(jobId)) this.completionOverlays.delete(jobId);
+    }
+    for (const record of records) this.pruneConsistentOverlay(record);
+  }
+
+  private reconcileRecord(jobId: string, record: DurableProcessJobRecord | undefined): void {
+    if (record === undefined) {
+      this.recordSnapshot.delete(jobId);
+      this.terminalSnapshotIds.delete(jobId);
+      this.completionOverlays.delete(jobId);
+      return;
+    }
+    const ownedRecord = structuredClone(record);
+    const cached = this.recordSnapshot.has(jobId);
+    if (!cached && this.recordSnapshot.size >= MAX_IN_MEMORY_RECORDS) {
+      // An uncached terminal read cannot displace the bounded fallback view.
+      if (isTerminalProcessJobState(ownedRecord.state) && !hasSubagentObligation(ownedRecord)) {
+        this.pruneConsistentOverlay(ownedRecord);
+        return;
+      }
+      const terminalVictim = this.terminalSnapshotIds.values().next().value;
+      if (terminalVictim === undefined) throw this.snapshotCapacityError(jobId);
+      this.recordSnapshot.delete(terminalVictim);
+      this.terminalSnapshotIds.delete(terminalVictim);
+      this.completionOverlays.delete(terminalVictim);
+    }
+    this.recordSnapshot.set(jobId, ownedRecord);
+    if (isTerminalProcessJobState(ownedRecord.state) && !hasSubagentObligation(ownedRecord)) this.terminalSnapshotIds.add(jobId);
+    else this.terminalSnapshotIds.delete(jobId);
+    this.pruneConsistentOverlay(ownedRecord);
+  }
+
+  private assertLiveSnapshotAdmissionCapacity(): void {
+    if (this.recordSnapshot.size < MAX_IN_MEMORY_RECORDS || this.terminalSnapshotIds.size > 0) return;
+    throw this.snapshotCapacityError("admission");
+  }
+
+  private snapshotCapacityError(jobId: string): ProcessJobServiceError {
+    this.options.logger?.warn?.(
+      "Process-job fallback snapshot reached its hard ceiling without a terminal eviction candidate.",
+      { jobId, snapshotRecords: this.recordSnapshot.size },
+    );
+    return new ProcessJobServiceError(
+      "process_job_store_error",
+      "Process-job fallback snapshot cannot admit live work without exceeding its hard ceiling.",
+    );
+  }
+
+  private reconcileMutation(snapshot: ProcessJobMutationSnapshot): void {
+    for (const jobId of snapshot.deletedKeys) this.reconcileRecord(jobId, undefined);
+    for (const [jobId, record] of snapshot.candidates) this.reconcileRecord(jobId, record);
+  }
+
+  private pruneConsistentOverlay(record: DurableProcessJobRecord): void {
+    const overlay = this.completionOverlays.get(record.jobId);
+    if (overlay !== undefined
+      && isTerminalProcessJobState(record.state)
+      && isDeepStrictEqual(overlay, projectProcessJob(record))) {
+      this.completionOverlays.delete(record.jobId);
+    }
+  }
+
+  private rememberFailedTerminalMutations(records: ReadonlyMap<string, DurableProcessJobRecord>): void {
+    for (const record of records.values()) {
+      if (isTerminalProcessJobState(record.state)) {
+        this.completionOverlays.set(record.jobId, projectProcessJob(record));
+      }
+    }
+  }
+
+  private snapshotRecords(): readonly DurableProcessJobRecord[] {
+    return [...this.recordSnapshot.values()].map((record) => structuredClone(record));
+  }
+
+  private async degradeStorage(operation: string, error: unknown): Promise<void> {
+    this.storageOperational = false;
+    this.mutableHealth.state = "degraded";
+    this.mutableHealth.failureOperation = operation;
+    this.mutableHealth.failureDetectedAt = this.now().toISOString();
+    this.disarmQueueTimer();
+    this.options.logger?.warn?.("Process-job storage degraded; new admission is closed.", {
+      operation,
+      reason: boundedSafeDiagnostic("unknown process-job store failure"),
+    });
+    try {
+      await recordProcessJobHealthIncident(this.store.stateDir, operation, this.now());
+    } catch (markerError) {
+      this.options.logger?.warn?.("Process-job health incident marker could not be persisted.", {
+        operation,
+        reason: boundedSafeDiagnostic("unknown health-marker failure"),
+      });
+    }
+    try {
+      await this.options.onHealthChange?.(structuredClone(this.mutableHealth));
+    } catch (healthError) {
+      this.options.logger?.warn?.("Process-job live health update could not be published.", {
+        operation,
+        reason: boundedSafeDiagnostic("unknown health-publication failure"),
+      });
+    }
+  }
+
+  private scheduleSurfaceUpdate(jobId: string, retirementOnly = false): void {
+    if (this.options.surfaceUpdate === undefined) return;
+    queueMicrotask(() => {
+      void this.updateSurfaceById(jobId, retirementOnly).catch((error: unknown) => {
+        this.options.logger?.warn?.("Process-job lifecycle surface could not be loaded for update.", {
+          jobId,
+          reason: boundedSafeDiagnostic("unknown lifecycle-surface load failure"),
+        });
+      });
+    });
+  }
+
+  private async updateSurfaceById(jobId: string, retirementOnly = false): Promise<void> {
+    const projection = await this.get(jobId);
+    if (projection !== undefined) await this.updateSurface(projection, retirementOnly);
+  }
+
+  private async updateInitialSurface(jobId: string): Promise<void> {
+    if (this.options.surfaceUpdate === undefined) return;
+    const update = this.updateSurfaceById(jobId).catch((error: unknown) => {
+      this.options.logger?.warn?.("Initial process-job lifecycle update failed.", {
+        jobId,
+        reason: boundedSafeDiagnostic("unknown initial lifecycle-surface failure"),
+      });
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolvePromise) => {
+      timer = setTimeout(resolvePromise, INITIAL_SURFACE_UPDATE_WAIT_MS);
+      timer.unref?.();
+    });
+    await Promise.race([update, deadline]);
+    if (timer !== undefined) clearTimeout(timer);
+  }
+
+  private async updateSurface(projection: ProcessJobProjection, retirementOnly = false): Promise<void> {
+    if (this.options.surfaceUpdate === undefined) return;
+    try {
+      await (retirementOnly
+        ? this.options.surfaceUpdate(projection, { retirementOnly: true })
+        : this.options.surfaceUpdate(projection));
+    } catch (error) {
+      this.options.logger?.warn?.("Process-job lifecycle surface could not be updated.", {
+        jobId: projection.jobId,
+        reason: boundedSafeDiagnostic("unknown lifecycle-surface failure"),
+      });
+    }
+  }
+}
+
+/** One disposition decision for a managed outcome, shared by true settlement and reporting. */
+function managedDisposition(record: DurableProcessJobRecord, outcome: InstanceOutcome, neverStarted: boolean): {
+  readonly incomingFailure: boolean; readonly certifiedTimeout: boolean; readonly resumeAfterStop: boolean; readonly disposition: SubagentDisposition;
+} {
+  const owner = record.subagentOwnership!;
+  const status = (["ok", "awaiting_reply", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(outcome.status) ? outcome.status : "failed") as SubagentDisposition["status"];
+  const incomingFailure = !["ok", "awaiting_reply", "busy"].includes(status);
+  const certifiedTimeout = outcome.certifiedTimeout === true && outcome.failureKind !== "session_continuity_lost"
+    && status === "timeout" && !owner.parentStopRequested
+    && owner.owner.settlement === "settled" && (!owner.disposition?.reason || owner.disposition.reason === "timeout")
+    && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained";
+  const continuity = outcome.failureKind === "session_continuity_lost" ? "lost"
+    : neverStarted ? "retained"
+    : certifiedTimeout ? "retained"
+    : owner.parentStopRequested && outcome.continuity?.turnToken === owner.turnToken ? outcome.continuity.state
+    : owner.parentStopRequested && owner.owner.settlement === "not_started" ? "retained" : undefined;
+  const resumeAfterStop = owner.parentStopRequested === true && continuity === "retained"
+    && ["settled", "not_started"].includes(owner.owner.settlement)
+    && ["cancelled", "ok", "awaiting_reply"].includes(status)
+    && (!owner.disposition?.reason || owner.disposition.reason === "cancelled");
+  const disposition: SubagentDisposition = { status,
+    ...(resumeAfterStop ? { resumeAfterStop: true } : {}),
+    ...(certifiedTimeout ? { certifiedTimeout: true } : {}),
+    ...(outcome.closeAfterSuccess ? { closeAfterSuccess: true } : {}),
+    continuity: continuity ?? (outcome.failureKind === "session_continuity_lost" ? "lost" : owner.disposition?.continuity === "retained" || (["ok", "awaiting_reply"].includes(status) && owner.owner.settlement === "settled") ? "retained" : "unknown"),
+    ...(["ok", "awaiting_reply", "busy"].includes(status) ? {} : { reason: outcome.failureKind ?? (status === "failed" ? "failed" : status as "timeout" | "cancelled" | "empty" | "interrupted") }) };
+  return { incomingFailure, certifiedTimeout, resumeAfterStop, disposition };
+}
+
+function pendingRequest(request: ServiceStartRequest): PendingProcessJob {
+  let cleanupPromise: Promise<void> | undefined;
+  return {
+    request,
+    redactionSecrets: processOutputSecrets(request.prepared?.env),
+    cleanup: async () => {
+      cleanupPromise ??= Promise.resolve().then(async () => isInternal(request) ? request.cleanup() : request.prepared.cleanup?.());
+      await cleanupPromise;
+    },
+  };
+}
+
+function captureMutationSnapshot(draft: ProcessJobStoreMutationDraft): ProcessJobMutationSnapshot {
+  // Do not structuredClone(draft): the copy-on-read Map subclass deliberately
+  // keeps its base Map slots empty, so structuredClone would silently lose its
+  // private source/override entries. Clone only the exposed touched entries.
+  return {
+    candidates: new Map(
+      [...draft.candidateEntries()].map(([jobId, record]) => [jobId, structuredClone(record)]),
+    ),
+    deletedKeys: [...draft.deletedKeys()],
+  };
+}
+
+function transitionTerminal(
+  record: DurableProcessJobRecord,
+  state: Extract<ProcessJobState, "succeeded" | "failed" | "timed_out" | "cancelled" | "spawn_failed" | "queue_expired" | "interrupted">,
+  now: Date,
+  code?: ProcessJobErrorCode,
+  message?: string,
+): void {
+  if (isTerminalProcessJobState(record.state)) return;
+  record.state = state;
+  record.completedAt = now.toISOString();
+  if (record.startedAt !== null && record.durationMs === null) {
+    record.durationMs = Math.max(0, now.getTime() - Date.parse(record.startedAt));
+  }
+  record.lastError = code === undefined || message === undefined
+    ? null
+    : processJobPublicError(code);
+  record.wake.state = record.wakeOnCompletion === false ? "suppressed" : "pending";
+  record.wake.retrySafe = false;
+}
+
+function isConversationBusyExhausted(record: DurableProcessJobRecord, now: Date): boolean {
+  const since = record.wake.conversationBusySinceAt;
+  return typeof since === "string"
+    && Date.parse(since) + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS <= now.getTime();
+}
+
+function clearConversationBusyDeferral(record: DurableProcessJobRecord): void {
+  record.wake.conversationBusyAttempts = 0;
+  record.wake.conversationBusySinceAt = null;
+}
+
+function recordWakeFailure(record: DurableProcessJobRecord): void {
+  if (record.lastError === null) {
+    record.lastError = processJobPublicError(record.wake.state === "unknown"
+      ? "process_job_wake_unknown" : "process_job_wake_failed");
+    return;
+  }
+  record.lastError = processJobPublicError(record.lastError.code);
+}
+
+function appendOperationalFailure(
+  record: DurableProcessJobRecord,
+  code: Extract<ProcessJobErrorCode, "process_job_cleanup_incomplete" | "process_job_store_error">
+    = "process_job_store_error",
+): void {
+  if (record.lastError?.code === "process_job_cleanup_incomplete") return;
+  record.lastError = processJobPublicError(code);
+}
+
+function effectiveEnvironmentKeys(overrides: Readonly<Record<string, string | undefined>> | undefined): readonly string[] {
+  const keys = new Set(Object.keys(process.env));
+  for (const [key, value] of Object.entries(overrides ?? {})) {
+    if (value === undefined) keys.delete(key);
+    else keys.add(key);
+  }
+  const bounded: string[] = [];
+  let totalBytes = 0;
+  for (const key of [...keys].sort()) {
+    const bytes = Buffer.byteLength(key, "utf8");
+    if (key.length === 0 || bytes > PROCESS_JOB_ENV_KEYS_CAPS.maxItemBytes) continue;
+    if (bounded.length >= PROCESS_JOB_ENV_KEYS_CAPS.maxItems
+      || totalBytes + bytes > PROCESS_JOB_ENV_KEYS_CAPS.maxTotalBytes) break;
+    bounded.push(key);
+    totalBytes += bytes;
+  }
+  return bounded;
+}
+
+function requireRecord(
+  records: Map<string, DurableProcessJobRecord>,
+  jobId: string,
+): DurableProcessJobRecord {
+  const record = records.get(jobId);
+  if (record === undefined) {
+    throw new ProcessJobServiceError("process_job_not_found", "Process job was not found.");
+  }
+  return record;
+}
+
+function rejectedProcessResult(error: unknown): ProcessJobProcessResult {
+  return {
+    code: null,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    aborted: false,
+    timedOut: false,
+    bufferExceeded: false,
+    truncated: false,
+    bytes: 0,
+    storedBytes: 0,
+    spawnError: error instanceof Error ? error : new Error(String(error)),
+    groupExitConfirmed: false,
+    durationMs: 0,
+  };
+}
+
+function assertOwnedProcessHandle(
+  handle: ProcessJobProcessHandle,
+): asserts handle is ProcessJobProcessHandle & { readonly pid: number; readonly pgid: number } {
+  const timestamp = typeof handle?.startedAt === "string" ? Date.parse(handle.startedAt) : Number.NaN;
+  if (handle === null
+    || typeof handle !== "object"
+    || !Number.isSafeInteger(handle.pid)
+    || (handle.pid ?? 0) <= 0
+    || handle.pgid !== handle.pid
+    || !Number.isFinite(timestamp)
+    || new Date(timestamp).toISOString() !== handle.startedAt
+    || typeof handle.completion?.then !== "function"
+    || typeof handle.release !== "function"
+    || typeof handle.cancel !== "function") {
+    throw new Error("Process-job launcher did not return an attested owned process-group handle.");
+  }
+}
+
+async function cancelMalformedHandle(handle: ProcessJobProcessHandle | undefined): Promise<void> {
+  if (handle === undefined || handle === null || typeof handle !== "object") return;
+  try { if (typeof handle.cancel === "function") handle.cancel(); } catch { /* best-effort kernel closure */ }
+  try { await handle.completion; } catch { /* rejection is represented by the launch failure */ }
+}

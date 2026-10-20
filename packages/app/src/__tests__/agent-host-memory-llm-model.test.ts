@@ -4,12 +4,12 @@
  *
  * Root cause: createConfiguredMemory reused the channel runtime — which carries
  * the channel fallback chain (primary = config.runtime.model) — for the memory
- * LLM. The agent-runtime fallback router overrides each run's per-call `model`
+ * LLM. The turn fallback router overrides each run's per-call `model`
  * with the chain's primary entry, so memory capture silently ran on
  * config.runtime.model. The fix gives the memory LLM its OWN fallback-free
  * runtime so the per-call memory model is the sole/effective primary.
  *
- * The runtime-adapter is mocked at module scope (mirrors agent-host-fallback /
+ * The turn host is mocked at module scope (mirrors agent-host-fallback /
  * agent-host-runtime-auth) so we can observe the OPTIONS createMonoRuntime is
  * built with AND capture the `model` reaching each `runtime.run`.
  */
@@ -47,7 +47,7 @@ vi.mock("@mono-agent/turn/host", async (importOriginal) => {
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
   };
 });
-vi.mock("../account-home.js", () => ({
+vi.mock("../host/account-home.js", () => ({
   accountHomeDirectory: () => coordinatorHome.path,
 }));
 vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) => ({
@@ -62,7 +62,7 @@ vi.mock("@mono-agent/conversation/process-incarnation", async (importOriginal) =
 }));
 
 const { createConfiguredMemory } = await import("../index.js");
-const { createConfiguredMemoryForApp } = await import("../configured-agent.js");
+const { createConfiguredMemoryForApp } = await import("../composition/configured-memory.js");
 const {
   acquireAgentRootOwnership,
   releaseAgentRootOwnershipWhenIdle,
@@ -71,8 +71,8 @@ const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
   processJobsRootRegistryPaths,
-} = await import("../process-jobs-root-registry.js");
-const { resolveProcessJobsProtectionPosture } = await import("../process-jobs-protection.js");
+} = await import("../process-jobs/process-jobs-root-registry.js");
+const { resolveProcessJobsProtectionPosture } = await import("../process-jobs/process-jobs-protection.js");
 
 const tempDirs: string[] = [];
 beforeAll(async () => {

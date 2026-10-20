@@ -6,8 +6,8 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createConfiguredAgentResponderForApp } from "../configured-agent.js";
-import { sessionRolloverForChannel } from "../app-controller-responder.js";
+import { createConfiguredAgentResponderForApp } from "../composition/configured-agent.js";
+import { sessionRolloverForChannel } from "../host/app-controller-responder.js";
 
 const tempDirs: string[] = [];
 

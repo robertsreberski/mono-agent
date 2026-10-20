@@ -20,19 +20,19 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  initMonoAgentFolder,
   mergeSecretEnvFile,
   SecretEnvConcurrentModificationError,
   secretEnvConcurrentModificationCause,
-} from "../init.js";
+} from "../setup/secret-env.js";
+import { initMonoAgentFolder } from "../setup/init.js";
 import { acquireOwnerPrivateLock } from "../durable-state/owner-private-lock.js";
 import {
   PROJECT_SKILL_MANIFEST_PATH,
   updateManagedProjectSkills,
-} from "../project-skills.js";
-import { redactSecrets } from "../redact-secrets.js";
+} from "../skills/project-skills.js";
+import { redactSecrets } from "../diagnostics/redact-secrets.js";
 import { secureFileReplace } from "../durable-state/secure-file-replace.js";
-import { defaultAnswers } from "../wizard/answers.js";
+import { defaultAnswers } from "../setup/wizard/answers.js";
 
 const roots: string[] = [];
 const execFileAsync = promisify(execFile);

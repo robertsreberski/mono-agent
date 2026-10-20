@@ -17,7 +17,7 @@ export interface KnownRunFailureKindDescription {
 
 export interface DescribeRunFailureKindInput {
   readonly status?: RunSummaryStatus;
-  readonly failureKind?: string | null;
+  readonly failureKind?: string | null | undefined;
 }
 
 export const KNOWN_RUN_FAILURE_KINDS = [

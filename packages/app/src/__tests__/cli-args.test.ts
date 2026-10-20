@@ -8,17 +8,17 @@ const mocks = vi.hoisted(() => ({
   waitForManagedRuntimePublication: vi.fn(async () => undefined),
 }));
 
-vi.mock("../managed-runtime-publication.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../managed-runtime-publication.js")>();
+vi.mock("../service/managed-runtime/managed-runtime-publication.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/managed-runtime/managed-runtime-publication.js")>();
   return { ...actual, waitForManagedRuntimePublication: mocks.waitForManagedRuntimePublication };
 });
 
-import { firstCliPositional, JSON_CAPABLE_COMMANDS } from "../cli-args.js";
-import { describeChannelStatus } from "../cli-background-command.js";
-import { loadCliEnvFile, parseCliArgs } from "../cli-args.js";
-import { monoAgentVersion, renderHelp, renderHelpTopic } from "../cli-help.js";
+import { firstCliPositional, JSON_CAPABLE_COMMANDS } from "../cli/cli-args.js";
+import { describeChannelStatus } from "../cli/commands/cli-background-command.js";
+import { loadCliEnvFile, parseCliArgs } from "../cli/cli-args.js";
+import { monoAgentVersion, renderHelp, renderHelpTopic } from "../cli/cli-help.js";
 import { runCli } from "../cli.js";
-import { shouldLoadCommandDotenv } from "../cli-commands.js";
+import { shouldLoadCommandDotenv } from "../cli/cli-commands.js";
 
 /** Resolve a help topic to its rendered detail text, failing if it is not a valid topic. */
 function helpTopicText(topic: string): string {
@@ -28,15 +28,15 @@ function helpTopicText(topic: string): string {
   }
   return result.text;
 }
-import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../background-environment.js";
-import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
-import { encodeBackgroundSnapshot } from "../background-snapshot.js";
+import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../service/background/background-environment.js";
+import { MANAGED_BACKGROUND_WORKER_ENV } from "../service/background/background-environment.js";
+import { encodeBackgroundSnapshot } from "../service/background/background-snapshot.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   MANAGED_WEB_LOG_MAINTENANCE_ENV,
-} from "../launchd.js";
+} from "../service/launchd/launchd.js";
 
 const tempDirs: string[] = [];
 

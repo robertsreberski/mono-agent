@@ -1,10 +1,10 @@
-import { emptySubagentCommandReceipts, isSubagentCommandReceipts } from "../subagent-command-receipts.js";
+import { emptySubagentCommandReceipts, isSubagentCommandReceipts } from "../subagents/subagent-command-receipts.js";
 import { type SubagentCommandReceipts } from "../subagents/types.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { OwnedForegroundProcessRequest, ProcessJobProcessResult } from "@mono-agent/turn/host/types";
-import { createSubagentOwnedCommands } from "../subagent-owned-commands.js";
-import { isSubagentExecutionOwnership } from "../subagent-execution-ownership.js";
+import { createSubagentOwnedCommands } from "../subagents/subagent-owned-commands.js";
+import { isSubagentExecutionOwnership } from "../subagents/subagent-execution-ownership.js";
 import { type SubagentExecutionOwnership } from "../subagents/types.js";
 const incarnation = { schema: "mono-agent.process-incarnation.v1" as const, bootSessionId: "boot", processStartId: "birth" };
 const result: ProcessJobProcessResult = { code: 0, signal: null, stdout: "ok", stderr: "", aborted: false, timedOut: false,

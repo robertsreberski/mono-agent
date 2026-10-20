@@ -1,3 +1,4 @@
+import { describePiProviderAuth, listPiBuiltinProviders } from "@mono-agent/turn/ai";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmod, link, mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -7,23 +8,19 @@ import { promisify } from "node:util";
 import { PassThrough } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import { createProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return { ...actual, link: vi.fn(actual.link) };
 });
 
-import {
-  detectProviderCredentialStates,
-  executeProviderSetupPlan,
-  piAuthPathForSetup,
-  piAuthRecoveryCommand,
-  planProviderSetup,
-  persistPiProviderCredential,
-  repairStalePiAuthLock,
-  runBoundedProviderCommand,
-} from "../provider-setup.js";
+import { executeProviderSetupPlan } from "../providers/provider-setup.js";
+import { detectProviderCredentialStates } from "../providers/credential-state.js";
+import { piAuthPathForSetup, piAuthRecoveryCommand } from "../providers/oauth-command.js";
+import { planProviderSetup } from "../providers/setup-plan.js";
+import { persistPiProviderCredential, repairStalePiAuthLock } from "../providers/auth-store-write.js";
+import { runBoundedProviderCommand } from "../providers/command.js";
 
 const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -35,6 +32,52 @@ afterEach(async () => {
 });
 
 describe("Pi provider setup safety", () => {
+  it("keeps credential resolution inside the lock through promotion, sync and transaction cleanup", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    const original = { openai: { type: "api_key", key: "fictional-sibling" } };
+    await writeFile(authPath, JSON.stringify(original), { mode: 0o600 });
+    const events: string[] = [];
+    await persistPiProviderCredential({
+      authPath,
+      provider: "opencode-go",
+      afterPiAuthLockCreated: async (lockPath) => {
+        expect((await stat(lockPath)).nlink).toBe(1);
+        events.push("lock");
+      },
+      resolveCredential: async () => {
+        expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual(original);
+        expect(JSON.parse(await readFile(`${authPath}.mono-agent.lock`, "utf8"))).toMatchObject({ pid: process.pid });
+        events.push("resolve");
+        return { type: "api_key", key: "fictional-replacement" };
+      },
+      beforePiAuthPromotion: async (_targetPath, stagedPath) => {
+        expect(JSON.parse(await readFile(stagedPath, "utf8"))).toEqual({
+          ...original,
+          "opencode-go": { type: "api_key", key: "fictional-replacement" },
+        });
+        events.push("promotion");
+      },
+      onCredentialStoreMutation: () => { events.push("mutation"); },
+      afterPiAuthLink: async (targetPath, stagedPath) => {
+        const staged = await stat(stagedPath);
+        expect(await stat(targetPath)).toMatchObject({ dev: staged.dev, ino: staged.ino, nlink: 2 });
+        events.push("link");
+      },
+      beforePiAuthPostMutationSync: () => { events.push("sync"); },
+      beforePiAuthTempCleanup: async (tempDir) => {
+        await expect(stat(`${authPath}.mono-agent.lock`)).resolves.toBeDefined();
+        await expect(stat(join(tempDir, "auth.json"))).resolves.toBeDefined();
+        events.push("cleanup");
+      },
+    });
+
+    expect(events).toEqual(["lock", "resolve", "promotion", "mutation", "link", "sync", "cleanup"]);
+    expect((await stat(authPath)).nlink).toBe(1);
+    expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+    expect(await readdir(dir)).toEqual(["auth.json"]);
+  });
+
   it.each([false, true])("invalidates observations at rename before link or recovery (concurrent change: %s)", async (concurrentChange) => {
     const dir = await tempDir();
     const authPath = join(dir, "auth.json");
@@ -1327,4 +1370,20 @@ it("requires an explicit OpenAI method for headless setup and preserves OAuth cl
     }) })).rejects.toThrow(/invalid credential/u);
     expect(JSON.parse(await readFile(authPath, "utf8")).openai.clientId).toBe("fake-issued-id");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+describe("runtime-owned Pi setup metadata", () => {
+  it("plans OAuth for every provider advertising that method without requiring an exact model", () => {
+    for (const provider of listPiBuiltinProviders()) {
+      const supportsOAuth = describePiProviderAuth(provider.id)?.methods.some((method) => method.type === "oauth");
+      const plan = planProviderSetup({
+        cwd: process.cwd(),
+        modelRefs: [`${provider.id}:fictional-model`],
+        piAuthMethods: { [provider.id]: "oauth" },
+      });
+      expect(plan.actions.map((action) => action.id)).toEqual(
+        supportsOAuth ? [`pi-login:${provider.id}`] : [],
+      );
+    }
+  });
 });

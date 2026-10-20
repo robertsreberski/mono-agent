@@ -1,6 +1,8 @@
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { MonoRuntimeLike, RuntimeRunOptions, SandboxEngine, SandboxPolicy, RuntimeToolOptions } from "@mono-agent/turn/host/types";
@@ -9,8 +11,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const processRunnerHooks = vi.hoisted(() => ({
   run: undefined as ((command: { readonly command: string; readonly args?: readonly string[] }) => unknown) | undefined,
 }));
+const processRunnerPath = await vi.hoisted(async () => {
+  const { createRequire } = await import("node:module");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  return fileURLToPath(new URL("./commands/process-runner.js", pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"))));
+});
 
-vi.mock("../../../turn/src/tools/commands/process-runner.js", async (importOriginal) => {
+vi.mock(processRunnerPath, async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
@@ -26,12 +33,13 @@ vi.mock("../../../turn/src/tools/commands/process-runner.js", async (importOrigi
 // This deliberately crosses the package-private boundary: the regression is
 // deciding only when the actual session turn builder creates Read/Write/Bash with
 // the fallback attempt's projected sandbox context.
-// @ts-expect-error -- package-private JavaScript deciding sink has no public declaration.
-import { buildTurnTools } from "../../../turn/src/execution/pi/turn-runner.js";
-import { loadAppCoreConfig } from "../app-config.js";
-import { createConfiguredAgentResponder } from "../configured-agent.js";
-import { configuredRuntimeFallbackModels } from "../runtime-routes.js";
-import { clearSessionsRegistryRoot } from "../sessions.js";
+const { buildTurnTools } = await import(
+  new URL("../execution/pi/turn-runner.js", pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/ai"))).href
+) as typeof import("../../../turn/dist/execution/pi/turn-runner.js");
+import { loadAppCoreConfig } from "../composition/app-config.js";
+import { createConfiguredAgentResponder } from "../composition/configured-agent.js";
+import { configuredRuntimeFallbackModels } from "../composition/runtime-routes.js";
+import { clearSessionsRegistryRoot } from "../conversation-admin/sessions.js";
 
 const temporaryDirectories: string[] = [];
 

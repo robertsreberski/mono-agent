@@ -1,24 +1,24 @@
 import { resolve } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../background-environment.js";
-import { decodeBackgroundSnapshot } from "../background-snapshot.js";
-import { parseCliArgs } from "../cli-args.js";
+import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../service/background/background-environment.js";
+import { decodeBackgroundSnapshot } from "../service/background/background-snapshot.js";
+import { parseCliArgs } from "../cli/cli-args.js";
 
 const mocks = vi.hoisted(() => ({
   inspect: vi.fn(), read: vi.fn(), start: vi.fn(), stop: vi.fn(), traces: vi.fn(), preflight: vi.fn(), health: vi.fn(),
   durable: vi.fn(), snapshot: vi.fn(), target: vi.fn(), lock: vi.fn(),
 }));
-vi.mock("../systemd.js", () => ({
+vi.mock("../service/systemd/systemd.js", () => ({
   SYSTEMD_WEB_IDENTITY: "web", systemdUnitName: (id: string) => `${id}.service`,
   isSystemdUserManagerUnavailable: () => false,
   inspectSystemd: mocks.inspect, readSystemdDefinition: mocks.read, startSystemd: mocks.start,
   stopSystemd: mocks.stop, systemdLogs: vi.fn(async () => 0), withSystemdLock: mocks.lock,
 }));
-vi.mock("../background.js", () => ({ canonicalBackgroundConfigPath: async (_cwd: string, path: string) => path,
+vi.mock("../service/background/target.js", () => ({ canonicalBackgroundConfigPath: async (_cwd: string, path: string) => path,
   resolveInstanceTarget: mocks.target }));
-vi.mock("../background-snapshot.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../background-snapshot.js")>();
+vi.mock("../service/background/background-snapshot.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/background-snapshot.js")>();
   return {
     ...actual,
     captureBackgroundSnapshot: mocks.snapshot,
@@ -29,7 +29,7 @@ vi.mock("../service/start-preflight.js", () => ({ ensureStartable: mocks.preflig
 vi.mock("../service/web/health.js", () => ({ webHealthcheck: mocks.health }));
 vi.mock("@mono-agent/observability", () => ({ listTraceSources: mocks.traces }));
 
-import { runSystemdAgentCommand, runSystemdWebCommand } from "../systemd-command.js";
+import { runSystemdAgentCommand, runSystemdWebCommand } from "../service/systemd/systemd-command.js";
 
 const service = { loadState: "loaded", activeState: "active", subState: "running", pid: 42, startedAt: "today", enabled: true };
 const args = (action: string) => parseCliArgs([action, "--config", "/agent/config.json"]);

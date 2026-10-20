@@ -12,6 +12,9 @@ export function releaseDependencyPinIssues(packages) {
   const issues = [];
   for (const pkg of packages) {
     for (const { section, name, range } of pinnedDependencyReferences(pkg.packageJson)) {
+      if (section !== "devDependencies" && pkg.name !== "@mono-agent/turn") {
+        issues.push(`${pkg.name} ${section}.${name} must be owned by @mono-agent/turn; test-only Pi dependencies belong in devDependencies`);
+      }
       const expected = PINNED_RUNTIME_DEPENDENCIES[name];
       if (range !== expected) {
         issues.push(
@@ -42,6 +45,9 @@ export function assertPackedDependencyResolution(consumerDir, packages, options 
           `Packed ${pkg.name} ${section}.${name} must remain ${expected}; found ${range ?? "(missing)"}`,
         );
       }
+      // Packed development-only fixtures keep their exact pin, but are not
+      // installed or resolved as part of the consumer runtime closure.
+      if (section === "devDependencies") continue;
       assertResolvedVersion({
         checked,
         expected,
@@ -77,7 +83,7 @@ function assertResolvedVersion({
   }
 
   // pi-agent-core declares pi-ai with a floating compatible-minor range while
-  // agent-runtime owns Core and an exact known-compatible Pi AI copy. Verify resolution
+  // turn owns Core and an exact known-compatible Pi AI copy. Verify resolution
   // from Core too so a host package or later Pi patch cannot silently rewire it.
   if (name === "@earendil-works/pi-agent-core") {
     const piAi = "@earendil-works/pi-ai";
@@ -95,7 +101,7 @@ function assertResolvedVersion({
 
 function pinnedDependencyReferences(packageJson) {
   const references = [];
-  for (const section of DEPENDENCY_SECTIONS) {
+  for (const section of [...DEPENDENCY_SECTIONS, "devDependencies"]) {
     for (const [name, range] of Object.entries(packageJson[section] ?? {})) {
       if (Object.hasOwn(PINNED_RUNTIME_DEPENDENCIES, name)) {
         references.push({ section, name, range });

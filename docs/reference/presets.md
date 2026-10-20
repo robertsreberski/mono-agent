@@ -97,7 +97,7 @@ The composed sandbox sets `fallback: "fail-closed"`. Setup/check proves filesyst
 
 ## How presets relate to the config
 
-A preset is not a separate format — `mono-agent presets show <id>` prints the exact `mono-agent.config.json` it would write, plus the `.env.example` and follow-up checklist. Everything a preset (or the wizard) configures can be edited afterwards like any hand-written config, and [`mono-agent config`](/observability/cli-reference/#config) shows the resolved result field-by-field with provenance. The preset catalog lives in `packages/app/src/wizard/presets.ts` and the module catalog in `packages/app/src/modules/catalog.ts`; a parity test (`presets-docs-parity.test.ts`) keeps this page in sync with them.
+A preset is not a separate format — `mono-agent presets show <id>` prints the exact `mono-agent.config.json` it would write, plus the `.env.example` and follow-up checklist. Everything a preset (or the wizard) configures can be edited afterwards like any hand-written config, and [`mono-agent config`](/observability/cli-reference/#config) shows the resolved result field-by-field with provenance. The preset catalog lives in `packages/app/src/setup/wizard/presets.ts` and the module catalog in `packages/app/src/setup/modules/catalog.ts`; a parity test (`presets-docs-parity.test.ts`) keeps this page in sync with them.
 
 ## Back-compat: legacy tool names
 

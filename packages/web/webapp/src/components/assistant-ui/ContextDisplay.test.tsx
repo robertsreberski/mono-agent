@@ -12,7 +12,7 @@ import { ApiError } from "../../api";
 const context = { status: "current" as const, measuredModel: "atlas/standard", usage: { total: 84_210, contextWindow: 200_000 } };
 const typical: WebThreadUsage = { total: { tokens: { input: 12_000, cacheWrite: 100, cacheRead: 5_000, output: 2_000 }, costUsd: 2.24 },
   byModel: [{ model: "atlas/standard", costUsd: 2.24 }], computedAt: "2026-01-01T00:00:00Z" };
-const mixed: WebThreadUsage = { total: { tokens: { input: 20_000, cacheWrite: 300, cacheRead: 9_000, output: 4_000 }, tokensPartial: true, costUsd: 4.18, costPartial: true },
+const mixed: WebThreadUsage = { total: { tokens: { input: 20_000, cacheWrite: 300, cacheRead: 9_000, output: 4_000 }, tokensPartial: true, costUsd: null, knownCostUsd: 4.18, costPartial: true },
   subagents: { runs: 2, costUsd: 1.12, tokensPartial: true },
   byModel: [{ model: "atlas/standard", costUsd: 3.06 }, { model: "grove/fast", costUsd: 1.12 }], computedAt: "2026-01-01T00:00:00Z" };
 const codexSnapshot: ProviderUsageSnapshot = {
@@ -96,7 +96,7 @@ describe("ContextDisplay", () => {
     const popup = await open();
     expect(within(popup).getByRole("row", { name: /Total/ })).toHaveTextContent("≥20.3k");
     expect(within(popup).getByRole("row", { name: /incl. subagents/ })).toHaveTextContent("not reported");
-    expect(within(popup).getByRole("region", { name: /Estimated cost/ })).toHaveTextContent("≥$4.18");
+    expect(within(popup).getByRole("region", { name: /Estimated cost/ })).toHaveTextContent("unknown");
     expect(within(popup).getAllByText("incl. subagents")).toHaveLength(2);
     expect(within(popup).getAllByText("$1.12")).toHaveLength(2);
     expect(within(popup).getByText("$3.06")).toBeVisible();
@@ -253,4 +253,34 @@ describe("ContextDisplay", () => {
     rerender(<ContextDisplay context={context} providerUsage={{ agent: agent("alpha"), providerId: "openai-codex" }} />);
     expect(within(popup).queryByRole("region", { name: "Codex plan" })).not.toBeInTheDocument();
   });
+});
+
+it("shows Compaction as an included cost subset and preserves unknown pricing", async () => {
+  const { rerender } = render(<ContextDisplay context={context} totals={{ ...typical, total: { costUsd: 1.75 }, compaction: { requests: 1, costUsd: 1.25 } }} />);
+  let popup = await open();
+  expect(within(popup).getByText("(included in total)")).toHaveClass("sr-only");
+  expect(within(popup).getByText("Compaction").parentElement).toHaveTextContent("$1.25");
+  expect(popup.querySelector(".context-display-cost-total")).toHaveTextContent("$1.75");
+  fireEvent.click(screen.getByRole("button", { name: /^Context usage:/ }));
+  rerender(<ContextDisplay context={context} totals={{ ...typical, total: {}, compaction: { requests: 1, costPartial: true } }} />);
+  popup = await open();
+  expect(within(popup).getByText("Compaction").parentElement).toHaveTextContent("—");
+  expect(popup.querySelector(".context-display-cost-total")).toBeNull();
+});
+
+it.each<{ name: string; total: WebThreadUsage["total"]; visible: string | undefined; accessible: string | undefined }>([
+  { name: "unknown price", total: { costUsd: null, knownCostUsd: 2 }, visible: "unknown", accessible: "Estimated cost unknown." },
+  { name: "partial coverage", total: { costUsd: 2, costPartial: true }, visible: "≥$2.00", accessible: "Estimated cost at least $2.00." },
+  { name: "complete coverage", total: { costUsd: 2 }, visible: "$2.00", accessible: "Estimated cost $2.00." },
+  { name: "no observation", total: {}, visible: undefined, accessible: undefined },
+])("matches visible and accessible cost for $name", async ({ total, visible, accessible }) => {
+  render(<ContextDisplay context={context} totals={{ total, byModel: [], computedAt: typical.computedAt }} />);
+  const trigger = screen.getByRole("button", { name: /^Context usage:/ });
+  if (accessible === undefined) expect(trigger).not.toHaveAccessibleName(/Estimated cost/);
+  else expect(trigger).toHaveAccessibleName(expect.stringContaining(accessible));
+  const popup = await open();
+  if (visible === undefined) expect(popup.querySelector(".context-display-cost-total")).toBeNull();
+  else expect(popup.querySelector(".context-display-cost-total")).toHaveTextContent(visible);
+  if (total.costUsd === null) expect(within(popup).getByText("Known cost").parentElement).toHaveTextContent("$2.00");
+  else expect(within(popup).queryByText("Known cost")).not.toBeInTheDocument();
 });

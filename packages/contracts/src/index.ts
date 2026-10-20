@@ -348,3 +348,6 @@ export {
 } from "./cancellation.js";
 
 export type { AgentResponseCancelledErrorOptions } from "./cancellation.js";
+
+export { isAgentCompactionAccounting } from "./compaction-accounting.js";
+export type { AgentCompactionAccounting } from "./compaction-accounting.js";

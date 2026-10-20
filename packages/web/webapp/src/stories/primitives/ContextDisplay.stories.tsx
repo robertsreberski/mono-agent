@@ -8,6 +8,7 @@ const moderate = { status: "current" as const, measuredModel: "atlas/standard", 
 const typical: WebThreadUsage = { total: { tokens: { input: 16_000, cacheRead: 82_000, cacheWrite: 2_000, output: 11_000 }, costUsd: 2.24 },
   byModel: [{ model: "atlas/standard", costUsd: 2.24 }], computedAt: "2026-09-19T12:00:00Z" };
 const mixed: WebThreadUsage = { total: { tokens: { input: 22_000, cacheRead: 76_000, cacheWrite: 2_000, output: 22_000 }, tokensPartial: true, costUsd: 4.18 },
+  compaction: { requests: 1, requestsWithUsage: 1, costUsd: 1.25 },
   subagents: { runs: 3, costUsd: 1.12, tokensPartial: true }, byModel: [
     { model: "atlas/standard", costUsd: 3.06 }, { model: "grove/fast", costUsd: 1.12 },
   ], computedAt: "2026-09-19T12:00:00Z" };
@@ -73,7 +74,8 @@ export const Unavailable: Story = { args: { context: { status: "unavailable" }, 
 export const PartialData: Story = { args: { ...base, context: { status: "last_measured", usage: { total: 142_300, contextWindow: 200_000 }, lastTurnFailed: true, reason: "The latest turn did not complete, so this is the last successful provider measurement." },
   totals: { ...mixed, total: { ...mixed.total, costPartial: true }, byModel: [{ model: "atlas/standard", costUsd: 3.06, costPartial: true }, mixed.byModel[1]!] },
   providerUsage: { ...providerUsage, agent: { ...providerAgent, sourceId: "atlas-story-usage-stale" } } }, play: withPlan };
-export const CostUnknown: Story = { args: { ...base, totals: { total: { tokens: typical.total.tokens, costPartial: true }, byModel: [], computedAt: typical.computedAt } }, play: open };
+export const CostPartial: Story = { args: { ...base, totals: { ...typical, total: { ...typical.total, costPartial: true } } }, play: open };
+export const CostUnknown: Story = { args: { ...base, totals: { total: { tokens: typical.total.tokens, costUsd: null, knownCostUsd: 2.24 }, byModel: [], computedAt: typical.computedAt } }, play: open };
 export const TotalsLoading: Story = { args: { context: moderate, threadId: "garden-usage-pending", providerUsage }, play: open };
 export const ProviderUsageLoading: Story = { args: { ...base, providerUsage: { ...providerUsage, agent: { ...providerAgent, sourceId: "atlas-story-usage-loading" } } }, play: open };
 export const ProviderUsageStale: Story = { args: { ...base, providerUsage: { ...providerUsage, agent: { ...providerAgent, sourceId: "atlas-story-usage-stale" } } }, play: withPlan };

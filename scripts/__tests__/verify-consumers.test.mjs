@@ -34,7 +34,7 @@ describe("verify-consumers", () => {
       "      - name: Typecheck marked documentation snippets",
       "        run: pnpm run check:doc-snippets",
       "",
-      "      - name: Check agent-runtime deep imports",
+      "      - name: Check turn deep imports",
       "        run: pnpm run check:deep-imports",
       "",
       "      - name: Verify consumer contracts",

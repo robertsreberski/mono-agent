@@ -4,9 +4,9 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { identityRoleDisplayLine, initChangeDisplayRows, secretChecklistDisplayRows } from "../cli-init-command.js";
-import { initMonoAgentFolder } from "../init.js";
-import { defaultAnswers } from "../wizard/answers.js";
+import { identityRoleDisplayLine, initChangeDisplayRows, secretChecklistDisplayRows } from "../setup/render.js";
+import { initMonoAgentFolder } from "../setup/init.js";
+import { defaultAnswers } from "../setup/wizard/answers.js";
 
 describe("init result reporting", () => {
   it("reports the exact Role destination for created, preserved, and dry-run identities", () => {

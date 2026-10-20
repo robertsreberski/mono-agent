@@ -11,10 +11,11 @@ import type { AgentRequestBase, AgentResponder } from "@mono-agent/contracts";
 import type { ConversationHistoryStore } from "@mono-agent/conversation";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { type MonoRuntimeLike } from "@mono-agent/turn/host/types";
-import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
-import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
+import { createConfiguredAgentResponderForApp } from "../composition/configured-agent.js";
+import { wrapOwnedConfiguredRuntime } from "../composition/runtime-ownership.js";
+import { createRequestModelOverrideRuntimeExtension } from "../composition/request-model-override.js";
 import { JsonlSessionRepo } from "@mono-agent/turn/engine";
-import { loadAppCoreConfig } from "../app-config.js";
+import { loadAppCoreConfig } from "../composition/app-config.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });

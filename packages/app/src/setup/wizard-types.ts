@@ -1,6 +1,6 @@
 import type { MonoAgentConfigJson } from "@mono-agent/config";
 import type { GeneratedFile } from "./types.js";
-import type { ModuleInputValues, CapabilityModule, ModuleValidateExpectation } from "../modules/types.js";
+import type { ModuleInputValues, CapabilityModule, ModuleValidateExpectation } from "./modules/types.js";
 /**
  * The complete set of choices the wizard (or a preset) makes. This is the single
  * input to {@link composeWizardPlan}: everything the composer needs to emit a full

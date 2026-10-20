@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { startMemoryRituals } from "../memory-rituals.js";
-import type { StartMemoryRitualsInput } from "../memory-rituals.js";
+import { startMemoryRituals } from "../memory/memory-rituals.js";
+import type { StartMemoryRitualsInput } from "../memory/memory-rituals.js";
 
 interface PendingTimer {
   cb: () => void;

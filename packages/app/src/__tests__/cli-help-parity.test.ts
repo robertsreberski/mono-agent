@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { JSON_CAPABLE_COMMANDS, PUBLIC_COMMANDS } from "../cli-args.js";
-import { HELP_ALIASES, HELP_COMMANDS } from "../cli-help.js";
+import { JSON_CAPABLE_COMMANDS, PUBLIC_COMMANDS } from "../cli/cli-args.js";
+import { HELP_ALIASES, HELP_COMMANDS } from "../cli/cli-help.js";
 
 describe("PUBLIC_COMMANDS / HELP_COMMANDS parity", () => {
   it("every public command has a help entry, except the two normalized aliases", () => {

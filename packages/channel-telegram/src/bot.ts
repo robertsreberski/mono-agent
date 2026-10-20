@@ -251,7 +251,7 @@ const DEFAULT_LONG_POLL_TIMEOUT_SECONDS = 30;
 // in-place while a sustained outage still has a hard liveness bound.
 const DEFAULT_RUNNER_MAX_RETRY_TIME_MS = 90_000;
 
-// Auto-restart backoff bounds for the polling monitor (mirrors slack-adapter's
+// Auto-restart backoff bounds for the polling monitor (mirrors channel-slack's
 // socket-mode reconnect loop): start at 500ms, double on each consecutive
 // failed restart, cap at 30s, reset to the initial delay after a clean restart.
 const DEFAULT_RESTART_INITIAL_BACKOFF_MS = 500;
@@ -300,7 +300,7 @@ function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
  * Outcome of a proactive {@link TelegramBotController.notify}: whether the nudge
  * reached the chat, plus a machine-readable reason for the silent-failure paths
  * (queue-full, cancelled, empty answer, responder/delivery failure). Structurally
- * matches the agent-app NotifyDeliveryResult so channel hooks can return it as-is.
+ * matches the app NotifyDeliveryResult so channel hooks can return it as-is.
  */
 export interface TelegramNotifyResult {
   readonly delivered: boolean;
@@ -3062,7 +3062,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
    * blip or host sleep). Without auto-restart the runner just stops and the bot
    * goes silent until a full process restart — so on a crash (while not stopped)
    * we recreate the runner via the factory and re-attach the monitor, with
-   * exponential backoff. Mirrors slack-adapter's socket-mode reconnect loop.
+   * exponential backoff. Mirrors channel-slack's socket-mode reconnect loop.
    */
   function spawnRunnerWithMonitor(): void {
     if (stabilityTimer !== undefined) {

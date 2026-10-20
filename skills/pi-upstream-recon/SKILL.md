@@ -47,7 +47,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   The mono-agent engine owns admission, steering and storage over the installed
   `runAgentLoop`; the runtime adapter owns provider and tool integration.
   Future updates require exact-pin and packed-consumer resolution checks, plus
-  the real-loop contract in `packages/turn/src/engine/__tests__/loop-contract.test.js`.
+  the real-loop contract in `packages/turn/src/engine/__tests__/loop-contract.test.ts`.
   Pi 0.86 folds request prompts and tool declarations into the transcript's
   leading system message: provider-facing code (including faux response
   factories in tests) sees a `TranscriptContext` and must replay tools/prompt
@@ -101,7 +101,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   New assistant-error retry patterns must not enable response-level retries in
   the runtime: checks, compaction and handoffs keep SSE and `maxRetries: 0`.
 - Pi's standalone OAuth registry remains unavailable at runtime.
-  `packages/turn/src/providers/pi/oauth-compat.js` owns the compatibility
+  `packages/turn/src/providers/pi/oauth-compat.ts` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream
   imports.
 - Importing projects should not add their own Pi dependency merely to read

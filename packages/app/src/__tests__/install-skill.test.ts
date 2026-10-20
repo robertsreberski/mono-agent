@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../cli.js";
-import { installComposerSkill } from "../install-skill.js";
+import { installComposerSkill } from "../setup/install-skill.js";
 
 const tempDirs: string[] = [];
 

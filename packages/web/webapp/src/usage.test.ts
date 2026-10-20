@@ -306,7 +306,7 @@ describe("redesigned usage projections", () => {
     expect([79.9, 80, 94.9, 95].map(contextLevel)).toEqual(["normal", "warning", "warning", "danger"]);
     const sample = { ...detail([message("first", [{ type: "telemetry", event: "usage_update",
       data: { cumulativeUsd: 0, tokens: { input: 1, output: 2 } } }])]), messagesNextCursor: "older" };
-    expect(windowUsage(sample).total).toMatchObject({ tokensPartial: true, costPartial: true, costUsd: 0 });
+    expect(windowUsage(sample).total).toMatchObject({ tokensPartial: true, costPartial: true, costUsd: null, knownCostUsd: 0 });
     expect(windowUsage(sample)).not.toHaveProperty("settledAssistantTurns");
     expect(windowUsage({ ...sample, messagesNextCursor: undefined })).toHaveProperty("settledAssistantTurns");
     const child = { type: "subagent", toolCallId: "delegate", name: "helper", status: "complete", calls: [],

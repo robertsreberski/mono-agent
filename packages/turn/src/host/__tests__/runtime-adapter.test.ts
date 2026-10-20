@@ -279,7 +279,7 @@ describe("runtime adapter fallback chain", () => {
 });
 
 describe("runtime adapter local providers", () => {
-  it("maps Ollama provider config to agent-runtime custom Pi options", () => {
+  it("maps Ollama provider config to turn custom Pi options", () => {
     const options = runtimeOptionsForLocalProvider(
       parseMonoRuntimeModelReference("ollama:qwen3:8b"),
       [
@@ -319,7 +319,7 @@ describe("runtime adapter local providers", () => {
     expect(options.isPrivateProvider).toBe(true);
   });
 
-  it("preserves disabled local providers so agent-runtime can fail honestly", () => {
+  it("preserves disabled local providers so turn can fail honestly", () => {
     const options = runtimeOptionsForLocalProvider(
       parseMonoRuntimeModelReference("ollama:llama3"),
       [

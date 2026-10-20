@@ -1,3 +1,5 @@
+import { DEFAULT_RUNTIME_RETRY_BACKOFF_MS, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS } from "@mono-agent/turn/host/config";
+import { DEFAULT_RUNTIME_PRIMARY_ATTEMPTS } from "../defaults.js";
 
 
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
@@ -119,9 +121,9 @@ function readFallbackAttempts(value: unknown, index: number): number | undefined
 export function readRetryConfig(runtime: Record<string, unknown> | undefined): RuntimeRetryConfig {
   const retry = jsonRecord(runtime?.retry, "runtime.retry") ?? {};
   return {
-    primaryAttempts: readRetryInteger(retry.primaryAttempts, "runtime.retry.primaryAttempts", 2, 1, 10),
-    backoffMs: readRetryInteger(retry.backoffMs, "runtime.retry.backoffMs", 1_000, 0, 60_000),
-    maxBackoffMs: readRetryInteger(retry.maxBackoffMs, "runtime.retry.maxBackoffMs", 15_000, 0, 300_000),
+    primaryAttempts: readRetryInteger(retry.primaryAttempts, "runtime.retry.primaryAttempts", DEFAULT_RUNTIME_PRIMARY_ATTEMPTS, 1, 10),
+    backoffMs: readRetryInteger(retry.backoffMs, "runtime.retry.backoffMs", DEFAULT_RUNTIME_RETRY_BACKOFF_MS, 0, 60_000),
+    maxBackoffMs: readRetryInteger(retry.maxBackoffMs, "runtime.retry.maxBackoffMs", DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS, 0, 300_000),
   };
 }
 
@@ -219,6 +221,8 @@ export function readRuntimeCompactionConfig(
     { min: 32_000, max: 10_000_000 },
   );
   return {
+    effort: jsonChoice(compaction.effort, "runtime.compaction.effort", ["auto", ...EFFORT_LEVELS], "auto"),
+    failureCooldownMs: jsonInteger(compaction.failureCooldownMs, "runtime.compaction.failureCooldownMs", 900000, { min: 0, max: 86400000 }),
     enabled: jsonBoolean(
       compaction.enabled,
       "runtime.compaction.enabled",

@@ -4,11 +4,11 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { listNotifyDestinations } from "../app-controller-maintenance.js";
-import type { MonoAgentAppController } from "../app-controller.js";
-import { isNotifyDestinationConversationId } from "../notify-destinations.js";
-import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
-import type { SeenConversation } from "../seen-conversations.js";
+import { listNotifyDestinations } from "../host/app-controller-maintenance.js";
+import type { MonoAgentAppController } from "../host/app-controller.js";
+import { isNotifyDestinationConversationId } from "../delivery/notify-destinations.js";
+import { createSeenNotifyDestinationCache } from "../delivery/seen-conversations.js";
+import type { SeenConversation } from "../delivery/seen-conversations.js";
 
 const fsProbe = vi.hoisted(() => ({
   statCalls: 0,

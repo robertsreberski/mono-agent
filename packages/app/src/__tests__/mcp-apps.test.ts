@@ -1,3 +1,4 @@
+import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import {
   access,
   chmod,
@@ -30,11 +31,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createMcpAppService,
   DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
-} from "../mcp-apps.js";
+} from "../mcp-apps/mcp-apps.js";
 import {
-  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
   replyArtifactStorageBudgetFor,
-} from "../reply-artifacts.js";
+} from "../artifacts/reply-artifacts.js";
 
 const tempDirs: string[] = [];
 const stream: AgentMessageStream = { async append() {} };
@@ -595,7 +595,7 @@ describe("MCP Apps registry", () => {
     let clock = new Date("2026-08-15T12:00:00.000Z");
     const storageBudget = replyArtifactStorageBudgetFor(
       artifactDir,
-      DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
+      DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
     );
     const publishingService = createMcpAppService({
       artifactDir,
@@ -1458,7 +1458,7 @@ describe("MCP Apps registry", () => {
 
       // Reload the module-scoped storage state to model a fresh service process.
       vi.resetModules();
-      const { createMcpAppService: createRestartedMcpAppService } = await import("../mcp-apps.js");
+      const { createMcpAppService: createRestartedMcpAppService } = await import("../mcp-apps/mcp-apps.js");
       const restartedService = createRestartedMcpAppService({
         artifactDir,
         auditMaxBytes: 1_024,
@@ -1990,6 +1990,60 @@ describe("MCP Apps registry", () => {
         .resolves.toMatchObject({ size: 1_024 });
     }
     await service.dispose();
+  });
+
+  it.each(["preflight", "completion"] as const)("shares audit admission across two services (%s failure)", async (failure) => {
+    const artifactDir = await tempDir();
+    const root = join(artifactDir, "mcp-apps");
+    const entered = deferred();
+    const barrier = deferred();
+    let inventories = 0;
+    const beforeAuditStorageOperation = async (operation: string, path: string) => {
+      if (operation === "readdir" && path === root) {
+        inventories += 1;
+        entered.resolve();
+        await barrier.promise;
+      }
+    };
+    const options = { artifactDir, auditMaxBytes: 1_024, auditRetainedFiles: 1,
+      auditStorageMaxBytes: 2_048, beforeAuditStorageOperation };
+    const services = [createMcpAppService(options), createMcpAppService(options)];
+    try {
+      const owners = await Promise.all(services.map(async (service, index) => {
+        const live = connection(`fictional-connection-${index}`);
+        const host = await hostFor(service, `fictional-run-${index}`, "conversation");
+        const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+        const directory = join(root, app.invocationId);
+        if (failure === "preflight") {
+          // Both live services protect their active files from cross-owner reclamation.
+          await writeFile(join(directory, "audit.jsonl"), Buffer.alloc(1_024, 0x61));
+        } else {
+          live.callTool.mockImplementationOnce(async () => {
+            await mkdir(join(directory, "audit.1.jsonl"));
+            return { ok: true };
+          });
+        }
+        return { service, live, app };
+      }));
+      const first = owners[0]!;
+      const second = owners[1]!;
+      const one = expect(first.service.request(confirmedToolCall(first.app))).rejects.toMatchObject({
+        code: failure === "preflight" ? "app_audit_failed" : "app_audit_incomplete",
+      });
+      await entered.promise;
+      const two = expect(second.service.request(confirmedToolCall(second.app))).rejects.toMatchObject({
+        code: failure === "preflight" ? "app_audit_failed" : "app_audit_incomplete",
+      });
+      expect(first.live.callTool).not.toHaveBeenCalled();
+      expect(second.live.callTool).not.toHaveBeenCalled();
+      barrier.resolve();
+      await Promise.all([one, two]);
+      expect(inventories).toBe(1);
+      for (const { live } of owners) expect(live.callTool).toHaveBeenCalledTimes(failure === "preflight" ? 0 : 1);
+    } finally {
+      barrier.resolve();
+      await Promise.all(services.map(async (service) => await service.dispose()));
+    }
   });
 
   it("requires one audit option set for every service sharing an artifact root", async () => {

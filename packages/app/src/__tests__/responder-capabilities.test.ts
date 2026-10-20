@@ -6,13 +6,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createConversationResponder } from "@mono-agent/conversation";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/turn/host/types";
-import { createConfiguredConversationHarness } from "../configured-agent.js";
+import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
 
 import type { AgentResponder } from "@mono-agent/contracts";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 
-import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
-import { bindProcessJobWakeContextToResponder } from "../process-jobs-context.js";
+import { createSlackPostedReplyHistory } from "../delivery/posted-reply-history.js";
+import { bindProcessJobWakeContextToResponder } from "../process-jobs/process-jobs-context.js";
 
 // Keep this inventory tied to the shared contract: a new optional capability
 // must be considered by the app's explicit responder decorators.

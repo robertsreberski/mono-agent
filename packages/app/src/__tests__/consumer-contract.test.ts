@@ -15,8 +15,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 
-import { consumerContractNames, validateConsumerContractFixture } from "../consumer-contract.js";
-import type { ConsumerContractName } from "../consumer-contract.js";
+import { consumerContractNames, validateConsumerContractFixture } from "../host/consumer-contract.js";
+import type { ConsumerContractName } from "../host/consumer-contract.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const consumersRoot = join(here, "fixtures", "consumers");

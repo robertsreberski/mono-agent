@@ -11,7 +11,7 @@ describe("check-getting-started-version-pins", () => {
     expect(result.issues, result.issues.join("\n")).toEqual([]);
   });
 
-  it("flags a pin that disagrees with the agent-app version", async () => {
+  it("flags a pin that disagrees with the app version", async () => {
     const result = await checkGettingStartedVersionPins({
       agentAppVersion: "0.4.1",
       docRecords: [
@@ -24,7 +24,7 @@ describe("check-getting-started-version-pins", () => {
     expect(result.issues[0]).toContain("0.4.1");
   });
 
-  it("accepts a pin that matches the agent-app version", async () => {
+  it("accepts a pin that matches the app version", async () => {
     const result = await checkGettingStartedVersionPins({
       agentAppVersion: "0.4.1",
       docRecords: [

@@ -74,7 +74,7 @@ export function isCronRequest(request: ConversationHarnessRequest): boolean {
 
 /**
  * This reader selects the requested session primary before context assembly;
- * its metadata precedence must match agent-app readOverride so the declared
+ * its metadata precedence must match app readOverride so the declared
  * binding and executed model agree.
  */
 export function requestSessionModel(request: ConversationHarnessRequest, defaultModel: RuntimeModelReference): RuntimeModelReference {

@@ -4,13 +4,13 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { validateMonoAgentFolder } from "../doctor.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import {
   FIRST_RUN_MEMORY_INITIALIZING_MARKER,
   initializeFirstRunManagedMemory,
-} from "../first-run-managed-memory.js";
-import { composeWizardPlan } from "../wizard/answers.js";
-import { findPreset, presetAnswers } from "../wizard/presets.js";
+} from "../setup/first-run-managed-memory.js";
+import { composeWizardPlan } from "../setup/wizard/answers.js";
+import { findPreset, presetAnswers } from "../setup/wizard/presets.js";
 
 let dir: string;
 

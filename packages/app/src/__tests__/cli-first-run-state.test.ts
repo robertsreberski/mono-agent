@@ -2,6 +2,7 @@ import { access, chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -83,8 +84,8 @@ vi.mock("@clack/prompts", () => ({
   })),
 }));
 
-vi.mock("../wizard/run.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../wizard/run.js")>();
+vi.mock("../setup/wizard/run.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../setup/wizard/run.js")>();
   return {
     ...actual,
     runInitWizard: mocks.runInitWizard,
@@ -92,13 +93,13 @@ vi.mock("../wizard/run.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../readiness-probe.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../readiness-probe.js")>();
+vi.mock("../setup/readiness-probe.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../setup/readiness-probe.js")>();
   return { ...actual, runAllRouteReadinessProbe: mocks.runAllRouteReadinessProbe };
 });
 
-vi.mock("../background-snapshot-key.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../background-snapshot-key.js")>();
+vi.mock("../service/background/background-snapshot-key.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/background-snapshot-key.js")>();
   const key = Buffer.alloc(32, 0x44);
   return {
     ...actual,
@@ -107,30 +108,45 @@ vi.mock("../background-snapshot-key.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../background.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../background.js")>();
+vi.mock("../service/background/background.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/background.js")>();
   return {
     ...actual,
-    defaultBackgroundDeps: mocks.defaultBackgroundDeps,
     ensureBackgroundReady: mocks.ensureBackgroundReady,
-    resolveInstanceTarget: mocks.resolveInstanceTarget,
   };
 });
 
-vi.mock("../provider-setup.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../provider-setup.js")>();
+vi.mock("../service/background/deps.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/deps.js")>();
+  return { ...actual, defaultBackgroundDeps: mocks.defaultBackgroundDeps };
+});
+
+vi.mock("../service/background/target.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/background/target.js")>();
+  return { ...actual, resolveInstanceTarget: mocks.resolveInstanceTarget };
+});
+
+vi.mock("../providers/provider-setup.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/provider-setup.js")>();
+  return {
+    ...actual,
+    executeProviderSetupPlan: mocks.executeProviderSetupPlan,
+  };
+});
+
+vi.mock("../providers/credential-state.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/credential-state.js")>();
   return {
     ...actual,
     detectProviderCredentialStates: (...args: unknown[]) =>
       mocks.detectProviderCredentialStatesOverride?.(...args) ?? actual.detectProviderCredentialStates(
         args[0] as Parameters<typeof actual.detectProviderCredentialStates>[0],
       ),
-    executeProviderSetupPlan: mocks.executeProviderSetupPlan,
   };
 });
 
-vi.mock("../sandbox-manager.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../sandbox-manager.js")>();
+vi.mock("../service/sandbox/sandbox-manager.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../service/sandbox/sandbox-manager.js")>();
   return {
     ...actual,
     sandboxRuntimeStatus: mocks.sandboxRuntimeStatus,
@@ -139,13 +155,13 @@ vi.mock("../sandbox-manager.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../doctor.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../doctor.js")>();
+vi.mock("../doctor/doctor.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../doctor/doctor.js")>();
   return { ...actual, validateMonoAgentFolder: mocks.validateMonoAgentFolder };
 });
 
-vi.mock("../init.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../init.js")>();
+vi.mock("../setup/init.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../setup/init.js")>();
   return {
     ...actual,
     initMonoAgentFolder: async (options: Parameters<typeof actual.initMonoAgentFolder>[0]) => {
@@ -156,10 +172,10 @@ vi.mock("../init.js", async (importOriginal) => {
 });
 
 import { runCli } from "../cli.js";
-import { BROWSER_CONSOLE_HOST, BROWSER_CONSOLE_PORT } from "../cli-init-command.js";
-import { DEFAULT_MODEL } from "../modules/index.js";
-import { DEFAULT_WEB_PORT } from "../web-command.js";
-import { defaultAnswers } from "../wizard/answers.js";
+import { BROWSER_CONSOLE_HOST, BROWSER_CONSOLE_PORT } from "../setup/render.js";
+import { DEFAULT_MODEL } from "../setup/modules/index.js";
+import { DEFAULT_WEB_PORT } from "../service/web/web-service-definition.js";
+import { defaultAnswers } from "../setup/wizard/answers.js";
 
 /** Provider id of the route `defaultAnswers()` selects, e.g. `openai-codex`. */
 const DEFAULT_ROUTE_PROVIDER = DEFAULT_MODEL.slice(0, DEFAULT_MODEL.indexOf(":"));
@@ -273,6 +289,55 @@ afterEach(async () => {
 });
 
 describe("guided init state transitions", () => {
+  it("validates staging before commit, then validates committed files before the root CLI handoff", async () => {
+    const events: string[] = [];
+    const configPath = join(process.cwd(), "mono-agent.config.json");
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+    mocks.validateMonoAgentFolder.mockImplementation(async (options) => {
+      if (options.cwd === process.cwd()) {
+        await expect(access(configPath)).resolves.toBeUndefined();
+        events.push("committed validation");
+      } else {
+        await expect(access(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+        events.push("staged validation");
+      }
+      return readyReport();
+    });
+    mocks.runAllRouteReadinessProbe.mockImplementation(async () => {
+      await expect(access(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+      events.push("route readiness");
+      return { ok: true };
+    });
+    mocks.beforeCommit = async () => {
+      await expect(access(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+      events.push("commit");
+    };
+    mocks.ensureBackgroundReady.mockImplementation(async () => {
+      events.push("background handoff");
+      return { ok: true, action: "started", source: { sourceId: "fixture-ready" } };
+    });
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(events).toEqual([
+      "staged validation",
+      "route readiness",
+      "staged validation",
+      "commit",
+      "committed validation",
+      "background handoff",
+    ]);
+    expect(mocks.resolveInstanceTarget).toHaveBeenCalledWith(expect.objectContaining({
+      cliPath: fileURLToPath(new URL("../cli.js", import.meta.url)),
+    }));
+  });
+
   it("keeps an absent default dotenv implicit and ends guided init with the browser handoff", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",

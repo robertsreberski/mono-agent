@@ -4,7 +4,7 @@ import {
 } from "@mono-agent/contracts";
 import { describe, expect, it } from "vitest";
 
-import { createReplyPartBudget, mergeReplyParts } from "../reply-part-budget.js";
+import { createReplyPartBudget, mergeReplyParts } from "../delivery/reply-part-budget.js";
 
 describe("shared reply-part budget", () => {
   it("enforces one exact boundary across independent producers without charging retries", () => {

@@ -12,12 +12,12 @@ import {
   createRunHistoryRuntimeExtension,
   RUN_HISTORY_MCP_SERVER_NAME,
   RUN_HISTORY_TOOL_NAME,
-} from "../run-history.js";
+} from "../request-tools/run-history.js";
 import {
   createSessionHistoryRuntimeExtension,
   SESSION_HISTORY_MCP_SERVER_NAME,
   SESSION_HISTORY_TOOL_NAME,
-} from "../session-history.js";
+} from "../request-tools/session-history.js";
 
 const tempDirs: string[] = [];
 

@@ -3,6 +3,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { chmod, lstat, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
@@ -11,6 +13,7 @@ import type { ModelSwitchStorageOwner } from "../history/model-switch/payloads.j
 import { createModelSwitchState, admitSummaryAttempt, finishSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage } from "../history/model-switch/billing.js";
 import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, serializeModelSwitchState, recognizesModelSwitchBinding, validateModelSwitchState, validateNativeTurnHistory } from "../history/model-switch/contract.js";
 import type { CanonicalJournalDescriptor, ModelSwitchIdentity, ModelSwitchState, NativeTurnHistory } from "../history/model-switch/contract.js";
+const engineEntryUrl = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/engine"));
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const source: CanonicalJournalDescriptor = { journalId: "fictional-journal", epoch: "1".repeat(64), handleId: "2".repeat(64),
@@ -206,8 +209,8 @@ it("rejects hard-linked or symlinked fences and replaced storage directories wit
 
 it("stores an actual P3a checkpoint proposal, including optional ledger fields, without a producer call", async () => {
   const { MemorySessionRepo } = await import("@mono-agent/turn/engine");
-  const { createEvidenceView } = await import(new URL("../../../turn/src/engine/evidence-view.js", import.meta.url).href) as typeof import("../../../turn/types/engine/evidence-view.js");
-  const { buildHandoff, createHandoffBudget } = await import(new URL("../../../turn/src/engine/handoff.js", import.meta.url).href) as typeof import("../../../turn/types/engine/handoff.js");
+  const { createEvidenceView } = await import(new URL("./evidence-view.js", engineEntryUrl).href) as typeof import("../../../turn/dist/engine/evidence-view.js");
+  const { buildHandoff, createHandoffBudget } = await import(new URL("./handoff.js", engineEntryUrl).href) as typeof import("../../../turn/dist/engine/handoff.js");
   const repository = new MemorySessionRepo(), native = await repository.create({ id: source.handleId, cwd: "/fictional" });
   await native.beginTurn("fictional-open-turn", {}, "synthetic", undefined);
   await native.appendMessage({ role: "user", content: "Fictional interrupted request", timestamp: 17 }, "00000000-0000-4000-8000-000000000007");

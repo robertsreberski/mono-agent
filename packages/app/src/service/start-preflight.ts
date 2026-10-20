@@ -1,8 +1,8 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { validateMonoAgentFolder } from "../doctor.js";
-import type { ValidationReport } from "../doctor-types.js";
-import type { ParsedCliArgs } from "../cli-args.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
+import type { ValidationReport } from "../doctor/doctor-types.js";
+import type { ParsedCliArgs } from "../cli/cli-args.js";
 /**
  * Outcome of the start/restart preflight. `code` is the process exit status to
  * return when refusing: 2 for a missing config file (a usage problem, matching

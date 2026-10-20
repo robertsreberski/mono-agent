@@ -1,3 +1,4 @@
+import { browserCostWire, normalizeBrowserCosts, costAmount, knownCostAmount } from "./cost-wire.js";
 import type { ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import type { WebCancelOrigin } from "./contracts.js";
 import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
@@ -95,7 +96,7 @@ import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
-import { latestMessageCostUsd, messageUsageRollup, sumMessageCosts, type MessageUsageRollup } from "./message-cost.js";
+import { latestMessageCostUsd, messageUsageRollup, type MessageUsageRollup } from "./message-cost.js";
 import { sumThreadUsage } from "./thread-usage.js";
 import { isAskUserToolName, runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
@@ -3233,9 +3234,12 @@ export class WebStore {
           misses += 1;
           parsedBytes += Buffer.byteLength(partsJson);
           const parsed = messageUsageRollup({ parts: parseParts(partsJson),
+            ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
             ...(row.executed_model === null ? {} : { attribution: { executed: { model: row.executed_model } } }),
           });
-          rollup = Object.freeze({ main: Object.freeze(parsed.main),
+          rollup = Object.freeze({ ...parsed, main: Object.freeze(parsed.main),
+            ...(parsed.compaction ? { compaction: Object.freeze(parsed.compaction) } : {}),
+            ...(parsed.compactionByModel ? { compactionByModel: Object.freeze(parsed.compactionByModel.map((slice) => Object.freeze(slice))) } : {}),
             subagents: Object.freeze(parsed.subagents.map((child) => Object.freeze(child))),
           });
         }
@@ -4274,7 +4278,8 @@ export class WebStore {
       revision: row.revision,
       conversationCount: memberIds.length,
       runningCount,
-      ...(monthUsd === undefined ? {} : { monthUsd }),
+      ...(monthUsd.costUsd === undefined ? {} : { monthUsd: monthUsd.costUsd }),
+      ...(monthUsd.knownCostUsd === undefined ? {} : { monthKnownUsd: monthUsd.knownCostUsd }),
       ...(external === undefined ? {} : { external: this.mapExternal(external) }),
     };
   }
@@ -4284,23 +4289,30 @@ export class WebStore {
    * non-archived members.
    *
    * One bounded indexed query (member threads by month range); the per-message
-   * latest-observation rule is the shared {@link latestMessageCostUsd}, so a
-   * project month always agrees with the conversation costs inside it.
+   * latest-observation rule is the shared {@link messageUsageRollup}, so a
+   * project month preserves its historical scope (no detached job spend).
    * Recomputed when summaries are read, never per token.
    */
-  private projectMonthUsd(memberIds: readonly string[], now: string): number | undefined {
-    if (memberIds.length === 0) return undefined;
+  private projectMonthUsd(memberIds: readonly string[], now: string): WebThreadUsage["total"] {
+    if (memberIds.length === 0) return {};
     const started = new Date(now);
-    if (Number.isNaN(started.getTime())) return undefined;
+    if (Number.isNaN(started.getTime())) return {};
     const monthStart = new Date(Date.UTC(started.getUTCFullYear(), started.getUTCMonth(), 1)).toISOString();
     const monthEnd = new Date(Date.UTC(started.getUTCFullYear(), started.getUTCMonth() + 1, 1)).toISOString();
     const rows = this.database.prepare(`
-      SELECT m.parts_json AS parts_json
+      SELECT m.parts_json
         FROM messages m
        WHERE m.thread_id IN (SELECT value FROM json_each(?))
          AND m.created_at >= ? AND m.created_at < ?
-    `).all(JSON.stringify(memberIds), monthStart, monthEnd) as Array<{ parts_json: string }>;
-    return sumMessageCosts(rows.map((member) => latestMessageCostUsd(parseParts(member.parts_json))));
+    `).all(JSON.stringify(memberIds), monthStart, monthEnd);
+    return sumThreadUsage(rows.flatMap((member) => {
+      if (typeof member.parts_json !== "string") return [];
+      const parts = parseParts(member.parts_json);
+      const costUsd = latestMessageCostUsd(parts);
+      const knownCostUsd = costUsd === null ? messageUsageRollup({ parts }).main.knownCostUsd : undefined;
+      return [{ main: { ...(costUsd === undefined ? {} : { costUsd }),
+        ...(knownCostUsd === undefined ? {} : { knownCostUsd }) }, subagents: [] }];
+    }), now).total;
   }
 
   /** Whether the current interactive thread still accepts agent-proposed titles. */
@@ -8566,6 +8578,7 @@ function applyEvent(
           status,
           ...(executionMs === undefined ? {} : { executionMs }),
           ...(subagent.costUsd === undefined ? {} : { costUsd: subagent.costUsd }),
+          ...(subagent.knownCostUsd === undefined ? {} : { knownCostUsd: subagent.knownCostUsd }),
           ...(subagent.usage === undefined ? {} : { usage: subagent.usage }),
           ...(subagent.attribution === undefined ? {} : { attribution: subagent.attribution }),
         }, historyUpdate));
@@ -8761,7 +8774,8 @@ function subagentOf(
   readonly id: string;
   readonly name: string;
   readonly label?: string;
-  readonly costUsd?: number;
+  readonly costUsd?: number | null;
+  readonly knownCostUsd?: number;
   readonly usage?: WebUsageTokens;
   readonly attribution?: WebRunAttribution;
 } | undefined {
@@ -8777,9 +8791,8 @@ function subagentOf(
   const label = typeof record.label === "string" ? record.label.trim() : "";
   // Only the closing bookend carries a price, and only when the runtime priced
   // the subagent's model at all.
-  const costUsd = typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
-    ? record.costUsd
-    : undefined;
+  const costUsd = costAmount(record);
+  const knownCostUsd = knownCostAmount(record);
   const usage = validSubagentUsage(record.usage) ? record.usage : undefined;
   const attribution = canonicalRunAttribution(record.attribution);
   return {
@@ -8787,6 +8800,7 @@ function subagentOf(
     name: name.length === 0 ? "subagent" : name,
     ...(label.length === 0 ? {} : { label }),
     ...(costUsd === undefined ? {} : { costUsd }),
+    ...(knownCostUsd === undefined ? {} : { knownCostUsd }),
     ...(usage === undefined ? {} : { usage }),
     ...(attribution === undefined ? {} : { attribution }),
   };
@@ -9458,7 +9472,7 @@ function durableMessagePart(part: WebMessagePart): WebMessagePart {
 }
 
 function serializeParts(parts: readonly WebMessagePart[]): string {
-  return JSON.stringify(parts.map(durableMessagePart));
+  return JSON.stringify(browserCostWire(parts.map(durableMessagePart)));
 }
 
 function validRichId(value: unknown): value is string {
@@ -9493,6 +9507,7 @@ function parseParts(value: string): WebMessagePart[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value) as unknown;
+    normalizeBrowserCosts(parsed);
   } catch {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts are not valid JSON.", 500);
   }
@@ -9786,8 +9801,10 @@ function canonicalizePersistedProcessJobUsage(part: Record<string, unknown>): Re
   if (typeof job !== "object" || job === null || Array.isArray(job)) return part;
   const projection = job as Record<string, unknown>;
   const progress = projection.subagentProgress;
-  if (typeof progress !== "object" || progress === null || Array.isArray(progress)
-    || !Object.hasOwn(progress, "usage")) return part;
+  if (typeof progress !== "object" || progress === null || Array.isArray(progress)) return part;
+  // Browser markers are storage/wire metadata, not fields of the strict agent contract.
+  Reflect.deleteProperty(progress, "costUnknown");
+  if (!Object.hasOwn(progress, "usage")) return part;
   const { usage: rawUsage, ...withoutUsage } = progress as Record<string, unknown>;
   // Only persisted card reads are tolerant. Ingress and agent durable records
   // still use the strict shared progress parser; no other field is relaxed.
@@ -9864,7 +9881,8 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && typeof part.name === "string"
       && (part.label === undefined || typeof part.label === "string")
       && (part.executionMs == null || typeof part.executionMs === "number")
-      && (part.costUsd === undefined || typeof part.costUsd === "number")
+      && (part.costUsd === undefined || part.costUsd === null || typeof part.costUsd === "number")
+      && (part.knownCostUsd === undefined || typeof part.knownCostUsd === "number")
       && (part.usage === undefined || validSubagentUsage(part.usage))
       && (part.attribution === undefined || canonicalRunAttribution(part.attribution) !== undefined)
       && (part.history === undefined || isSessionToolHistoryMetadata(part.history))

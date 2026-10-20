@@ -1,4 +1,4 @@
-import { managedSrtInstallRoot } from "../sandbox/managed.js";
+import { managedSrtInstallRoot } from "../sandbox/managed-identity.js";
 import { execFile } from "node:child_process";
 import { existsSync, rmSync, symlinkSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";

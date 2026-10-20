@@ -6,11 +6,16 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeRunOptions, RuntimeModelReference } from "@mono-agent/turn/host/types";
 
 const execute = vi.hoisted(() => vi.fn());
-vi.mock("../../../turn/src/execution/pi/run.js", async (original) => ({
+const executionPath = await vi.hoisted(async () => {
+  const { createRequire } = await import("node:module");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  return fileURLToPath(new URL("../execution/pi/run.js", pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/ai"))));
+});
+vi.mock(executionPath, async (original) => ({
   ...await original<Record<string, unknown>>(),
   engineTurnAdapter: { id: "session-attribution-test", execute },
 }));
-const { createRequestModelOverrideRuntimeExtension } = await import("../request-model-override.js");
+const { createRequestModelOverrideRuntimeExtension } = await import("../composition/request-model-override.js");
 const { createConfiguredConversationHarness, createConfiguredAgentRuntime } = await import("../index.js");
 const dirs: string[] = [];
 afterEach(async () => { execute.mockReset(); await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });

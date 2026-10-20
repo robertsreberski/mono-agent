@@ -107,9 +107,11 @@ function codeEnvKeys(root: string): Set<string> {
     join(root, "packages/config/src/config.ts"),
     join(root, "packages/config/src/load.ts"),
     // App-level loaders that read their own MONO_AGENT_* keys outside the core config.
-    join(root, "packages/app/src/interaction-bridge.ts"),
-    join(root, "packages/app/src/adapter-send-tools.ts"),
-    join(root, "packages/app/src/web-command.ts"),
+    join(root, "packages/app/src/mcp/interaction-bridge.ts"),
+    join(root, "packages/app/src/delivery/send-tools/adapter-send-tools.ts"),
+    join(root, "packages/app/src/delivery/send-tools/child-config.ts"),
+    join(root, "packages/app/src/cli/commands/web-command.ts"),
+    join(root, "packages/app/src/service/web/service.ts"),
     // Harness-owned request capability keys are injected into opted stdio MCPs;
     // they are real runtime env, although operators do not configure them.
     join(root, "packages/conversation/src/harness/index.ts"),

@@ -8,7 +8,7 @@ import {
   recallEvidenceNote,
   recallHitCurrentness,
   RECALL_TAIL_MARGIN,
-} from "../memory-recall.js";
+} from "../memory/memory-recall.js";
 import type { MemoryRecallHit, RecallCapableStore } from "../memory/recall-contract.js";
 import type { LabelSections } from "../memory/recall-contract.js";
 

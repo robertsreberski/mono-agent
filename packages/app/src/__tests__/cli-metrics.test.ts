@@ -77,7 +77,7 @@ describe("runCli runs report", () => {
       expect(report.overall.totalRuns).toBe(2);
       expect(report.overall.statusCounts.succeeded).toBe(1);
       expect(report.overall.statusCounts.failed).toBe(1);
-      expect(report.overall.cost.totalUsd).toBe(0.05);
+      expect(report.overall.cost).toMatchObject({ totalUsd: 0.05 });
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({ key: "openai-codex:gpt-5.5", totalRuns: 2 });
       expect(fetchSpy).not.toHaveBeenCalled();

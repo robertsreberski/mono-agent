@@ -1,0 +1,373 @@
+import type { TranscriptContext, FauxResponseFactory } from "@earendil-works/pi-ai";
+import type { RuntimeRunOptions } from "../../contracts/runtime.js";
+import type { PiHarness } from "../../execution/pi/types.js";
+import type { PiOptions } from "../../execution/pi/types.js";
+type InheritedCoverage = { version: 1; sources: Array<{ journalId: string; sourceTipId: string; sourceSeq: number; sourceDigest: string; extra?: string }>; extra?: string };
+type InheritedProjection = { messages: Array<{ role: string; content: string; timestamp: number }>; coverage: InheritedCoverage };
+type Projection = { version: number; artifact: { id: string; hash: string; extra?: string }; inherited: InheritedProjection; dispatchBudget?: ReturnType<typeof createHandoffBudget> };
+type Authority = { version: number; currentHandleId: string; sessionsRoot: string; hostAuthority: typeof hostAuthority; assertCurrent: (request: { action: string; sessionsRoot: string }) => Promise<void> };
+type TestOptions = PiOptions & { nativeSessionProjection?: Projection; nativeSessionAuthority?: Authority; messages: Array<{ role: string; content: string }> };
+type TestHarness = Omit<PiHarness, "prompt"> & { prompt(text: string, options?: unknown): ReturnType<PiHarness["prompt"]> };
+import { afterEach, expect, it, vi } from "vitest";
+import { mkdtemp, rm, readFile, readdir, appendFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { digestTurnInput } from "@mono-agent/turn/engine";
+import { createHandoffBudget } from "../../engine/handoff.js";
+import { assertNativeProjectionBinding } from "../../engine/session-authority.js";
+import { createRuntime } from "../../runtime/create-runtime.js";
+import * as turnRunner from "../../execution/pi/turn-runner.js";
+import { generateEngineTurnResponse } from "../../execution/pi/run.js";
+import { refreshProviderSession } from "../../runtime/session-fanout.js";
+import { createPiSessionAdapter } from "../../engine/session-adapter.js";
+import { createHarnessAdapter } from "../../execution/pi/driver-adapter.js";
+import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../execution/pi/compaction/compaction-driver.js";
+import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
+import { discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../execution/pi/session-results.js";
+import { JsonlSessionRepo } from "../../engine/session-store.js";
+
+const roots: string[] = [];
+afterEach(async () => { await refreshProviderSession(handle); for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }); });
+const handle = "a".repeat(64);
+const hostAuthority = { version: (1) as const, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+const coverage: InheritedCoverage = { version: 1, sources: [{ journalId: "retained-A", sourceTipId: "frozen-tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] };
+const inherited: InheritedProjection = { messages: [{ role: "user", content: "Historical handoff: Morgan chose amber; approval remains read-only; unknown effect requires checking.", timestamp: 1 }], coverage };
+async function setup() {
+  const root = await mkdtemp(join(tmpdir(), "native-projection-")); roots.push(root);
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "projection", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined! });
+  const models = createModels(); models.setProvider(faux.provider); const model = faux.getModel();
+  const assertCurrent = vi.fn(async (_request: { action: string; sessionsRoot: string }) => {});
+  const options = (turn = 1, extra = {}): TestOptions => ({ model: { provider: model.provider, model: model.id, reference: `${model.provider}:${model.id}` },
+    piResolvedModel: model, piResolvedModels: models, effort: "none", allowedTools: [],
+    sessionId: handle, providerSessionId: handle, sessionKeepAlive: true, sessionsRoot: root,
+    sessionTurn: { kind: "host", ownerKey: hostAuthority.ownerKey, historyBucket: hostAuthority.historyBucket, turnId: `turn-${turn}`, handleId: handle, baseRevision: turn - 1,
+      reconciliation: { version: 1, purpose: "execution", fenceDigest: "c".repeat(64), initialInputId: `input-${turn}` } },
+    nativeSessionAuthority: { version: 1, currentHandleId: handle, sessionsRoot: root, hostAuthority, assertCurrent },
+    nativeSessionProjection: { version: 1, artifact: { id: "4".repeat(64), hash: "5".repeat(64) }, inherited },
+    messages: [{ role: "user", content: `current-${turn}` }], ...extra });
+  return { root, faux, model, models, options, assertCurrent };
+}
+async function journal(root: string) {
+  const directory = join(root, "journals");
+  const name = (await readdir(directory)).find((name) => name.endsWith(".jsonl"));
+  return (await readFile(join(directory, name!), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+}
+
+it("creates only an authorized current guarded handle and dispatches inherited + current delta on true warm/cold resumes without seeding copies", async () => {
+  const f = await setup(), requests: TranscriptContext[] = [];
+  f.faux.setResponses(Array.from({ length: 3 }, (_, index) => (context: TranscriptContext) => {
+    requests.push(structuredClone(context)); return fauxAssistantMessage([fauxText(`reply-${index + 1}`)]);
+  }));
+  for (let turn = 1; turn <= 3; turn++) {
+    if (turn === 3) await refreshProviderSession(handle);
+    const result = await generateEngineTurnResponse("Current fictional rules", f.options(turn));
+    expect(result.error).toBeNull(); expect(result.text).toBe(`reply-${turn}`);
+  }
+  expect(requests).toHaveLength(3);
+  for (const [index, request] of requests.entries()) {
+    const wire = JSON.stringify(request);
+    expect(wire.match(/Morgan chose amber/g)).toHaveLength(1);
+    expect(wire).toContain(`current-${index + 1}`);
+    if (index > 0) expect(wire).toContain(`reply-${index}`);
+  }
+  const records = await journal(f.root);
+  expect(records[0]).toMatchObject({ ownershipSchemaVersion: 1, hostAuthority });
+  expect(JSON.stringify(records)).not.toContain("Morgan chose amber");
+  expect(records.filter((record) => record.kind === "message" && record.payload.message.role === "user")).toHaveLength(3);
+  expect(f.assertCurrent.mock.calls.some(([request]) => request.action === "create")).toBe(true);
+});
+
+it("direct dispatch cold-reopens twice without repeating a tool effect or the accepted handoff prefix", async () => {
+  const f = await setup(), requests: TranscriptContext[] = [], effect = vi.fn(async () => ({ content: [{ type: "text", text: "Fictional completed effect" }] }));
+  f.faux.setResponses([
+    (context) => { requests.push(structuredClone(context)); return fauxAssistantMessage([fauxToolCall("FictionalEffect", {}, { id: "direct-effect" })]); },
+    ...Array.from({ length: 3 }, (_, index) => (context: TranscriptContext) => { requests.push(structuredClone(context)); return fauxAssistantMessage([fauxText(`direct-${index + 1}`)]); }),
+  ]);
+  const tools = vi.spyOn(turnRunner, "buildTurnTools").mockResolvedValue({
+    tools: [{ name: "FictionalEffect", description: "Fictional effect", parameters: { type: "object", properties: {} }, execute: effect }],
+    structuredTool: null, mcpClients: [], closeRunTools: async () => {},
+  });
+  try {
+    const runtime = createRuntime();
+    for (let turn = 1; turn <= 3; turn++) {
+      if (turn > 1) await refreshProviderSession(handle);
+      const result = await runtime.run("Current fictional rules", f.options(turn) as unknown as RuntimeRunOptions);
+      expect(result.error).toBeNull(); expect(result.text).toBe(`direct-${turn}`);
+      expect(effect).toHaveBeenCalledOnce();
+    }
+    expect(requests).toHaveLength(4);
+    for (const request of requests) expect(JSON.stringify(request).match(/Morgan chose amber/g)).toHaveLength(1);
+    expect((await journal(f.root)).filter((record) => record.kind === "message" && record.payload.message.role === "toolResult")).toHaveLength(1);
+  } finally { tools.mockRestore(); }
+});
+
+it.each(["predecessor", "lost-claim", "projection-without-authority", "foreign-header"])("refuses %s before provider dispatch or mutation", async (variant) => {
+  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("not admitted")])); f.faux.setResponses([provider]);
+  let opts = f.options();
+  if (variant === "predecessor") opts.nativeSessionAuthority!.currentHandleId = "b".repeat(64);
+  if (variant === "lost-claim") f.assertCurrent.mockRejectedValue(new Error("Ownership lost"));
+  if (variant === "projection-without-authority") delete opts.nativeSessionAuthority;
+  let before;
+  if (variant === "foreign-header") {
+    const repo = new JsonlSessionRepo({ sessionsRoot: f.root }), raw = await repo.create({ id: handle, hostAuthority: { ...hostAuthority, authorityId: "9".repeat(64) }, assertOwned: async () => {} });
+    await raw.close(); before = await journal(f.root);
+  }
+  const result = await generateEngineTurnResponse("Current fictional rules", opts);
+  expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false); expect(provider).not.toHaveBeenCalled();
+  if (before) expect(await journal(f.root)).toEqual(before);
+});
+
+it("rechecks authority at dispatch after resolve-time open succeeds, before any provider or tool effect", async () => {
+  const f = await setup(), effect = vi.fn(async () => ({ content: [{ type: "text", text: "Fictional effect" }] }));
+  let openChecks = 0;
+  f.assertCurrent.mockImplementation(async ({ action }) => {
+    // Creation remains authorized; the claim is lost only after resolve's open.
+    if (action === "open" && ++openChecks > 1) throw new Error("Fictional authority lost before dispatch");
+  });
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall("FictionalEffect", {}, { id: "fictional-effect" })]),
+    fauxAssistantMessage([fauxText("must not dispatch")])]);
+  const tools = vi.spyOn(turnRunner, "buildTurnTools").mockResolvedValue({
+    tools: [{ name: "FictionalEffect", description: "Fictional effect", parameters: { type: "object", properties: {} }, execute: effect }],
+    structuredTool: null, mcpClients: [], closeRunTools: async () => {},
+  });
+  try {
+    const result = await generateEngineTurnResponse("Current fictional rules", f.options());
+    expect(result.failureKind).toBe("safety_native_session_authority");
+    expect(openChecks).toBe(2);
+    expect(f.faux.state.callCount).toBe(0);
+    expect(effect).not.toHaveBeenCalled();
+  } finally { tools.mockRestore(); }
+});
+
+it.each(["host_cap", "input_allowance", "mandatory_history"])("fails frozen %s with zero provider/summary calls and no compaction repair", async (reason) => {
+  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("must not dispatch")])); f.faux.setResponses([provider]);
+  const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext: { systemPrompt: "Short rules", tools: [] } });
+  let systemPrompt = "Short rules", opts = f.options();
+  opts.nativeSessionProjection!.dispatchBudget = budget;
+  if (reason === "host_cap") systemPrompt = "x".repeat(60000);
+  if (reason === "input_allowance") opts.messages = [{ role: "user", content: "x".repeat(600) }];
+  if (reason === "mandatory_history") opts.nativeSessionProjection!.inherited = { ...inherited, messages: [{ role: "user", content: "x".repeat(250000), timestamp: 1 }] };
+  const result = await generateEngineTurnResponse(systemPrompt, opts);
+  expect(result.error).toContain(`Handoff dispatch budget exceeded: ${reason}`);
+  expect(result.failureKind).toBe("safety_handoff_dispatch_budget"); expect(provider).not.toHaveBeenCalled();
+  expect((await journal(f.root)).filter((record) => record.kind === "compaction")).toHaveLength(0);
+});
+
+it("checks fitting normalized dispatch and pins the frozen output reserve", async () => {
+  const f = await setup(), requests: Array<{ context: TranscriptContext; options: import("@earendil-works/pi-ai").SimpleStreamOptions | undefined }> = [];
+  f.faux.setResponses([(context, options) => { requests.push({ context, options }); return fauxAssistantMessage([fauxText("accepted")]); }]);
+  const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext: { systemPrompt: "Short rules", tools: [] } });
+  const opts = f.options(); opts.nativeSessionProjection!.dispatchBudget = budget;
+  expect((await generateEngineTurnResponse("Short rules", opts)).text).toBe("accepted");
+  expect(requests[0]!.options!.maxTokens).toBe(2000);
+});
+
+it("compacts the composed view, records inherited coverage and reopens without duplicating its prefix", async () => {
+  const f = await setup(), repo = new JsonlSessionRepo({ sessionsRoot: f.root });
+  let raw = await repo.create({ id: handle, hostAuthority, assertOwned: async () => {} });
+  const session = createPiSessionAdapter(raw); session.setInheritedProjection(inherited);
+  const driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [], inheritedProjection: inherited }) as TestHarness;
+  let seen;
+  driver.on("session_before_compact", (event: { branchEntries: unknown[] }) => {
+    seen = event.branchEntries;
+    return { compaction: { summary: "Morgan chose amber; no approval; check unknown effects.", tokensBefore: 100, retainedTail: [] } };
+  });
+  await driver.compact();
+  expect(JSON.stringify(seen)).toContain("Historical handoff");
+  const context = await session.buildContext(); expect(context.messages).toHaveLength(1); expect(context.messages[0].role).toBe("compactionSummary");
+  await driver.close();
+  const records = await journal(f.root), checkpoint = records.find((record) => record.kind === "compaction");
+  expect(checkpoint.schemaVersion).toBe(2); expect(checkpoint.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage);
+  raw = await repo.open((await repo.list())[0]);
+  const reopened = createPiSessionAdapter(raw); reopened.setInheritedProjection(inherited);
+  expect((await reopened.buildContext()).messages).toEqual(context.messages);
+  reopened.setInheritedProjection({ ...inherited, coverage: { version: 1, sources: [{ ...coverage.sources[0]!, sourceDigest: "9".repeat(64) }] } });
+  await expect(reopened.buildContext()).rejects.toThrow("coverage");
+  await reopened.close();
+});
+
+it("refuses a composed cut retaining predecessor envelopes rather than copying them into current evidence", async () => {
+  const f = await setup(), repo = new JsonlSessionRepo({ sessionsRoot: f.root }), raw = await repo.create({ id: handle, hostAuthority, assertOwned: async () => {} });
+  const session = createPiSessionAdapter(raw); session.setInheritedProjection(inherited);
+  const driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [], inheritedProjection: inherited }) as TestHarness;
+  driver.on("session_before_compact", () => ({ compaction: { summary: "Cannot consume prefix", tokensBefore: 100, retainedTail: inherited.messages } }));
+  await expect(driver.compact()).rejects.toThrow("must cover the inherited prefix");
+  expect((await journal(f.root)).filter((record) => record.kind === "compaction")).toHaveLength(0);
+  await driver.close();
+});
+
+it("denies current-handle creation before publishing a guarded header", async () => {
+  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("not admitted")])); f.faux.setResponses([provider]);
+  f.assertCurrent.mockImplementation(async ({ action }) => { if (action === "create") throw new Error("Creation is not authorized"); });
+  const result = await generateEngineTurnResponse("Rules", f.options());
+  expect(result.failureKind).toBe("safety_native_session_authority"); expect(provider).not.toHaveBeenCalled();
+  const names = await readdir(join(f.root, "journals")).catch((error) => { if (error.code !== "ENOENT") throw error; return []; });
+  expect(names.filter((name) => name.endsWith(".jsonl"))).toEqual([]);
+});
+
+it("the real default guarded hook summarizes the entire large inherited prefix with a small current delta, then compacts a later turn normally", async () => {
+  const f = await setup(), repo = new JsonlSessionRepo({ sessionsRoot: f.root });
+  const raw = await repo.create({ id: handle, hostAuthority, assertOwned: async () => {} });
+  const prefix = { ...inherited, messages: [{ role: "user", content: "inherited-prefix " + "x".repeat(120000), timestamp: 1 }] };
+  const session = createPiSessionAdapter(raw); session.setInheritedProjection(prefix);
+  await raw.appendMessage({ role: "user", content: "small-current-delta", timestamp: 2 });
+  const summaries: string[] = [];
+  const summary: FauxResponseFactory = (context) => { summaries.push(JSON.stringify(context)); return fauxAssistantMessage([fauxText("## Goal\nContinue fictional work.\n## Constraints\nRead only; check unknown effects.\n## Next Steps\nWait for new instruction.")]); };
+  f.faux.setResponses([summary, fauxAssistantMessage([fauxText("growth-one reply")]), fauxAssistantMessage([fauxText("growth-two reply")]), summary]);
+  const driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [], inheritedProjection: prefix }) as TestHarness;
+  const policy = { keepRecentTokens: 20000, summaryMaxTokens: 2000, compactionMinSavingsTokens: 1 };
+  const compact = () => tryCompact(driver, { onEvent: undefined, onCompactionRecorded: undefined, runId: undefined, trigger: "manual", model: "faux:projection", session, policy, runtimeWarnings: [] });
+  expect(await compact()).toMatchObject({ applied: true, reduced: true });
+  expect(summaries).toHaveLength(1); expect(summaries[0]).toContain("inherited-prefix");
+  const first = (await journal(f.root)).find((record) => record.kind === "compaction");
+  expect(first.payload.compaction.retainedTail).toEqual([{ role: "user", content: "small-current-delta", timestamp: 2 }]);
+  expect(first.payload.derivedMessages).toEqual([]); expect(first.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage);
+  expect((await driver.prompt("growth-one " + "y".repeat(80000))).status).toBe("completed");
+  expect((await driver.prompt("growth-two " + "z".repeat(80000))).status).toBe("completed");
+  expect(await compact()).toMatchObject({ applied: true, reduced: true });
+  expect(summaries).toHaveLength(2); expect(summaries[1]).not.toContain("inherited-prefix");
+  expect((await journal(f.root)).filter((record) => record.kind === "compaction")).toHaveLength(2);
+  await driver.close();
+});
+
+it("rejects an invalid inherited cut before the guarded summarizer is called", async () => {
+  const complete = vi.fn();
+  const guarded = createGuardedCompactionHook({ harness: { models: { completeSimple: complete } }, trigger: "manual", effectivePolicy: {},
+    compactionSettings: { enabled: true, keepRecentTokens: 20000, reserveTokens: 4000 }, accounting: createCompactionAccounting() });
+  expect(await guarded.handler({ branchEntries: [], nonRetainablePrefixLength: 1 })).toEqual({ cancel: true });
+  expect(guarded.getDecision()?.kind).toBe("failed"); expect(complete).not.toHaveBeenCalled();
+});
+
+it.each(["omitted", "id", "hash", "coverage", "messages"])("durably binds the accepted artifact and refuses %s projection before any checkpoint", async (variant) => {
+  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("first reply")])); f.faux.setResponses([provider, provider]);
+  expect((await generateEngineTurnResponse("Rules", f.options())).error).toBeNull();
+  await refreshProviderSession(handle);
+  const records = await journal(f.root), bound = records.find((record) => record.kind === "turn_start" && record.payload.projectionBinding);
+  expect(bound.schemaVersion).toBe(2);
+  expect(bound.payload.projectionBinding).toMatchObject({ version: 1, artifact: f.options().nativeSessionProjection!.artifact, coverage });
+  expect(bound.payload.projectionBinding.messageDigest).toMatch(/^[a-f0-9]{64}$/);
+  // A fresh repository scan, not only the runtime's warm state, reconstructs binding.
+  const repo = new JsonlSessionRepo({ sessionsRoot: f.root }), raw = await repo.open((await repo.list())[0], { repair: false });
+  expect(raw.validator.projectionBinding).toEqual(bound.payload.projectionBinding); await raw.close();
+  const opts = f.options(2); opts.nativeSessionProjection = structuredClone(opts.nativeSessionProjection);
+  if (variant === "omitted") delete opts.nativeSessionProjection;
+  if (variant === "id") opts.nativeSessionProjection!.artifact.id = "8".repeat(64);
+  if (variant === "hash") opts.nativeSessionProjection!.artifact.hash = "8".repeat(64);
+  if (variant === "coverage") opts.nativeSessionProjection!.inherited.coverage.sources[0]!.sourceDigest = "8".repeat(64);
+  if (variant === "messages") opts.nativeSessionProjection!.inherited.messages[0]!.content = "Changed content with spoofed unchanged artifact reference";
+  const result = await generateEngineTurnResponse("Rules", opts);
+  expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false);
+  expect(provider).toHaveBeenCalledOnce(); expect(await journal(f.root)).toEqual(records);
+});
+
+it("permits projection omission after a composed checkpoint and validates supplied coverage", async () => {
+  const f = await setup(); f.faux.setResponses([fauxAssistantMessage([fauxText("first")]), fauxAssistantMessage([fauxText("after checkpoint")])]);
+  expect((await generateEngineTurnResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
+  const repo = new JsonlSessionRepo({ sessionsRoot: f.root }), raw = await repo.open((await repo.list())[0]);
+  await raw.appendCompaction({ summary: "Accepted inherited context was consumed", tokensBefore: 100, retainedTail: [] }, coverage,
+    { sourceTipId: raw.tip, sourceSeq: raw.seq }); await raw.close();
+  const omitted = f.options(2); delete omitted.nativeSessionProjection;
+  expect((await generateEngineTurnResponse("Rules", omitted)).text).toBe("after checkpoint"); await refreshProviderSession(handle);
+  const before = await journal(f.root), changed = f.options(3);
+  changed.nativeSessionProjection = structuredClone(changed.nativeSessionProjection);
+  changed.nativeSessionProjection!.inherited.coverage.sources[0]!.sourceDigest = "8".repeat(64);
+  expect((await generateEngineTurnResponse("Rules", changed)).failureKind).toBe("safety_native_session_authority");
+  expect(await journal(f.root)).toEqual(before);
+});
+
+it("pins the native root in authority and passes the actual root to the held owner's assertion", async () => {
+  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("first")])); f.faux.setResponses([provider]);
+  expect((await generateEngineTurnResponse("Rules", f.options())).error).toBeNull();
+  expect(f.assertCurrent.mock.calls.every(([request]) => request.sessionsRoot === f.root)).toBe(true);
+  const before = await journal(f.root), opts = f.options(2);
+  opts.nativeSessionAuthority!.sessionsRoot = f.root + "-other";
+  expect((await generateEngineTurnResponse("Rules", opts)).failureKind).toBe("safety_native_session_authority");
+  expect(provider).toHaveBeenCalledOnce(); expect(await journal(f.root)).toEqual(before);
+});
+
+it("refuses an inherited envelope in a guarded retained tail before any paid summary", async () => {
+  const f = await setup(), complete = vi.fn();
+  const guarded = createGuardedCompactionHook({ harness: { models: { completeSimple: complete }, getModel: () => f.model }, trigger: "manual", effectivePolicy: {},
+    compactionSettings: { enabled: true, keepRecentTokens: 20000, reserveTokens: 4000 }, accounting: createCompactionAccounting() });
+  const message = inherited.messages[0]!;
+  expect(await guarded.handler({ branchEntries: [{ type: "message", id: "prefix", message }, { type: "message", id: "current-copy", message: structuredClone(message) }], nonRetainablePrefixLength: 1 })).toEqual({ cancel: true });
+  expect(guarded.getDecision()).toMatchObject({ kind: "guard_skipped", reason: "inherited_prefix_not_reducible" });
+  expect(complete).not.toHaveBeenCalled();
+});
+
+it("allows the intended host-owned P2 matcher to inspect a guarded bound projection without dispatch authority", async () => {
+  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("reconciled reply")])); f.faux.setResponses([provider]);
+  const options = f.options(); expect((await generateEngineTurnResponse("Rules", options)).error).toBeNull();
+  const before = await journal(f.root);
+  const result = await reconcileNativeSessionTurn({ sessionsRoot: f.root, descriptor: options.sessionTurn, purpose: "execution",
+    expectedModel: { provider: f.model.provider, id: f.model.id, api: f.model.api },
+    expectedInputs: [{ id: "input-1", placement: "initial", requestDigest: digestTurnInput([{ type: "text", text: "current-1" }]) }] });
+  expect(result).toMatchObject({ status: "matched", outcome: "completed", handleId: handle });
+  expect(provider).toHaveBeenCalledOnce(); expect(await journal(f.root)).toEqual(before);
+});
+
+it.each([false, true])("carries composed coverage through omitted-projection compaction and cold reopening (projection restored=%s)", async (restore) => {
+  const f = await setup();
+  const final = vi.fn((context: TranscriptContext) => { expect(JSON.stringify(context)).not.toContain(inherited.messages[0]!.content); return fauxAssistantMessage([fauxText("reopened reply")]); });
+  const summary = vi.fn(() => fauxAssistantMessage([fauxText("## Goal\nContinue fictional work.\n## Progress\nInherited work covered; current work compacted.\n## Next Steps\nWait for instruction.")]));
+  f.faux.setResponses([fauxAssistantMessage([fauxText("initial reply")]), fauxAssistantMessage([fauxText("growth one")]), fauxAssistantMessage([fauxText("growth two")]), summary, final]);
+  expect((await generateEngineTurnResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
+  const repo = new JsonlSessionRepo({ sessionsRoot: f.root });
+  let raw = await repo.open((await repo.list())[0]); await raw.appendCompaction({ summary: "Inherited work consumed", tokensBefore: 100, retainedTail: [] }, coverage, { sourceTipId: raw.tip, sourceSeq: raw.seq }); await raw.close();
+  for (const turn of [2, 3]) {
+    const opts = f.options(turn); delete opts.nativeSessionProjection;
+    opts.messages = [{ role: "user", content: `growth-${turn} ` + "x".repeat(80000) }];
+    expect((await generateEngineTurnResponse("Rules", opts)).error).toBeNull();
+  }
+  await refreshProviderSession(handle);
+  raw = await repo.open((await repo.list())[0]); const session = createPiSessionAdapter(raw), driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [] }) as TestHarness;
+  expect(await tryCompact(driver, { onEvent: undefined, onCompactionRecorded: undefined, runId: undefined, trigger: "manual", model: "faux:projection", session,
+    policy: { keepRecentTokens: 20000, summaryMaxTokens: 2000, compactionMinSavingsTokens: 1 }, runtimeWarnings: [] })).toMatchObject({ applied: true, reduced: true });
+  expect(summary).toHaveBeenCalledOnce(); await driver.close();
+  const checkpoints = (await journal(f.root)).filter((record) => record.kind === "compaction");
+  expect(checkpoints).toHaveLength(2);
+  for (const checkpoint of checkpoints) { expect(checkpoint.schemaVersion).toBe(2); expect(checkpoint.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage); }
+  await refreshProviderSession(handle);
+  const reopened = f.options(4); if (!restore) delete reopened.nativeSessionProjection;
+  const result = await generateEngineTurnResponse("Rules", reopened);
+  expect(result.error).toBeNull(); expect(result.text).toBe("reopened reply"); expect(final).toHaveBeenCalledOnce();
+});
+
+it("recognizes a subsumed binding from any historical composed checkpoint when no projection is supplied", async () => {
+  const raw = { validator: { projectionBinding: { version: 1 } }, getEntries: async () => [
+    { type: "compaction", checkpoint: { inheritedCoverage: coverage } }, { type: "compaction", checkpoint: {} }] };
+  await expect(assertNativeProjectionBinding(raw, undefined)).resolves.toBeUndefined();
+});
+
+it.each(["coverage-extra", "source-extra", "long-journal-id", "long-tip-id", "artifact-extra"])("rejects %s projection shape as protected authority failure before admission", async (variant) => {
+  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("not admitted")])); f.faux.setResponses([provider]);
+  const opts = f.options(); opts.nativeSessionProjection = structuredClone(opts.nativeSessionProjection);
+  const projection = opts.nativeSessionProjection!;
+  if (variant === "coverage-extra") projection.inherited.coverage.extra = "not allowed";
+  if (variant === "source-extra") projection.inherited.coverage.sources[0]!.extra = "not allowed";
+  if (variant === "long-journal-id") projection.inherited.coverage.sources[0]!.journalId = "j".repeat(513);
+  if (variant === "long-tip-id") projection.inherited.coverage.sources[0]!.sourceTipId = "t".repeat(513);
+  if (variant === "artifact-extra") projection.artifact.extra = "not allowed";
+  const result = await generateEngineTurnResponse("Rules", opts);
+  expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false);
+  expect(provider).not.toHaveBeenCalled(); expect(f.assertCurrent).not.toHaveBeenCalled();
+  expect(await readdir(f.root)).toEqual([]);
+});
+
+it.each([discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow].map((cleanup) => [cleanup.name, cleanup]))(
+  "P preserves guarded bytes without rewind or delete through %s, including poisoned evidence", async (_name, cleanup) => {
+    const f = await setup(); f.faux.setResponses([fauxAssistantMessage([fauxText("Fictional durable evidence")])]);
+    await generateEngineTurnResponse("Fictional stable instructions", f.options());
+    const repo = resolveDurableNativeSessionRepo(f.root), metadata = (await repo.listOwned()).find((entry: { id: string }) => entry.id === handle);
+    const bytes = await readFile(metadata.path), raw = await repo.open(metadata, { repair: false, wait: false });
+    const deletion = vi.spyOn(repo, "delete"), close = vi.spyOn(raw, "close"), rewind = vi.fn(); raw.moveTo = rewind;
+    const reservation = { release: vi.fn() };
+    await cleanup({ preserveTurnEvidence: true, session: raw, sessionEntry: { repo, metadata }, reservation,
+      hasBaselineLeaf: true, baselineLeafId: "fictional-previous-leaf" },
+    { durableRepo: repo, options: { sessionKeepAlive: true }, requestedSessionId: handle, providerSessionId: handle,
+      externalAbort: true, errorMessage: "Fictional poisoned transcript", onEvent: vi.fn() });
+    expect(close).toHaveBeenCalledTimes(1); expect(reservation.release).toHaveBeenCalledTimes(1);
+    expect(rewind).not.toHaveBeenCalled(); expect(deletion).not.toHaveBeenCalled(); expect(await readFile(metadata.path)).toEqual(bytes);
+    deletion.mockRestore();
+  });

@@ -48,36 +48,25 @@ globalThis.fetch = async () => {
 
 let observedError;
 try {
-  // pi-ai 0.83.0 made `@earendil-works/pi-ai/oauth` type-only and made the
-  // login flows private provider implementations, so `loginAnthropic` is gone.
-  // The same real implementation is now reached through `provider.auth.oauth`,
-  // driven by the `prompt`/`notify` interaction rather than six callbacks. Pi
-  // 0.84 also requires the normalized provider interaction to carry a signal.
-  const { builtinProviders } = await import("@earendil-works/pi-ai/providers/all");
-  const anthropicOAuth = builtinProviders().find((provider) => provider.id === "anthropic")?.auth.oauth;
-  if (anthropicOAuth === undefined) {
-    throw new Error("Pi no longer exposes an anthropic OAuth implementation");
-  }
+  const { loginPiOAuth } = await import("@mono-agent/turn/ai");
   try {
-    await anthropicOAuth.login({
+    await loginPiOAuth("anthropic", {
       signal: new AbortController().signal,
-      notify: () => undefined,
-      prompt: async (prompt) => {
-        // Pi AI 1.0.1 offers browser/copy-code methods before starting login.
-        // Select the original browser flow; keep the real callback parser and
-        // every wrong-state/no-token-exchange assertion below unchanged.
-        if (prompt.type === "select") {
-          methodSelections += 1;
-          if (!prompt.options.some((option) => option.id === "browser")
-            || !prompt.options.some((option) => option.id === "copy_code")) {
-            throw new Error("Pi did not offer the expected Anthropic login methods");
-          }
-          return "browser";
+      onAuth: () => undefined,
+      onDeviceCode: () => undefined,
+      onSelect: async (prompt) => {
+        methodSelections += 1;
+        if (!prompt.options.some((option) => option.id === "browser")
+          || !prompt.options.some((option) => option.id === "copy_code")) {
+          throw new Error("Pi did not offer the expected Anthropic login methods");
         }
-        if (prompt.type === "manual_code") {
-          manualInputs += 1;
-          return WRONG_STATE_REDIRECT;
-        }
+        return "browser";
+      },
+      onManualCodeInput: async () => {
+        manualInputs += 1;
+        return WRONG_STATE_REDIRECT;
+      },
+      onPrompt: async () => {
         fallbackPrompts += 1;
         throw new Error("The wrong-state fixture reached Pi's fallback prompt");
       },

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeJsonAtomic } from "../durable-state/private-files.js";
-import { SUBAGENT_REGISTRY_MAX_BYTES, SUBAGENT_TERMINAL_MAX_COUNT, createSubagentInstanceRegistry, subagentConversationRoot, subagentInstanceSessionId } from "../subagent-instances.js";
+import { SUBAGENT_REGISTRY_MAX_BYTES, SUBAGENT_TERMINAL_MAX_COUNT, createSubagentInstanceRegistry, subagentConversationRoot, subagentInstanceSessionId } from "../subagents/subagent-instances.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -132,7 +132,7 @@ describe("persistent subagent registry", () => {
   it("recovers a built registry after process exit and excludes a competing process during an active turn", async () => {
     const { root, handle } = await setup();
     await handle.create({ ...spec, id: "process-test" });
-    const moduleUrl = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+    const moduleUrl = new URL("../../dist/subagents/subagent-instances.js", import.meta.url).href;
     const child = (operation: string) => execFileSync(process.execPath, ["--input-type=module", "-e", `
       import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
       const registry = createSubagentInstanceRegistry({ root: ${JSON.stringify(root)}, retireSession: async () => {} });
@@ -258,7 +258,7 @@ describe("awaiting child questions", () => {
   it("recovers a real process exit after durable question publication", async () => {
     const { handle, root } = await setup();
     const { id } = await handle.create(spec);
-    const moduleUrl = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+    const moduleUrl = new URL("../../dist/subagents/subagent-instances.js", import.meta.url).href;
     execFileSync(process.execPath, ["--input-type=module", "-e", `
       import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
       const handle = await createSubagentInstanceRegistry({ root: ${JSON.stringify(root)}, retireSession: async () => {} }).open("conversation");
@@ -282,4 +282,16 @@ describe("awaiting child questions", () => {
     expect(await handle.get(id)).toMatchObject({ status: "expired" });
     expect((await handle.get(id))?.pendingQuestion).toBeUndefined();
   });
+});
+
+it("persists an unknown lifetime total and preserves later known spend exactly once", async () => {
+  const { handle, root, retireSession } = await setup();
+  const created = await handle.create(spec);
+  await handle.begin(created.id);
+  await handle.finish(created.id, { status: "ok", usage: { input: 2, costUsd: null, knownCostUsd: 2 } });
+  const restarted = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
+  expect((await restarted.get(created.id))?.usage).toMatchObject({ input: 2, costUsd: null, knownCostUsd: 2 });
+  await restarted.begin(created.id);
+  await restarted.finish(created.id, { status: "ok", usage: { costUsd: 3 } });
+  expect((await restarted.get(created.id))?.usage).toMatchObject({ input: 2, costUsd: null, knownCostUsd: 5 });
 });

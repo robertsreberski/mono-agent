@@ -1,3 +1,4 @@
+import { isAgentCompactionAccounting } from "@mono-agent/contracts";
 import { isProviderUsageId, parseProviderUsageSnapshot, type ProviderUsageOperator } from "@mono-agent/contracts";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -923,6 +924,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         ...(typeof result.tokensBefore === "number" && Number.isFinite(result.tokensBefore) && result.tokensBefore >= 0 ? { tokensBefore: result.tokensBefore } : {}),
         ...(typeof result.tokensAfter === "number" && Number.isFinite(result.tokensAfter) && result.tokensAfter >= 0 ? { tokensAfter: result.tokensAfter } : {}),
         tokenCountsExact: result.tokenCountsExact === true,
+        ...(isAgentCompactionAccounting(result.accounting) ? { accounting: result.accounting } : {}),
       });
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return;
@@ -2573,7 +2575,7 @@ type SheddableInfoField = (typeof INFO_SHED_ORDER)[number];
  * Send `/v1/info` under the byte contract its consumer enforces.
  *
  * Every contributor to this body carries its own producer-side budget (see the
- * budget table in `agent-app`'s `channel-drivers/tui.ts`, and
+ * budget table in `app`'s `channels/drivers/tui.ts`, and
  * `MAX_SKILL_REGISTRY_BYTES` for skills) and those budgets sum to 960 KiB. This
  * is the last-resort fence behind them: without it the ONLY enforcement of the
  * 1 MiB cap lived in the consumer, so any producer-side miss took the agent

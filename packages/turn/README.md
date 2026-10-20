@@ -348,6 +348,12 @@ storage-only repair; it neither creates a session nor dispatches a model/tool.
 No existing
 configuration enables this path; configured switching remains separate work.
 
+Managed SRT pins, cache paths and readonly marker identity are owned by
+`@mono-agent/turn/host/sandbox`; app owns installation and repair.
+Read-only managed-directory/file inspection and hashing use explicit runtime
+or installer profiles; hashing alone does not establish release trust. Runtime
+verification always requires the independently pinned release tree.
+
 Typed hosts can use the built-in sandbox and process protection directly:
 
 ```ts
@@ -366,11 +372,22 @@ root retains readonly copying and coordinate normalization without a second faca
 
 ## Architecture
 
+Provider schema adaptation occurs only at the serialization boundary; native
+validation/execution keeps original schemas and cached validator identities.
+Shared-cap level-based Gemini and other reasoning families receive bounded
+answer headroom too. Savings vetoes are not failed compactions and do not block
+same-run reactive recovery.
+
+
 Pi results include a monotonic `dispatchProgress` snapshot (version 1), armed
 only after replay seeding: tool admission and yielded live input are distinct
 flags. Ordinary retries/backups stop after tool or live-input progress, with
 normalized-event evidence retained for other backends. Prepared native dispatch
 remains primary-only.
+
+`probeUnsupportedSessionsRoot` on `./engine/sessions.js` exposes the engine-owned
+read-only pre-release storage probe without opening a writer. Callers own refusal
+errors.
 
 The provider bridge imports the model-run loop, native journal/storage and
 compaction kit from `@mono-agent/turn/engine`. The separate `conversation` host
@@ -697,6 +714,7 @@ discardUncommittedSession
 isJournalStorageError
 nativeSessionRegistry
 normalizeDurableSessionsRoot
+probeUnsupportedSessionsRoot
 reconcileNativeSessionTurn
 recoverDurableNativeSession
 resolveDurableNativeSessionRepo
@@ -723,6 +741,8 @@ monoRuntimeSupportsSessionResume
 **`@mono-agent/turn/host/config`**
 
 ```text
+DEFAULT_RUNTIME_RETRY_BACKOFF_MS
+DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS
 MODEL_REFERENCE_ECHO_MAX_BYTES
 MODEL_REFERENCE_REASON_MAX_BYTES
 TurnHostError
@@ -747,7 +767,12 @@ validateProviderDefinition
 **`@mono-agent/turn/host/sandbox`**
 
 ```text
+MANAGED_SRT_LOCK_SHA256
+MANAGED_SRT_MARKER
+MANAGED_SRT_PACKAGE
 MANAGED_SRT_TREE_SHA256
+MANAGED_SRT_VERSION
+ManagedSrtMarker
 PreparedSandboxCommand
 SANDBOX_FALLBACKS
 SANDBOX_MODES
@@ -764,10 +789,16 @@ SandboxNetworkPolicy
 SandboxPolicy
 SandboxPolicyError
 SandboxUnavailableError
+assertManagedSrtDirectory
+assertManagedSrtRegularFile
 createSandboxPolicy
 createSrtSandboxEngine
 describeSandboxEffectiveState
 failClosedSandboxPolicy
+hashManagedSrtFile
+hashPrivateManagedSrtTree
+managedSrtCacheRoot
+managedSrtInstallRoot
 mergeSandboxPolicies
 networkPolicyAllowsUrl
 prepareSandboxedCommand
@@ -1097,6 +1128,10 @@ Returns:
 - `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 #### `runtime.run(systemPrompt, options)`
+
+The retired `piToolParallelismMode` field is rejected, including direct provider
+and prepared-dispatch callers. Use `piToolExecutionMode: "sequential"` for the
+former `one-at-a-time` value, or `"safe-parallel"` for `all` (also the default).
 
 Per-call options (a non-exhaustive selection):
 
@@ -1484,6 +1519,29 @@ guidance only says complete instructions may remain visible.
 
 ### Context compaction
 
+Summary requests resolve `compaction.effort` independently of conversation effort.
+The default `auto` disables reasoning when supported, otherwise chooses low (or
+the lowest supported level). The combined `summaryMaxTokens` text target retains
+its normal/split-turn division. Adaptive Anthropic requests add 2,048–8,192 tokens
+of bounded output allowance per summary for shared-ceiling thinking, limited by
+the model and remaining context. Legacy budget-based Anthropic keeps Pi’s native
+answer-room adjustment. Low adaptive effort is not a hard hidden-token cap.
+
+Unchanged paid summary failures are suppressed for `failureCooldownMs` (default
+900,000; zero disables). A 10% input increase (at least 8,192 tokens), summary
+policy/model change, successful compaction or new session permits another attempt.
+Manual actions bypass suppression. The bounded process-local cache clears on
+restart; one suppression warning explains why automatic compaction was skipped.
+Overflow remains a real failure and may continue through the fallback chain.
+
+A summary that cannot retain a useful answer after context/model and reasoning
+reserves is rejected **before invoking the provider**, with
+`insufficient_summary_headroom` accounting and a runtime warning. The useful
+minimum is Pi's 1024 tokens, or the intentionally smaller split/text budget.
+Known local non-dispatch has zero cost; missing provider usage remains unknown.
+Cheap headroom failures also enter suppression until growth, cooldown or policy/
+model-ceiling changes permit retry.
+
 Summary preparation preserves labelled heads and tails of text tool results within
 Pi's 2,000-character serializer allowance. Copies retain tool identities and
 arguments; live results remain unchanged. Confirmed `Read`/`Write`/`Edit` results
@@ -1495,10 +1553,11 @@ without a proven host resolver.
 A versioned focus supplements both Pi summary requests, including split turns:
 intent, approval constraints, open work, decisions, exact symbols, errors, and next
 action, distinguishing current instructions from superseded ones. Pi's prompts,
-cut rules, recent tail and output budgets remain unchanged. Empty, malformed,
+cut rules and recent tail remain unchanged. Runtime summary reasoning/output
+preparation is independent of conversation effort. Empty, malformed,
 aborted and output-truncated summaries are rejected before persistence.
 
-Each `context_compaction` event includes metadata-only `accounting` (version 1).
+Each `context_compaction` event includes metadata-only `accounting` (version 2).
 Terminal events retain separately identified summary requests and their status,
 duration, provider tokens and cost, including rejected requests. Missing usage or
 cost stays `null`. Transcript and full-request before/after estimates are comparable
@@ -1510,7 +1569,10 @@ paths, tool arguments and raw cache keys are excluded from accounting.
 With prompt-cache diagnostics enabled, assistant payload diagnostics and usage
 share a request ID and phase. `context_usage.providerCostUsd` preserves unknown
 provider cost as `null` alongside the existing compatibility cost field. Summary requests use operation-scoped IDs in
-compaction accounting; their usage never flows into assistant request totals.
+compaction accounting. Their usage is included once in run totals (including
+rejected summaries), but never becomes assistant-request context occupancy.
+The run usage bag retains a separate `compaction` slice deduped by request ID.
+Unknown costs remain null, or a marked partial subtotal for mixed reports.
 `scripts/summarize-prompt-cache.mjs` reports boundaries, separate assistant/summary
 cost, and first differing observed message fingerprints for full inputs. Differences
 are evidence of payload changes, not proof of cache misses; delta/unsupported
@@ -1630,3 +1692,28 @@ runtime fails closed.
 pnpm --filter @mono-agent/turn run build
 pnpm --filter @mono-agent/turn run test
 ```
+
+One strict `tsc -p tsconfig.build.json` emits runtime, declarations and maps
+under `dist`; all eleven public entries and private maps resolve there. There
+are no generated source files, separate `types` output or build-copy steps.
+`typecheck` checks the strict source/test project without emitting.
+
+`test` builds production once, then emits Node child fixtures into an ignored
+test-only tree and runs Vitest. Before direct parity execution, run `build` and
+`test:fixtures`. Frozen evidence is copied, never regenerated by a test. Source
+helper tests need no compiled fixtures; native sandbox tests use the built
+sandbox subtree and its adjacent runner.
+
+### Cost completeness
+
+An executed unpriced model request makes the inclusive run total unknown
+(`usage.cost_usd: null`), even when every child is priced or there are no
+children. `usage.known_cost_usd` retains separately observed spend for an unknown
+total; it is omitted when the total is fully priced. Cost events/observer metrics
+use nullable `cumulativeUsd` and optional `knownCostUsd`. Cumulative
+snapshots replace earlier observations rather than adding to them. Empty
+delegation budgets are priced zero; executed unpriced children are not.
+
+Synchronous children and included compaction are counted once in the parent.
+Detached children belong to their job/conversation accounting, not the initiating
+turn's budget. Public TypeScript consumers must handle nullable cost totals.

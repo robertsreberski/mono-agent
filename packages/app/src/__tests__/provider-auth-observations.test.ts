@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
+import { createProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
 
 describe("provider auth observations", () => {
   it("records weaker account acceptance, preserves live proof and recovers from rejection", () => {

@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
+
+- Keep totals unknown when any contributing cost is unpriced, and show known
+  spend separately, including unpriced runs without subagents (formerly $0.00).
+  Cost totals are now nullable across public contracts; strict TypeScript
+  callers must handle null. Upgrade agent/web binaries together. Older binaries
+  must not run against an upgraded state root; rollback requires restoring a
+  pre-upgrade backup.
+
+- Fix `@mono-agent/turn` declarations to include absent pricing, metrics,
+  transcript, filesystem-change and session values, and accept supported
+  omitted/defaulted arguments. Strict TypeScript callers may need new null or
+  undefined checks. Results and tool contexts can carry explicit `undefined`
+  (including `RuntimeResult.failureKind`, `ToolContext.workspace`,
+  `toolEnvironment`, `persistArtifact` and router `sessionTurnReconciliation`);
+  exact-optional assignment targets must admit it. `createPiOAuthApiKeyResolver`
+  now guarantees `readCredential`, `modifyCredential` and `deleteCredential`;
+  doubles typed as this factory must return all three methods too.
+
+- Fix model-router fallback with detached conversation history and no `messages`,
+  allowing backup models to use the replay instead of crashing.
+
+- Build and ship `@mono-agent/turn` runtime and declarations together from `dist`,
+  preserving all eleven public entries.
+
+- Remove the deprecated `piToolParallelismMode` key (breaking config/API change).
+  Migrate `piToolParallelismMode: "one-at-a-time"` to
+  `piToolExecutionMode: "sequential"`, and `piToolParallelismMode: "all"` to
+  `piToolExecutionMode: "safe-parallel"` (or omit it for the default).
+  The old key is rejected even when the new key is also supplied.
+
+- Add the SDK-free `@mono-agent/channel-telegram/conversation` entry for routing
+  Telegram chat and forum-topic destinations.
+
 - Rename the conversation harness APIs to `ConversationHarness*`,
   `createConversationHarness`, and `createConversationResponder` without aliases.
   Use `ConfiguredConversationHarnessOptions` and
@@ -25,6 +59,20 @@
 
 - Add `@mono-agent/memory/health-metadata` for ordered health issue codes
   without loading SQLite, the memory store, or provider SDKs.
+
+- Preserve tool argument validation across provider-schema adaptation and keep
+  compaction billing separate from ACP context occupancy; omit unpaid local
+  summary rejections from the web cost breakdown.
+
+- Fix fallback context fit and strict-provider tool schemas without replaying
+  side effects, and report provider-serialized effective reasoning effort.
+- Reject summaries without useful output headroom before any provider call,
+  with explicit zero-cost accounting and unchanged-failure suppression.
+- Include reported compaction spend in run totals and a separate web cost line,
+  including rejected summaries and bounded manual-compaction receipts.
+
+- Fix repeated long-context summary failures with independent compaction effort,
+  adaptive reasoning headroom, and configurable unchanged-failure suppression.
 
 - Remove unused public exports and dead helpers from `@mono-agent/contracts`,
   `@mono-agent/config`, `@mono-agent/turn`, `@mono-agent/conversation`, and

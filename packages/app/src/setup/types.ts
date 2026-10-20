@@ -29,3 +29,24 @@ export type SecretEnvRefusalCode =
   | "unsafe-env-path"
   | "unsafe-gitignore-path"
   | "unsafe-lock-path";
+import type { CliEnvironment } from "../service/background/source-inputs.js";
+
+export interface RunInitEnvironmentContext {
+  readonly shellEnv: CliEnvironment;
+  readonly dotenvEnv: CliEnvironment;
+  readonly dotenvPath: string;
+}
+
+export type InitFileChangeKind =
+  | "created"
+  | "updated"
+  | "unchanged"
+  | "planned-create"
+  | "planned-update";
+
+export interface InitFileChange {
+  readonly path: string;
+  readonly kind: InitFileChangeKind;
+  /** Marks a path whose contents must never be printed as part of init reporting. */
+  readonly sensitive?: boolean;
+}

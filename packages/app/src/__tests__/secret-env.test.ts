@@ -7,25 +7,26 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { parseEnv } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   SecretEnvConcurrentModificationError,
-  initMonoAgentFolder,
   mergeSecretEnvFile,
   resolveSafeSecretEnvTarget,
   secretEnvLockPathForCanonical,
   verifySecretEnvPersistenceGuard,
-} from "../init.js";
+} from "../setup/secret-env.js";
+import { initMonoAgentFolder } from "../setup/init.js";
 
 let dir: string;
 const SECRET_IGNORE_BLOCK = "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n";
@@ -420,6 +421,50 @@ describe("mergeSecretEnvFile", () => {
       SECOND: "mono-agent",
     });
     await rm(recoveryPath!, { force: true });
+  });
+
+  it("retains the claimed inode and a newer writer when interrupted after installation", async () => {
+    const envPath = join(dir, ".env");
+    const newerPath = join(dir, "newer-env");
+    await writeFile(envPath, "TOKEN=original\n", { mode: 0o600 });
+    await writeFile(newerPath, "TOKEN=newer-writer\n", { mode: 0o600 });
+    const original = await stat(envPath);
+    const newer = await stat(newerPath);
+    const interruption = new Error("fixture interruption after link");
+    let failure: unknown;
+    try {
+      await mergeSecretEnvFile(envPath, { SECOND: "fictional-value" }, {
+        async afterInstallLink(targetPath) {
+          if (targetPath !== envPath) return;
+          await rename(newerPath, envPath);
+          throw interruption;
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(SecretEnvConcurrentModificationError);
+    const concurrent = failure as SecretEnvConcurrentModificationError;
+    const recoveryPath = concurrent.recoveryPath;
+    expect(recoveryPath).toBeDefined();
+    expect(concurrent.name).toBe("SecretEnvConcurrentModificationError");
+    expect(concurrent.message).toBe(
+      `Secret persistence detected a concurrent or interrupted change to ${envPath}; bytes were retained at ${recoveryPath}. Inspect both paths before retrying.`,
+    );
+    // This transaction deliberately exposes its typed recovery error, not the
+    // injected error or any private low-level cause.
+    expect(concurrent.cause).toBeUndefined();
+    expect(await readFile(envPath, "utf8")).toBe("TOKEN=newer-writer\n");
+    expect(await readFile(recoveryPath!, "utf8")).toBe("TOKEN=original\n");
+    expect(await stat(envPath)).toMatchObject({ dev: newer.dev, ino: newer.ino, nlink: 1 });
+    expect(await stat(recoveryPath!)).toMatchObject({ dev: original.dev, ino: original.ino, nlink: 1 });
+    expect((await stat(recoveryPath!)).mode & 0o777).toBe(0o600);
+    expect((await readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect((await readdir(dir)).filter((name) => name.endsWith(".backup"))).toEqual([
+      basename(recoveryPath!),
+    ]);
+    await expect(stat(await lockPathForFixture(envPath))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("revalidates the committed ignore file immediately before promoting a secret", async () => {

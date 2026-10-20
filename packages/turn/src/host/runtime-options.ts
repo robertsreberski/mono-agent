@@ -69,7 +69,7 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
   readonly sandbox?: never;
   /**
    * Ordered model chain for provider failover. When present, runs are served by
-   * the agent-runtime fallback router: the first entry is attempted first and
+   * the turn fallback router: the first entry is attempted first and
    * each retryable provider failure advances to the next entry, so callers
    * should put the primary model at index 0. The router overrides the per-run
    * `model` with chain entries; failover details are reported on the result as

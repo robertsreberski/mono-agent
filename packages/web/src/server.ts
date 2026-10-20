@@ -1,3 +1,4 @@
+import { browserCostWire } from "./cost-wire.js";
 import { isProviderUsageId } from "@mono-agent/contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
@@ -158,6 +159,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   const allowedHosts = resolveAllowedHosts(options.allowedHosts, options.env ?? process.env);
   const service = await WebService.create(options);
   const app = express();
+  app.use((_req, res, next) => {
+    const json = res.json.bind(res);
+    res.json = (body: unknown) => json(browserCostWire(body));
+    next();
+  });
   const server = createServer(app);
   server.headersTimeout = 15_000;
   server.requestTimeout = 5 * 60_000;
@@ -2434,7 +2440,7 @@ function contentDisposition(name: string, disposition: "inline" | "attachment"):
 }
 
 function formatSse(event: WebEvent): string {
-  return `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+  return `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(browserCostWire(event))}\n\n`;
 }
 
 function isMutation(method: string): boolean {

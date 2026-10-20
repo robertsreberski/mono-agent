@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { allConfigReferenceFields } from "../config-reference.js";
-import { renderHelpTopic } from "../cli-help.js";
+import { allConfigReferenceFields } from "../config-reference/config-reference.js";
+import { renderHelpTopic } from "../cli/cli-help.js";
 
 /** The `help init` detail view carries the per-route ultra-effort contract. */
 function initHelpText(): string {

@@ -701,3 +701,12 @@ describe("cron operator wire contract", () => {
       .toThrowError(/invalid cron operator/iu);
   });
 });
+
+it.each([{ cumulativeUsd: null }, { cumulativeUsd: null, knownCostUsd: 0 }, { cumulativeUsd: null, knownCostUsd: 2 }])("accepts explicit unknown usage_update money %j", (cost) => {
+  expect(parseCronOperatorRunDetail(summary({ projection: "detail", events: [{ type: "usage_update", ...cost }], eventsIncluded: 1 })).events)
+    .toEqual([{ type: "usage_update", ...cost }]);
+});
+it.each([{ cumulativeUsd: -1 }, { cumulativeUsd: "2" }, { cumulativeUsd: NaN }, { cumulativeUsd: null, knownCostUsd: -1 },
+  { cumulativeUsd: 1, knownCostUsd: 2 }])("rejects invalid usage_update money %j", (cost) => {
+  expect(() => parseCronOperatorRunDetail(summary({ projection: "detail", events: [{ type: "usage_update", ...cost }], eventsIncluded: 1 }))).toThrow();
+});

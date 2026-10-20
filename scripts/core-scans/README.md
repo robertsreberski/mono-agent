@@ -30,7 +30,8 @@ not proof that a declaration is safe to delete. Reports and tool diagnostics are
 replaced on each run under `node_modules/.cache/core-scans/`:
 
 - `knip-{default,production,entry-exports}.json` and matching `.stderr.txt` files;
-- `madge-{contracts,config,turn,conversation,app}.json` and matching `.stderr.txt` files.
+- `madge-{contracts,config,turn,conversation,app}.json`, matching `.stderr.txt` files,
+  and `.policy.json` files recording exact accepted, unexpected and stale cycles.
 
 Knip prints per-package file, value-export, type-export, and other-issue counts.
 Compare symbols/paths, not just totals; production-minus-default identifies
@@ -48,15 +49,11 @@ exceptions below. Existing findings are deliberately not grandfathered in.
   projects are bounded to `src/` (plus app's proof scripts); build outputs are
   outside discovery, not exceptions. Test directories are non-production inputs,
   so production discovery excludes `src/**/__tests__/` including their helpers.
-- Existing package tsconfigs map normal `dist` exports back to source. Turn's
-  default `tsconfig.json` extends its existing host project so tools that resolve
-  that conventional filename, including Knip, can map the four built host entries
-  back to their TS owners. Package defaults resolve before fallback path aliases;
-  aliases alone cannot establish that identity in a built checkout. The facade
-  adds no compiler options or build steps; turn's explicit build/typecheck commands
-  keep using the split JS/host projects. The later TypeScript conversion replaces
-  those split configs. Exact host specifier mappings and entries remain explicit
-  in `knip.ts`; no ignore entries compensate for source-mapping gaps.
+- Package tsconfigs and Knip's manifest-derived mappings resolve built entries
+  to their authored TS/MTS owners. Turn's public and private targets all use
+  dist; scanners read authored source directly, without product overlays or a
+  hide/restore wrapper. Build preflight still validates every runtime/type
+  target. No export ignores compensate for source-mapping gaps.
 - Madge scans production source (`ts,js,mjs,mts`) with `__tests__` excluded.
   Type-only edges are included. It follows reachable source dependencies across
   core packages: repeated cycles with `../../` prefixes are expected. Do not
@@ -74,9 +71,22 @@ below. There are no package-wide, all-types, or public-barrel ignores.
 
 | Exact path / dependency | Reason and treatment |
 | --- | --- |
-| `packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mjs` | By-path proof tool; regeneration workflow in [PROJECTION-GOLDENS.md](../../packages/turn/src/engine/__tests__/fixtures/PROJECTION-GOLDENS.md). Non-production entry. |
-| `packages/turn/src/host/sandbox/srt-embed-runner.mjs` | Worker loaded with `new URL` in `src/host/sandbox/index.ts`; production entry. |
-| `packages/turn/package.json`: `@vscode/ripgrep` | String-resolved dependency in `src/tools/shared/ripgrep.js` via `createRequire().resolve`; exact dependency exception, not an unused package. |
+| `packages/turn/src/engine/__tests__/fixtures/regenerate-projection-goldens.mts` | By-path proof tool; regeneration workflow in [PROJECTION-GOLDENS.md](../../packages/turn/src/engine/__tests__/fixtures/PROJECTION-GOLDENS.md). Non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/projection-parity-worker.mts` | Forked from the test-only compiler output by frozen parity and the manual regeneration tool; non-production entry. |
+| `packages/turn/src/__tests__/fixtures/prepared-host-runtime.mts` | Authored fixture loaded by Vite source URL; separately compiled for plain-Node proofs. Non-production entry. |
+| `packages/turn/src/__tests__/ai/fixtures/native-journal-storage-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/__tests__/ai/fixtures/native-lifecycle-storage-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/__tests__/ai/fixtures/native-writer-holder.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/append-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/checkpoint-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/effect-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/import-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/lock-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/native-create-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/store-owner-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/engine/__tests__/fixtures/turn-evidence-worker.mts` | Compiled test-only fixture loaded by path; non-production entry. |
+| `packages/turn/src/host/sandbox/srt-embed-runner.mts` | Worker loaded with `new URL` in `src/host/sandbox/index.ts`; production entry. |
+| `packages/turn/package.json`: `@vscode/ripgrep` | String-resolved dependency in `src/tools/shared/ripgrep.ts` via `createRequire().resolve`; exact dependency exception, not an unused package. |
 | `packages/conversation/src/tool-history/writer-worker.ts` | Worker loaded with `new URL` in `src/tool-history/writer.ts`; production entry. |
 | `packages/conversation/src/__tests__/fixtures/canonical-v5-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; non-production entry, with only declaration exports exempted (they describe JS, not independent runtime values). |
 | `packages/conversation/src/__tests__/fixtures/managed-native-switch-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; same narrow treatment. |
@@ -135,6 +145,77 @@ name is justified solely by a generated inventory. The unused named stream and
 provider-projection types lacking authored documentation were cut; declarations
 required by retained function/class signatures remain private.
 
-The five core packages must have zero findings in all three modes. Cycle findings
-remain visible until the separate structural cleanup; exceptions do not hide
-cycles or turn a nonzero tool result into success.
+Four compatibility aliases remain: public RuntimeBridge/RuntimeBridgeDescriptor
+cite their exporting entry; RuntimeSdkId cites the runtime contract that uses
+it; AgentRuntimeInstance cites the native prepared-dispatch test and runtime
+factory signatures. The unused private RuntimeObserver, AuthPrompt and AuthEvent
+aliases and their retention entries are removed. The policy test checks each
+registered name is still exported at its exact source owner; no file-level or
+all-types exception is used.
+
+The five core packages must have zero findings in all three dead-code modes.
+
+## Exact cycle policy
+
+[`cycle-policy.mjs`](./cycle-policy.mjs) registers one directed **erased** cycle,
+reported by the app traversal:
+`packages/web/dist/console-tools.d.ts → packages/web/dist/store.d.ts → packages/web/dist/console-tools.d.ts`.
+The source edges are `console-tools.ts → store.ts` (`import type WebStore`) and
+`store.ts → console-tools.ts` (runtime console operations). The reverse edge is
+absent from JavaScript: this is a concrete store/operation declaration
+collaboration, not a runtime initialization cycle. A broad forwarding store port
+solely to eliminate declaration traversal would add another owner without
+removing a runtime dependency.
+
+Raw Madge findings and diagnostics stay visible. Only this exact path/edge set
+passes; an additional cycle **or a stale exception** fails with exit 1. Tool or
+malformed-report errors still exit 2. Cycle rotation is equivalent, not a wildcard
+path or SCC-wide waiver. The policy follows emitted JavaScript edges from
+`console-tools.js` transitively and refuses any path back to `store.js`, including
+static imports, value re-exports and literal dynamic imports. Missing emitted
+files fail rather than establish erasure. Tests pin source import kinds and
+reject each runtime-edge form, including a path through a third module.
+
+## Consolidated owners and deliberately distinct policies
+
+| Concern | Owner and retained boundary |
+| --- | --- |
+| SRT identity and verifier | turn host sandbox; app and host coordinator policies remain distinct |
+| Null recorder | observability; importing the no-op does not enable telemetry |
+| Process incarnation | conversation; platform identity/claim semantics remain local |
+| Effort vocabulary | config; provider capability interpretation stays with its provider |
+| Memory health facts | lightweight memory metadata; no eager memory backend loading |
+| Retry facts / reply-file defaults | turn runtime / config respectively; coordinators retain budgets |
+| Retired predicate / native-root probe | config / turn host respectively; rejection and disk-probe ordering unchanged |
+| MCP transport | app/mcp; conversation transport retains its separate session lifecycle |
+| File, lease and activity primitives | app/durable-state; service ownership policies remain at callers |
+| Daily conversation grammar | conversation; BuJo daily semantics remain memory-owned |
+| Runtime and process contracts | turn contract leaves; host adapters retain orchestration |
+| MCP Apps constants / timeout | contracts / turn respectively; wire values stay fixed |
+| Bash and Exec mechanics | turn command leaves; host capability/admission remains separate |
+| Approved snapshots | app service leaves; publication and trust remain coordinator decisions |
+| Read-only inspectors | storage owners; no mutation or permissive fallback added |
+| Conversation titles | app producer and web consumer validators; real MCP parity tests pin names and bounds |
+
+Do not merge conceptual lookalikes: tool and conversation semaphores have
+separate capacity scopes; JSON/source parsing has different trust boundaries;
+session, skill and process layers have distinct lifecycles. Redaction,
+publication/truncation and locks preserve their owner-specific ordering and
+failure policies. The title producer bounds trimmed raw input before collapse;
+the web consumer bounds normalized completed output.
+
+## Naming policy
+
+Current package and source prose uses the current owners. Historical
+changelog/migration/archive text, retired-name diagnostics and negative tests,
+real upstream SDK names, and native/OS or architectural kernel vocabulary are
+not aliases. Serialized diagnostic keys (including managed closure metadata)
+are not cosmetic identifiers.
+
+The explicit operational identities remain unchanged: turn runtime-brand's
+`agent_runtime` schema prefix, `agent-runtime` MCP/client/service names,
+`agent-runtime-cli-` temporary prefix, provider prefix, title/version and doctor
+hint; persisted `pi-sdk`/`mono-harness`; managed-runtime `agent-app` filesystem,
+marker and package identity values. Retired package mappings and their
+rejection tests remain exact. This is not a new exception category or a stored
+key migration.

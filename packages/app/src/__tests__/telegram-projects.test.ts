@@ -9,16 +9,16 @@ import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import type { TelegramAdapterStartOptions } from "@mono-agent/channel-telegram";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createTelegramChannelDriver } from "../channels.js";
+import { createTelegramChannelDriver } from "../channels/channels.js";
 import { type ChannelStartInput } from "../channels/types.js";
-import { CONSOLE_PROJECT_SCHEMAS, createConsoleProjectsRuntimeExtension } from "../console-projects.js";
+import { CONSOLE_PROJECT_SCHEMAS, createConsoleProjectsRuntimeExtension } from "../request-tools/console-projects.js";
 import {
   bindTelegramProjectTurn,
   createTelegramProjectsService,
   telegramProjectTurnFor,
   type TelegramProjectsService,
-} from "../telegram-projects.js";
-import { openTelegramTopicDirectory, type TelegramTopicDirectoryStore } from "../telegram-topic-directory.js";
+} from "../channels/telegram/telegram-projects.js";
+import { openTelegramTopicDirectory, type TelegramTopicDirectoryStore } from "../channels/telegram/telegram-topic-directory.js";
 
 const roots: string[] = [];
 const open: Array<{ close(): unknown }> = [];

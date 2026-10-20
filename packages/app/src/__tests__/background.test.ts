@@ -1,10 +1,10 @@
-import { errorLine } from "../ui.js";
-import { maintainLaunchdLogsWithLifecycleLockOperation } from "../background-log-maintenance.js";
-import { ensureManagedBackgroundRuntime, defaultManagedBackgroundRuntimeDeps, verifyManagedRuntimeLaunch } from "../background-runtime.js";
-import { runWebCommand } from "../web-command.js";
-import { allowUnattendedMaintenanceStop, MAINTENANCE_MAX_DEFERRAL_MS, type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
+import { errorLine } from "../cli/ui.js";
+import { maintainLaunchdLogsWithLifecycleLockOperation } from "../service/launchd/background-log-maintenance.js";
+import { ensureManagedBackgroundRuntime, defaultManagedBackgroundRuntimeDeps, verifyManagedRuntimeLaunch } from "../service/managed-runtime/background-runtime.js";
+import { runWebCommand } from "../cli/commands/web-command.js";
+import { allowUnattendedMaintenanceStop, MAINTENANCE_MAX_DEFERRAL_MS, type LaunchdMaintenanceActivityStatus } from "../service/launchd/launchd-maintenance-activity.js";
 import type { WorkerActivityProbe } from "../durable-state/activity-snapshot.js";
-import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
+import { LAUNCHD_LOG_MAX_BYTES } from "../service/launchd/launchd-logs.js";
 import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,25 +16,29 @@ import { describe, expect, it, vi } from "vitest";
 import { listTraceSources, registerTraceSource } from "@mono-agent/observability";
 import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
-import { canonicalBackgroundConfigPath, acquireFilesystemLifecycleLock, ensureBackgroundReady, defaultBackgroundDeps, forceRestartBackground, maintainLaunchdController, unattendedLogDeps, managedLaunchdLogMaintenanceEnvironment, resolveInstanceTarget, restartBackground, startBackground, statusBackground, stopBackground, tailLogs } from "../background.js";
-import { acquireSharedLaunchdLogLock, sharedLaunchdLogLockTarget } from "../launchd-lifecycle-lock.js";
-import { withLaunchdMaintenanceControllerLock } from "../launchd-maintenance-gate.js";
-import type { BackgroundDeps, InstanceTarget } from "../background.js";
-import type { BackgroundSnapshot } from "../background-snapshot.js";
-import { invalidateApprovedBackgroundSnapshots, resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
-import { encodeBackgroundSnapshot } from "../background-snapshot.js";
-import type { LaunchdLogInspection } from "../launchd-logs.js";
-import { buildLaunchdProgramArguments, deriveLaunchdLabel } from "../launchd.js";
-import { recordManagedSnapshotRefusal } from "../cli-background-command.js";
-import type { LaunchctlRunner } from "../launchd.js";
+import { ensureBackgroundReady, forceRestartBackground, maintainLaunchdController, unattendedLogDeps, restartBackground, startBackground, stopBackground, tailLogs } from "../service/background/background.js";
+import { canonicalBackgroundConfigPath, managedLaunchdLogMaintenanceEnvironment, resolveInstanceTarget } from "../service/background/target.js";
+import { defaultBackgroundDeps } from "../service/background/deps.js";
+import { statusBackground } from "../service/background/status.js";
+import { acquireFilesystemLifecycleLock } from "../service/launchd/launchd-lifecycle-lock.js";
+import { acquireSharedLaunchdLogLock, sharedLaunchdLogLockTarget } from "../service/launchd/launchd-lifecycle-lock.js";
+import { withLaunchdMaintenanceControllerLock } from "../service/launchd/launchd-maintenance-gate.js";
+import type { BackgroundDeps, InstanceTarget } from "../service/background/types.js";
+import type { BackgroundSnapshot } from "../service/background/background-snapshot.js";
+import { invalidateApprovedBackgroundSnapshots, resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot } from "../service/background/approved-background-snapshot.js";
+import { encodeBackgroundSnapshot } from "../service/background/background-snapshot.js";
+import type { LaunchdLogInspection } from "../service/launchd/launchd-logs.js";
+import { buildLaunchdProgramArguments, deriveLaunchdLabel } from "../service/launchd/launchd.js";
+import { recordManagedSnapshotRefusal } from "../cli/commands/cli-background-command.js";
+import type { LaunchctlRunner } from "../service/launchd/launchd.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import type { OwnerPrivateLock } from "../durable-state/owner-private-lock.js";
-import { readLaunchdSnapshotRefusal, clearLaunchdSnapshotRefusal } from "../launchd-snapshot-refusal.js";
+import { readLaunchdSnapshotRefusal, clearLaunchdSnapshotRefusal } from "../service/launchd/launchd-snapshot-refusal.js";
 import {
   readLaunchdLogMonitorStatus,
   removeLaunchdLogMonitorStatus,
   writeLaunchdLogMonitorStatus,
-} from "../launchd-log-monitor-status.js";
+} from "../service/launchd/launchd-log-monitor-status.js";
 
 const POLL = { timeoutMs: 5_000, intervalMs: 100 };
 const CLOCK_START = 1_000_000;

@@ -4,24 +4,49 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
+import { listPiBuiltinModels, listPiBuiltinProviders } from "@mono-agent/turn/ai";
+import { piModelResolutionIssue } from "../doctor/runtime.js";
+
 import type { SandboxEngine } from "@mono-agent/turn/host/types";
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import * as memoryStore from "@mono-agent/memory/store";
 
-import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
-import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
-import { launchdLogsSectionFromInspection, validateMonoAgentFolder } from "../doctor.js";
-import type { LaunchdLogInspection } from "../launchd-logs.js";
-import { appPackageVersion } from "../package-version.js";
+import { canonicalContinuationJson, continuationDigest } from "../continuations/continuations.js";
+import { MAX_RECORD_BYTES } from "../continuations/continuation-store-types.js";
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
+import { launchdLogsSectionFromInspection } from "../doctor/launchd-logs.js";
+import type { LaunchdLogInspection } from "../service/launchd/launchd-logs.js";
+import { appPackageVersion } from "../host/package-version.js";
 import {
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   recordProcessJobHealthIncident,
-} from "../process-jobs-store.js";
+} from "../process-jobs/process-jobs-store.js";
 
 let dir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agent-app-doctor-"));
+});
+
+describe("doctor Pi provider catalog", () => {
+  it("accepts exact models from every runtime-owned built-in provider", () => {
+    const config = resolveJsonMonoAgentConfig({
+      cwd: dir,
+      json: { runtime: { model: "openai:fictional-model" }, context: { identityPath: "IDENTITY.md" } },
+    });
+    const providers = listPiBuiltinProviders();
+    expect(providers.length).toBeGreaterThan(0);
+    for (const provider of providers) {
+      const models = listPiBuiltinModels(provider.id);
+      for (const model of models) {
+        expect(piModelResolutionIssue(config, parseMonoRuntimeModelReference(`${provider.id}:${model.id}`))).toBeUndefined();
+      }
+      expect(piModelResolutionIssue(config, parseMonoRuntimeModelReference(`${provider.id}:fictional-missing-model`)))
+        .toContain("pi model not found");
+    }
+  });
 });
 
 describe("launchd log doctor section", () => {

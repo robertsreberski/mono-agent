@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import type { ConversationHarness, ConversationHarnessRequest, ConversationHistoryStore } from "@mono-agent/conversation";
-import { serializeNativeSwitchHarness } from "../configured-native-switch.js";
+import { serializeNativeSwitchHarness } from "../composition/configured-native-switch.js";
 
 it("preserves retryable busy when bounded drain fails, with no hidden run retry", async () => {
   const run = vi.fn(async () => ({ metadata: { runId: "fictional-run", conversationId: "fictional", contextSources: [], contextSectionIds: [] },

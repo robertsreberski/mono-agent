@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { PROVIDER_USAGE_SCHEMA, parseProviderUsageSnapshot, type ProviderUsageId } from "@mono-agent/contracts";
-import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
-import { mapProviderUsage } from "../provider-usage-mappers.js";
-import { createProviderUsageService, PROVIDER_USAGE_CACHE_MS } from "../provider-usage.js";
+import { createProviderAuthObservationTracker } from "../providers/provider-auth-observations.js";
+import { mapProviderUsage } from "../providers/provider-usage-mappers.js";
+import { createProviderUsageService, PROVIDER_USAGE_CACHE_MS } from "../providers/provider-usage.js";
 const NOW = Date.parse("2026-09-14T12:00:00Z");
 const RESET = "2026-09-15T12:00:00.000Z";
 // Synthetic fixtures shaped like the researched responses; identifiers are canaries, never real data.

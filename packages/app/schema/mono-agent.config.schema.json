@@ -300,6 +300,35 @@
               "type": "boolean",
               "default": true
             },
+            "effort": {
+              "description": "Independent summary effort: auto disables thinking when supported, otherwise uses low or the lowest supported level; never inherits conversation effort.",
+              "examples": [
+                "auto"
+              ],
+              "type": "string",
+              "default": "auto",
+              "enum": [
+                "auto",
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            "failureCooldownMs": {
+              "description": "Suppress unchanged failed summaries for this many milliseconds (default 15 minutes); 0 disables suppression. Meaningful growth or summary-policy changes allow an earlier attempt.",
+              "examples": [
+                900000
+              ],
+              "type": "integer",
+              "default": 900000,
+              "minimum": 0,
+              "maximum": 86400000
+            },
             "triggerRatio": {
               "description": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom (10% of the window, 16,000-48,000 tokens).",
               "examples": [
@@ -320,7 +349,7 @@
               "maximum": 200000
             },
             "summaryMaxTokens": {
-              "description": "Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens.",
+              "description": "Combined generated-summary text target; omitted derives 4% of the effective window, clamped to 2,000-12,000 tokens. Adaptive thinking may add a bounded 2,048-8,192-token allowance per request, subject to model/context limits.",
               "examples": [
                 5120
               ],

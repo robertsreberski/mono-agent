@@ -984,13 +984,22 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
         model: "claude-fable-5",
         cumulativeUsd: 0.42,
         tokens: { input: 10, output: 5, cacheReadTokens: 300, cacheCreationTokens: 7 },
+        contextTokens: 22,
       }),
     ).toEqual({
       type: "usage_update",
       model: "claude-fable-5",
       cumulativeUsd: 0.42,
       tokens: { input: 10, output: 5, cacheRead: 300, cacheCreation: 7 },
+      contextTokens: 22,
     });
+  });
+
+  it("preserves unknown inclusive cost and separately known spend", () => {
+    expect(streamEventFromRuntimeEvent({ type: "cost_accumulated", cumulativeUsd: null, knownCostUsd: 2 }))
+      .toEqual({ type: "usage_update", cumulativeUsd: null, knownCostUsd: 2 });
+    expect(streamEventFromRuntimeEvent({ type: "cost_accumulated", cumulativeUsd: 3, knownCostUsd: 2 }))
+      .toEqual({ type: "usage_update", cumulativeUsd: 3 });
   });
 
   it("maps provider request lifecycle to provider_status", () => {

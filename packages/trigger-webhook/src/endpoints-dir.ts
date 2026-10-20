@@ -8,7 +8,7 @@ import { assertEndpointIdentity } from "./endpoint-identity.js";
 import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "./server.js";
 
 // Matches a leading YAML-style frontmatter block (`---` … `---`). Mirrors the
-// shape used by cron-adapter's job files; webhook-adapter keeps a self-contained
+// shape used by trigger-cron's job files; trigger-webhook keeps a self-contained
 // parser so it takes on no extra dependency. Frontmatter is flat scalars only.
 const FRONTMATTER_PATTERN = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/u;
 const MAX_RUN_MS = 86_400_000;

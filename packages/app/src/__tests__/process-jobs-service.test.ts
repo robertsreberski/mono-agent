@@ -1,11 +1,11 @@
+import type { ProcessJobWakeInput } from "../process-jobs/types.js";
 import { WorkerActivityTracker } from "../durable-state/worker-activity.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationHarness, createConversationResponder, createInMemoryHistoryStore, createLiveInputMailbox, createToolPolicy } from "@mono-agent/conversation";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
 import { withProjectContext } from "@mono-agent/web";
-// @ts-expect-error Real native engine test seam; only provider transport is scripted.
-import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
+import { generateEngineTurnResponse } from "@mono-agent/turn/ai";
 import { createToolContext } from "@mono-agent/turn/tools";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,14 +17,13 @@ import type { ProcessJobProcessHandle, ProcessJobProcessResult, ProcessJobStartR
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelId, RunningChannel } from "../channels/types.js";
-import type { ProcessJobsSettings } from "../process-jobs-config.js";
-import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
+import type { ProcessJobsSettings } from "../process-jobs/process-jobs-config.js";
+import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs/process-jobs-config.js";
 import {
   openProcessJobsService,
-  type ProcessJobWakeInput,
   type ProcessJobsHealth,
   type ProcessJobsServiceHandle,
-} from "../process-jobs-service.js";
+} from "../process-jobs/process-jobs-service.js";
 import {
   isTerminalProcessJobState,
   openProcessJobStore,
@@ -41,10 +40,10 @@ import {
   type ProcessJobOriginRecord,
   type ProcessJobStore,
   type ProcessJobStoreWorkCounter,
-} from "../process-jobs-store.js";
+} from "../process-jobs/process-jobs-store.js";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
-import { routeProactiveNotification } from "../proactive-notify.js";
-import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { routeProactiveNotification } from "../delivery/proactive-notify.js";
+import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs/process-jobs-context.js";
 
 const INCARNATION: ProcessIncarnation = {
   schema: "mono-agent.process-incarnation.v1",

@@ -1,33 +1,34 @@
-import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
-import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import type { ProcessJobWakeInput } from "../process-jobs/types.js";
+import { createSubagentRecoveryAccess } from "../subagents/subagent-recovery-access.js";
+import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs/process-jobs-context.js";
 import { createLiveInputMailbox } from "@mono-agent/conversation";
 import { formatHostCapabilities } from "@mono-agent/conversation";
-// @ts-expect-error Real direct kernel execution seam.
-import { execToolRun } from "../../../turn/src/tools/commands/exec.js";
+import { execToolRun } from "@mono-agent/turn/tools";
 import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/contracts";
 import { fileURLToPath } from "node:url";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import { createSandboxPolicy } from "@mono-agent/turn/host/sandbox";
-import { buildSubagentsOptions } from "../configured-agent.js";
-// @ts-expect-error Real Pi test seam; transport only is fake.
-import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
+import { buildSubagentsOptions } from "../composition/configured-subagents.js";
+import { generateEngineTurnResponse } from "@mono-agent/turn/ai";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
 import { writeJsonAtomic } from "../durable-state/private-files.js";
-import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
-import { openProcessJobsService, type ProcessJobsServiceHandle, type ProcessJobWakeInput } from "../process-jobs-service.js";
-import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
-import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
-import { hasSubagentObligation } from "../subagent-execution-ownership.js";
-import { launchInternalProcessJob } from "../process-jobs-internal.js";
-// @ts-expect-error Private kernel test seam.
-import { createAgentTool, subagentUsageForRun } from "../../../turn/src/tools/delegation/agent-tool.js";
-// @ts-expect-error Private kernel test seam.
-import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagents/subagent-instances.js";
+import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs/process-jobs-service.js";
+import { PROCESS_JOBS_DEFAULTS } from "../process-jobs/process-jobs-config.js";
+import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs/process-jobs-store.js";
+import { hasSubagentObligation } from "../subagents/subagent-execution-ownership.js";
+import { launchInternalProcessJob } from "../process-jobs/process-jobs-internal.js";
+const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"));
+const { createAgentTool, subagentUsageForRun } = await import(new URL("./delegation/agent-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-tool.js");
+const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
 
 const origin = { conversationId: "slack:C1:1.1#bucket", baseConversationId: "slack:C1:1.1", bucket: "bucket",
   replyToConversationId: "slack:C1:1.1", normalizedReplyTarget: "slack:C1:1.1", runId: "parent", historyBoundary: "parent", channel: "slack" };
@@ -64,7 +65,7 @@ async function fixture(overrides = {}, retireSession: (id: string, root: string)
 function tools(f: Awaited<ReturnType<typeof fixture>>, run: (request: any) => Promise<any>, extra = {}) {
   const options = { instances: f.instances, run, backgroundSubagentController: f.service.internalController(origin, 0), ...extra };
   const context = { recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } };
-  return { options, agent: createAgentTool(options, context), send: createAgentManageTool(options, context) };
+  return { options, agent: createAgentTool(options, context), send: presentTool(createAgentManageTool(options, context)) };
 }
 const done = async (service: ProcessJobsServiceHandle, id: string) => {
   await vi.waitFor(async () => expect((await service.get(id))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
@@ -454,7 +455,7 @@ describe("parent stop", () => {
     } };
     let observedProof: Awaited<ReturnType<NonNullable<typeof controller.stop>>> | undefined;
     let completionOrder = 0; let proofObservedAt = 0;
-    const send = createAgentManageTool({ ...options, instances, backgroundSubagentController: { ...controller,
+    const send = presentTool(createAgentManageTool({ ...options, instances, backgroundSubagentController: { ...controller,
       stop: async (identity: any) => {
         reached.resolve();
         try {
@@ -463,7 +464,7 @@ describe("parent stop", () => {
           proofObservedAt = ++completionOrder;
           return observedProof;
         } finally { controllerDrained.resolve(); }
-      } } });
+      } } }));
     let stopping: ReturnType<typeof send.execute> | undefined;
     try {
       stopping = send.execute("stop", { id: "helper", stop: true }); await reached.promise;
@@ -1265,7 +1266,7 @@ describe("managed detached production execution", () => {
 
   it.each(["changed-root", "missing-job", "registry-reset"])("G03/G04: actual managed certificate remains fenced after %s without recreating historical state", async (mode) => {
     const f = await managedFixture(undefined, {}, true); const root = resolve(f.root, "children"); let held = false;
-    let identity: import("../subagent-registry-ownership.js").SubagentOwnerIdentity | undefined;
+    let identity: import("../subagents/subagent-registry-ownership.js").SubagentOwnerIdentity | undefined;
     f.service.bindManagedSubagents!({ root,
       verify: async (owner) => (await f.registry.open(owner.conversationId, { existingOnly: true })).verifyOwner(owner),
       publish: async (phase, publication) => {
@@ -1285,7 +1286,7 @@ describe("managed detached production execution", () => {
     if (mode === "missing-job") await store.mutate((records) => { records.delete(receipt.details.jobId); });
     if (mode === "registry-reset") await rm(resolve(subagentConversationRoot(root, origin.conversationId), "instances.json"));
     const reopened = await openProcessJobsService({ ...f.options, store, settings: { ...f.options.settings, stateDir } }); services.push(reopened);
-    const resolveOwner = vi.fn((owner: import("../subagent-registry-ownership.js").SubagentOwnerIdentity) => reopened.resolveSubagentOwner!(owner));
+    const resolveOwner = vi.fn((owner: import("../subagents/subagent-registry-ownership.js").SubagentOwnerIdentity) => reopened.resolveSubagentOwner!(owner));
     const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => Date.now() + 3 * 86_400_000,
       resolveOwner, checkOwnerIndex: (conversationId, known) => reopened.checkSubagentOwnerIndex!(conversationId, known),
     });
@@ -1457,7 +1458,7 @@ describe("managed detached production execution", () => {
     await f.service.stop();
     const root = resolve(f.root, "children"); let clock = Date.now();
     const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {}, now: () => clock,
-      ...(resolver === "stopped" ? { resolveOwner: (identity: import("../subagent-registry-ownership.js").SubagentOwnerIdentity) => f.service.resolveSubagentOwner!(identity) } : {}),
+      ...(resolver === "stopped" ? { resolveOwner: (identity: import("../subagents/subagent-registry-ownership.js").SubagentOwnerIdentity) => f.service.resolveSubagentOwner!(identity) } : {}),
     });
     const unavailable = await registry.open(origin.conversationId, { existingOnly: true });
     await expect(unavailable.close("helper")).rejects.toThrow("subagent_owner_unavailable");
@@ -1805,7 +1806,7 @@ describe("managed detached production execution", () => {
     const run = async (request: any) => {
       sessions.push(request.instance.sessionId);
       const result = await execToolRun({ executable: process.execPath, args: ["-e", "process.stdout.write('verified')"], workdir: f.root }, {
-        ctx: { workspace: f.root }, toolCallId: "owned-call", ownedForegroundProcessController: request.ownedForegroundProcesses.forAttempt(),
+        ctx: { workspace: f.root } as import("@mono-agent/turn/tools").ToolContext, toolCallId: "owned-call", ownedForegroundProcessController: request.ownedForegroundProcesses.forAttempt(),
       });
       expect(result.error).not.toBe(true);
       expect(result.text).toContain("verified");
@@ -1870,9 +1871,11 @@ describe("managed detached production execution", () => {
   }, 30_000);
 
   it.each([
-    { scenario: "token-only unpriced", price: 0, existingCost: undefined },
-    { scenario: "price already present", price: 0.08, existingCost: 0.03 },
-  ])("backfills $scenario tokens without overwriting cost", async ({ price, existingCost }) => {
+    { scenario: "token-only zero", price: 0, existingCost: undefined, lateKnown: undefined, existingKnown: undefined },
+    { scenario: "price already present", price: 0.08, existingCost: 0.03, lateKnown: undefined, existingKnown: undefined },
+    { scenario: "explicit unknown already present", price: 0.08, existingCost: null, lateKnown: undefined, existingKnown: 2 },
+    { scenario: "explicit unknown late fill", price: null, existingCost: undefined, lateKnown: 2, existingKnown: undefined },
+  ])("backfills $scenario tokens without overwriting cost", async ({ price, existingCost, lateKnown, existingKnown }) => {
     const surfaceUpdate = vi.fn(async (_job: ProcessJobProjection) => {});
     const f = await managedFixture(undefined, {}, false, undefined, surfaceUpdate);
     const gate = deferred<any>();
@@ -1883,17 +1886,18 @@ describe("managed detached production execution", () => {
     await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     if (existingCost !== undefined) await f.store.mutate((records) => {
       const record = records.get(receipt.details.jobId)!;
-      record.subagentProgress = { ...record.subagentProgress!, costUsd: existingCost };
+      record.subagentProgress = { ...record.subagentProgress!, costUsd: existingCost, ...(existingKnown === undefined ? {} : { knownCostUsd: existingKnown }) };
     });
     const before = (await f.store.get(receipt.details.jobId))!.subagentProgress!;
     expect(before).not.toHaveProperty("usage");
-    gate.resolve({ text: "late", usage: { input_tokens: 9 }, cost: { total: price } });
+    gate.resolve({ text: "late", usage: { input_tokens: 9 }, cost: { total: price, ...(lateKnown === undefined ? {} : { knownCostUsd: lateKnown }) } });
     await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentProgress?.usage?.input).toBe(9),
       { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const after = (await f.store.get(receipt.details.jobId))!.subagentProgress!;
     expect(after.revision).toBe(before.revision + 1);
-    if (existingCost === undefined) expect(after).not.toHaveProperty("costUsd");
-    else expect(after.costUsd).toBe(existingCost);
+    if (existingCost === undefined && price !== null) expect(after).not.toHaveProperty("costUsd");
+    else expect(after.costUsd).toBe(existingCost ?? null);
+    expect(after.knownCostUsd).toBe(existingKnown ?? lateKnown);
     await vi.waitFor(() => expect(surfaceUpdate.mock.calls.some(([job]) =>
       job.kind === "internal" && job.subagentProgress?.usage?.input === 9)).toBe(true),
     { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
@@ -2000,7 +2004,7 @@ describe("detached persistent subagents", () => {
     expect(await f.service.get(receipt.details.jobId)).toEqual(job);
     expect(f.wake).toHaveBeenCalledOnce();
     expect((await f.instances.get("helper"))?.usage).toMatchObject({ input: 7, output: 2, costUsd: 0.1 });
-    expect(subagentUsageForRun(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
+    expect((subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
     const next = tools(f, async () => ({ text: "replied" }));
     await expect(next.send.execute("reply", { id: "helper", message: "Small", close: true })).rejects.toThrow("subagent_recovery_required");
     expect((await f.instances.get("helper"))?.recovery).toMatchObject({ continuity: "unknown" });
@@ -2188,7 +2192,7 @@ it.each(["cooperative", "late"])("certified %s detached child timeout resumes re
     });
     const access = { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) };
     const agent = createAgentTool(subagents, { model: config.runtime.model, recoveryAccess: access });
-    const send = createAgentManageTool(subagents, { model: config.runtime.model, recoveryAccess: access });
+    const send = presentTool(createAgentManageTool(subagents, { model: config.runtime.model, recoveryAccess: access }));
     faux.setResponses([async (_context: any, options: any) => {
       await new Promise<void>((resolve) => options.signal.addEventListener("abort", () => resolve(), { once: true }));
       return fauxAssistantMessage([fauxText("unfinished native work")], { stopReason: "aborted" });
@@ -2253,7 +2257,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
     subagents.backgroundSubagentController = f.service.internalController(origin, 0);
     const agent = createAgentTool(subagents, { model: config.runtime.model, cwd: f.root });
-    const send = createAgentManageTool(subagents, { model: config.runtime.model, cwd: f.root });
+    const send = presentTool(createAgentManageTool(subagents, { model: config.runtime.model, cwd: f.root }));
     for (let turn = 0; turn < 2; turn++) {
       const entered = deferred<void>();
       faux.setResponses([
@@ -2313,7 +2317,7 @@ it("G08: retained failure acknowledgement resumes the exact session JSONL after 
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
     subagents.backgroundSubagentController = f.service.internalController(origin, 0);
     const context = { model: config.runtime.model, recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } };
-    const agent = createAgentTool(subagents, context); const send = createAgentManageTool(subagents, context);
+    const agent = createAgentTool(subagents, context); const send = presentTool(createAgentManageTool(subagents, context));
     f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
       verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => {
@@ -2395,13 +2399,13 @@ it.each([false, true])("real Pi fake transport: detached AskParent and backgroun
     await owner.disposeSession!(record.sessionId);
     let input: any;
     faux.setResponses([(context: any) => { input = context; return fauxAssistantMessage([fauxText("Small scope answer")]); }]);
-    const second = await createAgentManageTool(subagents).execute("second", { id: "helper", message: "Small", background: true });
+    const second = await presentTool(createAgentManageTool(subagents)).execute("second", { id: "helper", message: "Small", background: true });
     expect((await done(f.service, second.details.jobId)).state).toBe("succeeded");
     expect(JSON.stringify(input.messages)).toContain("first task"); expect(JSON.stringify(input.messages)).toContain("Which scope?");
     expect(await transcripts()).toEqual(files);
     expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 2 });
     faux.setResponses([fauxAssistantMessage([fauxText("Closed successfully")])]);
-    const third = await createAgentManageTool(subagents).execute("third", { id: "helper", message: "Finish", background: true, close: true });
+    const third = await presentTool(createAgentManageTool(subagents)).execute("third", { id: "helper", message: "Finish", background: true, close: true });
     await done(f.service, third.details.jobId);
     expect((await f.instances.get("helper"))?.status).toBe("closed");
     expect(await transcripts()).toEqual([]); expect(f.wake).toHaveBeenCalledTimes(3);
@@ -2592,12 +2596,12 @@ it.each([false, true])("keeps detached parent usage deterministic with delayed=%
     r.onEvent({ type: "cost_accumulated", tokens: { input: 12, output: 3 }, cumulativeUsd: 0.25 });
     return result;
   });
-  const before = subagentUsageForRun(options);
+  const before = (subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options);
   const receipt = await agent.execute("usage", { persist: true, background: true, id: "helper", prompt: "work" });
-  expect(subagentUsageForRun(options)).toEqual(before);
+  expect((subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options)).toEqual(before);
   gate.resolve(result);
   const job = await done(f.service, receipt.details.jobId);
-  expect(subagentUsageForRun(options)).toEqual(before);
+  expect((subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options)).toEqual(before);
   expect((await f.instances.get("helper"))?.usage).toMatchObject({ input: 12, output: 3, costUsd: 0.25 });
   expect(job.output.preview).toContain('"usage":{"input":12');
 });
@@ -2634,7 +2638,7 @@ it("retains observed detached spend when the child throws without a result", asy
   expect(job.state).toBe("failed");
   expect(job.output.preview).toContain('"usage":{"input":9');
   expect((await f.instances.get("helper"))?.usage).toMatchObject({ input: 9, output: 4, costUsd: 0.2 });
-  expect(subagentUsageForRun(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
+  expect((subagentUsageForRun as (options: unknown, parentRunId?: string) => ReturnType<typeof subagentUsageForRun>)(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
 });
 
 
@@ -2898,4 +2902,47 @@ it("counts actual detached execution after its reporting cancellation grace, not
     expect(f.service.activeExecutionCount()).toBe(1);
   } finally { finish.resolve(); }
   await vi.waitFor(() => expect(f.service.activeExecutionCount()).toBe(0), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+}, 30_000);
+
+function presentTool(value: ReturnType<typeof createAgentManageTool>) {
+  assert.ok(value);
+  return value;
+}
+
+it("round-trips an unknown detached turn through ownership, publication and reopened job progress", async () => {
+  const f = await managedFixture();
+  const { agent } = tools(f, async () => ({ text: "Synthetic reply", usage: { input_tokens: 3, cost_usd: null, known_cost_usd: 2 } }));
+  const receipt = await agent.execute("synthetic-unknown", { persist: true, background: true, id: "helper", prompt: "Synthetic task" });
+  const job = await done(f.service, receipt.details.jobId);
+  expect(job).toMatchObject({ state: "succeeded", subagentProgress: { costUsd: null, knownCostUsd: 2 } });
+  const stored = await f.store.get(receipt.details.jobId);
+  expect(stored?.subagentOwnership?.usage).toMatchObject({ costUsd: null, knownCostUsd: 2 });
+  const reopened = await openProcessJobStore(f.root, f.options.settings.stateDir);
+  expect((await reopened.get(receipt.details.jobId))?.subagentProgress).toMatchObject({ costUsd: null, knownCostUsd: 2 });
+  expect(await f.instances.get("helper")).toMatchObject({ turns: 1, usage: { costUsd: null, knownCostUsd: 2 } });
+}, 30_000);
+
+it.each([undefined, 0])("round-trips legacy job cost %s byte-stably and rejects contradictory known spend", async (costUsd) => {
+  const f = await managedFixture();
+  const { agent } = tools(f, async () => ({ text: "Synthetic zero", usage: { cost_usd: 0 } }));
+  const receipt = await agent.execute("synthetic-legacy", { persist: true, background: true, id: "helper", prompt: "Synthetic task" });
+  await done(f.service, receipt.details.jobId);
+  await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+  await f.store.mutate((records) => {
+    const record = records.get(receipt.details.jobId);
+    if (record?.subagentProgress === undefined) throw new Error("Missing synthetic progress");
+    const { costUsd: _old, knownCostUsd: _known, ...progress } = record.subagentProgress;
+    record.subagentProgress = { ...progress, ...(costUsd === undefined ? {} : { costUsd }) };
+  });
+  const file = resolve(f.store.recordsDir, `${receipt.details.jobId}.json`);
+  const before = await readFile(file, "utf8");
+  const reopened = await openProcessJobStore(f.root, f.options.settings.stateDir);
+  expect((await reopened.get(receipt.details.jobId))?.subagentProgress?.costUsd).toBe(costUsd);
+  expect(await readFile(file, "utf8")).toBe(before);
+  await expect(f.store.mutate((records) => {
+    const record = records.get(receipt.details.jobId);
+    if (record?.subagentProgress === undefined) throw new Error("Missing synthetic progress");
+    record.subagentProgress = { ...record.subagentProgress, costUsd: 1, knownCostUsd: 2 };
+  })).rejects.toThrow();
+  expect(await readFile(file, "utf8")).toBe(before);
 }, 30_000);

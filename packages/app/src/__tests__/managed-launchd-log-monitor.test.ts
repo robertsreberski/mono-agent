@@ -4,11 +4,11 @@ import {
   createManagedLaunchdLogWakeState,
   requestLaunchdLogMaintenanceIfNeeded,
   startManagedLaunchdLogMonitor,
-} from "../background-log-maintenance.js";
-import type { BackgroundLifecycleTarget } from "../launchd-lifecycle-lock.js";
-import { LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS } from "../launchd-logs.js";
-import type { LaunchdLogInspection } from "../launchd-logs.js";
-import type { LaunchctlRunner } from "../launchd.js";
+} from "../service/launchd/background-log-maintenance.js";
+import type { BackgroundLifecycleTarget } from "../service/launchd/launchd-lifecycle-lock.js";
+import { LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS } from "../service/launchd/launchd-logs.js";
+import type { LaunchdLogInspection } from "../service/launchd/launchd-logs.js";
+import type { LaunchctlRunner } from "../service/launchd/launchd.js";
 
 function target(suffix = "demo-0a1b2c3d"): BackgroundLifecycleTarget {
   const label = `com.mono-agent.${suffix}`;

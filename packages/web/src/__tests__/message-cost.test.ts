@@ -96,13 +96,13 @@ describe("messageUsageRollup", () => {
     const card = { type: "process-job", job: { subagentProgress: { costUsd: 3, route: { executed: { model: "grove/fast" } } } } };
     const rolled = messageUsageRollup({ parts: [child, usage(1), card] });
     const total = sumThreadUsage([rolled]);
-    expect(rolled.main.costUsd).toBe(4);
-    expect(total.total.costUsd).toBe(7);
+    expect(rolled.main).toMatchObject({ costUsd: 4 });
+    expect(total.total).toMatchObject({ costUsd: 7 });
     expect(total.subagents).toMatchObject({ costUsd: 7, runs: 2, tokensPartial: true });
     expect(total.total.tokensPartial).toBe(true);
     expect(total.byModel.reduce((sum, row) => sum + (row.costUsd ?? 0), 0)).toBe(7);
     expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0), usage(0)] })]).total.costUsd).toBe(0);
-    expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0)] })]).total.costUsd).toBe(0);
+    expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0)] })]).total).toMatchObject({ costUsd: 0 });
   });
   it("drops the total lower bound once every detached job reports tokens", () => {
     const card = { type: "process-job", job: { subagentProgress: { costUsd: 0.25,
@@ -212,5 +212,60 @@ describe("model-reference attribution", () => {
       attribution: { attempted: { model } },
     });
     expect(sumThreadUsage([failed]).byModel).toEqual([{ model, costUsd: 0.5 }]);
+  });
+});
+
+describe("compaction spend", () => {
+  const summary = (version = 2, included = true, cost: number | null = 1.25) => ({ type: "telemetry", event: "context_compaction", data: {
+    model: "faux:summary", accounting: { version, usageIncluded: included, requests: [{ requestId: "fictional:1", model: "faux:summary", status: "rejected", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd: cost }] },
+  } });
+  const aggregate = (cost = 1.75) => ({ type: "telemetry", event: "usage_update", data: { cumulativeUsd: cost, model: "faux:main", tokens: { input: 110, output: 22, cacheRead: 0, cacheCreation: 0 } } });
+  it("treats included compaction as a subset and dedupes lifecycle rows", async () => {
+    const { messageUsageRollup } = await import("../message-cost.js");
+    const { sumThreadUsage } = await import("../thread-usage.js");
+    const parts = [summary(), summary(), aggregate()];
+    expect(latestMessageCostUsd(parts)).toBe(1.75);
+    const rollup = messageUsageRollup({ parts });
+    expect(rollup.compaction).toMatchObject({ requests: 1, costUsd: 1.25 });
+    const total = sumThreadUsage([rollup]);
+    expect(total.total.costUsd).toBe(1.75);
+    expect(total.compaction?.costUsd).toBe(1.25);
+    expect(total.byModel.find((row) => row.model === "faux:main")?.costUsd).toBe(0.5);
+    expect(total.byModel.find((row) => row.model === "faux:summary")?.costUsd).toBe(1.25);
+  });
+  it("adds legacy and later manual receipts to the prior aggregate", () => {
+    expect(latestMessageCostUsd([aggregate(0.5), summary(1, false)])).toBe(1.75);
+    expect(latestMessageCostUsd([aggregate(0.5), summary(2, false)])).toBe(1.75);
+  });
+  it("preserves unknown and measured-zero compaction costs", async () => {
+    const { messageUsageRollup } = await import("../message-cost.js");
+    expect(latestMessageCostUsd([summary(2, false, null)])).toBeNull();
+    expect(messageUsageRollup({ parts: [summary(2, false, null)] }).compaction).toMatchObject({ costPartial: true });
+    expect(latestMessageCostUsd([summary(2, false, 0)])).toBe(0);
+  });
+});
+
+describe("compaction token and non-dispatch boundaries", () => {
+  const summary = (requests: unknown[]) => telemetry("context_compaction", { accounting: { version: 2, usageIncluded: false, requests } });
+  const row = { requestId: "fictional:1", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, costUsd: 1.25 };
+  it.each([1.5, -1, Number.MAX_SAFE_INTEGER + 1])("drops invalid compaction tokens %s without losing thread cost", (input) => {
+    const parts = [summary([{ ...row, input }])];
+    const usage = sumThreadUsage([messageUsageRollup({ parts })], "2026-01-01T00:00:00Z");
+    expect(usage.total.costUsd).toBe(1.25);
+    expect(usage.total.tokens).toBeUndefined();
+    expect(usage.compaction).toMatchObject({ requests: 1, requestsWithUsage: 0, tokensPartial: true });
+  });
+  it("bounds sums of safe compaction samples", () => {
+    const usage = messageUsageRollup({ parts: [summary([{ ...row, input: Number.MAX_SAFE_INTEGER }, { ...row, requestId: "fictional:2" }])] });
+    expect(usage.compaction?.tokens?.input).toBe(Number.MAX_SAFE_INTEGER);
+    expect(usage.compaction?.tokensPartial).toBe(true);
+  });
+  it("omits never-invoked requests from UI cost/counts while retaining measured free summaries", () => {
+    const local = summary([{ ...row, input: 0, output: 0, costUsd: 0, providerInvoked: false }]);
+    expect(messageUsageRollup({ parts: [local] }).compaction).toBeUndefined();
+    expect(latestMessageCostUsd([local])).toBeUndefined();
+    expect(sumThreadUsage([messageUsageRollup({ parts: [local] })], "2026-01-01T00:00:00Z").compaction).toBeUndefined();
+    const mixed = messageUsageRollup({ parts: [local, summary([{ ...row, requestId: "fictional:2", costUsd: 0, providerInvoked: true }])] });
+    expect(mixed.compaction).toMatchObject({ requests: 1, requestsWithUsage: 1, costUsd: 0 });
   });
 });

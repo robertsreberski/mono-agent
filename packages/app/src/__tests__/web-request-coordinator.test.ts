@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
 import { performWebSearch } from "@mono-agent/turn/tools";
 import { createToolContext } from "@mono-agent/turn/tools";
-import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
+import { createHostWebRequestCoordinator } from "../host/web-request-coordinator.js";
 const roots: string[] = [];
 const children: ChildProcess[] = [];
 afterEach(async () => { for (const c of children.splice(0)) c.kill(); await Promise.all(roots.splice(0).map((r) => rm(r, { recursive: true, force: true }))); });

@@ -3,17 +3,26 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
-import { createMonoRuntime, monoRuntimeSupportsLiveInput } from "@mono-agent/turn/host";
-import { buildSubagentsOptions } from "../dist/configured-agent.js";
-import { createSubagentInstanceRegistry } from "../dist/subagent-instances.js";
-import { openProcessJobsService } from "../dist/process-jobs-service.js";
-import { openProcessJobStore } from "../dist/process-jobs-store.js";
-import { PROCESS_JOBS_DEFAULTS } from "../dist/process-jobs-config.js";
-import { createAgentTool } from "../../turn/src/tools/delegation/agent-tool.js";
-import { createAgentManageTool } from "../../turn/src/tools/delegation/agent-manage-tool.js";
-import { generateEngineTurnResponse } from "../../turn/src/execution/pi/run.js";
-import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../turn/node_modules/@earendil-works/pi-ai/dist/index.js";
+import { registerHooks } from "node:module";
+
+const turnSourceRoot = new URL("../../turn/src/", import.meta.url).href;
+const turnDistRoot = new URL("../../turn/dist/", import.meta.url).href;
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
+  return resolved.url.startsWith(turnSourceRoot)
+    ? { ...resolved, url: turnDistRoot + resolved.url.slice(turnSourceRoot.length) } : resolved;
+} });
+const { resolveJsonMonoAgentConfig } = await import("@mono-agent/config");
+const { createMonoRuntime, monoRuntimeSupportsLiveInput } = await import("@mono-agent/turn/host");
+const { buildSubagentsOptions } = await import("../dist/composition/configured-subagents.js");
+const { createSubagentInstanceRegistry } = await import("../dist/subagents/subagent-instances.js");
+const { openProcessJobsService } = await import("../dist/process-jobs/process-jobs-service.js");
+const { openProcessJobStore } = await import("../dist/process-jobs/process-jobs-store.js");
+const { PROCESS_JOBS_DEFAULTS } = await import("../dist/process-jobs/process-jobs-config.js");
+const { createAgentTool } = await import("../../turn/dist/tools/delegation/agent-tool.js");
+const { createAgentManageTool } = await import("../../turn/dist/tools/delegation/agent-manage-tool.js");
+const { generateEngineTurnResponse } = await import("../../turn/dist/execution/pi/run.js");
+const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import("../../turn/node_modules/@earendil-works/pi-ai/dist/index.js");
 
 const STEER_TEXT = "steered mid-turn: prefer the smaller diff";
 function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }

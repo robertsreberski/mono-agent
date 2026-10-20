@@ -426,7 +426,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
       }
     ]
     // Jobs here merge with cron/*.md files (duplicate ids error).
-    // Agent-app pins overlap to skip; config exposes no queue/replace controls.
+    // App pins overlap to skip; config exposes no queue/replace controls.
     // Overlapping ticks of the same configured job are therefore skipped, never queued.
   }
 }

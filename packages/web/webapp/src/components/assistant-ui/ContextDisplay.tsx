@@ -141,23 +141,29 @@ function CostSection({ totals, loading, id }: { readonly totals?: WebThreadUsage
   const models = totals?.byModel ?? [];
   const duplicates = new Map<string, number>();
   for (const row of models) duplicates.set(modelName(row.model), (duplicates.get(modelName(row.model)) ?? 0) + 1);
-  const cost = (slice: WebUsageSlice) => slice.costUsd === undefined ? "—" : `${slice.costPartial ? "≥" : ""}${formatUsd(slice.costUsd)}`;
-  const more = models.slice(4).reduce((sum, row) => sum + (row.costUsd ?? 0), 0);
+  const cost = (slice: WebUsageSlice) => slice.costUsd === null ? "unknown" : slice.costUsd === undefined ? "—" : `${slice.costPartial ? "≥" : ""}${formatUsd(slice.costUsd)}`;
+  const moreRows = models.slice(4);
+  const more = moreRows.some((row) => row.costUsd === null) ? null : moreRows.reduce((sum, row) => sum + (row.costUsd ?? 0), 0);
   return <section className="context-display-section" aria-labelledby={id} aria-busy={loading || undefined}>
     <div className="context-display-section-heading"><h3 className="context-display-eyebrow" id={id}>Estimated cost</h3>
       {(loading && totals === undefined || total?.costUsd !== undefined) && <span className="context-display-cost-total">{total === undefined ? "—" : cost(total)}</span>}
     </div>
-    {loading && totals === undefined ? null : total?.costUsd === undefined
+    {loading && totals === undefined ? null : total?.costUsd === undefined && totals?.compaction === undefined
       ? <p className="context-display-empty">No cost was reported for this conversation.</p>
       : <dl className="context-display-cost">
-        {totals?.subagents?.costUsd !== undefined && totals.subagents.costUsd > 0 &&
+        {totals?.compaction && <div className="context-display-cost-row is-sub" title="Context summary requests, included in the total"><dt>Compaction<span className="sr-only"> (included in total)</span></dt><dd>{cost(totals.compaction)}</dd></div>}
+        {totals?.subagents?.costUsd !== undefined && (totals.subagents.costUsd === null || totals.subagents.costUsd > 0) &&
           <div className="context-display-cost-row is-sub"><dt>incl. subagents</dt><dd>{cost(totals.subagents)}</dd></div>}
+        {total?.knownCostUsd !== undefined && <>
+          <div className="context-display-cost-divider" aria-hidden="true" />
+          <div className="context-display-cost-row" title="Known spend across this conversation"><dt>Known cost</dt><dd>{formatUsd(total.knownCostUsd)}</dd></div>
+        </>}
         {models.length >= 2 && <><div className="context-display-cost-divider" aria-hidden="true" />
           {models.slice(0, 4).map((row, index) => <div className="context-display-cost-row is-model" key={`${row.model ?? "unknown"}-${index}`}>
-            <dt title={row.model}>{modelName(row.model)}{duplicates.get(modelName(row.model))! > 1 && row.model?.includes(":") ? ` · ${row.model.split(":", 1)[0]}` : ""}</dt>
-            <dd>{cost(row)}</dd>
+            <dt title={row.model}>{modelName(row.model)}{(duplicates.get(modelName(row.model)) ?? 0) > 1 && row.model?.includes(":") ? ` · ${row.model.split(":", 1)[0]}` : ""}</dt>
+            <dd>{cost(row)}{row.knownCostUsd === undefined ? null : <span> · Known cost {formatUsd(row.knownCostUsd)}</span>}</dd>
           </div>)}
-          {models.length > 4 && <div className="context-display-cost-row is-model"><dt>{models.length - 4} more models</dt><dd>{formatUsd(more)}</dd></div>}
+          {models.length > 4 && <div className="context-display-cost-row is-model"><dt>{models.length - 4} more models</dt><dd>{more === null ? "unknown" : formatUsd(more)}</dd></div>}
         </>}
       </dl>}
   </section>;
@@ -229,7 +235,7 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
   const label = contextLoading ? "loading" : used === undefined ? "context size not reported"
     : size === undefined ? `${exact(used)} tokens; context window size not reported`
       : `${estimate ? "about " : last ? "last measured " : ""}${exact(used)} of ${exact(size)} tokens (${estimate ? "about " : ""}${percentText(percent!)}${estimate ? ") after compaction" : ")"}${context.status === "updating" || running ? ", updating" : ""}`;
-  const ariaLabel = `Context usage: ${label}${busy ? ", compacting" : ""}.${totals?.total.costUsd === undefined ? "" : ` Estimated cost ${formatUsd(totals.total.costUsd)}.`}`;
+  const ariaLabel = `Context usage: ${label}${busy ? ", compacting" : ""}.${totals?.total.costUsd === undefined ? "" : ` Estimated cost ${totals.total.costUsd === null ? "unknown" : `${totals.total.costPartial ? "at least " : ""}${formatUsd(totals.total.costUsd)}`}.${totals.total.knownCostUsd === undefined ? "" : ` Known cost ${formatUsd(totals.total.knownCostUsd)}.`}`}`;
   const availableProviderUsage = providerUsage !== undefined && providerUsage.agent.supportsProviderUsage === true
     && providerUsage.agent.status !== "offline" && isProviderUsageId(providerUsage.providerId)
     ? { agent: providerUsage.agent, providerId: providerUsage.providerId } : undefined;

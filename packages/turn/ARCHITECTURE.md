@@ -19,8 +19,12 @@ agent turn:
 Typed hosts use `@mono-agent/turn/host`; low-level consumers can still
 inject their own sandbox through `createRuntime()` / `createRouterRuntime()`.
 The package depends on contracts for host contracts/errors and owns its isolated
-`src/engine` for native execution/storage. `src/host/` compiles from TypeScript to `dist/host`,
-while existing JavaScript ships from `src` with generated declarations in `types`.
+`src/engine` for native execution/storage. One strict production compiler pass
+(`tsc -p tsconfig.build.json`) emits JavaScript, declarations and both map kinds
+together under `dist`. All public and private runtime/type targets point there.
+Authored production sources are TS/MTS only; no source products, separate types
+root, declaration overlays or materialization step exist. The source/test
+project is checked separately without emitting.
 The host entrypoints split construction, config validation, contracts and sandbox
 support without adding a forwarding package. Config remains a separate package.
 
@@ -347,3 +351,35 @@ run, how state changes, and how results are persisted. The runtime decides how
 to talk to models through Pi provider dependencies; how tools are
 exposed; how provider failures are normalized; and how enough telemetry is
 returned for a host to make reliable orchestration decisions.
+
+## Build and test artifacts
+
+Keep `.js` import specifiers in authored TypeScript for NodeNext output;
+`verbatimModuleSyntax` preserves import side effects. The shipping build extends
+the strict source configuration, emits runtime and declarations in one pass,
+and excludes every `__tests__` directory. Preserve exported alias/interface,
+optional, readonly, unknown and union contracts when editing sources. Build
+before dependent typechecks and direct parity execution.
+
+Test-only fixture output lives under root `.worklab-tmp/turn-test-fixtures`, not
+an installed-dependency or workspace-package tree. Fixtures compile separately;
+raw frozen data is copied unchanged. Bare imports resolve using turn's ESM
+conditions. Only emitted workers' relative production imports are routed to
+`turn/dist`; there is no source-product fallback. Fork/exec callers preload the
+bounded bootstrap with Node `--import` before static linking. Fixture emission
+must leave the runtime dependency digest unchanged.
+
+Authored workers and the sandbox runner use `.mts`; stable Node launch names
+remain `.mjs`. The production runner and its maps live only beside the sandbox
+implementation in `dist/host/sandbox`. Ordinary source suites use authored
+modules; the entire sandbox implementation subtree uses its built owner so its
+native asset URL stays valid without copying an asset into source. Source MTS
+helper tests remain on their source graph with no compiled-fixture prerequisite.
+Historical parity roots remain explicit, never redirected to current code.
+
+The normal package `test` builds production once, emits fixtures, then runs
+Vitest. For direct frozen-parity tests, run `build` and `test:fixtures` first.
+No test regenerates goldens; the manual writer is separate, as described in
+`engine/__tests__/fixtures/PROJECTION-GOLDENS.md`. The scripts directory contains
+only public-declaration comparison and test-fixture tooling, not shipping build
+wrappers.

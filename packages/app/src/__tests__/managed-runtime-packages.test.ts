@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveConfiguredManagedRuntimePackages } from "../managed-runtime-packages.js";
+import { resolveConfiguredManagedRuntimePackages } from "../service/managed-runtime/managed-runtime-packages.js";
 
 const directories: string[] = [];
 

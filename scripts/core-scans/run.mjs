@@ -1,3 +1,4 @@
+import { classifyCycles, cycleExceptions } from "./cycle-policy.mjs";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -60,9 +61,9 @@ export function scanArguments(kind) {
 
 // Findings are a non-zero result, not a launcher failure. Always finish every
 // mode/package; never make a red baseline look green with --no-exit-code.
-export function run(kind, { execute = spawnSync, directory = outputDirectory, checkBuild = missingPackageEntryPoints } = {}) {
+export function run(kind, { execute = spawnSync, directory = outputDirectory, checkBuild = missingPackageEntryPoints, exceptions = cycleExceptions } = {}) {
   if (kind === "all") {
-    return Math.max(run("dead-code", { execute, directory, checkBuild }), run("cycles", { execute, directory, checkBuild }));
+    return Math.max(run("dead-code", { execute, directory, checkBuild, exceptions }), run("cycles", { execute, directory, checkBuild, exceptions }));
   }
   const scans = scanArguments(kind);
   mkdirSync(directory, { recursive: true });
@@ -83,9 +84,11 @@ export function run(kind, { execute = spawnSync, directory = outputDirectory, ch
   let errors = false;
   for (const scan of scans) {
     console.log(`\n== ${scan.name}`);
-    const result = execute("pnpm", scan.args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
-    writeFileSync(resolve(directory, `${scan.name}.stderr.txt`), result.stderr ?? "");
+    let result = { stderr: "" };
+    writeFileSync(resolve(directory, `${scan.name}.stderr.txt`), "");
     try {
+      result = execute("pnpm", scan.args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+      writeFileSync(resolve(directory, `${scan.name}.stderr.txt`), result.stderr ?? "");
       if (result.error || result.signal || ![0, 1].includes(result.status)) {
         throw result.error ?? new Error(`Tool exited ${result.status ?? result.signal}`);
       }
@@ -99,19 +102,25 @@ export function run(kind, { execute = spawnSync, directory = outputDirectory, ch
           throw new Error("Knip returned findings outside the five core packages");
         }
         for (const name of packages) console.log(`${name}: ${JSON.stringify(summarize(report, name))}`);
+        findings ||= result.status === 1;
       } else {
         if (!Array.isArray(report) || report.some((cycle) => !Array.isArray(cycle))) throw new Error("Invalid Madge report");
         console.log(`${report.length} cycle(s)`);
         for (const cycle of report) console.log(`  ${cycle.join(" > ")}`);
+        const policy = classifyCycles(scan.name, report, exceptions);
+        for (const entry of policy.matched) console.log(`  accepted ${entry.classification}: ${entry.cycle.join(" > ")}`);
+        for (const entry of policy.stale) console.error(`  stale cycle exception: ${entry.cycle.join(" > ")}`);
+        writeFileSync(resolve(directory, `${scan.name}.policy.json`), `${JSON.stringify(policy, null, 2)}\n`);
+        findings ||= policy.unexpected.length > 0 || policy.stale.length > 0;
       }
       writeFileSync(resolve(directory, `${scan.name}.json`), `${JSON.stringify(report, null, 2)}\n`);
-      findings ||= result.status === 1;
     } catch (error) {
       errors = true;
       console.error(`${scan.name}: ${error.message}`);
       console.error(result.stderr || "No tool diagnostics; see the command above.");
       // Do not leave a previous successful report masquerading as this run.
       writeFileSync(resolve(directory, `${scan.name}.json`), `${JSON.stringify({ error: error.message })}\n`);
+      if (kind === "cycles") writeFileSync(resolve(directory, `${scan.name}.policy.json`), `${JSON.stringify({ error: error.message })}\n`);
     }
   }
   console.log("\nReports: node_modules/.cache/core-scans/");

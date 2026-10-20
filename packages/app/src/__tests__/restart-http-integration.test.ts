@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
-import { createSupervisedRestartAuthority } from "../supervised-restart-authority.js";
-import { createSupervisedRestartLatch, AGENT_RESTART_EXIT_CODE } from "../supervised-restart-latch.js";
-import { systemdUnitName } from "../systemd.js";
+import { createSupervisedRestartAuthority } from "../service/restart/supervised-restart-authority.js";
+import { createSupervisedRestartLatch, AGENT_RESTART_EXIT_CODE } from "../service/restart/supervised-restart-latch.js";
+import { systemdUnitName } from "../service/systemd/systemd.js";
 
 const CONFIG = "/work/demo/mono-agent.config.json";
 

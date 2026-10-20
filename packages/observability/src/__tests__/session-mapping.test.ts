@@ -812,3 +812,12 @@ it("preserves model_change on direct and nested session boundaries", () => {
   expect(boundarySteps(session.steps)).toHaveLength(2);
   for (const step of boundarySteps(session.steps)) expect(step).toMatchObject({ kind: "resume_replay", providerSessionId: "new-id", reason: "model_change" });
 });
+
+it("distinguishes absent historic costs from explicit unknown in session totals", () => {
+  const { summary } = loadFixture("notified");
+  expect(mapRunToSession({ ...summary, cost: {}, usage: {} }, [], OPTS).totals.cost).toBe(0);
+  expect(mapRunToSession({ ...summary, status: "running", cost: {}, usage: {} }, [], OPTS).totals.cost).toBe(0);
+  expect(mapRunToSession({ ...summary, status: "failed", cost: {}, usage: {} }, [], OPTS).totals.cost).toBe(0);
+  expect(mapRunToSession({ ...summary, cost: { cumulativeUsd: null, knownCostUsd: 0 } }, [], OPTS).totals)
+    .toMatchObject({ cost: null, knownCostUsd: 0 });
+});

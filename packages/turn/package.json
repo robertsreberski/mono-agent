@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/turn",
-  "version": "0.25.1",
+  "version": "0.26.0",
   "description": "Agent runtime backed by the Pi SDK provider catalog",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -20,71 +20,72 @@
   },
   "exports": {
     ".": {
-      "types": "./types/index.d.ts",
-      "default": "./src/index.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./ai": {
-      "types": "./types/ai/index.d.ts",
-      "default": "./src/ai/index.js"
+      "types": "./dist/ai/index.d.ts",
+      "default": "./dist/ai/index.js"
     },
     "./agent": {
-      "types": "./types/agent/index.d.ts",
-      "default": "./src/agent/index.js"
+      "types": "./dist/agent/index.d.ts",
+      "default": "./dist/agent/index.js"
     },
     "./host": {
-      "types": "./types/host/index.d.ts",
+      "types": "./dist/host/index.d.ts",
       "default": "./dist/host/index.js"
     },
     "./host/config": {
-      "types": "./types/host/config.d.ts",
+      "types": "./dist/host/config.d.ts",
       "default": "./dist/host/config.js"
     },
     "./host/types": {
-      "types": "./types/host/types.d.ts",
+      "types": "./dist/host/types.d.ts",
       "default": "./dist/host/types.js"
     },
     "./host/sandbox": {
-      "types": "./types/host/sandbox/index.d.ts",
+      "types": "./dist/host/sandbox/index.d.ts",
       "default": "./dist/host/sandbox/index.js"
     },
     "./engine": {
-      "types": "./types/engine/index.d.ts",
-      "default": "./src/engine/index.js"
+      "types": "./dist/engine/index.d.ts",
+      "default": "./dist/engine/index.js"
     },
     "./engine/sessions.js": {
-      "types": "./types/engine/sessions.d.ts",
-      "default": "./src/engine/sessions.js"
+      "types": "./dist/engine/sessions.d.ts",
+      "default": "./dist/engine/sessions.js"
     },
     "./engine/owned-fs.js": {
-      "types": "./types/engine/owned-fs.d.ts",
-      "default": "./src/engine/owned-fs.js"
+      "types": "./dist/engine/owned-fs.d.ts",
+      "default": "./dist/engine/owned-fs.js"
     },
     "./tools": {
-      "types": "./types/tools/index.d.ts",
-      "default": "./src/tools/index.js"
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.js"
     }
   },
-  "main": "./src/index.js",
-  "types": "./types/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.types.json && tsc -p tsconfig.host.build.json && node -e \"require('node:fs').copyFileSync('src/host/sandbox/srt-embed-runner.mjs','dist/host/sandbox/srt-embed-runner.mjs')\"",
-    "typecheck": "tsc -p tsconfig.types.json --noEmit && tsc -p tsconfig.host.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "prepack": "pnpm run build",
-    "test": "vitest run"
+    "test": "pnpm run build && node scripts/emit-test-fixtures.mjs && vitest run",
+    "test:fixtures": "node scripts/emit-test-fixtures.mjs",
+    "compare:public-types": "node scripts/compare-public-declarations.mjs"
   },
   "files": [
-    "src/**/*.js",
-    "!src/__tests__/**",
-    "!src/engine/__tests__/**",
-    "types/**/*.d.ts",
+    "dist/**/*.js",
+    "dist/**/*.mjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.mts",
+    "!dist/**/__tests__/**",
+    "!dist/**/fixtures/**",
     "ARCHITECTURE.md",
     "MIGRATION.md",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
-    "dist/host/**/*.js",
-    "!dist/host/**/__tests__/**",
-    "dist/host/sandbox/srt-embed-runner.mjs",
     "ENGINE.md"
   ],
   "engines": {
@@ -104,72 +105,76 @@
     "turndown": "7.2.4",
     "unpdf": "1.8.1",
     "zod": "^4.3.6",
-    "@mono-agent/contracts": "workspace:0.25.1",
+    "@mono-agent/contracts": "workspace:0.26.0",
     "@earendil-works/pi-agent-core": "1.2.0"
   },
   "devDependencies": {
     "@types/turndown": "5.0.6"
   },
   "imports": {
+    "#turn/runtime/retry-defaults": {
+      "types": "./dist/runtime/retry-defaults.d.ts",
+      "default": "./dist/runtime/retry-defaults.js"
+    },
     "#turn/contracts/runtime": {
-      "types": "./types/contracts/runtime.d.ts",
-      "default": "./src/contracts/runtime.js"
+      "types": "./dist/contracts/runtime.d.ts",
+      "default": "./dist/contracts/runtime.js"
     },
     "#turn/telemetry/cost": {
-      "types": "./types/telemetry/cost.d.ts",
-      "default": "./src/telemetry/cost.js"
+      "types": "./dist/telemetry/cost.d.ts",
+      "default": "./dist/telemetry/cost.js"
     },
     "#turn/contracts/native-storage": {
-      "types": "./types/contracts/native-storage.d.ts",
-      "default": "./src/contracts/native-storage.js"
+      "types": "./dist/contracts/native-storage.d.ts",
+      "default": "./dist/contracts/native-storage.js"
     },
     "#turn/contracts/events": {
-      "types": "./types/contracts/events.d.ts",
-      "default": "./src/contracts/events.js"
+      "types": "./dist/contracts/events.d.ts",
+      "default": "./dist/contracts/events.js"
     },
     "#turn/contracts/live-input": {
-      "types": "./types/contracts/live-input.d.ts",
-      "default": "./src/contracts/live-input.js"
+      "types": "./dist/contracts/live-input.d.ts",
+      "default": "./dist/contracts/live-input.js"
     },
     "#turn/contracts/mcp-apps": {
-      "types": "./types/contracts/mcp-apps.d.ts",
-      "default": "./src/contracts/mcp-apps.js"
+      "types": "./dist/contracts/mcp-apps.d.ts",
+      "default": "./dist/contracts/mcp-apps.js"
     },
     "#turn/contracts/session": {
-      "types": "./types/contracts/session.d.ts",
-      "default": "./src/contracts/session.js"
+      "types": "./dist/contracts/session.d.ts",
+      "default": "./dist/contracts/session.js"
     },
     "#turn/contracts/process": {
-      "types": "./types/contracts/process.d.ts",
-      "default": "./src/contracts/process.js"
+      "types": "./dist/contracts/process.d.ts",
+      "default": "./dist/contracts/process.js"
     },
     "#turn/contracts/policy": {
-      "types": "./types/contracts/policy.d.ts",
-      "default": "./src/contracts/policy.js"
+      "types": "./dist/contracts/policy.d.ts",
+      "default": "./dist/contracts/policy.js"
     },
     "#turn/runtime/create-runtime": {
-      "types": "./types/runtime/create-runtime.d.ts",
-      "default": "./src/runtime/create-runtime.js"
+      "types": "./dist/runtime/create-runtime.d.ts",
+      "default": "./dist/runtime/create-runtime.js"
     },
     "#turn/runtime/router": {
-      "types": "./types/runtime/router.d.ts",
-      "default": "./src/runtime/router.js"
+      "types": "./dist/runtime/router.d.ts",
+      "default": "./dist/runtime/router.js"
     },
     "#turn/runtime/model-reference": {
-      "types": "./types/runtime/model-reference.d.ts",
-      "default": "./src/runtime/model-reference.js"
+      "types": "./dist/runtime/model-reference.d.ts",
+      "default": "./dist/runtime/model-reference.js"
     },
     "#turn/runtime/bridges": {
-      "types": "./types/runtime/bridges.d.ts",
-      "default": "./src/runtime/bridges.js"
+      "types": "./dist/runtime/bridges.d.ts",
+      "default": "./dist/runtime/bridges.js"
     },
     "#turn/providers/pi/catalog": {
-      "types": "./types/providers/pi/catalog.d.ts",
-      "default": "./src/providers/pi/catalog.js"
+      "types": "./dist/providers/pi/catalog.d.ts",
+      "default": "./dist/providers/pi/catalog.js"
     },
     "#turn/providers/pi/context-1m": {
-      "types": "./types/providers/pi/context-1m.d.ts",
-      "default": "./src/providers/pi/context-1m.js"
+      "types": "./dist/providers/pi/context-1m.d.ts",
+      "default": "./dist/providers/pi/context-1m.js"
     }
   }
 }

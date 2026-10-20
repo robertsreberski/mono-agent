@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
-import type { ProcessJobStore } from "../process-jobs-store.js";
+import type { ProcessJobStore } from "../process-jobs/process-jobs-store.js";
 
 const processJobsHooks = vi.hoisted(() => ({
   decorateNextOpen: false,
@@ -14,8 +14,8 @@ const processJobsHooks = vi.hoisted(() => ({
   lockReleases: 0,
 }));
 
-vi.mock("../process-jobs-service.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../process-jobs-service.js")>();
+vi.mock("../process-jobs/process-jobs-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../process-jobs/process-jobs-service.js")>();
   return {
     ...actual,
     openProcessJobsService: async (
@@ -63,9 +63,9 @@ vi.mock("../process-jobs-service.js", async (importOriginal) => {
   };
 });
 
-const { MonoAgentAppController } = await import("../app-controller.js");
+const { MonoAgentAppController } = await import("../host/app-controller.js");
 const { acquireAgentRootOwnership } = await import("../durable-state/agent-root-coordinator.js");
-const { startMonoAgentApp } = await import("../app.js");
+const { startMonoAgentApp } = await import("../host/app.js");
 
 const temporaryDirectories: string[] = [];
 

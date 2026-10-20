@@ -18,7 +18,7 @@ import {
   isRunHistoryToolAllowed,
   RUN_HISTORY_MCP_SERVER_NAME,
   RUN_HISTORY_TOOL_NAME,
-} from "../run-history.js";
+} from "../request-tools/run-history.js";
 
 const tempDirs: string[] = [];
 

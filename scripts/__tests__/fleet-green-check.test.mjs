@@ -39,7 +39,7 @@ import {
   shortSha,
   MANAGED_BACKGROUND_ENV_NAMES,
 } from "../fleet-green-check.mjs";
-import { BACKGROUND_OPERATIONAL_ENV_NAMES } from "../../packages/app/src/background-environment.ts";
+import { BACKGROUND_OPERATIONAL_ENV_NAMES } from "../../packages/app/src/service/background/background-environment.ts";
 import { managedPlistTopologyFingerprint } from "../fleet-green-check/probes.mjs";
 
 const DATE = "2026-07-07";

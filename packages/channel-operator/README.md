@@ -218,6 +218,11 @@ Turn selection continues to travel through the existing metadata block.
 
 ## Architecture
 
+Manual compaction results preserve optional bounded numeric-only accounting
+for up to two summary requests, including known settled failed outcomes.
+Lost/unsettled requests remain errors; accounting never changes session fences.
+
+
 An app-owned `ProviderUsageOperator` enables bearer-protected `GET ${basePath}/v1/provider-usage` (optional exact `anthropic`, `openai-codex`, `opencode-go` or `github-copilot` provider filter) and `capabilities.providerUsage: {version: 1}`. This no-store read is separate from auth status and validates the secret-free v1 projection. An optional `ProviderUsageOperator.refresh()` additionally advertises `refresh: true` and enables bearer-protected `POST ${basePath}/v1/provider-usage/refresh` (empty JSON object, same strict optional provider query). It awaits a refresh respecting backoff; snapshot-only hosts return an explicit unavailable response, never cached fallback.
 
 ### Data flow

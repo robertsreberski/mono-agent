@@ -321,6 +321,13 @@ The normalized runtime map is an internal resolved form, not a JSON config field
 
 ## Architecture
 
+Summary reasoning uses `runtime.compaction.effort` (default `auto`: none when
+supported, otherwise low/the minimum supported level), independently of
+conversation effort. `runtime.compaction.failureCooldownMs` defaults to 900000;
+zero disables unchanged paid-failure suppression. The summary text target and
+its bounded adaptive thinking allowance are distinct from conversation output.
+
+
 `memory.profile.enabled` is a validated BuJo-only boolean, default off,
 enabling a deterministic owner label profile. See [owner context](../../docs/memory/capture-and-recall.md#optional-bujo-owner-context)
 for budgets, privacy boundaries and retained-session behavior.
@@ -341,6 +348,13 @@ See [intention lifecycle and recency](../../docs/memory/capture-and-recall.md#op
 
 
 ### Data flow
+
+Reply-file storage defaults are config-owned; the per-file default uses the
+contracts attachment bound. Runtime retry delays come from turn host/config,
+while attempt counts and JSON validation remain config policy.
+
+`hasRetiredPiSessionsRoot` shares presence detection with administrative readers;
+callers retain their own container guards and error details.
 
 Configuration follows one deterministic pipeline:
 
@@ -388,6 +402,7 @@ ArtifactRetentionConfig
 CORE_CONFIG_FIELD_IDS
 ConfigViewField
 ConfigViewSection
+DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES
 EFFORT_LEVELS
 EffortLevel
 MAX_AGENT_NAME_LENGTH
@@ -408,6 +423,7 @@ assertNoRetiredMonoAgentConfig
 buildMonoAgentConfigView
 findJsonSecretConfigWarnings
 findRemovedConfigWarnings
+hasRetiredPiSessionsRoot
 loadMonoAgentConfig
 modelReferenceFromConfigJson
 readMonoAgentConfigJson

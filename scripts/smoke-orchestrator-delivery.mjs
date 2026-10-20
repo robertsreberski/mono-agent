@@ -4,18 +4,19 @@
 // transport. The responder is scripted: no model, external provider, or hosted CI.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../packages/app/dist/durable-state/agent-root-coordinator.js";
-import { registerProcessJobsRoot } from "../packages/app/dist/process-jobs-root-registry.js";
-import { PROCESS_JOBS_DEFAULTS } from "../packages/app/dist/process-jobs-config.js";
-import { openProcessJobsService } from "../packages/app/dist/process-jobs-service.js";
-import { resolveProcessJobsProtectionPosture } from "../packages/app/dist/process-jobs-protection.js";
-import { createProcessJobsRuntimeExtension } from "../packages/app/dist/process-jobs-runtime.js";
-import { bindProcessJobWakeContextToResponder, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../packages/app/dist/process-jobs-context.js";
+import { registerProcessJobsRoot } from "../packages/app/dist/process-jobs/process-jobs-root-registry.js";
+import { PROCESS_JOBS_DEFAULTS } from "../packages/app/dist/process-jobs/process-jobs-config.js";
+import { openProcessJobsService } from "../packages/app/dist/process-jobs/process-jobs-service.js";
+import { resolveProcessJobsProtectionPosture } from "../packages/app/dist/process-jobs/process-jobs-protection.js";
+import { createProcessJobsRuntimeExtension } from "../packages/app/dist/process-jobs/process-jobs-runtime.js";
+import { bindProcessJobWakeContextToResponder, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../packages/app/dist/process-jobs/process-jobs-context.js";
 // App/service admission uses freshly built dist; tools use their public entry.
 import { execToolRun } from "@mono-agent/turn/tools";
 
@@ -40,6 +41,7 @@ let callbackError;
 let exhausted = false;
 let helperId;
 let unknownId;
+let unadmittedId;
 
 // Remove inherited credentials from tool children; Git is confined to this new
 // repository, with global/system configuration and hooks disabled.
@@ -154,6 +156,8 @@ const responder = bindProcessJobWakeContextToResponder({
           await waitFor(async () => (await service.get(helperId))?.wake.state === "suppressed", "helper opt-out");
           unknownId = await launch(options.processJobs, "console.log('AMBIGUOUS_RECEIPT')");
           await waitFor(async () => (await service.get(unknownId))?.wake.state === "unknown", "ambiguous receipt");
+          unadmittedId = await launch(options.processJobs, "console.log('UNADMITTED_RECEIPT')");
+          await waitFor(async () => (await service.get(unadmittedId))?.wake.state === "unknown", "never-admitted receipt");
         }
         jobs.push(await launch(options.processJobs, stages[depth]));
       }
@@ -187,7 +191,14 @@ try {
       phases.wakesBegun += 1;
       lastProgressAt = Date.now();
       try {
-        if (input.projection.jobId === unknownId || input.projection.output.preview.includes("AMBIGUOUS_RECEIPT")) {
+        const possiblyAdmitted = input.projection.jobId === unknownId || input.projection.output.preview.includes("AMBIGUOUS_RECEIPT");
+        const neverAdmitted = input.projection.jobId === unadmittedId || input.projection.output.preview.includes("UNADMITTED_RECEIPT");
+        if (possiblyAdmitted || neverAdmitted) {
+          if (possiblyAdmitted) {
+            // Match web delivery: cross the durable fence before admission can become ambiguous.
+            assert.ok(input.wakeRecovery?.token);
+            assert.equal(await service.wakeAdmission.claim(input.deliveryKey, input.wakeRecovery.token, randomUUID()), true);
+          }
           wakes.push({ jobId: input.projection.jobId, ambiguous: true });
           return { delivered: false, code: "notification_delivery_unknown", reason: "Scripted ambiguous receipt",
             ambiguous: true, retryable: false };
@@ -234,22 +245,30 @@ try {
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: workspace, env: gitEnv, encoding: "utf8" }), "");
   await service.stop();
   service = undefined;
-  // Reopen the actual durable store and reactivate wakes: unknown receipts must
-  // remain unknown and must not be replayed after process-service recovery.
+  // Reopen the actual durable store: possibly admitted receipts stay unknown,
+  // while provably never-admitted receipts are safe to replay exactly once.
   let replayed = 0;
+  let unadmittedReplayed = 0;
   service = await openProcessJobsService({ cwd: agentRoot, workspace, settings, registration,
-    wake: async () => { replayed += 1; return { delivered: true }; } });
+    wake: async (input) => {
+      if (input.projection.jobId === unadmittedId) unadmittedReplayed += 1;
+      else replayed += 1;
+      return { delivered: true };
+    } });
   await service.activateWakes();
   const unknown = await service.get(unknownId);
   const helper = await service.get(helperId);
   assert.equal(unknown.wake.state, "unknown");
   assert.equal(unknown.wake.attempts, 1);
+  await waitFor(async () => (await service.get(unadmittedId))?.wake.state === "delivered", "never-admitted receipt replay");
+  assert.equal((await service.get(unadmittedId)).wake.attempts, 1);
   assert.equal(helper.wake.state, "suppressed");
   assert.equal(helper.wake.attempts, 0);
   assert.ok(surfaceUpdates.some((update) => update.jobId === helperId && update.state === "succeeded"));
   await service.stop();
   service = undefined;
   assert.equal(replayed, 0);
+  assert.equal(unadmittedReplayed, 1);
   console.log(JSON.stringify({ result: "passed", sourceRoot,
     sourceHead: execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourceRoot, encoding: "utf8" }).trim(),
     sourceTreeClean: execFileSync("git", ["status", "--porcelain"], { cwd: sourceRoot, encoding: "utf8" }).trim() === "",
@@ -258,6 +277,7 @@ try {
     initialUserTurns: 1, syntheticDepthResets: 0, deliberateFailedCheck: true, correctionVerified: true,
     disposableCommit: commit, ciLikeSubprocessSettled: true, depth31: availability[31], depth32: availability[32],
     helperOptOutTerminalUpdate: true, ambiguousReceiptNotReplayedAfterReopen: true,
+    neverAdmittedReceiptReplayedOnceAfterReopen: true,
     providerCalls: 0, actualModelPolicyBehavior: "not tested", hostedCI: "not tested" }));
 } finally {
   await service?.stop();

@@ -8,7 +8,7 @@ import {
   isSetConversationTitleToolAllowed,
   SET_CONVERSATION_TITLE_MCP_SERVER_NAME,
   SET_CONVERSATION_TITLE_TOOL_NAME,
-} from "../conversation-title.js";
+} from "../request-tools/conversation-title.js";
 
 function request(overrides: {
   readonly conversationId?: string;
@@ -149,4 +149,69 @@ describe("SetConversationTitle request-scoped tool", () => {
       expect(result.structuredContent).toBeUndefined();
     } finally { await client.close(); await extension.cleanup?.(); }
   });
+});
+
+it("keeps the real title producer and web consumer wire identity and bounds in parity", async () => {
+  // A computed test-only URL avoids pulling a sibling package through app's rootDir.
+  // Each coordinator retains its own validator; this exercises the emitted contract.
+  const { conversationTitleFromFrame } = await import(new URL("../../../web/src/conversation-title.ts", import.meta.url).href) as {
+    conversationTitleFromFrame(frame: unknown): string | undefined;
+  };
+  const { streamEventFromRuntimeEvent } = await import(new URL("../../../conversation/src/responder.ts", import.meta.url).href) as {
+    streamEventFromRuntimeEvent(event: unknown, context: { toolNames: Map<string, string> }): Readonly<Record<string, unknown>> | undefined;
+  };
+  const extension = await createSetConversationTitleRuntimeExtension()(request());
+  const servers = extension.runtimeOptions?.mcpServers as Record<string, { url: string }>;
+  const names = Object.keys(servers);
+  expect(names).toEqual([SET_CONVERSATION_TITLE_MCP_SERVER_NAME]);
+  const serverName = names[0]!;
+  const client = new Client({ name: "title-contract-parity", version: "1.0.0" });
+  const completed = (name: string, result: Readonly<Record<string, unknown>>) => {
+    const context = { toolNames: new Map<string, string>() };
+    streamEventFromRuntimeEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "title-contract", name }] } }, context);
+    const event = streamEventFromRuntimeEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "title-contract",
+      raw_result: { details: { raw: result } }, is_error: result.isError }] } }, context);
+    expect(event?.name).toBe(name);
+    expect(event?.isError).toBe(result.isError);
+    return { kind: "event", event };
+  };
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(servers[serverName]!.url)) as never);
+    const tools = (await client.listTools()).tools;
+    expect(tools).toHaveLength(1);
+    const tool = tools[0]!;
+    const bound = (tool.inputSchema.properties?.title as { maxLength: number }).maxLength;
+    expect(bound).toBe(80);
+    const identities = [tool.name, `mcp__${serverName}__${tool.name}`];
+    for (const [input, title] of [
+      ["  Fictional\n topic title  ", "Fictional topic title"],
+      ["x".repeat(bound), "x".repeat(bound)],
+      ["🪁".repeat(bound / 2), "🪁".repeat(bound / 2)],
+      ["x".repeat(bound - 1) + "é", "x".repeat(bound - 1) + "é"],
+    ]) {
+      const result = await client.callTool({ name: tool.name, arguments: { title: input } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual({ schema: 1, title });
+      for (const name of identities) expect(conversationTitleFromFrame(completed(name, result))).toBe(title);
+      expect(conversationTitleFromFrame(completed(`mcp__other-server__${tool.name}`, result))).toBeUndefined();
+      expect(conversationTitleFromFrame(completed(tool.name, { ...result, isError: true }))).toBeUndefined();
+      expect(conversationTitleFromFrame(completed(tool.name, { structuredContent: { schema: 2, title } }))).toBeUndefined();
+    }
+    for (const title of ["", "  \n  ", "x".repeat(bound + 1), "🪁".repeat(bound / 2) + "x", "bad\u0000title"]) {
+      const result = await client.callTool({ name: tool.name, arguments: { title } });
+      expect(result.isError).toBe(true);
+      for (const name of identities) expect(conversationTitleFromFrame(completed(name, result))).toBeUndefined();
+    }
+    const payload = { schema: 1, title: "Fictional bounded title", padding: "" };
+    payload.padding = "x".repeat(16_000 - JSON.stringify(payload).length);
+    expect(conversationTitleFromFrame(completed(tool.name, { structuredContent: payload }))).toBe(payload.title);
+    const oversized = completed(tool.name, { structuredContent: { ...payload, padding: payload.padding + "x" } });
+    expect(oversized.event?.structuredContent).toBeUndefined();
+    expect(conversationTitleFromFrame(oversized)).toBeUndefined();
+    // The producer bounds trimmed raw input; the consumer defensively bounds
+    // normalized completed results. This difference is intentional, not a merger.
+    const spaced = "x" + " ".repeat(bound) + "y";
+    expect((await client.callTool({ name: tool.name, arguments: { title: spaced } })).isError).toBe(true);
+    expect(conversationTitleFromFrame(completed(tool.name, { structuredContent: { schema: 1, title: spaced } }))).toBe("x y");
+  } finally { await client.close(); await extension.cleanup?.(); }
 });

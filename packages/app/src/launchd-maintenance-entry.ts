@@ -14,25 +14,25 @@ import {
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   MANAGED_WEB_LOG_MAINTENANCE_ENV,
   webMaintenanceDispersionSeconds,
-} from "./launchd.js";
-import type { LaunchdPaths } from "./launchd.js";
-import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-command.js";
-import type { LaunchdMaintenanceCommandArgs } from "./launchd-maintenance-command.js";
+} from "./service/launchd/launchd.js";
+import type { LaunchdPaths } from "./service/launchd/launchd.js";
+import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./service/launchd/launchd-maintenance-command.js";
+import type { LaunchdMaintenanceCommandArgs } from "./service/launchd/launchd-maintenance-command.js";
 import {
   defaultLaunchdMaintenanceGateDependencies,
   withLaunchdMaintenanceControllerLock,
-} from "./launchd-maintenance-gate.js";
+} from "./service/launchd/launchd-maintenance-gate.js";
 import type {
   LaunchdMaintenanceGateDependencies,
   LaunchdMaintenanceLifecycleLease,
-} from "./launchd-maintenance-gate.js";
-import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "./managed-launchd-maintenance-environment.js";
-import { sanitizeManagedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";
+} from "./service/launchd/launchd-maintenance-gate.js";
+import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "./service/launchd/managed-launchd-maintenance-environment.js";
+import { sanitizeManagedWebLogMaintenanceEnvironment } from "./service/launchd/managed-web-maintenance-environment.js";
 import {
   verifyManagedRuntimeMaintenanceEntrypoint,
-} from "./managed-runtime-maintenance-entry.js";
-import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.js";
-import type { WebLogMaintenanceCommandArgs } from "./web-log-maintenance-command.js";
+} from "./service/managed-runtime/managed-runtime-maintenance-entry.js";
+import { parseWebLogMaintenanceArguments } from "./service/web/web-log-maintenance-command.js";
+import type { WebLogMaintenanceCommandArgs } from "./service/web/web-log-maintenance-command.js";
 
 interface HeavyMaintenanceModule {
   readonly runLaunchdLogMaintenanceCommandWithLifecycleLease: (
@@ -63,8 +63,8 @@ export function defaultLaunchdMaintenanceEntryDependencies(): LaunchdMaintenance
     gate: defaultLaunchdMaintenanceGateDependencies(),
     pathsForLabel: (label) => launchdPathsFor(label),
     verifyEntrypoint: verifyManagedRuntimeMaintenanceEntrypoint,
-    loadHeavy: async () => await import("./cli-background-command.js"),
-    loadWebHeavy: async () => await import("./web-log-maintenance.js"),
+    loadHeavy: async () => await import("./cli/commands/cli-background-command.js"),
+    loadWebHeavy: async () => await import("./service/web/web-log-maintenance.js"),
     inspectWebHelper: launchdWebMaintenanceInfo,
     currentEntrypointPath: fileURLToPath(import.meta.url),
     platform: process.platform,
@@ -122,7 +122,7 @@ export async function runLaunchdMaintenanceEntry(
         || definition.expectedWebPlistIdentity !== webArgs.expectedWebPlistIdentity) {
         throw new Error("launchd does not own this exact web-maintenance helper definition and pid");
       }
-      const heavy = await (deps.loadWebHeavy ?? (async () => await import("./web-log-maintenance.js")))();
+      const heavy = await (deps.loadWebHeavy ?? (async () => await import("./service/web/web-log-maintenance.js")))();
       return await heavy.runWebLogMaintenanceCommand(webArgs);
     } catch (error) {
       safeStderr(deps, `Scheduled web maintenance could not establish its dispersed attested boundary: ${safeError(error)}`);

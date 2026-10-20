@@ -12,9 +12,9 @@ import type { DeliverWebNotificationInput } from "@mono-agent/web";
 import { WebConsoleError } from "@mono-agent/web";
 
 import type { ChannelDriver, ChannelStartInput } from "../channels/types.js";
-import { createTuiChannelDriver } from "../channels.js";
-import { MAX_DISCOVERED_INFO_MODEL_BYTES, startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
-import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER, MAX_CATALOG_ID_BYTES, MAX_PAGE_SIZE } from "../provider-model-catalog.js";
+import { createTuiChannelDriver } from "../channels/channels.js";
+import { MAX_DISCOVERED_INFO_MODEL_BYTES, startAppOwnedTuiChannel } from "../channels/drivers/tui.js";
+import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER, MAX_CATALOG_ID_BYTES, MAX_PAGE_SIZE } from "../providers/provider-model-catalog.js";
 
 const noopResponder: AgentResponder = {
   async respond() {
@@ -163,7 +163,7 @@ async function resolveInfo(captured: TuiAdapterOptions): Promise<TuiAdapterInfo>
 /**
  * A realistically long canonical reference — a SIZE, not a bound.
  *
- * The parser has no length rule at all: `requireQuotableReference` (agent-runtime's
+ * The parser has no length rule at all: `requireQuotableReference` (turn's
  * `model-refs.js`) refuses control and formatting code points and nothing else, because what a
  * model may be called is decided by providers, not by a grammar layer. Two rounds tried a byte
  * ceiling here and both numbers refused a model that really exists.
@@ -244,7 +244,7 @@ describe("tui channel driver — info composition", () => {
         schema: "mono-agent.acp-source.v1",
         bridgeVersion: 1,
         protocolVersion: 1,
-        installedVersion: "0.25.1",
+        installedVersion: "0.26.0",
         workspacePath: await realpath("/tmp"),
       },
     });

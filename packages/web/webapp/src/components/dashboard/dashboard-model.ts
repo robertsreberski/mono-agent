@@ -1,3 +1,4 @@
+import { costAmount } from "../../../../src/cost-wire.js";
 import {
   threadJobSummaries,
   threadOutcomeError,
@@ -194,10 +195,11 @@ export const runningCardStatus = (thread: ThreadSummary): string => {
     : calls > 0
       ? `Working · ${String(calls)} tool call${calls === 1 ? "" : "s"}`
       : "Working…";
+  const cost = costAmount(activity, "cumulativeUsd");
   return [
     head,
     ...threadJobSummaries(thread),
-    ...(activity.cumulativeUsd === undefined ? [] : [formatUsd(activity.cumulativeUsd)]),
+    ...(cost === undefined ? [] : [cost === null ? "cost unknown" : formatUsd(cost)]),
   ].join(" · ");
 };
 

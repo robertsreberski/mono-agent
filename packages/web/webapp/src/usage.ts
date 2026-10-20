@@ -94,12 +94,13 @@ export function windowUsage(detail: ThreadDetail): WebThreadUsage {
   let partialSubagents: WebThreadUsage["subagents"];
   if (usage.subagents !== undefined) {
     const { runsWithTokens: _windowRuns, ...windowSubagents } = usage.subagents;
-    partialSubagents = { ...windowSubagents, tokensPartial: true, costPartial: true };
+    partialSubagents = { ...windowSubagents, ...partialCost(windowSubagents), tokensPartial: true, costPartial: true };
   }
   return {
     ...partial,
-    total: { ...usage.total, tokensPartial: true, costPartial: true },
-    byModel: usage.byModel.map((model) => ({ ...model, costPartial: true as const, tokensPartial: true as const })),
+    total: { ...usage.total, ...partialCost(usage.total), tokensPartial: true, costPartial: true },
+    ...(usage.compaction ? { compaction: { ...usage.compaction, ...partialCost(usage.compaction), tokensPartial: true, costPartial: true } } : {}),
+    byModel: usage.byModel.map((model) => ({ ...model, ...partialCost(model), costPartial: true, tokensPartial: true })),
     ...(partialSubagents === undefined ? {} : { subagents: partialSubagents }),
   };
 }
@@ -298,3 +299,8 @@ export const conversationConsoleUsage = (
 
   return { context: contextProjection(detail, options.selectedModel) };
 };
+
+function partialCost(slice: WebUsageSlice): WebUsageSlice {
+  const known = slice.costUsd ?? slice.knownCostUsd;
+  return { costUsd: null, ...(known === undefined ? {} : { knownCostUsd: known }) };
+}

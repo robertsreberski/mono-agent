@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { startTuiAdapter } from "@mono-agent/channel-operator";
-import { createSupervisedRestartAuthority } from "../supervised-restart-authority.js";
-import { createSupervisedRestartLatch } from "../supervised-restart-latch.js";
-import { systemdUnitName } from "../systemd.js";
-import type { PreparedSupervisedRestartInputs } from "../supervised-restart.js";
+import { createSupervisedRestartAuthority } from "../service/restart/supervised-restart-authority.js";
+import { createSupervisedRestartLatch } from "../service/restart/supervised-restart-latch.js";
+import { systemdUnitName } from "../service/systemd/systemd.js";
+import type { PreparedSupervisedRestartInputs } from "../service/restart/supervised-restart.js";
 
 const configPath = "/work/example/mono-agent.config.json";
 function fixture(prepareStartupInputs: (signal: AbortSignal) => Promise<PreparedSupervisedRestartInputs>) {

@@ -107,6 +107,13 @@ export function orphanedBuildArtifacts(packageDir, filePaths) {
 
 export function assertPackResult(pkg, packed, packDestination, options = {}) {
   const files = new Set((packed.files || []).map((file) => file.path));
+  if (pkg.name === "@mono-agent/turn") {
+    const forbidden = [...files].filter((file) => /^(?:src|types)\//u.test(file)
+      || /(?:^|\/)(?:__tests__|fixtures)(?:\/|$)/u.test(file)
+      || file.endsWith(".map") || /(?<!\.d)\.(?:ts|mts|cts|tsx)$/u.test(file));
+    if (forbidden.length) throw new Error(`Turn tarball contains non-shipping files: ${forbidden.join(", ")}`);
+    if (!files.has("dist/host/sandbox/srt-embed-runner.mjs")) throw new Error("Turn tarball is missing the sandbox runner");
+  }
   const requiredFiles = ["package.json", "README.md"];
   if (pkg.name === "@mono-agent/web") {
     requiredFiles.push("webapp/dist/index.html");

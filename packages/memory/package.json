@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/memory",
-  "version": "0.25.1",
+  "version": "0.26.0",
   "description": "Local memory package with SQLite store, embedding search, and Bullet-Journal engine subpaths.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -41,7 +41,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/contracts": "workspace:0.25.1",
+    "@mono-agent/contracts": "workspace:0.26.0",
     "better-sqlite3": "^11.8.1",
     "sqlite-vec": "^0.1.7-alpha.2"
   },

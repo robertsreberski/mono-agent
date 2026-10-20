@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CONTINUATION_SERVICE_PORT,
   loadContinuationSettings,
-} from "../continuation-config.js";
+} from "../continuations/continuation-config.js";
 
 describe("loadContinuationSettings", () => {
   it("uses a fixed restart-safe port when the host block is absent", async () => {

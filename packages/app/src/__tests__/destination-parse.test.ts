@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { parseTelegramConversationId } from "@mono-agent/channel-telegram";
+import { parseTelegramConversationId, formatTelegramConversationTarget } from "@mono-agent/channel-telegram/conversation";
 
-import { slackTargetFromConversation, telegramChatIdFromConversation } from "../channels.js";
-import { telegramConversationIdFor, telegramTargetFromConversation } from "../telegram-destination.js";
+import { slackTargetFromConversation, telegramChatIdFromConversation } from "../channels/channels.js";
+import { telegramTargetFromConversation } from "../channels/telegram/telegram-destination.js";
 
 describe("telegramChatIdFromConversation", () => {
   it("extracts numeric and group chat ids, stripping a rollover bucket", () => {
@@ -58,8 +58,8 @@ describe("telegramTargetFromConversation", () => {
   });
 
   it("round-trips a target into its conversation id", () => {
-    expect(telegramConversationIdFor({ chatId: -1001 })).toBe("telegram:-1001");
-    expect(telegramConversationIdFor({ chatId: -1001, messageThreadId: 12 })).toBe("telegram:-1001:12");
+    expect(formatTelegramConversationTarget({ chatId: -1001 })).toBe("telegram:-1001");
+    expect(formatTelegramConversationTarget({ chatId: -1001, messageThreadId: 12 })).toBe("telegram:-1001:12");
   });
 });
 

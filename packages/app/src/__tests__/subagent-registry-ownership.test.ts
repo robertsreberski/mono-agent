@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagents/subagent-instances.js";
 import { writeJsonAtomic } from "../durable-state/private-files.js";
-import { isSubagentRecoveryFence, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "../subagent-registry-ownership.js";
+import { isSubagentRecoveryFence, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "../subagents/subagent-registry-ownership.js";
 
 it("loads old recovery fences and restricts new timeout certificates to retained timeout", () => {
   const legacy = { turnToken: randomUUID(), sequence: 1, reason: "timeout", continuity: "unknown" };
@@ -24,7 +24,7 @@ async function crashedLinkedTurn() {
   const root = await mkdtemp(resolve(process.cwd(), ".registry-ownership-")); roots.push(root);
   const storeRoot = resolve(root, "registered-jobs");
   const jobId = randomUUID();
-  const moduleUrl = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+  const moduleUrl = new URL("../../dist/subagents/subagent-instances.js", import.meta.url).href;
   execFileSync(process.execPath, ["--input-type=module", "-e", `
     import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
     const handle = await createSubagentInstanceRegistry({ root: ${JSON.stringify(root)}, retireSession: async () => {},
@@ -114,8 +114,10 @@ describe("registry ownership fences independent of process-job service availabil
     const identity: SubagentOwnerIdentity = { conversationId: "conversation", instanceId: "child", instanceIncarnation: created.incarnation!,
       turnToken: oldJob, jobId: oldJob, storeRoot };
     const publication = { identity, sequence: 1, disposition: { status: "ok" as const, continuity: "retained" as const }, released: true,
-      outcome: { status: "ok" as const } };
+      outcome: { status: "ok" as const, usage: { costUsd: null, knownCostUsd: 2 } } };
     await handle.publishOwned("intent", publication); await handle.publishOwned("confirm", publication);
+    await handle.publishOwned("confirm", publication);
+    expect(await handle.get("child")).toMatchObject({ turns: 1, usage: { costUsd: null, knownCostUsd: 2 } });
     proof = { state: "released", identity, sequence: 1, continuity: "retained", receiptRecorded: true };
     await handle.publishOwned("finalize", publication); await handle.publishOwned("acknowledge", publication);
     await handle.close("child"); const replacement = await handle.create(spec); const active = await handle.begin("child");

@@ -7,15 +7,15 @@ const mocks = vi.hoisted(() => ({
   writeRunInspectionUsageFailure: vi.fn(),
 }));
 
-vi.mock("../metrics.js", () => ({ runMetrics: mocks.runMetrics }));
-vi.mock("../audit-runs.js", () => ({ runAuditRuns: mocks.runAuditRuns }));
-vi.mock("../run-inspection.js", () => ({
+vi.mock("../cli/commands/metrics.js", () => ({ runMetrics: mocks.runMetrics }));
+vi.mock("../diagnostics/audit-runs.js", () => ({ runAuditRuns: mocks.runAuditRuns }));
+vi.mock("../diagnostics/run-inspection.js", () => ({
   runInspection: mocks.runInspection,
   writeRunInspectionUsageFailure: mocks.writeRunInspectionUsageFailure,
 }));
 
-import { parseCliArgs } from "../cli-args.js";
-import { runRunsCommand } from "../cli-runs-command.js";
+import { parseCliArgs } from "../cli/cli-args.js";
+import { runRunsCommand } from "../cli/commands/cli-runs-command.js";
 
 beforeEach(() => {
   mocks.runMetrics.mockClear();

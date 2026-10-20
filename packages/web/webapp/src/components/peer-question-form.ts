@@ -1,6 +1,6 @@
 /**
  * Display-only summary of an untrusted PeerAgent ACP form. Mirrors
- * `describePeerQuestionForm` in agent-contracts: the browser bundle may not
+ * `describePeerQuestionForm` in contracts: the browser bundle may not
  * load server contract modules, and the peer bridge remains the sole validator.
  */
 export interface PeerQuestionFieldView {

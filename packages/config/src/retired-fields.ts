@@ -88,6 +88,14 @@ const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
     message: "`observability.exporters` was removed with first-party Phoenix/OTLP export. Remove the active exporter block before upgrading. Local run artifacts are unchanged and mono-agent does not select a replacement. If a final export is required, perform it before upgrading with the known-good version you already operate.",
     jsonValueIsActive: retiredObservabilityJsonIsActive,
   },
+  {
+    path: "piToolParallelismMode",
+    message: "`piToolParallelismMode` was renamed to `piToolExecutionMode`; use `sequential` instead of `one-at-a-time`, or `safe-parallel` instead of `all`.",
+  },
+  {
+    path: "runtimeOptions.piToolParallelismMode",
+    message: "`runtimeOptions.piToolParallelismMode` was renamed to `runtimeOptions.piToolExecutionMode`; use `sequential` instead of `one-at-a-time`, or `safe-parallel` instead of `all`.",
+  },
 ] as const;
 
 /**
@@ -133,7 +141,7 @@ export function assertNoRetiredMonoAgentConfigJson(json: object): void {
   // read provider settings during retired-field rejection.
   const providers = (json as { providers?: unknown }).providers;
   const native = isJsonRecord(providers) ? providers.piNative : undefined;
-  if (isJsonRecord(native) && Object.hasOwn(native, "piSessionsRoot")) {
+  if (isJsonRecord(native) && hasRetiredPiSessionsRoot(native)) {
     throw new MonoAgentConfigError("invalid_json",
       "providers.piNative.piSessionsRoot was renamed to runtime.session.root; move the value there",
       { path: "providers.piNative.piSessionsRoot", paths: ["providers.piNative.piSessionsRoot"] });
@@ -142,4 +150,9 @@ export function assertNoRetiredMonoAgentConfigJson(json: object): void {
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Presence only: callers retain their own container guards and diagnostics. */
+export function hasRetiredPiSessionsRoot(value: unknown): boolean {
+  return value !== null && typeof value === "object" && Object.hasOwn(value, "piSessionsRoot");
 }

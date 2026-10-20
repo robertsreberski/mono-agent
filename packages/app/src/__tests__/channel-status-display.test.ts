@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatHumanChannelSections } from "../channel-status-display.js";
+import { formatHumanChannelSections } from "../channels/channel-status-display.js";
 
 describe("formatHumanChannelSections", () => {
   it("groups operator surfaces, labels the shared GUI, and compacts disabled channels", () => {

@@ -1,3 +1,4 @@
+import { recordedCost } from "./recorded-cost.js";
 import { suppressesNotification } from "@mono-agent/contracts";
 
 import { compactString } from "./content.js";
@@ -125,7 +126,8 @@ export interface SessionStepUsage {
   readonly i: number;
   readonly o: number;
   readonly c: number;
-  readonly cost: number;
+  readonly cost: number | null;
+  readonly knownCostUsd?: number;
 }
 
 /** Aggregate counters for a session. */
@@ -140,7 +142,8 @@ export interface SessionTotals {
   readonly tokCacheWrite?: number;
   readonly tokInputTotal?: number;
   readonly cacheHitRatio?: number;
-  readonly cost: number;
+  readonly cost: number | null;
+  readonly knownCostUsd?: number;
   readonly steps: number;
 }
 
@@ -365,12 +368,14 @@ export function mapRunToSession(
     });
   }
 
+  const recorded = recordedCost(summary);
   const totals: SessionTotals = {
     asst: walk.asstCount,
     tcalls: walk.tcallCount,
     think: walk.thinkCount,
     ...tokenTotals(summary.usage),
-    cost: resolveCost(summary),
+    cost: recorded.total === undefined ? 0 : recorded.total,
+    ...(recorded.known === undefined ? {} : { knownCostUsd: recorded.known }),
     steps: events.length,
   };
 
@@ -954,13 +959,6 @@ function tokenTotals(usage: unknown): Pick<SessionTotals, "tokIn" | "tokOut" | "
   };
 }
 
-/** Prefer the observer aggregate `cost.cumulativeUsd`, else `usage.cost_usd`, else 0. */
-function resolveCost(summary: RunSummary): number {
-  const fromCost = isRecord(summary.cost) ? finiteNumber(summary.cost.cumulativeUsd) : undefined;
-  if (fromCost !== undefined) return fromCost;
-  const fromUsage = isRecord(summary.usage) ? finiteNumber(summary.usage.cost_usd) : undefined;
-  return fromUsage ?? 0;
-}
 
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;

@@ -31,8 +31,8 @@ import {
   REPLY_ARTIFACT_MCP_SERVER_NAME,
   replyArtifactStorageBudgetFor,
   type ReplyArtifactService,
-} from "../reply-artifacts.js";
-import { createReplyPartBudget } from "../reply-part-budget.js";
+} from "../artifacts/reply-artifacts.js";
+import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
 
 const tempDirs: string[] = [];
 

@@ -1,3 +1,6 @@
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -6,13 +9,12 @@ import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { createMonoRuntime } from "@mono-agent/turn/host";
-// @ts-expect-error Private kernel tool boundary.
-import { createAgentManageTool } from "../../../turn/src/tools/delegation/agent-manage-tool.js";
-// @ts-expect-error Real native engine; only provider transport is fake.
-import { generateEngineTurnResponse } from "../../../turn/src/execution/pi/run.js";
-import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
+const toolsEntry = pathToFileURL(createRequire(import.meta.url).resolve("@mono-agent/turn/tools"));
+const { createAgentManageTool } = await import(new URL("./delegation/agent-manage-tool.js", toolsEntry).href) as typeof import("../../../turn/dist/tools/delegation/agent-manage-tool.js");
+import { generateEngineTurnResponse } from "@mono-agent/turn/ai";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagents/subagent-instances.js";
 import { acquireSqliteLease } from "../durable-state/sqlite-lease.js";
-import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";
+import type { SubagentOwnerIdentity } from "../subagents/subagent-registry-ownership.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const spec = { id: "helper", name: "helper", systemPrompt: "Review", definition: { name: "helper", description: "Review", systemPrompt: "Review" } };
@@ -124,7 +126,7 @@ it("G09: actual AgentManage rejects foreign-conversation and replaced-incarnatio
   const f = await fixture(); const original = await f.handle.inspect(spec.id);
   const request = { id: spec.id, ack: original.ack!, message: "verified new instructions", background: true };
   const run = vi.fn(); const startInternal = vi.fn();
-  const tool = (instances: typeof f.handle) => createAgentManageTool({ instances, run, backgroundSubagentController: { startInternal } });
+  const tool = (instances: typeof f.handle) => presentTool(createAgentManageTool({ instances, run, backgroundSubagentController: { startInternal } }));
   const foreign = await f.registry.open("foreign-conversation");
   const settle = async (handle: typeof f.handle, conversationId: string) => {
     const record = (await handle.get(spec.id))!; const token = randomUUID(); await handle.reserve(spec.id, token); await handle.begin(spec.id, token);
@@ -159,7 +161,7 @@ it("G09: current/previous consumption markers compact; the third-oldest token st
   const current = await f.handle.inspect(spec.id); const before = JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding;
   expect(before.consumed.token).toBe(requests[2]!.ack); expect(before.previous.token).toBe(requests[1]!.ack);
   expect(JSON.stringify(before)).not.toContain(requests[0]!.ack);
-  const run = vi.fn(); const startInternal = vi.fn(); const send = createAgentManageTool({ instances: f.handle, run, backgroundSubagentController: { startInternal } });
+  const run = vi.fn(); const startInternal = vi.fn(); const send = presentTool(createAgentManageTool({ instances: f.handle, run, backgroundSubagentController: { startInternal } }));
   for (const [index, request] of requests.entries()) {
     expect((await send.execute(`old-${index}`, { id: spec.id, ...request })).details).toMatchObject({ executed: false,
       recovery: { code: index === 0 ? "subagent_recovery_ack_stale" : "subagent_recovery_already_consumed" } });
@@ -246,7 +248,7 @@ it("reopens an unconsumed reservation without granting a second admission", asyn
 });
 it("physically kills the owner after reservation but before admission; duplicates never retry missing work", async () => {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.ack-crash-")); roots.push(root);
-  const module = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+  const module = new URL("../../dist/subagents/subagent-instances.js", import.meta.url).href;
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     import { randomUUID } from 'node:crypto';
     import { createSubagentInstanceRegistry } from ${JSON.stringify(module)};
@@ -297,3 +299,8 @@ it("admits an acknowledged continuation that also retargets the instance, and st
   await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
   await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, message: "something else" })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
 });
+
+function presentTool(value: ReturnType<typeof createAgentManageTool>) {
+  assert.ok(value);
+  return value;
+}

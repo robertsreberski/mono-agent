@@ -19,6 +19,7 @@ import {
   REQUIRED_PACKAGE_README_SECTIONS,
 } from "./lib/package-docs.mjs";
 import { findPackageVerificationErrors } from "./lib/package-verification.mjs";
+import { findUndeclaredWorkspaceImports, workspaceFileInventory } from "./lib/workspace-imports.mjs";
 
 const root = process.cwd();
 const packageScope = "@mono-agent/";
@@ -27,6 +28,8 @@ const requiredReadmeSections = REQUIRED_PACKAGE_README_SECTIONS.map((section) =>
 const errors = [];
 const catalogByName = packageByName();
 const catalogPaths = new Set(packageCatalog.map((entry) => packageRelativePath(entry)));
+const trackedFiles = workspaceFileInventory(root);
+const workspacePackages = packageCatalog.map((entry) => ({ name: entry.name, path: packageRelativePath(entry) }));
 const packagePaths = workspacePackagePaths()
   .sort();
 
@@ -99,6 +102,9 @@ for (const catalogEntry of packageCatalog) {
   }
 
   const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  errors.push(...findUndeclaredWorkspaceImports({
+    root, packagePath, manifest, workspaceNames: new Set(catalogByName.keys()), workspacePackages, trackedFiles,
+  }));
   if (catalogEntry.publishable === true) {
     errors.push(...findPackageVerificationErrors({ manifest, packagePath }));
   }
@@ -212,7 +218,7 @@ const controllerOperationModules = [
   "app-controller-traceability.ts",
 ];
 for (const file of controllerOperationModules) {
-  const relativePath = join("packages", "app", "src", file);
+  const relativePath = join("packages", "app", "src", "host", file);
   const text = readFileSync(join(root, relativePath), "utf8");
   if (/from\s+["']\.\/app-controller\.js["']/u.test(text)) {
     errors.push(`${relativePath} must depend on a narrow controller port, not MonoAgentAppController.`);
@@ -221,37 +227,37 @@ for (const file of controllerOperationModules) {
 
 const extractedResponsibilityDeclarations = [
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function startManagedWebLogMonitor",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function inspectLegacyManagedWebLogArtifacts",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function maintainLegacyManagedWebLogArtifacts",
     owner: "managed-web-logs.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function runWebLogMaintenanceCommand",
     owner: "web-log-maintenance.ts",
   },
   {
-    file: join("packages", "app", "src", "web-command.ts"),
+    file: join("packages", "app", "src", "cli", "commands", "web-command.ts"),
     declaration: "function writeWebLogMaintenanceStatus",
     owner: "web-log-maintenance-status.ts",
   },
   {
-    file: join("packages", "app", "src", "background.ts"),
+    file: join("packages", "app", "src", "service", "background", "background.ts"),
     declaration: "function maintainLaunchdLogsWithSharedLockOperation",
     owner: "background-log-maintenance.ts",
   },
   {
-    file: join("packages", "app", "src", "background.ts"),
+    file: join("packages", "app", "src", "service", "background", "background.ts"),
     declaration: "function maintainLaunchdLogsOperation",
     owner: "background-log-maintenance.ts",
   },
@@ -267,9 +273,25 @@ const extractedResponsibilityDeclarations = [
   },
 ];
 for (const rule of extractedResponsibilityDeclarations) {
-  const text = readFileSync(join(root, rule.file), "utf8");
-  if (text.includes(rule.declaration)) {
-    errors.push(`${rule.file} must keep ${rule.declaration} in ${rule.owner}.`);
+  const files = [rule.file];
+  const serviceDirectory = rule.file === join("packages", "app", "src", "cli", "commands", "web-command.ts")
+    ? join("packages", "app", "src", "service", "web")
+    : rule.file === join("packages", "app", "src", "service", "background", "background.ts")
+      ? join("packages", "app", "src", "service", "background")
+      : undefined;
+  if (serviceDirectory) {
+    const ownerFile = rule.file === join("packages", "app", "src", "cli", "commands", "web-command.ts")
+      ? join(serviceDirectory, rule.owner) : undefined;
+    files.push(...readdirSync(join(root, serviceDirectory), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+      .map((entry) => join(serviceDirectory, entry.name))
+      .filter((file) => file !== rule.file && file !== ownerFile));
+  }
+  for (const file of files) {
+    const text = readFileSync(join(root, file), "utf8");
+    if (text.includes(rule.declaration)) {
+      errors.push(`${file} must keep ${rule.declaration} in ${rule.owner}.`);
+    }
   }
 }
 
@@ -349,7 +371,7 @@ function isTextFile(path) {
   if (statSync(path).size > 1_000_000) {
     return false;
   }
-  return /\.(?:cjs|css|html|js|json|md|mjs|ts|tsx|yaml|yml)$/u.test(path);
+  return /\.(?:cjs|css|cts|html|js|json|jsx|md|mjs|mts|ts|tsx|yaml|yml)$/u.test(path);
 }
 
 function isPackageDirectory(dir) {

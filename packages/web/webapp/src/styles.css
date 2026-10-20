@@ -408,6 +408,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .running-card-title { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .running-card-status { min-width: 0; overflow: hidden; color: var(--accent); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 /* A turn that has not reported anything yet: the same line, stated quietly. */
+.running-card-known-cost { color: var(--text-muted); font-size: 9.5px; }
 .running-card-status.is-pending { color: var(--text-muted); }
 .running-card-time { flex: none; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .running-truncated { margin: 7px 0 0; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }

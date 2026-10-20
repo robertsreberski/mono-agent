@@ -50,9 +50,9 @@ const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
   processJobsRootRegistryPaths,
-} = await import("../process-jobs-root-registry.js");
+} = await import("../process-jobs/process-jobs-root-registry.js");
 
-const { PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR } = await import("../process-jobs-runtime.js");
+const { PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR } = await import("../process-jobs/process-jobs-runtime.js");
 
 const PI_MODEL = {
   provider: "openai-codex", model: "gpt-5.6-sol",

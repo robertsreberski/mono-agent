@@ -243,7 +243,7 @@ describe("resolveJsonMonoAgentConfig", () => {
   }
 } });
 
-    expect(config.runtime.compaction).toEqual({ enabled: true, fixedOverheadEnabled: true });
+    expect(config.runtime.compaction).toEqual({ enabled: true, fixedOverheadEnabled: true, effort: "auto", failureCooldownMs: 900000 });
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
     expect(config.tools.web).toEqual({
@@ -626,6 +626,8 @@ describe("resolveJsonMonoAgentConfig", () => {
       triggerRatio: 0.8,
       keepRecentTokens: 9_000,
       summaryMaxTokens: 3_000,
+      effort: "auto",
+      failureCooldownMs: 900000,
       minSavingsTokens: 7_000,
       fixedOverheadEnabled: false,
       contextWindowOverride: 272_000,
@@ -636,6 +638,8 @@ describe("resolveJsonMonoAgentConfig", () => {
     [{ enabled: "sometimes" as unknown as boolean }, "runtime.compaction.enabled"],
     [{ triggerRatio: 0.1 }, "runtime.compaction.triggerRatio"],
     [{ keepRecentTokens: 3999 }, "runtime.compaction.keepRecentTokens"],
+    [{ effort: "unbounded" }, "runtime.compaction.effort"],
+    [{ failureCooldownMs: -1 }, "runtime.compaction.failureCooldownMs"],
     [{ summaryMaxTokens: 999 }, "runtime.compaction.summaryMaxTokens"],
     [{ minSavingsTokens: -1 }, "runtime.compaction.minSavingsTokens"],
     [{ fixedOverheadEnabled: "sometimes" as unknown as boolean }, "runtime.compaction.fixedOverheadEnabled"],

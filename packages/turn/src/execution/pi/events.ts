@@ -1,0 +1,365 @@
+import { supportsPiContext1M } from "../../providers/pi/context-1m.js";
+import { effectiveContextWindow } from "./compaction/compaction-driver.js";
+// @ts-check
+// Harness event → runtime-event normalization for the pi-native bridge.
+//
+// Pure move of the `harness.subscribe` handler out of engine-turn.js: text /
+// thinking delta+end dedup, tool start / update / end / timing events, and the
+// turn-counting + maxTurns stop. All mutable counters and dedup keys live on the
+// caller-owned `runState`; no module-level mutable state here.
+
+import { isReplyPresentationTool } from "./reply-text.js";
+import { toolResultContent } from "../../providers/pi/messages.js";
+import {
+  compactToolRawResult,
+  eventToolArgs,
+  jsonSerializable,
+  streamContentKey,
+} from "../../providers/pi/events.js";
+import { contextUsageFromAssistantMessage } from "./result-builder.js";
+import { classifyPiToolResult, toolLifecycleMetadata } from "../../runtime/tool-lifecycle.js";
+import { retryableProviderFailureInfo } from "../../telemetry/failure.js";
+
+function toolResultFileChange(result: any) {
+  const fileChange = result?.details?.file_change;
+  return fileChange && typeof fileChange === "object" && !Array.isArray(fileChange)
+    ? jsonSerializable(fileChange, null)
+    : null;
+}
+
+function toolResultOutcome(result: any) {
+  const source = result?.details?.outcome;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const bounded: Record<string, string | number | boolean> = {};
+  const strings = {
+    status: "status",
+    code: "code",
+    backend: "backend",
+    signal: "signal",
+    contentKind: "content_kind",
+    charset: "charset",
+    charsetSource: "charset_source",
+    extractionStage: "extraction_stage",
+    renderReason: "render_reason",
+    retryAt: "retry_at",
+    nextAction: "next_action",
+  };
+  const numbers = {
+    attempts: "attempts",
+    queueWaitMs: "queue_wait_ms",
+    backendDurationMs: "backend_duration_ms",
+    retryAfterMs: "retry_after_ms",
+    maxRequestsPerRun: "max_requests_per_run",
+    requestsThisCall: "requests_this_call",
+    requestsUsed: "requests_used",
+    requestsRemaining: "requests_remaining",
+    cooldownSkipCount: "cooldown_skip_count",
+    quotaSkipCount: "quota_skip_count",
+    bytes: "bytes",
+    exitCode: "exit_code",
+    statusCode: "status_code",
+    redirectCount: "redirect_count",
+    parserFailureCount: "parser_failure_count",
+  };
+  const booleans = {
+    retryable: "retryable",
+    cacheHit: "cache_hit",
+    truncated: "truncated",
+    timedOut: "timed_out",
+    rendered: "rendered",
+    renderFailed: "render_failed",
+    browserRecommended: "browser_recommended",
+    retryInRun: "retry_in_run",
+    fallbackUsed: "fallback_used",
+    hadDecodingReplacement: "had_decoding_replacement",
+  };
+  for (const [input, output] of Object.entries(strings)) {
+    if (typeof source[input] === "string") bounded[output] = source[input].slice(0, 120);
+  }
+  for (const [input, output] of Object.entries(numbers)) {
+    if (Number.isFinite(Number(source[input]))) bounded[output] = Number(source[input]);
+  }
+  for (const [input, output] of Object.entries(booleans)) {
+    if (typeof source[input] === "boolean") bounded[output] = source[input];
+  }
+  return bounded;
+}
+
+/**
+ * Subscribe to the engine driver; runtime owns maxTurns abort and event presentation.
+ */
+export function createStreamSubscriber(runState: StreamSubscriberState, { onEvent, options, toolLimits, harness, sdk, model, runtimeWarnings }: {
+    onEvent: (event: any) => void;
+    options: any;
+    toolLimits: any;
+    harness: any;
+    sdk: string;
+    model: string;
+    runtimeWarnings?: any[];
+}): (event: any) => void {
+  const requestRetry = runState.requestRetry ??= { retries: 0, failedAttempts: null, textMark: 0, thinkingMark: 0 };
+  return (event: any) => {
+    if (event.type === "message_start" && event.message?.role === "assistant") {
+      requestRetry.textMark = runState.assistantTexts.length;
+      requestRetry.thinkingMark = runState.assistantThinking.length;
+    }
+    if (event.type === "message_start" && event.message?.role === "assistant" && runState.silentTurn?.accepted) {
+      // A continuation after the terminal tool is not the certified completion.
+      runState.silentTurn.accepted = false;
+      runState.silentTurn.completed = false;
+    }
+    if (event.type === "retry_scheduled") {
+      // The failed partial stays journaled and billed, but its streamed text is
+      // not part of the answer: the retried request regenerates it.
+      runState.assistantTexts.length = Math.min(runState.assistantTexts.length, requestRetry.textMark);
+      runState.assistantThinking.length = Math.min(runState.assistantThinking.length, requestRetry.thinkingMark);
+      requestRetry.retries += 1;
+      const errorMessage = String(event.errorMessage || "Unknown error").slice(0, 300);
+      const warning = {
+        warning_kind: "provider_request_retry", source: "pi", model,
+        attempt: event.attempt, max_attempts: event.maxAttempts, delay_ms: event.delayMs,
+        reason: retryableProviderFailureInfo({ errorText: errorMessage, failureKind: "provider_unavailable" }).subkind,
+        message: `Pi provider request failed after its response started (${errorMessage}); `
+          + `retrying the request (attempt ${event.attempt} of ${event.maxAttempts}) without re-running tools.`,
+      };
+      runtimeWarnings?.push(warning);
+      onEvent({ type: "runtime_warning", ...warning });
+      return;
+    }
+    if (event.type === "retry_end") {
+      requestRetry.failedAttempts = event.success ? null : event.attempt;
+      return;
+    }
+    // A new assistant request starts its own attempt count.
+    if (event.type === "run_start" || event.type === "turn_start") requestRetry.failedAttempts = null;
+    if (event.type === "message_update") {
+      const streamEvent = event.assistantMessageEvent;
+      if (streamEvent?.type === "text_delta" && streamEvent.delta) {
+        runState.textDeltaIndexes.add(streamContentKey(streamEvent, "text"));
+        if (streamEvent.delta.trim() && runState.silentTurn) runState.silentTurn.visibleContent = true;
+        runState.assistantTexts.push(streamEvent.delta);
+        onEvent({ type: "assistant", message: { content: [{ type: "text", text: streamEvent.delta }] } });
+      } else if (streamEvent?.type === "text_end" && streamEvent.content) {
+        const key = streamContentKey(streamEvent, "text");
+        if (!runState.textDeltaIndexes.has(key)) {
+          if (streamEvent.content.trim() && runState.silentTurn) runState.silentTurn.visibleContent = true;
+          runState.assistantTexts.push(streamEvent.content);
+          onEvent({ type: "assistant", message: { content: [{ type: "text", text: streamEvent.content }] } });
+        }
+      } else if (streamEvent?.type === "thinking_delta" && streamEvent.delta) {
+        runState.thinkingDeltaIndexes.add(streamContentKey(streamEvent, "thinking"));
+        runState.assistantThinking.push(streamEvent.delta);
+        onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.delta }] } });
+      } else if (streamEvent?.type === "thinking_end" && streamEvent.content) {
+        const key = streamContentKey(streamEvent, "thinking");
+        if (!runState.thinkingDeltaIndexes.has(key)) {
+          runState.assistantThinking.push(streamEvent.content);
+          onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.content }] } });
+        }
+      }
+    } else if (event.type === "message_end" && event.message?.role === "assistant") {
+      const contextUsage = contextUsageFromAssistantMessage(event.message);
+      if (contextUsage) {
+        const { costUsd, ...contextTokens } = contextUsage;
+        const context1M = options.context1MModels?.[model] === true && !options.customProvider && supportsPiContext1M(model);
+        const contextWindow = context1M
+          ? effectiveContextWindow(harness, { model: harness?.getModel?.() }, { reference: model }, options.compaction?.contextWindowOverride)
+          : Number(harness?.getModel?.()?.contextWindow) || 0;
+        const measurementId = typeof event.message?.id === "string" && event.message.id.trim().length > 0
+          ? event.message.id
+          : undefined;
+        onEvent({
+          type: "context_usage",
+          ...harness?.getPromptCacheRequest?.(),
+          sdk,
+          model,
+          timestamp: Date.now(),
+          ...(measurementId === undefined ? {} : { measurementId }),
+          ...(contextWindow > 0 ? { contextWindow } : {}),
+          ...(context1M ? { context1M: true } : {}),
+          tokens: contextTokens,
+          costUsd,
+          providerCostUsd: typeof event.message.usage?.cost?.total === "number" && Number.isFinite(event.message.usage.cost.total) && event.message.usage.cost.total >= 0 ? event.message.usage.cost.total : null,
+          costSource: "pi_usage",
+        });
+      }
+      const hasVisibleContent = Array.isArray(event.message?.content)
+        && event.message.content.some((block: any) => block
+          && typeof block === "object"
+          && ((block.type === "text"
+            && typeof block.text === "string"
+            && block.text.length > 0)
+            || (block.type === "thinking"
+              && ((typeof block.thinking === "string" && block.thinking.length > 0)
+                || (typeof block.text === "string" && block.text.length > 0)))));
+      if (hasVisibleContent) {
+        const messageId = typeof event.message?.id === "string" && event.message.id.trim().length > 0
+          ? event.message.id
+          : undefined;
+        onEvent({
+          type: "assistant_message_boundary",
+          ...(messageId === undefined ? {} : { messageId }),
+        });
+      }
+    } else if (event.type === "tool_execution_start") {
+      if (runState.dispatchProgress?.armed) runState.dispatchProgress.toolAdmitted = true;
+      runState.toolExecutionsThisTurn += 1;
+      if (event.toolName) runState.lastToolName = event.toolName;
+      if (event.toolCallId) runState.toolStartTimes.set(event.toolCallId, Date.now());
+      const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
+      onEvent({
+        type: "assistant",
+        message: {
+          content: [{
+            type: "tool_use",
+            id: event.toolCallId,
+            name: event.toolName,
+            input,
+          }],
+        },
+      });
+    } else if (event.type === "tool_execution_update") {
+      const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
+      onEvent({
+        type: "tool_update",
+        tool_use_id: event.toolCallId,
+        name: event.toolName,
+        input,
+        partial_result: jsonSerializable(event.partialResult, String(event.partialResult ?? "")),
+      });
+    } else if (event.type === "tool_execution_end") {
+      if (event.isError) {
+        runState.toolFailureThisTurn = true;
+      }
+      if (event.toolName === "AskParent" && !event.isError && runState.silentTurn) runState.silentTurn.pendingQuestion = true;
+      if (!event.isError && runState.silentTurn
+        && /^(?:AskUser|mcp__[^\s]+__AskUser)$/.test(event.toolName ?? "")) runState.silentTurn.visibleContent = true;
+      if (!event.isError && runState.silentTurn
+        && isReplyPresentationTool(event.toolName)) {
+        runState.silentTurn.visibleContent = true;
+      }
+      if (event.toolName === "FinishSilently" && !event.isError
+        && event.result?.details?.accepted === true && runState.silentTurn?.accepted === true) {
+        runState.silentCompletedThisTurn = true;
+        runState.silentTurn.completed = true;
+      }
+      if (options.outputSchema !== undefined
+        && options.outputSchema !== null
+        && event.toolName === "StructuredOutput"
+        && !event.isError
+        && runState.structuredResult !== undefined
+        && runState.structuredResult !== null) {
+        runState.structuredOutputCompletedThisTurn = true;
+      }
+      const resultContent = toolResultContent(event.result);
+      const fileChange = toolResultFileChange(event.result);
+      const outcome = toolResultOutcome(event.result);
+      const classification = classifyPiToolResult({
+        result: event.result,
+        isError: !!event.isError,
+        aborted: options.abortSignal?.aborted === true,
+        approval: runState.toolApprovals.get(event.toolCallId),
+      });
+      if (!event.isError) runState.toolResultsSeen += 1;
+      const startedAt = runState.toolStartTimes.get(event.toolCallId);
+      if (startedAt !== undefined) {
+        runState.toolStartTimes.delete(event.toolCallId);
+        onEvent({
+          type: "tool_timing",
+          tool_use_id: event.toolCallId,
+          name: event.toolName,
+          execution_ms: Date.now() - startedAt,
+          is_error: !!event.isError,
+          ...(outcome || {}),
+          tool_lifecycle: toolLifecycleMetadata({
+            state: classification.state,
+            failure_kind: classification.failureKind,
+            detail_code: classification.detailCode,
+          }),
+        });
+      }
+      runState.toolApprovals.delete(event.toolCallId);
+      const rawResult = compactToolRawResult(jsonSerializable(event.result, resultContent), resultContent);
+      onEvent({
+        type: "user",
+        message: {
+          content: [{
+            type: "tool_result",
+            tool_use_id: event.toolCallId,
+            content: resultContent,
+            raw_result: rawResult,
+            ...(fileChange === null ? {} : { file_change: fileChange }),
+            is_error: !!event.isError,
+            tool_lifecycle: toolLifecycleMetadata({
+              state: classification.state,
+              failure_kind: classification.failureKind,
+              detail_code: classification.detailCode,
+            }),
+          }],
+        },
+      });
+    } else if (event.type === "turn_end") {
+      runState.turnCount += 1;
+      // Runtime counts completed tool-use turns and enforces maxTurns here.
+      // Successful sole StructuredOutput or FinishSilently calls terminate normally;
+      // ordinary, mixed and failed tool batches remain subject to the ceiling.
+      const completedOnlyTerminalStructuredOutput = runState.toolExecutionsThisTurn === 1
+        && runState.toolFailureThisTurn === false
+        && runState.structuredOutputCompletedThisTurn === true;
+      const completedOnlyTerminalSilence = runState.toolExecutionsThisTurn === 1
+        && runState.toolFailureThisTurn === false
+        && runState.silentCompletedThisTurn === true;
+      runState.toolExecutionsThisTurn = 0;
+      runState.toolFailureThisTurn = false;
+      runState.structuredOutputCompletedThisTurn = false;
+      runState.silentCompletedThisTurn = false;
+      if (Number.isFinite(Number(options.maxTurns))
+        && Number(options.maxTurns) > 0
+        && runState.turnCount >= Number(options.maxTurns)
+        && event.message?.stopReason === "toolUse"
+        && !completedOnlyTerminalStructuredOutput
+        && !completedOnlyTerminalSilence) {
+        runState.maxTurnsHit = true;
+        void Promise.resolve(harness.abort()).catch(() => {});
+      }
+    }
+  };
+}
+
+/**
+ * The slice of run state the stream subscriber reads and mutates. A structural
+ * subset of the orchestrator's runState.
+ */
+export type StreamSubscriberState = {
+    assistantTexts: string[];
+    dispatchProgress?: import("../../contracts/runtime.js").RuntimeDispatchProgress;
+    assistantThinking: string[];
+    textDeltaIndexes: Set<unknown>;
+    thinkingDeltaIndexes: Set<unknown>;
+    toolStartTimes: Map<string, number>;
+    toolApprovals: Map<string, any>;
+    turnCount: number;
+    toolResultsSeen: number;
+    lastToolName: string | null;
+    maxTurnsHit: boolean;
+    toolExecutionsThisTurn: number;
+    toolFailureThisTurn: boolean;
+    structuredOutputCompletedThisTurn: boolean;
+    silentCompletedThisTurn?: boolean;
+    silentTurn?: {
+        soleCall: boolean;
+        visibleContent: boolean;
+        pendingQuestion: boolean;
+        failed: boolean;
+        accepted: boolean;
+        completed: boolean;
+        liveInputRefusalReason?: () => ("live_input_consumed" | "live_input_uncertain" | null);
+    };
+    structuredResult: unknown;
+    requestRetry?: {
+        retries: number;
+        failedAttempts: number | null;
+        textMark: number;
+        thinkingMark: number;
+    };
+};

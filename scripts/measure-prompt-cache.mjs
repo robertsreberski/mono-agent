@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { measurementCosts, assertMeasurementThreshold } from "./lib/prompt-cache-cost.mjs";
 import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -159,7 +160,7 @@ function collectRun(events, response, labels) {
     if (event?.type === "capabilities_resolved") controlEvents.push({ type: event.type, capabilitiesUsed: event.capabilitiesUsed });
   }
   const usage = response.metadata.runtime?.usage ?? {};
-  const totals = { input: usage.input_tokens ?? null, cacheRead: usage.cache_read_tokens ?? null, cacheWrite: usage.cache_creation_tokens ?? null, output: usage.output_tokens ?? null, costUsd: usage.cost_usd ?? null };
+  const totals = { input: usage.input_tokens ?? null, cacheRead: usage.cache_read_tokens ?? null, cacheWrite: usage.cache_creation_tokens ?? null, output: usage.output_tokens ?? null, costUsd: usage.cost_usd ?? null, ...(usage.cost_usd === null && typeof usage.known_cost_usd === "number" ? { knownCostUsd: usage.known_cost_usd } : {}) };
   return { ...labels, responseStatus: response.failure === undefined ? "ok" : "failed", historyMode, requests, contextUsageSnapshots, runTotals: { ...totals, cacheHitRatio: [totals.input, totals.cacheRead, totals.cacheWrite].every(Number.isFinite) ? ratio({ input: totals.input, cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite }) : null }, compactionEvents, reseedEvents, controlEvents };
 }
 
@@ -202,7 +203,7 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
   const collectLifecycle = (event) => {
     if (lifecycleEvents.length < MAX_REPORT_EVENTS) lifecycleEvents.push({ kind: event.kind, reason: event.reason });
   };
-  let spent = 0;
+  let spent = measurementCosts([]);
   for (let repeat = 0; repeat < repeats; repeat += 1) {
     let toolsEnabled = true;
     let config = makeConfig(root, model, scenario, piAuthPath, toolsEnabled);
@@ -219,6 +220,7 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
           harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, memory: scenario === "recall-changing" ? recallFixture() : undefined, runtimeOptions: { ...runtimeOptions, effort, promptCacheDiagnostics: true, piTransport: transport }, onSessionEvent: collectLifecycle });
         }
         const execute = async (conversation) => {
+          assertMeasurementThreshold(spent, ceiling);
           const events = [];
           const repetitionMarker = hash(`${root}:${repeat}`).slice(0, 12);
           const response = await harness.run({
@@ -232,10 +234,8 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
           });
           const collected = collectRun(events, response, { repeat: repeat + 1, turn: turn + 1, conversation: conversation + 1 });
           runs.push(collected);
-          spent += Number(collected.runTotals.costUsd) || 0;
-          if (ceiling !== undefined && spent > ceiling) {
-            throw new Error("Observed spend exceeded the secondary post-response stop threshold; measurement stopped. This threshold is not a hard ceiling.");
-          }
+          spent = measurementCosts(runs.map((run) => run.runTotals));
+          assertMeasurementThreshold(spent, ceiling);
         };
         if (scenario === "concurrent") await Promise.all(Array.from({ length: conversations }, (_, conversation) => execute(conversation)));
         else await execute(0);
@@ -245,8 +245,8 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
       await runtime.disposeAllSessions?.();
     }
   }
-  const aggregate = runs.reduce((sum, run) => ({ input: sum.input + (run.runTotals.input ?? 0), cacheRead: sum.cacheRead + (run.runTotals.cacheRead ?? 0), cacheWrite: sum.cacheWrite + (run.runTotals.cacheWrite ?? 0), output: sum.output + (run.runTotals.output ?? 0), costUsd: sum.costUsd + (run.runTotals.costUsd ?? 0) }), { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, costUsd: 0 });
-  return { runs, lifecycleEvents, cumulativeTotals: { ...aggregate, cacheHitRatio: ratio(aggregate) } };
+  const aggregate = runs.reduce((sum, run) => ({ input: sum.input + (run.runTotals.input ?? 0), cacheRead: sum.cacheRead + (run.runTotals.cacheRead ?? 0), cacheWrite: sum.cacheWrite + (run.runTotals.cacheWrite ?? 0), output: sum.output + (run.runTotals.output ?? 0), costUsd: 0 }), { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, costUsd: 0 });
+  return { runs, lifecycleEvents, cumulativeTotals: { ...aggregate, ...measurementCosts(runs.map((run) => run.runTotals)), cacheHitRatio: ratio(aggregate) } };
 }
 
 async function preflight(argv) {

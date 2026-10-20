@@ -1,10 +1,10 @@
 import type { RuntimeModelReference, OwnedForegroundProcesses } from "@mono-agent/turn/host/types";
 import type { LiveInputMailbox } from "@mono-agent/conversation";
 import type { ProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
-import type { SubagentSalvage } from "../subagent-salvage.js";
-import type { SubagentVerificationTarget, SubagentVerificationDeclaration, SubagentVerificationObservation } from "../subagent-verification-observer.js";
-import type { SubagentTurnIntent, SubagentRecoveryFence, SubagentOwnerIdentity, SubagentContinuity, SubagentFailureReason } from "../subagent-registry-ownership.js";
-import type { SubagentRecoveryAcknowledgement } from "../subagent-recovery-binding.js";
+import type { SubagentSalvage } from "./subagent-salvage.js";
+import type { SubagentVerificationTarget, SubagentVerificationDeclaration, SubagentVerificationObservation } from "./subagent-verification-observer.js";
+import type { SubagentTurnIntent, SubagentRecoveryFence, SubagentOwnerIdentity, SubagentContinuity, SubagentFailureReason } from "./subagent-registry-ownership.js";
+import type { SubagentRecoveryAcknowledgement } from "./subagent-recovery-binding.js";
 interface InstanceDefinition {
   readonly name: string;
   readonly description: string;
@@ -20,7 +20,7 @@ interface InstanceDefinition {
 
 export interface SubagentQuestion { question: string; options?: string[] }
 
-export interface InstanceUsage { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number }
+export interface InstanceUsage { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number | null; knownCostUsd?: number }
 
 export interface SubagentInstance {
   id: string;

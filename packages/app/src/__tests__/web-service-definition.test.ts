@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { buildWebLaunchdProgramArguments, WEB_LAUNCHD_LABEL } from "../launchd.js";
-import { decodeManagedWebDefinition } from "../web-service-definition.js";
+import { buildWebLaunchdProgramArguments, WEB_LAUNCHD_LABEL } from "../service/launchd/launchd.js";
+import { decodeManagedWebDefinition } from "../service/web/web-service-definition.js";
 
 /** The macOS LaunchAgent prefix: env -i … <node> <cli> */
 const launchdPrefix = ["/usr/bin/env", "-i", "PATH=/usr/bin", "/managed/node", "/managed/dist/cli.js"];

@@ -5,14 +5,16 @@ import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 
-import { APP_TOOL_NAMES, BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
-import { assertConcreteWizardModelRef, canonicalWizardModelRef, channelSelectOptions, creationReviewOptions, CUSTOM_PI_MODEL_OPTION, effortSelectOptions, fallbackModelSelectOptions, memorySelectOptions, modelSelectOptions, piModelSelectOptions, presetSelectOptions, toolMultiselectOptions, validateWizardAgentName, validateWizardAgentPurpose, wizardCancelIntentForKey, WizardCancelled } from "../wizard/prompts.js";
+import { APP_TOOL_NAMES, BUILTIN_TOOL_NAMES } from "../tools/known-tools.js";
+import { assertConcreteWizardModelRef, canonicalWizardModelRef, channelSelectOptions, creationReviewOptions, CUSTOM_PI_MODEL_OPTION, effortSelectOptions, fallbackModelSelectOptions, memorySelectOptions, modelSelectOptions, piModelSelectOptions, presetSelectOptions, toolMultiselectOptions, validateWizardAgentName, validateWizardAgentPurpose, wizardCancelIntentForKey, WizardCancelled } from "../setup/wizard/prompts.js";
 import {
   discoverWizardModelCandidates,
   rankWizardModelCandidates,
   type WizardModelCandidate,
-} from "../wizard/model-discovery.js";
-import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine, resolvePiCliPath } from "../provider-setup.js";
+} from "../setup/wizard/model-discovery.js";
+import { executeProviderSetupPlan } from "../providers/provider-setup.js";
+import { planProviderSetup, providerSetupActionCommandLine } from "../providers/setup-plan.js";
+import { resolvePiCliPath } from "../providers/oauth-command.js";
 
 function modelCandidate(
   candidate: Pick<WizardModelCandidate, "value" | "label" | "source">

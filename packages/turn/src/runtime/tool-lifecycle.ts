@@ -1,0 +1,346 @@
+// Provider-neutral lifecycle persistence gate. Provider bridges may emit their
+// own exact `tool_lifecycle` hint; absent fidelity falls back conservatively to
+// success/error and never infers terminal state from prose.
+
+// @ts-check
+
+import { types as nodeUtilTypes } from "node:util";
+
+const FAILURE_KINDS = new Set([
+  "provider_unavailable", "provider_unavailable_exhausted", "provider_auth", "skipped_capability_mismatch",
+  "context_limit", "usage_limit", "process_death", "runtime_error", "cancelled", "cancelled_user",
+  "cancelled_stale", "cancelled_shutdown", "cancelled_signal",
+]);
+const HOST_HISTORY_METADATA = Symbol("mono-agent.host-tool-history");
+const HOST_TOOL_LIFECYCLE_METADATA = Symbol("mono-agent.host-tool-lifecycle");
+
+export function createToolLifecycleEventGate({ sink, onObserve, onLifecycleAdmitted, onEvent, abortSignal }: { sink?: (event: any) => Promise<any>; onObserve?: (event: any) => void; onLifecycleAdmitted?: (event: any) => void; onEvent?: (event: any) => void; abortSignal?: AbortSignal | undefined; }): {
+  emit: (event: Parameters<typeof stripProviderLifecycleMetadata>[0]) => void;
+  flush(): Promise<void>;
+} {
+  let tail: Promise<void> = Promise.resolve();
+  let pendingDeliveries = 0;
+  const timing: Map<string, any> = new Map();
+  const approvals: Map<string, any> = new Map();
+  const preparedBlocks = new WeakSet();
+
+  const emit = (event: Parameters<typeof stripProviderLifecycleMetadata>[0]) => {
+    stripProviderLifecycleMetadata(event);
+    try { onObserve?.(event); } catch { /* observer callback semantics remain best-effort */ }
+    observeClassification(event, timing, approvals);
+    const requiresPersistence = typeof sink === "function" && eventNeedsPersistence(event);
+    // Admission/classification follows native emission, not delayed storage.
+    const writes = requiresPersistence ? prepareEvent(event, { timing, approvals, abortSignal }, preparedBlocks) : [];
+    for (const write of writes) {
+      try { onLifecycleAdmitted?.(write.lifecycle); } catch { /* observers remain best-effort */ }
+    }
+    if (!requiresPersistence && pendingDeliveries === 0) {
+      try { onEvent?.(event); } catch { /* host callback semantics remain best-effort */ }
+      return;
+    }
+
+    pendingDeliveries += 1;
+    const delivery = tail.then(async () => {
+      if (requiresPersistence) {
+        for (const write of writes) {
+          const persisted = await safePersist(sink, write.lifecycle);
+          try { write.block.history = historyMetadata(persisted, write.state); } catch { /* still settle every admitted write */ }
+        }
+      }
+      try { onEvent?.(event); } catch { /* host callback semantics remain best-effort */ }
+    }).catch((error) => {
+      if (requiresPersistence) attachPersistenceFailure(event, error);
+      try { onEvent?.(event); } catch { /* host callback semantics remain best-effort */ }
+    });
+    tail = delivery.finally(() => { pendingDeliveries -= 1; });
+  };
+
+  return {
+    emit,
+    async flush() { await tail; },
+  };
+}
+
+function eventNeedsPersistence(event: any) {
+  if (!record(event) || (event.type !== "assistant" && event.type !== "user")) return false;
+  const message = event.message;
+  if (!record(message) || !Array.isArray(message.content)) return false;
+  return message.content.some((block: Parameters<typeof record>[0]) => {
+    if (!record(block) || hostHistoryMetadata(block.history)) return false;
+    if (event.type === "assistant" && block.type === "tool_use") {
+      return typeof block.id === "string" && typeof block.name === "string";
+    }
+    if (event.type === "user" && block.type === "tool_result") {
+      return typeof block.tool_use_id === "string" || typeof block.tool_call_id === "string";
+    }
+    return false;
+  });
+}
+
+/**
+ * Pi-native exact classifier. It consumes structured tool result details, not
+ * error text, so timeout/signal/non-zero/cancellation fidelity cannot drift
+ * with provider wording.
+ */
+export function classifyPiToolResult(input: { result?: any; isError?: boolean; aborted?: boolean; approval?: any; }): {
+  detailCode?: string;
+  failureKind?: string;
+  state: string;
+} {
+  const outcome = input.result?.details?.outcome;
+  const outcomeFailureKind = failureKind(outcome?.failureKind);
+  if (input.approval?.reason === "approval_timeout") {
+    return terminal("timeout", "runtime_error", "approval_timeout");
+  }
+  if (input.approval?.decision === "deny") {
+    return terminal("rejected", "runtime_error", boundedCode(input.approval.reason || "approval_denied"));
+  }
+  if (outcome?.timedOut === true || outcome?.timed_out === true || outcome?.code === "timeout") {
+    return terminal("timeout", "runtime_error", "tool_timeout");
+  }
+  if (typeof outcome?.signal === "string" && outcome.signal.length > 0) {
+    return terminal("signal", "process_death", boundedCode(outcome.signal));
+  }
+  const exitCode = Number(outcome?.exitCode ?? outcome?.exit_code);
+  if (Number.isFinite(exitCode) && exitCode !== 0) {
+    return terminal("exit_nonzero", "runtime_error", `exit_${String(exitCode)}`);
+  }
+  if (outcome?.code === "aborted" || input.aborted && input.isError && !failureOutranksAbort(outcomeFailureKind)) {
+    return terminal("cancelled", "cancelled", "abort_signal");
+  }
+  if (input.isError || outcome?.status === "error") {
+    return terminal("error", outcomeFailureKind, boundedCode(outcome?.code || "runtime_error"));
+  }
+  return terminal("success", undefined, undefined);
+}
+
+function observeClassification(event: any, timing: Map<string, any>, approvals: Map<string, any>) {
+  if (!record(event)) return;
+  if (event.type === "tool_timing" && typeof event.tool_use_id === "string") {
+    timing.set(event.tool_use_id, event);
+  }
+  if (event.type === "tool_approval_denied" && typeof event.toolUseId === "string") {
+    approvals.set(event.toolUseId, event);
+  }
+}
+
+function prepareEvent(event: any, context: { timing: Map<string, any>; approvals: Map<string, any>; abortSignal?: AbortSignal | undefined; }, preparedBlocks: WeakSet<any>) {
+  const writes: Array<{ block: Parameters<typeof record>[0]; lifecycle: Record<string, unknown>; state: string | undefined }> = [];
+  if (!record(event) || (event.type !== "assistant" && event.type !== "user")) return writes;
+  const message = event.message;
+  if (!record(message) || !Array.isArray(message.content)) return writes;
+  for (const block of message.content) {
+    if (!record(block)) continue;
+    if (event.type === "assistant" && block.type === "tool_use") {
+      if (hostHistoryMetadata(block.history) || preparedBlocks.has(block)) continue;
+      if (typeof block.id !== "string" || typeof block.name !== "string") continue;
+      const lifecycle = {
+        phase: "invocation",
+        toolCallId: block.id,
+        toolName: block.name,
+        ...(Object.hasOwn(block, "input") ? { arguments: block.input } : {}),
+      };
+      preparedBlocks.add(block);
+      writes.push({ block, lifecycle, state: undefined });
+      continue;
+    }
+    if (event.type === "user" && block.type === "tool_result") {
+      if (hostHistoryMetadata(block.history) || preparedBlocks.has(block)) continue;
+      const id = typeof block.tool_use_id === "string" ? block.tool_use_id
+        : typeof block.tool_call_id === "string" ? block.tool_call_id : undefined;
+      if (id === undefined) continue;
+      const classified = classifyGenericResult(block, context.timing.get(id), context.approvals.get(id), context.abortSignal);
+      const lifecycle = {
+        phase: "result",
+        toolCallId: id,
+        ...(typeof block.name === "string" ? { toolName: block.name } : {}),
+        ...(Object.hasOwn(block, "content") ? { content: block.content } : {}),
+        ...classified,
+        ...(typeof context.timing.get(id)?.execution_ms === "number"
+          ? { executionMs: context.timing.get(id).execution_ms }
+          : {}),
+        artifacts: artifactPaths(block),
+      };
+      preparedBlocks.add(block);
+      writes.push({ block, lifecycle, state: classified.state });
+      context.timing.delete(id);
+      context.approvals.delete(id);
+    }
+  }
+  return writes;
+}
+
+function classifyGenericResult(block: any, timing: any, approval: any, abortSignal: AbortSignal | undefined) {
+  const explicit = hostToolLifecycleMetadata(block.tool_lifecycle)
+    ? block.tool_lifecycle
+    : hostToolLifecycleMetadata(timing?.tool_lifecycle)
+      ? timing.tool_lifecycle
+      : undefined;
+  // A failure kind only outranks host cancellation when its trusted hint also
+  // supplies the terminal error state required by the lifecycle contract.
+  const explicitFailureOutranksAbort = record(explicit)
+    && explicit.state === "error"
+    && failureOutranksAbort(explicit.failure_kind);
+  if (approval?.reason === "approval_timeout") return terminal("timeout", "runtime_error", "approval_timeout");
+  if (approval?.decision === "deny") return terminal("rejected", "runtime_error", boundedCode(approval.reason || "approval_denied"));
+  if (record(explicit) && terminalState(explicit.state) && explicit.state !== "error") {
+    return explicit.state === "success"
+      ? terminal("success", undefined, undefined)
+      : terminal(
+          explicit.state,
+          explicit.state === "cancelled" && abortSignal?.aborted
+            ? cancellationFailureKind(abortSignal)
+            : lifecycleFailureKind(explicit.state, explicit.failure_kind),
+          boundedCode(explicit.detail_code || explicit.state),
+        );
+  }
+  if (timing?.timed_out === true) return terminal("timeout", "runtime_error", "tool_timeout");
+  if (typeof timing?.signal === "string" && timing.signal.length > 0) return terminal("signal", "process_death", boundedCode(timing.signal));
+  if (Number.isFinite(Number(timing?.exit_code)) && Number(timing.exit_code) !== 0) {
+    return terminal("exit_nonzero", "runtime_error", `exit_${String(Number(timing.exit_code))}`);
+  }
+  if (
+    abortSignal?.aborted
+    && block.is_error === true
+    && !explicitFailureOutranksAbort
+  ) {
+    return terminal("cancelled", cancellationFailureKind(abortSignal), "abort_signal");
+  }
+  if (record(explicit) && explicit.state === "error") {
+    return terminal("error", failureKind(explicit.failure_kind), boundedCode(explicit.detail_code || "provider_error"));
+  }
+  if (block.is_error === true || timing?.is_error === true) return terminal("error", failureKind(explicit?.failure_kind), boundedCode(explicit?.detail_code || "provider_error"));
+  return terminal("success", undefined, undefined);
+}
+
+async function safePersist(sink: (event: any) => Promise<any>, event: any) {
+  try {
+    return await sink(event) ?? { persistence: "failed", errorCode: "history_writer_unavailable" };
+  } catch (error) {
+    return { persistence: "failed", errorCode: (error as { code?: unknown } | null | undefined)?.code || "history_write_failed" };
+  }
+}
+
+function historyMetadata(persisted: any, terminalStateValue: string | undefined) {
+  const metadata = {
+    ...(typeof persisted?.recordId === "string" ? { recordId: persisted.recordId } : {}),
+    ...(Number.isFinite(Number(persisted?.sequence)) ? { sequence: Number(persisted.sequence) } : {}),
+    persistence: persisted?.persistence === "persisted" || persisted?.persistence === "deferred"
+      ? persisted.persistence
+      : "failed",
+    ...(terminalStateValue === undefined ? {} : { terminalState: terminalStateValue }),
+    ...(typeof persisted?.truncated === "boolean" ? { truncated: persisted.truncated } : {}),
+    ...(Number.isFinite(Number(persisted?.originalBytes)) ? { originalBytes: Number(persisted.originalBytes) } : {}),
+    ...(Number.isFinite(Number(persisted?.retainedBytes)) ? { retainedBytes: Number(persisted.retainedBytes) } : {}),
+    ...(Array.isArray(persisted?.artifactReferences) ? { artifactReferences: persisted.artifactReferences } : {}),
+    ...(typeof persisted?.errorCode === "string" ? { errorCode: persisted.errorCode } : {}),
+    untrusted: true,
+  };
+  Object.defineProperty(metadata, HOST_HISTORY_METADATA, { value: true });
+  return metadata;
+}
+
+/**
+ * Mark a provider adapter's host-derived structured outcome as trusted input to the gate.
+ */
+export function toolLifecycleMetadata(value: any): any {
+  const metadata = record(value) ? { ...value } : {};
+  Object.defineProperty(metadata, HOST_TOOL_LIFECYCLE_METADATA, { value: true });
+  return metadata;
+}
+
+/**
+ * Provider payloads cannot assert host persistence or choose a terminal state.
+ */
+function stripProviderLifecycleMetadata(event: any) {
+  if (!record(event) || !record(event.message) || !Array.isArray(event.message.content)) return;
+  for (const block of event.message.content) {
+    if (!record(block) || (block.type !== "tool_use" && block.type !== "tool_result")) continue;
+    if (Object.hasOwn(block, "history") && !hostHistoryMetadata(block.history)) delete block.history;
+    if (Object.hasOwn(block, "tool_lifecycle") && !hostToolLifecycleMetadata(block.tool_lifecycle)) {
+      delete block.tool_lifecycle;
+    }
+  }
+}
+
+function hostHistoryMetadata(value: any) {
+  return record(value) && value[HOST_HISTORY_METADATA] === true;
+}
+
+function hostToolLifecycleMetadata(value: any) {
+  return record(value) && value[HOST_TOOL_LIFECYCLE_METADATA] === true;
+}
+
+function attachPersistenceFailure(event: any, error: unknown) {
+  if (!record(event) || !record(event.message) || !Array.isArray(event.message.content)) return;
+  for (const block of event.message.content) {
+    if (record(block) && (block.type === "tool_use" || block.type === "tool_result")) {
+      const candidate = ((error) as any);
+      const code = record(candidate) && typeof candidate.code === "string" ? candidate.code : "history_write_failed";
+      block.history = historyMetadata({ persistence: "failed", errorCode: code }, undefined);
+    }
+  }
+}
+
+function artifactPaths(block: any) {
+  const paths = new Set<string>();
+  collectPaths(block.raw_result?.details?.tool_payload_saved_paths, paths);
+  collectPaths(block.raw_result?.tool_payload_saved_paths, paths);
+  collectPaths(block.tool_payload_saved_paths, paths);
+  return [...paths].slice(0, 32).map((path) => ({ path }));
+}
+
+function collectPaths(value: any, paths: Set<string>) {
+  if (typeof value === "string" && value.length > 0) paths.add(value);
+  else if (Array.isArray(value)) for (const item of value) collectPaths(item, paths);
+}
+
+function terminal(state: string, failureKindValue: string | undefined, detailCode: string | undefined) {
+  return {
+    state,
+    ...(failureKindValue === undefined ? {} : { failureKind: failureKindValue }),
+    ...(detailCode === undefined ? {} : { detailCode }),
+  };
+}
+
+function failureKind(value: any) {
+  return typeof value === "string" && FAILURE_KINDS.has(value) ? value : "runtime_error";
+}
+
+function lifecycleFailureKind(state: string, value: any) {
+  if (typeof value === "string" && FAILURE_KINDS.has(value)) return value;
+  if (state === "signal" || state === "interrupted") return "process_death";
+  return state === "cancelled" ? "cancelled" : "runtime_error";
+}
+
+function failureOutranksAbort(value: any) {
+  const kind = failureKind(value);
+  return kind !== "runtime_error" && !kind.startsWith("cancelled");
+}
+
+function cancellationFailureKind(signal: AbortSignal) {
+  const reason = signal.reason;
+  if (typeof reason !== "object" || reason === null || nodeUtilTypes.isProxy(reason)) {
+    return "cancelled";
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(reason, "channelUserCancel");
+    return descriptor !== undefined && "value" in descriptor && descriptor.value === true
+      ? "cancelled_user"
+      : "cancelled";
+  } catch {
+    return "cancelled";
+  }
+}
+
+function terminalState(value: any) {
+  return ["success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted"].includes(value);
+}
+
+function boundedCode(value: any) {
+  return String(value || "unknown").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 160) || "unknown";
+}
+
+function record(value: any) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}

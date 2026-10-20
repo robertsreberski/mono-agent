@@ -20,13 +20,13 @@ vi.mock("@clack/prompts", () => ({
   confirm: mocks.confirm,
 }));
 
-vi.mock("../provider-setup.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../provider-setup.js")>();
+vi.mock("../providers/provider-setup.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/provider-setup.js")>();
   return { ...actual, executeProviderSetupPlan: mocks.executeProviderSetupPlan };
 });
 
-import { parseCliArgs } from "../cli-args.js";
-import { readApiKeyFromStdin } from "../cli-init-command.js";
+import { parseCliArgs } from "../cli/cli-args.js";
+import { readApiKeyFromStdin } from "../cli/commands/auth.js";
 import { runCli } from "../cli.js";
 
 const originalCwd = process.cwd();

@@ -26,27 +26,24 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelDriver } from "../channels/types.js";
-import { startMonoAgentApp } from "../app.js";
+import { startMonoAgentApp } from "../host/app.js";
 import {
   createAdapterSendProxy,
   safeAdapterSendProxyErrorMessage,
-} from "../adapter-send-proxy.js";
+} from "../delivery/send-tools/adapter-send-proxy.js";
 import {
-  ADAPTER_SEND_TOOLS_MCP_SERVER_NAME,
-  adapterSendToolsChildConfigFromEnv,
   adapterSendToolNames,
-  adapterSendToolsMcpEnv,
-  adapterSendToolsMcpServerSpec,
-  createAdapterSendToolsRuntimeExtension,
-  createAdapterSendToolsClients,
-  createAdapterSendToolsServer,
   isAdapterSendToolAllowed,
   resolveAdapterSendToolsSettings,
-} from "../adapter-send-tools.js";
-import type { AdapterSendToolsSettings } from "../adapter-send-tools.js";
-import { lookupProducingConversation, resolvePostedMessageIndexPath } from "../posted-message-index.js";
-import { startInteractionBridge } from "../interaction-bridge.js";
-import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
+} from "../delivery/send-tools/adapter-send-tools.js";
+import type { AdapterSendToolsSettings } from "../delivery/send-tools/types.js";
+import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME, adapterSendToolsChildConfigFromEnv, adapterSendToolsMcpEnv } from "../delivery/send-tools/child-config.js";
+import { adapterSendToolsMcpServerSpec, createAdapterSendToolsRuntimeExtension } from "../delivery/send-tools/host-extension.js";
+import { createAdapterSendToolsClients } from "../delivery/send-tools/clients.js";
+import { createAdapterSendToolsServer } from "../delivery/send-tools/server.js";
+import { lookupProducingConversation, resolvePostedMessageIndexPath } from "../delivery/posted-message-index.js";
+import { startInteractionBridge } from "../mcp/interaction-bridge.js";
+import { createSlackPostedReplyHistory } from "../delivery/posted-reply-history.js";
 
 let dir: string;
 
@@ -331,6 +328,35 @@ describe("adapter send tools MCP spec/env", () => {
     await result.settleCleanup?.();
     await expect(lstat(runOutputDir)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(result.settleCleanup?.()).resolves.toBeUndefined();
+  });
+
+  it("keeps output settlement independent when history capability revocation fails", async () => {
+    const release = vi.fn(() => { throw new Error("fictional revocation failure"); });
+    const extension = createAdapterSendToolsRuntimeExtension(
+      "/fictional/mono-agent.config.json", dir, ["SlackSendMessage", "TelegramSendFile"],
+      undefined, undefined, join(dir, "outbound"),
+      { issueDeliveryHistoryCapability: () => ({ url: "http://127.0.0.1:43124", token: "fictional-token", release }) },
+    );
+    const result = await extension({ runId: "fixture-revocation", request: { conversationId: "web:fixture" } });
+    const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as { env: Record<string, string> };
+    const output = spec.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DIR as string;
+    await expect(result.cleanup()).rejects.toThrow("fictional revocation failure");
+    expect((await lstat(output)).isDirectory()).toBe(true);
+    expect(release).toHaveBeenCalledOnce();
+    await result.settleCleanup?.();
+    await result.settleCleanup?.();
+    await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses an unsafe output run id before issuing delivery authority", async () => {
+    const issueDeliveryHistoryCapability = vi.fn();
+    const extension = createAdapterSendToolsRuntimeExtension(
+      "/fictional/mono-agent.config.json", dir, ["SlackSendMessage"],
+      undefined, undefined, join(dir, "outbound"), { issueDeliveryHistoryCapability },
+    );
+    await expect(extension({ runId: "../invalid", request: { conversationId: "web:fixture" } }))
+      .rejects.toThrow("run id is unsafe");
+    expect(issueDeliveryHistoryCapability).not.toHaveBeenCalled();
   });
 
   it("never deletes a replacement directory during adapter output cleanup", async () => {
@@ -2483,6 +2509,34 @@ describe("TelegramSendFile path upload", () => {
     expect(sendDocument).not.toHaveBeenCalled();
   });
 
+  it("refuses a single-link regular file outside the pinned run directory", async () => {
+    const runOutputDir = join(dir, "outbound", "fixture-containment");
+    await mkdir(runOutputDir, { recursive: true });
+    const rootStats = await lstat(runOutputDir);
+    const outside = join(dir, "fictional-outside.txt");
+    await writeFile(outside, "Fictional outside content.", "utf8");
+    const candidate = await lstat(outside);
+    expect(candidate.isFile()).toBe(true);
+    expect(candidate.nlink).toBe(1);
+    const sendDocument = vi.fn(async () => ({ message_id: 3, chat: { id: 42 } }));
+    const server = await createAdapterSendToolsServer({
+      telegram: {
+        botToken: "fictional-token", allowedChatIds: ["42"], allowAllChats: false,
+        tools: { send: false, file: true },
+        sendTools: { scope: "producing-conversation", pathScope: "run-output" },
+        producingConversationId: "telegram:42", runOutputDir,
+        runOutputIdentity: { dev: rootStats.dev, ino: rootStats.ino },
+      },
+    }, { telegram: { sendMessage: vi.fn(), sendDocument } });
+    await withMcpClient(server, async (client) => {
+      const refused = await client.callTool({ name: "TelegramSendFile", arguments: { kind: "document", path: outside } });
+      expect(refused.isError).toBe(true);
+      expect(refused.content).toEqual([{ type: "text", text:
+        "TelegramSendFile: path must be a regular file inside the current run output directory." }]);
+    });
+    expect(sendDocument).not.toHaveBeenCalled();
+  });
+
   it("pins strict path uploads to the current run directory object and returns one generic path error", async () => {
     const runOutputDir = join(dir, "outbound", "run-1");
     await mkdir(runOutputDir, { recursive: true });
@@ -2842,8 +2896,8 @@ describe("parent-interruption wake interaction suppression", () => {
     await writeFile(configPath, JSON.stringify({ tools: { allowedTools: ["AskUser"] } }));
     const bridge = await startInteractionBridge({ port: 0, askTimeoutMs: null });
     try {
-      const { adapterSendToolsRuntimeOptions } = await import("../app-controller-responder.js");
-      const { requestSuppressesInteractionTools } = await import("../adapter-send-tools.js");
+      const { adapterSendToolsRuntimeOptions } = await import("../host/app-controller-responder.js");
+      const { requestSuppressesInteractionTools } = await import("../delivery/send-tools/adapter-send-tools.js");
       const options = await adapterSendToolsRuntimeOptions({ env: {}, cwd: dir, configReadPath: configPath, interactionBridge: bridge } as never,
         { tools: { allowedTools: ["AskUser"], disallowedTools: [] }, artifacts: { dir: join(dir, "artifacts") } } as never);
       const extension = options.createExtension!(requestSuppressesInteractionTools);

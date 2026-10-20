@@ -1,9 +1,9 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { allowUnattendedMaintenanceStop, clearMaintenanceDeferral, describeMaintenanceActivity, MAINTENANCE_MAX_DEFERRAL_MS, readLaunchdMaintenanceActivityStatus, writeLaunchdMaintenanceActivityStatus, type LaunchdMaintenanceActivityStatus, type MaintenanceActivityRequest } from "../launchd-maintenance-activity.js";
-import { LAUNCHD_LOG_MAX_BYTES, type LaunchdLogInspection } from "../launchd-logs.js";
-import type { BackgroundLifecycleTarget } from "../launchd-lifecycle-lock.js";
+import { allowUnattendedMaintenanceStop, clearMaintenanceDeferral, describeMaintenanceActivity, MAINTENANCE_MAX_DEFERRAL_MS, readLaunchdMaintenanceActivityStatus, writeLaunchdMaintenanceActivityStatus, type LaunchdMaintenanceActivityStatus, type MaintenanceActivityRequest } from "../service/launchd/launchd-maintenance-activity.js";
+import { LAUNCHD_LOG_MAX_BYTES, type LaunchdLogInspection } from "../service/launchd/launchd-logs.js";
+import type { BackgroundLifecycleTarget } from "../service/launchd/launchd-lifecycle-lock.js";
 import type { WorkerActivityProbe } from "../durable-state/activity-snapshot.js";
 
 const target: BackgroundLifecycleTarget = { label: "com.mono-agent.policy-01234567", paths: { logDir: "/fictional/logs", stdoutPath: "/fictional/logs/out", stderrPath: "/fictional/logs/err", launchAgentsDir: "/fictional", plistPath: "/fictional/main.plist" } };

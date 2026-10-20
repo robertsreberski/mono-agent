@@ -6,11 +6,11 @@ import {
   WEB_LAUNCHD_LABEL,
   WEB_MAINTENANCE_LAUNCHD_LABEL,
   webMaintenanceCalendarMinute,
-} from "../launchd.js";
-import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "../launchd-logs.js";
-import { managedWebLogMaintenanceEnvironment } from "../managed-web-maintenance-environment.js";
-import { runWebLogMaintenanceCommand } from "../web-log-maintenance.js";
-import type { WebLogMaintenanceStatus } from "../web-log-maintenance-status.js";
+} from "../service/launchd/launchd.js";
+import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "../service/launchd/launchd-logs.js";
+import { managedWebLogMaintenanceEnvironment } from "../service/launchd/managed-web-maintenance-environment.js";
+import { runWebLogMaintenanceCommand } from "../service/web/web-log-maintenance.js";
+import type { WebLogMaintenanceStatus } from "../service/web/web-log-maintenance-status.js";
 
 const IDENTITY = `1:2:345:${"a".repeat(64)}`;
 const ENTRY = "/managed/runtime/dist/launchd-maintenance-entry.js";

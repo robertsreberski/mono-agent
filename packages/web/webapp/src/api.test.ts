@@ -1087,3 +1087,23 @@ describe("conversation usage validator", () => {
     expect(() => parseThreadUsage({ ...response, total: { tokens: { ...response.total.tokens, input: NaN } } })).toThrow();
   });
 });
+
+it("validates optional compaction usage before it can reach ContextDisplay", () => {
+  const base = { total: {}, byModel: [], computedAt: "2026-01-01T00:00:00Z" };
+  const compaction = { requests: 1, requestsWithUsage: 0, costPartial: true };
+  expect(parseThreadUsage({ ...base, compaction }).compaction).toEqual(compaction);
+  for (const invalid of [[], { ...compaction, costUsd: {} }, { ...compaction, requests: 0 },
+    { ...compaction, requests: 1.5 }, { ...compaction, requestsWithUsage: 2 }, { ...compaction, requestsWithUsage: -1 },
+    { ...compaction, requestsWithUsage: 0.5 }, { ...compaction, tokens: { input: 1.5, output: 0, cacheRead: 0, cacheWrite: 0 } }]) {
+    expect(() => parseThreadUsage({ ...base, compaction: invalid })).toThrow("Invalid conversation usage response");
+  }
+});
+
+it("normalizes unknown usage without treating unmarked omissions as free", () => {
+  const base = { byModel: [], computedAt: "2026-01-01T00:00:00Z" };
+  expect(parseThreadUsage({ ...base, total: { costUnknown: true, knownCostUsd: 2 } }).total)
+    .toMatchObject({ costUsd: null, knownCostUsd: 2 });
+  expect(parseThreadUsage({ ...base, total: {} }).total.costUsd).toBeUndefined();
+  expect(() => parseThreadUsage({ ...base, total: { costUnknown: false } })).toThrow();
+  expect(() => parseThreadUsage({ ...base, total: { costUnknown: true, knownCostUsd: -1 } })).toThrow();
+});

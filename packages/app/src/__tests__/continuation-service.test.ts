@@ -10,8 +10,8 @@ import {
   ContinuationSynthesisUnavailableError,
   startContinuationService,
   type ContinuationServiceHandle,
-} from "../continuation-service.js";
-import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
+} from "../continuations/continuation-service.js";
+import { canonicalContinuationJson, continuationDigest } from "../continuations/continuations.js";
 
 const services: ContinuationServiceHandle[] = [];
 
@@ -894,6 +894,43 @@ describe("durable continuation service", () => {
       status: "degraded",
       storage: { historyDegraded: 1 },
     });
+  });
+
+  it("aborts an admitted operator resolution before lease release and fences late history completion", async () => {
+    let historyStarted!: () => void;
+    let finishHistory!: () => void;
+    const started = new Promise<void>((resolve) => { historyStarted = resolve; });
+    const history = new Promise<void>((resolve) => { finishHistory = resolve; });
+    const deliver = vi.fn(async () => ({ kind: "unknown" as const, code: "ambiguous", reason: "Uncertain post" }));
+    const recordHistory = vi.fn(async () => {
+      historyStarted();
+      await history;
+      return { recorded: true as const };
+    });
+    const stateDir = fixtureDir("operator-stop-drain");
+    const service = await start({ stateDir, deliver, recordHistory });
+    const claim = await issueAndClaim(service, "operator-stop-task");
+    await putResult(claim, { final: true });
+    await service.processDue();
+    const resolving = expect(service.resolveUnknown(claim.continuationId, { kind: "delivered", deliveryId: "fictional:confirmed" })).rejects.toMatchObject({ name: "ContinuationServiceStoppingError" });
+    await started;
+    let stopped = false;
+    const firstStop = service.stop().then(() => { stopped = true; });
+    const secondStop = service.stop();
+    try {
+      await expect(service.health()).rejects.toThrow("Continuation service is stopped.");
+      await Promise.all([resolving, firstStop, secondStop]);
+      expect(stopped).toBe(true);
+    } finally {
+      finishHistory();
+      await Promise.all([resolving, firstStop, secondStop]);
+    }
+    expect(recordHistory).toHaveBeenCalledOnce();
+    expect(deliver).toHaveBeenCalledOnce();
+    const restarted = await start({ stateDir, deliver });
+    await expect(restarted.processDue()).resolves.toBe(0);
+    expect(deliver).toHaveBeenCalledOnce();
+    await expect(getStatus({ ...claim, statusUrl: `${restarted.url}/v1/continuations/${claim.continuationId}/status` })).resolves.toMatchObject({ state: "delivery_unknown" });
   });
 
   it("bounds active claims per origin and globally while preserving idempotent replay", async () => {

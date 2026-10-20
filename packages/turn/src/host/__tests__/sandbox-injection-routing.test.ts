@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // This deliberately crosses the package-private boundary: the regression only
 // becomes deciding once Pi's turn builder chooses request sandbox over its
 // configured ToolContext sandbox.
-// @ts-expect-error -- package-private JavaScript deciding sink has no public declaration.
 import { buildTurnTools } from "../../execution/pi/turn-runner.js";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "@mono-agent/turn/host/types";
