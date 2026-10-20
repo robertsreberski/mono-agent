@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/conversation",
-  "version": "0.25.1",
+  "version": "0.26.0",
   "description": "Composable agent request-to-runtime harness.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -35,9 +35,9 @@
     "test": "vitest run --no-file-parallelism"
   },
   "dependencies": {
-    "@mono-agent/contracts": "workspace:0.25.1",
-    "@mono-agent/observability": "workspace:0.25.1",
-    "@mono-agent/turn": "workspace:0.25.1"
+    "@mono-agent/contracts": "workspace:0.26.0",
+    "@mono-agent/observability": "workspace:0.26.0",
+    "@mono-agent/turn": "workspace:0.26.0"
   },
   "publishConfig": {
     "access": "public"

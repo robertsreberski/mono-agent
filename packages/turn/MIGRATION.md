@@ -998,16 +998,17 @@ from `@mono-agent/turn/ai`, not a private provider subpath.
 
 ## Version
 
-This guide describes the published `0.25.x` package contract. Keep
-`@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
-`@mono-agent/*` packages on the same lockstep version when upgrading. The paired
-runtime adapter no longer exposes `piReasoningSummary` in its run-options type.
+This guide describes the published `0.26.x` package contract. Keep
+`@mono-agent/turn` and the other `@mono-agent/*` packages on the same lockstep
+version when upgrading. `0.26.0` renames `@mono-agent/agent-runtime` to
+`@mono-agent/turn` and folds `@mono-agent/runtime-adapter` into
+`@mono-agent/turn/host`; the old package names receive no further releases.
 
 ---
 
 ## Appendix — Worklab shared-kernel adoption
 
-Worklab should consume the published `@mono-agent/agent-runtime` package rather
+Worklab should consume the published `@mono-agent/turn` package rather
 than vendor or rename its source. The products remain separate, but provider
 execution has one owner. Apply this downstream checklist when removing
 Worklab's runtime fork:
