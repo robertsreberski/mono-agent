@@ -143,6 +143,12 @@ from the filed `## X.Y.Z` section. Then stop. If consumer adoption was also requ
 start a separate exact-target workflow with `fleet-deploy` or that consumer's
 own runbook.
 
+When a release retires or renames a published package, add the old name and its
+replacement to `scripts/release/deprecate-retired.mjs`. After the replacement is
+verified on npm, dispatch the **npm deprecate retired** workflow once with
+`dry_run` enabled, review the list, then once with it disabled. It uses the
+release `NPM_TOKEN` and skips names that already carry the same message.
+
 Package deprecations must retain an explicit removal version/date or permanent
 retention decision in `docs/reference/deprecations.md`; remove due code, tests,
 and documentation together during the target release.
