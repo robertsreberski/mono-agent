@@ -1,0 +1,898 @@
+{
+  "version": 1,
+  "schema": "./console-api.v1.schema.json",
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/healthz",
+      "requestType": "NoBody",
+      "responseType": "ApiHealth",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/mcp-app-proxy",
+      "requestType": "NoBody",
+      "responseType": "Html",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "responseContentType": "text/html"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/bootstrap",
+      "requestType": "NoBody",
+      "responseType": "ApiBootstrap",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiBootstrapQuery"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/agents/:id",
+      "requestType": "ApiPatchAgent",
+      "responseType": "ApiAgent",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/agents/:id/run-defaults",
+      "requestType": "ApiPutRunDefaults",
+      "responseType": "ApiAgent",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/agents/:id/run-defaults",
+      "requestType": "NoBody",
+      "responseType": "ApiAgent",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/provider-usage/refresh",
+      "requestType": "ApiEmpty",
+      "responseType": "ApiProviderUsage",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "queryType": "ApiProviderQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/provider-usage",
+      "requestType": "NoBody",
+      "responseType": "ApiProviderUsage",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "queryType": "ApiProviderQuery"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/restart",
+      "requestType": "ApiEmpty",
+      "responseType": "ApiRestart",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/restart",
+      "requestType": "NoBody",
+      "responseType": "ApiLatestRestart",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/restart/:operationId",
+      "requestType": "NoBody",
+      "responseType": "ApiRestart",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/provider-auth",
+      "requestType": "NoBody",
+      "responseType": "ApiProviderAuth",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/provider-auth/sessions",
+      "requestType": "ApiAuthStart",
+      "responseType": "ApiAuthSession",
+      "successStatus": [
+        201
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/provider-auth/sessions/:sessionId",
+      "requestType": "NoBody",
+      "responseType": "ApiAuthSession",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/provider-auth/sessions/:sessionId/input",
+      "requestType": "ApiAuthInput",
+      "responseType": "ApiAuthSession",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/agents/:id/provider-auth/sessions/:sessionId",
+      "requestType": "NoBody",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/provider-auth/checks",
+      "requestType": "ApiAuthCheckStart",
+      "responseType": "ApiAuthCheck",
+      "successStatus": [
+        201
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/provider-auth/checks/:checkId",
+      "requestType": "NoBody",
+      "responseType": "ApiAuthCheck",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/agents/:id/provider-auth/checks/:checkId",
+      "requestType": "NoBody",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/skills",
+      "requestType": "NoBody",
+      "responseType": "ApiSkills",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/cron",
+      "requestType": "NoBody",
+      "responseType": "ApiCronOverview",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/cron/config-view",
+      "requestType": "NoBody",
+      "responseType": "ApiCronConfig",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/cron/jobs/:jobId/runs",
+      "requestType": "NoBody",
+      "responseType": "ApiCronRuns",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiCronRunsQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/models",
+      "requestType": "NoBody",
+      "responseType": "ApiModels",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiModelsQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/cron/jobs/:jobId/runs/:runId",
+      "requestType": "NoBody",
+      "responseType": "ApiCronRun",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/cron/jobs/:jobId/runs/:runId/reply-threads",
+      "requestType": "ApiCronReply",
+      "responseType": "ApiCronReceipt",
+      "successStatus": [
+        200,
+        201
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/cron/jobs/:jobId/run",
+      "requestType": "ApiCronAction",
+      "responseType": "ApiCronRunResult",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "resultStatuses": [
+        200,
+        428
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/cron/jobs/:jobId/effective-enabled",
+      "requestType": "ApiCronEnable",
+      "responseType": "ApiCronEnableResult",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "resultStatuses": [
+        200,
+        428
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads",
+      "requestType": "ApiCreateThread",
+      "responseType": "ApiThread",
+      "successStatus": [
+        201
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/tags",
+      "requestType": "NoBody",
+      "responseType": "ApiTags",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiSourceQuery"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tags",
+      "requestType": "ApiCreateTag",
+      "responseType": "ApiTag",
+      "successStatus": [
+        201
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/tags/:id",
+      "requestType": "ApiPatchTag",
+      "responseType": "ApiTag",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/tags/:id",
+      "requestType": "NoBody",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/projects",
+      "requestType": "NoBody",
+      "responseType": "ApiProjects",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiSourceQuery"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/projects",
+      "requestType": "ApiCreateProject",
+      "responseType": "ApiProject",
+      "successStatus": [
+        201
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/projects/:id",
+      "requestType": "ApiPatchProject",
+      "responseType": "ApiProject",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/projects/:id",
+      "requestType": "NoBody",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads",
+      "requestType": "NoBody",
+      "responseType": "ApiThreadPage",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiThreadsQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/search",
+      "requestType": "NoBody",
+      "responseType": "ApiSearch",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiSearchQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/active",
+      "requestType": "NoBody",
+      "responseType": "ApiActiveThreads",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:threadId/messages/:messageId/tool-calls/:toolCallId",
+      "requestType": "NoBody",
+      "responseType": "ApiToolCall",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:threadId/messages/:messageId/parts/:partId/restart",
+      "requestType": "ApiEmpty",
+      "responseType": "ApiRestart",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:threadId/messages/:messageId",
+      "requestType": "NoBody",
+      "responseType": "ApiMessage",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiFullQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:id/usage",
+      "requestType": "NoBody",
+      "responseType": "ApiThreadUsage",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:id",
+      "requestType": "NoBody",
+      "responseType": "ApiThreadDetail",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiFullQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:id/messages",
+      "requestType": "NoBody",
+      "responseType": "ApiMessagePage",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiMessagesQuery"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:threadId/messages/:messageId/reply-attachments/:partId/access",
+      "requestType": "NoBody",
+      "responseType": "ApiAttachmentAccess",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:threadId/messages/:messageId/reply-attachments/:partId/content",
+      "requestType": "NoBody",
+      "responseType": "Binary",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiCapabilityQuery",
+      "responseContentType": "*/*"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:threadId/messages/:messageId/mcp-apps/:partId/access",
+      "requestType": "NoBody",
+      "responseType": "ApiMcpAppAccess",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:threadId/messages/:messageId/mcp-apps/:partId",
+      "requestType": "NoBody",
+      "responseType": "ApiMcpAppResource",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiCapabilityQuery"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:threadId/messages/:messageId/mcp-apps/:partId/requests",
+      "requestType": "ApiMcpAppRequest",
+      "responseType": "ApiMcpAppResult",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "queryType": "ApiCapabilityQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:id/jobs/:jobId",
+      "requestType": "NoBody",
+      "responseType": "ApiJob",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:id/wake-schedule",
+      "requestType": "NoBody",
+      "responseType": "ApiWakeSchedule",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/wake-schedule",
+      "requestType": "ApiCreateWake",
+      "responseType": "ApiWakeSchedule",
+      "successStatus": [
+        201
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/threads/:id/wake-schedule",
+      "requestType": "ApiPutWake",
+      "responseType": "ApiWakeSchedule",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/threads/:id/wake-schedule",
+      "requestType": "ApiPatchWake",
+      "responseType": "ApiWakeSchedule",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/threads/:id/wake-schedule",
+      "requestType": "ApiDeleteWake",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/threads/:id",
+      "requestType": "ApiPatchThread",
+      "responseType": "ApiThread",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/threads/:id",
+      "requestType": "NoBody",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiDeleteThreadQuery"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/compact",
+      "requestType": "ApiEmpty",
+      "responseType": "ApiCompaction",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/turns",
+      "requestType": "ApiStartTurn",
+      "responseType": "ApiStartedTurn",
+      "successStatus": [
+        202
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/submissions",
+      "requestType": "ApiStartSubmission",
+      "responseType": "ApiSubmissionReceipt",
+      "successStatus": [
+        202
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "resultStatuses": [
+        202,
+        409
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:id/submissions/:submissionId",
+      "requestType": "NoBody",
+      "responseType": "ApiSubmissionReceipt",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/live-input",
+      "requestType": "ApiLiveInput",
+      "responseType": "ApiLiveInputReceipt",
+      "successStatus": [
+        202
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/cancel",
+      "requestType": "ApiCancel",
+      "responseType": "ApiCancelled",
+      "successStatus": [
+        202
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:id/ask",
+      "requestType": "NoBody",
+      "responseType": "ApiAsk",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/threads/:id/ask/:interactionId",
+      "requestType": "NoBody",
+      "responseType": "ApiAsk",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/threads/:id/ask",
+      "requestType": "ApiAnswerAsk",
+      "responseType": "ApiAskResult",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/push/subscriptions",
+      "requestType": "ApiPushSubscriptionInput",
+      "responseType": "ApiPushSubscription",
+      "successStatus": [
+        201
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/push/subscriptions/:id",
+      "requestType": "NoBody",
+      "responseType": "ApiPushSubscription",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "claimed"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/push/subscriptions/:id",
+      "requestType": "NoBody",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/push/subscriptions/:id/test",
+      "requestType": "NoBody",
+      "responseType": "ApiPushSubscription",
+      "successStatus": [
+        202
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/push/events/:eventId/ack",
+      "requestType": "ApiPushAck",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/uploads",
+      "requestType": "ApiCreateUpload",
+      "responseType": "ApiUpload",
+      "successStatus": [
+        201
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/uploads/:id/content",
+      "requestType": "Binary",
+      "responseType": "ApiUpload",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/uploads/:id",
+      "requestType": "NoBody",
+      "responseType": "NoBody",
+      "successStatus": [
+        204
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/uploads/:id/content",
+      "requestType": "NoBody",
+      "responseType": "Binary",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "responseContentType": "*/*"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events",
+      "requestType": "NoBody",
+      "responseType": "ApiEvent",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": false,
+      "originPolicy": "host",
+      "queryType": "ApiEventsQuery",
+      "responseContentType": "text/event-stream"
+    }
+  ]
+}

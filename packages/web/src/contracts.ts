@@ -1312,6 +1312,31 @@ export interface WebEvent {
   readonly payload?: unknown;
 }
 
+/** Payload vocabulary for the v1 SSE wire; omitted payloads are invalidation hints. */
+export interface WebEventPayloadMap {
+  readonly ready: { readonly version: typeof WEB_API_VERSION };
+  readonly "agents.changed": WebAgentsChangedPayload;
+  readonly "cron.changed": { readonly sourceId: string; readonly jobId?: string };
+  readonly "threads.changed": WebThreadChangedPayload | undefined;
+  readonly "thread.changed": WebThreadChangedPayload;
+  readonly "tags.changed": WebTagChangedPayload;
+  readonly "projects.changed": WebProjectChangedPayload;
+  readonly "message.changed": Omit<WebMessageChangedPayload, "deltaDeclined">;
+  readonly "message.delta": WebMessageDelta;
+  readonly "turn.changed": { readonly turn: WebRunState };
+  readonly "attachment.changed": { readonly attachment: WebAttachment } | { readonly attachmentId: string; readonly removed: true };
+  readonly "push.pending": { readonly eventId: string; readonly threadId: string; readonly ackToken: string };
+}
+
+/** Discriminated wire envelope. The legacy, permissive WebEvent remains unchanged. */
+export type WebTypedEvent = {
+  [K in WebEventType]: Omit<WebEvent, "type" | "payload"> & { readonly type: K } & (
+    undefined extends WebEventPayloadMap[K]
+      ? { readonly payload?: Exclude<WebEventPayloadMap[K], undefined> }
+      : { readonly payload: WebEventPayloadMap[K] }
+  );
+}[WebEventType];
+
 export interface CreateWebThreadInput {
   readonly sourceId: string;
   /** Explicit draft choice; absent inherits the web default and null selects config. */

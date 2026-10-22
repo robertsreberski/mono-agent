@@ -1,0 +1,354 @@
+[
+  {
+    "name": "opens a transcript with its first part",
+    "prev": [],
+    "next": [
+      {
+        "type": "text",
+        "text": "alpha"
+      }
+    ],
+    "ops": [
+      {
+        "op": "set",
+        "index": 0,
+        "part": {
+          "type": "text",
+          "text": "alpha"
+        }
+      }
+    ]
+  },
+  {
+    "name": "grows a text part by its tail",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      }
+    ],
+    "next": [
+      {
+        "type": "text",
+        "text": "alpha and more"
+      }
+    ],
+    "ops": [
+      {
+        "op": "append",
+        "index": 0,
+        "delta": " and more"
+      }
+    ]
+  },
+  {
+    "name": "grows a reasoning part by its tail",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "reasoning",
+        "text": "why"
+      }
+    ],
+    "next": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "reasoning",
+        "text": "why not"
+      }
+    ],
+    "ops": [
+      {
+        "op": "append",
+        "index": 1,
+        "delta": " not"
+      }
+    ]
+  },
+  {
+    "name": "replaces a tool call in the slot it already holds",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "t1",
+        "toolName": "Read",
+        "status": "running"
+      }
+    ],
+    "next": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "t1",
+        "toolName": "Read",
+        "result": "body",
+        "status": "complete"
+      }
+    ],
+    "ops": [
+      {
+        "op": "set",
+        "index": 1,
+        "part": {
+          "type": "tool-call",
+          "toolCallId": "t1",
+          "toolName": "Read",
+          "result": "body",
+          "status": "complete"
+        }
+      }
+    ]
+  },
+  {
+    "name": "sets every index the array gained",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      }
+    ],
+    "next": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "t1",
+        "toolName": "Read",
+        "result": "body",
+        "status": "complete"
+      },
+      {
+        "type": "error",
+        "code": "provider_unavailable",
+        "message": "boom"
+      }
+    ],
+    "ops": [
+      {
+        "op": "set",
+        "index": 1,
+        "part": {
+          "type": "tool-call",
+          "toolCallId": "t1",
+          "toolName": "Read",
+          "result": "body",
+          "status": "complete"
+        }
+      },
+      {
+        "op": "set",
+        "index": 2,
+        "part": {
+          "type": "error",
+          "code": "provider_unavailable",
+          "message": "boom"
+        }
+      }
+    ]
+  },
+  {
+    "name": "truncates before re-setting a spliced array",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "t1",
+        "toolName": "Read",
+        "result": "body",
+        "status": "complete"
+      },
+      {
+        "type": "reasoning",
+        "text": "why"
+      }
+    ],
+    "next": [
+      {
+        "type": "tool-call",
+        "toolCallId": "t1",
+        "toolName": "Read",
+        "result": "body",
+        "status": "complete"
+      },
+      {
+        "type": "reasoning",
+        "text": "why not"
+      }
+    ],
+    "ops": [
+      {
+        "op": "truncate",
+        "length": 2
+      },
+      {
+        "op": "set",
+        "index": 0,
+        "part": {
+          "type": "tool-call",
+          "toolCallId": "t1",
+          "toolName": "Read",
+          "result": "body",
+          "status": "complete"
+        }
+      },
+      {
+        "op": "set",
+        "index": 1,
+        "part": {
+          "type": "reasoning",
+          "text": "why not"
+        }
+      }
+    ]
+  },
+  {
+    "name": "truncates and says nothing else when the survivors did not move",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "reasoning",
+        "text": "why"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "t1",
+        "toolName": "Read",
+        "result": "body",
+        "status": "complete"
+      }
+    ],
+    "next": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "reasoning",
+        "text": "why"
+      }
+    ],
+    "ops": [
+      {
+        "op": "truncate",
+        "length": 2
+      }
+    ]
+  },
+  {
+    "name": "says nothing about an array nothing touched",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "t1",
+        "toolName": "Read",
+        "result": "body",
+        "status": "complete"
+      }
+    ],
+    "next": [
+      {
+        "type": "text",
+        "text": "alpha"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "t1",
+        "toolName": "Read",
+        "result": "body",
+        "status": "complete"
+      }
+    ],
+    "ops": []
+  },
+  {
+    "name": "says nothing about a text part that only lost its identity",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      }
+    ],
+    "next": [
+      {
+        "type": "text",
+        "text": "alpha"
+      }
+    ],
+    "ops": []
+  },
+  {
+    "name": "sets rather than appends when a part changed type",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      }
+    ],
+    "next": [
+      {
+        "type": "reasoning",
+        "text": "alpha"
+      }
+    ],
+    "ops": [
+      {
+        "op": "set",
+        "index": 0,
+        "part": {
+          "type": "reasoning",
+          "text": "alpha"
+        }
+      }
+    ]
+  },
+  {
+    "name": "sets rather than appends when text shrank",
+    "prev": [
+      {
+        "type": "text",
+        "text": "alpha"
+      }
+    ],
+    "next": [
+      {
+        "type": "text",
+        "text": "alp"
+      }
+    ],
+    "ops": [
+      {
+        "op": "set",
+        "index": 0,
+        "part": {
+          "type": "text",
+          "text": "alp"
+        }
+      }
+    ]
+  }
+]

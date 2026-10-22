@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": { "@mono-agent/contracts": ["../contracts/src/index.ts"] },
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/api-contract.ts", "scripts/contract/*.ts"]
+}

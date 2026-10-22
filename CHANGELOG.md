@@ -5,6 +5,8 @@
 - Fix MCP SDK security vulnerabilities. HTTP and SSE MCP clients now reject
   cross-origin redirects; configure the final endpoint URL for servers that
   redirect to another host or port.
+- Add a versioned console API schema, route manifest, typed SSE payload map and
+  validated JSON fixtures for native clients, pinned to `@mono-agent/web` versions.
 
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 

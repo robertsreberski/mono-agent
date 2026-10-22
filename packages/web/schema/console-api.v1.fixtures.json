@@ -1,0 +1,1658 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "name": "bootstrap",
+      "type": "ApiBootstrap",
+      "value": {
+        "version": 1,
+        "console": {
+          "hostName": "console.example.ts.net",
+          "displayName": "Example console",
+          "theme": "evergreen"
+        },
+        "push": {
+          "applicationServerKey": "fictional-public-key",
+          "keyFingerprint": "example",
+          "serviceWorkerVersion": 2
+        },
+        "agents": [
+          {
+            "sourceId": "agent-example",
+            "label": "Example agent",
+            "status": "online",
+            "pinned": false,
+            "supportsAttachments": true,
+            "runSettings": {
+              "config": {},
+              "override": null,
+              "effective": {
+                "modelSource": "config",
+                "effortSource": "config"
+              }
+            },
+            "updatedAt": "2030-01-02T12:00:00.000Z"
+          }
+        ],
+        "threads": [
+          {
+            "id": "thread-example",
+            "sourceId": "agent-example",
+            "title": "Morgan's sample project",
+            "archivedAt": null,
+            "projectId": null,
+            "tagIds": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1,
+            "messageCount": 3,
+            "runState": {
+              "status": "idle"
+            },
+            "canSend": true,
+            "canUpload": true,
+            "runModel": null,
+            "runEffort": null
+          }
+        ],
+        "threadsSourceId": "agent-example",
+        "threadsNextCursor": null,
+        "tags": [
+          {
+            "id": "tag-example",
+            "sourceId": "agent-example",
+            "name": "Examples",
+            "color": "blue",
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1
+          }
+        ],
+        "projects": [
+          {
+            "id": "project-example",
+            "sourceId": "agent-example",
+            "name": "Sample project",
+            "context": "Fictional examples only.",
+            "archivedAt": null,
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1,
+            "conversationCount": 1,
+            "runningCount": 0,
+            "monthCostUnknown": true,
+            "monthKnownUsd": 0.02
+          }
+        ],
+        "projectsSourceId": "agent-example",
+        "limits": {
+          "maxFileBytes": 20971520,
+          "maxFilesPerTurn": 10,
+          "maxTurnBytes": 67108864,
+          "accept": [
+            "text/plain"
+          ]
+        }
+      }
+    },
+    {
+      "name": "thread-page",
+      "type": "ApiThreadPage",
+      "value": {
+        "threads": [
+          {
+            "id": "thread-example",
+            "sourceId": "agent-example",
+            "title": "Morgan's sample project",
+            "archivedAt": null,
+            "projectId": null,
+            "tagIds": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1,
+            "messageCount": 3,
+            "runState": {
+              "status": "idle"
+            },
+            "canSend": true,
+            "canUpload": true,
+            "runModel": null,
+            "runEffort": null
+          }
+        ],
+        "nextCursor": "opaque-example-cursor"
+      }
+    },
+    {
+      "name": "thread-detail",
+      "type": "ApiThreadDetail",
+      "value": {
+        "thread": {
+          "id": "thread-example",
+          "sourceId": "agent-example",
+          "title": "Morgan's sample project",
+          "archivedAt": null,
+          "projectId": null,
+          "tagIds": [],
+          "createdAt": "2030-01-02T12:00:00.000Z",
+          "updatedAt": "2030-01-02T12:00:00.000Z",
+          "revision": 1,
+          "messageCount": 3,
+          "runState": {
+            "status": "idle"
+          },
+          "canSend": true,
+          "canUpload": true,
+          "runModel": null,
+          "runEffort": null
+        },
+        "messages": [
+          {
+            "id": "message-user",
+            "threadId": "thread-example",
+            "turnId": "turn-example",
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "Show an example."
+              }
+            ],
+            "attachments": [
+              {
+                "id": "upload-example",
+                "name": "example.txt",
+                "contentType": "text/plain",
+                "sizeBytes": 7,
+                "kind": "document",
+                "status": "committed",
+                "uploaded": true,
+                "createdAt": "2030-01-02T12:00:00.000Z"
+              }
+            ],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "finishedAt": "2030-01-02T12:00:00.000Z",
+            "status": "complete",
+            "seq": 1
+          },
+          {
+            "id": "message-example",
+            "threadId": "thread-example",
+            "turnId": "turn-example",
+            "role": "assistant",
+            "parts": [
+              {
+                "type": "text",
+                "text": "Hello, Morgan."
+              },
+              {
+                "type": "reasoning",
+                "text": "Consider the example."
+              },
+              {
+                "type": "reply_options",
+                "id": "options-example",
+                "options": [
+                  "Continue",
+                  "Stop"
+                ]
+              },
+              {
+                "type": "restart_proposal",
+                "id": "restart-example",
+                "reason": "Apply example settings.",
+                "restartable": {
+                  "state": "available"
+                }
+              },
+              {
+                "type": "tool-call",
+                "toolCallId": "call-example",
+                "toolName": "Read",
+                "args": {
+                  "path": "example.txt"
+                },
+                "result": "Example",
+                "status": "complete"
+              },
+              {
+                "type": "subagent",
+                "toolCallId": "delegate-example",
+                "name": "reviewer",
+                "status": "complete",
+                "calls": [],
+                "costUnknown": true,
+                "knownCostUsd": 0.01
+              },
+              {
+                "type": "process-job",
+                "job": {
+                  "schema": "mono-agent.process-job-projection.v1",
+                  "jobId": "job-example",
+                  "tool": "Exec",
+                  "state": "succeeded",
+                  "summary": "Build example",
+                  "origin": {
+                    "conversationId": "thread-example",
+                    "channel": "web",
+                    "runId": "turn-example",
+                    "historyBoundary": "message-example",
+                    "bucket": null
+                  },
+                  "timestamps": {
+                    "admittedAt": "2030-01-02T12:00:00.000Z",
+                    "queueDeadlineAt": "2030-01-02T12:00:00.000Z",
+                    "startedAt": "2030-01-02T12:00:00.000Z",
+                    "runtimeDeadlineAt": "2030-01-02T12:00:00.000Z",
+                    "completedAt": "2030-01-02T12:00:00.000Z"
+                  },
+                  "limits": {
+                    "maxRuntimeMs": 60000,
+                    "maxOutputBytes": 4096,
+                    "previewChars": 200,
+                    "chainDepth": 0
+                  },
+                  "output": {
+                    "stdoutBytes": 7,
+                    "stderrBytes": 0,
+                    "truncated": false,
+                    "preview": "Example",
+                    "stdoutRef": null,
+                    "stderrRef": null
+                  },
+                  "wake": {
+                    "state": "delivered",
+                    "attempts": 1,
+                    "deliveryKey": "wake-example",
+                    "lastAttemptAt": "2030-01-02T12:00:00.000Z"
+                  },
+                  "exitCode": 0,
+                  "signal": null,
+                  "durationMs": 10,
+                  "cancelRequested": false,
+                  "lastError": null
+                }
+              },
+              {
+                "type": "scheduled-wake",
+                "occurrenceId": "occurrence-example",
+                "scheduledAt": "2030-01-02T12:00:00.000Z",
+                "firedAt": "2030-01-02T12:00:00.000Z",
+                "timezone": "UTC",
+                "message": "Check the example."
+              },
+              {
+                "type": "process-job-wake",
+                "jobId": "job-example",
+                "deliveryKey": "wake-example",
+                "disposition": "steered"
+              },
+              {
+                "type": "steer",
+                "inputId": "input-example",
+                "messageId": "message-user",
+                "text": "Use the small example.",
+                "receivedAt": "2030-01-02T12:00:00.000Z"
+              },
+              {
+                "type": "telemetry",
+                "event": "runtime_warning",
+                "kind": "degraded_native_context",
+                "data": {
+                  "message": "Example warning"
+                }
+              },
+              {
+                "type": "error",
+                "code": "example_error",
+                "message": "Example unavailable."
+              },
+              {
+                "type": "attachment",
+                "id": "reply-example",
+                "artifactId": "artifact-example",
+                "name": "example.txt",
+                "mediaType": "text/plain",
+                "sizeBytes": 7,
+                "integrityId": "example-digest"
+              },
+              {
+                "type": "mcp_app",
+                "id": "app-example",
+                "invocationId": "invocation-example",
+                "connectionId": "connection-example",
+                "serverName": "example",
+                "toolName": "example",
+                "resourceUri": "ui://example/view",
+                "mediaType": "text/html;profile=mcp-app",
+                "protocolVersion": "2026-01-26"
+              },
+              {
+                "type": "failure",
+                "id": "failure-example",
+                "code": "artifact_missing",
+                "message": "Example artifact unavailable."
+              },
+              {
+                "type": "conversation-marker",
+                "at": "2030-01-02T12:00:00.000Z",
+                "kind": "model",
+                "before": {
+                  "model": null,
+                  "effort": null
+                },
+                "after": {
+                  "model": "example/model",
+                  "effort": "low"
+                }
+              },
+              {
+                "type": "conversation-marker",
+                "at": "2030-01-02T12:00:00.000Z",
+                "kind": "project",
+                "before": null,
+                "after": {
+                  "id": "project-example",
+                  "name": "Sample project",
+                  "color": "blue"
+                }
+              },
+              {
+                "type": "conversation-marker",
+                "at": "2030-01-02T12:00:00.000Z",
+                "kind": "resumed",
+                "previousMessageAt": "2030-01-02T12:00:00.000Z",
+                "idleMs": 60000
+              },
+              {
+                "type": "conversation-marker",
+                "at": "2030-01-02T12:00:00.000Z",
+                "kind": "compaction",
+                "operationId": "compact-example",
+                "trigger": "manual",
+                "status": "succeeded",
+                "tokensBefore": 200,
+                "tokensAfter": 100
+              },
+              {
+                "type": "cron-reply-context",
+                "schema": "mono-agent.web.cron-reply-context.v1",
+                "untrusted": true,
+                "source": {
+                  "sourceId": "agent-example",
+                  "jobId": "cron-example",
+                  "runId": "cron-run-example"
+                },
+                "run": {
+                  "sequence": 1,
+                  "trigger": "scheduled",
+                  "status": "succeeded",
+                  "scheduledAt": "2030-01-02T12:00:00.000Z",
+                  "orderedAt": "2030-01-02T12:00:00.000Z"
+                },
+                "snapshot": {
+                  "capturedAt": "2030-01-02T12:00:00.000Z",
+                  "kind": "summary",
+                  "sourceTruncationKnown": true,
+                  "sourceFieldsTruncated": [],
+                  "maxBytes": 4096,
+                  "originalErrorBytes": 0,
+                  "retainedErrorBytes": 0,
+                  "originalResultBytes": 7,
+                  "retainedResultBytes": 7,
+                  "truncatedFields": []
+                },
+                "result": {
+                  "text": "Example"
+                },
+                "failure": {},
+                "prefix": "Example cron result",
+                "rawJson": "{}",
+                "rawText": "Example cron result {}"
+              }
+            ],
+            "attachments": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "finishedAt": "2030-01-02T12:00:00.000Z",
+            "status": "complete",
+            "seq": 1
+          },
+          {
+            "id": "message-system",
+            "threadId": "thread-example",
+            "turnId": "turn-example",
+            "role": "system",
+            "parts": [
+              {
+                "type": "text",
+                "text": "Example notice."
+              }
+            ],
+            "attachments": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "finishedAt": "2030-01-02T12:00:00.000Z",
+            "status": "complete",
+            "seq": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "message-page",
+      "type": "ApiMessagePage",
+      "value": {
+        "messages": [
+          {
+            "id": "message-user",
+            "threadId": "thread-example",
+            "turnId": "turn-example",
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "Show an example."
+              }
+            ],
+            "attachments": [
+              {
+                "id": "upload-example",
+                "name": "example.txt",
+                "contentType": "text/plain",
+                "sizeBytes": 7,
+                "kind": "document",
+                "status": "committed",
+                "uploaded": true,
+                "createdAt": "2030-01-02T12:00:00.000Z"
+              }
+            ],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "finishedAt": "2030-01-02T12:00:00.000Z",
+            "status": "complete",
+            "seq": 1
+          },
+          {
+            "id": "message-example",
+            "threadId": "thread-example",
+            "turnId": "turn-example",
+            "role": "assistant",
+            "parts": [
+              {
+                "type": "text",
+                "text": "Hello, Morgan."
+              },
+              {
+                "type": "reasoning",
+                "text": "Consider the example."
+              },
+              {
+                "type": "reply_options",
+                "id": "options-example",
+                "options": [
+                  "Continue",
+                  "Stop"
+                ]
+              },
+              {
+                "type": "restart_proposal",
+                "id": "restart-example",
+                "reason": "Apply example settings.",
+                "restartable": {
+                  "state": "available"
+                }
+              },
+              {
+                "type": "tool-call",
+                "toolCallId": "call-example",
+                "toolName": "Read",
+                "args": {
+                  "path": "example.txt"
+                },
+                "result": "Example",
+                "status": "complete"
+              },
+              {
+                "type": "subagent",
+                "toolCallId": "delegate-example",
+                "name": "reviewer",
+                "status": "complete",
+                "calls": [],
+                "costUnknown": true,
+                "knownCostUsd": 0.01
+              },
+              {
+                "type": "process-job",
+                "job": {
+                  "schema": "mono-agent.process-job-projection.v1",
+                  "jobId": "job-example",
+                  "tool": "Exec",
+                  "state": "succeeded",
+                  "summary": "Build example",
+                  "origin": {
+                    "conversationId": "thread-example",
+                    "channel": "web",
+                    "runId": "turn-example",
+                    "historyBoundary": "message-example",
+                    "bucket": null
+                  },
+                  "timestamps": {
+                    "admittedAt": "2030-01-02T12:00:00.000Z",
+                    "queueDeadlineAt": "2030-01-02T12:00:00.000Z",
+                    "startedAt": "2030-01-02T12:00:00.000Z",
+                    "runtimeDeadlineAt": "2030-01-02T12:00:00.000Z",
+                    "completedAt": "2030-01-02T12:00:00.000Z"
+                  },
+                  "limits": {
+                    "maxRuntimeMs": 60000,
+                    "maxOutputBytes": 4096,
+                    "previewChars": 200,
+                    "chainDepth": 0
+                  },
+                  "output": {
+                    "stdoutBytes": 7,
+                    "stderrBytes": 0,
+                    "truncated": false,
+                    "preview": "Example",
+                    "stdoutRef": null,
+                    "stderrRef": null
+                  },
+                  "wake": {
+                    "state": "delivered",
+                    "attempts": 1,
+                    "deliveryKey": "wake-example",
+                    "lastAttemptAt": "2030-01-02T12:00:00.000Z"
+                  },
+                  "exitCode": 0,
+                  "signal": null,
+                  "durationMs": 10,
+                  "cancelRequested": false,
+                  "lastError": null
+                }
+              },
+              {
+                "type": "scheduled-wake",
+                "occurrenceId": "occurrence-example",
+                "scheduledAt": "2030-01-02T12:00:00.000Z",
+                "firedAt": "2030-01-02T12:00:00.000Z",
+                "timezone": "UTC",
+                "message": "Check the example."
+              },
+              {
+                "type": "process-job-wake",
+                "jobId": "job-example",
+                "deliveryKey": "wake-example",
+                "disposition": "steered"
+              },
+              {
+                "type": "steer",
+                "inputId": "input-example",
+                "messageId": "message-user",
+                "text": "Use the small example.",
+                "receivedAt": "2030-01-02T12:00:00.000Z"
+              },
+              {
+                "type": "telemetry",
+                "event": "runtime_warning",
+                "kind": "degraded_native_context",
+                "data": {
+                  "message": "Example warning"
+                }
+              },
+              {
+                "type": "error",
+                "code": "example_error",
+                "message": "Example unavailable."
+              },
+              {
+                "type": "attachment",
+                "id": "reply-example",
+                "artifactId": "artifact-example",
+                "name": "example.txt",
+                "mediaType": "text/plain",
+                "sizeBytes": 7,
+                "integrityId": "example-digest"
+              },
+              {
+                "type": "mcp_app",
+                "id": "app-example",
+                "invocationId": "invocation-example",
+                "connectionId": "connection-example",
+                "serverName": "example",
+                "toolName": "example",
+                "resourceUri": "ui://example/view",
+                "mediaType": "text/html;profile=mcp-app",
+                "protocolVersion": "2026-01-26"
+              },
+              {
+                "type": "failure",
+                "id": "failure-example",
+                "code": "artifact_missing",
+                "message": "Example artifact unavailable."
+              },
+              {
+                "type": "conversation-marker",
+                "at": "2030-01-02T12:00:00.000Z",
+                "kind": "model",
+                "before": {
+                  "model": null,
+                  "effort": null
+                },
+                "after": {
+                  "model": "example/model",
+                  "effort": "low"
+                }
+              },
+              {
+                "type": "conversation-marker",
+                "at": "2030-01-02T12:00:00.000Z",
+                "kind": "project",
+                "before": null,
+                "after": {
+                  "id": "project-example",
+                  "name": "Sample project",
+                  "color": "blue"
+                }
+              },
+              {
+                "type": "conversation-marker",
+                "at": "2030-01-02T12:00:00.000Z",
+                "kind": "resumed",
+                "previousMessageAt": "2030-01-02T12:00:00.000Z",
+                "idleMs": 60000
+              },
+              {
+                "type": "conversation-marker",
+                "at": "2030-01-02T12:00:00.000Z",
+                "kind": "compaction",
+                "operationId": "compact-example",
+                "trigger": "manual",
+                "status": "succeeded",
+                "tokensBefore": 200,
+                "tokensAfter": 100
+              },
+              {
+                "type": "cron-reply-context",
+                "schema": "mono-agent.web.cron-reply-context.v1",
+                "untrusted": true,
+                "source": {
+                  "sourceId": "agent-example",
+                  "jobId": "cron-example",
+                  "runId": "cron-run-example"
+                },
+                "run": {
+                  "sequence": 1,
+                  "trigger": "scheduled",
+                  "status": "succeeded",
+                  "scheduledAt": "2030-01-02T12:00:00.000Z",
+                  "orderedAt": "2030-01-02T12:00:00.000Z"
+                },
+                "snapshot": {
+                  "capturedAt": "2030-01-02T12:00:00.000Z",
+                  "kind": "summary",
+                  "sourceTruncationKnown": true,
+                  "sourceFieldsTruncated": [],
+                  "maxBytes": 4096,
+                  "originalErrorBytes": 0,
+                  "retainedErrorBytes": 0,
+                  "originalResultBytes": 7,
+                  "retainedResultBytes": 7,
+                  "truncatedFields": []
+                },
+                "result": {
+                  "text": "Example"
+                },
+                "failure": {},
+                "prefix": "Example cron result",
+                "rawJson": "{}",
+                "rawText": "Example cron result {}"
+              }
+            ],
+            "attachments": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "finishedAt": "2030-01-02T12:00:00.000Z",
+            "status": "complete",
+            "seq": 1
+          },
+          {
+            "id": "message-system",
+            "threadId": "thread-example",
+            "turnId": "turn-example",
+            "role": "system",
+            "parts": [
+              {
+                "type": "text",
+                "text": "Example notice."
+              }
+            ],
+            "attachments": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "finishedAt": "2030-01-02T12:00:00.000Z",
+            "status": "complete",
+            "seq": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "upload-create-request",
+      "type": "ApiCreateUpload",
+      "value": {
+        "name": "example.txt",
+        "contentType": "text/plain",
+        "sizeBytes": 7
+      }
+    },
+    {
+      "name": "upload-create",
+      "type": "ApiUpload",
+      "value": {
+        "attachment": {
+          "id": "upload-example",
+          "name": "example.txt",
+          "contentType": "text/plain",
+          "sizeBytes": 7,
+          "kind": "document",
+          "status": "staged",
+          "uploaded": false,
+          "createdAt": "2030-01-02T12:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "submission-request",
+      "type": "ApiStartSubmission",
+      "value": {
+        "submissionId": "submission-example",
+        "text": "Show an example.",
+        "attachmentIds": [
+          "upload-example"
+        ]
+      }
+    },
+    {
+      "name": "submission-receipt",
+      "type": "ApiSubmissionReceipt",
+      "value": {
+        "submissionId": "submission-example",
+        "threadId": "thread-example",
+        "outcome": "turn",
+        "messageId": "message-user",
+        "turnId": "turn-example",
+        "turn": {
+          "status": "idle"
+        }
+      }
+    },
+    {
+      "name": "ask",
+      "type": "ApiAsk",
+      "value": {
+        "ask": {
+          "interactionId": "ask-example",
+          "message": "Choose an example",
+          "questions": [
+            {
+              "id": "question-example",
+              "header": "Example",
+              "question": "Which size?",
+              "multiSelect": false,
+              "options": [
+                {
+                  "id": "small",
+                  "label": "Small",
+                  "description": "A short example"
+                }
+              ]
+            }
+          ],
+          "answers": [],
+          "activeQuestionIndex": 0,
+          "status": "pending",
+          "createdAt": "2030-01-02T12:00:00.000Z",
+          "expiresAt": null
+        }
+      }
+    },
+    {
+      "name": "ask-answer",
+      "type": "ApiAnswerAsk",
+      "value": {
+        "interactionId": "ask-example",
+        "answers": [
+          {
+            "questionId": "question-example",
+            "selectedOptionIds": [
+              "small"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "wake-schedule",
+      "type": "ApiWakeSchedule",
+      "value": {
+        "schedule": {
+          "scheduleId": "schedule-example",
+          "threadId": "thread-example",
+          "sourceId": "agent-example",
+          "definition": {
+            "kind": "weekly",
+            "timezone": "UTC",
+            "days": [
+              1,
+              3
+            ],
+            "times": [
+              "09:00"
+            ],
+            "message": "Review the example.",
+            "compactFirst": false
+          },
+          "state": "active",
+          "revision": 1,
+          "nextFireAt": "2030-01-07T09:00:00.000Z",
+          "lastOutcome": null,
+          "createdAt": "2030-01-02T12:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "project",
+      "type": "ApiProject",
+      "value": {
+        "project": {
+          "id": "project-example",
+          "sourceId": "agent-example",
+          "name": "Sample project",
+          "context": "Fictional examples only.",
+          "archivedAt": null,
+          "createdAt": "2030-01-02T12:00:00.000Z",
+          "updatedAt": "2030-01-02T12:00:00.000Z",
+          "revision": 1,
+          "conversationCount": 1,
+          "runningCount": 0,
+          "monthCostUnknown": true,
+          "monthKnownUsd": 0.02
+        }
+      }
+    },
+    {
+      "name": "tag",
+      "type": "ApiTag",
+      "value": {
+        "tag": {
+          "id": "tag-example",
+          "sourceId": "agent-example",
+          "name": "Examples",
+          "color": "blue",
+          "createdAt": "2030-01-02T12:00:00.000Z",
+          "updatedAt": "2030-01-02T12:00:00.000Z",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "name": "provider-usage",
+      "type": "ApiProviderUsage",
+      "value": {
+        "schema": "mono-agent.provider-usage.v1",
+        "providers": [
+          {
+            "providerId": "anthropic",
+            "label": "Claude",
+            "fetchedAt": "2030-01-02T12:00:00.000Z",
+            "stale": false,
+            "windows": [
+              {
+                "kind": "session",
+                "label": "Session",
+                "usedPercent": 25,
+                "periodMs": 18000000,
+                "resetsAt": "2030-01-02T15:00:00.000Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron-overview",
+      "type": "ApiCronOverview",
+      "value": {
+        "generatedAt": "2030-01-02T12:00:00.000Z",
+        "actionsEnabled": true,
+        "jobs": [
+          {
+            "jobId": "cron-example",
+            "conversationId": "cron-conversation-example",
+            "threadId": "cron-thread-example",
+            "expression": "0 9 * * 1",
+            "timezone": "UTC",
+            "configured": true,
+            "declaredEnabled": true,
+            "effectiveEnabled": true,
+            "health": "healthy"
+          }
+        ]
+      }
+    },
+    {
+      "name": "event-ready",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-0",
+        "version": 1,
+        "type": "ready",
+        "at": "2030-01-02T12:00:00.000Z",
+        "payload": {
+          "version": 1
+        }
+      },
+      "frame": "id: event-0\nevent: ready\ndata: {\"id\":\"event-0\",\"version\":1,\"type\":\"ready\",\"at\":\"2030-01-02T12:00:00.000Z\",\"payload\":{\"version\":1}}\n\n"
+    },
+    {
+      "name": "event-agents.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-1",
+        "version": 1,
+        "type": "agents.changed",
+        "at": "2030-01-02T12:00:00.000Z"
+      },
+      "frame": "id: event-1\nevent: agents.changed\ndata: {\"id\":\"event-1\",\"version\":1,\"type\":\"agents.changed\",\"at\":\"2030-01-02T12:00:00.000Z\"}\n\n"
+    },
+    {
+      "name": "event-cron.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-2",
+        "version": 1,
+        "type": "cron.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "sourceId": "agent-example"
+        }
+      },
+      "frame": "id: event-2\nevent: cron.changed\ndata: {\"id\":\"event-2\",\"version\":1,\"type\":\"cron.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"sourceId\":\"agent-example\"}}\n\n"
+    },
+    {
+      "name": "event-threads.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-3",
+        "version": 1,
+        "type": "threads.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "thread": {
+            "id": "thread-example",
+            "sourceId": "agent-example",
+            "title": "Morgan's sample project",
+            "archivedAt": null,
+            "projectId": null,
+            "tagIds": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1,
+            "messageCount": 3,
+            "runState": {
+              "status": "idle"
+            },
+            "canSend": true,
+            "canUpload": true,
+            "runModel": null,
+            "runEffort": null
+          }
+        }
+      },
+      "frame": "id: event-3\nevent: threads.changed\ndata: {\"id\":\"event-3\",\"version\":1,\"type\":\"threads.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"thread\":{\"id\":\"thread-example\",\"sourceId\":\"agent-example\",\"title\":\"Morgan's sample project\",\"archivedAt\":null,\"projectId\":null,\"tagIds\":[],\"createdAt\":\"2030-01-02T12:00:00.000Z\",\"updatedAt\":\"2030-01-02T12:00:00.000Z\",\"revision\":1,\"messageCount\":3,\"runState\":{\"status\":\"idle\"},\"canSend\":true,\"canUpload\":true,\"runModel\":null,\"runEffort\":null}}}\n\n"
+    },
+    {
+      "name": "event-thread.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-4",
+        "version": 1,
+        "type": "thread.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "thread": {
+            "id": "thread-example",
+            "sourceId": "agent-example",
+            "title": "Morgan's sample project",
+            "archivedAt": null,
+            "projectId": null,
+            "tagIds": [],
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1,
+            "messageCount": 3,
+            "runState": {
+              "status": "idle"
+            },
+            "canSend": true,
+            "canUpload": true,
+            "runModel": null,
+            "runEffort": null
+          }
+        }
+      },
+      "frame": "id: event-4\nevent: thread.changed\ndata: {\"id\":\"event-4\",\"version\":1,\"type\":\"thread.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"thread\":{\"id\":\"thread-example\",\"sourceId\":\"agent-example\",\"title\":\"Morgan's sample project\",\"archivedAt\":null,\"projectId\":null,\"tagIds\":[],\"createdAt\":\"2030-01-02T12:00:00.000Z\",\"updatedAt\":\"2030-01-02T12:00:00.000Z\",\"revision\":1,\"messageCount\":3,\"runState\":{\"status\":\"idle\"},\"canSend\":true,\"canUpload\":true,\"runModel\":null,\"runEffort\":null}}}\n\n"
+    },
+    {
+      "name": "event-tags.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-5",
+        "version": 1,
+        "type": "tags.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "tag": {
+            "id": "tag-example",
+            "sourceId": "agent-example",
+            "name": "Examples",
+            "color": "blue",
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1
+          }
+        }
+      },
+      "frame": "id: event-5\nevent: tags.changed\ndata: {\"id\":\"event-5\",\"version\":1,\"type\":\"tags.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"tag\":{\"id\":\"tag-example\",\"sourceId\":\"agent-example\",\"name\":\"Examples\",\"color\":\"blue\",\"createdAt\":\"2030-01-02T12:00:00.000Z\",\"updatedAt\":\"2030-01-02T12:00:00.000Z\",\"revision\":1}}}\n\n"
+    },
+    {
+      "name": "event-projects.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-6",
+        "version": 1,
+        "type": "projects.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "project": {
+            "id": "project-example",
+            "sourceId": "agent-example",
+            "name": "Sample project",
+            "context": "Fictional examples only.",
+            "archivedAt": null,
+            "createdAt": "2030-01-02T12:00:00.000Z",
+            "updatedAt": "2030-01-02T12:00:00.000Z",
+            "revision": 1,
+            "conversationCount": 1,
+            "runningCount": 0,
+            "monthCostUnknown": true,
+            "monthKnownUsd": 0.02
+          }
+        }
+      },
+      "frame": "id: event-6\nevent: projects.changed\ndata: {\"id\":\"event-6\",\"version\":1,\"type\":\"projects.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"project\":{\"id\":\"project-example\",\"sourceId\":\"agent-example\",\"name\":\"Sample project\",\"context\":\"Fictional examples only.\",\"archivedAt\":null,\"createdAt\":\"2030-01-02T12:00:00.000Z\",\"updatedAt\":\"2030-01-02T12:00:00.000Z\",\"revision\":1,\"conversationCount\":1,\"runningCount\":0,\"monthCostUnknown\":true,\"monthKnownUsd\":0.02}}}\n\n"
+    },
+    {
+      "name": "event-message.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-7",
+        "version": 1,
+        "type": "message.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "messageId": "message-example",
+          "updatedAt": "2030-01-02T12:00:00.000Z"
+        }
+      },
+      "frame": "id: event-7\nevent: message.changed\ndata: {\"id\":\"event-7\",\"version\":1,\"type\":\"message.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"messageId\":\"message-example\",\"updatedAt\":\"2030-01-02T12:00:00.000Z\"}}\n\n"
+    },
+    {
+      "name": "event-message.delta",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-8",
+        "version": 1,
+        "type": "message.delta",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "messageId": "message-example",
+          "baseSeq": 1,
+          "seq": 2,
+          "status": "complete",
+          "updatedAt": "2030-01-02T12:00:00.000Z",
+          "ops": [
+            {
+              "op": "append",
+              "index": 0,
+              "delta": " Welcome."
+            }
+          ]
+        }
+      },
+      "frame": "id: event-8\nevent: message.delta\ndata: {\"id\":\"event-8\",\"version\":1,\"type\":\"message.delta\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"messageId\":\"message-example\",\"baseSeq\":1,\"seq\":2,\"status\":\"complete\",\"updatedAt\":\"2030-01-02T12:00:00.000Z\",\"ops\":[{\"op\":\"append\",\"index\":0,\"delta\":\" Welcome.\"}]}}\n\n"
+    },
+    {
+      "name": "event-turn.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-9",
+        "version": 1,
+        "type": "turn.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "turn": {
+            "status": "idle"
+          }
+        }
+      },
+      "frame": "id: event-9\nevent: turn.changed\ndata: {\"id\":\"event-9\",\"version\":1,\"type\":\"turn.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"turn\":{\"status\":\"idle\"}}}\n\n"
+    },
+    {
+      "name": "event-attachment.changed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-10",
+        "version": 1,
+        "type": "attachment.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "attachment": {
+            "id": "upload-example",
+            "name": "example.txt",
+            "contentType": "text/plain",
+            "sizeBytes": 7,
+            "kind": "document",
+            "status": "staged",
+            "uploaded": false,
+            "createdAt": "2030-01-02T12:00:00.000Z"
+          }
+        }
+      },
+      "frame": "id: event-10\nevent: attachment.changed\ndata: {\"id\":\"event-10\",\"version\":1,\"type\":\"attachment.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"attachment\":{\"id\":\"upload-example\",\"name\":\"example.txt\",\"contentType\":\"text/plain\",\"sizeBytes\":7,\"kind\":\"document\",\"status\":\"staged\",\"uploaded\":false,\"createdAt\":\"2030-01-02T12:00:00.000Z\"}}}\n\n"
+    },
+    {
+      "name": "event-push.pending",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-11",
+        "version": 1,
+        "type": "push.pending",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "eventId": "push-example",
+          "threadId": "thread-example",
+          "ackToken": "fictional-ack-token"
+        }
+      },
+      "frame": "id: event-11\nevent: push.pending\ndata: {\"id\":\"event-11\",\"version\":1,\"type\":\"push.pending\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"eventId\":\"push-example\",\"threadId\":\"thread-example\",\"ackToken\":\"fictional-ack-token\"}}\n\n"
+    },
+    {
+      "name": "event-agent-pin",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-pin",
+        "version": 1,
+        "type": "agents.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "payload": {
+          "sourceId": "agent-example",
+          "pinned": true
+        }
+      },
+      "frame": "id: event-pin\nevent: agents.changed\ndata: {\"id\":\"event-pin\",\"version\":1,\"type\":\"agents.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"payload\":{\"sourceId\":\"agent-example\",\"pinned\":true}}\n\n"
+    },
+    {
+      "name": "event-tag-removed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-tag-remove",
+        "version": 1,
+        "type": "tags.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "payload": {
+          "tagId": "tag-example",
+          "removed": true
+        }
+      },
+      "frame": "id: event-tag-remove\nevent: tags.changed\ndata: {\"id\":\"event-tag-remove\",\"version\":1,\"type\":\"tags.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"payload\":{\"tagId\":\"tag-example\",\"removed\":true}}\n\n"
+    },
+    {
+      "name": "event-project-removed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-project-remove",
+        "version": 1,
+        "type": "projects.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "payload": {
+          "projectId": "project-example",
+          "removed": true
+        }
+      },
+      "frame": "id: event-project-remove\nevent: projects.changed\ndata: {\"id\":\"event-project-remove\",\"version\":1,\"type\":\"projects.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"payload\":{\"projectId\":\"project-example\",\"removed\":true}}\n\n"
+    },
+    {
+      "name": "event-attachment-removed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-upload-remove",
+        "version": 1,
+        "type": "attachment.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "payload": {
+          "attachmentId": "upload-example",
+          "removed": true
+        }
+      },
+      "frame": "id: event-upload-remove\nevent: attachment.changed\ndata: {\"id\":\"event-upload-remove\",\"version\":1,\"type\":\"attachment.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"payload\":{\"attachmentId\":\"upload-example\",\"removed\":true}}\n\n"
+    },
+    {
+      "name": "compaction",
+      "type": "ApiCompaction",
+      "value": {
+        "status": "skipped",
+        "operationId": "compaction-example",
+        "trigger": "manual",
+        "reason": "nothing_to_compact"
+      }
+    },
+    {
+      "name": "event-threads-invalidation",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-invalidate",
+        "version": 1,
+        "type": "threads.changed",
+        "at": "2030-01-02T12:00:00.000Z"
+      },
+      "frame": "id: event-invalidate\nevent: threads.changed\ndata: {\"id\":\"event-invalidate\",\"version\":1,\"type\":\"threads.changed\",\"at\":\"2030-01-02T12:00:00.000Z\"}\n\n"
+    },
+    {
+      "name": "event-thread-removed",
+      "type": "ApiEvent",
+      "value": {
+        "id": "event-remove",
+        "version": 1,
+        "type": "thread.changed",
+        "at": "2030-01-02T12:00:00.000Z",
+        "threadId": "thread-example",
+        "payload": {
+          "threadId": "thread-example",
+          "removed": true
+        }
+      },
+      "frame": "id: event-remove\nevent: thread.changed\ndata: {\"id\":\"event-remove\",\"version\":1,\"type\":\"thread.changed\",\"at\":\"2030-01-02T12:00:00.000Z\",\"threadId\":\"thread-example\",\"payload\":{\"threadId\":\"thread-example\",\"removed\":true}}\n\n"
+    },
+    {
+      "name": "message-delta-vectors",
+      "type": "ApiDeltaVectors",
+      "value": [
+        {
+          "name": "opens a transcript with its first part",
+          "prev": [],
+          "next": [
+            {
+              "type": "text",
+              "text": "alpha"
+            }
+          ],
+          "ops": [
+            {
+              "op": "set",
+              "index": 0,
+              "part": {
+                "type": "text",
+                "text": "alpha"
+              }
+            }
+          ]
+        },
+        {
+          "name": "grows a text part by its tail",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            }
+          ],
+          "next": [
+            {
+              "type": "text",
+              "text": "alpha and more"
+            }
+          ],
+          "ops": [
+            {
+              "op": "append",
+              "index": 0,
+              "delta": " and more"
+            }
+          ]
+        },
+        {
+          "name": "grows a reasoning part by its tail",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "reasoning",
+              "text": "why"
+            }
+          ],
+          "next": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "reasoning",
+              "text": "why not"
+            }
+          ],
+          "ops": [
+            {
+              "op": "append",
+              "index": 1,
+              "delta": " not"
+            }
+          ]
+        },
+        {
+          "name": "replaces a tool call in the slot it already holds",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "tool-call",
+              "toolCallId": "t1",
+              "toolName": "Read",
+              "status": "running"
+            }
+          ],
+          "next": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "tool-call",
+              "toolCallId": "t1",
+              "toolName": "Read",
+              "result": "body",
+              "status": "complete"
+            }
+          ],
+          "ops": [
+            {
+              "op": "set",
+              "index": 1,
+              "part": {
+                "type": "tool-call",
+                "toolCallId": "t1",
+                "toolName": "Read",
+                "result": "body",
+                "status": "complete"
+              }
+            }
+          ]
+        },
+        {
+          "name": "sets every index the array gained",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            }
+          ],
+          "next": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "tool-call",
+              "toolCallId": "t1",
+              "toolName": "Read",
+              "result": "body",
+              "status": "complete"
+            },
+            {
+              "type": "error",
+              "code": "provider_unavailable",
+              "message": "boom"
+            }
+          ],
+          "ops": [
+            {
+              "op": "set",
+              "index": 1,
+              "part": {
+                "type": "tool-call",
+                "toolCallId": "t1",
+                "toolName": "Read",
+                "result": "body",
+                "status": "complete"
+              }
+            },
+            {
+              "op": "set",
+              "index": 2,
+              "part": {
+                "type": "error",
+                "code": "provider_unavailable",
+                "message": "boom"
+              }
+            }
+          ]
+        },
+        {
+          "name": "truncates before re-setting a spliced array",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "tool-call",
+              "toolCallId": "t1",
+              "toolName": "Read",
+              "result": "body",
+              "status": "complete"
+            },
+            {
+              "type": "reasoning",
+              "text": "why"
+            }
+          ],
+          "next": [
+            {
+              "type": "tool-call",
+              "toolCallId": "t1",
+              "toolName": "Read",
+              "result": "body",
+              "status": "complete"
+            },
+            {
+              "type": "reasoning",
+              "text": "why not"
+            }
+          ],
+          "ops": [
+            {
+              "op": "truncate",
+              "length": 2
+            },
+            {
+              "op": "set",
+              "index": 0,
+              "part": {
+                "type": "tool-call",
+                "toolCallId": "t1",
+                "toolName": "Read",
+                "result": "body",
+                "status": "complete"
+              }
+            },
+            {
+              "op": "set",
+              "index": 1,
+              "part": {
+                "type": "reasoning",
+                "text": "why not"
+              }
+            }
+          ]
+        },
+        {
+          "name": "truncates and says nothing else when the survivors did not move",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "reasoning",
+              "text": "why"
+            },
+            {
+              "type": "tool-call",
+              "toolCallId": "t1",
+              "toolName": "Read",
+              "result": "body",
+              "status": "complete"
+            }
+          ],
+          "next": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "reasoning",
+              "text": "why"
+            }
+          ],
+          "ops": [
+            {
+              "op": "truncate",
+              "length": 2
+            }
+          ]
+        },
+        {
+          "name": "says nothing about an array nothing touched",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "tool-call",
+              "toolCallId": "t1",
+              "toolName": "Read",
+              "result": "body",
+              "status": "complete"
+            }
+          ],
+          "next": [
+            {
+              "type": "text",
+              "text": "alpha"
+            },
+            {
+              "type": "tool-call",
+              "toolCallId": "t1",
+              "toolName": "Read",
+              "result": "body",
+              "status": "complete"
+            }
+          ],
+          "ops": []
+        },
+        {
+          "name": "says nothing about a text part that only lost its identity",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            }
+          ],
+          "next": [
+            {
+              "type": "text",
+              "text": "alpha"
+            }
+          ],
+          "ops": []
+        },
+        {
+          "name": "sets rather than appends when a part changed type",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            }
+          ],
+          "next": [
+            {
+              "type": "reasoning",
+              "text": "alpha"
+            }
+          ],
+          "ops": [
+            {
+              "op": "set",
+              "index": 0,
+              "part": {
+                "type": "reasoning",
+                "text": "alpha"
+              }
+            }
+          ]
+        },
+        {
+          "name": "sets rather than appends when text shrank",
+          "prev": [
+            {
+              "type": "text",
+              "text": "alpha"
+            }
+          ],
+          "next": [
+            {
+              "type": "text",
+              "text": "alp"
+            }
+          ],
+          "ops": [
+            {
+              "op": "set",
+              "index": 0,
+              "part": {
+                "type": "text",
+                "text": "alp"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
