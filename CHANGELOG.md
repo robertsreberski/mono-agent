@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix MCP SDK security vulnerabilities. HTTP and SSE MCP clients now reject
+  cross-origin redirects; configure the final endpoint URL for servers that
+  redirect to another host or port.
+
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 
 - Keep totals unknown when any contributing cost is unpriced, and show known
