@@ -52,7 +52,7 @@
     "scan:core": "node scripts/core-scans/run.mjs all"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@mono-agent/app": "workspace:0.26.0",
     "@mono-agent/channel-a2a": "workspace:0.26.0",
     "@mono-agent/channel-messenger": "workspace:0.26.0",

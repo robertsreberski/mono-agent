@@ -22,6 +22,7 @@ overrides:
   smol-toml: 1.7.1
   source-map-js: 1.2.2
   svgo: 4.1.0
+  vite: 8.1.6
 
 # Pre-approve native/postinstall build scripts so install is non-interactive.
 onlyBuiltDependencies:
