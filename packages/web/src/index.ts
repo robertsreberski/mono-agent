@@ -116,6 +116,8 @@ export type {
   WebCronReplySnapshotKind,
   WebEvent,
   WebEventType,
+  WebEventPayloadMap,
+  WebTypedEvent,
   WebLiveInputReceipt,
   WebSubmissionReceipt,
   WebMessage,

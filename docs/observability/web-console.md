@@ -19,6 +19,9 @@ including previously loaded pages, so hidden history cannot reappear from an old
 browser cache. Offline cleanup preserves real text and rich replies even when an
 older server marked their cron metadata silent.
 
+For non-TypeScript clients, see [Building a native console client](./native-console-client.md)
+for the versioned JSON Schema, route manifest, SSE and golden fixtures.
+
 ## Start it once
 
 On Linux, use the [systemd user-service backend](./linux-services.md) for

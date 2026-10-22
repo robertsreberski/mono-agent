@@ -75,6 +75,7 @@ import {
   type WebCronReplyReceipt,
   type WebEvent,
   type WebEventType,
+  type WebEventPayloadMap,
   type WebLiveInputReceipt,
   type WebSubmissionReceipt,
   type WebMessage,
@@ -4300,7 +4301,7 @@ export class WebService {
     this.emit("message.delta", threadId, shaped);
   }
 
-  private emit(type: WebEventType, threadId?: string, payload?: unknown): void {
+  private emit<K extends WebEventType>(type: K, threadId?: string, payload?: WebEventPayloadMap[K]): void {
     if (this.stopped) return;
     const event = this.createEvent(type, threadId, payload);
     for (const subscriber of [...this.subscribers]) {
@@ -4312,7 +4313,7 @@ export class WebService {
     }
   }
 
-  private createEvent(type: WebEventType, threadId?: string, payload?: unknown): WebEvent {
+  private createEvent<K extends WebEventType>(type: K, threadId?: string, payload?: WebEventPayloadMap[K]): WebEvent {
     this.eventSequence += 1;
     return {
       id: `${Date.now()}-${this.eventSequence}`,

@@ -1015,6 +1015,11 @@ id discovery no longer reports, are left alone.
 
 ### Package structure
 
+- `src/api-contract.ts`: HTTP body/query wrapper DTOs referencing the domain contracts.
+- `scripts/contract/`: explicit route descriptors and fictional fixture inputs.
+- `scripts/generate-api-contract.mjs`: deterministic JSON Schema/manifest/fixture generation and drift checks.
+- `schema/`: published, version-pinnable v1 JSON artifacts.
+
 | Source area | Responsibility |
 | --- | --- |
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, hostname/display-name/theme bootstrap identity, per-console PWA manifest, uploads, SSE invalidations, host/origin checks, provider-auth no-store proxy routes, and static webapp serving. |
@@ -1076,6 +1081,13 @@ cannot open the affected conversations and older agents cannot open their
 process-job store.
 
 ### Start here
+
+Native/non-TypeScript clients can pin the four JSON artifacts exported under
+`@mono-agent/web/schema/`: `console-api.v1.schema.json`,
+`console-api.v1.routes.json`, `console-api.v1.fixtures.json` and
+`message-delta-vectors.v1.json`. See [Building a native console client](../../docs/observability/native-console-client.md)
+for transport semantics and validation. `WebEventPayloadMap` and `WebTypedEvent`
+add exhaustive payload typing; existing `WebEvent` stays source-compatible.
 
 | API | Use it for |
 | --- | --- |
@@ -1178,6 +1190,7 @@ WebCronReplyContextPart
 WebCronReplyReceipt
 WebCronReplySnapshotKind
 WebEvent
+WebEventPayloadMap
 WebEventType
 WebExternalConversation
 WebExternalConversationChannel
@@ -1231,6 +1244,7 @@ WebThreadSearchHit
 WebThreadSearchPage
 WebThreadTrigger
 WebThreadUsage
+WebTypedEvent
 WebUsageSlice
 WebUsageTokens
 WebWakeSchedule
@@ -1382,6 +1396,12 @@ import another operator surface or start the operator adapter server.
 - [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 
 ## Verification
+
+`pnpm --filter @mono-agent/web run generate:api-contract` refreshes the four
+committed JSON artifacts. `check:api-contract` validates fixtures and rejects
+stale output; it runs before package tests, including root recursive CI tests.
+The contract tests cover route registration/origin-policy parity, SSE envelopes,
+all rendered message part kinds and the shared delta conformance vectors.
 
 The frontend's standalone install does not depend on ancestor workspace
 `node_modules` or built framework packages. Both Vite configs resolve only

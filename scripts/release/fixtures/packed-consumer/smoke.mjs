@@ -63,7 +63,8 @@ if (packageNames.includes("@mono-agent/channel-telegram")) {
 }
 
 for (const specifier of importSpecifiers) {
-  if (specifier.endsWith("/package.json")) {
+  // JSON export subpaths (package.json, published schemas) need the JSON import attribute.
+  if (specifier.endsWith(".json")) {
     await import(specifier, { with: { type: "json" } });
   } else {
     await import(specifier);

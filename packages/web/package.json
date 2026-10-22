@@ -19,23 +19,30 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./schema/console-api.v1.schema.json": "./schema/console-api.v1.schema.json",
+    "./schema/console-api.v1.routes.json": "./schema/console-api.v1.routes.json",
+    "./schema/console-api.v1.fixtures.json": "./schema/console-api.v1.fixtures.json",
+    "./schema/message-delta-vectors.v1.json": "./schema/message-delta-vectors.v1.json"
   },
   "files": [
     "dist",
+    "schema",
     "webapp/dist",
     "README.md"
   ],
   "scripts": {
     "build": "pnpm --dir webapp install --frozen-lockfile && pnpm --dir webapp run build && tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --dir webapp run typecheck:storybook",
-    "test": "vitest run src/__tests__ && pnpm --dir webapp run test"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.contract.json && pnpm --dir webapp run typecheck:storybook",
+    "test": "pnpm run check:api-contract && vitest run src/__tests__ && pnpm --dir webapp run test",
+    "generate:api-contract": "node scripts/generate-api-contract.mjs",
+    "check:api-contract": "node scripts/generate-api-contract.mjs --check"
   },
   "dependencies": {
-    "@mono-agent/contracts": "workspace:0.26.0",
-    "@mono-agent/config": "workspace:0.26.0",
-    "@mono-agent/observability": "workspace:0.26.0",
     "@mono-agent/channel-operator": "workspace:0.26.0",
+    "@mono-agent/config": "workspace:0.26.0",
+    "@mono-agent/contracts": "workspace:0.26.0",
+    "@mono-agent/observability": "workspace:0.26.0",
     "compression": "1.8.2",
     "cron-parser": "5.5.0",
     "express": "^5.1.0",
@@ -47,6 +54,8 @@
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.2",
     "@types/web-push": "3.6.4",
+    "ajv": "^8.20.0",
+    "ts-json-schema-generator": "^2.9.0",
     "undici": "8.11.2"
   },
   "publishConfig": {
