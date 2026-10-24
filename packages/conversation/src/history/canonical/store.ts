@@ -1,6 +1,6 @@
 import { AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES, AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES, AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES, AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, AGENT_CONTEXT_IMPORT_VERSION, type AgentContextImportRequest, type AgentContextImportResult } from "@mono-agent/contracts";
 import { OwnedFileDamagedError, isOwned } from "@mono-agent/turn/engine/owned-fs.js";
-import type { RuntimeNativeEpochContext, RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage } from "@mono-agent/turn/host/types";
+import type { MonoRuntimeCompactionRecord, RuntimeDurableCompactionCheckpoint, RuntimeNativeEpochContext, RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage } from "@mono-agent/turn/host/types";
 import type { CanonicalContinuityState, ConversationHistoryContinuityParticipant, PreparedContinuityPublication } from "../continuity-contracts.js";
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
@@ -1197,7 +1197,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       const existing = await this.readRecord(normalizedId, heldLogical.rootIdentity);
       const historyVersion = historyRecordVersion(existing);
+      const assertCheckpointOwner = async () => { if (settled || prepared) throw new Error("Exclusive turn has settled."); await heldLogical.assertOwned(); };
       return {
+        ...(this.continuity ? {
+          prepareCompaction: async (checkpoint: RuntimeDurableCompactionCheckpoint) => await serialize(async () => await this.recordCheckpoint(normalizedId, heldLogical.rootIdentity, assertCheckpointOwner, `exclusive:${historyVersion}`, "prepare", checkpoint)),
+          recordCompaction: async (record: MonoRuntimeCompactionRecord) => await serialize(async () => { if (record.checkpoint) await this.recordCheckpoint(normalizedId, heldLogical.rootIdentity, assertCheckpointOwner, `exclusive:${historyVersion}`, "committed", record.checkpoint); }),
+        } : {}),
         history: existing.messages.map(cloneMessage),
         historyVersion,
         prepareCommit: async (messages) => await serialize(async () => {
@@ -1603,10 +1608,17 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (turnSettled || prepared) throw new Error("Prepared provider turn no longer owns executable storage");
         await held.assertOwned();
       }), existing.native ? structuredClone(existing.native) : undefined);
+      const checkpointOwner = async () => { if (turnSettled || prepared) throw new Error("Provider turn has settled."); await held.assertOwned(); };
+      const compactionRecording = this.continuity ? {
+        prepareCompaction: async (checkpoint: RuntimeDurableCompactionCheckpoint) => await serializeTurn(async () => await this.recordCheckpoint(normalizedId, rootIdentity, checkpointOwner, normalizedRunId, "prepare", checkpoint)),
+        recordCompaction: async (record: MonoRuntimeCompactionRecord) => await serializeTurn(async () => { if (record.checkpoint) await this.recordCheckpoint(normalizedId, rootIdentity, checkpointOwner, normalizedRunId, "committed", record.checkpoint); }),
+      } : {};
       return {
+        ...compactionRecording,
         ...(recovery.status === "clean" ? {} : { recovery }),
         ...(payload === undefined ? {} : { reconciliation: {
           get settlement() { return reconciliationSettlement; },
+          ...compactionRecording,
           descriptor: pendingTurnDescriptor(payload),
           admit: async (input: PendingTurnInput) => await serializeTurn(async () => {
             if (turnSettled || prepared) throw new Error("Cannot admit input to a settled provider turn.");
@@ -1894,6 +1906,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const canonicalVersion = historyRecordVersion(existing);
     // Native ownership/matching/repair/fsync happens OUTSIDE the root transaction.
     const evidence = await this.inspectProviderTurn({ descriptor: pendingTurnDescriptor(payload), purpose: payload.identity.purpose,
+      ...(this.continuity ? { includeContinuity: true } : {}),
       modelKey: payload.identity.modelKey, expectedInputs: payload.inputs.map((input) => ({ id: input.id, requestDigest: input.requestDigest, placement: input.placement })) });
     await held.assertOwned();
     if (existing.native !== undefined && evidence.status === "matched" && evidence.journalId !== currentJournal(existing.conversationId, existing.providerSession!.epoch).journalId) {
@@ -1902,6 +1915,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const current = await this.readRecord(payload.identity.historyBucket, held.rootIdentity, true);
     if (historyRecordVersion(current) !== canonicalVersion) throw new Error("Canonical history changed during native inspection.");
     let projection = projectTurnSettlement(payload, evidence, new Date(this.now()).toISOString());
+    if (this.continuity) {
+      const checkpoint = evidence.status === "matched" ? evidence.latestCompaction : undefined;
+      if (checkpoint && (evidence.status !== "matched" || checkpoint.journalId !== evidence.journalId || !evidence.operations.some((op) => op.operationId === checkpoint.operationId && op.type === "compaction"))) throw new Error("Durable summary checkpoint has contradictory native ownership.");
+      await this.continuity.recoverCheckpoint({ conversationId: payload.identity.historyBucket, assertOwned: () => held.assertOwned(),
+        current: this.continuityState(current), ...(checkpoint ? { evidence: checkpoint } : {}) });
+      if (checkpoint) await this.recordCheckpoint(payload.identity.historyBucket, held.rootIdentity, () => held.assertOwned(), payload.identity.turnId, "committed", checkpoint);
+    }
     if (projection.outcome === "completed" && payload.identity.purpose === "execution" && liveMessages?.length) {
       const users = liveMessages.slice(0, -1), assistant = liveMessages.at(-1)!;
       const projectedUsers = projection.messages.filter((message) => message.role === "user");
@@ -1957,6 +1977,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try { fence = await this.findDirtyFence(historyKey(conversationId), locksIdentity); }
     finally { await releaseSnapshot(); }
     if (fence?.kind !== "execution" && fence?.kind !== "compaction") {
+      await this.continuity?.recoverCheckpoint({ conversationId, assertOwned: () => held.assertOwned(), current: this.continuityState(canonical) });
       if (fence === undefined && this.inspectProviderTurn !== undefined) {
         const releaseCleanup = await this.acquireRootTransaction(held.rootIdentity);
         try { await this.removePendingConversation(historyKey(conversationId), held.rootIdentity, () => held.assertOwned()); }
@@ -2032,6 +2053,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     } finally {
       await releaseRoot();
     }
+  }
+
+  private async recordCheckpoint(conversationId: string, rootIdentity: DirectoryIdentity, assertOwned: () => Promise<void>,
+    runId: string, phase: "prepare" | "committed", evidence: RuntimeDurableCompactionCheckpoint): Promise<void> {
+    if (!this.continuity) return;
+    await assertOwned();
+    await this.continuity.checkpoint({ conversationId, assertOwned, runId, phase, evidence,
+      current: this.continuityState(await this.readRecord(conversationId, rootIdentity)) });
+    await this.continuityPhase(phase === "prepare" ? "summary_prepared" : "summary_committed");
   }
 
   private continuityState(record: LoadedHistoryRecord | CanonicalHistoryFile): CanonicalContinuityState {
@@ -3081,6 +3111,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             && committedRecord?.providerSession !== undefined
             && committedRecord.providerSession?.epoch === fence.epoch
           ) {
+            // A legacy/non-P2 provider has no surviving checkpoint proof after
+            // fail-closed retirement. Drop only its uncommitted cut preparation.
+            await this.continuity?.recoverCheckpoint({ conversationId: committedRecord.conversationId, assertOwned,
+              current: this.continuityState(committedRecord) });
             await this.rotateCommittedProviderEpoch(committedEntry, committedRecord, rootIdentity, assertOwned);
           }
         }

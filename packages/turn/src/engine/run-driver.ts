@@ -12,6 +12,7 @@ import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
 import { recordInterruption, repairInterruptedSession, isExecutableAssistant } from "./interruption.js";
 import { validateSessionTurn } from "./journal-schema.js";
+import { compactionEvidence } from "./compaction-evidence.js";
 import { createTurnBinding, digestTurnInput } from "./turn-evidence.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
 
@@ -37,7 +38,7 @@ export function createRunDriver(store: any, options: any): {
     cancelQueued(entryId: any): Promise<any>;
     abort(): Promise<void>;
     waitForIdle(): Promise<void>;
-    compact(): Promise<any>;
+    compact(options?: { continuityTrigger?: string }): Promise<any>;
     setTools(value: any): void;
     setMidRunCompactionArmed(value: any): void;
     setCompactionSettings(value: any): void;
@@ -196,10 +197,18 @@ export function createRunDriver(store: any, options: any): {
     }
     return merged;
   }
-  function publish(event: any): void {
+  function publish(event: any): void | Promise<void> {
+    const recording: Promise<unknown>[] = [];
     const envelope = { lane: "main", ...(runId ? { runId } : {}), ...event };
     for (const listener of listeners) {
-      try { listener(envelope); }
+      try {
+        const result = (listener as (event: any) => unknown)(envelope);
+        // Only the completed-cut boundary awaits asynchronous recorders. General
+        // provider/tool observers retain their synchronous delivery contract.
+        if (event.type === "compaction_end" && result && typeof (result as Promise<unknown>).then === "function") recording.push(Promise.resolve(result).catch((error) => {
+          for (const observer of listeners) { try { observer({ type: "handler_error", lane: "main", runId, eventType: event.type, error }); } catch { /* diagnostic */ } }
+        }));
+      }
       catch (error) {
         // Match the old harness event bus: a subscriber failure is diagnostic,
         // not a provider/tool failure or a reason to repeat an effect.
@@ -209,6 +218,7 @@ export function createRunDriver(store: any, options: any): {
         }
       }
     }
+    if (recording.length) return Promise.all(recording).then(() => {});
   }
   async function emit(event: any): Promise<void> {
     if (event.message?.[BACKOFF_ABORT]) return;
@@ -255,14 +265,15 @@ export function createRunDriver(store: any, options: any): {
     for (const q of selected) q.state = "selected";
     return selected.map((q: any) => q.message);
   }
-  async function performCompaction(reason: string = "manual"): Promise<any> {
+  async function performCompaction(reason: string = "manual", continuityTrigger?: string): Promise<any> {
     publish({ type: "compaction_start", reason });
     const context = { abortSignal: controller?.signal || new AbortController().signal };
     let entry: any, ended = false, operationOpened = false;
     const operationId = randomUUID();
     const own = await ensureTurn("manual-compaction");
     try {
-      await store.openOperation(operationId, modelConfig(), "compaction", reason); operationOpened = true;
+      const cause = options.continuityRecording ? `continuity:${continuityTrigger ?? (reason === "threshold" ? "mid-run" : "manual")}` : reason;
+      await store.openOperation(operationId, modelConfig(), "compaction", cause); operationOpened = true;
       let decision: any;
       const nativeEntries = await store.getEntries(); const repairs = await store.getRepairEntries();
       const projection = project(nativeEntries, { repairs, mode: "compaction" });
@@ -288,6 +299,14 @@ export function createRunDriver(store: any, options: any): {
       // prefix. Every later checkpoint must carry its coverage, not revert to v2.
       const inheritedCoverage = inherited?.coverage ?? nativeEntries.filter((prior: any) => prior.type === "compaction"
         && prior.checkpoint?.inheritedCoverage).at(-1)?.checkpoint.inheritedCoverage;
+      if (options.continuityRecording) {
+        const preparing = compactionEvidence({ type: "compaction", id: operationId, summary: decision.compaction.summary,
+          checkpoint: { summaryMessage: { summary: decision.compaction.summary }, coverage: { version: 1, sourceTipId: source.sourceTipId, sourceEntryCount: nativeEntries.length } } },
+          store.metadata.journalId, { operationId, cause, model: modelConfig().model });
+        await options.onCompactionPreparing(Object.freeze(preparing));
+        if (context.abortSignal.aborted) throw new Error("Pi compaction aborted during evidence preparation.");
+        if (store.tip !== source.sourceTipId) throw new Error("Compaction source advanced during evidence preparation.");
+      }
       const id = await store.appendCompaction(decision.compaction, inheritedCoverage, inheritedCoverage ? source : undefined);
       await barrier();
       entry = await store.getEntry(id);
@@ -295,7 +314,9 @@ export function createRunDriver(store: any, options: any): {
       // operation marker are both durable, never after summary generation alone.
       await store.closeOperation(operationId, "completed"); operationOpened = false; await barrier();
       ended = true;
-      publish({ type: "compaction_end", reason, status: "completed", entry, compaction: entry });
+      if (options.continuityRecording) entry = { ...entry, continuityCheckpoint: compactionEvidence(entry, store.metadata.journalId,
+        { operationId, cause, model: modelConfig().model }) };
+      await publish({ type: "compaction_end", reason, status: "completed", entry, compaction: entry });
       return entry;
     } catch (error) {
       ended = true;
@@ -456,10 +477,10 @@ export function createRunDriver(store: any, options: any): {
     },
     async abort(): Promise<void> { controller?.abort(); },
     async waitForIdle(): Promise<void> { await running; },
-    async compact(): Promise<any> {
+    async compact(compactOptions?: { continuityTrigger?: string }): Promise<any> {
       if (running || closed || turnEnding) throw new Error("mono-agent harness is closed, busy or ending its turn");
       controller = new AbortController();
-      running = performCompaction();
+      running = performCompaction("manual", compactOptions?.continuityTrigger);
       try { return await running; } finally { running = null; }
     },
     setTools(value: any): void { tools = wrapTools(value); },

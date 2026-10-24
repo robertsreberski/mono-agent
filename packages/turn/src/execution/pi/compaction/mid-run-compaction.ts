@@ -394,7 +394,8 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
    * than optimistically inside the hook. An aborted or declined task therefore
    * leaves nothing half-applied.
    */
-  function onCompactionEnd(event: any) {
+  let recordingTail = Promise.resolve();
+  async function onCompactionEnd(event: any) {
     if (!event || event.type !== "compaction_end" || event.reason !== "threshold") return;
     if (event.lane !== undefined && event.lane !== "main") return;
     const attempt = pending;
@@ -460,9 +461,15 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
       tokensBefore: decision.tokensBefore,
       tokensAfter: decision.tokensAfter,
     });
+    // The next attempt measures growth from the compacted transcript.
+    lastAttempt = {
+      transcriptTokens: Number(decision.tokensAfter) || 0,
+      assistantCount: assistantCountOf(decision.compaction?.retainedTail || []),
+    };
     if (typeof options.onCompactionRecorded === "function") {
       try {
-        options.onCompactionRecorded({
+        await options.onCompactionRecorded({
+          ...(event.entry?.continuityCheckpoint === undefined ? {} : { checkpoint: event.entry.continuityCheckpoint }),
           task_run_id: options.runId || null,
           trigger: MID_RUN_TRIGGER,
           provider_kind: "pi",
@@ -481,11 +488,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
         });
       }
     }
-    // The next attempt measures growth from the compacted transcript.
-    lastAttempt = {
-      transcriptTokens: Number(decision.tokensAfter) || 0,
-      assistantCount: assistantCountOf(decision.compaction?.retainedTail || []),
-    };
+
   }
 
   return {
@@ -520,7 +523,11 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
           keepRecentTokens: policy.keepRecentTokens,
         });
         removeHook = harness.on("session_before_compact", handler);
-        unsubscribe = harness.subscribe(onCompactionEnd);
+        unsubscribe = harness.subscribe((event: any) => {
+          const recording = onCompactionEnd(event);
+          recordingTail = Promise.all([recordingTail, recording]).then(() => {}, () => { runtimeWarnings?.push({ warning_kind: "context_compaction_record_failed", source: "pi", message: "Compaction completion handler failed." }); });
+          return recording;
+        });
         harness.setMidRunCompactionArmed(true);
         armed = true;
         diagnostics.context_compaction_midrun_armed = true;
@@ -544,6 +551,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
       disposed = true;
       pending = null;
       inFlight = false;
+      await recordingTail;
       if (!armed) return;
       armed = false;
       try { harness.setMidRunCompactionArmed(false); } catch { /* best-effort */ }

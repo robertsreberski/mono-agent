@@ -12,7 +12,9 @@
   abandons stale preparations with explicit coverage gaps, not permanent blocks.
   Reset purges evidence; retention never silently removes pinned references.
   Unfinished assistant accounts remain reconstruction data, not retrievable
-  completed-answer evidence.
+  completed-answer evidence. Portable summaries reserve storage before compaction;
+  awaitable recording and exact native-checkpoint recovery retain them without
+  repeating a summary call.
 
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures

@@ -1,3 +1,4 @@
+import type { RuntimeDurableCompactionCheckpoint } from "#turn/contracts/session";
 import type * as Policies from "#turn/contracts/policy";
 import type { RuntimeLiveInputEvidence } from "#turn/contracts/live-input";
 import type { RuntimeLiveInputUncertainty } from "#turn/contracts/live-input";
@@ -266,7 +267,7 @@ export interface RuntimeSessionTurnDetachedAttempt {
   readonly result: RuntimeResult;
 }
 /** Common request facts, narrowed by the host's authority and required inputs. */
-export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions, "sessionRecovery" | "sessionTurn" | "providerAttributionSessionId" | "processJobs" | "ownedForegroundProcesses" | "promptCacheDiagnostics" | "cacheRetention" | "toolLifecycleSink" | "effort" | "cwd" | "maxTurns" | "allowedTools" | "disallowedTools" | "mcpCallNoTotalTimeoutTools" | "liveInput" | "piToolExecutionMode">> & {
+export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions, "onCompactionPreparing" | "onCompactionRecorded" | "sessionRecovery" | "sessionTurn" | "providerAttributionSessionId" | "processJobs" | "ownedForegroundProcesses" | "promptCacheDiagnostics" | "cacheRetention" | "toolLifecycleSink" | "effort" | "cwd" | "maxTurns" | "allowedTools" | "disallowedTools" | "mcpCallNoTotalTimeoutTools" | "liveInput" | "piToolExecutionMode">> & {
   readonly model: RuntimeModelReference;
   readonly toolLimits?: RuntimeToolLimits;
   readonly compaction?: RuntimeCompactionPolicy;
@@ -498,6 +499,7 @@ export interface MonoRuntimeApprovalDecision {
 
 /** Payload passed to `onCompactionRecorded` after a successful context compaction (see execution/pi/run.js). */
 export interface MonoRuntimeCompactionRecord {
+  readonly checkpoint?: RuntimeDurableCompactionCheckpoint;
   readonly task_run_id: string | null;
   readonly trigger: string;
   readonly provider_kind: string;
@@ -523,7 +525,7 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
     readonly toolName: string;
     readonly toolUseId: string | null;
   }) => string | null;
-  readonly onCompactionRecorded?: (record: MonoRuntimeCompactionRecord) => void;
+  readonly onCompactionRecorded?: ((record: MonoRuntimeCompactionRecord) => void) | ((record: MonoRuntimeCompactionRecord) => Promise<void>);
   readonly onToolApprovalRequest?: (payload: MonoRuntimeApprovalRequest) => Promise<MonoRuntimeApprovalDecision>;
   readonly toolRiskTiers?: Readonly<Record<string, "low" | "medium" | "high">>;
   readonly approvalDefaultRiskTier?: "low" | "medium" | "high";

@@ -17,7 +17,7 @@ async function root() { const dir = await mkdtemp(join(tmpdir(), "continuity-can
 async function setup(dir: string) {
   const writer = await ToolHistoryWriter.open({ root: dir, continuityEnabled: true }); writers.add(writer);
   const reader = new ToolHistoryReader(dir);
-  const continuity = createContinuityParticipant({ writer, logicalConversationId: (id) => id,
+  const continuity = createContinuityParticipant({ writer, reader, logicalConversationId: (id) => id,
     protectedConversations: () => reader.protectedContinuityConversations() });
   return { writer, reader, continuity, store: createDurableHistoryStore({ root: dir, continuity }) };
 }
@@ -197,7 +197,7 @@ async function crash(dir: string, phase: string, pin = false): Promise<void> {
     import { createDurableHistoryStore, ToolHistoryWriter, ToolHistoryReader, createContinuityParticipant } from ${JSON.stringify(entry)};
     const root = process.argv[2], phase = process.argv[3], id = 'web:fiction';
     const writer = await ToolHistoryWriter.open({root,continuityEnabled:true}), reader = new ToolHistoryReader(root);
-    const continuity = createContinuityParticipant({writer,logicalConversationId:id=>id,protectedConversations:()=>reader.protectedContinuityConversations()});
+    const continuity = createContinuityParticipant({writer,reader,logicalConversationId:id=>id,protectedConversations:()=>reader.protectedContinuityConversations()});
     const store = createDurableHistoryStore({root,continuity,onContinuityPhase:async point=>{
       if(point!==phase)return;
       if(process.argv[4]==='pin') {

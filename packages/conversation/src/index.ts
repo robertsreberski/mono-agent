@@ -24,7 +24,7 @@ export type { ContinuityPublicationWriter } from "./tool-history/continuity-part
 export type { CanonicalContinuityState, ConversationHistoryContinuityParticipant, OwnedContinuityContext, OwnedContinuityMutation, PreparedContinuityPublication } from "./history/continuity-contracts.js";
 export { continuityGenerationId, continuityRecordId } from "./tool-history/continuity-storage.js";
 export { CONTINUITY_USER_VERSION } from "./tool-history/continuity-contracts.js";
-export type { ContinuityCoverageGap, ContinuityPreparation, ContinuityPublication, ContinuityReconciliation, ContinuityReconciliationResult, ContinuityRecordInput, ContinuityRecordMetadata, ContinuityReceipt, ContinuityPin, ContinuityScope, ContinuitySource, ContinuitySummary, ContinuitySearchInput, ContinuitySearchPage, ContinuityGetInput, ContinuityGetResult } from "./tool-history/continuity-contracts.js";
+export type { ContinuityCheckpointProof, ContinuityCoverageGap, ContinuityPreparation, ContinuityPublication, ContinuityReconciliation, ContinuityReconciliationResult, ContinuityRecordInput, ContinuityRecordMetadata, ContinuityReceipt, ContinuityPin, ContinuityScope, ContinuitySource, ContinuitySummary, ContinuitySearchInput, ContinuitySearchPage, ContinuityGetInput, ContinuityGetResult } from "./tool-history/continuity-contracts.js";
 export { CONVERSATION_HISTORY_VERSION_MAX_BYTES } from "./sessions/warm-store.js";
 export { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "./mcp-server-transport.js";
 export { ConversationHarnessFailureError, createConversationResponder } from "./responder.js";

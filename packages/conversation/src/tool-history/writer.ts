@@ -10,7 +10,7 @@ import { TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_PERSISTENCE_CEILING
 import { ToolHistoryWriterError } from "./errors.js";
 import { canonicalHistoryRoot, positiveInteger, requestedArtifactRoot } from "./paths.js";
 
-import { validateContinuityPreparation } from "./continuity-storage.js";
+import { validateContinuityPreparation, validateContinuityPublication } from "./continuity-storage.js";
 import type { ContinuityPin, ContinuityPreparation, ContinuityPublication, ContinuityReceipt, ContinuityReconciliation, ContinuityReconciliationResult } from "./continuity-contracts.js";
 
 const TOOL_HISTORY_RECONCILIATION_CEILING_MS = 10_000;
@@ -242,10 +242,12 @@ export class ToolHistoryWriter {
   }
 
   async commitContinuity(input: ContinuityPublication): Promise<void> {
+    validateContinuityPublication(input, true);
     await this.request("continuity_commit", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
   }
 
   async reconcileContinuity(input: ContinuityReconciliation): Promise<ContinuityReconciliationResult> {
+    validateContinuityPublication(input);
     return await this.request("continuity_reconcile", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS) as ContinuityReconciliationResult;
   }
 

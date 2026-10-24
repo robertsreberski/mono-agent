@@ -108,6 +108,14 @@ tool-lifecycle payloads share the existing 256 MiB retention budget. Live pins
 never silently expire: exhausted pinned capacity reports degraded continuity
 rather than invalidating references. Conversation reset and
 `restart --clear-sessions` remove this evidence with the existing sidecar.
+
+The latest portable summary is generated evidence, not a user instruction.
+Recording is awaited across manual, pre-turn, reactive and mid-run compaction.
+Its storage reservation happens before reduction; pinned-capacity exhaustion
+refuses that reduction. A prepared summary is invisible until the owner verifies
+the actual synced native checkpoint and its covered-source/retained-text digests.
+An interrupted acknowledgement can recover without another summary call.
+Canonical hashes alone cannot prove a native reduction occurred.
 `SessionHistory` keeps its prior-run tool-lifecycle contract.
 
 ## Web-only durable model-switch opt-in

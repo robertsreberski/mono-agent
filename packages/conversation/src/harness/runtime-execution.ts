@@ -38,6 +38,8 @@ interface HarnessRuntimeRouting {
   readonly recoveryRevision?: number | undefined;
   readonly turnRevision?: number | undefined;
   readonly reconciliation?: ConversationHistoryTurnReconciliation | undefined;
+  readonly prepareCompaction?: ConversationHistoryTurnReconciliation["prepareCompaction"] | undefined;
+  readonly recordCompaction?: ConversationHistoryTurnReconciliation["recordCompaction"] | undefined;
   readonly detachedHistoryOverride?: readonly HistoryMessage[];
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
@@ -306,6 +308,9 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       delete merged.nativeSessionProjection;
       delete merged.sessionTurn;
       delete merged.onSessionTurnDetached;
+      delete merged.onCompactionRecorded;
+      delete merged.onCompactionPreparing;
+      delete (merged as Record<string, unknown>).continuityRecording;
       delete merged.detachedContext;
       // Lifecycle persistence is host-owned and cannot be injected or replaced
       // by static/request extensions.
@@ -558,6 +563,10 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           } } }),
         };
       }
+      const prepareCompaction = routing.prepareCompaction ?? reconciliation?.prepareCompaction ?? (preparation && options.toolHistory?.continuityEnabled ? async (checkpoint: import("@mono-agent/turn/host/types").RuntimeDurableCompactionCheckpoint) => { if (!reconciliation?.prepareCompaction) throw new Error("Owned checkpoint preparation unavailable."); await reconciliation.prepareCompaction(checkpoint); } : undefined);
+      const recordCompaction = routing.recordCompaction ?? reconciliation?.recordCompaction ?? (preparation && options.toolHistory?.continuityEnabled ? async (record: import("@mono-agent/turn/host/types").MonoRuntimeCompactionRecord) => { if (!reconciliation?.recordCompaction) throw new Error("Owned checkpoint recording unavailable."); await reconciliation.recordCompaction(record); } : undefined);
+      if (prepareCompaction && recordCompaction) runtimeOptions = { ...runtimeOptions,
+        onCompactionPreparing: prepareCompaction, onCompactionRecorded: recordCompaction };
       if (preparation) {
         if (!runtime.prepareNativeDispatch) throw new Error("Native prepared dispatch capability unavailable");
         nativeLease = await runtime.prepareNativeDispatch(context.systemPrompt, runtimeOptions);

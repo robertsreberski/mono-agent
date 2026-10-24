@@ -1,3 +1,4 @@
+import type { RuntimeDurableCompactionCheckpoint } from "@mono-agent/turn/host/types";
 import type { HistoryMessage } from "../context/types.js";
 
 export interface CanonicalContinuityState {
@@ -24,6 +25,9 @@ export interface PreparedContinuityPublication {
 }
 /** Optional participant; absent means exactly the legacy path, including OFF mode. */
 export interface ConversationHistoryContinuityParticipant {
+  checkpoint(context: OwnedContinuityContext & { readonly current: CanonicalContinuityState; readonly runId: string;
+    readonly phase: "prepare" | "committed"; readonly evidence: RuntimeDurableCompactionCheckpoint }): Promise<void>;
+  recoverCheckpoint(context: OwnedContinuityContext & { readonly current: CanonicalContinuityState; readonly evidence?: RuntimeDurableCompactionCheckpoint }): Promise<void>;
   reconcile(context: OwnedContinuityContext & { readonly current: CanonicalContinuityState }): Promise<void>;
   prepare(mutation: OwnedContinuityMutation): Promise<PreparedContinuityPublication | undefined>;
   /** Pinned/prepared physical owners cannot be canonical retention victims. */

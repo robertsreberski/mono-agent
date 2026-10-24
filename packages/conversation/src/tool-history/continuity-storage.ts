@@ -32,7 +32,7 @@ export function createContinuitySchema(database: DatabaseSync): void {
       logical_id TEXT NOT NULL,
       before_digest TEXT,
       after_digest TEXT,
-      action TEXT NOT NULL CHECK(action IN ('publish','reset','delete')),
+      action TEXT NOT NULL CHECK(action IN ('publish','reset','delete','checkpoint')),
       preparation_digest TEXT NOT NULL,
       state TEXT NOT NULL CHECK(state IN ('prepared','committed','abandoned')),
       latest_summary_record_id TEXT,
@@ -43,7 +43,9 @@ export function createContinuitySchema(database: DatabaseSync): void {
       gap_reason TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS continuity_prepared_owner_idx
-      ON continuity_generations(conversation_id) WHERE state='prepared';
+      ON continuity_generations(conversation_id) WHERE state='prepared' AND action<>'checkpoint';
+    CREATE UNIQUE INDEX IF NOT EXISTS continuity_prepared_checkpoint_idx
+      ON continuity_generations(conversation_id) WHERE state='prepared' AND action='checkpoint';
     CREATE INDEX IF NOT EXISTS continuity_generation_scope_idx
       ON continuity_generations(logical_id,conversation_id,state);
     CREATE TABLE IF NOT EXISTS continuity_records (
@@ -119,7 +121,10 @@ export function prepareContinuity(
     if (existing.preparation_digest !== preparationDigest) fail("continuity_conflict", "Continuity generation changed after preparation.");
     return { generationId: input.generationId, status: existing.state as "prepared" | "committed", recordIds: input.records.map((r) => r.recordId) };
   }
-  if (database.prepare("SELECT 1 FROM continuity_generations WHERE conversation_id=? AND state='prepared'").get(input.conversationId)) {
+  // A purge may supersede a pending cut without prematurely destroying its
+  // recovery evidence. Other canonical mutations must first resolve that cut.
+  const pending = database.prepare("SELECT action FROM continuity_generations WHERE conversation_id=? AND state='prepared'").all(input.conversationId) as Record<string, unknown>[];
+  if (pending.some((row) => !((input.action === "reset" || input.action === "delete") && row.action === "checkpoint"))) {
     fail("continuity_reconciliation_required", "An unresolved continuity publication must be reconciled under its conversation owner before mutation.");
   }
   for (const { record } of records) {
@@ -127,9 +132,10 @@ export function prepareContinuity(
     if (prior) throw Object.assign(new ToolHistoryWriterError("continuity_conflict", "Continuity record identity conflicts with an existing generation."), { conflictingGenerationId: prior.generation_id });
   }
   const bytes = records.reduce((sum, row) => sum + row.retained.retainedBytes, 0);
-  if ((input.action ?? "publish") === "publish") reserve(bytes, records.length);
+  const capturesText = input.action === undefined || input.action === "publish" || input.action === "checkpoint";
+  if (capturesText) reserve(bytes, records.length);
   const count = Number((database.prepare("SELECT count(*) count FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).count);
-  if ((input.action ?? "publish") === "publish" && (continuityRetainedBytes(database) + toolRetainedBytes(database) + bytes > limits.maxBytes || count + records.length > limits.maxCompletedCalls)) {
+  if (capturesText && (continuityRetainedBytes(database) + toolRetainedBytes(database) + bytes > limits.maxBytes || count + records.length > limits.maxCompletedCalls)) {
     fail("continuity_quota_exhausted", "Continuity retention capacity is exhausted; continuity is degraded and new reductions must be declined.");
   }
   database.prepare("DELETE FROM metadata WHERE key='continuity_degraded'").run();
@@ -150,12 +156,11 @@ export function prepareContinuity(
 }
 
 export function commitContinuity(database: DatabaseSync, input: ContinuityPublication): void {
-  normalizeId(input.conversationId, "conversationId");
-  validateGenerationId(input.generationId);
-  validateDigest(input.canonicalDigest, true);
+  validateContinuityPublication(input, true);
   const row = database.prepare("SELECT * FROM continuity_generations WHERE generation_id=? AND conversation_id=?")
     .get(input.generationId, input.conversationId) as Record<string, unknown> | undefined;
   if (!row || row.after_digest !== input.canonicalDigest) fail("continuity_publication_mismatch", "Canonical publication does not match the prepared continuity target.");
+  if (row.action === "checkpoint" && !matchesCheckpoint(database, row.generation_id as string, input.checkpoint)) fail("continuity_publication_mismatch", "A checkpoint preparation requires exact durable native evidence.");
   if (row.state === "committed") return;
   if (row.state !== "prepared") fail("continuity_conflict", "Only a prepared continuity generation may commit.");
   if (row.action === "reset" || row.action === "delete") clearPhysicalContinuity(database, input.conversationId, input.generationId);
@@ -173,19 +178,26 @@ export function commitContinuity(database: DatabaseSync, input: ContinuityPublic
 }
 
 export function reconcileContinuity(database: DatabaseSync, input: ContinuityReconciliation): ContinuityReconciliationResult {
-  normalizeId(input.conversationId, "conversationId");
-  validateDigest(input.canonicalDigest, true);
-  const row = database.prepare("SELECT * FROM continuity_generations WHERE conversation_id=? AND state='prepared'")
+  validateContinuityPublication(input);
+  const row = database.prepare("SELECT * FROM continuity_generations WHERE conversation_id=? AND state='prepared' ORDER BY CASE WHEN action='checkpoint' THEN 1 ELSE 0 END LIMIT 1")
     .get(input.conversationId) as Record<string, unknown> | undefined;
   if (!row) return { status: "clean" };
   const generationId = row.generation_id as string;
+  if (row.action === "checkpoint" && row.after_digest === input.canonicalDigest) {
+    if (input.checkpoint === undefined) return { status: "checkpoint_pending", generationId };
+    if (matchesCheckpoint(database, generationId, input.checkpoint)) {
+      commitContinuity(database, { ...input, generationId });
+      return { status: "committed", generationId };
+    }
+    discardPreparation(database, generationId);
+    return { status: "discarded", generationId };
+  }
   if (row.after_digest === input.canonicalDigest) {
     commitContinuity(database, { ...input, generationId });
     return { status: "committed", generationId };
   }
   if (row.before_digest === input.canonicalDigest) {
-    database.prepare("DELETE FROM continuity_pins WHERE record_id IN (SELECT record_id FROM continuity_records WHERE generation_id=?)").run(generationId);
-    database.prepare("DELETE FROM continuity_generations WHERE generation_id=?").run(generationId);
+    discardPreparation(database, generationId);
     return { status: "discarded", generationId };
   }
   // Evidence is not authority. OFF-mode canonical mutation and offline repair
@@ -195,6 +207,19 @@ export function reconcileContinuity(database: DatabaseSync, input: ContinuityRec
   database.prepare("UPDATE continuity_generations SET state='abandoned',observed_digest=?,abandoned_at_ms=?,gap_reason='canonical_advanced_past_preparation' WHERE generation_id=?")
     .run(input.canonicalDigest, Date.now(), generationId);
   return { status: "abandoned", generationId };
+}
+
+function discardPreparation(database: DatabaseSync, generationId: string): void {
+  database.prepare("DELETE FROM continuity_pins WHERE record_id IN (SELECT record_id FROM continuity_records WHERE generation_id=?)").run(generationId);
+  database.prepare("DELETE FROM continuity_generations WHERE generation_id=?").run(generationId);
+}
+function matchesCheckpoint(database: DatabaseSync, generationId: string, proof: ContinuityPublication["checkpoint"]): boolean {
+  if (proof?.status !== "published") return false;
+  const records = database.prepare("SELECT source_json,summary_json,text_sha256 FROM continuity_records WHERE generation_id=?").all(generationId) as Record<string, unknown>[];
+  return records.length === 1 && records.every((record) => {
+    const source = JSON.parse(record.source_json as string), summary = JSON.parse(record.summary_json as string);
+    return source.journalId === proof.journalId && source.operationId === proof.operationId && summary.coverage.sourceDigest === proof.sourceDigest && record.text_sha256 === proof.summaryDigest;
+  });
 }
 
 export function pinContinuity(database: DatabaseSync, pin: ContinuityPin): void {
@@ -279,6 +304,18 @@ export function readContinuityStats(database: DatabaseSync): ContinuityStats {
     degraded: database.prepare("SELECT 1 FROM metadata WHERE key='continuity_degraded'").get() !== undefined };
 }
 
+export function validateContinuityPublication(input: ContinuityReconciliation | ContinuityPublication, commit = false): void {
+  if (Object.keys(input).some((key) => !["conversationId", "canonicalDigest", "checkpoint", ...(commit ? ["generationId"] : [])].includes(key))) fail("continuity_invalid_preparation", "Unsupported publication fields.");
+  normalizeId(input.conversationId, "conversationId"); validateDigest(input.canonicalDigest, true);
+  if (commit) validateGenerationId((input as ContinuityPublication).generationId);
+  const proof = input.checkpoint;
+  if (proof === undefined) return;
+  if (!proof || !["absent", "published"].includes(proof.status)) fail("continuity_invalid_preparation", "Invalid checkpoint proof.");
+  const keys = proof.status === "absent" ? ["status"] : ["status", "journalId", "operationId", "sourceDigest", "summaryDigest"];
+  if (Object.keys(proof).some((key) => !keys.includes(key))) fail("continuity_invalid_preparation", "Unsupported checkpoint proof fields.");
+  if (proof.status === "published") { safeMetadata(proof.journalId); safeMetadata(proof.operationId); validateDigest(proof.sourceDigest); validateDigest(proof.summaryDigest); }
+}
+
 export function validateContinuityPreparation(input: ContinuityPreparation): void {
   if (Object.keys(input).some((k) => !["generationId", "conversationId", "logicalConversationId", "beforeDigest", "afterDigest", "records", "latestSummaryRecordId", "action"].includes(k))) fail("continuity_invalid_preparation", "Unsupported continuity preparation fields.");
   validateGenerationId(input.generationId);
@@ -286,10 +323,11 @@ export function validateContinuityPreparation(input: ContinuityPreparation): voi
   normalizeId(input.logicalConversationId, "logicalConversationId");
   validateDigest(input.beforeDigest, true);
   validateDigest(input.afterDigest, true);
-  if (!["publish", "reset", "delete"].includes(input.action ?? "publish") || (input.afterDigest === null) !== (input.action === "delete")) fail("continuity_invalid_preparation", "Invalid continuity publication action/target.");
-  if (input.beforeDigest === input.afterDigest) fail("continuity_invalid_preparation", "Continuity publication must identify a distinct canonical target.");
+  if (!["publish", "reset", "delete", "checkpoint"].includes(input.action ?? "publish") || (input.action !== "checkpoint" && (input.afterDigest === null) !== (input.action === "delete"))) fail("continuity_invalid_preparation", "Invalid continuity publication action/target.");
+  if (input.action !== "checkpoint" && input.beforeDigest === input.afterDigest) fail("continuity_invalid_preparation", "Continuity publication must identify a distinct canonical target.");
   if (!Array.isArray(input.records) || input.records.length > CONTINUITY_GENERATION_MAX_RECORDS) fail("continuity_invalid_preparation", "Continuity generation exceeds the record bound.");
   if ((input.action === "reset" || input.action === "delete") && (input.records.length || input.latestSummaryRecordId !== undefined)) fail("continuity_invalid_preparation", "Reset/deletion cannot introduce retained text.");
+  if (input.action === "checkpoint" && (input.beforeDigest !== input.afterDigest || input.records.length !== 1 || input.records[0]?.kind !== "summary")) fail("continuity_invalid_preparation", "Checkpoint preparation must preserve canonical state and contain one summary.");
   let bytes = 0;
   for (const record of input.records) {
     validateRecord(record);

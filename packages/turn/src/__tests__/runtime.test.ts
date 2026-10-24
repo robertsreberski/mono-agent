@@ -260,6 +260,22 @@ describe("createRuntime", () => {
     });
   });
 
+  it("composes and awaits owned plus host compaction recording without accepting a forged recording flag", async () => {
+    const order: string[] = [];
+    executeMock.mockImplementation(async (_system, request) => {
+      expect(request.continuityRecording).toBe(true);
+      await request.onCompactionRecorded({ summary: "Fictional durable summary." });
+      return { text: "ok" };
+    });
+    const runtime = createRuntime({ onCompactionRecorded: async () => { await Promise.resolve(); order.push("host"); } });
+    await runtime.run("sys", { model: modelRef("faux", "m"), onCompactionPreparing: async () => {},
+      onCompactionRecorded: async () => { await Promise.resolve(); order.push("owned"); } });
+    expect(order).toEqual(["owned", "host"]);
+    executeMock.mockResolvedValue({ text: "ok" });
+    await runtime.run("sys", { model: modelRef("faux", "m"), continuityRecording: true });
+    expect(executeMock.mock.calls.at(-1)![1]).not.toHaveProperty("continuityRecording");
+  });
+
   it("run() lets a run-bound artifact sink replace the host default", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const hostSink = () => null;

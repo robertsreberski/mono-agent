@@ -339,10 +339,13 @@ export class ConversationHarnessImpl implements ConversationHarness {
       if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       const manualRuntimeOptions = mergeRuntimeOptions(this.options.runtimeOptions, endpoint);
       delete manualRuntimeOptions.onSessionTurnDetached;
+      delete manualRuntimeOptions.onCompactionRecorded;
+      delete manualRuntimeOptions.onCompactionPreparing;
       delete manualRuntimeOptions.sessionRecovery;
       const compactionReconciliation = providerTurn.reconciliation;
       const run = runtime.run(MANUAL_COMPACTION_SYSTEM_PROMPT, {
         ...manualRuntimeOptions,
+        ...(providerTurn.prepareCompaction && providerTurn.recordCompaction ? { onCompactionPreparing: providerTurn.prepareCompaction, onCompactionRecorded: providerTurn.recordCompaction } : {}),
         ...(compactionReconciliation === undefined ? {} : { onSessionTurnDetached: async (attempt) => {
           assertDetachedTurnDescriptor(attempt.descriptor, compactionReconciliation.descriptor);
           await compactionReconciliation.claim("detached");
@@ -1439,6 +1442,8 @@ export class ConversationHarnessImpl implements ConversationHarness {
           providerHistoryTurn === undefined ? undefined : this.options.sessionsRoot,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
+            prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
+            recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
             ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),
             ...(coordinatedProviderAttemptEligibleForSync ? { turnRevision: coordinatedProviderSessionRevision } : {}),
             ...(this.options.historyStore?.readProviderSessionBinding !== undefined && coordinatedProviderAttemptEligibleForSync
@@ -1514,6 +1519,8 @@ export class ConversationHarnessImpl implements ConversationHarness {
           undefined,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
+            prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
+            recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
             ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),
             onRuntimeSelected: (key) => { activeAttemptModelKey = key; } },
           prepared.skillDisclosureEntries,

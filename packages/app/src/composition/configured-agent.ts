@@ -371,6 +371,7 @@ async function createConfiguredConversationHarnessInternal(
               if (owner.sessionTurnReconciliation !== "v1" || owner.reconcileSessionTurn === undefined) throw new Error("Session owner cannot reconcile native turn evidence.");
               const selected = parseMonoRuntimeModelReference(request.modelKey);
               return await owner.reconcileSessionTurn({ descriptor: request.descriptor, purpose: request.purpose,
+                ...(request.includeContinuity ? { includeContinuity: true } : {}),
                 expectedInputs: request.expectedInputs, sessionsRoot: sessionsRoot,
                 expectedModel: { provider: selected.provider, id: selected.model } });
             },

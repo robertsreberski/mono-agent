@@ -48,18 +48,22 @@ export interface ContinuityPreparation {
   /** Digest of the validated canonical representation; null means absent. */
   readonly beforeDigest: string | null;
   readonly afterDigest: string | null;
-  readonly action?: "publish" | "reset" | "delete";
+  readonly action?: "publish" | "reset" | "delete" | "checkpoint";
   readonly records: readonly ContinuityRecordInput[];
   readonly latestSummaryRecordId?: string;
 }
 
+export type ContinuityCheckpointProof = { readonly status: "published"; readonly journalId: string; readonly operationId: string; readonly sourceDigest: string; readonly summaryDigest: string } | { readonly status: "absent" };
+
 export interface ContinuityPublication {
+  readonly checkpoint?: ContinuityCheckpointProof;
   readonly conversationId: string;
   readonly generationId: string;
   readonly canonicalDigest: string | null;
 }
 
 export interface ContinuityReconciliation {
+  readonly checkpoint?: ContinuityCheckpointProof;
   readonly conversationId: string;
   readonly canonicalDigest: string | null;
 }
@@ -71,7 +75,7 @@ export interface ContinuityReceipt {
 }
 
 export interface ContinuityReconciliationResult {
-  readonly status: "clean" | "committed" | "discarded" | "abandoned";
+  readonly status: "clean" | "committed" | "discarded" | "abandoned" | "checkpoint_pending";
   readonly generationId?: string;
 }
 

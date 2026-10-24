@@ -393,6 +393,17 @@ The canonical text adapter omits cancelled/failed account envelopes and
 unfinished detached candidates: durable reconstruction metadata is not proof of
 a completed assistant answer, and can contain partial streams/nested retrieval.
 
+Portable summaries use a separate checkpoint preparation: a matching canonical
+hash alone never exposes one. The owned producer reserves the sanitized summary
+before the native cut, then acknowledges the synced journal/operation, covered
+source digest and retained-summary digest. Recovery checks the actual durable
+checkpoint; an absent cut discards its preparation. For non-durable runs,
+an interrupted preparation stays unpublished and is discarded at the next
+owned recovery. A quota refusal declines the reduction instead of cutting
+away unretained context. Explicit reset can stage a purge over a pending cut;
+an aborted purge leaves that preparation intact, and a published purge removes
+it with the other physical evidence.
+
 `searchContinuity` / `getContinuity` return scoped evidence, not instructions or
 new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests
 and explicit redaction/truncation/tombstone status. Retained text uses the same
@@ -839,6 +850,7 @@ BuiltAgentContext
 CONTINUITY_USER_VERSION
 CONVERSATION_HISTORY_VERSION_MAX_BYTES
 CanonicalContinuityState
+ContinuityCheckpointProof
 ContinuityCoverageGap
 ContinuityGetInput
 ContinuityGetResult

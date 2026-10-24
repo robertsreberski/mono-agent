@@ -1,3 +1,4 @@
+import type { RuntimeDurableCompactionCheckpoint } from "./session.js";
 // Shared turn contracts, authored as JSDoc; no runtime implementation imports.
 
 export type RuntimeToolLimits = import("./policy.js").RuntimeToolLimits;
@@ -20,6 +21,10 @@ export type RuntimeToolLifecycleSink = import("./events.js").RuntimeToolLifecycl
 export type RuntimeRunOptions = {
   /** Request-local provider outage recovery window (0–180000 ms); default 0. */
   piRequestRetryBudgetMs?: number;
+  /** Owner-held capacity/preparation barrier before publishing a native cut. */
+  onCompactionPreparing?: (checkpoint: RuntimeDurableCompactionCheckpoint) => Promise<void>;
+  /** Request-owned recorder. Awaited; composed with the runtime host recorder. */
+  onCompactionRecorded?: ((record: CompactionRecordedPayload) => void) | ((record: CompactionRecordedPayload) => Promise<void>);
   /**
    * Stable profile exposure, not execution authority.
    */
@@ -291,7 +296,9 @@ export type RuntimeRunOptions = {
  * createRuntime), and the per-run observerHub (onEvent is overridden to the
  * hub's emit). `systemPrompt` is passed positionally, not folded into this object.
  */
-export type RuntimeRequest = RuntimeRunOptions & Pick<TurnHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools"> & {
+export type RuntimeRequest = RuntimeRunOptions & Pick<TurnHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools"> & {
+  /** Internal positive host recorder capability; not a config or model option. */
+  continuityRecording?: true;
   runtimeBrand: import("../runtime-brand.js").RuntimeBrand;
   toolContext?: import("../tools/shared/tool-context.js").ToolContext;
   observerHub: {
@@ -758,6 +765,7 @@ export type ApprovalDecision = {
  * after a successful context compaction, so the host can persist the row.
  */
 export type CompactionRecordedPayload = {
+  checkpoint?: RuntimeDurableCompactionCheckpoint;
   task_run_id: string | null;
   trigger: string;
   provider_kind: string;
@@ -816,7 +824,7 @@ export type TurnHostOptions = {
     toolName: string;
     toolUseId: (string | null);
   }) => (string | null);
-  onCompactionRecorded?: (record: CompactionRecordedPayload) => void;
+  onCompactionRecorded?: ((record: CompactionRecordedPayload) => void) | ((record: CompactionRecordedPayload) => Promise<void>);
   onToolApprovalRequest?: (payload: ApprovalRequestPayload) => Promise<ApprovalDecision>;
   toolRiskTiers?: {
     [x: string]: "low" | "medium" | "high";

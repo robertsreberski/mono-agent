@@ -302,7 +302,7 @@ export function lazyConfiguredToolHistory(
     resetConversation: async (id) => await writer.resetConversation!(id),
   };
   return {
-    ...(options.continuityEnabled === true ? { continuity: createContinuityParticipant({ writer: continuityWriter,
+    ...(options.continuityEnabled === true ? { continuityEnabled: true as const, continuity: createContinuityParticipant({ writer: continuityWriter, reader,
       logicalConversationId: (id) => toolHistoryLogicalConversationId(id, options.rollover),
       protectedConversations: () => reader.protectedContinuityConversations(), onWarning: warn }) } : {}),
     writer,

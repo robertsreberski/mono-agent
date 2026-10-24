@@ -88,6 +88,8 @@ export type PiRunState = Omit<NativeSessionState, "session" | "recoveryInputIds"
   };
 };
 export type PiHarnessOptions = {
+  continuityRecording?: true;
+  onCompactionPreparing?: RuntimeRunOptions["onCompactionPreparing"];
   session: PiSession;
   models: Models;
   model: PiModel;

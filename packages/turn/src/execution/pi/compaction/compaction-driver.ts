@@ -564,6 +564,7 @@ export async function tryCompact(harness: any, {
   onEvent,
   runtimeWarnings,
   onCompactionRecorded,
+  continuityRecording,
   runId,
   model,
   session,
@@ -574,6 +575,7 @@ export async function tryCompact(harness: any, {
     onEvent: any;
     runtimeWarnings: any;
     onCompactionRecorded?: any;
+    continuityRecording?: true | undefined;
     runId?: any;
     model?: any;
     session?: any;
@@ -623,7 +625,7 @@ export async function tryCompact(harness: any, {
     });
     readDecision = guarded.getDecision;
     removeHook = harness.on("session_before_compact", guarded.handler);
-    const result = await harness.compact();
+    const result = await (continuityRecording ? harness.compact({ continuityTrigger: trigger === "manual" ? "manual" : trigger === "reactive_overflow" ? "reactive" : "pre-turn" }) : harness.compact());
     hookDecision = readDecision();
     const measuredTokensBefore = hookDecision?.tokensBefore ?? null;
     const tokensBefore = Number(result?.tokensBefore) || null;
@@ -656,7 +658,8 @@ export async function tryCompact(harness: any, {
     }
     if (typeof onCompactionRecorded === "function") {
       try {
-        onCompactionRecorded({
+        await onCompactionRecorded({
+          ...(result?.continuityCheckpoint === undefined ? {} : { checkpoint: result.continuityCheckpoint }),
           task_run_id: runId || null,
           trigger,
           provider_kind: "pi",
@@ -862,6 +865,7 @@ export async function runProactiveCompaction(runState: any, {
         onEvent,
         runtimeWarnings,
         onCompactionRecorded: options.onCompactionRecorded,
+        continuityRecording: options.continuityRecording,
         runId: options.runId,
         model: reference,
         session: runState.session,
@@ -963,6 +967,7 @@ export async function runReactiveCompaction(runState: any, {
         onEvent,
         runtimeWarnings,
         onCompactionRecorded: options.onCompactionRecorded,
+        continuityRecording: options.continuityRecording,
         runId: options.runId,
         model: reference,
         session: runState.session,

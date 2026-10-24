@@ -152,6 +152,55 @@ describe("continuity publication primitives (not canonical-store integration)", 
     expect(reader.searchContinuity(scope).items).toEqual([]);
   });
 
+  it("never promotes a pre-cut summary on canonical digest alone and requires exact native checkpoint proof", async () => {
+    const path = await root(), writer = await open(path), reader = new ToolHistoryReader(path);
+    const record: ContinuityRecordInput = { ...row("summary", "A completed portable summary."), kind: "summary", provenance: "generated",
+      source: { journalId: "fiction-journal", operationId: "fiction-operation" },
+      summary: { model: "faux:m", operationId: "fiction-operation", trigger: "manual", coverage: { sourceDigest: digest("coverage") } } };
+    const input = { ...preparation([record]), action: "checkpoint" as const, beforeDigest: null, afterDigest: null, latestSummaryRecordId: record.recordId };
+    await writer.prepareContinuity(input);
+    expect(await writer.reconcileContinuity({ conversationId: input.conversationId, canonicalDigest: null })).toMatchObject({ status: "checkpoint_pending" });
+    expect(reader.searchContinuity(scope).items).toEqual([]);
+    await expect(writer.commitContinuity({ conversationId: input.conversationId, generationId: input.generationId, canonicalDigest: null })).rejects.toMatchObject({ code: "continuity_publication_mismatch" });
+    await expect(writer.reconcileContinuity({ conversationId: input.conversationId, canonicalDigest: null, checkpoint: { status: "published", journalId: "fiction-journal", operationId: "fiction-operation", sourceDigest: "invalid", summaryDigest: digest(record.text) } })).rejects.toMatchObject({ code: "continuity_invalid_preparation" });
+    expect((await writer.stats()).continuity).toMatchObject({ prepared: 1 });
+    await expect(writer.commitContinuity({ conversationId: input.conversationId, generationId: input.generationId, canonicalDigest: null,
+      checkpoint: { status: "published", journalId: "fiction-journal", operationId: "fiction-operation", sourceDigest: digest("coverage"), summaryDigest: digest("different retained text") } })).rejects.toMatchObject({ code: "continuity_publication_mismatch" });
+    expect(await writer.reconcileContinuity({ conversationId: input.conversationId, canonicalDigest: null,
+      checkpoint: { status: "published", journalId: "fiction-journal", operationId: "fiction-operation", sourceDigest: digest("coverage"), summaryDigest: digest(record.text) } })).toMatchObject({ status: "committed" });
+    expect(reader.latestContinuitySummary(scope)).toMatchObject({ recordId: record.recordId, summary: { trigger: "manual" } });
+    expect((await writer.stats()).continuity).toMatchObject({ prepared: 0, pins: 1 });
+  });
+
+  it("releases unpublished checkpoint preparation only after explicit absence evidence", async () => {
+    const path = await root(), writer = await open(path);
+    const record: ContinuityRecordInput = { ...row("summary"), kind: "summary", provenance: "generated",
+      source: { journalId: "fiction-journal", operationId: "fiction-operation" },
+      summary: { model: "faux:m", operationId: "fiction-operation", trigger: "pre-turn", coverage: { sourceDigest: digest("coverage") } } };
+    const input = { ...preparation([record]), action: "checkpoint" as const, afterDigest: digest("before"), latestSummaryRecordId: record.recordId };
+    await writer.prepareContinuity(input);
+    expect(await writer.reconcileContinuity({ conversationId: input.conversationId, canonicalDigest: input.beforeDigest, checkpoint: { status: "absent" } })).toMatchObject({ status: "discarded" });
+    expect((await writer.stats()).continuity).toMatchObject({ prepared: 0, records: 0, retainedBytes: 0 });
+  });
+
+  it("keeps a pending checkpoint intact across an unpublished purge and purges it only with canonical reset proof", async () => {
+    const path = await root(), writer = await open(path), reader = new ToolHistoryReader(path);
+    const record: ContinuityRecordInput = { ...row("summary"), kind: "summary", provenance: "generated",
+      source: { journalId: "fiction-journal", operationId: "fiction-operation" },
+      summary: { model: "faux:m", operationId: "fiction-operation", trigger: "manual", coverage: { sourceDigest: digest("coverage") } } };
+    const cut = { ...preparation([record]), action: "checkpoint" as const, afterDigest: digest("before"), latestSummaryRecordId: record.recordId };
+    await writer.prepareContinuity(cut);
+    const purge = { ...preparation([]), action: "reset" as const, afterDigest: digest("reset") };
+    await writer.prepareContinuity(purge);
+    expect((await writer.stats()).continuity).toMatchObject({ prepared: 2 });
+    expect(await writer.reconcileContinuity({ conversationId: scope.currentConversationId, canonicalDigest: purge.beforeDigest })).toMatchObject({ status: "discarded", generationId: purge.generationId });
+    expect(await writer.reconcileContinuity({ conversationId: scope.currentConversationId, canonicalDigest: cut.beforeDigest })).toMatchObject({ status: "checkpoint_pending", generationId: cut.generationId });
+    const reset = { ...purge, generationId: continuityGenerationId() }; await writer.prepareContinuity(reset);
+    await writer.commitContinuity({ conversationId: scope.currentConversationId, generationId: reset.generationId, canonicalDigest: reset.afterDigest });
+    expect((await writer.stats()).continuity).toMatchObject({ prepared: 0, records: 0, pins: 0 });
+    expect(reader.latestContinuitySummary(scope)).toBeUndefined();
+  });
+
   it("rejects oversized generation inputs before worker cloning and reconciles an absent source", async () => {
     const path = await root(), writer = await open(path);
     await expect(writer.prepareContinuity(preparation([row("too-large", "x".repeat(16 * 1024 * 1024 + 1))])))
