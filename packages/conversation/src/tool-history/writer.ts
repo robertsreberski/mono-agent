@@ -10,6 +10,9 @@ import { TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_PERSISTENCE_CEILING
 import { ToolHistoryWriterError } from "./errors.js";
 import { canonicalHistoryRoot, positiveInteger, requestedArtifactRoot } from "./paths.js";
 
+import { validateContinuityPreparation } from "./continuity-storage.js";
+import type { ContinuityPin, ContinuityPreparation, ContinuityPublication, ContinuityReceipt, ContinuityReconciliation, ContinuityReconciliationResult } from "./continuity-contracts.js";
+
 const TOOL_HISTORY_RECONCILIATION_CEILING_MS = 10_000;
 const TOOL_HISTORY_MAINTENANCE_CEILING_MS = 10_000;
 
@@ -69,6 +72,7 @@ export async function acquireToolHistoryWriter(
     // is suspended on the already-resolved promise. Retry instead of reviving
     // the writer that release is closing.
     if (PROCESS_WRITERS.get(root) !== entryPromise) continue;
+    if (options.continuityEnabled === true) await entry.writer.enableContinuity();
     entry.references += 1;
     let released = false;
     return {
@@ -142,6 +146,7 @@ export class ToolHistoryWriter {
     const worker = new Worker(workerUrl, {
       workerData: {
         root,
+        continuityEnabled: options.continuityEnabled === true,
         artifactRoot,
         artifactRootAliases: [artifactRoot, lexicalArtifactRoot],
         retention: options.retention,
@@ -223,6 +228,33 @@ export class ToolHistoryWriter {
     await this.request("finish_run", payload, remainingMs).catch((error) => {
       this.reportRunFinalizationFailure(binding, status, error);
     });
+  }
+
+  /** Upgrade only through an explicit host capability, using the existing worker owner. */
+  async enableContinuity(): Promise<void> {
+    await this.request("enable_continuity", undefined, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
+  }
+
+  async prepareContinuity(input: ContinuityPreparation): Promise<ContinuityReceipt> {
+    // Bound selected fields before structured-cloning them to the worker.
+    validateContinuityPreparation(input);
+    return await this.request("continuity_prepare", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS) as ContinuityReceipt;
+  }
+
+  async commitContinuity(input: ContinuityPublication): Promise<void> {
+    await this.request("continuity_commit", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
+  }
+
+  async reconcileContinuity(input: ContinuityReconciliation): Promise<ContinuityReconciliationResult> {
+    return await this.request("continuity_reconcile", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS) as ContinuityReconciliationResult;
+  }
+
+  async pinContinuity(pin: ContinuityPin): Promise<void> {
+    await this.request("continuity_pin", pin, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
+  }
+
+  async unpinContinuity(pin: ContinuityPin): Promise<void> {
+    await this.request("continuity_unpin", pin, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
   }
 
   async resetConversation(logicalConversationId: string): Promise<void> {

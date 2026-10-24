@@ -37,8 +37,12 @@ import {
   TOOL_HISTORY_RESULT_MAX_BYTES,
   type BoundedToolHistoryPayload,
 } from "./payload.js";
+import { ToolHistoryWriterError } from "./errors.js";
 import { continueToolHistoryOperationTail } from "./worker-queue.js";
 import { TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_SCHEMA, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRetentionOptions, type ToolHistoryRunBinding } from "./contracts.js";
+
+import { CONTINUITY_USER_VERSION, type ContinuityPin, type ContinuityPreparation, type ContinuityPublication, type ContinuityReconciliation } from "./continuity-contracts.js";
+import { assertContinuitySchema, commitContinuity, continuityRetainedBytes, createContinuitySchema, hasContinuitySchema, pinContinuity, prepareContinuity, reconcileContinuity, resetContinuity, retainContinuity, readContinuityStats, unpinContinuity } from "./continuity-storage.js";
 
 const DEFAULT_RETENTION: Required<ToolHistoryRetentionOptions> = {
   maxCompletedCalls: 100_000,
@@ -78,6 +82,7 @@ class RunBindingConflictError extends WorkerHistoryError {
 }
 
 const input = workerData as WorkerInput;
+let continuityEnabled = input.continuityEnabled === true;
 const root = resolve(input.root);
 const artifactRoot = canonicalToolArtifactRoot(input.artifactRoot);
 const artifactRootAliases = input.artifactRootAliases.map((value) => resolve(value));
@@ -101,7 +106,7 @@ try {
 } catch (error) {
   respondError(
     0,
-    error instanceof WorkerHistoryError ? error.code : "history_writer_start_failed",
+    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_writer_start_failed",
     reasonOf(error),
   );
   throw error;
@@ -125,7 +130,7 @@ try {
   try { owner?.release(); } catch { /* startup error remains authoritative */ }
   respondError(
     0,
-    error instanceof WorkerHistoryError ? error.code : "history_writer_start_failed",
+    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_writer_start_failed",
     reasonOf(error),
   );
   throw error;
@@ -150,6 +155,41 @@ parentPort.on("message", (request: WorkerRequest) => {
         case "ready":
           respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls") });
           break;
+        case "enable_continuity":
+          transaction(database, () => {
+            if (pragmaNumber(database, "user_version") >= CONTINUITY_USER_VERSION) assertContinuitySchema(database);
+            else createContinuitySchema(database);
+            database.exec(`PRAGMA user_version=${String(CONTINUITY_USER_VERSION)}`);
+          });
+          continuityEnabled = true;
+          respond(request.id, null);
+          break;
+        case "continuity_prepare":
+        case "continuity_commit":
+        case "continuity_reconcile":
+        case "continuity_pin":
+        case "continuity_unpin": {
+          if (!continuityEnabled) throw new WorkerHistoryError("continuity_disabled", "Continuity capture is not enabled.");
+          let result: unknown;
+          try {
+            transaction(database, () => {
+              switch (request.operation) {
+                case "continuity_prepare": result = prepareContinuity(database, request.payload as ContinuityPreparation, retention, (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records)); break;
+                case "continuity_commit": commitContinuity(database, request.payload as ContinuityPublication); break;
+                case "continuity_reconcile": result = reconcileContinuity(database, request.payload as ContinuityReconciliation); break;
+                case "continuity_pin": pinContinuity(database, request.payload as ContinuityPin); break;
+                case "continuity_unpin": unpinContinuity(database, request.payload as ContinuityPin); break;
+              }
+            });
+          } catch (error) {
+            if ((error as { code?: string }).code === "continuity_quota_exhausted") {
+              transaction(database, () => { database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('continuity_degraded','quota')").run(); });
+            }
+            throw error;
+          }
+          respond(request.id, result ?? null);
+          break;
+        }
         case "invocation":
           respond(request.id, recordInvocation(database, lifecyclePayload(request.payload)));
           break;
@@ -238,7 +278,7 @@ parentPort.on("message", (request: WorkerRequest) => {
     } catch (error) {
       respondError(
         request.id,
-        error instanceof WorkerHistoryError ? error.code : "history_write_failed",
+        (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_write_failed",
         reasonOf(error),
       );
     }
@@ -538,6 +578,7 @@ function closeDanglingInTransaction(
 }
 
 function resetLogicalConversation(database: DatabaseSync, logicalConversationId: string): void {
+  if (hasContinuitySchema(database)) resetContinuity(database, logicalConversationId);
   const runs = database.prepare(`
     SELECT conversation_id,run_id FROM runs WHERE logical_id=?
     ORDER BY conversation_id,run_id
@@ -672,8 +713,14 @@ function normalizedArtifactIds(
 }
 
 function applyRetention(database: DatabaseSync, limits: Required<ToolHistoryRetentionOptions>): void {
-  transaction(database, () => {
+  transaction(database, () => applyRetentionInTransaction(database, limits));
+}
+
+function applyRetentionInTransaction(database: DatabaseSync, limits: Required<ToolHistoryRetentionOptions>, reservedBytes = 0, reservedRecords = 0): void {
     const now = Date.now();
+    const extended = hasContinuitySchema(database);
+    if (extended) retainContinuity(database, limits, now, reservedBytes, reservedRecords);
+    const continuityBytes = extended ? continuityRetainedBytes(database) : 0;
     const ageCutoff = now - limits.maxAgeMs;
     const old = database.prepare(`
       SELECT conversation_id,run_id,tool_call_id FROM tool_calls
@@ -689,7 +736,7 @@ function applyRetention(database: DatabaseSync, limits: Required<ToolHistoryRete
     `).all(limits.maxCompletedCalls) as Record<string, unknown>[];
     pruneCalls(database, overflow, "count", now);
     let retainedBytes = Number((database.prepare("SELECT coalesce(sum(retained_bytes),0) bytes FROM tool_records").get() as Record<string, unknown>).bytes);
-    while (retainedBytes > limits.maxBytes) {
+    while (retainedBytes + continuityBytes + reservedBytes > limits.maxBytes) {
       const rows = database.prepare(`
         SELECT conversation_id,run_id,tool_call_id FROM tool_calls
         WHERE end_seq IS NOT NULL
@@ -728,7 +775,6 @@ function applyRetention(database: DatabaseSync, limits: Required<ToolHistoryRete
         .run(conversationId, runId);
     }
     clearStat(database, "maintenance_failures");
-  });
 }
 
 function pruneCalls(database: DatabaseSync, rows: Record<string, unknown>[], reason: string, now: number): void {
@@ -777,7 +823,7 @@ function openContentDatabase(
   const pristine = existingApplication === 0 && existingVersion === 0 && existingTables.length === 0;
   const compatible = existingApplication === TOOL_HISTORY_APPLICATION_ID
     && existingVersion >= 0
-    && existingVersion <= TOOL_HISTORY_USER_VERSION;
+    && existingVersion <= CONTINUITY_USER_VERSION;
   if (!pristine && !compatible) {
     database.close();
     throw new WorkerHistoryError(
@@ -878,7 +924,9 @@ function openContentDatabase(
     sanitizePersistedWriterStatDetails(database);
     migrateSyntheticResultMarker(database, existingVersion);
     migrateLegacyIncidentKeys(database);
-    database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION)}`);
+    if (existingVersion >= CONTINUITY_USER_VERSION) assertContinuitySchema(database);
+    else if (continuityEnabled) createContinuitySchema(database);
+    database.exec(`PRAGMA user_version=${String(continuityEnabled ? CONTINUITY_USER_VERSION : Math.max(existingVersion, TOOL_HISTORY_USER_VERSION))}`);
     const metadata = database.prepare("INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)");
     const existingArtifactRoot = database.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get() as Record<string, unknown> | undefined;
     if (existingArtifactRoot !== undefined && existingArtifactRoot.value !== configuredArtifactRoot) {
@@ -1409,6 +1457,7 @@ function workerStats(database: DatabaseSync): Record<string, unknown> {
   `).get() as Record<string, unknown>;
   return {
     ...counts,
+    ...(hasContinuitySchema(database) ? { retainedBytes: Number(counts.retainedBytes) + continuityRetainedBytes(database), continuity: readContinuityStats(database) } : {}),
     writeFailures: incidentStatValue(database, "write_failures"),
     idempotencyConflicts: incidentStatValue(database, "idempotency_conflicts"),
     maintenanceFailures: statValue(database, "maintenance_failures"),

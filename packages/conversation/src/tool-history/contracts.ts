@@ -21,6 +21,8 @@ export interface ToolHistoryRetentionOptions {
 
 export interface ToolHistoryWriterOptions {
   readonly root: string;
+  /** Positive capture/migration capability. Absent/false preserves v2. */
+  readonly continuityEnabled?: boolean;
   /** Host-only root under which provider-reported artifact files may exist. */
   readonly artifactRoot?: string;
   readonly retention?: ToolHistoryRetentionOptions;
@@ -145,6 +147,7 @@ export interface ToolHistoryGetResult {
 }
 
 export interface ToolHistoryStats {
+  readonly continuity?: import("./continuity-contracts.js").ContinuityStats;
   readonly calls: number;
   readonly records: number;
   readonly tombstones: number;
@@ -205,6 +208,7 @@ export function toolHistoryLogicalConversationId(
 
 export interface WorkerInput {
   readonly root: string;
+  readonly continuityEnabled?: boolean;
   readonly artifactRoot: string;
   readonly artifactRootAliases: readonly string[];
   readonly retention?: ToolHistoryRetentionOptions;

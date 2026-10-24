@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add capability-gated continuity evidence storage to the conversation sidecar,
+  with scoped digest-verifiable text, durable publication preparation and
+  non-expiring reference pins; ordinary writers retain the existing v2 format.
+
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures
   explicitly and preserve ordinary prose and JSON syntax during output redaction.

@@ -10,6 +10,10 @@ import { ToolHistoryWriterError } from "./errors.js";
 import { assertSecureReadableDirectory, assertSecureReadableFile, normalizeId } from "./paths.js";
 import { reasonOf } from "./writer.js";
 
+import { CONTINUITY_USER_VERSION, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
+import { getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
+import { assertContinuitySchema, hasContinuitySchema, readContinuityStats } from "./continuity-storage.js";
+
 /** Read-only bounded query surface used by projection, SessionHistory, purge, and doctor. */
 export class ToolHistoryReader {
   readonly root: string;
@@ -19,6 +23,24 @@ export class ToolHistoryReader {
     if (!isAbsolute(root)) throw new TypeError("tool history root must be absolute.");
     this.root = resolve(root);
     this.databasePath = join(this.root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+  }
+
+  searchContinuity(input: ContinuitySearchInput): ContinuitySearchPage {
+    const database = this.openReadOnly();
+    if (database === undefined) return { available: false, items: [] };
+    try { return searchContinuity(database, input); } finally { database.close(); }
+  }
+
+  getContinuity(input: ContinuityGetInput): ContinuityGetResult {
+    const database = this.openReadOnly();
+    if (database === undefined) return { status: "unavailable", untrusted: true };
+    try { return getContinuity(database, input); } finally { database.close(); }
+  }
+
+  latestContinuitySummary(scope: ContinuityScope): ContinuityRecordMetadata | undefined {
+    const database = this.openReadOnly();
+    if (database === undefined) return undefined;
+    try { return latestContinuitySummary(database, scope); } finally { database.close(); }
   }
 
   async exists(): Promise<boolean> {
@@ -275,15 +297,17 @@ export class ToolHistoryReader {
   }
 
   private openReadOnly(options: { readonly zeroLengthAsAbsent?: boolean } = {}): DatabaseSync | undefined {
+    let database: DatabaseSync | undefined;
     try {
       assertSecureReadableDirectory(join(this.root, TOOL_HISTORY_DIRECTORY));
       const fileSize = assertSecureReadableFile(this.databasePath);
       if (options.zeroLengthAsAbsent === true && fileSize === 0) return undefined;
-      const database = new DatabaseSync(this.databasePath, { readOnly: true });
+      database = new DatabaseSync(this.databasePath, { readOnly: true });
       database.exec("PRAGMA busy_timeout=250");
       validateDatabase(database);
       return database;
     } catch (error) {
+      database?.close();
       if ((error as NodeJS.ErrnoException).code === "ENOENT" || reasonOf(error).includes("unable to open database")) return undefined;
       throw error;
     }
@@ -384,12 +408,13 @@ function validateDatabase(database: DatabaseSync): void {
       `Tool history schema version ${String(userVersion)} is upgrade-pending; a writer must upgrade it to ${String(TOOL_HISTORY_USER_VERSION)} before read-only access.`,
     );
   }
-  if (applicationId !== TOOL_HISTORY_APPLICATION_ID || userVersion !== TOOL_HISTORY_USER_VERSION) {
+  if (applicationId !== TOOL_HISTORY_APPLICATION_ID || (userVersion < TOOL_HISTORY_USER_VERSION || userVersion > CONTINUITY_USER_VERSION)) {
     throw new ToolHistoryWriterError(
       "history_schema_unsupported",
       "Tool history schema is unsupported because it is newer or foreign. Downgrade is blocked until persisted conversation state is purged.",
     );
   }
+  if (userVersion === CONTINUITY_USER_VERSION) assertContinuitySchema(database);
 }
 
 function readStats(database: DatabaseSync, path: string): ToolHistoryStats {
@@ -423,7 +448,8 @@ function readStats(database: DatabaseSync, path: string): ToolHistoryStats {
     idempotencyConflicts: numberField(counts, "idempotency_conflicts"),
     maintenanceFailures: numberField(counts, "maintenance_failures"),
     recoveryFailures: numberField(counts, "recovery_failures"),
-    retainedBytes: numberField(counts, "retained_bytes"),
+    retainedBytes: numberField(counts, "retained_bytes") + (hasContinuitySchema(database) ? readContinuityStats(database).retainedBytes : 0),
+    ...(hasContinuitySchema(database) ? { continuity: readContinuityStats(database) } : {}),
     bytes,
     journalPresent: existsSync(`${path}-journal`),
     limits: {

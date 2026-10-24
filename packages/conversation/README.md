@@ -362,6 +362,33 @@ and root drain/serialization remain prerequisites for a supported opt-in.
 
 ## Architecture
 
+The tool-history writer also provides a positively enabled continuity-storage
+substrate (`ToolHistoryWriterOptions.continuityEnabled`, default false). Ordinary
+writers keep SQLite v2; enabled writers migrate the same owner-private database
+to v3. Readers support both versions; older binaries cannot read v3. This is a
+storage capability, not permission to mutate a canonical conversation without
+its existing owner. The configured conversation participant and request tool
+must be wired by the host before advertising end-to-end continuity.
+
+Continuity preparation stores immutable sanitized text (at most 1 MiB per
+record) and an expected canonical before/after digest. Prepared records are not
+readable evidence. After canonical publication, `commitContinuity` verifies the
+target digest and makes records readable. Before another mutation, the same
+conversation owner must reconcile an interrupted preparation: a matching target
+commits, an unchanged source discards, and ambiguity preserves evidence and
+refuses advancement. Storage primitives do not acquire canonical ownership.
+
+`searchContinuity` / `getContinuity` return scoped evidence, not instructions or
+new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests
+and explicit redaction/truncation/tombstone status. Retained text uses the same
+credential/private-path sanitation as lifecycle persistence, independently of
+its smaller JSON projection. Oversized text is explicitly omitted rather than
+risking retention of a clipped credential. Lifecycle and continuity text share
+the existing 256 MiB retained-payload budget. Pins do not expire; a full pinned
+budget reports degraded continuity instead of deleting referenced evidence.
+Logical tool-history reset clears the continuity generations and pins too.
+
+
 Session boundaries carry an additive `context` disposition (`retained`,
 `reconstructed`, or `handoff`) independently of historical `kind` and
 `reason`. Cancelled/failed warm resumes retain context; cold replay boundaries
