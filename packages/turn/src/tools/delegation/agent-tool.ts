@@ -16,6 +16,7 @@ import type { RuntimeSubagentInstance } from "../../contracts/runtime.js";
 import { randomUUID } from "node:crypto";
 
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 
 import { createCountingSemaphore } from "../shared/semaphore.js";
 import { publicBackgroundStartFailure } from "../commands/process-jobs.js";
@@ -446,7 +447,7 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
                 try { result = await runTurn(childSignal, reportProgress, execution); }
                 catch (error: any) { throw markChildRunFailure(error); }
                 return { answer: result.answer, status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
-                  output: JSON.stringify({ instanceId: retained.id, ...result.details.subagent,
+                  output: JSON.stringify({ resultReference: result.resultReference, instanceId: retained.id, ...result.details.subagent,
                     answer: result.content[0]!.text, artifacts: result.details.tool_payload_saved_paths ?? [] }) };
               } finally { await instances!.releaseReservation!(retained.id, reservation!); }
             },
@@ -793,7 +794,8 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
         // would otherwise land ~480KB in one batch. Later calls get whatever
         // budget remains.
         const remaining = detached ? RESULT_MAX_BYTES : Math.max(0, TURN_RESULT_MAX_BYTES - budget.bytes);
-        const { text, savedPath, truncated } = formatSubagentResult({
+        const { text, savedPath, truncated, reference } = formatSubagentResult({
+          alwaysPersist: detached,
           profileName: profile.name,
           ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}),
           label: params.description,
@@ -807,7 +809,10 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
           ...(droppedTools.length === 0 ? {} : {
             notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools!.join(", ")}.`,
           }),
-          persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full, continuation ? "AgentManage" : "Agent"),
+          persist: (full) => {
+            const path = persistSubagentResult(context.persistArtifact, toolCallId, full, continuation ? "AgentManage" : "Agent");
+            return detached && path !== null ? resolve(path) : path;
+          },
         });
         if (!detached) budget.bytes += Buffer.byteLength(text, "utf8");
         // `details.subagent.status` is the load-bearing signal: pi hardcodes
@@ -819,7 +824,7 @@ export function createAgentTool(subagents: RuntimeSubagentsOptions | null | unde
         // artifact references from (the bloat guard sets the same one), so a
         // spilled subagent result is recorded in tool history like any other.
         return {
-          ...(detached ? { answer: outcomeWithWrapUp.answer } : {}),
+          ...(detached ? { answer: outcomeWithWrapUp.answer, resultReference: reference } : {}),
           content: [{ type: "text", text }],
           details: {
             tool: continuation ? "AgentManage" : "Agent",
@@ -1535,10 +1540,11 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }: { resu
  * result is handed to `persist` and the retained text names the saved file, the
  * same way the bloat guard and the shell tools reference their spilled output.
  * The reference sits directly under the header so the final byte cap can never
- * cut it off. Without a sink (or when the write fails) the text says so instead,
+ * cut it off. Detached completions always persist, even without elision.
+ * Without a sink (or when the write fails) the text says so instead,
  * so the caller does not go looking for a file that was never written.
  */
-function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, wrapUpNote, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }: { profileName: string; instance?: { id: string; turns: number; status: string; }; label?: string | undefined; routeLabel?: string; outcome: { status: string; answer: string; reason?: string; }; wrapUpNote?: string; durationMs: number; activity: ReadonlyArray<{ name: string; args: unknown; ms?: number | undefined; isError: boolean; }>; maxBytes?: number; cwd?: string; notice?: string; persist?: (fullText: string) => string | null; }) {
+function formatSubagentResult({ alwaysPersist = false, profileName, instance, label, routeLabel, outcome, wrapUpNote, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }: { alwaysPersist?: boolean; profileName: string; instance?: { id: string; turns: number; status: string; }; label?: string | undefined; routeLabel?: string; outcome: { status: string; answer: string; reason?: string; }; wrapUpNote?: string; durationMs: number; activity: ReadonlyArray<{ name: string; args: unknown; ms?: number | undefined; isError: boolean; }>; maxBytes?: number; cwd?: string; notice?: string; persist?: (fullText: string) => string | null; }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
   const header = `<subagent: ${profileName}${instance ? ` · instance ${instance.id} · turn ${instance.turns}${instance.status === "closed" ? " · closed" : ""}` : ""}${label ? ` · ${label}` : ""}${routeLabel ? ` · ${routeLabel}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
@@ -1564,18 +1570,21 @@ function formatSubagentResult({ profileName, instance, label, routeLabel, outcom
   const lossy = outcome.answer.length > ANSWER_MAX_CHARS
     || activity.length > LOG_MAX_LINES
     || Buffer.byteLength(retained, "utf8") > cap;
-  if (!lossy) return { text: retained, savedPath: null, truncated: false };
+  if (!lossy && !alwaysPersist) return { text: retained, savedPath: null, truncated: false, reference: null };
 
   const full = [header, ...preamble, ...body(outcome.answer, activity.map((entry, index) => activityLine(entry, index, cwd)))].join("\n");
   const savedPath = typeof persist === "function" ? persist(full) : null;
-  const reference = savedPath === null
-    ? "[result truncated; full result not saved: artifact persistence unavailable]"
-    : `[result truncated; full result saved to: ${savedPath}]`;
+  const referenceLabel = savedPath === null
+    ? "full result not saved: artifact persistence unavailable"
+    : `full result saved to: ${savedPath}`;
+  const truncated = lossy || Buffer.byteLength(`${retained}\n[${referenceLabel}]`, "utf8") > cap;
+  const reference = `[${truncated ? "result truncated; " : ""}${referenceLabel}]`;
   const [retainedHeader, ...retainedRest] = retained.split("\n");
   return {
     text: capBytes([retainedHeader, reference, ...retainedRest].join("\n"), cap),
     savedPath,
-    truncated: true,
+    truncated,
+    reference,
   };
 }
 

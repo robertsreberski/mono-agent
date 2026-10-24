@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix detached `Agent` and `AgentManage` completions to save full final results
+  and lead completion wakes with their artifact paths; report persistence failures
+  explicitly and preserve ordinary prose and JSON syntax during output redaction.
+
 - Add an absolute proactive compaction ceiling, `runtime.compaction.maxInputTokens`,
   on by default at 200,000 tokens for every agent. The trigger is now the lowest
   of the ratio trigger, the safety-headroom trigger and this ceiling. Windows up
