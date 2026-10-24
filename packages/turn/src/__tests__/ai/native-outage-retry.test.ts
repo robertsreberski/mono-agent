@@ -1,6 +1,7 @@
 import type { SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { afterEach, expect, it, vi } from "vitest";
 import { builtinModels, getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
+import { normalizePiErrorMessage } from "../../providers/pi/errors.js";
 import { requestRetryPolicy } from "../../execution/pi/request-retry.js";
 import { generateEngineTurnResponse } from "../../execution/pi/run.js";
 import { createRequestObserver } from "../../providers/pi/request-attempt.js";
@@ -251,4 +252,99 @@ it("does not turn SDK-flattened invalid fetch arguments into an outage", async (
   const fetch = vi.fn(async () => { throw new TypeError("Invalid URL argument"); });
   const { result } = await run("openai", fetch);
   expect(fetch).toHaveBeenCalledOnce(); expect(result.error).toContain("exhausted=non_retryable");
+});
+
+
+it.each(routes)("keeps realistic %s token-rate throttling on short header-aware retries", async (route) => {
+  const fetch = vi.fn(async () => Response.json({ error: { type: "rate_limit_error", code: "rate_limit_exceeded",
+    message: "Fictional token-per-minute rate limit exceeded; reduce the prompt length or the maximum tokens requested." } },
+  { status: 429, headers: { "retry-after-ms": "0" } }));
+  const { result, requests } = await run(route, fetch);
+  expect(fetch).toHaveBeenCalledTimes(3); expect(requests).toHaveLength(1);
+  expect(result.error).toContain("attempts=1 http_sends=3");
+});
+
+it.each(routes.flatMap((route) => [408, 409].map((status) => ({ route, status }))))("keeps $route HTTP $status at the short seam only", async ({ route, status }) => {
+  const fetch = vi.fn(async () => Response.json({ error: { message: "Fictional transient request conflict" } }, { status, headers: { "retry-after-ms": "0" } }));
+  const { result, requests } = await run(route, fetch);
+  expect(fetch).toHaveBeenCalledTimes(3); expect(requests).toHaveLength(1);
+  expect(result.error).toContain("attempts=1 http_sends=3");
+});
+
+function rateLimitStream(route: Route): Response {
+  const start = route === "anthropic"
+    ? { type: "message_start", message: { id: "fictional", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [], usage: { input_tokens: 1, output_tokens: 0 } } }
+    : { type: "response.created", response: { id: "fictional", status: "in_progress", output: [] } };
+  const failure = { type: "error", error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "Fictional token rate limit exceeded; reduce the maximum tokens requested" } };
+  return new Response([start, failure].map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+}
+
+it.each(routes)("retains at most three short retries for a %s 200-stream throttle", async (route) => {
+  const fetch = vi.fn(async () => rateLimitStream(route));
+  const { result, requests } = await run(route, fetch);
+  expect(fetch).toHaveBeenCalledTimes(4); expect(requests).toHaveLength(4);
+  expect(result.error).toContain("attempts=4 http_sends=4"); expect(result.error).toContain("exhausted=attempt_limit");
+  expect(result.events.filter((event: any) => event.warning_kind === "provider_request_retry").map((event: any) => event.delay_ms)).toEqual([10, 10, 10]);
+});
+
+it("retains legacy 1/2/4-second stream throttle delays inside the shared window", () => {
+  let now = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const policy = requestRetryPolicy({ maxRetries: 2, maxRetryDelayMs: 60_000, providerCheck: false, retryBudgetMs: 120_000 }).createRequest!();
+  for (const [index, delay] of [1000, 2000, 4000].entries()) {
+    expect(policy.shouldRetry({ errorMessage: "rate_limit_exceeded" }, { responseStarted: true })).toBe(true);
+    expect(policy.retryDelay(index + 1)).toBe(delay); now += delay;
+  }
+  expect(policy.shouldRetry({ errorMessage: "rate_limit_exceeded" }, { responseStarted: true })).toBe(false);
+  const bounded = requestRetryPolicy({ maxRetries: 2, maxRetryDelayMs: 60_000, providerCheck: false, retryBudgetMs: 500 }).createRequest!();
+  expect(bounded.shouldRetry({ errorMessage: "rate_limit_exceeded" }, { responseStarted: true })).toBe(true);
+  expect(bounded.retryDelay(1)).toBeNull();
+});
+
+it("retains three short retries for real Codex websocket throttling after its first event", async () => {
+  const sockets: unknown[] = [];
+  class FictionalRateSocket extends EventTarget {
+    readyState = 0;
+    constructor() { super(); sockets.push(this); queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event("open")); }); }
+    send() { setTimeout(() => {
+      this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "response.created", response: { id: "fictional", status: "in_progress", output: [] } }) }));
+      this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded", message: "Fictional rate limit exceeded" } }) }));
+    }, 0); }
+    close() { this.readyState = 3; }
+  }
+  vi.stubGlobal("WebSocket", FictionalRateSocket);
+  const fetch = vi.fn(async () => response("openai-codex"));
+  const { result, requests } = await run("openai-codex", fetch, { piTransport: "auto" });
+  expect(sockets).toHaveLength(4); expect(fetch).not.toHaveBeenCalled(); expect(requests).toHaveLength(4);
+  expect(result.error).toContain("attempts=4 http_sends=0"); expect(result.error).toContain("exhausted=attempt_limit");
+});
+
+it.each(routes)("cancels an in-flight %s outage fetch without retrying", async (route) => {
+  const controller = new AbortController();
+  const fetch = vi.fn((_input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("Fictional request aborted", "AbortError")), { once: true });
+    setTimeout(() => controller.abort(), 20);
+  }));
+  const started = Date.now();
+  const { result, requests } = await run(route, fetch, { abortSignal: controller.signal });
+  expect(result.cancelled).toBe(true); expect(fetch).toHaveBeenCalledOnce(); expect(requests).toHaveLength(1);
+  expect(requests[0]?.maxRetries).toBe(0); expect(requests[0]?.fetch).toEqual(expect.any(Function));
+  expect(Date.now() - started).toBeLessThan(2000);
+});
+
+it.each([JSON.stringify({ error: { message: "Fictional connection error" } }),
+  `Codex error: ${JSON.stringify({ error: { message: "Fictional connection error" } })}`])("normalizes provider envelopes before adding diagnostics (%s)", (errorMessage) => {
+  const policy = requestRetryPolicy({ maxRetries: 2, maxRetryDelayMs: 60_000, providerCheck: false, retryBudgetMs: 120_000 }).createRequest!();
+  const result = policy.finish({ stopReason: "error", errorMessage }, { responseStarted: true, attempts: 4, reason: "budget" });
+  expect(normalizePiErrorMessage(result.errorMessage)).toMatch(/^Fictional connection error \[provider_retry /);
+  expect(result.errorMessage).not.toContain('{"error"'); expect(result.errorMessage).not.toContain("Codex error:");
+});
+
+
+it("does not stretch streamed throttling to a long provider delay", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("fictional", { headers: { "retry-after": "20" } })));
+  const policy = requestRetryPolicy({ maxRetries: 2, maxRetryDelayMs: 60_000, providerCheck: false, retryBudgetMs: 120_000 }).createRequest!();
+  await policy.fetch("https://fictional.invalid");
+  expect(policy.shouldRetry({ errorMessage: "rate_limit_exceeded" }, { responseStarted: true })).toBe(true);
+  expect(policy.retryDelay(1)).toBeNull();
 });

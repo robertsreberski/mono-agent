@@ -202,13 +202,20 @@ The outage profile passes **zero retries to the adapter**. The native driver
 owns transient connection/server failures both before and after generation
 starts, within one recovery window per assistant request. An opaque
 `Connection error.` or `fetch failed`, failed body read, websocket loss, timeout
-or transient 5xx/529 can recover. Auth, quota, context, validation and safety
+or transient 5xx/529 can recover. DNS/TLS failures that surface as `fetch failed`
+can also consume this whole window in children, even when retrying cannot repair
+the underlying configuration. Auth, quota, context, validation and safety
 failures never enter this window. `x-should-retry: false` vetoes resends.
 
 Ordinary 429 throttling and HTTP 408/409 keep short SDK-policy handling through
 pi-ai's native `retryProviderRequest` helper at a request-local fetch boundary:
 the existing `piMaxRetries` count, header precedence and abortable sleeps remain.
-A final short-policy failure never enters the long driver loop. Only replayable
+A final short-policy failure never enters the long driver loop. A 200 response
+stream or Codex websocket that reports throttling after generation starts gets
+only the legacy three short driver retries (1/2/4 seconds, capped by
+`maxRetryDelayMs` and the remaining window), never the long outage schedule.
+A server delay that cannot fit that short schedule stops recovery instead.
+Only replayable
 request bodies (strings, byte arrays or cloned Requests) receive those short
 resends; other bodies return the first response unchanged. Successful bodies
 are not buffered, and backpressure/cancellation are preserved.
@@ -235,7 +242,8 @@ Router restrictions after tools/live input are unchanged: no tools or whole
 tool-bearing turns are replayed. Unknown-outcome request resends can cause
 **duplicate provider billing**, including usage the failed response never reports.
 
-Exhausted child failures append a bounded diagnostic suffix: generation phase,
+Child request failures, including non-retried terminal failures, append a bounded
+diagnostic suffix: generation phase,
 observed HTTP phase, driver attempts, observed HTTP sends (fetch invocations, not proof of provider receipt), elapsed milliseconds,
 allowlisted attributed cause code (or `unknown`), and exhaustion reason. The
 elapsed value measures that assistant request, not the entire child turn.

@@ -12,7 +12,16 @@ export function attributedCauseCode(error: unknown): string | null {
   return null;
 }
 
-export const TERMINAL_PROVIDER_ERROR = /usage[_ ]limit|insufficient[_ ]quota|quota[_ ]exceeded|quota exceeded|billing|out of budget|available balance|context[_ ](?:length|window)|context limit|input (?:is too long|exceeds)|invalid[_ ](?:request|api[_ ]key)|unauthori[sz]ed|forbidden|authentication|validation|safety|content[_ ](?:filter|policy)|max(?:imum)?(?:[_ ]output)?[_ ]tokens?|max turns/i;
+// A token-rate response may recommend reducing maximum tokens: that is not an
+// exhausted generation/output budget. Only account/usage limits veto short HTTP retries.
+const SHORT_POLICY_TERMINAL = /usage[_ ]limit|insufficient[_ ]quota|quota[_ ]exceeded|quota exceeded|billing|out of budget|available balance|GoUsageLimitError|FreeUsageLimitError/i;
+
+const INVALID_PROVIDER_REQUEST = /context[_ ](?:length|window)|context limit|input (?:is too long|exceeds)|invalid[_ ](?:request|api[_ ]key)|unauthori[sz]ed|forbidden|authentication|validation|safety|content[_ ](?:filter|policy)|max turns/i;
+const OUTPUT_LIMIT = /max(?:imum)?(?:[_ ]output)?[_ ]tokens?/i;
+
+export function isTerminalProviderFailure(text: string, throttled = false): boolean {
+  return SHORT_POLICY_TERMINAL.test(text) || INVALID_PROVIDER_REQUEST.test(text) || (!throttled && OUTPUT_LIMIT.test(text));
+}
 
 type AttemptObservation = {
   httpPhase: "unknown" | "pre-response" | "post-response";
@@ -39,7 +48,7 @@ async function terminalResponse(response: Response): Promise<boolean> {
       if (done) break;
       text += decoder.decode(value.subarray(0, 4096 - text.length), { stream: true });
     }
-    return TERMINAL_PROVIDER_ERROR.test(text);
+    return [408, 409, 429].includes(response.status) ? SHORT_POLICY_TERMINAL.test(text) : isTerminalProviderFailure(text);
   } finally {
     // A tee's cancellation can wait for the original branch: do not await it.
     void reader.cancel().catch(() => {});

@@ -17,7 +17,7 @@
 import { retryableProviderFailureInfo } from "../../telemetry/failure.js";
 import { normalizePiErrorMessage } from "../../providers/pi/errors.js";
 import { failureKindForPiError } from "./result-builder.js";
-import { attributedCauseCode, createRequestObserver, TERMINAL_PROVIDER_ERROR } from "../../providers/pi/request-attempt.js";
+import { attributedCauseCode, createRequestObserver, isTerminalProviderFailure } from "../../providers/pi/request-attempt.js";
 
 /** Additional attempts after a mid-stream failure (inherited Pi harness value). */
 const REQUEST_RETRY_LIMIT = 3;
@@ -75,17 +75,29 @@ function outageRequestPolicy(shortRetries: number, maxRetryDelayMs: number, budg
   const observer = createRequestObserver({ maxRetries: shortRetries, maxRetryDelayMs });
   const startedAt = Date.now();
   let recoveryStartedAt: number | undefined;
+  let rateLimitRetries = 0;
+  let streamRateLimit = false;
+  let shortLimitReached = false;
   return {
     enabled: true, maxRetries: 16, baseDelayMs: 1000, maxDelayMs: Math.min(20_000, maxRetryDelayMs),
     fetch: observer.fetch,
     beforeAttempt: observer.reset,
-    shouldRetry(message: any, _phase: { responseStarted: boolean }) {
+    shouldRetry(message: any, { responseStarted }: { responseStarted: boolean }) {
       const seen = observer.snapshot();
       const text = normalizePiErrorMessage(message?.errorMessage) || "";
-      if (seen.veto || seen.delayLimit || seen.shortPolicy || seen.terminal || TERMINAL_PROVIDER_ERROR.test(text)
-        || /\b429\b|rate.?limit|too many requests/i.test(text)
+      streamRateLimit = /\b429\b|rate.?limit|too many requests/i.test(text);
+      if (seen.veto || seen.delayLimit || seen.shortPolicy || seen.terminal || isTerminalProviderFailure(text, streamRateLimit)
         || failureKindForPiError(text, {}) !== "provider_unavailable") return false;
       if (seen.status !== undefined && seen.status >= 400 && seen.status < 500) return false;
+      if (streamRateLimit) {
+        // A 200 stream or websocket can throttle after start, outside the fetch
+        // seam's short HTTP policy. Retain only legacy 1/2/4 s recovery here.
+        if (!responseStarted) return false;
+        if (rateLimitRetries >= REQUEST_RETRY_LIMIT) { shortLimitReached = true; return false; }
+        rateLimitRetries++;
+        recoveryStartedAt ??= Date.now();
+        return true;
+      }
       // SDKs flatten even invalid fetch arguments to "Connection error.". Do not
       // turn an observed programming/config error into an outage on that basis.
       if (seen.httpPhase === "pre-response" && !seen.transportFailure && !/timed? ?out|ETIMEDOUT/i.test(text)) return false;
@@ -100,6 +112,12 @@ function outageRequestPolicy(shortRetries: number, maxRetryDelayMs: number, budg
       const remaining = budgetMs - (Date.now() - (recoveryStartedAt ?? Date.now()));
       const serverDelay = observer.snapshot().serverDelayMs ?? 0;
       if (remaining <= 1 || serverDelay >= remaining) return null;
+      if (streamRateLimit) {
+        const delay = Math.min(REQUEST_RETRY_BASE_DELAY_MS * 2 ** (rateLimitRetries - 1), maxRetryDelayMs);
+        // Do not stretch a short stream-throttle schedule into an outage loop,
+        // or resend earlier than a provider lower bound. Fail if both cannot fit.
+        return serverDelay <= delay && delay < remaining ? delay : null;
+      }
       const delay = Math.max(serverDelay,
         Math.min(1000 * 2 ** (retry - 1), 20_000, maxRetryDelayMs) * (1 - Math.random() * 0.25));
       // Use the tail of the window too, without starting at/after expiry or
@@ -115,8 +133,10 @@ function outageRequestPolicy(shortRetries: number, maxRetryDelayMs: number, budg
       const transport = message.diagnostics?.findLast((entry: any) => entry.type === "provider_transport_failure");
       const cause = seen.cause ?? attributedCauseCode(transport?.error) ?? "unknown";
       const suffix = `[provider_retry phase=${responseStarted ? "post-response" : "pre-response"} http=${seen.httpPhase}`
-        + ` attempts=${attempts} http_sends=${observer.sends()} elapsed_ms=${Math.max(0, Date.now() - startedAt)} cause=${cause} exhausted=${seen.delayLimit ? "delay_limit" : reason}]`;
-      return { ...message, errorMessage: `${message.errorMessage || "Unknown provider error"} ${suffix}` };
+        + ` attempts=${attempts} http_sends=${observer.sends()} elapsed_ms=${Math.max(0, Date.now() - startedAt)} cause=${cause} exhausted=${seen.delayLimit ? "delay_limit" : shortLimitReached ? "attempt_limit" : reason}]`;
+      // Normalize anchored JSON/Codex envelopes before appending diagnostics;
+      // downstream normalizers must not have to parse JSON plus a text suffix.
+      return { ...message, errorMessage: `${normalizePiErrorMessage(message.errorMessage) || "Unknown provider error"} ${suffix}` };
     },
   };
 }

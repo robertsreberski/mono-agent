@@ -14,7 +14,7 @@
   minutes). Keep parent turns and Bedrock on their existing policy, ordinary
   throttling on short header-aware retries, and never replay tools. Zero restores
   legacy policy; inherited `piMaxRetries: 0` disables all request retries. Report
-  bounded request-attributed failure diagnostics after exhaustion. Resends can
+  bounded request-attributed diagnostics on request failure. Resends can
   duplicate provider billing; the window is not a hard request timeout.
 
 - Add an absolute proactive compaction ceiling, `runtime.compaction.maxInputTokens`,

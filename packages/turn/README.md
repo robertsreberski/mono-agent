@@ -1431,14 +1431,18 @@ In outage mode, adapters receive `maxRetries: 0`; the driver owns transient
 connection/server recovery before and after generation start. Ordinary 429 and
 HTTP 408/409 retain the native short, header-aware policy at a request-local
 fetch seam, only with replayable bodies. The two owners never retry the same
-failure. Auth/quota/context/validation/safety and retry-header vetoes remain
+failure. Post-start stream/websocket throttling outside the HTTP seam retains
+only three legacy short retries (1/2/4 seconds) inside the window, not the long
+schedule. Auth/quota/context/validation/safety and retry-header vetoes remain
 terminal. Cancellation interrupts sleeps; successful bodies retain streaming
 backpressure. Failed partials never enter retry context, and earlier tools and
 live inputs are never replayed.
 
 One window starts at the first eligible failure, with 1/2/4/8/16-second delays,
 a 20-second cap, downward jitter, server delay lower bounds and the existing
-per-delay ceiling. There are at most 16 resends; the default unjittered window
+per-delay ceiling. DNS/TLS errors surfacing as `fetch failed` can use the whole
+child window even when retries cannot repair the underlying configuration.
+There are at most 16 resends; the default unjittered window
 fits about nine, plus a shortened final wait toward expiry when permitted. No
 driver resend starts after expiry. This is not a hard
 request timeout: worst-case time per router attempt is healthy work before
@@ -1447,7 +1451,8 @@ Codex native fallback/connect behavior can add time and requests; router
 attempts multiply windows, without relaxing the no-tool-turn-replay rule.
 Unknown-outcome resends may duplicate provider billing and lose usage reports.
 
-Exhaustion includes a bounded, request-attributed suffix (generation phase,
+Failures, including non-retried terminal failures, include a bounded,
+request-attributed suffix (generation phase,
 observed HTTP phase, driver attempts, observed HTTP sends, elapsed request time,
 allowlisted cause or unknown, exhaustion reason). Generation pre-response is
 pre-`start`, not necessarily pre-headers; websocket handshake/send counts remain
