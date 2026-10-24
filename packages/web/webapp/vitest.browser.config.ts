@@ -54,6 +54,15 @@ export default defineConfig({
           provide: { providerUsageTouch: false },
           context: { viewport: { width: 1440, height: 1000 }, hasTouch: false },
         },
+        // Local iOS-engine coverage without requiring WebKit in the existing
+        // Chromium-only CI/standalone installation: WEBAPP_TEST_WEBKIT=1.
+        ...(process.env.WEBAPP_TEST_WEBKIT === "1" ? [{
+          browser: "webkit" as const,
+          name: "webkit-chat",
+          include: ["src/components/Chat.browser.test.tsx"],
+          exclude: ["src/**/!(Chat).browser.test.tsx"],
+          context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
+        }] : []),
         // Instance include patterns merge with the suite's include; explicitly
         // exclude other files so only this regression gets a second context.
         {
