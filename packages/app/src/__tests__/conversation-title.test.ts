@@ -197,7 +197,7 @@ it("keeps the real title producer and web consumer wire identity and bounds in p
       expect(conversationTitleFromFrame(completed(tool.name, { ...result, isError: true }))).toBeUndefined();
       expect(conversationTitleFromFrame(completed(tool.name, { structuredContent: { schema: 2, title } }))).toBeUndefined();
     }
-    for (const title of ["", "  \n  ", "x".repeat(bound + 1), "🪁".repeat(bound / 2) + "x", "bad\u0000title"]) {
+    for (const title of ["", "  \n  ", "x".repeat(bound + 1), "🪁".repeat(bound / 2) + "x", "🪁".repeat(bound / 2 + 1), "bad\u0000title"]) {
       const result = await client.callTool({ name: tool.name, arguments: { title } });
       expect(result.isError).toBe(true);
       for (const name of identities) expect(conversationTitleFromFrame(completed(name, result))).toBeUndefined();

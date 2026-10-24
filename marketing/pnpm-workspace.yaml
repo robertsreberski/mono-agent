@@ -16,6 +16,8 @@ allowBuilds:
 
 # Security floors for transitive Astro dependencies (mirrors website/ pins).
 overrides:
+  undici: 8.12.2
+  zod: 4.6.6
   devalue: 5.9.3
   js-yaml: 4.3.2
   nanoid: 3.3.18

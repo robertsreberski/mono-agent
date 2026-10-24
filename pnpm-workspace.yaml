@@ -24,6 +24,9 @@ minimumReleaseAge: 0
 # Security floors for production transitive ranges. Keep these exact so the
 # advisory gate and every packed consumer resolve the reviewed fixed versions.
 overrides:
+  undici: 8.12.2
+  body-parser: 2.4.0
+  zod: 4.6.6
   '@xmldom/xmldom': 0.9.12
   '@modelcontextprotocol/sdk': 1.32.1
   fast-uri: 3.1.7

@@ -17,6 +17,11 @@ const SET_CONVERSATION_TITLE_INPUT = z.object({
     .trim()
     .min(1)
     .max(SET_CONVERSATION_TITLE_MAX_CHARACTERS)
+    // Zod counts code points; the existing web wire limit counts UTF-16 units.
+    .refine(
+      (value) => value.length <= SET_CONVERSATION_TITLE_MAX_CHARACTERS,
+      "title exceeds the UTF-16 length limit",
+    )
     .refine(
       (value) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value),
       "title contains unsupported control characters",

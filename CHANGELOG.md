@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix body parsing, HTTP fetch and schema-validation denial-of-service
+  vulnerabilities in the framework and bundled web apps. The managed sandbox
+  runtime retains its pinned schema library pending an upstream-compatible fix;
+  its validation is limited to host-generated sandbox settings.
+
 - Fix MCP SDK security vulnerabilities. HTTP and SSE MCP clients now reject
   cross-origin redirects; configure the final endpoint URL for servers that
   redirect to another host or port.
