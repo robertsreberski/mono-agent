@@ -598,7 +598,7 @@ describe("sessionToolHistorySection continuity (schema v3)", () => {
     expect(section.details.join("\n")).not.toMatch(/upgrade is pending|newer|downgrade|Morgan|Avery|web:alpha/iu);
   });
 
-  it("reports unresolved and abandoned generations as waiting without exposing content", async () => {
+  it("reports unresolved generations as waiting and abandoned gaps without exposing content", async () => {
     const root = await tempRoot();
     const writer = await openWriter(root, { continuityEnabled: true });
     await publishContinuity(writer, continuityPreparation("web:alpha", ["Morgan chose the cobalt design."]));
@@ -615,6 +615,23 @@ describe("sessionToolHistorySection continuity (schema v3)", () => {
     expect(section.details.join("\n")).toContain("1 unresolved continuity generation(s) are prepared but not committed");
     expect(section.details.join("\n")).toContain("1 abandoned continuity generation(s) are retained as content-free coverage gaps");
     expect(section.details.join("\n")).not.toMatch(/Unpublished fictional|Superseded fictional|web:beta|web:gamma/u);
+  });
+
+  it("keeps coverage gaps informational: abandoned generations alone leave the section ok", async () => {
+    const root = await tempRoot();
+    const writer = await openWriter(root, { continuityEnabled: true });
+    await publishContinuity(writer, continuityPreparation("web:alpha", ["Morgan chose the cobalt design."]));
+    const abandoned = continuityPreparation("web:gamma", ["Superseded fictional reply."]);
+    await writer.prepareContinuity(abandoned);
+    await expect(writer.reconcileContinuity({ conversationId: abandoned.conversationId, canonicalDigest: digest("web:gamma:advanced") }))
+      .resolves.toMatchObject({ status: "abandoned" });
+    await writer.close();
+
+    const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(section.status, section.details.join("\n")).toBe("ok");
+    expect(section.details).toContain("Continuity generations: 1 committed, 0 unresolved, 1 abandoned (coverage gaps).");
+    expect(section.details.join("\n")).toContain("1 abandoned continuity generation(s) are retained as content-free coverage gaps (informational)");
+    expect(section.details.join("\n")).not.toMatch(/Superseded fictional|web:gamma/u);
   });
 
   it("reports quota-degraded continuity as waiting while pinned evidence stays counted", async () => {

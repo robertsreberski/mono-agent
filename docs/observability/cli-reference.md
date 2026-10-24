@@ -408,9 +408,11 @@ two content-free lines: continuity records, tombstones, pins and retained text
 bytes, and committed, unresolved (prepared) and abandoned generations.
 Continuity text counts toward the shared retained-payload budget shown above. The
 section is `waiting` while prepared generations await their conversation's next
-owned reconciliation, while abandoned generations remain as coverage gaps, or
-when pinned evidence has exhausted the shared budget (quota-degraded continuity
-refuses new reductions but keeps existing references readable). A v3 store
+owned reconciliation, or when pinned evidence has exhausted the shared budget
+(quota-degraded continuity refuses new reductions but keeps existing references
+readable). Abandoned generations are permanent, truthful coverage gaps for
+history that was never captured; doctor counts them as information only and
+does not change the section status. A v3 store
 missing any of `continuity_generations`, `continuity_records` or
 `continuity_pins` is a hard error. A v2 store prints no continuity lines.
 

@@ -223,10 +223,11 @@ function reportContinuity(
       `${String(continuity.prepared)} unresolved continuity generation(s) are prepared but not committed; ${liveOwner ? "the live writer's owning conversation" : "the owning conversation"} reconciles them before its next canonical mutation, and prepared evidence stays unreadable until then.`,
     );
   }
+  // Coverage gaps are permanent, truthful records of history that was never
+  // captured. Nothing can act on or wait them out, so they stay informational.
   if (continuity.coverageGaps > 0) {
-    worsen(
-      "waiting",
-      `${String(continuity.coverageGaps)} abandoned continuity generation(s) are retained as content-free coverage gaps: canonical history advanced past an unpublished preparation, so that evidence is reported as unavailable rather than recovered.`,
+    details.push(
+      `${String(continuity.coverageGaps)} abandoned continuity generation(s) are retained as content-free coverage gaps (informational): canonical history advanced past an unpublished preparation, so that evidence is reported as unavailable rather than recovered.`,
     );
   }
   if (continuity.degraded) {
