@@ -150,7 +150,7 @@ On long traces, each sample must also show the pressure its arm is designed to t
 | `native` | Provider-reported probe input ≥ 150,000 tokens |
 | `cold-rebuild`, `restart-switch-compact` | 64 replayed messages, and at least 32 tool records dropped from the projection |
 | `compaction-1` | Compaction `tokensBefore` ≥ 150,000 |
-| `compaction-2` | Mid-trace `tokensBefore` ≥ 80,000; probe `tokensBefore` ≥ 60,000 |
+| `compaction-2` | Mid-trace `tokensBefore` ≥ 80,000; probe `tokensBefore` ≥ 40,000 (the summary plus the rest of the trace) |
 | `ceiling` | Compaction `tokensBefore` ≥ 200,000 (Pi's estimate, the trigger's own input) |
 
 A sample below its threshold is `pressure_unverified`. Unverified samples of

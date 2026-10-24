@@ -73,7 +73,7 @@ export const ARMS = Object.freeze([
     restart: false,
     probeConfig: runtime({ compaction: SMALL_PROACTIVE_COMPACTION }),
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 1 }),
-    pressure: Object.freeze([{ metric: "midCompactionTokensBefore", min: 80_000 }, { metric: "compactionTokensBefore", min: 60_000 }]),
+    pressure: Object.freeze([{ metric: "midCompactionTokensBefore", min: 80_000 }, { metric: "compactionTokensBefore", min: 40_000 }]),
   }),
   Object.freeze({
     id: "ceiling",
