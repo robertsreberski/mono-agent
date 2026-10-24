@@ -993,7 +993,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await this.resetPhysicalConversation(conversationId, heldLogical);
       }
       await this.resetDirtyFencesForLogicalConversation(logicalId, heldLogical);
-      await this.continuity?.resetLogical({ conversationId: logicalId, assertOwned: () => heldLogical.assertOwned() });
+      await this.continuityAvailable(async () => await this.continuity?.resetLogical({ conversationId: logicalId, assertOwned: () => heldLogical.assertOwned() }));
       const releaseDiagnostics = await this.acquireRootTransaction(rootIdentity);
       try {
         await heldLogical.assertOwned();
@@ -1234,7 +1234,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               ...lastCommitBinding(current),
               providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(current.providerSession?.modelKey) },
             };
-            await this.continuity?.recoverCheckpoint({ conversationId: normalizedId, assertOwned: () => held!.assertOwned(), current: this.continuityState(current) });
+            await this.continuityAvailable(async () => await this.continuity?.recoverCheckpoint({ conversationId: normalizedId, assertOwned: () => held!.assertOwned(), current: this.continuityState(current) }));
             const inner = await this.prepareRecord(record, held, held.rootIdentity, undefined, retirementFence, undefined, false, undefined, "publish", [...current.messages, ...admitted]);
             held = undefined;
             let appendState: "open" | "committed" | "aborted" = "open";
@@ -1723,7 +1723,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               ...modelBinding(modelKey),
             },
           });
-          await this.continuity?.recoverCheckpoint({ conversationId: normalizedId, assertOwned: () => held.assertOwned(), current: this.continuityState(turnBaseRecord) });
+          await this.continuityAvailable(async () => await this.continuity?.recoverCheckpoint({ conversationId: normalizedId, assertOwned: () => held.assertOwned(), current: this.continuityState(turnBaseRecord) }));
           prepared = await this.prepareRecord(cleanRecord, held, rootIdentity, () => {
             turnSettled = true;
           }, fence, undefined, false, undefined, "publish", combined);
@@ -1939,8 +1939,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (this.continuity) {
       const checkpoint = evidence.status === "matched" ? evidence.latestCompaction : undefined;
       if (checkpoint && (evidence.status !== "matched" || checkpoint.journalId !== evidence.journalId || !evidence.operations.some((op) => op.operationId === checkpoint.operationId && op.type === "compaction"))) throw new Error("Durable summary checkpoint has contradictory native ownership.");
-      await this.continuity.recoverCheckpoint({ conversationId: payload.identity.historyBucket, assertOwned: () => held.assertOwned(),
-        current: this.continuityState(current), ...(checkpoint ? { evidence: checkpoint } : {}) });
+      await this.continuityAvailable(async () => await this.continuity?.recoverCheckpoint({ conversationId: payload.identity.historyBucket, assertOwned: () => held.assertOwned(),
+        current: this.continuityState(current), ...(checkpoint ? { evidence: checkpoint } : {}) }));
       if (checkpoint) await this.recordCheckpoint(payload.identity.historyBucket, held.rootIdentity, () => held.assertOwned(), payload.identity.turnId, "committed", checkpoint);
     }
     if (projection.outcome === "completed" && payload.identity.purpose === "execution" && liveMessages?.length) {
@@ -2013,7 +2013,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try { fence = await this.findDirtyFence(historyKey(conversationId), locksIdentity); }
     finally { await releaseSnapshot(); }
     if (fence?.kind !== "execution" && fence?.kind !== "compaction") {
-      await this.continuity?.recoverCheckpoint({ conversationId, assertOwned: () => held.assertOwned(), current: this.continuityState(canonical) });
+      await this.continuityAvailable(async () => await this.continuity?.recoverCheckpoint({ conversationId, assertOwned: () => held.assertOwned(), current: this.continuityState(canonical) }));
       if (fence === undefined && this.inspectProviderTurn !== undefined) {
         const releaseCleanup = await this.acquireRootTransaction(held.rootIdentity);
         try { await this.removePendingConversation(historyKey(conversationId), held.rootIdentity, () => held.assertOwned()); }
@@ -2095,8 +2095,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     runId: string, phase: "prepare" | "committed", evidence: RuntimeDurableCompactionCheckpoint): Promise<void> {
     if (!this.continuity) return;
     await assertOwned();
-    await this.continuity.checkpoint({ conversationId, assertOwned, runId, phase, evidence,
-      current: this.continuityState(await this.readRecord(conversationId, rootIdentity)) });
+    const current = this.continuityState(await this.readRecord(conversationId, rootIdentity));
+    const record = async () => await this.continuity!.checkpoint({ conversationId, assertOwned, runId, phase, evidence, current });
+    if (phase === "prepare") await record(); // Refuse the cut when evidence cannot be staged.
+    else await this.continuityAvailable(record);
+    await assertOwned();
     await this.continuityPhase(phase === "prepare" ? "summary_prepared" : "summary_committed");
   }
 
@@ -2109,25 +2112,37 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       ...(validated.lastCommit === undefined ? {} : { settlement: { turnId: validated.lastCommit.turnId, outcome: validated.lastCommit.outcome } }),
       ...(validated.providerSession === undefined ? {} : { epoch: validated.providerSession.epoch, revision: validated.providerSession.revision ?? 0 }) };
   }
+  /** Optional participants cannot become a canonical availability dependency. */
+  private async continuityAvailable<T>(operation: () => Promise<T>): Promise<T | undefined> {
+    try { return await operation(); }
+    catch {
+      recordPostCommitMaintenanceFailure(this.root, new Error("Continuity is degraded; optional sidecar evidence is unavailable."));
+      return undefined;
+    }
+  }
   private async reconcileContinuity(id: string, rootIdentity: DirectoryIdentity, assertOwned: () => Promise<void>): Promise<void> {
     if (!this.continuity) return;
     await assertOwned();
-    await this.continuity.reconcile({ conversationId: id, assertOwned, current: this.continuityState(await this.readRecord(id, rootIdentity)) });
+    const current = this.continuityState(await this.readRecord(id, rootIdentity));
+    await this.continuityAvailable(async () => await this.continuity!.reconcile({ conversationId: id, assertOwned, current }));
+    await assertOwned();
   }
   private async prepareContinuity(record: CanonicalHistoryFile | null, id: string, rootIdentity: DirectoryIdentity,
     assertOwned: () => Promise<void>, action: "publish" | "reset" | "delete" = "publish", messages?: readonly HistoryMessage[]): Promise<PreparedContinuityPublication | undefined> {
     if (!this.continuity) return undefined;
     await this.reconcileContinuity(id, rootIdentity, assertOwned);
-    const publication = await this.continuity.prepare({ conversationId: id, assertOwned, action,
-      before: this.continuityState(await this.readRecord(id, rootIdentity)),
-      after: record === null ? { digest: null, messages: [] } : { ...this.continuityState(record), ...(messages === undefined ? {} : { messages }) } });
+    const before = this.continuityState(await this.readRecord(id, rootIdentity));
+    const after = record === null ? { digest: null, messages: [] } : { ...this.continuityState(record), ...(messages === undefined ? {} : { messages }) };
+    const publication = await this.continuityAvailable(async () => await this.continuity!.prepare({ conversationId: id, assertOwned, action, before, after }));
+    await assertOwned();
     await this.continuityPhase("continuity_prepared");
     return publication;
   }
   private async commitContinuity(publication: PreparedContinuityPublication | undefined, id: string, rootIdentity: DirectoryIdentity): Promise<void> {
     if (!publication) return;
     await this.continuityPhase("canonical_durable");
-    await publication.commit(this.continuityState(await this.readRecord(id, rootIdentity)));
+    const current = this.continuityState(await this.readRecord(id, rootIdentity));
+    await this.continuityAvailable(async () => await publication.commit(current));
     await this.continuityPhase("continuity_committed");
   }
 
@@ -2668,7 +2683,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const protectedNames = new Set(
       (await this.claims.scanActiveMarkers(true)).map((marker) => `${marker.conversationKey}${HISTORY_FILE_SUFFIX}`),
     );
-    if (this.continuity) for (const id of await this.continuity.protectedConversations()) protectedNames.add(`${historyKey(id)}${HISTORY_FILE_SUFFIX}`);
+    if (this.continuity) for (const id of await this.continuityAvailable(async () => await this.continuity!.protectedConversations()) ?? []) protectedNames.add(`${historyKey(id)}${HISTORY_FILE_SUFFIX}`);
     // Pending execution/compaction owners cannot be quota/age-evicted before
     // explicit settlement. No native inspection occurs under this transaction.
     const fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
@@ -3153,8 +3168,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           ) {
             // A legacy/non-P2 provider has no surviving checkpoint proof after
             // fail-closed retirement. Drop only its uncommitted cut preparation.
-            await this.continuity?.recoverCheckpoint({ conversationId: committedRecord.conversationId, assertOwned,
-              current: this.continuityState(committedRecord) });
+            await this.continuityAvailable(async () => await this.continuity?.recoverCheckpoint({ conversationId: committedRecord.conversationId, assertOwned,
+              current: this.continuityState(committedRecord) }));
             await this.rotateCommittedProviderEpoch(committedEntry, committedRecord, rootIdentity, assertOwned);
           }
         }

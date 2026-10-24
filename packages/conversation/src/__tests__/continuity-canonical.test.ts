@@ -56,6 +56,19 @@ describe("owned canonical continuity publication", () => {
     expect((await writer.stats()).continuity?.prepared).toBe(0);
   });
 
+  it.each(["prepare", "commit", "reconcile", "recoverCheckpoint", "protectedConversations"] as const)("isolates a throwing custom participant's %s from canonical availability", async phase => {
+    const dir = await root(), { continuity } = await setup(dir);
+    const fail = async () => { throw new Error("Fictional custom participant outage"); };
+    const participant = { ...continuity,
+      ...(phase === "commit" ? { prepare: async () => ({ commit: fail }) } : { [phase]: fail }) };
+    const store = createDurableHistoryStore({ root: dir, continuity: participant });
+    const turn = await store.beginProviderSessionTurn!(id, "fictional-custom-run");
+    await (await turn.prepareCommit([message("Canonical answer despite a custom outage.")], { providerSessionSynced: true })).commit();
+    expect((await store.load(id)).map(message => message.content)).toEqual(["Canonical answer despite a custom outage."]);
+    expect((await store.stats()).postCommitMaintenanceFailures).toBeGreaterThan(0);
+    await (await store.beginProviderSessionTurn!(id, "fictional-custom-next")).abort();
+  });
+
   it.each(["exclusive", "provider"] as const)("discards a %s turn's own uncompleted checkpoint before publication", async kind => {
     const { store, writer, reader } = await setup(await root());
     const turn = kind === "exclusive" ? await store.contextImport!.beginExclusiveTurn(id) : await store.beginProviderSessionTurn!(id, "fictional-checkpoint-run");
