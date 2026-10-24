@@ -217,6 +217,16 @@ individual WebFetch call may use `render: "always"` for a strict browser-first
 request.
 
 
+### Retained conversation evidence
+
+`runtime.session.continuity.enabled` defaults to false. It opts the configured
+host into sanitized retained conversation evidence and `ConversationHistory`,
+independent of memory and provider-session persistence. Absent, empty and
+explicit false resolve identically. Existing v2 sidecars are not upgraded while
+off; enabling performs a one-way v3 upgrade. Back up and stop older writers
+first. Disabling capture does not downgrade existing evidence or remove readers.
+See [retained evidence](../../docs/runtime/sessions-concurrency.md#retained-conversation-evidence-default-off).
+
 ### Dated conversation evidence
 
 `tools.conversationSearch.datedSnippets` defaults off and requires local BuJo

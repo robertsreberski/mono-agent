@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add OFF-default `runtime.session.continuity.enabled` configuration for
+  retained conversation evidence, independent of memory.
 - Add capability-gated continuity evidence storage to the conversation sidecar,
   with scoped digest-verifiable text, durable publication preparation and
   non-expiring reference pins; ordinary writers retain the existing v2 format.

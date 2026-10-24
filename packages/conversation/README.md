@@ -821,7 +821,23 @@ Every symbol exported by each public code entrypoint is listed below.
 
 ```text
 BuiltAgentContext
+CONTINUITY_USER_VERSION
 CONVERSATION_HISTORY_VERSION_MAX_BYTES
+ContinuityGetInput
+ContinuityGetResult
+ContinuityPin
+ContinuityPreparation
+ContinuityPublication
+ContinuityReceipt
+ContinuityReconciliation
+ContinuityReconciliationResult
+ContinuityRecordInput
+ContinuityRecordMetadata
+ContinuityScope
+ContinuitySearchInput
+ContinuitySearchPage
+ContinuitySource
+ContinuitySummary
 ConversationHarness
 ConversationHarnessError
 ConversationHarnessFailureError
@@ -864,6 +880,8 @@ acquireToolHistoryWriter
 bindProcessJobLiveInput
 classifyContinuationMcpServerTransport
 composeHostTurnEnvelope
+continuityGenerationId
+continuityRecordId
 createConversationHarness
 createConversationResponder
 createDurableHistoryStore

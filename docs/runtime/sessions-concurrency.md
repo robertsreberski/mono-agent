@@ -76,6 +76,37 @@ writers and back up the canonical history directory and any sessions root as a
 consistent snapshot. Older binaries cannot read version 3. Rollback requires
 stopping writers and restoring the backup, not disabling model switching.
 
+## Retained conversation evidence (default off)
+
+`runtime.session.continuity.enabled` defaults to `false`. Opting in retains
+sanitized user and assistant text, permitted tool text and the latest portable
+compaction summary in the existing conversation tool-history sidecar. It does
+not require a memory backend or a durable provider-session root. This is
+retrievable evidence, not an active-state ledger, automatic recall or permission
+to repeat an old action.
+
+```json
+{ "runtime": { "session": { "continuity": { "enabled": true } } } }
+```
+
+This is a partial configuration. Keep the usual model and identity settings.
+Stop older writers and back up canonical history and the sidecar together before
+enabling: the first capable writer upgrades the sidecar from SQLite v2 to v3.
+Disabled operation does not perform that upgrade. Existing v3 evidence remains
+readable after disabling new capture. Binary rollback requires stopped writers
+and a consistent backup; disabling a flag does not downgrade storage.
+
+`ConversationHistory`, when allowed by tool policy, searches and retrieves only
+the current logical conversation (including configured rollover buckets).
+Chunks are at most 8192 UTF-8 bytes and identify the retained text's digest,
+redaction and truncation. Retained records are bounded at 1 MiB; oversized text
+is explicitly omitted, never presented as lossless original text. Continuity and
+tool-lifecycle payloads share the existing 256 MiB retention budget. Live pins
+never silently expire: exhausted pinned capacity reports degraded continuity
+rather than invalidating references. Conversation reset and
+`restart --clear-sessions` remove this evidence with the existing sidecar.
+`SessionHistory` keeps its prior-run tool-lifecycle contract.
+
 ## Web-only durable model-switch opt-in
 
 Defaults retain cold model-change replay. After backing up consistent host history
