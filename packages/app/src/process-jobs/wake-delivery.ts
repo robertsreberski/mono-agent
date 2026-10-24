@@ -29,6 +29,7 @@ export interface WakeDecision {
 export interface ProcessJobWakeOperations {
   beginAttempt(jobId: string): Promise<WakeAttempt>;
   settleAttempt(jobId: string, attempt: WakeAttempt, result: NotifyDeliveryResult, decision: WakeDecision, silent: boolean): Promise<void>;
+  readResultReference(record: DurableProcessJobRecord): Promise<string | undefined>;
   readSalvage(record: DurableProcessJobRecord): Promise<SubagentSalvage | undefined>;
   updateSurface(projection: ProcessJobProjection): Promise<void>;
   updateSurfaceById(jobId: string): Promise<void>;
@@ -48,10 +49,11 @@ export async function deliverProcessJobWake(jobId: string, operations: ProcessJo
     const projection = projectProcessJob(record);
     await operations.updateSurface(projection);
     const salvage = await operations.readSalvage(record);
+    const resultReference = await operations.readResultReference(record);
     const result = await operations.wake({
       projection,
       prompt: processJobWakePrompt(projection, salvage, record.kind === "internal" && record.state === "interrupted"
-        && record.subagentOwnership?.disposition?.continuity === "unknown" && record.subagentOwnership.owner.settlement !== "not_started"),
+        && record.subagentOwnership?.disposition?.continuity === "unknown" && record.subagentOwnership.owner.settlement !== "not_started", resultReference),
       conversationId: record.origin.replyToConversationId,
       channel: record.origin.channel,
       deliveryKey: record.wake.deliveryKey,

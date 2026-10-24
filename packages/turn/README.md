@@ -1213,7 +1213,12 @@ Without the facade, `Agent` stays stateless and `AgentManage` is absent.
 
 Persistent Agent/AgentManage can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
-wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
+wake the exact origin. Every settled detached result persists its complete header,
+answer and activity through `persistArtifact`, including answers that need no
+truncation. The stdout JSON leads with `resultReference`, naming the absolute
+full-result artifact path (also in `artifacts`), or explicitly reporting that
+persistence was unavailable. The host exposes this reference independently of its
+bounded completion preview. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
 `AgentManage({id, stop:true})` cooperatively stops managed detached work without
 starting a new turn. Only a proven `resumable:true` receipt permits ordinary

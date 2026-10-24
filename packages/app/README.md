@@ -118,6 +118,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   routes, and `mono-agent jobs` CLI at the app boundary. This
   local contract does not resist a hostile same-UID provider; use OS privilege
   separation when that is in the threat model.
+- Retain each settled detached Agent/AgentManage final result as a private
+  tool-output artifact. Completion stdout JSON exposes its absolute path through
+  `resultReference` and `artifacts`; the parent wake leads with that reference
+  independently of output preview limits. Failed
+  persistence is explicit. Internal JSON is redacted by field before serialization;
+  HTTP-auth credential rules preserve ordinary digest/token/basic/bearer prose.
 - Keep persistent child incarnation/turn intents and minimal recovery fences in
   the owner-private registry. Abandoned linked turns cannot unblock without
   exact registered-owner proof; retained-root index failure blocks replacement

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix detached `Agent` and `AgentManage` completions to save full final results
+  and lead completion wakes with their artifact paths; report persistence failures
+  explicitly and preserve ordinary prose and JSON syntax during output redaction.
+
 - Keep the conversation composer docked when expanding background-agent jobs;
   prevent focus from scrolling the conversation's structural container.
 - Add an absolute proactive compaction ceiling, `runtime.compaction.maxInputTokens`,

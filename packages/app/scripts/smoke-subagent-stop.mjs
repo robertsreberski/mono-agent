@@ -1,8 +1,9 @@
 // Controlled transport, real built app/registry/job store and durable sessions.
 // Run after: pnpm --filter @mono-agent/app... run build
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
+import { resolve, isAbsolute } from "node:path";
+import { createToolHistoryArtifactSink } from "@mono-agent/conversation";
 import { registerHooks } from "node:module";
 
 const turnSourceRoot = new URL("../../turn/src/", import.meta.url).href;
@@ -42,9 +43,10 @@ let releaseLate;
 try {
   const stateDir = resolve(root, "jobs");
   const store = await openProcessJobStore(root, stateDir);
+  const wakes = [];
   service = await openProcessJobsService({ cwd: root, workspace: root, store,
     settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir, maxConcurrent: 1, maxQueued: 0 },
-    registration: {}, attestRegistration: async () => ({}), wake: async () => ({ delivered: true }),
+    registration: {}, attestRegistration: async () => ({}), wake: async (input) => { wakes.push(input); return { delivered: true }; },
   });
   await service.activateWakes();
   const registryRoot = resolve(root, "children");
@@ -77,7 +79,7 @@ try {
   } };
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model }, { conversationId: origin.conversationId, runId: "parent", instances }).subagents;
   subagents.backgroundSubagentController = service.internalController(origin, 0);
-  const context = { cwd: root, model: config.runtime.model, recoveryAccess: access };
+  const context = { cwd: root, model: config.runtime.model, recoveryAccess: access, persistArtifact: createToolHistoryArtifactSink({ artifactRoot: resolve(root, "artifacts"), runId: "parent" }) };
   const agent = createAgentTool(subagents, context); const send = createAgentManageTool(subagents, context);
   const toolBearing = deferred();
   faux.setResponses([
@@ -98,9 +100,22 @@ try {
   assert.equal(stored.subagentOwnership.instanceIncarnation, first.incarnation);
   assert.equal(stored.subagentOwnership.publication.receiptPending, false);
   let resumedContext;
-  faux.setResponses([(context) => { resumedContext = context; return fauxAssistantMessage([fauxText("resumed")]); }]);
+  const finalAnswer = `digest verification; token thresholds; basic setup; bearer of bad news; ${"Planning notes. ".repeat(2_000)}THE-END`;
+  faux.setResponses([(context) => { resumedContext = context; return fauxAssistantMessage([fauxText(finalAnswer)]); }]);
   const resumed = await send.execute("resume", { id: "helper", message: "continue same instance", background: true });
   await until(async () => (await service.get(resumed.details.jobId))?.wake.state === "delivered");
+  const completed = await service.get(resumed.details.jobId);
+  const stdout = JSON.parse(await readFile(resolve(stateDir, completed.output.stdoutRef), "utf8"));
+  const fullPath = stdout.artifacts[0];
+  assert.ok(isAbsolute(fullPath), `Expected an absolute artifact reference, got ${JSON.stringify(fullPath)}`);
+  assert.match(stdout.resultReference, /full result saved to:/);
+  assert.ok(completed.output.preview.startsWith(stdout.resultReference));
+  assert.ok(wakes.find((wake) => wake.projection.jobId === resumed.details.jobId).prompt.includes(fullPath));
+  const fullText = await readFile(fullPath, "utf8");
+  assert.ok(fullText.includes(finalAnswer));
+  assert.match(fullText, /<subagent:/);
+  assert.equal((await stat(fullPath)).mode & 0o777, 0o600);
+  assert.ok(stdout.answer.includes("digest verification; token thresholds"));
   assert.deepEqual(sessions, [first.sessionId, first.sessionId]);
   assert.match(JSON.stringify(resumedContext.messages), /remember smoke original context/);
   assert.match(JSON.stringify(resumedContext.messages), /smoke retained tool evidence/);
@@ -109,6 +124,7 @@ try {
   assert.equal((await instances.get("helper")).status, "closed");
   console.log(JSON.stringify({ scenario: "built-native-stop-resume-close", stopped: stopped.details.stop,
     sessionId: first.sessionId, instanceIncarnation: first.incarnation, resumedJobId: resumed.details.jobId,
+    fullAnswerArtifactVerified: true, wakeResultPathVerified: true, privateArtifactMode: "0600",
     priorContextVisible: true, toolResultPaired: true, releaseReceiptAcknowledged: true, finalStatus: "closed" }));
 
   // Exhausted provider failure: certify, inspect/ack, then continue the SAME child.

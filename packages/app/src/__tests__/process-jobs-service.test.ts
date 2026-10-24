@@ -4243,3 +4243,30 @@ describe("wake fence review regressions", () => {
     expect((await service.get(started.jobId))?.lastError).toEqual(processJobPublicError("process_job_wake_unknown"));
   });
 });
+
+it.each([1, 300])("delivers detached result paths with a %s-character preview and preserves long redacted JSON artifacts", async (previewChars) => {
+  const fixture = await createFixture({ previewChars });
+  const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+  const service = await startService(fixture, { wake });
+  await service.activateWakes();
+  const reference = "[full result saved to: /artifacts/child-full.txt]";
+  const prose = "digest verification; token thresholds; basic setup; bearer of bad news";
+  const answer = `${"Planning. ".repeat(1_500)}${prose}; Authorization: Digest username="morgan", realm="example", nonce="fictional-nonce", response="fictional-response"; ${"Conclusion. ".repeat(1_500)}THE-END`;
+  const started = await service.internalController(ORIGIN, 0).startInternal({
+    kind: "internal", tool: "Agent", jobId: randomUUID(), instanceId: "helper",
+    run: async () => ({ status: "ok", answer, output: JSON.stringify({ resultReference: reference, answer, artifacts: ["/artifacts/child-full.txt"] }) }),
+    cleanup: async () => {},
+  });
+  await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+  const projection = (await service.get(started.jobId))!;
+  parseProcessJobProjection(projection);
+  expect(projection.output.preview.length).toBeLessThanOrEqual(previewChars);
+  if (previewChars >= reference.length) expect(projection.output.preview.split("\n")[0]).toBe(reference);
+  expect(wake.mock.calls[0]?.[0].prompt).toContain(reference);
+  expect(projection.output.truncated).toBe(false);
+  const artifact = JSON.parse(await readFile(join(fixture.settings.stateDir, projection.output.stdoutRef!), "utf8"));
+  expect(artifact.answer).toContain(prose);
+  expect(artifact.answer.endsWith("THE-END")).toBe(true);
+  expect(artifact.answer).not.toMatch(/morgan|fictional-/u);
+  expect(artifact.artifacts).toEqual(["/artifacts/child-full.txt"]);
+});

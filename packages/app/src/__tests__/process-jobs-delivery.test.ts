@@ -87,6 +87,7 @@ it.each([
       return { record: { ...record, wake: { ...record.wake, attempts } }, previousDelivery: undefined };
     },
     updateSurface: async () => { events.push("surface"); },
+    readResultReference: async () => undefined,
     readSalvage: async () => undefined,
     wake: async (input) => {
       // The external edge must not be entered until its durable attempt exists.

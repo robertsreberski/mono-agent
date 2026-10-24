@@ -271,3 +271,9 @@ describe("argument preview redaction", () => {
     expect(isProcessJobSubagentProgress(snapshot)).toBe(true);
   });
 });
+
+it("preserves ordinary auth-like prose in progress answer excerpts", () => {
+  const progress = new SubagentJobProgress([]);
+  const answer = "digest verification, token thresholds, basic setup, bearer of bad news";
+  expect(progress.finish(answer)?.answerHead).toBe(answer);
+});
