@@ -288,7 +288,8 @@ export function traceTokenShape(trace) {
   }
   let records = 0; let projection = 0;
   for (const call of [...shape.calls].reverse()) {
-    const retained = call.bytes > 16 * 1024 ? 64 : call.bytes;
+    // Tool history keeps the first 16 KiB of an oversized result.
+    const retained = Math.min(call.bytes, 16 * 1024);
     if (records >= 32 || projection + retained > 64 * 1024) break;
     records += 1; projection += retained;
   }

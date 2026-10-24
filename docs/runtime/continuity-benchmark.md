@@ -73,7 +73,9 @@ Each generated trace has:
   window and the tool-projection bound (32 records or 64 KiB of newer
   retained results). There is also an identifier in the middle of a long
   result (the summary serializer keeps only result heads and tails), and one
-  at the head of an oversized result, with a superseded decoy.
+  at the head of an oversized result, with a superseded decoy. Tool history keeps
+  the first 16 KiB of an oversized result, so this late identifier is a control:
+  it should survive cold rebuild while its record is among the newest projected ones.
 - a secret-looking temporary password in a tool result, which must never be
   repeated verbatim (the `redaction` category);
 - a size target that puts Pi's own context estimate at the probe at about
