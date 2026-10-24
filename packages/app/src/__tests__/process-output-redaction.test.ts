@@ -71,12 +71,12 @@ it("keeps a long single-line JSON answer complete and parseable across credentia
 });
 
 it("keeps trusted artifact locations resolvable without exempting answer text or real secrets", () => {
-  const path = "/home/morgan/project/artifacts/full.txt";
-  const source = { resultReference: `[full result saved to: ${path}]`, artifacts: [path], answer: "/home/morgan fictional-private-token" };
-  const parsed = JSON.parse(redactStructuredProcessOutput(JSON.stringify(source), ["/home/morgan", "fictional-private-token"], false, ["fictional-private-token"]));
+  const path = "/home/example/project/artifacts/full.txt";
+  const source = { resultReference: `[full result saved to: ${path}]`, artifacts: [path], answer: "/home/example fictional-private-token" };
+  const parsed = JSON.parse(redactStructuredProcessOutput(JSON.stringify(source), ["/home/example", "fictional-private-token"], false, ["fictional-private-token"]));
   expect(parsed.artifacts).toEqual([path]);
   expect(parsed.resultReference).toContain(path);
-  expect(parsed.answer).not.toContain("/home/morgan");
+  expect(parsed.answer).not.toContain("/home/example");
   expect(parsed.answer).not.toContain("fictional-private-token");
   const credentialPath = { artifacts: ["/artifacts/fictional-private-token/full.txt"] };
   expect(redactStructuredProcessOutput(JSON.stringify(credentialPath), ["fictional-private-token"], false, ["fictional-private-token"])).not.toContain("fictional-private-token");
