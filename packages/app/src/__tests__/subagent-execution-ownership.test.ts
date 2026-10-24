@@ -11,7 +11,7 @@ const command = (): SubagentOwnedCommand => ({ id: randomUUID(), callKey: "attem
   cwd: "/worktree", sandboxSettingsPath: null, pid: 456, pgid: 456, incarnation, deadlineAt: 170_000 });
 
 describe("durable subagent ownership predicate", () => {
-  it.each(["queued", "running", "succeeded", "timed_out", "cancelled", "interrupted"])("ignores reporting status %s and settled wake when U/P remain", (state) => {
+  it.each(["queued", "running", "succeeded", "failed", "timed_out", "cancelled", "interrupted"])("ignores reporting status %s and settled wake when U/P remain", (state) => {
     const held = { kind: "internal" as const, state, wake: { state: "delivered" }, subagentOwnership: ownership() };
     expect(hasUnresolvedSubagentOwnership(held)).toBe(true);
     expect(hasPendingSubagentPublication(held)).toBe(true);
@@ -27,6 +27,17 @@ describe("durable subagent ownership predicate", () => {
     const value = ownership(); value.owner.settlement = "dead"; value.revoked = true;
     value.publication.state = "confirmed"; value.command = { ...command(), state }; value.seenCalls = [value.command.callKey];
     expect(isSubagentExecutionOwnership(value)).toBe(true);
+    expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(true);
+    value.command.state = "released";
+    expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(false);
+  });
+  it.each(["running", "terminating", "cleanup_unknown"] as const)("certified failed disposition cannot release a %s command", (state) => {
+    const value = ownership(); value.owner.settlement = "settled"; value.revoked = true;
+    value.disposition = { status: "failed", reason: "failed", continuity: "retained" };
+    value.publication = { sequence: 2, state: "confirmed", receiptPending: false };
+    value.command = { ...command(), state }; value.seenCalls = [value.command.callKey];
+    expect(isSubagentExecutionOwnership(value)).toBe(true);
+    expect(hasUnresolvedSubagentOwnership({ kind: "internal", subagentOwnership: value })).toBe(true);
     expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(true);
     value.command.state = "released";
     expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(false);

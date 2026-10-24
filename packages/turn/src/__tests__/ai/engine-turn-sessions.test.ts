@@ -2386,3 +2386,27 @@ it("refuses reconciliation of a legacy recovery-pending handle without evicting 
     expect(await recoverDurableNativeSession(failed.providerSessionRecovery, { appliedInputIds: [] })).toBe(true); expect(faux!.state.callCount).toBe(2);
   } finally { await disposeProviderSession(id); rmSync(root, { recursive: true, force: true }); }
 });
+
+it("certified failed recovery excludes partial assistant tool calls on continuation", async () => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-failed-context-")); const id = "failed-context";
+  const common = { sessionsRoot: root, sessionId: id, sessionKeepAlive: true, messages: [{ role: "user", content: "Fictional original input." }] };
+  try {
+    faux!.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")])]);
+    await generateEngineTurnResponse("Fictional instructions.", runOptions(model, common));
+    faux!.setResponses([fauxAssistantMessage([fauxText("failed partial draft"), fauxToolCall("Read", { file_path: "unused.txt" }, { id: "dangling-failed-call" })],
+      { stopReason: "error", errorMessage: "Fictional provider failure" })]);
+    const failed = await generateEngineTurnResponse("Fictional instructions.", runOptions(model, { ...common, sessionResume: true,
+      sessionRecovery: { runId: "failed-turn", revision: 0 } }));
+    expect(failed.error).toBeTruthy(); expect(failed.providerSessionRecovery).toBeDefined();
+    expect(await recoverDurableNativeSession(failed.providerSessionRecovery, { appliedInputIds: [] })).toBe(true);
+    let context: any;
+    faux!.setResponses([(input: any) => { context = input; return fauxAssistantMessage([fauxText("Continued safely.")]); }]);
+    const continued = await generateEngineTurnResponse("Fictional instructions.", runOptions(model, { ...common, sessionResume: true,
+      messages: [{ role: "user", content: "Re-check partial work." }] }));
+    expect(continued.error).toBeFalsy();
+    const messages = JSON.stringify(context.messages);
+    expect(messages).toContain("Fictional original input."); expect(messages).toContain("Fictional baseline.");
+    expect(messages).toContain("Re-check partial work."); expect(messages).not.toContain("dangling-failed-call");
+    expect(messages).not.toContain("failed partial draft");
+  } finally { await disposeProviderSession(id); rmSync(root, { recursive: true, force: true }); }
+});

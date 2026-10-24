@@ -32,6 +32,18 @@ describe("persistent subagent registry", () => {
     expect(retireSession).toHaveBeenCalledWith(created.sessionId, created.sessionsRoot);
     expect((await handle.get(created.id))?.status).toBe("closed");
   });
+  it.each(["retained", "unknown", "lost", "wrong-token", "cancelled"])("foreground failure retains only same-turn certified continuity: %s", async (mode) => {
+    const { handle, root, retireSession } = await setup();
+    const created = await handle.create(spec);
+    const begun = await handle.begin(created.id); const token = begun.activeTurn!.token;
+    const finished = await handle.finish(created.id, { status: mode === "cancelled" ? "cancelled" : "failed",
+      ...(mode === "lost" ? { failureKind: "session_continuity_lost" as const } : {}),
+      continuity: { turnToken: mode === "wrong-token" ? randomUUID() : token, state: mode === "unknown" ? "unknown" : "retained" } });
+    expect(finished.recovery).toMatchObject({ reason: mode === "lost" ? "session_continuity_lost" : mode === "cancelled" ? "cancelled" : "failed",
+      continuity: mode === "retained" ? "retained" : mode === "lost" ? "lost" : "unknown" });
+    const reloaded = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
+    expect((await reloaded.get(created.id))?.recovery).toEqual(finished.recovery);
+  });
   it("enforces capacity, duplicate ids, maxTurns, and concurrent turn exclusion across handles", async () => {
     const { registry, handle } = await setup({ maxPerConversation: 1, maxTurns: 1 });
     await expect(handle.create({ ...spec, id: "../bad" })).rejects.toThrow(/id must/u);

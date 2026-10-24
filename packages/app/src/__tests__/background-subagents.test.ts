@@ -2147,7 +2147,7 @@ it.each(["missing", "run", "revision", "session", "model", "tip", "false", "thro
     providerSessionId: fault === "session" ? "wrong" : instance.sessionId,
     modelKey: fault === "model" ? "wrong:model" : config.runtime.model.reference, tipId: fault === "tip" ? "" : "tip" };
   const recoverSession = vi.fn(async () => { if (fault === "throw") throw new Error("recovery failed"); return false; });
-  const runtime = { recoverSession, run: vi.fn(async (_prompt: string, _options: any) => ({ cancelled: true, providerSessionId: instance.sessionId,
+  const runtime = { recoverSession, run: vi.fn(async (_prompt: string, _options: any) => ({ error: "Fictional failure", providerSessionId: instance.sessionId,
     ...(fault === "missing" ? {} : { providerSessionRecovery: receipt }) })) };
   const options: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
     { conversationId: origin.conversationId, runId: "parent", instances: f.instances });
@@ -2156,6 +2156,93 @@ it.each(["missing", "run", "revision", "session", "model", "tip", "false", "thro
   expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ sessionRecovery: { runId: turnToken, revision: 0 } });
   expect(recoverSession).toHaveBeenCalledTimes(["false", "throw"].includes(fault) ? 1 : 0);
 });
+
+it.each([false, true])("certified failed child requires ack and continues same native context (background=%s)", async (background) => {
+  const owner = createMonoRuntime();
+  const f = await managedFixture(async (id, root) => owner.retireDurableSession!(id, root));
+  try {
+    await writeFile(resolve(f.root, "evidence.txt"), "fictional completed tool evidence");
+    const config = resolveJsonMonoAgentConfig({ cwd: f.root, json: {
+      runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: resolve(f.root, "IDENTITY.md") },
+      tools: { allowedTools: ["Agent", "AgentManage"] },
+      subagents: { enabled: true, instances: { root: resolve(f.root, "children") } },
+    } });
+    const piPath = fileURLToPath(new URL("../../../turn/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
+    const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
+    const models = createModels(); models.setProvider(faux.provider);
+    const calls: any[] = [];
+    let firstSettled: any;
+    const mutate = f.store.mutate.bind(f.store);
+    if (background) vi.spyOn(f.store, "mutate").mockImplementation(async (...args) => {
+      const result = await mutate(...args);
+      const id = calls[0]?.sessionRecovery?.runId;
+      const record = id ? await f.store.get(id) : undefined;
+      if (!firstSettled && record?.subagentOwnership?.owner.settlement === "settled") firstSettled = structuredClone(record.subagentOwnership);
+      return result;
+    });
+    const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: any) => {
+      calls.push(options);
+      return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+    } };
+    const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
+      { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
+    if (background) subagents.backgroundSubagentController = f.service.internalController(origin, 0);
+    const publications: any[] = [];
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        publications.push(publication);
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    const access = { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) };
+    const agent = createAgentTool(subagents, { cwd: f.root, model: config.runtime.model, recoveryAccess: access });
+    const send = presentTool(createAgentManageTool(subagents, { cwd: f.root, model: config.runtime.model, recoveryAccess: access }));
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "completed-read" })]),
+      fauxAssistantMessage([fauxText("failed draft"), fauxToolCall("Read", { file_path: "never.txt" }, { id: "dangling-read" })],
+        { stopReason: "error", errorMessage: "Fictional connection error" }),
+    ]);
+    const first = await agent.execute("failed", { id: "helper", persist: true, background, prompt: "original failed-turn input" });
+    if (background) expect((await done(f.service, first.details.jobId)).state).toBe("failed");
+    else expect(first.details.subagent.status).toBe("failed");
+    const original = (await f.instances.get("helper"))!;
+    expect(original).toMatchObject({ status: "idle", recovery: { reason: "failed", continuity: "retained" } });
+    expect(original.recovery).not.toHaveProperty("certifiedTimeout");
+    // Reload exercises the existing failed+retained persisted validators.
+    const reloaded = await f.registry.open(origin.conversationId, { existingOnly: true });
+    expect((await reloaded.get("helper"))?.recovery).toEqual(original.recovery);
+    await expect(send.execute("unacknowledged", { id: "helper", background, message: "do not admit" })).rejects.toThrow();
+    const inspected = (await send.execute("inspect", { id: "helper", inspect: true })).details.recovery;
+    expect(inspected).toMatchObject({ status: "ready", parentVerificationRequired: true, recovery: { reason: "failed", continuity: "retained" } });
+    expect(inspected.ack).toBeTypeOf("string"); expect(inspected.resumable).toBeUndefined();
+    if (background) {
+      // Inspect can publish as soon as this mutation releases the service lock:
+      // the first settled snapshot itself must already carry the disposition.
+      expect(firstSettled).toMatchObject({ disposition: { status: "failed", reason: "failed", continuity: "retained" } });
+      expect(publications.filter((entry) => entry.released).length).toBeGreaterThan(0);
+      expect(publications.filter((entry) => entry.released).every((entry) => entry.disposition.continuity === "retained" && entry.disposition.reason === "failed")).toBe(true);
+    }
+    let continued: any;
+    faux.setResponses([(input: any) => { continued = input; return fauxAssistantMessage([fauxText("continued")]); }]);
+    const request = { id: "helper", background, ack: inspected.ack, message: "verify partial work and finish" };
+    const next = await send.execute("continue", request);
+    if (background) expect((await done(f.service, next.details.jobId)).state).toBe("succeeded");
+    else expect(next.details.subagent.status).toBe("ok");
+    const final = (await f.instances.get("helper"))!;
+    expect(final.incarnation).toBe(original.incarnation); expect(final.sessionId).toBe(original.sessionId);
+    expect(calls).toHaveLength(2); expect(calls[1].sessionId).toBe(calls[0].sessionId);
+    const messages = JSON.stringify(continued.messages);
+    expect(messages).toContain("original failed-turn input"); expect(messages).toContain("fictional completed tool evidence");
+    expect(messages).toContain("previous turn failed (reason: failed)"); expect(messages).not.toContain("failed draft");
+    expect(messages).not.toContain("dangling-read");
+    // Every surviving tool result has a preceding native tool call, exactly once.
+    expect(continued.messages.filter((m: any) => m.role === "toolResult" && m.toolCallId === "completed-read")).toHaveLength(1);
+    const duplicate = await send.execute("duplicate", request);
+    expect(duplicate.details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_already_consumed" } });
+  } finally { await f.service.stop(); await owner.disposeAllSessions?.(); }
+}, 30_000);
 
 it.each(["cooperative", "late"])("certified %s detached child timeout resumes real Pi transcript without ack", async (mode) => {
   const releaseLate = deferred<void>();
