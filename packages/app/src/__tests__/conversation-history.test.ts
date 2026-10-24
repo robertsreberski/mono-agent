@@ -124,9 +124,9 @@ describe("ConversationHistory scoped evidence", () => {
   });
 
   it("reports redaction, oversize omission and retained coverage gaps without claiming complete history", async () => {
-    const f = await fixture(), redacted = preparation(["api_key=fictional_fixture_key_1234567890", "z".repeat(1024 * 1024 + 1)]); await publish(f.writer, redacted);
+    const f = await fixture(), redacted = preparation(["api_key=fixture-secret", "z".repeat(1024 * 1024 + 1)]); await publish(f.writer, redacted);
     const visible = body(handleConversationHistoryRequest(f.binding, { action: "get", recordId: redacted.records[0]!.recordId }));
-    expect(visible.record.redacted).toBe(true); expect(visible.chunk).not.toContain("fictional_fixture_key");
+    expect(visible.record.redacted).toBe(true); expect(visible.chunk).not.toContain("fixture-secret");
     expect(body(handleConversationHistoryRequest(f.binding, { action: "get", recordId: redacted.records[1]!.recordId }))).toMatchObject({ status: "available", record: { truncated: true, originalBytes: 1024 * 1024 + 1 }, chunk: "[continuity text omitted because it exceeded the record bound]" });
     const abandoned = preparation(["This unpublished text must not escape."]); await f.writer.prepareContinuity(abandoned);
     await f.writer.reconcileContinuity({ conversationId, canonicalDigest: sha("advanced") });

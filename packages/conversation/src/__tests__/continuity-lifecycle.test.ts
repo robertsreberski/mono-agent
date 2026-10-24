@@ -68,11 +68,11 @@ it("captures plain strings and joins all plain text blocks in order with truthfu
 
 it("sanitizes complete text and reports oversize omission with truthful multi-block byte counts", async () => {
   const f = await fixture();
-  await result(f.writer, "api_key=fictional_fixture_secret_1234567890", "redacted");
+  await result(f.writer, "api_key=fixture-secret", "redacted");
   const huge = "z".repeat(700_000);
   await f.writer.persist(binding, { phase: "result", toolCallId: "oversized", toolName: "Read", state: "success", content: [{ type: "text", text: huge }, { type: "text", text: huge }] });
   const found = f.reader.searchContinuity(scope).items;
-  expect(found.find(r => r.redacted)?.preview).not.toContain("fictional_fixture_secret");
+  expect(found.find(r => r.redacted)?.preview).not.toContain("fixture-secret");
   expect(found.find(r => r.truncated)).toMatchObject({ originalBytes: 1_400_001, truncated: true });
   expect(found.find(r => r.truncated)?.preview).toContain("exceeded the record bound");
 });
