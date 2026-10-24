@@ -297,3 +297,15 @@ it("limits schema chain eligibility to trusted provider dialect errors", async (
   expect(local("400 invalid request: missing required messages", "openai-completions")).toBe(false);
   expect(local("400 INVALID_ARGUMENT function_declarations[0].parameters: missing field type", "google-generative-ai")).toBe(true);
 });
+
+
+describe("request retry diagnostics do not change router taxonomy", () => {
+  it.each([401, 403, 429, 500, 503, 504])("ignores diagnostic elapsed_ms=%s and attributed causes", (elapsed) => {
+    const suffix = ` [provider_retry phase=pre-response http=pre-response attempts=3 http_sends=3 elapsed_ms=${elapsed} cause=ECONNRESET exhausted=budget]`;
+    for (const errorText of ["Connection error.", "Unknown upstream error", "401 Unauthorized", "insufficient_quota", "context_length_exceeded", "503 overloaded"]) {
+      expect(classifyFailure({ errorText: errorText + suffix })).toBe(classifyFailure({ errorText }));
+      expect(retryableProviderFailureInfo({ errorText: errorText + suffix, failureKind: "provider_unavailable" }))
+        .toEqual(retryableProviderFailureInfo({ errorText, failureKind: "provider_unavailable" }));
+    }
+  });
+});

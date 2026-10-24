@@ -223,6 +223,13 @@ describe("config reference", () => {
     expect(findUnknownAppConfigPaths({ observability: { unknown: [] } })).toEqual(["observability.unknown"]);
   });
 
+  it("describes the child-only bounded provider outage window", () => {
+    expect((buildMonoAgentConfigSchema().properties as Record<string, unknown>).subagents).toMatchObject({
+      properties: { providerRetryBudgetMs: { type: "integer", minimum: 0, maximum: 180_000, default: 120_000 } },
+    });
+    expect(findUnknownAppConfigPaths({ subagents: { providerRetryBudgetMs: 0 } })).toEqual([]);
+  });
+
   it("describes string and strict named subagent model choices", () => {
     const schema = buildMonoAgentConfigSchema();
     expect((schema.properties as Record<string, unknown>).subagents).toMatchObject({

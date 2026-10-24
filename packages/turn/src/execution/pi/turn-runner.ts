@@ -347,6 +347,12 @@ export async function buildTurnHarness(runState: PiRunState, {
 }: { session: PiSession; piModels: Models; model: PiModel; thinkingLevel: string; systemPrompt: string; outputSchema: any; tools: PiTool[]; toolExecutionMode: string; transport: string; maxRetries: number; maxRetryDelayMs: number; steeringMode: string; options: PiOptions }) {
   const providerCheckMaxTokens = options.providerCheckMaxTokens;
   const providerCheck = typeof providerCheckMaxTokens === "number" && Number.isSafeInteger(providerCheckMaxTokens) && providerCheckMaxTokens > 0;
+  // Only adapters proven to honor request-local fetch and zero internal retries
+  // participate. In particular Bedrock keeps its AWS SDK retry ownership.
+  const outageSupported = ["anthropic-messages", "openai-responses", "openai-codex-responses"].includes(model.api);
+  const retry = requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck,
+    retryBudgetMs: outageSupported ? options.piRequestRetryBudgetMs ?? 0 : 0 });
+  runState.requestRetry.outage = "outage" in retry && retry.outage === true;
   // Codex auto transport can resend via SSE even with a zero retry budget.
   const harness = await createHarnessAdapter(session, {
     session,
@@ -358,13 +364,13 @@ export async function buildTurnHarness(runState: PiRunState, {
     toolExecutionMode,
     silentTurnState: runState.silentTurn,
     onEffectiveEffort: options.onEffectiveEffort,
-    streamOptions: { transport: providerCheck ? "sse" : transport, maxRetries: providerCheck ? 0 : maxRetries, maxRetryDelayMs,
+    streamOptions: { transport: providerCheck ? "sse" : transport, maxRetries: providerCheck || runState.requestRetry.outage ? 0 : maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },
-    // Pi providers retry SDK-policy failures only before a response starts. The
-    // driver re-issues only a transient failure after the response started; the
-    // journaled partial keeps its usage and never reaches the retried context.
-    retry: requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck }),
+    // Legacy profiles split retries at provider start; outage profiles disable
+    // adapter retries and own both phases. Neither projects a failed partial
+    // into the retried context or re-runs an earlier tool.
+    retry,
     steeringMode,
     followUpMode: steeringMode,
     assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.sessionsRoot) : undefined,

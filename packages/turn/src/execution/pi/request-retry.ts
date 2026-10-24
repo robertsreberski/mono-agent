@@ -1,7 +1,7 @@
 // @ts-check
-// Mid-stream retry policy for one assistant request on the native driver.
+// Request retry profiles for one assistant request on the native driver.
 //
-// Layering (worst case per assistant request, per router attempt):
+// Legacy layering (worst case per assistant request, per router attempt):
 //   * pi-ai provider SDK retries (`piMaxRetries` = N) cover failures BEFORE a
 //     response starts; Codex additionally falls back from websocket to SSE
 //     before its first stream event.
@@ -9,12 +9,15 @@
 //     provider emitted `start`), which the SDK layer never repeats. It never
 //     retries a failure before `start`, so the two layers do not multiply on
 //     the same pre-response error.
+// Outage profile: adapter retries are zero; the driver owns connection/server
+// recovery in both phases, with disjoint short HTTP retries at the fetch seam.
 // A failed assistant message never executes tools and live input is only
 // consumed between requests, so the retried request repeats no effect.
 
 import { retryableProviderFailureInfo } from "../../telemetry/failure.js";
 import { normalizePiErrorMessage } from "../../providers/pi/errors.js";
 import { failureKindForPiError } from "./result-builder.js";
+import { attributedCauseCode, createRequestObserver, isTerminalProviderFailure } from "../../providers/pi/request-attempt.js";
 
 /** Additional attempts after a mid-stream failure (inherited Pi harness value). */
 const REQUEST_RETRY_LIMIT = 3;
@@ -44,25 +47,96 @@ export function isTransientRequestFailure(errorText: string | null | undefined):
  * Driver retry policy for one turn. `piMaxRetries: 0` disables it with the SDK
  * layer; provider checks stay single-shot.
  */
-export function requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck }: {
+export function requestRetryPolicy({ maxRetries, maxRetryDelayMs, providerCheck, retryBudgetMs = 0 }: {
     maxRetries: number;
     maxRetryDelayMs: number;
     providerCheck: boolean;
-}): {
-    enabled: boolean;
-    maxRetries: number;
-    baseDelayMs: number;
-    maxDelayMs: number;
-    shouldRetry: (message: any, { responseStarted }: {
-        responseStarted: boolean;
-    }) => boolean;
-} {
+    retryBudgetMs?: number;
+}) {
   const enabled = maxRetries > 0 && !providerCheck;
+  if (enabled && Number.isFinite(retryBudgetMs) && retryBudgetMs > 0) {
+    return {
+      enabled: true, outage: true, maxRetries: 16, baseDelayMs: 1000, maxDelayMs: Math.min(20_000, maxRetryDelayMs),
+      shouldRetry: (message: any, _phase: { responseStarted: boolean }) => isTransientRequestFailure(message?.errorMessage),
+      // A fresh controller for EACH assistant request, not for each turn/attempt.
+      createRequest: () => outageRequestPolicy(maxRetries, maxRetryDelayMs, Math.min(180_000, retryBudgetMs)),
+    };
+  }
   return {
     enabled,
     maxRetries: enabled ? REQUEST_RETRY_LIMIT : 0,
     baseDelayMs: REQUEST_RETRY_BASE_DELAY_MS,
     maxDelayMs: maxRetryDelayMs,
     shouldRetry: (message: any, { responseStarted }: { responseStarted: boolean; }) => responseStarted && isTransientRequestFailure(message?.errorMessage),
+  };
+}
+
+function outageRequestPolicy(shortRetries: number, maxRetryDelayMs: number, budgetMs: number) {
+  const observer = createRequestObserver({ maxRetries: shortRetries, maxRetryDelayMs });
+  const startedAt = Date.now();
+  let recoveryStartedAt: number | undefined;
+  let rateLimitRetries = 0;
+  let streamRateLimit = false;
+  let shortLimitReached = false;
+  return {
+    enabled: true, maxRetries: 16, baseDelayMs: 1000, maxDelayMs: Math.min(20_000, maxRetryDelayMs),
+    fetch: observer.fetch,
+    beforeAttempt: observer.reset,
+    shouldRetry(message: any, { responseStarted }: { responseStarted: boolean }) {
+      const seen = observer.snapshot();
+      const text = normalizePiErrorMessage(message?.errorMessage) || "";
+      streamRateLimit = /\b429\b|rate.?limit|too many requests/i.test(text);
+      if (seen.veto || seen.delayLimit || seen.shortPolicy || seen.terminal || isTerminalProviderFailure(text, streamRateLimit)
+        || failureKindForPiError(text, {}) !== "provider_unavailable") return false;
+      if (seen.status !== undefined && seen.status >= 400 && seen.status < 500) return false;
+      if (streamRateLimit) {
+        // A 200 stream or websocket can throttle after start, outside the fetch
+        // seam's short HTTP policy. Retain only legacy 1/2/4 s recovery here.
+        if (!responseStarted) return false;
+        if (rateLimitRetries >= REQUEST_RETRY_LIMIT) { shortLimitReached = true; return false; }
+        rateLimitRetries++;
+        recoveryStartedAt ??= Date.now();
+        return true;
+      }
+      // SDKs flatten even invalid fetch arguments to "Connection error.". Do not
+      // turn an observed programming/config error into an outage on that basis.
+      if (seen.httpPhase === "pre-response" && !seen.transportFailure && !/timed? ?out|ETIMEDOUT/i.test(text)) return false;
+      // Text alone is all APIConnectionError sometimes leaves us. Actual fetch
+      // and body read failures are also positive request-attributed evidence.
+      const eligible = seen.transportFailure || seen.bodyFailure || (seen.status !== undefined && seen.status >= 500)
+        || (!/429|rate.?limit/i.test(text) && (isTransientRequestFailure(text) || /fetch failed|\bEPIPE\b/i.test(text)));
+      if (eligible) recoveryStartedAt ??= Date.now();
+      return eligible;
+    },
+    retryDelay(retry: number) {
+      const remaining = budgetMs - (Date.now() - (recoveryStartedAt ?? Date.now()));
+      const serverDelay = observer.snapshot().serverDelayMs ?? 0;
+      if (remaining <= 1 || serverDelay >= remaining) return null;
+      if (streamRateLimit) {
+        const delay = Math.min(REQUEST_RETRY_BASE_DELAY_MS * 2 ** (rateLimitRetries - 1), maxRetryDelayMs);
+        // Do not stretch a short stream-throttle schedule into an outage loop,
+        // or resend earlier than a provider lower bound. Fail if both cannot fit.
+        return serverDelay <= delay && delay < remaining ? delay : null;
+      }
+      const delay = Math.max(serverDelay,
+        Math.min(1000 * 2 ** (retry - 1), 20_000, maxRetryDelayMs) * (1 - Math.random() * 0.25));
+      // Use the tail of the window too, without starting at/after expiry or
+      // violating a provider's lower bound. Recheck the clock after sleeping.
+      return Math.max(serverDelay, Math.min(delay, remaining - 1));
+    },
+    canStartAttempt: () => recoveryStartedAt === undefined || Date.now() - recoveryStartedAt < budgetMs,
+    finish(message: any, { responseStarted, attempts, reason }: { responseStarted: boolean; attempts: number; reason: string }) {
+      if (message.stopReason !== "error") return message;
+      const seen = observer.snapshot();
+      // Codex's request-local websocket diagnostic may retain a DIRECT code,
+      // but global undici correlation is deliberately never consulted here.
+      const transport = message.diagnostics?.findLast((entry: any) => entry.type === "provider_transport_failure");
+      const cause = seen.cause ?? attributedCauseCode(transport?.error) ?? "unknown";
+      const suffix = `[provider_retry phase=${responseStarted ? "post-response" : "pre-response"} http=${seen.httpPhase}`
+        + ` attempts=${attempts} http_sends=${observer.sends()} elapsed_ms=${Math.max(0, Date.now() - startedAt)} cause=${cause} exhausted=${seen.delayLimit ? "delay_limit" : shortLimitReached ? "attempt_limit" : reason}]`;
+      // Normalize anchored JSON/Codex envelopes before appending diagnostics;
+      // downstream normalizers must not have to parse JSON plus a text suffix.
+      return { ...message, errorMessage: `${normalizePiErrorMessage(message.errorMessage) || "Unknown provider error"} ${suffix}` };
+    },
   };
 }

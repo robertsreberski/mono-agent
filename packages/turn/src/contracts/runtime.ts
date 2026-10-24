@@ -18,6 +18,8 @@ export type RuntimeToolLifecycleSink = import("./events.js").RuntimeToolLifecycl
 
 
 export type RuntimeRunOptions = {
+  /** Request-local provider outage recovery window (0–180000 ms); default 0. */
+  piRequestRetryBudgetMs?: number;
   /**
    * Stable profile exposure, not execution authority.
    */

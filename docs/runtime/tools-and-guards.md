@@ -147,6 +147,16 @@ show the effective ceiling; the child timer and parent abort can stop commands
 sooner, as can the detached job deadline. Interactive parent turns and NodeRepl
 keep their 120-second caps. Child-owned background commands remain unsupported.
 
+**Provider outages.** `subagents.providerRetryBudgetMs` (integer 0–180000 ms,
+default 120000) gives each child assistant request a shared pre-/post-generation
+outage window on Anthropic, OpenAI Responses and Codex. Zero restores legacy;
+inherited `providers.piNative.piMaxRetries: 0` disables retries entirely. Parent
+turns, other adapters and Bedrock's AWS policy stay unchanged. Throttling keeps
+short header-aware handling, cancellation interrupts sleeps, and no tool is
+replayed. The window is not a hard request timeout; unknown-outcome resends can
+duplicate billing. Exhaustion retains bounded request-attributed phase/count/
+time/cause diagnostics. See [provider retry timing and ownership](/runtime/fallback/#child-provider-outage-window).
+
 **Guardrails.** A subagent is read-only unless its profile enumerates more (or,
 for one built at call time, unless its `tools` request survives the ceiling), and
 it never receives `Agent`, `AgentManage`, `AskUser`, or any channel-send tool — it cannot

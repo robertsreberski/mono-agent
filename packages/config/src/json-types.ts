@@ -167,6 +167,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
   };
   readonly peers?: Readonly<Record<string, { readonly sourceId: string }>>;
   readonly subagents?: {
+    /** Child provider outage recovery: 0–180000 ms, default 120000; 0 keeps legacy retries. */
+    readonly providerRetryBudgetMs?: number;
   readonly instances?: {
     /** Default true when subagents are enabled. */
     readonly enabled?: boolean;

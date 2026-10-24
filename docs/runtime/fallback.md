@@ -123,6 +123,12 @@ appended to it), emits `provider_retry_started` rather than a failover event, an
 appends its own `failoverHistory` entry carrying `retryIndex` — each retry keeps
 its own request id and failure subkind.
 
+### Legacy request retries
+
+Interactive parent turns and direct runtime calls keep the following legacy
+policy by default. Children use the outage profile below on supported adapters
+unless `subagents.providerRetryBudgetMs` is zero.
+
 Router attempts compose with provider-transport retries inside each Pi attempt.
 `providers.piNative.piMaxRetries` (0–8, default 2) sizes SDK retries before a
 response starts; zero disables budgeted retries. A connection lost before
@@ -180,6 +186,74 @@ assistant request before the chain advances. Durable native Web turns are
 primary-only, without router fallback or re-attempt, so their bound is 12
 requests and 4 started responses. These retries never replay tools or whole
 turns; a turn with several assistant requests can exceed a per-request bound.
+
+### Child provider outage window
+
+Native `Agent` children (foreground and background, persistent and stateless)
+default to `subagents.providerRetryBudgetMs: 120000` on Anthropic messages,
+OpenAI Responses and OpenAI Codex. This integer accepts 0–180000 milliseconds;
+zero restores the legacy profile. Direct runtime callers can opt in with
+`piRequestRetryBudgetMs` (default zero). Other adapters retain legacy behavior;
+Bedrock always keeps AWS SDK retry ownership. An inherited
+`providers.piNative.piMaxRetries: 0` disables both short and outage retries,
+even when the child window is positive.
+
+The outage profile passes **zero retries to the adapter**. The native driver
+owns transient connection/server failures both before and after generation
+starts, within one recovery window per assistant request. An opaque
+`Connection error.` or `fetch failed`, failed body read, websocket loss, timeout
+or transient 5xx/529 can recover. DNS/TLS failures that surface as `fetch failed`
+can also consume this whole window in children, even when retrying cannot repair
+the underlying configuration. Auth, quota, context, validation and safety
+failures never enter this window. `x-should-retry: false` vetoes resends.
+
+Ordinary 429 throttling and HTTP 408/409 keep short SDK-policy handling through
+pi-ai's native `retryProviderRequest` helper at a request-local fetch boundary:
+the existing `piMaxRetries` count, header precedence and abortable sleeps remain.
+A final short-policy failure never enters the long driver loop. A 200 response
+stream or Codex websocket that reports throttling after generation starts gets
+only the legacy three short driver retries (1/2/4 seconds, capped by
+`maxRetryDelayMs` and the remaining window), never the long outage schedule.
+A server delay that cannot fit that short schedule stops recovery instead.
+Only replayable
+request bodies (strings, byte arrays or cloned Requests) receive those short
+resends; other bodies return the first response unchanged. Successful bodies
+are not buffered, and backpressure/cancellation are preserved.
+
+Driver delays start at 1/2/4/8/16 seconds, then cap at 20 seconds, with up to 25%
+downward jitter and the existing `maxRetryDelayMs` ceiling. A provider-requested
+delay remains a lower bound; exceeding the delay cap fails instead. The recovery
+clock starts at the first eligible failure and never resets between phases.
+No new driver attempt starts at or after expiry. An independent limit permits
+at most 16 additional attempts (17 total); without jitter the default window
+normally fits nine resends at about 1,3,7,15,31,51,71,91,111 seconds and a final
+shortened wait toward expiry (subject to provider delay lower bounds). Cancellation
+interrupts either kind of backoff promptly; child/job deadlines still win.
+
+**This is not a hard request or turn timeout.** Worst-case wall time in each
+router attempt is healthy work before the first failure, plus the recovery
+window, plus the last in-flight request/transport duration. That final duration
+is not bounded by this setting: an attempt started before expiry may finish
+later, including its short HTTP-policy waits. Codex can additionally spend its
+15-second websocket connect timeout or perform its native pre-event SSE fallback
+and definite continuation corrections. Router re-attempts multiply independent
+windows; a multi-request turn has a separate window per assistant request.
+Router restrictions after tools/live input are unchanged: no tools or whole
+tool-bearing turns are replayed. Unknown-outcome request resends can cause
+**duplicate provider billing**, including usage the failed response never reports.
+
+Child request failures, including non-retried terminal failures, append a bounded
+diagnostic suffix: generation phase,
+observed HTTP phase, driver attempts, observed HTTP sends (fetch invocations, not proof of provider receipt), elapsed milliseconds,
+allowlisted attributed cause code (or `unknown`), and exhaustion reason. The
+elapsed value measures that assistant request, not the entire child turn.
+Generation `pre-response` means no provider `start` event, not necessarily no
+headers: HTTP error responses already have headers, and Codex websocket `start`
+waits for its first mapped event. HTTP phase is reported separately as
+`pre-response`, `post-response` or `unknown`; websocket handshakes/sends are not
+invented from fetch observations. Process-wide undici correlation is not an
+attributed cause. Warnings distinguish before/after generation start. Failed
+partials remain journaled and billed but absent from the resend context.
 
 Provider checks, compaction summaries and handoff summaries force SSE with zero
 retries and no mid-stream retry, avoiding

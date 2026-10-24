@@ -285,7 +285,7 @@ export function buildSubagentsOptions(
         sessionIdleTimeoutMs: subagents.instances?.idleTtlMs ?? 86_400_000,
         ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
       }),
-      ...configProviderOptions(config),
+      ...configProviderOptions(config, { subagent: true }),
       model: childModel,
       ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
       messages: [{ role: "user", content: composeHostTurnEnvelope(formatHostCapabilities(childCapabilityOptions), request.prompt) }],

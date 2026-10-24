@@ -125,9 +125,10 @@ export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOption
 }
 
 /** Provider transport/retry policy only; never inherit parent execution authority. */
-export function configProviderOptions(config: MonoAgentConfig): Partial<Pick<StaticRuntimeOptions, "piTransport" | "piMaxRetries" | "maxRetryDelayMs">> {
+export function configProviderOptions(config: MonoAgentConfig, { subagent = false }: { subagent?: boolean } = {}): Partial<Pick<StaticRuntimeOptions, "piTransport" | "piMaxRetries" | "maxRetryDelayMs" | "piRequestRetryBudgetMs">> {
   const piNative = config.providers?.piNative;
   return {
+    ...(subagent ? { piRequestRetryBudgetMs: config.subagents?.providerRetryBudgetMs ?? 120_000 } : {}),
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),

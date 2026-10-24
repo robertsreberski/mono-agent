@@ -73,8 +73,14 @@ const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?o
 // message_stop"): the transport dropped mid-response, not a request fault.
 const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|(?:websocket )?stream (?:ended|closed) before|socket hang up|und_err_socket|econnreset|premature close)\b/i;
 
+// Retry diagnostics are evidence, not provider text. In particular an elapsed
+// time containing 401/403/429 must not change auth or router classification.
+function classificationText(text: string): string {
+  return text.replace(/ \[provider_retry phase=(?:pre-response|post-response) http=(?:unknown|pre-response|post-response) attempts=\d{1,3} http_sends=\d{1,5} elapsed_ms=\d{1,16} cause=(?:unknown|EPIPE|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|UND_ERR_[A-Z_]{1,40}) exhausted=(?:budget|attempt_limit|non_retryable|delay_limit)\]/g, "");
+}
+
 export function isProviderAuthFailureText(text: string = ""): boolean {
-  return PROVIDER_AUTH_RE.test(text || "");
+  return PROVIDER_AUTH_RE.test(classificationText(text || ""));
 }
 
 /**
@@ -84,7 +90,7 @@ export function isProviderAuthFailureText(text: string = ""): boolean {
  * failures retain the terminal `usage_limit` classification.
  */
 export function isContextLimitFailureText(text: string = ""): boolean {
-  const value = String(text || "");
+  const value = classificationText(String(text || ""));
   if (/rate limit|too many requests/i.test(value)) return false;
   if (/output[_ ]tokens?|output[_ ]token[_ ]limit/i.test(value)) return false;
   return CONTEXT_LIMIT_RE.test(value);
@@ -122,7 +128,7 @@ export function retryableProviderFailureInfo({
   stderrTail = "",
   failureKind = null,
 }: { errorText?: string | null | undefined; stderrTail?: string | null | undefined; failureKind?: string | null | undefined; } | undefined = {}): RetryableProviderFailureInfo {
-  const haystack = `${errorText || ""}\n${stderrTail || ""}`.trim();
+  const haystack = classificationText(`${errorText || ""}\n${stderrTail || ""}`).trim();
   if (haystack.includes("subscription_sharing_usage_limit_exceeded")) {
     return { retryable: true, subkind: "subscription_limit", requestId: requestIdFromText(haystack) };
   }
@@ -216,7 +222,7 @@ export function classifyFailure({
 
   if (hint && FAILURE_KINDS.includes(hint)) return hint;
 
-  const haystack = `${errorText || ""}\n${stderrTail || ""}`;
+  const haystack = classificationText(`${errorText || ""}\n${stderrTail || ""}`);
   if (isContextLimitFailureText(haystack)) return "context_limit";
   if (USAGE_LIMIT_RE.test(haystack)) return "usage_limit";
   if (TOOL_FAILURE_RE.test(haystack)) return "tool_failure";

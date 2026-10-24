@@ -166,6 +166,14 @@ inspect, verify partial effects, then ack one continuation (also `background:tru
 for detached recovery). Lost/unknown continuity still requires close/create;
 only certified timeouts allow ordinary-message recovery without ack. Child runs
 forward configured provider retry/transport policy, preserving explicit zero.
+`subagents.providerRetryBudgetMs` defaults to 120000 ms (integer 0–180000) per
+assistant request on Anthropic, OpenAI Responses and Codex; 0 restores legacy.
+Inherited `providers.piNative.piMaxRetries:0` disables both retry kinds. Parent
+turns and Bedrock keep their existing policy. Ordinary throttling stays on short
+header-aware retries; outages share one pre/post-generation recovery window,
+never replaying tools. This is not a hard timeout and resends can duplicate
+provider billing. Exhaustion reports bounded attributed phase/count/time/cause
+facts, not process-wide transport correlation.
 Registries and session transcripts survive restarts and are
 removed by `restart --clear-sessions`. Instances are conversation-scoped and
 serialized; cross-conversation reuse is unsupported. With ProcessJobs enabled,

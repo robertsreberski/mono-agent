@@ -42,6 +42,7 @@ export function readSubagentsConfig(
   const definitions = readSubagentDefinitions(record.definitions, cwd);
   const models = readSubagentModels(record.models, definitions);
   return {
+    ...(record.providerRetryBudgetMs === undefined ? {} : { providerRetryBudgetMs: readSubagentInteger(record.providerRetryBudgetMs, "providerRetryBudgetMs", 0, 180_000) }),
     ...(record.enabled === undefined ? {} : { enabled: readSubagentBoolean(record.enabled, "enabled") }),
     ...(record.maxConcurrent === undefined ? {} : { maxConcurrent: readSubagentInteger(record.maxConcurrent, "maxConcurrent", 1, 10) }),
     ...(record.maxPerTurn === undefined ? {} : { maxPerTurn: readSubagentInteger(record.maxPerTurn, "maxPerTurn", 1, 200) }),

@@ -35,6 +35,7 @@ export type PiOptions = Omit<Partial<RuntimeRequest>, "liveInput" | "piToolExecu
   piResolvedCapabilities?: PiCapabilities;
   piMaxRetries?: number | string;
   maxRetryDelayMs?: number;
+  piRequestRetryBudgetMs?: number;
   piTransport?: "auto" | "sse" | "websocket" | "websocket-cached";
   customProvider?: any;
   context1MModels?: Record<string, boolean>;
@@ -61,7 +62,7 @@ export type PiRunState = Omit<NativeSessionState, "session" | "recoveryInputIds"
   assistantThinking: string[];
   textDeltaIndexes: Set<number>;
   thinkingDeltaIndexes: Set<number>;
-  requestRetry: { retries: number; failedAttempts: number | null; textMark: number; thinkingMark: number };
+  requestRetry: { outage?: boolean; retries: number; failedAttempts: number | null; textMark: number; thinkingMark: number };
   toolStartTimes: Map<string, number>;
   toolApprovals: Map<string, any>;
   turnCount: number;
