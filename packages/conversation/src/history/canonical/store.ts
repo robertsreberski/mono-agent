@@ -1200,6 +1200,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const assertCheckpointOwner = async () => { if (settled || prepared) throw new Error("Exclusive turn has settled."); await heldLogical.assertOwned(); };
       return {
         ...(this.continuity ? {
+          withContinuityOwner: async <T>(operation: () => Promise<T>): Promise<T> => await serialize(async () => {
+            await assertCheckpointOwner(); const result = await operation(); await assertCheckpointOwner(); return result;
+          }),
           prepareCompaction: async (checkpoint: RuntimeDurableCompactionCheckpoint) => await serialize(async () => await this.recordCheckpoint(normalizedId, heldLogical.rootIdentity, assertCheckpointOwner, `exclusive:${historyVersion}`, "prepare", checkpoint)),
           recordCompaction: async (record: MonoRuntimeCompactionRecord) => await serialize(async () => { if (record.checkpoint) await this.recordCheckpoint(normalizedId, heldLogical.rootIdentity, assertCheckpointOwner, `exclusive:${historyVersion}`, "committed", record.checkpoint); }),
         } : {}),
@@ -1610,6 +1613,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }), existing.native ? structuredClone(existing.native) : undefined);
       const checkpointOwner = async () => { if (turnSettled || prepared) throw new Error("Provider turn has settled."); await held.assertOwned(); };
       const compactionRecording = this.continuity ? {
+        withContinuityOwner: async <T>(operation: () => Promise<T>): Promise<T> => await serializeTurn(async () => {
+          await checkpointOwner(); const result = await operation(); await checkpointOwner(); return result;
+        }),
         prepareCompaction: async (checkpoint: RuntimeDurableCompactionCheckpoint) => await serializeTurn(async () => await this.recordCheckpoint(normalizedId, rootIdentity, checkpointOwner, normalizedRunId, "prepare", checkpoint)),
         recordCompaction: async (record: MonoRuntimeCompactionRecord) => await serializeTurn(async () => { if (record.checkpoint) await this.recordCheckpoint(normalizedId, rootIdentity, checkpointOwner, normalizedRunId, "committed", record.checkpoint); }),
       } : {};

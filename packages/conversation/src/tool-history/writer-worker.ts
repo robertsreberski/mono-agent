@@ -37,6 +37,7 @@ import {
   TOOL_HISTORY_RESULT_MAX_BYTES,
   type BoundedToolHistoryPayload,
 } from "./payload.js";
+import { captureFinalizedToolText } from "./continuity-lifecycle.js";
 import { isNestedHistoryTool, NESTED_HISTORY_OMISSION } from "./nested-history.js";
 import { ToolHistoryWriterError } from "./errors.js";
 import { continueToolHistoryOperationTail } from "./worker-queue.js";
@@ -75,8 +76,8 @@ class RunBindingConflictError extends WorkerHistoryError {
   readonly incidentKey: string;
   readonly detail: string;
 
-  constructor(incidentKey: string, detail: string) {
-    super("history_idempotency_conflict", "Run binding changed after tool history opened.");
+  constructor(incidentKey: string, detail: string, message = "Run binding changed after tool history opened.") {
+    super("history_idempotency_conflict", message);
     this.incidentKey = incidentKey;
     this.detail = detail;
   }
@@ -490,6 +491,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
         database.prepare("DELETE FROM artifact_refs WHERE conversation_id=? AND run_id=? AND tool_call_id=?")
           .run(binding.conversationId, binding.runId, toolCallId);
         const artifacts = insertArtifacts(database, binding, toolCallId, event.artifacts ?? [], now);
+        recordFinalizedText(database, binding, event, String(call.tool_name));
         resolveLifecycleIncidents(database, binding, toolCallId, "result");
         return persistence(recordId, sequence, bounded, artifacts);
       }
@@ -511,6 +513,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
         );
         return { persistence: "failed", errorCode: "history_idempotency_conflict" };
       }
+      recordFinalizedText(database, binding, event, String(call.tool_name));
       resolveLifecycleIncidents(database, binding, toolCallId, "result");
       return persistenceFromRow(existing, artifactRefs(database, binding, toolCallId));
     }
@@ -534,9 +537,32 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       recordId, binding, toolCallId, phase: "result", sequence, bounded,
     });
     const artifacts = insertArtifacts(database, binding, toolCallId, event.artifacts ?? [], now);
+    recordFinalizedText(database, binding, event, String(call.tool_name));
     resolveLifecycleIncidents(database, binding, toolCallId, "result");
     return persistence(recordId, sequence, bounded, artifacts);
   }, () => applyRetention(database, retention));
+}
+
+function recordFinalizedText(database: DatabaseSync, binding: ToolHistoryRunBinding,
+  event: Extract<RuntimeToolLifecycleEvent, { phase: "result" }>, toolName: string): void {
+  if (!continuityEnabled || binding.continuityEnabled !== true) return;
+  try {
+    captureFinalizedToolText(database, binding, event, toolName, retention,
+      (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records));
+  } catch (error) {
+    if ((error as { code?: string }).code === "continuity_quota_exhausted") {
+      // Ordinary tool execution must not fail because optional capture is full.
+      database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('continuity_degraded','quota')").run();
+      return;
+    }
+    if ((error as { code?: string }).code === "continuity_conflict") {
+      // Roll the entire lifecycle transaction back; count the incident in the
+      // existing post-rollback path, never publish a contradictory legacy row.
+      throw new RunBindingConflictError(lifecycleIncidentKey(binding, event.toolCallId, "result"),
+        "continuity:finalized_tool_identity_changed", "Retained tool text changed for an existing lifecycle identity.");
+    }
+    throw error;
+  }
 }
 
 function closeDangling(
@@ -1500,6 +1526,7 @@ function bindingOf(value: unknown): ToolHistoryRunBinding {
     runId: normalizeId(record.runId, "runId"),
     isolated: record.isolated === true,
     ...(record.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
+    ...(record.finalizedContinuity === true ? { finalizedContinuity: true as const } : {}),
   };
 }
 

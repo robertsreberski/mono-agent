@@ -434,6 +434,14 @@ payloads report tombstones or unavailability. Retained coverage gaps are reporte
 no result, empty search or gap count promises complete coverage. Nested history
 retrieval bodies are omitted from enabled capture and cold projections.
 
+Automatic tool-text capture requires the store's positive borrowed-owner
+capability. Successful, non-isolated plain-text results commit atomically with
+finalized lifecycle receipts, before the run ends and independently of the
+legacy JSON projection's smaller clipping limits. Multiple plain text blocks
+are joined with a single newline. Mixed/image/opaque/signed results, unfinished
+or interrupted results and nested history-tool bodies are not captured this
+way. Custom stores without that capability do not get an unowned fallback.
+
 This is historical evidence, not active-state maintenance. A generated summary
 cannot become an owner quotation or renew permission. Use `RunHistory` for run
 settlement/recovery, and `SessionHistory` for its unchanged prior-run tool-lifecycle

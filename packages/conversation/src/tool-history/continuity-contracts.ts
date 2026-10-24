@@ -45,7 +45,8 @@ export interface ContinuityPreparation {
   readonly generationId: string;
   readonly conversationId: string;
   readonly logicalConversationId: string;
-  /** Digest of the validated canonical representation; null means absent. */
+  /** Canonical digest (null when absent). The internal lifecycle worker uses a
+   * finalized receipt target only for its atomic, already-committed tool rows. */
   readonly beforeDigest: string | null;
   readonly afterDigest: string | null;
   readonly action?: "publish" | "reset" | "delete" | "checkpoint";

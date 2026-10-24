@@ -404,6 +404,16 @@ away unretained context. Explicit reset can stage a purge over a pending cut;
 an aborted purge leaves that preparation intact, and a published purge removes
 it with the other physical evidence.
 
+Successful non-isolated plain-text lifecycle results can be retained independently
+of the smaller legacy JSON projection. The configured harness borrows
+`withContinuityOwner` on the owned exclusive/provider/reconciliation turn, so
+lifecycle admission is serialized with commit/abort. Its callback must not
+reenter that turn. The fresh per-run `finalizedContinuity` worker capability is
+not persisted or inferred during recovery; custom stores without the positive
+owner port do not get an unowned fallback. The finalized receipt and retained
+text commit in the same FULL SQLite transaction. Mixed, opaque, signed,
+interrupted and nested-history results are not candidates for this capture.
+
 `searchContinuity` / `getContinuity` return scoped evidence, not instructions or
 new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests
 and explicit redaction/truncation/tombstone status. Retained text uses the same

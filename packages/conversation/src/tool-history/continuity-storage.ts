@@ -8,7 +8,7 @@ import {
   type ContinuityReceipt, type ContinuityReconciliation, type ContinuityReconciliationResult,
   type ContinuityRecordInput, type ContinuityStats,
 } from "./continuity-contracts.js";
-import { retainContinuityText } from "./continuity-payload.js";
+import { retainContinuityText, type RetainedContinuityText } from "./continuity-payload.js";
 import { ToolHistoryWriterError } from "./errors.js";
 import { normalizeId } from "./paths.js";
 
@@ -104,9 +104,16 @@ export function hasContinuitySchema(database: DatabaseSync): boolean {
 export function prepareContinuity(
   database: DatabaseSync, input: ContinuityPreparation, limits: Required<ToolHistoryRetentionOptions>,
   reserve: (bytes: number, records: number) => void,
+  // Worker-only capability: a successful text-only result and its lifecycle
+  // receipt commit in this SAME FULL transaction. Never accepted over IPC.
+  finalizedTool?: RetainedContinuityText,
 ): ContinuityReceipt {
   validateContinuityPreparation(input);
-  const records = input.records.map((record) => ({ record, retained: retainContinuityText(record.text) }));
+  if (finalizedTool !== undefined && (input.action !== "publish" || input.beforeDigest !== null
+    || input.records.length !== 1 || input.records[0]?.kind !== "tool" || input.records[0].text !== finalizedTool.text)) {
+    fail("continuity_invalid_preparation", "Finalized lifecycle publication requires exactly one tool result.");
+  }
+  const records = input.records.map((record) => ({ record, retained: finalizedTool ?? retainContinuityText(record.text) }));
   if (input.action === "checkpoint" && records.some(({ retained }) => retained.truncated)) {
     fail("continuity_summary_unavailable", "A compaction checkpoint cannot replace context with an omitted summary.");
   }
@@ -127,7 +134,7 @@ export function prepareContinuity(
   // A purge may supersede a pending cut without prematurely destroying its
   // recovery evidence. Other canonical mutations must first resolve that cut.
   const pending = database.prepare("SELECT action FROM continuity_generations WHERE conversation_id=? AND state='prepared'").all(input.conversationId) as Record<string, unknown>[];
-  if (pending.some((row) => !((input.action === "reset" || input.action === "delete") && row.action === "checkpoint"))) {
+  if (finalizedTool === undefined && pending.some((row) => !((input.action === "reset" || input.action === "delete") && row.action === "checkpoint"))) {
     fail("continuity_reconciliation_required", "An unresolved continuity publication must be reconciled under its conversation owner before mutation.");
   }
   for (const { record } of records) {
@@ -144,18 +151,19 @@ export function prepareContinuity(
   database.prepare("DELETE FROM metadata WHERE key='continuity_degraded'").run();
   const now = Date.now();
   database.prepare(`INSERT INTO continuity_generations
-    (generation_id,conversation_id,logical_id,before_digest,after_digest,preparation_digest,state,latest_summary_record_id,created_at_ms,action)
-    VALUES (?,?,?,?,?,?,'prepared',?,?,?)`).run(input.generationId, input.conversationId, input.logicalConversationId,
-      input.beforeDigest, input.afterDigest, preparationDigest, input.latestSummaryRecordId ?? null, now, input.action ?? "publish");
+    (generation_id,conversation_id,logical_id,before_digest,after_digest,preparation_digest,state,latest_summary_record_id,created_at_ms,action,committed_at_ms)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(input.generationId, input.conversationId, input.logicalConversationId,
+      input.beforeDigest, input.afterDigest, preparationDigest, finalizedTool === undefined ? "prepared" : "committed",
+      input.latestSummaryRecordId ?? null, now, input.action ?? "publish", finalizedTool === undefined ? null : now);
   for (const { record: r, retained: t } of records) {
     database.prepare(`INSERT INTO continuity_records
       (record_id,generation_id,run_id,input_id,kind,seq,retained_text,text_sha256,original_bytes,retained_bytes,
-       redacted,truncated,provenance,source_json,summary_json,created_at_ms)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(r.recordId, input.generationId, r.runId, r.inputId ?? null,
+       redacted,truncated,provenance,source_json,summary_json,created_at_ms,finalized)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(r.recordId, input.generationId, r.runId, r.inputId ?? null,
         r.kind, r.sequence, t.text, t.sha256, t.originalBytes, t.retainedBytes, t.redacted ? 1 : 0,
-        t.truncated ? 1 : 0, r.provenance, JSON.stringify(r.source ?? {}), r.summary === undefined ? null : JSON.stringify(r.summary), now);
+        t.truncated ? 1 : 0, r.provenance, JSON.stringify(r.source ?? {}), r.summary === undefined ? null : JSON.stringify(r.summary), now, finalizedTool === undefined ? 0 : 1);
   }
-  return { generationId: input.generationId, status: "prepared", recordIds: records.map((r) => r.record.recordId) };
+  return { generationId: input.generationId, status: finalizedTool === undefined ? "prepared" : "committed", recordIds: records.map((r) => r.record.recordId) };
 }
 
 export function commitContinuity(database: DatabaseSync, input: ContinuityPublication): void {

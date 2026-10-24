@@ -19,6 +19,10 @@
   digest-bound UTF-8 navigation and explicit incomplete/redacted evidence;
   enabled capture omits nested retrieval bodies. SessionHistory keeps its
   prior-run contract.
+- Retain permitted successful tool text under the existing conversation owner;
+  publish it atomically with finalized lifecycle receipts, independently of
+  clipped lifecycle JSON. Current-run retrieval never exposes a partial stream
+  or uses an unowned custom-store fallback.
 
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures

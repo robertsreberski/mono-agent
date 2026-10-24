@@ -40,6 +40,19 @@ describe("owned canonical continuity publication", () => {
     expect(records.every((r) => r.provenance === "unknown")).toBe(true);
   });
 
+  it.each(["exclusive", "provider"] as const)("serializes %s evidence admission before abort releases its borrowed owner", async (kind) => {
+    const { store } = await setup(await root());
+    const turn = kind === "exclusive" ? await store.contextImport!.beginExclusiveTurn(id) : await store.beginProviderSessionTurn!(id, "fictional-owned-run");
+    let entered!: () => void, release!: () => void, aborted = false;
+    const started = new Promise<void>(yes => { entered = yes; }), gate = new Promise<void>(yes => { release = yes; });
+    const publication = turn.withContinuityOwner!(async () => { entered(); await gate; return "admitted"; });
+    await started;
+    const abort = turn.abort().then(() => { aborted = true; });
+    await new Promise<void>(yes => setImmediate(yes)); expect(aborted).toBe(false);
+    release(); expect(await publication).toBe("admitted"); await abort; expect(aborted).toBe(true);
+    await expect(turn.withContinuityOwner!(async () => undefined)).rejects.toThrow("settled");
+  });
+
   it("clears physical evidence only with a durable reset, then allows new capture", async () => {
     const dir = await root(), { store, writer, reader } = await setup(dir);
     await store.append(id, [message("Old completed answer.")]);

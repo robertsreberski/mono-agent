@@ -69,6 +69,8 @@ beforeAll(async () => {
     "tool-history/persistence-coordinator",
     "tool-history/contracts",
     "tool-history/continuity-contracts",
+    "tool-history/continuity-lifecycle",
+    "tool-history/nested-history",
     "tool-history/continuity-payload",
     "tool-history/continuity-storage",
     "tool-history/continuity-reader",

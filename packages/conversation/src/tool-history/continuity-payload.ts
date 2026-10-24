@@ -18,8 +18,8 @@ export function retainContinuityText(value: string): RetainedContinuityText {
   const originalBytes = Buffer.byteLength(value, "utf8");
   // Do not inspect a clipped credential/path and accidentally retain its prefix.
   // Oversized input is explicitly omitted before security inspection.
-  const oversized = originalBytes > CONTINUITY_RECORD_MAX_BYTES;
-  const inspected = oversized ? "[continuity text omitted because it exceeded the record bound]" : value;
+  if (originalBytes > CONTINUITY_RECORD_MAX_BYTES) return omittedContinuityText(originalBytes);
+  const inspected = value;
   const sanitized = redactJsonValue(inspected, CONTINUITY_RECORD_MAX_BYTES, {
     contentPatternRedaction: true,
     visibleTextSanitization: {
@@ -35,6 +35,13 @@ export function retainContinuityText(value: string): RetainedContinuityText {
     originalBytes,
     retainedBytes: Buffer.byteLength(text, "utf8"),
     redacted: sanitized !== inspected,
-    truncated: oversized || text !== sanitized,
+    truncated: text !== sanitized,
   };
+}
+
+/** Preserve truthful size without joining an oversized multi-block result. */
+export function omittedContinuityText(originalBytes: number): RetainedContinuityText {
+  const text = "[continuity text omitted because it exceeded the record bound]";
+  return { text, sha256: createHash("sha256").update(text).digest("hex"), originalBytes,
+    retainedBytes: Buffer.byteLength(text), redacted: false, truncated: true };
 }

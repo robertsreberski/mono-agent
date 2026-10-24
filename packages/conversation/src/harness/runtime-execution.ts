@@ -38,6 +38,7 @@ interface HarnessRuntimeRouting {
   readonly recoveryRevision?: number | undefined;
   readonly turnRevision?: number | undefined;
   readonly reconciliation?: ConversationHistoryTurnReconciliation | undefined;
+  readonly withContinuityOwner?: ConversationHistoryTurnReconciliation["withContinuityOwner"] | undefined;
   readonly prepareCompaction?: ConversationHistoryTurnReconciliation["prepareCompaction"] | undefined;
   readonly recordCompaction?: ConversationHistoryTurnReconciliation["recordCompaction"] | undefined;
   readonly detachedHistoryOverride?: readonly HistoryMessage[];
@@ -496,16 +497,20 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           recordEvent: (event: RuntimeEventLike) => turnContinuityCollector.observeNativeEvent(event),
           recordToolLifecycle: (event: import("@mono-agent/turn/host/types").RuntimeToolLifecycleEvent) => turnContinuityCollector.admitToolLifecycle(event),
         }],
-        toolLifecycleSink: turnContinuityCollector.wrapToolLifecycleSink(
-          options.toolHistory?.writer.createSink({
-              conversationId: request.conversationId,
-              logicalConversationId: options.toolHistory?.logicalConversationId(request.conversationId)
-                ?? request.conversationId,
-              runId,
-              isolated: sessionIsolated,
-              ...(options.toolHistory?.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
-          }),
-        ),
+        toolLifecycleSink: turnContinuityCollector.wrapToolLifecycleSink(options.toolHistory === undefined ? undefined : async (event) => {
+          const persist = async (owned: boolean) => await options.toolHistory!.writer.createSink({
+            conversationId: request.conversationId,
+            logicalConversationId: options.toolHistory!.logicalConversationId(request.conversationId),
+            runId, isolated: sessionIsolated,
+            ...(options.toolHistory?.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
+            ...(owned ? { finalizedContinuity: true as const } : {}),
+          })(event);
+          const owner = routing.withContinuityOwner ?? reconciliation?.withContinuityOwner;
+          // Borrow the owner through admission to the existing worker queue.
+          // Deferred writes precede canonical prepare/reset barriers. Custom stores
+          // without this positive capability get no unowned capture fallback.
+          return options.toolHistory?.continuityEnabled === true && owner ? await owner(() => persist(true)) : await persist(false);
+        }),
         // Durable provider-session root is forwarded only for a host-history
         // coordinated turn. Custom stores and isolated runs cannot safely make
         // provider JSONL authoritative across a crash, so they stay in-memory.
