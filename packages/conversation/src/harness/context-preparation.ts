@@ -39,6 +39,7 @@ export async function prepareHarnessContext(
   readonly historyOmitted: boolean;
   readonly historyAsMessages: boolean;
   readonly toolHistoryProjection: string | undefined;
+  readonly toolProjectionRecords?: number;
 }> {
     const history = contextOptions.historyMode === "omitted"
       ? []
@@ -105,6 +106,7 @@ export async function prepareHarnessContext(
       history,
       historyOmitted: contextOptions.historyMode === "omitted",
       historyAsMessages: contextOptions.historyMode === "messages",
+      toolProjectionRecords: toolProjection?.recordCount ?? 0,
       toolHistoryProjection: contextOptions.historyMode === "messages" ? toolProjection?.text : undefined,
     };
 }

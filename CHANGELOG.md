@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add retained-versus-reconstructed context facts to session boundaries and
+  separate retained resumes from prompt-cache reseed diagnostics.
+- Fix automatic memory recall echoing earlier status from the same logical
+  conversation when source provenance is known; keep explicit recall unchanged.
+
 - Fix body parsing, HTTP fetch and schema-validation denial-of-service
   vulnerabilities in the framework and bundled web apps. The managed sandbox
   runtime retains its pinned schema library pending an upstream-compatible fix;

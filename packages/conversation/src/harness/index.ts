@@ -79,7 +79,7 @@ import {
 import { prepareConfiguredModelSwitch, type InternalNativeSwitchPolicy, type ConfiguredPreparedTurn } from "./configured-model-switch.js";
 import { coldReplayMessages, runHarnessRuntime } from "./runtime-execution.js";
 import { mergeRuntimeOptions } from "./runtime-options.js";
-import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./session-events.js";
+import { reconstructionFacts, sessionEventFromRecord, withSessionBoundaryTimestamp } from "./session-events.js";
 import { createSessionRuntimeResolver, ProviderSessionModelChangedError, type ProviderSessionHandle, type SessionRuntimeResolver } from "../sessions/runtime-owner.js";
 import { sessionModelKey } from "../sessions/model-key.js";
 import { retireRunResultSession } from "./session-retirement.js";
@@ -1157,6 +1157,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
         emit({
           type: "session_boundary",
           kind: "isolated",
+          context: "reconstructed",
           conversationId: request.conversationId,
           reason,
           timestamp: this.nowIso(),
@@ -1381,13 +1382,10 @@ export class ConversationHarnessImpl implements ConversationHarness {
       if (coldReason === undefined && confirmedWarmSession && sessionRecord?.recovery?.nextOutcome !== undefined) {
         const outcome = sessionRecord.recovery.nextOutcome;
         delete sessionRecord.recovery.nextOutcome;
-        emit({ type: "session_boundary", kind: "resume_replay", conversationId: request.conversationId,
+        emit({ type: "session_boundary", kind: "resume_replay", context: "retained", conversationId: request.conversationId,
           providerSessionId: providerAttributionSessionId, reason: `${outcome}_turn_resume`, timestamp: this.nowIso() });
       }
       if (coldReason !== undefined) {
-        emit({ type: "session_boundary", kind: "resume_replay",
-          conversationId: request.conversationId, providerSessionId: providerAttributionSessionId,
-          reason: coldReason, timestamp: this.nowIso() });
         this.publishSessionEvent({ kind: "cold", conversationId: request.conversationId,
           modelKey: requestedModelKey, reason: coldReason, snapshot: this.sessionStoreSnapshot() });
       } else if (!isolated && startedWithoutLocalSession && this.sessionsEnabled()) {
@@ -1408,6 +1406,12 @@ export class ConversationHarnessImpl implements ConversationHarness {
         isolated,
         ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
       }, emit);
+      if (coldReason !== undefined) {
+        const handoff = preparedNativeTurn !== undefined && coldReason === "model_change";
+        emit({ type: "session_boundary", kind: "resume_replay", context: handoff ? "handoff" : "reconstructed",
+          conversationId: request.conversationId, providerSessionId: providerAttributionSessionId,
+          reason: coldReason, ...(!handoff ? reconstructionFacts(prepared) : {}), timestamp: this.nowIso() });
+      }
       context = prepared.context;
       throwIfCancellationOwned();
 
@@ -1467,14 +1471,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
           provider_session_id: resumeSessionId,
         };
         emit(warning);
-        emit({
-          type: "session_boundary",
-          kind: "resume_replay",
-          conversationId: request.conversationId,
-          providerSessionId: resumeSessionId,
-          reason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result",
-          timestamp: this.nowIso(),
-        });
+        const staleResumeSessionId = resumeSessionId;
         await p2Turn?.claim("detached");
         await retireSessions(
           sessionRecord,
@@ -1491,6 +1488,16 @@ export class ConversationHarnessImpl implements ConversationHarness {
           isolated,
           ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
         }, emit);
+        emit({
+          type: "session_boundary",
+          kind: "resume_replay",
+          context: "reconstructed",
+          ...reconstructionFacts(prepared),
+          conversationId: request.conversationId,
+          providerSessionId: staleResumeSessionId,
+          reason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result",
+          timestamp: this.nowIso(),
+        });
         context = prepared.context;
         throwIfCancellationOwned();
         runtimeResult = await settleRuntime(runHarnessRuntime(

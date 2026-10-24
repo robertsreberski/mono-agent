@@ -131,18 +131,22 @@ function recallFixture() {
   };
 }
 
-function collectRun(events, response, labels) {
+export function collectRun(events, response, labels) {
   const requests = [];
   const contextUsageSnapshots = [];
   let currentRequest;
   let historyMode = "unknown";
   const compactionEvents = [];
   const reseedEvents = [];
+  const retainedResumeEvents = [];
+  const handoffEvents = [];
+  const historyReplayEvents = [];
+  const unclassifiedBoundaryEvents = [];
   const controlEvents = [];
   for (const event of events.slice(0, MAX_REPORT_EVENTS)) {
     if (event?.type === "turn_context") {
       historyMode = event.historyOmitted === true ? "provider-session" : Number(event.historyCount) > 0 ? "replayed" : "fresh";
-      if (event.historyOmitted !== true && Number(event.historyCount) > 0) reseedEvents.push({ kind: "canonical_history_replay", historyCount: Number(event.historyCount) });
+      if (event.historyOmitted !== true && Number(event.historyCount) > 0) historyReplayEvents.push({ kind: "canonical_history_replay", historyCount: Number(event.historyCount) });
     }
     if (event?.type === "prompt_cache_diagnostic") {
       currentRequest = { ...event, input: null, cacheRead: null, cacheWrite: null, output: null, cacheHitRatio: null, costUsd: null, costSource: "unavailable", historyMode };
@@ -155,13 +159,19 @@ function collectRun(events, response, labels) {
       if (currentRequest) Object.assign(currentRequest, snapshot, { cacheHitRatio: ratio({ input: snapshot.input ?? 0, cacheRead: snapshot.cacheRead ?? 0, cacheWrite: snapshot.cacheWrite ?? 0 }) });
     }
     if (event?.type === "context_compaction") compactionEvents.push({ status: event.status ?? "unknown", trigger: event.trigger ?? "unknown", tokensBefore: event.tokensBefore, tokensAfter: event.tokensAfter });
-    if (event?.type === "session_boundary" && event.kind === "resume_replay") reseedEvents.push({ kind: event.kind, reason: event.reason });
+    if (event?.type === "session_boundary") {
+      const boundary = { kind: event.kind, reason: event.reason, context: event.context };
+      if (event.context === "reconstructed") reseedEvents.push(boundary);
+      else if (event.context === "retained") retainedResumeEvents.push(boundary);
+      else if (event.context === "handoff") handoffEvents.push(boundary);
+      else unclassifiedBoundaryEvents.push(boundary);
+    }
     if (event?.type === "memory_recalled") controlEvents.push({ type: event.type, source: event.source, bytes: event.bytes });
     if (event?.type === "capabilities_resolved") controlEvents.push({ type: event.type, capabilitiesUsed: event.capabilitiesUsed });
   }
   const usage = response.metadata.runtime?.usage ?? {};
   const totals = { input: usage.input_tokens ?? null, cacheRead: usage.cache_read_tokens ?? null, cacheWrite: usage.cache_creation_tokens ?? null, output: usage.output_tokens ?? null, costUsd: usage.cost_usd ?? null, ...(usage.cost_usd === null && typeof usage.known_cost_usd === "number" ? { knownCostUsd: usage.known_cost_usd } : {}) };
-  return { ...labels, responseStatus: response.failure === undefined ? "ok" : "failed", historyMode, requests, contextUsageSnapshots, runTotals: { ...totals, cacheHitRatio: [totals.input, totals.cacheRead, totals.cacheWrite].every(Number.isFinite) ? ratio({ input: totals.input, cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite }) : null }, compactionEvents, reseedEvents, controlEvents };
+  return { ...labels, responseStatus: response.failure === undefined ? "ok" : "failed", historyMode, requests, contextUsageSnapshots, runTotals: { ...totals, cacheHitRatio: [totals.input, totals.cacheRead, totals.cacheWrite].every(Number.isFinite) ? ratio({ input: totals.input, cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite }) : null }, compactionEvents, reseedEvents, historyReplayEvents, retainedResumeEvents, handoffEvents, unclassifiedBoundaryEvents, controlEvents };
 }
 
 async function fakeProvider(fixturePath) {
@@ -264,11 +274,12 @@ async function preflight(argv) {
 }
 
 // Only pre-flight failures use natural exit; failures after runtime setup stay uncaught.
-const prepared = await preflight(process.argv.slice(2)).catch((error) => {
+const prepared = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  ? await preflight(process.argv.slice(2)).catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
   return undefined;
-});
+}) : undefined;
 if (prepared !== undefined) {
   const { args, scenario, output, fixtureTokens, requestedTransport, live } = prepared;
   const tempParent = join(WORKTREE, ".mono-agent", "cache-benchmark");
@@ -282,7 +293,7 @@ if (prepared !== undefined) {
     const fake = live === undefined ? await fakeProvider(fixturePath) : undefined;
     const measured = await runScenario({ args, root, model: live?.model ?? fake.model, transport: live?.transport ?? requestedTransport, runtimeOptions: live?.runtimeOptions ?? fake?.runtimeOptions ?? {}, piAuthPath: live?.piAuthPath, ceiling: live?.ceiling });
     const piPackage = JSON.parse(await readFile(join(piAiPackageRoot(), "package.json"), "utf8"));
-    const report = { schema: 2, mode: live === undefined ? "dry-run" : "live", scenario, model: (live?.model ?? fake.model).reference, effort: typeof args.effort === "string" ? args.effort : "none", transport: live?.transport ?? requestedTransport, piVersion: piPackage.version, sampling: { turns: boundedInteger(args.turns, scenario === "stateless" ? 34 : 4, "turns", 1, 40), repeats: boundedInteger(args.repeats, 1, "repeats", 1, 10), conversations: boundedInteger(args.conversations, scenario === "concurrent" ? 2 : 1, "conversations", 1, 8) }, fixture: { tokensRequested: fixtureTokens, bytes: Buffer.byteLength(fixture), sha256: hash(fixture) }, generatedAt: new Date().toISOString(), ...measured };
+    const report = { schema: 3, mode: live === undefined ? "dry-run" : "live", scenario, model: (live?.model ?? fake.model).reference, effort: typeof args.effort === "string" ? args.effort : "none", transport: live?.transport ?? requestedTransport, piVersion: piPackage.version, sampling: { turns: boundedInteger(args.turns, scenario === "stateless" ? 34 : 4, "turns", 1, 40), repeats: boundedInteger(args.repeats, 1, "repeats", 1, 10), conversations: boundedInteger(args.conversations, scenario === "concurrent" ? 2 : 1, "conversations", 1, 8) }, fixture: { tokensRequested: fixtureTokens, bytes: Buffer.byteLength(fixture), sha256: hash(fixture) }, generatedAt: new Date().toISOString(), ...measured };
     await mkdir(dirname(output), { recursive: true });
     await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
     process.stdout.write(`${JSON.stringify({ output: relative(WORKTREE, output), mode: report.mode, scenario, runs: report.runs.length, requests: report.runs.reduce((sum, run) => sum + run.requests.length, 0), cacheHitRatio: report.cumulativeTotals.cacheHitRatio })}\n`);

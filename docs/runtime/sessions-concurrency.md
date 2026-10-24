@@ -40,6 +40,33 @@ Boundary rules:
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
 | `mono-agent web-control reset` | Validated idle host admission, cooldown and quota metadata under `~/.mono-agent/web-control`; active requests prevent reset | Conversations, artifacts, documents and account quota; ordinary session resets and restarts preserve web-control state | CLI operational metadata only |
 
+## Boundary context telemetry
+
+Every built-in `session_boundary` includes `context`: `retained` means the
+provider kept its context; `reconstructed` means the next attempt builds context
+from canonical history rather than keeping the warm transcript. `handoff` denotes
+a structured native model handoff, not ordinary replay. Existing `kind` and
+`reason` values are unchanged; older/custom producers may omit `context`.
+
+- `cancelled_turn_resume` and `failed_turn_resume` are **retained**, despite the
+  historical `kind: "resume_replay"` name.
+- Default cold `model_change`, `legacy_unbound_model`, `cancelled_turn_reseed`,
+  `failed_turn_reseed`, `resume_error` and `runtime_result` are **reconstructed**.
+- Rollover and isolated proactive/continuation turns are **reconstructed**; they
+  do not claim to retain the interactive context. Router fallback/detached
+  context construction reports `resume_replay` / `detached_context` as
+  **reconstructed** when the host supplies that reconstruction. Native model
+  changes reported through this boundary use **handoff**, not reconstruction.
+
+Where available, reconstruction events include `replayedMessageCount`,
+`toolProjectionBytes`, `toolProjectionRecords` and `coverageStartTimestamp`
+(the first timestamped canonical message). These describe supplied evidence,
+not provider token occupancy, complete historical coverage, or proof of delivery.
+They contain no message or tool content. An ordinary cold durable reopen may
+supply canonical history which the runtime skips when its native journal exists;
+this is not proof of reconstruction and does not emit a new boundary merely
+because history was supplied. No rotation or replay policy changes here.
+
 ## Durable-history upgrade and rollback
 
 Every durable-history user upgrades one way, with or without `runtime.session.root`

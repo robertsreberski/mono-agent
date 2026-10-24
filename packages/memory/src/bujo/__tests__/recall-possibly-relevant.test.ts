@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MemoryDb } from "../../store/index.js";
 
 import {
   composeRecallBlock,
+  excludeSameConversationRecallHits,
   formatPossiblyRelevantBlock,
   POSSIBLY_RELEVANT_HEADING,
   POSSIBLY_RELEVANT_MAX_LINES,
@@ -174,4 +175,23 @@ describe("possibly-relevant selection", () => {
       new Map(), 500, "2026-09-25", "2026-09-25T05:00:00Z")?.content)
       .toContain("ended 2026-09-24T23:30:00-05:00");
   });
+});
+
+
+it.each([
+  ["web:thread-a", "web:thread-a"],
+  ["chat-a#2030-01-02", "chat-a#2030-01-01"],
+  ["chat-a", "chat-a#2030-01-01"],
+])("excludes known logical self-echo for %s without guessing unknown provenance", async (current, source) => {
+  const rows = [
+    { score: 0.99, record: { id: "self", text: "The fictional parcel has not been sent.", source: { session: source } } },
+    { score: 0.9, record: { id: "other", text: "Use a tracked parcel service.", source: { session: "other-chat" } } },
+    { score: 0.89, record: { id: "unknown", text: "Keep the shipping receipt.", source: {} } },
+  ];
+  expect(excludeSameConversationRecallHits(rows, current).map((row) => row.record.id)).toEqual(["other", "unknown"]);
+  const db = { recallWithOutcome: async () => ({ retrievalMode: "hybrid", hits: rows }), recordAccess: vi.fn() } as unknown as MemoryDb;
+  const block = await composeRecallBlock(db, "parcel", { conversationId: current });
+  expect(block?.content).not.toContain("has not been sent");
+  expect(block?.content).toContain("tracked parcel");
+  expect(block?.content).toContain("shipping receipt");
 });

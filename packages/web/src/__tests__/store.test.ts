@@ -2305,6 +2305,28 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("persists additive session boundary facts as opaque telemetry across reopen", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+    const event = { type: "runtime_telemetry" as const, kind: "session_boundary", data: {
+      kind: "resume_replay", reason: "model_change", context: "reconstructed", replayedMessageCount: 4,
+      toolProjectionBytes: 100, toolProjectionRecords: 1, coverageStartTimestamp: "2030-01-01T00:00:00Z",
+    } };
+    store.applyStreamFrames(turn.turnId, [{ kind: "event", event }]);
+    store.completeTurn(turn.turnId, "done");
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    try {
+      const assistant = reopened.getThreadDetail(thread.id)?.messages.find((message) => message.id === turn.assistantMessageId);
+      expect(assistant?.parts).toContainEqual({ type: "telemetry", event: "runtime_telemetry", data: event });
+    } finally { reopened.close(); }
+  });
+
   it("retains a lost manual compaction response as an unknown timeline row across restart", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

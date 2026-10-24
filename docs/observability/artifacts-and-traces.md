@@ -403,3 +403,14 @@ unsupported hosts complete normally without publishing it. A stale lock may be r
 an operator confirms that no root build remains active.
 
 To wire any of this up from code rather than config (custom hosts, embedding the runtime), see [Programmatic usage](/programmatic/).
+
+### Session boundary context facts
+
+Direct `session_boundary` events and their `runtime_telemetry` wrappers preserve
+optional `context` (`retained`, `reconstructed`, `handoff`),
+`replayedMessageCount`, `toolProjectionBytes`, `toolProjectionRecords` and
+`coverageStartTimestamp` in boundary timeline steps. Counts must be nonnegative
+safe integers; unknown dispositions are omitted. Legacy artifacts remain
+readable without these fields. These content-free facts describe supplied
+replay evidence, not complete history or provider token occupancy. See
+[boundary classification](/runtime/sessions-concurrency/#boundary-context-telemetry).

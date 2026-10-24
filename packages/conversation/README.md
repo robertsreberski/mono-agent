@@ -362,6 +362,12 @@ and root drain/serialization remain prerequisites for a supported opt-in.
 
 ## Architecture
 
+Session boundaries carry an additive `context` disposition (`retained`,
+`reconstructed`, or `handoff`) independently of historical `kind` and
+`reason`. Cancelled/failed warm resumes retain context; cold replay boundaries
+can include content-free canonical-message and tool-projection size facts.
+See [boundary telemetry](../../docs/runtime/sessions-concurrency.md#boundary-context-telemetry).
+
 Usage updates preserve inclusive billing totals while carrying optional
 context-eligible token counts for occupancy consumers. Settled failed manual
 compaction results are projected field by field, never returned as raw runtime

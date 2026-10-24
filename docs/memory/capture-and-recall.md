@@ -678,3 +678,19 @@ Retained-session de-duplication uses actual invocation receipts; a profile
 source ending sends one changed/empty profile replacement, not repeated text.
 Keep recency off until separately reviewed usefulness evidence supports it;
 scripted regressions are not real-model extraction or retrieval-quality proof.
+
+### Automatic recall and conversation provenance
+
+Automatic similarity recall excludes records whose known `source.session`
+matches the current logical conversation, including different daily
+`#YYYY-MM-DD` buckets. This prevents an earlier status from the active dialogue
+being reintroduced as current background. Filtering occurs before score/line
+selection; explicit `MemoryRecall`, including its original-query mode, remains
+unchanged. The standalone local store's automatic `load()` follows the same rule.
+
+Journal/Lite completed-turn projection and explicit Remember preserve the host
+conversation id in `source.session`. Web turns already use `web:<thread-id>`;
+no bare-thread-id alias is guessed. BuJo extraction and Markdown rebuilds may
+lack session provenance, and label/card readers do not expose it. Such unknown
+or legacy records keep their existing behavior: this is not a content-based
+staleness detector or a provenance migration.

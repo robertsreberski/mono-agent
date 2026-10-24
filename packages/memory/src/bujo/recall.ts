@@ -153,10 +153,25 @@ function clampLineBytes(text: string, maxBytes: number): string {
   return `${cut}…`;
 }
 
+/**
+ * Exclude only known source sessions from the same logical conversation.
+ * Daily host buckets share an owner; web ids already contain the `web:` prefix.
+ * Unknown/legacy provenance is deliberately not inferred from text or file paths.
+ */
+export function excludeSameConversationRecallHits<T extends { readonly record: {
+  readonly source?: { readonly session?: string };
+} }>(hits: readonly T[], conversationId: string): readonly T[] {
+  const logicalId = (id: string) => id.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
+  return hits.filter((hit) => {
+    const source = hit.record.source?.session;
+    return source === undefined || source.length === 0 || logicalId(source) !== logicalId(conversationId);
+  });
+}
+
 export async function composeRecallBlock(
   db: MemoryDb,
   query: string,
-  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal; asOf?: string; now?: string; intentExpiry?: boolean } = {},
+  options: { conversationId?: string; topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal; asOf?: string; now?: string; intentExpiry?: boolean } = {},
 ): Promise<MemoryBlock | undefined> {
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? POSSIBLY_RELEVANT_MAX_BYTES, POSSIBLY_RELEVANT_MAX_BYTES));
   const topK = Math.max(1, Math.min(options.topK ?? POSSIBLY_RELEVANT_MAX_LINES, POSSIBLY_RELEVANT_MAX_LINES));
@@ -169,7 +184,8 @@ export async function composeRecallBlock(
   // Standalone callers enforce audience policy. Lexical-only/degraded results
   // remain available through explicit recall, never as automatic context.
   if (outcome.retrievalMode !== "hybrid" || outcome.degradation !== undefined) return undefined;
-  const hits = selectPossiblyRelevantRecallHits(outcome.hits, {
+  const hits = selectPossiblyRelevantRecallHits(options.conversationId === undefined ? outcome.hits
+    : excludeSameConversationRecallHits(outcome.hits, options.conversationId), {
     intentExpiry: options.intentExpiry === true, maxLines: topK, ...(options.asOf === undefined ? {} : { asOf: options.asOf }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });

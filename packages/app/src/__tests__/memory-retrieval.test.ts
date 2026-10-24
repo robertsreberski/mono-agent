@@ -1328,3 +1328,24 @@ it("releases memory but still propagates a failed startup close instead of repor
     expect(diagnostic).not.toHaveBeenCalled();
   } finally { released.mockRestore(); }
 });
+
+
+it.each([
+  ["web:thread-a", "web:thread-a"],
+  ["chat-a#2030-01-02", "chat-a#2030-01-01"],
+  ["web:thread-a", "thread-a"],
+])("filters automatic self-echo but preserves explicit recall for %s from %s", async (current, source) => {
+  const rows = [
+    { score: 0.95, record: { id: "self", text: "The fictional parcel has not been sent.", source: { session: source } } },
+    { score: 0.94, record: { id: "other", text: "Use a tracked parcel service.", source: { session: "other-chat" } } },
+    { score: 0.93, record: { id: "unknown", text: "Keep the shipping receipt." } },
+  ];
+  const service = new MemoryRetrievalService({ ...fakeStore(), recall: async () => rows });
+  const block = await service.load(current, "What should I know about the fictional parcel?", { ownerTurn: true, turnId: "self-echo" });
+  if (source === "thread-a") expect(block?.content).toContain("has not been sent"); // No guessed web-prefix conversion.
+  else expect(block?.content).not.toContain("has not been sent");
+  expect(block?.content).toContain("tracked parcel");
+  expect(block?.content).toContain("shipping receipt");
+  expect((await service.recallForTurn("self-echo", "What should I know about the fictional parcel?")).map((row) => row.record.id))
+    .toEqual(["self", "other", "unknown"]);
+});

@@ -176,6 +176,12 @@ not change automatic recall policy.
 
 ### Standalone automatic recall
 
+Automatic recall excludes known `source.session` matches to the logical
+conversation (including daily buckets); explicit recall is unchanged. Unknown
+provenance remains eligible. `excludeSameConversationRecallHits` shares that
+content-free filter with host integrations; it never guesses provenance from
+text, file paths or unprefixed web thread ids.
+
 `BujoMemoryStore.load()` uses the same score-based, language-neutral
 `selectPossiblyRelevantRecallHits` policy as the app's automatic block: hybrid
 results only, at most three lines, no grammar or claim of factual correctness.
@@ -719,6 +725,7 @@ createIdFactory
 createOllamaLlm
 curateEstimate
 dailyFilePath
+excludeSameConversationRecallHits
 exportMemoryBundle
 extractCapturePlanStrict
 findCanonicalMemoryBullet

@@ -169,6 +169,11 @@ export type SessionStep =
     }
   | {
       readonly k: "boundary";
+      readonly context?: "retained" | "reconstructed" | "handoff";
+      readonly replayedMessageCount?: number;
+      readonly toolProjectionBytes?: number;
+      readonly toolProjectionRecords?: number;
+      readonly coverageStartTimestamp?: string;
       readonly ts: string;
       readonly kind: string;
       readonly conversationId?: string;
@@ -742,6 +747,12 @@ function sessionBoundaryStep(event: RuntimeEventLike, ts: string): Extract<Sessi
     k: "boundary",
     ts,
     kind,
+    ...(["retained", "reconstructed", "handoff"].includes(String(source?.context))
+      ? { context: source!.context as "retained" | "reconstructed" | "handoff" } : {}),
+    ...Object.fromEntries(["replayedMessageCount", "toolProjectionBytes", "toolProjectionRecords"]
+      .filter((key) => Number.isSafeInteger(source?.[key]) && (source![key] as number) >= 0)
+      .map((key) => [key, source![key]])),
+    ...(readString(source?.coverageStartTimestamp) === undefined ? {} : { coverageStartTimestamp: readString(source?.coverageStartTimestamp)! }),
     ...(conversationId === undefined ? {} : { conversationId }),
     ...(baseConversationId === undefined ? {} : { baseConversationId }),
     ...(previousConversationId === undefined ? {} : { previousConversationId }),

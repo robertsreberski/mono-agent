@@ -1376,10 +1376,11 @@ describe("ConversationHarness continuous sessions", () => {
     expect(fake.disposedSessions).toContain("ps-next");
     expect(events).toContainEqual(expect.objectContaining({
       type: "session_boundary",
-      kind: "resume_replay",
+      kind: "resume_replay", context: "reconstructed",
       conversationId: "conv-1",
       providerSessionId: "ps-next",
       reason: "runtime_result",
+      replayedMessageCount: expect.any(Number),
     }));
   });
 
@@ -1397,8 +1398,11 @@ describe("ConversationHarness continuous sessions", () => {
     const first = await harness.run(request("conv-1"));
     expect(first.text).toBe("recovered");
 
-    const second = await harness.run(request("conv-1", "again"));
+    const events: unknown[] = [];
+    const second = await harness.run({ ...request("conv-1", "again"), onEvent: (event) => events.push(event) });
     expect(second.text).toBe("recovered");
+    expect(events).toContainEqual(expect.objectContaining({ type: "session_boundary", reason: "resume_error",
+      context: "reconstructed", providerSessionId: "ps-next", replayedMessageCount: 3 }));
     expect(fake.calls).toHaveLength(3);
     expect(fake.calls[1]?.options.sessionId).toBe("ps-next");
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
@@ -2213,7 +2217,7 @@ describe("coordinated terminal recovery", () => {
       expect(f.prefixes[2]).toHaveLength(f.prefixes[1]!.length + 1); // no host note
       const history = await f.historyStore.load("recovery");
       expect(history.filter((message) => message.content === "interrupted")).toHaveLength(1);
-      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === `${outcome === "cancelled" ? "cancelled" : "failed"}_turn_resume`)).toHaveLength(1);
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === `${outcome === "cancelled" ? "cancelled" : "failed"}_turn_resume`)).toMatchObject([{ context: "retained" }]);
       await f.run("success", "after boundary");
       expect(f.events.filter((event) => event.type === "session_boundary" && String(event.reason).endsWith("_turn_resume"))).toHaveLength(1);
     } finally { await f.close(); }
@@ -2354,7 +2358,7 @@ describe("coordinated terminal recovery", () => {
     const f = await fixture();
     try {
       f.denyRecovery(); await f.run(outcome, "interrupted"); await f.run("success", "next"); await f.run("success", "warm");
-      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === `${outcome === "cancelled" ? "cancelled" : "failed"}_turn_reseed`)).toHaveLength(1);
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === `${outcome === "cancelled" ? "cancelled" : "failed"}_turn_reseed`)).toMatchObject([{ context: "reconstructed", replayedMessageCount: expect.any(Number) }]);
     } finally { await f.close(); }
   });
 

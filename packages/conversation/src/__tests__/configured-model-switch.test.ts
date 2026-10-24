@@ -519,3 +519,21 @@ it("cancellation during the binding preflight leaves no account and never waits 
     expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before); await holder.assertOwned();
   } finally { await holder.abort(); await pending; }
 });
+
+
+it("classifies an existing local model-change boundary as a native handoff, not canonical replay", async () => {
+  const f = await fixture(); await f.seed();
+  const harness = f.makeHarness("A", true);
+  f.faux.setResponses([text("Fictional resumed A reply")]);
+  expect((await harness.run(f.request("warm-A"))).failure).toBeUndefined();
+  const events: unknown[] = [];
+  f.faux.setResponses([text(summary), text(summary), text("Fictional B reply")]);
+  const response = await harness.run(f.request("handoff-B", "Fictional switch", {
+    metadata: { web: { model: "faux:B" } }, onEvent: (event) => events.push(event),
+  }));
+  expect(response.failure).toBeUndefined();
+  expect(events).toContainEqual(expect.objectContaining({ type: "session_boundary", kind: "resume_replay",
+    reason: "model_change", context: "handoff" }));
+  const boundary = events.find((event) => (event as { type?: string }).type === "session_boundary");
+  expect(boundary).not.toHaveProperty("replayedMessageCount");
+});

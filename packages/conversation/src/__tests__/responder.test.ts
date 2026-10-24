@@ -691,6 +691,7 @@ describe("createConversationResponder", () => {
     expect(seen[1]?.sessionBoundary).toMatchObject({
       type: "session_boundary",
       kind: "rollover",
+      context: "reconstructed",
       conversationId: "telegram:42#2026-06-20",
       baseConversationId: "telegram:42",
       previousConversationId: "telegram:42#2026-06-19",
@@ -701,6 +702,7 @@ describe("createConversationResponder", () => {
       kind: "session_boundary",
       data: {
         kind: "rollover",
+        context: "reconstructed",
         conversationId: "telegram:42#2026-06-20",
         baseConversationId: "telegram:42",
         previousConversationId: "telegram:42#2026-06-19",
@@ -1968,7 +1970,7 @@ describe("bucketConversationId", () => {
 });
 
 it("forwards model-change boundaries as runtime telemetry", () => {
-  const boundary = { type: "session_boundary", kind: "resume_replay", conversationId: "web:c",
+  const boundary = { type: "session_boundary", kind: "resume_replay", context: "reconstructed", conversationId: "web:c",
     providerSessionId: "new-id", reason: "model_change" };
   const { type: _type, ...data } = boundary;
   expect(streamEventFromRuntimeEvent(boundary)).toMatchObject({ type: "runtime_telemetry", kind: "session_boundary", data });

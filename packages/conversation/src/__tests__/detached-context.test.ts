@@ -55,7 +55,8 @@ it.each(["memory", "custom", "durable", "exclusive"] as const)("carries canonica
   await f.harness.run(request("Fictional warm-up input"));
   const load = f.historyStore && flavour !== "exclusive" ? vi.spyOn(f.historyStore, "load") : undefined;
   f.fail();
-  const response = await f.harness.run(request("Fictional current question"));
+  const events: unknown[] = [];
+  const response = await f.harness.run({ ...request("Fictional current question"), onEvent: (event) => events.push(event) });
   expect(response.text).toBe("Fictional backup answer");
   expect(f.calls[1]!.messages).toHaveLength(1); // warm primary retains its own transcript
   const replay = f.calls[2]!.messages;
@@ -67,6 +68,9 @@ it.each(["memory", "custom", "durable", "exclusive"] as const)("carries canonica
   expect(replay[0]!.content).not.toContain("<host_turn_context>");
   expect(Object.isFrozen(replay[0])).toBe(true);
   expect(f.calls[2]).not.toHaveProperty("detachedContext");
+  expect(events).toContainEqual(expect.objectContaining({ type: "session_boundary", kind: "resume_replay",
+    reason: "detached_context", context: "reconstructed", replayedMessageCount: 4,
+    toolProjectionBytes: 0, toolProjectionRecords: 0 }));
   if (load) expect(load).toHaveBeenCalledOnce();
   expect(f.exclusiveLoad).not.toHaveBeenCalled();
   await f.harness.dispose!();
@@ -74,8 +78,11 @@ it.each(["memory", "custom", "durable", "exclusive"] as const)("carries canonica
 
 it("keeps cold replay single-prefixed and does not reload it for the backup", async () => {
   const f = await fixture("memory"), load = vi.spyOn(f.historyStore!, "load"); f.fail();
-  const response = await f.harness.run(request("Fictional cold question"));
+  const events: unknown[] = [];
+  const response = await f.harness.run({ ...request("Fictional cold question"), onEvent: (event) => events.push(event) });
   expect(response.text).toBe("Fictional backup answer"); expect(load).toHaveBeenCalledOnce();
+  expect(events).toContainEqual(expect.objectContaining({ type: "session_boundary", reason: "detached_context",
+    context: "reconstructed", replayedMessageCount: 2 }));
   expect(f.calls[1]!.messages).toEqual(f.calls[0]!.messages); expect(f.calls[1]!.messages).toHaveLength(3);
   await f.harness.dispose!();
 });
@@ -122,6 +129,9 @@ it.each([false, true])("adds bounded tool history, or keeps canonical replay on 
   const response = await f.harness.run({ ...request("Fictional current question"), onEvent: (event) => events.push(event) });
   expect(response.text).toBe("Fictional backup answer");
   const replay = f.calls[2]!.messages;
+  expect(events).toContainEqual(expect.objectContaining({ type: "session_boundary", reason: "detached_context",
+    context: "reconstructed", replayedMessageCount: 4, toolProjectionRecords: throws ? 0 : 1,
+    toolProjectionBytes: throws ? 0 : expect.any(Number) }));
   expect(replay.map((message) => message.content).join("\n")).toContain("Fictional earlier answer");
   if (throws) {
     expect(replay).toHaveLength(5);

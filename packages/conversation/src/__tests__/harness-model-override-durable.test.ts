@@ -74,7 +74,7 @@ describe("durable model override native sessions", () => {
       expect(seed).not.toContain("NATIVE-EVIDENCE");
       expect(value.jsonl[1]).not.toEqual(value.jsonl[0]);
       expect(value.jsonl.every((files) => files.length === 1)).toBe(true);
-      expect(value.events).toMatchObject([{ kind: "resume_replay", reason: "model_change" }]);
+      expect(value.events).toMatchObject([{ kind: "resume_replay", context: "reconstructed", reason: "model_change" }]);
       for (const method of ["invalidateSession", "disposeSession", "retireDurableSession"]) {
         expect(value.trace).toContainEqual({ method, owner: `faux:${before}`, id: oldId });
       }
@@ -111,7 +111,7 @@ describe("durable model override native sessions", () => {
     expect(next.sessionEvents.filter((event) => event.kind === "cold")).toEqual([
       expect.objectContaining({ kind: "cold", reason: "model_change", modelKey: "faux:override" }),
     ]);
-    expect(next.events).toMatchObject([{ kind: "resume_replay", reason: "model_change" }]);
+    expect(next.events).toMatchObject([{ kind: "resume_replay", context: "reconstructed", reason: "model_change" }]);
     expect(next.events).toHaveLength(1);
   });
 
@@ -120,7 +120,7 @@ describe("durable model override native sessions", () => {
     expect(next.sessionEvents.filter((event) => event.kind === "cold")).toEqual([
       expect.objectContaining({ kind: "cold", reason: "legacy_unbound_model", modelKey: "faux:override" }),
     ]);
-    expect(next.events).toMatchObject([{ kind: "resume_replay", reason: "legacy_unbound_model" }]);
+    expect(next.events).toMatchObject([{ kind: "resume_replay", context: "reconstructed", reason: "legacy_unbound_model" }]);
     expect(next.events).toHaveLength(1);
     expect(next.sessionEvents.filter((event) => event.kind === "saved").at(-1)?.snapshot?.[0])
       .toMatchObject({ modelKey: "faux:override" });
@@ -145,6 +145,6 @@ describe("durable model override native sessions", () => {
     expect(next.requests[0]!.sessionId).toBe(first.requests[0]!.sessionId);
     expect(next.records[1]!.providerSession.modelKey).toBe("faux:third");
     expect(next.boundaries).toMatchObject([{ reason: "model_change", providerSessionId: next.requests[1]!.sessionId }]);
-    expect(next.events).toMatchObject([{ kind: "resume_replay", reason: "model_change" }]);
+    expect(next.events).toMatchObject([{ kind: "resume_replay", context: "reconstructed", reason: "model_change" }]);
   });
 });
