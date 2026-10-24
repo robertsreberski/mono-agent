@@ -32,6 +32,7 @@ import type {
 } from "@mono-agent/turn/host/types";
 
 import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
+import { createConversationHistoryRuntimeExtension, isConversationHistoryToolAllowed } from "../request-tools/conversation-history.js";
 import { createToolOutputArtifactsRuntimeExtension } from "../artifacts/tool-output-artifacts.js";
 import {
   acquireAgentRootOwnership,
@@ -267,6 +268,12 @@ async function createConfiguredConversationHarnessInternal(
     channelId: internalHooks.processJobs?.channelId,
     conversationScheme: internalHooks.processJobs?.conversationScheme,
   });
+  const conversationHistory = config.runtime.session.continuity?.enabled === false || !isConversationHistoryToolAllowed(config.tools)
+    ? undefined : internalHooks.conversationHistoryExtension ?? createConversationHistoryRuntimeExtension({
+      historyRoot: artifactDerivedRoots.history,
+      rollover: internalHooks.sessionRollover ?? config.runtime.session.rollover ?? "none",
+      onUnavailable: () => options.onToolHistoryWarning?.("ConversationHistory endpoint could not start; retained evidence is unavailable this run."),
+    });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     ({ request }) => {
       const admitted = () => {
@@ -283,6 +290,7 @@ async function createConfiguredConversationHarnessInternal(
         : {};
     },
     peerAgent,
+    conversationHistory,
     memoryRecall,
     memoryJournal,
     memoryRemember,

@@ -92,7 +92,12 @@ to repeat an old action.
 This partial configuration opts out; keep the usual model and identity settings.
 Explicit false preserves legacy paths: no participant, sidecar probe or v3
 upgrade for continuity. Under normal tool policy every default-enabled agent
-gets `ConversationHistory` (an allowlist must include its name).
+gets `ConversationHistory`: `"*"` allows it, a restrictive allowlist must include
+its name, and an explicit deny wins. The tool is constructed for standalone
+configured harnesses as well as channel controllers. Denying retrieval alone
+does not turn capture off. Unlike SessionHistory's prior-run tool evidence,
+positively finalized/fsynced current-run conversation records are eligible;
+partial streams and prepared publications remain unavailable.
 Stop older writers and back up canonical history and the sidecar together before
 the first enabled start: the first capable writer upgrades the sidecar from SQLite v2 to v3 in place; older binaries refuse the upgraded store.
 Disabled operation does not perform that upgrade. Existing v3 evidence remains

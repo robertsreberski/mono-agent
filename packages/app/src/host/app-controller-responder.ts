@@ -38,6 +38,7 @@ import { createRestartProposalService, isProposeRestartToolAllowed } from "../se
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
 import { isRetiredProjectSkillName } from "../skills/project-skills.js";
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "../request-tools/run-history.js";
+import { createConversationHistoryRuntimeExtension, isConversationHistoryToolAllowed } from "../request-tools/conversation-history.js";
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "../request-tools/session-history.js";
 import {
   createReplyArtifactService,
@@ -308,6 +309,13 @@ export async function buildResponder(
         },
       })
     : undefined;
+  const conversationHistoryExtension = coreConfig.runtime.session.continuity?.enabled !== false
+    && isConversationHistoryToolAllowed(coreConfig.tools) && historyToolSupport.conversationHistory
+    ? createConversationHistoryRuntimeExtension({
+      historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"),
+      rollover: sessionRollover ?? coreConfig.runtime.session.rollover ?? "none",
+      onUnavailable: () => controller.logger?.warn?.("ConversationHistory tool endpoint could not start; retained evidence is unavailable this run."),
+    }) : undefined;
   // Always active: a no-op for interactive turns (which carry no cron/webhook
   // metadata), it applies the per-trigger model/effort override otherwise.
   const requestModelOverride = controller.requestModelOverrideRuntimeOptions(modelBoundaryConfig);
@@ -424,6 +432,7 @@ export async function buildResponder(
     observabilityContext,
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
+    ...(conversationHistoryExtension === undefined ? {} : { conversationHistoryExtension }),
     processJobs: {
       registry: processJobsRegistry,
       service: controller.processJobsService,

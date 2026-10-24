@@ -24,6 +24,7 @@ import {
 } from "../memory/memory-journal.js";
 import { createMemoryRecallServer } from "../memory/memory-recall.js";
 import { createRunHistoryServer } from "../request-tools/run-history.js";
+import { createConversationHistoryServer } from "../request-tools/conversation-history.js";
 import { createSessionHistoryServer } from "../request-tools/session-history.js";
 
 function memoryRecord(id: string, over: Partial<MemoryRecord> = {}): MemoryRecord {
@@ -474,6 +475,11 @@ describe("MemoryJournal capability, policy, and routing separation", () => {
       logicalConversationId: "web:thread",
       runId: "current",
     });
+    const conversationHistory = createConversationHistoryServer({ reader: new ToolHistoryReader(historyDir),
+      conversationId: "web:thread", logicalConversationId: "web:thread", runId: "current" });
+    const conversationClient = new Client({ name: "routing-conversation", version: "1.0.0" });
+    const [conversationClientTransport, conversationServerTransport] = InMemoryTransport.createLinkedPair();
+    await conversationHistory.connect(conversationServerTransport); await conversationClient.connect(conversationClientTransport);
     const runClient = new Client({ name: "routing-run", version: "1.0.0" }, { capabilities: {} });
     const sessionClient = new Client({ name: "routing-session", version: "1.0.0" }, { capabilities: {} });
     const [runClientTransport, runServerTransport] = InMemoryTransport.createLinkedPair();
@@ -509,14 +515,20 @@ describe("MemoryJournal capability, policy, and routing separation", () => {
       expect(runDescription).toMatch(/MemoryJournal.*broad retrospective/iu);
       expect(sessionDescription).toMatch(/exact tool-lifecycle evidence/iu);
       expect(sessionDescription).toMatch(/not a broad chronological journal summary/iu);
+      expect((await journalConnection.client.listTools()).tools[0]!.description).toContain("ConversationHistory");
+      const conversationDescription = (await conversationClient.listTools()).tools[0]!.description!;
+      expect(conversationDescription).toContain("portable-summary");
+      expect(conversationDescription).toContain("Generated summaries");
+      expect(conversationDescription).toContain("SessionHistory keeps its prior-run");
     } finally {
       await Promise.all([
         recallClient.close(),
         journalConnection.close(),
         runClient.close(),
         sessionClient.close(),
+        conversationClient.close(),
       ]);
-      await Promise.all([recall.close(), runHistory.close(), sessionHistory.close()]);
+      await Promise.all([recall.close(), runHistory.close(), sessionHistory.close(), conversationHistory.close()]);
       await rm(historyDir, { recursive: true, force: true });
     }
   });

@@ -1,4 +1,5 @@
 import { ToolHistoryReader } from "./reader.js";
+import { isNestedHistoryTool, NESTED_HISTORY_OMISSION } from "./nested-history.js";
 
 const PROJECTION_MAX_BYTES = 64 * 1024;
 const PROJECTION_HEADER_LINES = [
@@ -25,6 +26,7 @@ export function buildToolHistoryProjection(
   currentConversationId: string,
   currentRunId: string,
   excludedRecordIds: ReadonlySet<string> = new Set(),
+  continuityEnabled = false,
 ): ToolHistoryProjection | undefined {
   const records = reader.latestProjection(
     logicalConversationId,
@@ -38,7 +40,7 @@ export function buildToolHistoryProjection(
   // Reader order is newest first. Render the complete chronological form when
   // it fits; otherwise retain a contiguous newest suffix and reverse only that
   // selected suffix for provider-facing chronological output.
-  const newestFirstBlocks = records.map(renderRecordLines);
+  const newestFirstBlocks = records.map((record) => renderRecordLines(record, continuityEnabled));
   const fullLines = [
     ...PROJECTION_HEADER_LINES,
     ...newestFirstBlocks.slice().reverse().flat(),
@@ -75,11 +77,12 @@ export function buildToolHistoryProjection(
 
 function renderRecordLines(
   record: ReturnType<ToolHistoryReader["latestProjection"]>[number],
+  continuityEnabled: boolean,
 ): string[] {
   const { call, invocation, result } = record;
   const resultChunk = isNestedSessionHistoryTool(call.toolName)
     ? "[nested SessionHistory result omitted; inspect the referenced record directly]"
-    : result?.chunk ?? "null";
+    : continuityEnabled && isNestedHistoryTool(call.toolName) ? NESTED_HISTORY_OMISSION : result?.chunk ?? "null";
   const artifacts = call.artifactReferences.length === 0
     ? "none"
     : call.artifactReferences.map((artifact) => `${artifact.id}:${artifact.available ? "available" : "unavailable"}`).join(",");

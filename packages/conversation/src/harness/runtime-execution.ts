@@ -503,6 +503,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
                 ?? request.conversationId,
               runId,
               isolated: sessionIsolated,
+              ...(options.toolHistory?.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
           }),
         ),
         // Durable provider-session root is forwarded only for a host-history

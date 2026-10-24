@@ -37,6 +37,7 @@ import {
   TOOL_HISTORY_RESULT_MAX_BYTES,
   type BoundedToolHistoryPayload,
 } from "./payload.js";
+import { isNestedHistoryTool, NESTED_HISTORY_OMISSION } from "./nested-history.js";
 import { ToolHistoryWriterError } from "./errors.js";
 import { continueToolHistoryOperationTail } from "./worker-queue.js";
 import { TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_SCHEMA, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRetentionOptions, type ToolHistoryRunBinding } from "./contracts.js";
@@ -400,7 +401,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
   const detailCode = event.detailCode === undefined ? null : boundedCode(event.detailCode);
   const executionMs = event.executionMs === undefined ? null : nonNegativeInteger(event.executionMs);
   const artifactIds = normalizedArtifactIds(event.artifacts ?? [], binding);
-  const bounded = boundedToolHistoryPayload(event.content ?? null, TOOL_HISTORY_RESULT_MAX_BYTES);
+  const original = boundedToolHistoryPayload(event.content ?? null, TOOL_HISTORY_RESULT_MAX_BYTES);
   return lifecycleTransaction(database, () => {
     ensureRun(database, binding);
     const recordId = toolHistoryRecordId(binding.conversationId, binding.runId, toolCallId, "result");
@@ -448,6 +449,9 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       );
       return { persistence: "failed", errorCode: "history_idempotency_conflict" };
     }
+    const bounded = binding.continuityEnabled === true && isNestedHistoryTool(String(call.tool_name))
+      ? { ...boundedToolHistoryPayload({ omitted: NESTED_HISTORY_OMISSION }, TOOL_HISTORY_RESULT_MAX_BYTES), originalBytes: original.originalBytes, truncated: true }
+      : original;
     const existing = database.prepare(`
       SELECT record_id,seq,payload_sha256,truncated,original_bytes,retained_bytes
       FROM tool_records WHERE conversation_id=? AND run_id=? AND tool_call_id=? AND phase='result'
@@ -1495,6 +1499,7 @@ function bindingOf(value: unknown): ToolHistoryRunBinding {
     logicalConversationId: normalizeId(record.logicalConversationId, "logicalConversationId"),
     runId: normalizeId(record.runId, "runId"),
     isolated: record.isolated === true,
+    ...(record.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
   };
 }
 

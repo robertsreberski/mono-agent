@@ -32,6 +32,8 @@ export interface ToolHistoryWriterOptions {
 }
 
 export interface ToolHistoryRunBinding {
+  /** Positive per-run capture capability, never inferred from a shared writer. */
+  readonly continuityEnabled?: true;
   readonly conversationId: string;
   readonly logicalConversationId: string;
   readonly runId: string;

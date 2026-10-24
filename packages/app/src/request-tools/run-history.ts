@@ -1136,7 +1136,8 @@ function projectRun(
             content: requestScopedNestedResult(
               linked.name,
               [RUN_HISTORY_TOOL_NAME, RUN_HISTORY_LEGACY_TOOL_NAME],
-              boundedProjectedValue(normalizeToolResultContent(block.content, artifactDir), artifactDir),
+              requestScopedNestedResult(linked.name, ["ConversationHistory", "conversation_history"],
+                boundedProjectedValue(normalizeToolResultContent(block.content, artifactDir), artifactDir)),
               NESTED_RUN_HISTORY_RESULT_OMISSION,
             ),
             isError: block.is_error === true,

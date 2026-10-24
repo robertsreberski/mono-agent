@@ -32,7 +32,7 @@ const SESSION_HISTORY_TOOL_ALIASES = [
   SESSION_HISTORY_MCP_TOOL_NAME,
   SESSION_HISTORY_MCP_SERVER_WILDCARD,
 ] as const;
-const NESTED_ALIASES = [SESSION_HISTORY_TOOL_NAME, SESSION_HISTORY_LEGACY_TOOL_NAME] as const;
+const NESTED_ALIASES = [SESSION_HISTORY_TOOL_NAME, SESSION_HISTORY_LEGACY_TOOL_NAME, "ConversationHistory", "conversation_history"] as const;
 const TERMINAL_STATES = [
   "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
 ] as const;

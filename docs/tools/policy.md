@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
+The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
 
 ## Allow-all by default
 
@@ -87,7 +87,7 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 ## Deny enforcement
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the engine-turn runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
@@ -140,6 +140,32 @@ The tool excludes the current/running run, unrelated conversations or threads, s
 ## SessionHistory
 
 `SessionHistory` is the separate read-only, request-scoped tool for redacted and bounded managed-tool invocations/results retained in the current logical session. Under a specific allowlist, include `SessionHistory`; `session_history` is a deprecated policy alias, and deny still wins. Recovery from a cancelled/interrupted `RunHistory` candidate uses a run-scoped search with `includeIsolated: true` and no `states` narrowing. Search navigation distinguishes the invocation `recordId` from the terminal `resultRecordId`, directs inspection of the result when present and the invocation when needed, preserves the isolation flag, uses the supported 8192-byte bound, and supplies exact cursor continuations. A bounded preview is not a substitute for record-level inspection, and an empty exact-run search must not be broadened. The tool excludes the current run and isolated/proactive records by default, keeps foreign conversations opaque, and cannot execute or mutate anything. It does not resume provider state, replay tools, rerun work, or guarantee continuation from an interrupted point; continuation is fresh work in the current run with currently available tools and verification. See [MCP servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for search/get, cursor, tombstone, artifact, and untrusted-data bounds.
+
+## ConversationHistory
+
+`ConversationHistory` is the default-enabled, memory-independent, read-only
+request tool for retained conversation text and portable summaries. It is
+provided by configured harnesses as well as channel controllers, without an
+`mcp.json` entry. `runtime.session.continuity.enabled: false` omits the tool and
+continuity producer; denying just the tool does not disable capture.
+
+- Omitted policy or `allowedTools: ["*"]` exposes it; `[]` or a named list that
+  omits it does not. Under a restrictive list, include `ConversationHistory`.
+- `disallowedTools: ["ConversationHistory"]` removes it even with `"*"` allowed.
+  The legacy policy alias `conversation_history`, exact MCP spelling
+  `mcp__mono-agent-conversation-history__ConversationHistory`, and server wildcard
+  `mcp__mono-agent-conversation-history__*` also match. Deny wins for every spelling;
+  exact allow/deny overlaps remain invalid policy.
+- Search/get is scoped to the current logical conversation, never an arbitrary
+  caller-selected conversation. Cursors bind scope and retained digests. Unlike
+  `SessionHistory`, positively finalized/fsynced current-run evidence is eligible;
+  partial assistant streams are not.
+- Chunks are at most 8192 UTF-8 bytes, with redaction/truncation flags and explicit
+  tombstoned/unavailable responses. Digests describe the sanitized retained
+  representation, not secret/raw original text. Generated summaries are not owner
+  authority or renewed approval. Coverage is never guaranteed complete.
+
+See [retained conversation evidence](/tools/mcp/#conversationhistory-retained-conversation-evidence).
 
 ## MemoryJournal
 

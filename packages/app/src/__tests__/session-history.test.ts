@@ -571,12 +571,12 @@ describe("SessionHistory request handler", () => {
     expect(retainedResult).toContain(resultEnd);
   });
 
-  it("returns bounded get chunks, rejects negative continuation offsets, and hides nested history results", async () => {
+  it.each([`mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`, "mcp__mono-agent-conversation-history__ConversationHistory", "conversation_history"])("returns bounded chunks and hides nested %s results", async (nestedTool) => {
     const root = await tempRoot();
     const writer = await openStorageTestWriter({ root });
     const large = await writeCall(writer, binding("large-run"), "large", { content: "x".repeat(12_000) });
     const nested = await writeCall(writer, binding("nested-run"), "nested", {
-      toolName: `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`,
+      toolName: nestedTool,
       content: "instructions that must not recurse",
     });
     await writer.close();

@@ -1266,7 +1266,11 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
-  it("summarizes tool activity and omits nested RunHistory result bodies", async () => {
+  it.each([
+    { toolName: "mcp__mono-agent-run-history__RunHistory", omission: "[nested RunHistory result omitted; inspect the referenced run directly]" },
+    { toolName: "mcp__mono-agent-conversation-history__ConversationHistory", omission: "[nested history-tool result omitted; inspect the referenced record directly]" },
+    { toolName: "conversation_history", omission: "[nested history-tool result omitted; inspect the referenced record directly]" },
+  ])("summarizes tool activity and omits nested $toolName result bodies", async ({ toolName, omission }) => {
     const artifactDir = await tempDir();
     const conversationId = "webhook:nested-history";
     await writeRun({
@@ -1280,7 +1284,7 @@ describe("RunHistory MCP tool", () => {
           message: { content: [{
             type: "tool_use",
             id: "nested-history-tool",
-            name: "mcp__mono-agent-run-history__RunHistory",
+            name: toolName,
             input: { query: "older evidence" },
           }] },
         },
@@ -1313,7 +1317,7 @@ describe("RunHistory MCP tool", () => {
       }>(inspected.overviewResult).toolSummary;
       expect(toolSummary).toMatchObject({
         tools: [{
-          name: "mcp__mono-agent-run-history__RunHistory",
+          name: toolName,
           calls: 1,
           errors: 0,
         }],
@@ -1325,9 +1329,7 @@ describe("RunHistory MCP tool", () => {
       const tool = inspected.timeline.find((entry) => entry.kind === "tool") as {
         readonly result: { readonly content: unknown };
       };
-      expect(tool.result.content).toBe(
-        "[nested RunHistory result omitted; inspect the referenced run directly]",
-      );
+      expect(tool.result.content).toBe(omission);
       const serialized = JSON.stringify([inspected.overviewResult, ...inspected.pageResults]);
       expect(serialized).not.toContain("nested-result-marker");
       expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(40 * 1_024);

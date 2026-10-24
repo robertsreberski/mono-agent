@@ -126,6 +126,8 @@ export interface RunArtifactCommitEvent {
 export type RunArtifactCommitHook = (event: RunArtifactCommitEvent) => void | Promise<void>;
 
 export interface ConfiguredAgentInternalHooks {
+  /** Reuse the controller-created endpoint; standalone configured harnesses construct their own. */
+  readonly conversationHistoryExtension?: NonNullable<ConfiguredConversationHarnessOptions["runtimeOptionsForRequest"]>;
   /**
    * App-owned hook invoked after the local JSONL running/terminal summary is
    * committed. A returned

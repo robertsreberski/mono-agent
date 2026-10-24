@@ -243,10 +243,12 @@ export function reasonOf(error: unknown): string {
 export function historyToolRouteSupport(_config: MonoAgentConfig): {
   readonly runHistory: boolean;
   readonly sessionHistory: boolean;
+  readonly conversationHistory: boolean;
 } {
   return {
     runHistory: true,
     sessionHistory: true,
+    conversationHistory: true,
   };
 }
 

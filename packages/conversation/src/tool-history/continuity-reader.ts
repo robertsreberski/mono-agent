@@ -25,8 +25,11 @@ export function searchContinuity(database: DatabaseSync, input: ContinuitySearch
   const values: (string | number)[] = [input.logicalConversationId];
   if (input.query !== undefined) {
     if (input.query.trim().length === 0 || Buffer.byteLength(input.query) > 512) throw new TypeError("Continuity query must be 1 through 512 bytes.");
+    // SQLite's built-in lower() folds ASCII only. Match the query's Unicode
+    // lowercasing without a second retained-text copy or schema migration.
+    database.function("continuity_lower", { deterministic: true }, (value) => typeof value === "string" ? value.toLowerCase() : "");
     for (const term of [...new Set(input.query.toLowerCase().trim().split(/\s+/u))].slice(0, 16)) {
-      clauses.push("instr(lower(r.retained_text),?)>0"); values.push(term);
+      clauses.push("instr(continuity_lower(r.retained_text),?)>0"); values.push(term);
     }
   }
   if (input.before !== undefined) {

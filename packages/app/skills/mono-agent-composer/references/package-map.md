@@ -81,10 +81,14 @@ companion, not an MCP server injected into every composed agent. Add project
 MCP servers to the agent's own `mcp.json`; do not copy the documentation server
 there unless the resulting agent itself must answer mono-agent framework questions.
 
-`RunHistory`, `SessionHistory`, `MemoryJournal`, and `SetConversationTitle` are app-owned
+`RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, and `SetConversationTitle` are app-owned
 request-scoped tools, not entries for `mcp.json`. `SessionHistory` searches the
-current logical session's retained managed-tool calls/results and needs no config
-key. `SetConversationTitle` appears only for writable interactive web threads;
+current logical session's retained prior-run managed-tool calls/results and needs
+no config key. `ConversationHistory` is default-on through
+`runtime.session.continuity.enabled` and retrieves scoped sanitized conversation
+text/portable summaries, including positively finalized current-run evidence.
+Normal `"*"` policy allows it; a named allowlist must include it and explicit deny
+wins. Generated summaries are not owner authority or renewed approval. `SetConversationTitle` appears only for writable interactive web threads;
 it keeps automatic semantic titles current, while a user rename permanently
 wins. Allow-all exposes eligible tools; a specific allowlist must name each one.
 `MemoryJournal` also requires `memory.recallTool.enabled` and an affirmative local

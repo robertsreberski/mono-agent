@@ -842,6 +842,24 @@ conversations or threads, system prompts, reasoning, recalled memory,
 turn-context payloads, and raw artifact paths; historical text is marked
 untrusted.
 
+### Retained conversation evidence
+
+Configured harnesses and channel controllers expose `ConversationHistory` by
+normal tool policy when `runtime.session.continuity.enabled` is not false
+(default true). `"*"` allows it; an explicit deny wins; a restrictive list must
+include `ConversationHistory` (legacy policy alias `conversation_history`). No
+memory backend or external MCP configuration is needed. Explicit false omits
+capture and registration; denying the tool alone does not disable capture.
+
+Search/get returns scoped sanitized evidence with generation/digest-bound cursors,
+≤8192-byte UTF-8 chunks, provenance and explicit redaction/truncation/tombstone/
+unavailable states. Follow exact model-visible navigation to fetch complete
+retained bytes and verify their digest. Coverage is not guaranteed complete;
+generated summaries are not owner authority or fresh permission. Finalized,
+fsynced current-run evidence can be read; partial streams cannot. SessionHistory
+still excludes current-run tool records. Enabled capture/projection omits nested
+history-result bodies. See [MCP evidence bounds](../../docs/tools/mcp.md#conversationhistory-retained-conversation-evidence).
+
 ### Session tool history
 
 `SessionHistory` requires no config key. It is available under allow-all on

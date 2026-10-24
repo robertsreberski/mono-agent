@@ -14,7 +14,11 @@
   Unfinished assistant accounts remain reconstruction data, not retrievable
   completed-answer evidence. Portable summaries reserve storage before compaction;
   awaitable recording and exact native-checkpoint recovery retain them without
-  repeating a summary call.
+  repeating a summary call. `ConversationHistory` search/get now follows normal
+  wildcard/deny policy in configured harnesses and controllers, with scoped,
+  digest-bound UTF-8 navigation and explicit incomplete/redacted evidence;
+  enabled capture omits nested retrieval bodies. SessionHistory keeps its
+  prior-run contract.
 
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures
