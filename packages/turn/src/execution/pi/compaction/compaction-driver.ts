@@ -14,6 +14,7 @@ import { MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 import {
   estimateFixedOverheadTokens,
   isLikelyContextTermination,
+  liftCompactionCeilingFloor,
   resolveAgentCompactionPolicy,
 } from "../../../agent/compaction.js";
 import {
@@ -723,9 +724,10 @@ function isReactiveCompactionCandidate(errorMessage: any, diagnostics: any) {
  * gives `contextWindow - reserveTokens = triggerTokens - 1`, hence
  *   `shouldCompact(x, window, s)` == `x > triggerTokens - 1` == `x >= triggerTokens`.
  * `triggerTokens < contextWindow` always (it is `min(floor(window*ratio),
- * window - reserve)` with `ratio <= 0.95`), so `reserveTokens >= 2` — never
- * degenerate. `keepRecentTokens` is carried through for a faithful settings
- * object even though `shouldCompact` ignores it.
+ * window - reserve)` with `ratio <= 0.95`, optionally lowered by the absolute
+ * `maxInputTokens` ceiling and lifted back no higher than that window trigger),
+ * so `reserveTokens >= 2` — never degenerate. `keepRecentTokens` is carried
+ * through for a faithful settings object even though `shouldCompact` ignores it.
  */
 export function piCompactionSettings(policy: {
     enabled: boolean;
@@ -764,8 +766,9 @@ export function resolveLiveCompactionPolicy({ harness, runtime, resolved, toolLi
 }
 
 /**
- * Proactive compaction: if the session is already near the window, compact
- * BEFORE issuing the request so a long-lived session never overflows. Mutates
+ * Proactive compaction: if the session is already near the window (or past the
+ * absolute maxInputTokens ceiling), compact BEFORE issuing the request so a
+ * long-lived session never overflows or grows without bound. Mutates
  * runState.compaction (applied / compactedThisRun / diagnostics) and re-anchors
  * runState.sessionBaselineCount when it fires.
  */
@@ -780,7 +783,7 @@ export async function runProactiveCompaction(runState: any, {
   onEvent,
   runtimeWarnings,
 }: any): Promise<void> {
-  const policy = runState.compaction.policy;
+  let policy = runState.compaction.policy;
   if (!(policy.enabled && policy.contextWindow > 0 && !options.abortSignal?.aborted)) return;
   // Fixed per-request overhead the provider meters but the raw transcript
   // estimate excludes (system prompt + tool/MCP schemas + per-turn user
@@ -804,13 +807,26 @@ export async function runProactiveCompaction(runState: any, {
   const perTurnContent = Array.isArray(promptImages) && promptImages.length > 0
     ? [{ type: "text", text: promptText }, ...promptImages]
     : promptText;
+  const requestOverhead = estimateFixedOverheadTokens({
+    systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema, options.prompts),
+    tools,
+    messages: [{ role: "user", content: perTurnContent }],
+  });
   const fixedOverhead = policy.fixedOverheadEnabled !== false
-    ? estimateFixedOverheadTokens({
-      systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema, options.prompts),
-      tools,
-      messages: [{ role: "user", content: perTurnContent }],
-    })
+    ? requestOverhead
     : { systemPromptTokens: 0, toolSchemaTokens: 0, userMessageTokens: 0, fixedOverheadTokens: 0 };
+  // A binding absolute ceiling must leave room for the request's own fixed
+  // overhead plus a summary, the retained tail and the minimum savings;
+  // otherwise every turn would re-arm and pay for a summary that cannot save
+  // enough. The real request carries this overhead whether or not the estimate
+  // folds it in, so the floor always uses it. The lifted policy is stored on the
+  // run so mid-run checkpoints share the same trigger.
+  const lifted = liftCompactionCeilingFloor(policy, requestOverhead.fixedOverheadTokens);
+  if (lifted.floorTokens !== null) {
+    policy = lifted.policy;
+    runState.compaction.policy = policy;
+    runState.compaction.diagnostics.context_compaction_trigger_floor_tokens = lifted.floorTokens;
+  }
   const est = await estimateCurrentContextTokens(
     runState.session,
     fixedOverhead.fixedOverheadTokens,
@@ -827,6 +843,10 @@ export async function runProactiveCompaction(runState: any, {
     context_tool_schema_tokens: fixedOverhead.toolSchemaTokens,
     context_user_message_tokens: fixedOverhead.userMessageTokens,
     context_compaction_trigger_tokens: policy.triggerTokens,
+    // Which arm binds the trigger (ratio / reserve / max_input_tokens /
+    // max_input_tokens_floor) and the resolved absolute ceiling (0 = disabled).
+    ...(policy.triggerSource === undefined ? {} : { context_compaction_trigger_source: policy.triggerSource }),
+    ...(policy.maxInputTokens === undefined ? {} : { context_compaction_max_input_tokens: policy.maxInputTokens }),
     context_request_estimate_tokens: est.tokens,
     // Retained for compatibility with the diagnostics introduced in PR #489.
     context_transcript_estimate: est.tokens,

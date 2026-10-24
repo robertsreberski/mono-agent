@@ -7,6 +7,13 @@ import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "../tools/mcp/timeouts.js"
 
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_TRIGGER_RATIO = 0.90;
+// Absolute proactive ceiling. Large-window models otherwise let one
+// conversation grow towards ~90% of a 1M window before compacting, paying for
+// that whole prefix on every request. The ceiling only moves the proactive
+// trigger; it never refuses a request or changes the usable window. 0 disables.
+const DEFAULT_MAX_INPUT_TOKENS = 200_000;
+const MIN_MAX_INPUT_TOKENS = 32_000;
+const MAX_MAX_INPUT_TOKENS = 10_000_000;
 // intelligence-ramp Phase 3: lifted from 16K/20K/12K. Mid-task tool reads
 // (large file edits, long bash output, deep MCP results) were being silently
 // clipped before the agent could reason about them. The 256KB hard ceiling
@@ -34,6 +41,13 @@ function clampInteger(value: any, fallback: number, min: number, max: number): n
   return Math.floor(clampNumber(value, fallback, min, max));
 }
 
+// Omitted (or null) selects the default ceiling; an explicit 0 is the opt-out.
+function resolveMaxInputTokens(value: unknown): number {
+  if (value === undefined || value === null) return DEFAULT_MAX_INPUT_TOKENS;
+  if (Number(value) === 0) return 0;
+  return clampInteger(value, DEFAULT_MAX_INPUT_TOKENS, MIN_MAX_INPUT_TOKENS, MAX_MAX_INPUT_TOKENS);
+}
+
 
 export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} }: { toolLimits?: import("../contracts/policy.js").RuntimeToolLimits | undefined; compaction?: import("../contracts/policy.js").RuntimeCompactionPolicy | undefined; } | undefined = {}, model: { contextWindow?: number | undefined; } | null | undefined = {}): AgentCompactionPolicy {
   const contextWindow = clampInteger(model?.contextWindow, DEFAULT_CONTEXT_WINDOW, 32000, 10_000_000);
@@ -54,6 +68,11 @@ export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} 
   // (372000 * 0.70 is otherwise 260399.99999999997 in JavaScript).
   const ratioTrigger = Math.floor((contextWindow * triggerRatio) + (Number.EPSILON * contextWindow));
   const reserveTrigger = Math.max(1, contextWindow - safetyHeadroom);
+  const windowTriggerTokens = Math.min(ratioTrigger, reserveTrigger);
+  // The absolute ceiling binds only when it is strictly below the
+  // window-derived trigger, so smaller windows keep today's trigger exactly.
+  const maxInputTokens = resolveMaxInputTokens(compaction.maxInputTokens);
+  const ceilingBinds = maxInputTokens > 0 && maxInputTokens < windowTriggerTokens;
   const adaptiveKeepRecentTokens = clampInteger(contextWindow * 0.10, 4000, 4000, 20000);
   const adaptiveSummaryMaxTokens = clampInteger(contextWindow * 0.04, 2000, 2000, 12000);
   const adaptiveMinSavingsTokens = clampInteger(contextWindow * 0.10, 4000, 4000, 20000);
@@ -63,7 +82,10 @@ export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} 
     failureCooldownMs: clampInteger(compaction.failureCooldownMs, 900000, 0, 86400000),
     contextWindow,
     triggerRatio,
-    triggerTokens: Math.min(ratioTrigger, reserveTrigger),
+    triggerTokens: ceilingBinds ? maxInputTokens : windowTriggerTokens,
+    windowTriggerTokens,
+    maxInputTokens,
+    triggerSource: ceilingBinds ? "max_input_tokens" : ratioTrigger <= reserveTrigger ? "ratio" : "reserve",
     keepRecentTokens: clampInteger(
       compaction.keepRecentTokens,
       adaptiveKeepRecentTokens,
@@ -100,6 +122,30 @@ export function resolveAgentCompactionPolicy({ toolLimits = {}, compaction = {} 
       1000,
       Number.MAX_SAFE_INTEGER,
     ),
+  };
+}
+
+/**
+ * Anti-thrash floor for the absolute ceiling. After an accepted compaction the
+ * request still carries the stable fixed overhead plus the summary and the
+ * retained tail; a ceiling below `fixedOverhead + summaryMaxTokens +
+ * keepRecentTokens + compactionMinSavingsTokens` would re-arm immediately and
+ * pay for a summary that cannot meet the savings minimum on every turn. Lift a
+ * binding ceiling to that floor, never above the window-derived trigger. Ratio-
+ * or reserve-bound policies are returned unchanged.
+ */
+export function liftCompactionCeilingFloor(policy: AgentCompactionPolicy, fixedOverheadTokens: number): { policy: AgentCompactionPolicy; floorTokens: number | null; } {
+  if (policy.triggerSource !== "max_input_tokens") return { policy, floorTokens: null };
+  const overhead = Math.max(0, Math.ceil(Number(fixedOverheadTokens) || 0));
+  const floorTokens = overhead + policy.summaryMaxTokens + policy.keepRecentTokens + policy.compactionMinSavingsTokens;
+  if (floorTokens <= policy.triggerTokens) return { policy, floorTokens: null };
+  return {
+    policy: {
+      ...policy,
+      triggerTokens: Math.min(floorTokens, policy.windowTriggerTokens),
+      triggerSource: "max_input_tokens_floor",
+    },
+    floorTokens,
   };
 }
 
@@ -165,7 +211,17 @@ export type AgentCompactionPolicy = {
   enabled: boolean;
   contextWindow: number;
   triggerRatio: number;
+  /** Effective proactive trigger: min(ratio trigger, reserve trigger, maxInputTokens). */
   triggerTokens: number;
+  /** Window-derived trigger before the absolute ceiling: min(ratio trigger, reserve trigger). */
+  windowTriggerTokens: number;
+  /** Resolved absolute proactive ceiling; 0 when disabled. */
+  maxInputTokens: number;
+  /**
+   * Which arm binds triggerTokens. `max_input_tokens_floor` means a binding
+   * ceiling was lifted to the fixed-overhead floor (see liftCompactionCeilingFloor).
+   */
+  triggerSource: "ratio" | "reserve" | "max_input_tokens" | "max_input_tokens_floor";
   keepRecentTokens: number;
   summaryMaxTokens: number;
   fixedOverheadEnabled: boolean;

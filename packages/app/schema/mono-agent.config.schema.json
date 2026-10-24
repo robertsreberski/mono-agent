@@ -339,6 +339,23 @@
               "minimum": 0.2,
               "maximum": 0.95
             },
+            "maxInputTokens": {
+              "description": "Absolute proactive compaction ceiling in tokens; the trigger is the lowest of the ratio, the safety-headroom trigger and this value, so windows up to about 222,000 tokens are unaffected by the default. 0 disables it; other values must be 32,000-10,000,000. A soft trigger only: it never refuses a request or changes the usable window, and it is lifted when fixed request overhead plus summary, retained tail and minimum savings would not fit beneath it.",
+              "examples": [
+                300000
+              ],
+              "type": "integer",
+              "default": 200000,
+              "anyOf": [
+                {
+                  "const": 0
+                },
+                {
+                  "minimum": 32000,
+                  "maximum": 10000000
+                }
+              ]
+            },
             "keepRecentTokens": {
               "description": "Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens.",
               "examples": [

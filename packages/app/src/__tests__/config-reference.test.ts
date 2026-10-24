@@ -34,6 +34,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<keyof typeof CORE_CONFIG_FIELD_IDS, Conf
   "runtime.compaction.effort": "string",
   "runtime.compaction.failureCooldownMs": "integer",
   "runtime.compaction.triggerRatio": "number",
+  "runtime.compaction.maxInputTokens": "integer",
   "runtime.compaction.keepRecentTokens": "integer",
   "runtime.compaction.summaryMaxTokens": "integer",
   "runtime.compaction.minSavingsTokens": "integer",
@@ -407,6 +408,11 @@ describe("config reference", () => {
       default: 0.9,
       minimum: 0.2,
       maximum: 0.95,
+    });
+    expect(schemaNode(schema, "runtime", "compaction", "maxInputTokens")).toMatchObject({
+      type: "integer",
+      default: 200_000,
+      anyOf: [{ const: 0 }, { minimum: 32_000, maximum: 10_000_000 }],
     });
     expect(schemaNode(schema, "runtime", "compaction", "keepRecentTokens")).toMatchObject({
       type: "integer",

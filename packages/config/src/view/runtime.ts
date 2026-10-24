@@ -117,6 +117,14 @@ export function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): Confi
         defaultValue: 0.90,
       }),
       toField({
+        id: "runtime.compaction.maxInputTokens",
+        label: "Compaction absolute ceiling",
+        value: compaction.maxInputTokens === 0 ? "disabled" : String(compaction.maxInputTokens ?? 200_000),
+        jsonPresent: json.runtime?.compaction?.maxInputTokens !== undefined,
+        jsonValue: json.runtime?.compaction?.maxInputTokens,
+        defaultValue: 200_000,
+      }),
+      toField({
         id: "runtime.compaction.keepRecentTokens",
         label: "Compaction retained tokens",
         value: compaction.keepRecentTokens === undefined ? "adaptive by model" : String(compaction.keepRecentTokens),

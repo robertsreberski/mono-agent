@@ -70,6 +70,13 @@ export type RuntimeCompactionPolicy = {
    */
   triggerRatio?: number;
   /**
+   * Absolute proactive trigger ceiling in tokens; default 200000, 0 disables.
+   * The effective trigger is min(ratio trigger, reserve trigger, maxInputTokens).
+   * Only moves proactive compaction: it never refuses a request or changes the
+   * usable context window, output reserve or overflow handling.
+   */
+  maxInputTokens?: number;
+  /**
    * Recent-token budget preserved across a compaction.
    */
   keepRecentTokens?: number;

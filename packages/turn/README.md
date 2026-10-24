@@ -1613,13 +1613,35 @@ try the next configured model.
 
 Hosts pass the typed `RuntimeCompactionPolicy` through `runOptions.compaction`; the
 flat `runOptions.settings` inputs are rejected with migration instructions.
-The config-first host exposes this as `runtime.compaction.*` plus matching
-`MONO_AGENT_COMPACTION_*` variables. Omitted values resolve against effective window
+The config-first host exposes this as `runtime.compaction.*` (there are no
+compaction environment variables). Omitted values resolve against effective window
 `W`: trigger ratio `0.90`; safety headroom `clamp(floor(W × 0.10), 16000, 48000)`;
+absolute ceiling `maxInputTokens` `200000`;
 retained context and minimum proactive savings `clamp(floor(W × 0.10), 4000, 20000)`;
 summary output `clamp(floor(W × 0.04), 2000, 12000)`. Explicit values retain their
 scalar validation bounds. `onCompactionRecorded(record)` fires only for accepted,
 persisted automatic compactions.
+
+The proactive and mid-run trigger is
+`min(floor(W × triggerRatio), W − safetyHeadroom, maxInputTokens)`.
+`resolveAgentCompactionPolicy()` reports the window-only value as
+`windowTriggerTokens`, the resolved ceiling as `maxInputTokens` (`0` = disabled),
+and the binding arm as `triggerSource`. Windows up to about 222,000 tokens keep
+their existing trigger. A 1M window compacts at 200,000 tokens and drains to
+summary + retained tail + fixed overhead. The ceiling is only a soft trigger. It
+does not refuse requests, report `context_limit` or change `contextWindow`,
+`contextWindowOverride`, the output reserve or reactive recovery. If compaction
+fails or saves too little, the turn proceeds unchanged. Before each run, a ceiling
+below the request's estimated fixed overhead plus `summaryMaxTokens +
+keepRecentTokens + compactionMinSavingsTokens` is raised to that sum
+(`triggerSource: "max_input_tokens_floor"`). It is never raised above
+`windowTriggerTokens`, and mid-run checkpoints use the same raised trigger. Without
+this floor, each turn would re-arm and pay for a summary that could not meet the
+savings minimum. Run diagnostics add `context_compaction_trigger_source`,
+`context_compaction_max_input_tokens` and, when raised,
+`context_compaction_trigger_floor_tokens`. Large-window conversations therefore
+compact more often, and each compaction rebuilds the provider prompt cache.
+Pass `maxInputTokens: 0` to restore the window-only trigger.
 
 ### Advanced exports
 

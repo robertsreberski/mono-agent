@@ -2428,6 +2428,83 @@ describe("pi-native auto-compaction", () => {
     expect([first, second].flatMap((result) => result.runtimeWarnings).filter((warning: Warning) => warning.warning_kind === "context_compaction_suppressed")).toHaveLength(1);
   });
 
+  // bigHistory(60, 8000): ~120 messages of ~2k estimated tokens, ~240k total —
+  // past the 200k ceiling and far below 90% of a 1M window.
+  it("proactively compacts a 1M-window conversation at the absolute 200k ceiling", async () => {
+    const base = setup({ contextWindow: 1_000_000 });
+    const summaries: TranscriptContext[] = [];
+    faux!.setResponses([
+      (context: TranscriptContext) => { summaries.push(context); return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]); },
+      fauxAssistantMessage([fauxText("done")]),
+    ]);
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
+      piResolvedModel: base,
+      model: { provider: "faux", model: "ceiling", reference: "faux:ceiling" },
+      messages: bigHistory(60, 8000),
+      resolvePiApiKey: async () => "faux-key",
+      sessionsRoot,
+    }));
+    expect(result.error).toBeNull();
+    expect(result.failureKind ?? null).toBeNull();
+    expect(result.text).toBe("done");
+    expect(summaries).toHaveLength(1);
+    expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
+    expect(result.diagnostics).toMatchObject({
+      context_window: 1_000_000,
+      context_compaction_proactive: true,
+      context_compaction_trigger_tokens: 200_000,
+      context_compaction_trigger_source: "max_input_tokens",
+      context_compaction_max_input_tokens: 200_000,
+    });
+    expect(result.diagnostics.context_request_estimate_tokens).toBeGreaterThanOrEqual(200_000);
+    expect(result.diagnostics.context_compaction_tokens_after).toBeLessThan(200_000);
+  });
+
+  it("keeps the window-derived trigger on a 1M window when the ceiling is disabled", async () => {
+    const base = setup({ contextWindow: 1_000_000 });
+    let calls = 0;
+    faux!.setResponses([() => { calls += 1; return fauxAssistantMessage([fauxText("done")]); }]);
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
+      piResolvedModel: base,
+      compaction: { maxInputTokens: 0 },
+      model: { provider: "faux", model: "ceiling-off", reference: "faux:ceiling-off" },
+      messages: bigHistory(60, 8000),
+      resolvePiApiKey: async () => "faux-key",
+      sessionsRoot,
+    }));
+    expect(result.error).toBeNull();
+    expect(result.text).toBe("done");
+    expect(calls).toBe(1);
+    expect(result.capabilitiesUsed.context_compaction_applied).toBe(false);
+    expect(result.diagnostics).toMatchObject({
+      context_compaction_trigger_tokens: 900_000,
+      context_compaction_trigger_source: "ratio",
+      context_compaction_max_input_tokens: 0,
+    });
+  });
+
+  it("answers normally, without a context_limit, when the ceiling compaction fails", async () => {
+    const base = setup({ contextWindow: 1_000_000 });
+    faux!.setResponses([
+      fauxAssistantMessage([], { stopReason: "error", errorMessage: "synthetic summary outage" }),
+      fauxAssistantMessage([fauxText("done")]),
+    ]);
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
+      piResolvedModel: base,
+      model: { provider: "faux", model: "ceiling-failure", reference: "faux:ceiling-failure" },
+      messages: bigHistory(60, 8000),
+      resolvePiApiKey: async () => "faux-key",
+      sessionsRoot,
+    }));
+    expect(result.error).toBeNull();
+    expect(result.failureKind ?? null).toBeNull();
+    expect(result.text).toBe("done");
+    expect(result.capabilitiesUsed.context_compaction_applied).toBe(false);
+    expect(result.runtimeWarnings.map((warning: Warning) => warning.warning_kind)).toContain("context_compaction_failed");
+    expect(result.diagnostics.context_compaction_reactive_attempted).toBeUndefined();
+    expect(result.diagnostics.context_learned_window).toBeUndefined();
+  });
+
   it("proactively compacts before the turn when near the window", async () => {
     const base = setup();
     const windowed = { ...base, contextWindow: 200000 };

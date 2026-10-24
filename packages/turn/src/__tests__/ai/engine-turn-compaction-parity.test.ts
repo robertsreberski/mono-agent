@@ -36,12 +36,16 @@ describe("proactive compaction trigger — old (>=) vs new (shouldCompact) parit
   const scenarios = [
     // 128k: the 16k minimum headroom sets a 112k trigger below the 115.2k ratio arm.
     { name: "reserve-dominant window (128k)", modelWindow: 128_000, policies: {}, expectTrigger: 112_000 },
-    // 1M: safety headroom caps at 48k, while the 0.90 ratio fires at 900k.
-    { name: "ratio-dominant window (1M)", modelWindow: 1_000_000, policies: {}, expectTrigger: 900_000 },
+    // 1M: the default 200k absolute ceiling sits below every window arm.
+    { name: "ceiling-dominant window (1M)", modelWindow: 1_000_000, policies: {}, expectTrigger: 200_000 },
+    // 1M with the ceiling disabled: safety headroom caps at 48k, while the 0.90 ratio fires at 900k.
+    { name: "ratio-dominant window (1M, ceiling off)", modelWindow: 1_000_000, policies: { compaction: { maxInputTokens: 0 } }, expectTrigger: 900_000 },
     // tiny: clamps to the 32k floor; 16k minimum headroom wins over 90%.
     { name: "tiny window (32k floor)", modelWindow: 1_000, policies: {}, expectTrigger: 16_000 },
-    // huge: clamps to the 10M ceiling and the 0.90 ratio remains dominant.
-    { name: "huge window (10M clamp)", modelWindow: 50_000_000, policies: {}, expectTrigger: 9_000_000 },
+    // huge: clamps to the 10M window ceiling; the absolute ceiling binds.
+    { name: "huge window (10M clamp)", modelWindow: 50_000_000, policies: {}, expectTrigger: 200_000 },
+    // huge with the absolute ceiling disabled: the 0.90 ratio remains dominant.
+    { name: "huge window (10M clamp, ceiling off)", modelWindow: 50_000_000, policies: { compaction: { maxInputTokens: 0 } }, expectTrigger: 9_000_000 },
     // custom ratio still resolves to an integer trigger via Math.floor.
     { name: "custom ratio 0.5 on 200k", modelWindow: 200_000, policies: { compaction: { triggerRatio: 0.5 } }, expectTrigger: 100_000 },
   ];

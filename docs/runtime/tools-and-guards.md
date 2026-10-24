@@ -414,7 +414,9 @@ unknown. Summary requests keep Pi's existing disabled-cache setting.
 
 Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the engine-turn adapter, the bridge owns the decision in all three cases:
 
-- **Proactively** — before a turn when the running model is near its context window.
+- **Proactively** — before a turn when the request reaches the proactive
+  trigger: near the running model's context window, or the absolute
+  `maxInputTokens` ceiling (default 200,000 tokens) on large-window models.
 - **Mid-run** — between completed model/tool rounds of a single turn, so a long
   tool-using run that crosses the trigger while it is still working compacts
   then instead of drifting until the turn ends. The check runs at Pi's own
@@ -457,12 +459,53 @@ request still exceeds the primary model's window, the run is classified as
 `context_limit`; the fallback router may then try the next configured model.
 
 This is automatic and configurable on the engine-turn adapter. Defaults resolve against the effective context window `W`: trigger ratio `0.90`, safety headroom
-`clamp(floor(W × 0.10), 16000, 48000)`, retained context
+`clamp(floor(W × 0.10), 16000, 48000)`, absolute ceiling `maxInputTokens`
+`200000`, retained context
 `clamp(floor(W × 0.10), 4000, 20000)`, summary output
 `clamp(floor(W × 0.04), 2000, 12000)`, and minimum proactive savings
-`clamp(floor(W × 0.10), 4000, 20000)`. Configure overrides under
-`runtime.compaction` (or the matching `MONO_AGENT_COMPACTION_*` variables).
+`clamp(floor(W × 0.10), 4000, 20000)`. Configure overrides in the agent's
+`runtime.compaction` config; there are no compaction environment variables.
 See [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions persist, and [Fallback & failover](/runtime/fallback/) for window changes across the fallback chain.
+
+### Absolute compaction ceiling
+
+The proactive trigger (before a turn and at mid-run checkpoints) is
+`min(floor(W × triggerRatio), W − safetyHeadroom, maxInputTokens)`. Windows up to
+about 222,000 tokens already trigger at or below 200,000, so the default changes
+nothing for them. On larger windows the context is compacted at the ceiling
+rather than near 90% of the window. Without a ceiling, a multi-day conversation
+on a 1M-window model grew past 500,000 tokens without compacting, and every
+request carried that whole prefix. A 1M-window conversation now compacts at
+about 200,000 tokens. It drains to the summary (at most `summaryMaxTokens`), the
+retained tail (`keepRecentTokens`) and the fixed request overhead, using the same
+guards as every other proactive compaction.
+
+The ceiling is a soft trigger only. It never refuses a request, and it never
+changes the usable window, the output reserve, `contextWindowOverride` or reactive
+overflow handling. It is never reported as `context_limit`, so it cannot cause a
+fallback to a larger-window model. If a compaction cannot get under the ceiling
+because savings are too small, nothing can be cut or the summary fails, the turn
+proceeds as before. The minimum-savings, failure-cooldown and mid-run growth
+guards then limit retries. When the stable fixed overhead (system prompt, tool
+schemas and current turn) plus `summaryMaxTokens + keepRecentTokens +
+minSavingsTokens` would not fit under the ceiling, the trigger for that run is
+raised to that sum. It is never raised above the window-derived trigger. Without
+this, every turn would arm again and pay for a summary that could not save
+enough.
+
+The trade-off is deliberate: large-window conversations compact more often. Each
+compaction replaces the cached prompt prefix, so the next request rebuilds the
+provider prompt cache, and the summary is a separate paid request. Request
+shapes, reasoning and signed-thinking handling are unchanged. Set a larger value
+(for example `"maxInputTokens": 400000`) for one agent to compact later, or
+`"maxInputTokens": 0` to turn the ceiling off and keep only the ratio and
+safety-headroom trigger. Explicit values other than 0 must be 32,000–10,000,000.
+
+Each proactive check reports `context_compaction_trigger_tokens`,
+`context_compaction_trigger_source` (`ratio`, `reserve`, `max_input_tokens`, or
+`max_input_tokens_floor` when the overhead floor raised the ceiling),
+`context_compaction_max_input_tokens` (`0` when disabled) and, when raised,
+`context_compaction_trigger_floor_tokens`.
 
 ## Web research and WebFetch retry
 

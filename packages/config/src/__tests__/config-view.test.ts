@@ -38,6 +38,16 @@ describe("buildMonoAgentConfigView", () => {
       .toEqual(new Set(["json", "default"]));
   });
 
+  it("shows the absolute compaction ceiling default, override and opt-out", () => {
+    expect(field(buildView({}), "runtime.compaction.maxInputTokens")).toMatchObject({ value: "200000", source: "default" });
+    expect(field(buildView({ runtime: { compaction: { maxInputTokens: 300_000 } } }), "runtime.compaction.maxInputTokens"))
+      .toMatchObject({ value: "300000", source: "json" });
+    expect(field(buildView({ runtime: { compaction: { maxInputTokens: 0 } } }), "runtime.compaction.maxInputTokens"))
+      .toMatchObject({ value: "disabled", source: "json" });
+    expect(field(buildView({ runtime: { compaction: { maxInputTokens: 200_000 } } }), "runtime.compaction.maxInputTokens"))
+      .toMatchObject({ source: "json", restatesDefault: true });
+  });
+
   it("marks JSON values that restate a default", () => {
     expect(field(buildView({ traceability: { heartbeatMs: 10_000 } }), "traceability.heartbeatMs"))
       .toMatchObject({ source: "json", restatesDefault: true });
