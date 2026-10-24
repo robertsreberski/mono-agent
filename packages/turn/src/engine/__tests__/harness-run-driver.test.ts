@@ -516,7 +516,7 @@ it.each([1, "1"])("adapts provider declarations but preserves native validation 
   } finally { loop.mockRestore(); await adapter.close(); await raw.close(); }
 });
 
-it("declines a mid-run threshold reduction when the evidence preparer refuses and still completes the run", async () => {
+it("continues a mid-run threshold reduction when the evidence preparer refuses and still completes the run", async () => {
   const faux = fauxProvider({ provider: "faux", models: [{ id: "declined-cut", contextWindow: 4096, maxTokens: 1000 }], tokensPerSecond: 1000000 });
   const models = createModels(); models.setProvider(faux.provider); faux.setResponses([fauxAssistantMessage([fauxText("Completed without reducing context.")])]);
   const repo = new MemorySessionRepo(), raw: any = await repo.create();
@@ -531,8 +531,22 @@ it("declines a mid-run threshold reduction when the evidence preparer refuses an
   try {
     expect((await driver.prompt("Fictional next request.")).status).toBe("completed");
     expect(prepare).toHaveBeenCalled();
-    expect((await raw.getEntries()).some((entry: any) => entry.type === "compaction")).toBe(false);
-    expect(events).toContainEqual(expect.objectContaining({ type: "compaction_end", reason: "threshold", status: "declined" }));
+    expect((await raw.getEntries()).some((entry: any) => entry.type === "compaction")).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({ type: "compaction_end", reason: "threshold", status: "completed" }));
     expect(events).toContainEqual(expect.objectContaining({ type: "warning", code: "context_compaction_prepare_failed" }));
+  } finally { await driver.close(); await raw.close(); }
+});
+
+it.each(["manual", "pre-turn", "reactive"])("continues %s compaction when an evidence callback is unavailable", async trigger => {
+  const repo = new MemorySessionRepo(), raw: any = await repo.create();
+  await raw.appendMessage({ role: "user", content: "Fictional original context.", timestamp: 1 }, "fictional-source");
+  const driver = createRunDriver(raw, { model: { provider: "faux", id: "m", api: "faux-api" }, tools: [], systemPrompt: "Fixture",
+    continuityRecording: true, onCompactionPreparing: async () => { throw new Error("Fictional writer outage"); } });
+  driver.hooks.on("before_compaction", () => ({ compaction: { summary: "Fictional summary.", retainedTail: [], tokensBefore: 100 } }));
+  const events: any[] = []; driver.subscribe((event: any) => events.push(event));
+  try {
+    await expect(driver.compact({ continuityTrigger: trigger })).resolves.toMatchObject({ summary: "Fictional summary." });
+    expect(events).toContainEqual(expect.objectContaining({ type: "warning", code: "context_compaction_prepare_failed" }));
+    expect((await raw.getEntries()).some((entry: any) => entry.type === "compaction")).toBe(true);
   } finally { await driver.close(); await raw.close(); }
 });

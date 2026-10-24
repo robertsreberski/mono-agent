@@ -201,6 +201,17 @@ describe("owned canonical continuity publication", () => {
     expect(reader.searchContinuity(scope).items.map((r) => r.preview)).toEqual(["Existing completed answer."]);
   });
 
+  it("borrows an already held logical owner to retire a sibling daily bucket's inactive fence", async () => {
+    const dir = await root(), { continuity } = await setup(dir), retired: string[] = [];
+    const store = createDurableHistoryStore({ root: dir, continuity, retireProviderSession: async id => { retired.push(id); } });
+    const first = `${id}#2026-10-01`, second = `${id}#2026-10-02`;
+    await store.append(first, [message("First daily bucket answer.")]);
+    const prior = await store.beginProviderSessionTurn!(first, "fictional-aborted-run"); await prior.abort();
+    const next = await store.contextImport!.beginExclusiveTurn(second);
+    await next.abort();
+    expect(retired).toEqual([prior.providerSessionId]);
+  });
+
   it("covers model-switch and direct/prepared native publication without taking another owner", async () => {
     const dir = await root(), f = await fixture(dir);
     const { continuity, reader, writer } = await setup(join(dir, "history"));

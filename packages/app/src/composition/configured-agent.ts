@@ -268,7 +268,7 @@ async function createConfiguredConversationHarnessInternal(
     channelId: internalHooks.processJobs?.channelId,
     conversationScheme: internalHooks.processJobs?.conversationScheme,
   });
-  const conversationHistory = config.runtime.session.continuity?.enabled === false || !isConversationHistoryToolAllowed(config.tools)
+  const conversationHistory = internalHooks.conversationHistoryExtension === null || config.runtime.session.continuity?.enabled === false || !isConversationHistoryToolAllowed(config.tools)
     ? undefined : internalHooks.conversationHistoryExtension ?? createConversationHistoryRuntimeExtension({
       historyRoot: artifactDerivedRoots.history,
       rollover: internalHooks.sessionRollover ?? config.runtime.session.rollover ?? "none",

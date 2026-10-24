@@ -16,12 +16,21 @@ import { ToolHistoryWriter } from "../tool-history/writer.js";
 const roots: string[] = [], writers = new Set<ToolHistoryWriter>(), cleanup: Array<() => Promise<void>> = [];
 const id = "web:fiction", scope = { logicalConversationId: id, currentConversationId: id, currentRunId: "reading-run" };
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); for (const writer of writers) await writer.close(); writers.clear(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
-async function fixture(maxBytes?: number, summary = "Morgan chose the cobalt design.") {
+async function fixture(maxBytes?: number, summary = "Morgan chose the cobalt design.", outageCode?: string) {
   const root = await mkdtemp(join(tmpdir(), "continuity-summary-")); roots.push(root);
   const historyRoot = join(root, "history"), sessionsRoot = join(root, "native");
   const writer = await ToolHistoryWriter.open({ root: historyRoot, continuityEnabled: true, ...(maxBytes === undefined ? {} : { retention: { maxBytes } }) }); writers.add(writer);
-  const reader = new ToolHistoryReader(historyRoot), runtime = createMonoRuntime();
-  const continuity = createContinuityParticipant({ writer, reader, logicalConversationId: (id) => id, protectedConversations: () => reader.protectedContinuityConversations() });
+  const reader = new ToolHistoryReader(historyRoot), runtime = createMonoRuntime(), warnings: string[] = [];
+  let unavailable = outageCode !== undefined;
+  const available = () => { if (unavailable) throw Object.assign(new Error("Fictional sidecar unavailable"), { code: outageCode }); };
+  const continuity = createContinuityParticipant({ writer: {
+    prepareContinuity: async input => { available(); return await writer.prepareContinuity(input); },
+    commitContinuity: async input => { available(); await writer.commitContinuity(input); },
+    reconcileContinuity: async input => { available(); return await writer.reconcileContinuity(input); },
+    recordContinuityGap: async input => { available(); await writer.recordContinuityGap(input); },
+    resetConversation: async input => { available(); await writer.resetConversation(input); },
+  }, reader: { getContinuity: input => { available(); return reader.getContinuity(input); } },
+    logicalConversationId: (id) => id, protectedConversations: () => reader.protectedContinuityConversations(), onWarning: warning => warnings.push(warning) });
   const store = createDurableHistoryStore({ root: historyRoot, continuity, retireProviderSession: async () => {},
     reconcileProviderSessionTurn: async (request) => await runtime.reconcileSessionTurn!({ sessionsRoot, descriptor: request.descriptor, purpose: request.purpose,
       ...(request.includeContinuity ? { includeContinuity: true } : {}), expectedModel: { provider: "faux", id: "m", api: "faux-api" }, expectedInputs: request.expectedInputs }) });
@@ -36,7 +45,7 @@ async function fixture(maxBytes?: number, summary = "Morgan chose the cobalt des
   const closeHandles = async () => { if (closed) return; closed = true; try { await raw.close(); } finally { await repo.close(); } };
   cleanup.push(async () => { try { await closeHandles(); } finally { await turn.abort(); } });
   const closeNative = async (outcome = "completed") => { await driver.endTurn(outcome, outcome === "completed" ? { text: null, error: null, failureKind: null, cancelled: false, stopReason: "endTurn" } : undefined); await raw.sync(); await closeHandles(); };
-  return { root, historyRoot, writer, reader, store, turn, driver, raw, closeNative };
+  return { root, historyRoot, writer, reader, store, turn, driver, raw, closeNative, warnings, restoreSidecar: () => { unavailable = false; } };
 }
 function record(checkpoint: NonNullable<MonoRuntimeCompactionRecord["checkpoint"]>): MonoRuntimeCompactionRecord {
   return { checkpoint, task_run_id: "fiction-summary-run", model: "faux:m", provider_kind: "pi", trigger: "manual", summary: checkpoint.summary,
@@ -126,21 +135,35 @@ describe("owned portable summary publication", () => {
     expect(f.reader.latestContinuitySummary(scope)).toBeUndefined();
   });
 
-  it("declines the native reduction rather than retaining an oversized summary's omission placeholder", async () => {
+  it("continues the native reduction without retaining an oversized summary's omission placeholder", async () => {
     const f = await fixture(undefined, "x".repeat(1024 * 1024 + 1));
-    await expect(f.driver.compact({ continuityTrigger: "manual" })).rejects.toMatchObject({ code: "continuity_summary_unavailable" });
-    expect((await f.raw.getEntries()).some((entry: { type: string }) => entry.type === "compaction")).toBe(false);
+    await expect(f.driver.compact({ continuityTrigger: "manual" })).resolves.toBeDefined();
+    expect((await f.raw.getEntries()).some((entry: { type: string }) => entry.type === "compaction")).toBe(true);
     expect((await f.writer.stats()).continuity).toMatchObject({ records: 0, prepared: 0 });
     await f.closeNative("failed"); await f.turn.abort();
   });
 
-  it("declines the native reduction when a portable summary cannot reserve capacity", async () => {
+  it("continues the native reduction when a portable summary cannot reserve capacity", async () => {
     const f = await fixture(1);
-    await expect(f.driver.compact({ continuityTrigger: "manual" })).rejects.toMatchObject({ code: "continuity_quota_exhausted" });
-    expect((await f.raw.getEntries()).some((entry: { type: string }) => entry.type === "compaction")).toBe(false);
+    await expect(f.driver.compact({ continuityTrigger: "manual" })).resolves.toBeDefined();
+    expect((await f.raw.getEntries()).some((entry: { type: string }) => entry.type === "compaction")).toBe(true);
     expect((await f.writer.stats()).continuity).toMatchObject({ degraded: true, prepared: 0 });
     await f.closeNative("failed"); await f.turn.abort();
   });
+  it.each(["history_artifact_root_mismatch", "history_integrity_failed", "history_schema_unsupported", "history_writer_closed"])("compacts through %s during both preparation and recording, then recovers proof and gap", async code => {
+    const f = await fixture(undefined, "A fictional portable summary.", code);
+    const cut = await f.driver.compact({ continuityTrigger: "manual" });
+    await expect(f.turn.recordCompaction!(record(cut.continuityCheckpoint))).resolves.toBeUndefined();
+    expect((await f.raw.getEntries()).some((entry: { type: string }) => entry.type === "compaction")).toBe(true);
+    expect(f.reader.latestContinuitySummary(scope)).toBeUndefined();
+    expect(f.warnings.some(warning => warning.includes("degraded"))).toBe(true);
+    f.restoreSidecar();
+    await f.closeNative(); await (await f.turn.prepareCommit([], { providerSessionSynced: true })).commit();
+    expect(f.reader.latestContinuitySummary(scope)).toMatchObject({ kind: "summary", summary: { operationId: cut.continuityCheckpoint.operationId } });
+    expect(f.reader.continuityGaps(id).items).toContainEqual(expect.objectContaining({ reason: "sidecar_unavailable" }));
+    expect((await f.writer.stats()).continuity?.prepared).toBe(0);
+  });
+
   it.each(["summary_prepared", "native_checkpoint", "summary_committed"])("recovers actual SIGKILL at %s without promoting an unpublished cut", async (phase) => {
     const root = await mkdtemp(join(tmpdir(), "continuity-summary-kill-")); roots.push(root);
     const fixturePath = join(root, "summary-crash.mjs");

@@ -120,6 +120,7 @@ export async function validateMonoAgentFolder(
     sections.push(await computerUseSection(coreConfig.tools.computerUse));
     sections.push(await sessionToolHistorySection({
       historyRoot: join(coreConfig.artifacts.dir, "..", "history"),
+      artifactRoot: join(coreConfig.artifacts.dir, "tool-output"),
       requestScopedToolSupported: true,
     }));
     sections.push(await webToolsSection(coreConfig, options, liveness));

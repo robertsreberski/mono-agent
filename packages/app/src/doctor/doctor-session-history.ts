@@ -1,3 +1,4 @@
+import { canonicalToolArtifactRoot } from "@mono-agent/observability";
 import { lstat, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -19,6 +20,7 @@ const CONTINUITY_TABLES = ["continuity_generations", "continuity_records", "cont
 
 interface SessionToolHistoryDoctorOptions {
   readonly historyRoot: string;
+  readonly artifactRoot?: string;
   readonly requestScopedToolSupported: boolean;
 }
 
@@ -138,7 +140,7 @@ async function inspectSessionToolHistorySection(
   );
 
   const contentInspection = contentSecure
-    ? inspectContentDatabase(contentPath, Number(contentInfo.size), owner.live === true, worsen)
+    ? inspectContentDatabase(contentPath, Number(contentInfo.size), owner.live === true, worsen, options.artifactRoot)
     : "unavailable";
   if (contentInspection === "pristine") {
     details.push("Tool history database is a pristine zero-byte file; the next writer can initialize it safely.");
@@ -227,13 +229,13 @@ function reportContinuity(
   // captured. Nothing can act on or wait them out, so they stay informational.
   if (continuity.coverageGaps > 0) {
     details.push(
-      `${String(continuity.coverageGaps)} abandoned continuity generation(s) are retained as content-free coverage gaps (informational): canonical history advanced past an unpublished preparation, so that evidence is reported as unavailable rather than recovered.`,
+      `${String(continuity.coverageGaps)} abandoned continuity generation(s) are retained as content-free coverage gaps (informational): capture was skipped or canonical history advanced past an unpublished preparation, so coverage is incomplete.`,
     );
   }
   if (continuity.degraded) {
     worsen(
       "waiting",
-      "Conversation continuity is degraded: pinned evidence exhausted the shared retention budget, so new reductions are refused until pins are released or the budget grows; existing references stay readable.",
+      "Conversation continuity is degraded: retained evidence was skipped because storage, capacity or capture bounds were unavailable. Compaction and canonical publication continue; existing references stay readable when the store is accessible.",
     );
   }
 }
@@ -243,6 +245,7 @@ function inspectContentDatabase(
   size: number,
   liveOwner: boolean,
   worsen: (status: ValidationStatus, detail: string) => void,
+  artifactRoot?: string,
 ): "readable" | "pristine" | "unavailable" {
   let database: DatabaseSync | undefined;
   try {
@@ -295,6 +298,12 @@ function inspectContentDatabase(
           `Tool-history schema v${String(userVersion)} is missing continuity table(s): ${missing.join(", ")}. Restore a consistent backup or purge persisted conversation state.`,
         );
         return "unavailable";
+      }
+    }
+    if (artifactRoot !== undefined) {
+      const stored = database.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get() as { value?: unknown } | undefined;
+      if (stored !== undefined && stored.value !== canonicalToolArtifactRoot(artifactRoot)) {
+        worsen("waiting", "history_artifact_root_mismatch: tool-history and continuity capture are degraded after a root move or fork; the artifact-root pin is unchanged. Compaction and canonical history continue; use a fresh store for the new root.");
       }
     }
     return "readable";

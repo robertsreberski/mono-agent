@@ -32,6 +32,7 @@ it.each(tools.flatMap((tool) => [tool, `mcp__fictional-history__${tool}`]))("omi
     }
     const projection = buildToolHistoryProjection(reader, id, id, "reading-run", new Set(), true)!;
     expect(projection.text).not.toContain(text);
+    expect(buildToolHistoryProjection(reader, id, id, "reading-run", new Set(), false)!.text).not.toContain(text);
     const found = reader.search({ ...scope, query: "nested-body-cobalt", limit: 10 });
     expect(found.items.map(({ runId }) => runId)).toEqual(["legacy"]);
   } finally { await writer.close(); await rm(root, { recursive: true, force: true }); }

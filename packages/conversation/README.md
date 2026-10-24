@@ -389,12 +389,17 @@ coverage. Contradictory generations still refuse and appear in sidecar
 idempotency-conflict diagnostics. Storage primitives do not acquire canonical
 ownership. Canonical retention protects prepared physical owners and non-summary reference
 pins. Summary pins protect retained text, not canonical age/quota retention.
-Sidecar outages warn and degrade coverage rather than blocking canonical
+Sidecar outages warn and degrade coverage rather than blocking compaction, canonical
 publication or cleanup. Digest-bound reconciliation remains the only way to
 publish a stranded preparation. Bounds, quota and outage gaps are content-free
 and use tombstone count/age retention; diagnostics queued during a complete
 outage are process-local until the writer recovers. Unattested user text is
-`user`/unknown; imported context is `imported`/unknown.
+`user`/unknown; imported context is `imported`/unknown. Initial exclusive-mode
+input has no native input identity and cannot acquire owner attestation. Custom
+preparer/recorder callbacks must settle within a bounded local operation:
+cancellation does not interrupt a callback that never settles. Moving/forking
+an existing sidecar retains its artifact-root pin; mismatched roots degrade
+capture until a fresh store is used, without preventing compaction.
 Explicit reset purges evidence after canonical publication, before owner release.
 The canonical text adapter omits cancelled/failed account envelopes and
 unfinished detached candidates: durable reconstruction metadata is not proof of
@@ -406,8 +411,10 @@ before the native cut, then acknowledges the synced journal/operation, covered
 source digest and retained-summary digest. Recovery checks the actual durable
 checkpoint; an absent cut discards its preparation. For non-durable runs,
 an interrupted preparation stays unpublished and is discarded at the next
-owned recovery. A quota refusal declines the reduction instead of cutting
-away unretained context. Explicit reset can stage a purge over a pending cut;
+owned recovery. Capture unavailability (including quota or summary bounds)
+never vetoes compaction: native reduction continues with warnings and incomplete
+retained coverage, and only exact durable proof can later promote a summary.
+Explicit reset can stage a purge over a pending cut;
 an aborted purge leaves that preparation intact, and a published purge removes
 it with the other physical evidence.
 

@@ -146,7 +146,7 @@ export function prepareContinuity(
   if (capturesText) reserve(bytes, records.length);
   const count = Number((database.prepare("SELECT count(*) count FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).count);
   if (capturesText && (continuityRetainedBytes(database) + toolRetainedBytes(database) + bytes > limits.maxBytes || count + records.length > limits.maxCompletedCalls)) {
-    fail("continuity_quota_exhausted", "Continuity retention capacity is exhausted; continuity is degraded and new reductions must be declined.");
+    fail("continuity_quota_exhausted", "Continuity retention capacity is exhausted; capture is degraded but compaction continues.");
   }
   database.prepare("DELETE FROM metadata WHERE key='continuity_degraded'").run();
   const now = Date.now();

@@ -8,7 +8,7 @@ import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { acquireToolHistoryWriter, createInMemoryHistoryStore } from "@mono-agent/conversation";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { expect, it } from "vitest";
-import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
+import { createConfiguredAgentResponderForApp, createConfiguredConversationHarness } from "../composition/configured-agent.js";
 import { CONVERSATION_HISTORY_MCP_SERVER_NAME, CONVERSATION_HISTORY_TOOL_NAME } from "../request-tools/conversation-history.js";
 
 it.each([
@@ -115,5 +115,22 @@ it("does not upgrade the sidecar for a caller-supplied store with no configured 
     const database = new DatabaseSync(join(cwd, "history", "tool-history", "tool-lifecycles.sqlite"), { readOnly: true });
     try { expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 2 }); }
     finally { database.close(); }
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+it("respects explicit controller suppression instead of creating a standalone history endpoint", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "configured-suppressed-history-"));
+  try {
+    await writeFile(join(cwd, "IDENTITY.md"), "Fictional fixture.");
+    const config = resolveJsonMonoAgentConfig({ cwd, json: { runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" } } });
+    let observed = false;
+    const responder = await createConfiguredAgentResponderForApp({ config, cwd, env: {}, historyStore: createInMemoryHistoryStore(),
+      runtime: { async run(_prompt, options) {
+        observed = true;
+        expect((options.mcpServers as Record<string, unknown> | undefined)?.[CONVERSATION_HISTORY_MCP_SERVER_NAME]).toBeUndefined();
+        return { text: "Fictional answer." };
+      } } }, { conversationHistoryExtension: null });
+    await responder.respond({ conversationId: "web:fiction", text: "Fictional request.", abortSignal: new AbortController().signal }, { append: async () => {} });
+    expect(observed).toBe(true);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });

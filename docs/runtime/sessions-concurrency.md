@@ -100,8 +100,8 @@ positively finalized/fsynced current-run conversation records are eligible;
 partial streams and prepared publications remain unavailable.
 Stop older writers and back up canonical history and the sidecar together before
 the first enabled start: the first capable writer upgrades the sidecar from SQLite v2 to v3 in place; older binaries refuse the upgraded store.
-Disabled operation does not perform that upgrade. Existing v3 evidence remains
-readable after disabling new capture. Binary rollback requires stopped writers
+Disabled operation does not perform that upgrade. Existing v3 evidence stays on disk for doctor, stats and purge;
+ConversationHistory is not registered while capture is disabled. Binary rollback requires stopped writers
 and a consistent backup; disabling a flag does not downgrade storage.
 
 `ConversationHistory`, when allowed by tool policy, searches and retrieves only
@@ -116,12 +116,24 @@ rather than invalidating references. Conversation reset and
 
 The latest portable summary is generated evidence, not a user instruction.
 Recording is awaited across manual, pre-turn, reactive and mid-run compaction.
-Its storage reservation happens before reduction; pinned-capacity exhaustion
-refuses that reduction. A prepared summary is invisible until the owner verifies
+Storage reservation is attempted before reduction, but sidecar outages, full
+capacity or an oversized summary never block compaction or the run. They warn
+and degrade retained evidence coverage, with content-free gaps when storage is
+reachable again. A prepared summary is invisible until the owner verifies
 the actual synced native checkpoint and its covered-source/retained-text digests.
 An interrupted acknowledgement can recover without another summary call.
 Canonical hashes alone cannot prove a native reduction occurred.
 `SessionHistory` keeps its prior-run tool-lifecycle contract.
+
+Moving or forking an agent root with an existing sidecar preserves its pinned
+artifact root. Tool-history and continuity writes degrade if that root differs;
+compaction and canonical history continue. Use a fresh store for the moved root;
+this release does not rebind stored artifact paths.
+
+Custom preparer/recorder callbacks must be bounded local operations. They are
+awaited under the owner; cancellation cannot forcibly interrupt a callback that
+does not settle. Initial exclusive-mode input has no native input identity and
+remains `user`/unknown rather than inventing host-owner attestation.
 
 ## Web-only durable model-switch opt-in
 

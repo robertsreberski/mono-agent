@@ -52,7 +52,7 @@ export function createContinuityParticipant(options: {
         const evidence = context.evidence, logicalConversationId = options.logicalConversationId(context.conversationId);
         const recordId = continuityRecordId(context.conversationId, `summary:${evidence.journalId}:${evidence.operationId}`);
         const retained = retainContinuityText(evidence.summary);
-        if (retained.truncated) throw Object.assign(new Error("Portable summary cannot be retained completely; compaction must be declined."), { code: "continuity_summary_unavailable" });
+        if (retained.truncated) throw Object.assign(new Error("Portable summary cannot be retained completely; compaction continues without retained evidence."), { code: "continuity_summary_unavailable" });
         const proof = { status: "published" as const, journalId: evidence.journalId, operationId: evidence.operationId,
           sourceDigest: evidence.sourceDigest, summaryDigest: retained.sha256 };
         const preparation = (generationId: string): ContinuityPreparation => ({ generationId, conversationId: context.conversationId, logicalConversationId,
@@ -85,7 +85,6 @@ export function createContinuityParticipant(options: {
         await gap(context.conversationId, context.current.digest, context.current.digest,
           (error as { code?: string }).code === "continuity_quota_exhausted" ? "capture_quota"
             : (error as { code?: string }).code === "continuity_summary_unavailable" ? "capture_bounds" : "sidecar_unavailable");
-        if (context.phase === "prepare") throw error; // Decline the cut, not the user's turn.
       }
       await context.assertOwned();
     },

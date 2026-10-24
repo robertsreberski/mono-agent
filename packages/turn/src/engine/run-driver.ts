@@ -306,11 +306,8 @@ export function createRunDriver(store: any, options: any): {
           store.metadata.journalId, { operationId, cause, model: modelConfig().model });
         try { await options.onCompactionPreparing(Object.freeze(preparing)); }
         catch (error) {
-          if (reason !== "threshold" || context.abortSignal.aborted) throw error;
-          ended = true;
-          publish({ type: "warning", code: "context_compaction_prepare_failed", message: "Context reduction was declined because retained evidence could not be prepared." });
-          publish({ type: "compaction_end", reason, status: "declined", cancelled: true });
-          return undefined;
+          if (context.abortSignal.aborted) throw error;
+          publish({ type: "warning", code: "context_compaction_prepare_failed", message: "Context reduction continues without retained evidence because its preparation is unavailable." });
         }
         if (context.abortSignal.aborted) throw new Error("Pi compaction aborted during evidence preparation.");
         if (store.tip !== source.sourceTipId) throw new Error("Compaction source advanced during evidence preparation.");

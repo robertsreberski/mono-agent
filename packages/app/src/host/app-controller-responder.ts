@@ -432,7 +432,7 @@ export async function buildResponder(
     observabilityContext,
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
-    ...(conversationHistoryExtension === undefined ? {} : { conversationHistoryExtension }),
+    conversationHistoryExtension: conversationHistoryExtension ?? null,
     processJobs: {
       registry: processJobsRegistry,
       service: controller.processJobsService,

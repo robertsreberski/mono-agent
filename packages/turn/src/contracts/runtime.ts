@@ -21,7 +21,7 @@ export type RuntimeToolLifecycleSink = import("./events.js").RuntimeToolLifecycl
 export type RuntimeRunOptions = {
   /** Request-local provider outage recovery window (0–180000 ms); default 0. */
   piRequestRetryBudgetMs?: number;
-  /** Owner-held capacity/preparation barrier before publishing a native cut. */
+  /** Best-effort owner-held capture before a native cut; failures never veto compaction. Must settle within bounded local I/O. */
   onCompactionPreparing?: (checkpoint: RuntimeDurableCompactionCheckpoint) => Promise<void>;
   /** Request-owned recorder. Awaited; composed with the runtime host recorder. */
   onCompactionRecorded?: ((record: CompactionRecordedPayload) => void) | ((record: CompactionRecordedPayload) => Promise<void>);

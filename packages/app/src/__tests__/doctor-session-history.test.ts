@@ -650,7 +650,7 @@ describe("sessionToolHistorySection continuity (schema v3)", () => {
       "Conversation continuity: 1 records, 0 tombstones, 1 pins, 150 retained text bytes (counted in the shared retained payload budget).",
     );
     expect(section.details).toContain(
-      "Conversation continuity is degraded: pinned evidence exhausted the shared retention budget, so new reductions are refused until pins are released or the budget grows; existing references stay readable.",
+      "Conversation continuity is degraded: retained evidence was skipped because storage, capacity or capture bounds were unavailable. Compaction and canonical publication continue; existing references stay readable when the store is accessible.",
     );
   });
 
@@ -787,3 +787,15 @@ async function waitForChildOutput(
     child.on("exit", onExit);
   });
 }
+
+it("reports a moved sidecar's artifact-root degradation without rebinding or writing", async () => {
+  const root = await tempRoot(), oldRoot = join(root, "old-artifacts", "tool-output"), newRoot = join(root, "new-artifacts", "tool-output");
+  const writer = await openWriter(root, { artifactRoot: oldRoot, continuityEnabled: true }); await writer.close();
+  const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), before = await readFile(path);
+  const section = await sessionToolHistorySection({ historyRoot: root, artifactRoot: newRoot, requestScopedToolSupported: true });
+  expect(section.status).toBe("waiting");
+  expect(section.details).toContainEqual(expect.stringContaining("history_artifact_root_mismatch"));
+  expect(section.details).toContainEqual(expect.stringContaining("Compaction and canonical history continue"));
+  expect(await readFile(path)).toEqual(before);
+  expect(JSON.stringify(section)).not.toContain(oldRoot); expect(JSON.stringify(section)).not.toContain(newRoot);
+});

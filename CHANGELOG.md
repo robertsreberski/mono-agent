@@ -15,7 +15,7 @@
   which protect retained evidence but do not lease canonical conversations.
   Sidecar outages warn and degrade evidence coverage, not canonical publication
   or fence cleanup; skipped bounded/quota capture records content-free gaps.
-  A refused mid-run evidence preparation declines only the reduction.
+  Unavailable summary preparation never blocks compaction on any trigger.
   Unfinished assistant accounts remain reconstruction data, not retrievable
   completed-answer evidence. Portable summaries reserve storage before compaction;
   awaitable recording and exact native-checkpoint recovery retain them without

@@ -1191,6 +1191,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           heldLogical.rootIdentity,
           locksIdentity,
           historyKey(normalizedId),
+          heldLogical,
         );
         requireSettledFence(await this.findDirtyFence(historyKey(normalizedId), locksIdentity));
         signal?.throwIfAborted();
@@ -2097,8 +2098,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     await assertOwned();
     const current = this.continuityState(await this.readRecord(conversationId, rootIdentity));
     const record = async () => await this.continuity!.checkpoint({ conversationId, assertOwned, runId, phase, evidence, current });
-    if (phase === "prepare") await record(); // Refuse the cut when evidence cannot be staged.
-    else await this.continuityAvailable(record);
+    await this.continuityAvailable(record); // Evidence availability never controls the native cut.
     await assertOwned();
     await this.continuityPhase(phase === "prepare" ? "summary_prepared" : "summary_committed");
   }
@@ -2965,7 +2965,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       try {
         signal?.throwIfAborted();
         await this.findDirtyFence(conversationKey, locksIdentity);
-        await this.retireInactiveDirtyFences(rootIdentity, locksIdentity, conversationKey);
+        await this.retireInactiveDirtyFences(rootIdentity, locksIdentity, conversationKey, heldLogical);
         // Cancellation ends here: marker publication and recovery finish uncancelled.
         signal?.throwIfAborted();
         marker = await this.claims.createActiveMarker(conversationKey, locksIdentity);
@@ -3106,6 +3106,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     rootIdentity: DirectoryIdentity,
     locksIdentity: DirectoryIdentity,
     excludedConversationKey: string,
+    borrowedLogical: HeldLogicalConversation,
   ): Promise<void> {
     if (this.retireProviderSession === undefined) return;
     const activeKeys = new Set((await this.claims.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
@@ -3176,7 +3177,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await rm(fence.path);
         removed = true;
       };
-      if (this.continuity && committedRecord) await this.withContinuityMaintenanceOwner(committedRecord, rootIdentity, undefined, retire);
+      if (this.continuity && committedRecord) await this.withContinuityMaintenanceOwner(committedRecord, rootIdentity, borrowedLogical, retire);
       else await retire(async () => {});
     }
     if (removed) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);

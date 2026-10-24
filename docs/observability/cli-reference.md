@@ -409,7 +409,7 @@ bytes, and committed, unresolved (prepared) and abandoned generations.
 Continuity text counts toward the shared retained-payload budget shown above. The
 section is `waiting` while prepared generations await their conversation's next
 owned reconciliation, or when pinned evidence has exhausted the shared budget
-(quota-degraded continuity refuses new reductions but keeps existing references
+(degraded continuity skips retained evidence, not compaction, and keeps existing references
 readable). Abandoned generations are permanent, truthful coverage gaps for
 history that was never captured; doctor counts them as information only and
 does not change the section status. A v3 store
