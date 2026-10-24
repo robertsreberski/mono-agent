@@ -4,7 +4,7 @@ import { sanitizeVisibleText } from "@mono-agent/observability";
 import type { ToolHistoryRetentionOptions } from "./contracts.js";
 import {
   CONTINUITY_GENERATION_MAX_BYTES, CONTINUITY_GENERATION_MAX_RECORDS,
-  type ContinuityPin, type ContinuityPreparation, type ContinuityPublication,
+  type ContinuityGapInput, type ContinuityPin, type ContinuityPreparation, type ContinuityPublication,
   type ContinuityReceipt, type ContinuityReconciliation, type ContinuityReconciliationResult,
   type ContinuityRecordInput, type ContinuityStats,
 } from "./continuity-contracts.js";
@@ -54,7 +54,7 @@ export function createContinuitySchema(database: DatabaseSync): void {
       generation_id TEXT NOT NULL REFERENCES continuity_generations(generation_id) ON DELETE CASCADE,
       run_id TEXT NOT NULL,
       input_id TEXT,
-      kind TEXT NOT NULL CHECK(kind IN ('owner','other-user','assistant','summary','tool')),
+      kind TEXT NOT NULL CHECK(kind IN ('owner','user','other-user','imported','assistant','summary','tool')),
       seq INTEGER NOT NULL,
       finalized INTEGER NOT NULL DEFAULT 0 CHECK(finalized IN (0,1)),
       retained_text TEXT,
@@ -164,6 +164,24 @@ export function prepareContinuity(
         t.truncated ? 1 : 0, r.provenance, JSON.stringify(r.source ?? {}), r.summary === undefined ? null : JSON.stringify(r.summary), now, finalizedTool === undefined ? 0 : 1);
   }
   return { generationId: input.generationId, status: finalizedTool === undefined ? "prepared" : "committed", recordIds: records.map((r) => r.record.recordId) };
+}
+
+/** Gap diagnostics must remain possible even when retained payload capacity is full. */
+export function recordContinuityGap(database: DatabaseSync, input: ContinuityGapInput): void {
+  if (Object.keys(input).some(key => !["generationId", "conversationId", "logicalConversationId", "beforeDigest", "afterDigest", "reason"].includes(key))
+    || !GENERATION_ID.test(input.generationId)
+    || !["capture_bounds", "capture_quota", "sidecar_unavailable", "canonical_advanced_past_preparation"].includes(input.reason)) {
+    fail("continuity_invalid_preparation", "Invalid continuity gap.");
+  }
+  normalizeId(input.conversationId, "conversationId"); normalizeId(input.logicalConversationId, "logicalConversationId");
+  validateDigest(input.beforeDigest, true); validateDigest(input.afterDigest, true);
+  const now = Date.now();
+  // Use a distinct diagnostic id, never mutate a prepared generation or its proof.
+  database.prepare(`INSERT OR IGNORE INTO continuity_generations
+    (generation_id,conversation_id,logical_id,before_digest,after_digest,preparation_digest,state,created_at_ms,action,observed_digest,abandoned_at_ms,gap_reason)
+    VALUES (?,?,?,?,?,?,'abandoned',?,'publish',NULL,?,?)`).run(input.generationId, input.conversationId, input.logicalConversationId,
+      input.beforeDigest, input.afterDigest, createHash("sha256").update(JSON.stringify(input)).digest("hex"), now, now, input.reason);
+  database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('continuity_degraded',?)").run(input.reason);
 }
 
 export function commitContinuity(database: DatabaseSync, input: ContinuityPublication): void {
@@ -358,14 +376,14 @@ function validateRecord(r: ContinuityRecordInput): void {
   normalizeId(r.runId, "runId");
   if (r.inputId !== undefined) normalizeId(r.inputId, "inputId");
   if (!Number.isSafeInteger(r.sequence) || r.sequence < 0 || typeof r.text !== "string") fail("continuity_invalid_record", "Invalid continuity sequence or text.");
-  const allowed = { owner: ["host-owner"], "other-user": ["other-user", "unknown"], assistant: ["assistant", "unknown"], summary: ["generated"], tool: ["tool"] };
+  const allowed = { owner: ["host-owner"], user: ["unknown"], imported: ["unknown"], "other-user": ["other-user"], assistant: ["assistant", "unknown"], summary: ["generated"], tool: ["tool"] };
   if (!(r.kind in allowed) || !allowed[r.kind].includes(r.provenance)) fail("continuity_invalid_provenance", "Continuity source kind and provenance disagree.");
   const source = r.source ?? {};
   const keys = Object.keys(source);
   if (keys.some((k) => !["epoch", "revision", "journalId", "operationId", "attestation"].includes(k))) fail("continuity_invalid_provenance", "Unsupported continuity source metadata.");
   for (const key of ["epoch", "journalId", "operationId"] as const) if (source[key] !== undefined) safeMetadata(source[key]!);
   if (source.revision !== undefined && (!Number.isSafeInteger(source.revision) || source.revision < 0)) fail("continuity_invalid_provenance", "Invalid continuity source revision.");
-  if (r.kind === "owner") {
+  if (r.kind === "owner" || r.kind === "other-user") {
     if (!source.attestation || source.attestation.inputId !== r.inputId || !r.inputId) fail("continuity_invalid_provenance", "Owner evidence requires the exact staged input attestation.");
     validateDigest(source.attestation.requestDigest);
     if (Object.keys(source.attestation).some((k) => !["inputId", "requestDigest"].includes(k))) fail("continuity_invalid_provenance", "Unsupported input attestation.");

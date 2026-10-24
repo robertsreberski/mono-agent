@@ -24,6 +24,83 @@ async function setup(dir: string) {
 afterEach(async () => { for (const writer of writers) await writer.close(); writers.clear(); await Promise.all(roots.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
 describe("owned canonical continuity publication", () => {
+  it.each(["prepareContinuity", "commitContinuity", "reconcileContinuity", "recoverCheckpoint", "protectedConversations"] as const)("keeps canonical publication and cleanup available during %s outage", async (phase) => {
+    const dir = await root(), { writer, reader } = await setup(dir);
+    const warnings: string[] = [];
+    let unavailable = true;
+    const fail = () => { if (unavailable) throw new Error("Fictional sidecar outage"); };
+    const continuity = createContinuityParticipant({
+      writer: {
+        recordContinuityGap: async input => { fail(); await writer.recordContinuityGap(input); },
+        prepareContinuity: async input => { if (phase === "prepareContinuity") fail(); return await writer.prepareContinuity(input); },
+        commitContinuity: async input => { if (phase === "commitContinuity") fail(); await writer.commitContinuity(input); },
+        reconcileContinuity: async input => { if (phase === "reconcileContinuity" || phase === "recoverCheckpoint" && input.checkpoint !== undefined) fail(); return await writer.reconcileContinuity(input); },
+        resetConversation: async input => await writer.resetConversation(input),
+      }, reader, logicalConversationId: id => id,
+      protectedConversations: () => { if (phase === "protectedConversations") fail(); return reader.protectedContinuityConversations(); },
+      onWarning: text => warnings.push(text),
+    });
+    let retirements = 0;
+    const store = createDurableHistoryStore({ root: dir, continuity, retireProviderSession: async () => { retirements++; } });
+    const turn = await store.beginProviderSessionTurn!(id, "fictional-outage-run");
+    await (await turn.prepareCommit([message("Canonical answer survives the outage.")], { providerSessionSynced: true })).commit();
+    expect((await store.load(id)).map(m => m.content)).toEqual(["Canonical answer survives the outage."]);
+    // No stranded execution fence or held owner: the next turn can enter and finish.
+    unavailable = false;
+    const next = await store.beginProviderSessionTurn!(id, "fictional-next-run");
+    await (await next.prepareCommit([message("Next canonical answer.")], { providerSessionSynced: true })).commit();
+    expect(retirements).toBe(0);
+    expect(warnings.some(text => text.includes("degraded"))).toBe(true);
+    expect(reader.continuityGaps(id).items.some(gap => gap.reason === "sidecar_unavailable")).toBe(true);
+    if (phase === "commitContinuity") expect(reader.searchContinuity(scope).items.map(r => r.preview)).toContain("Canonical answer survives the outage.");
+    expect((await writer.stats()).continuity?.prepared).toBe(0);
+  });
+
+  it.each(["exclusive", "provider"] as const)("discards a %s turn's own uncompleted checkpoint before publication", async kind => {
+    const { store, writer, reader } = await setup(await root());
+    const turn = kind === "exclusive" ? await store.contextImport!.beginExclusiveTurn(id) : await store.beginProviderSessionTurn!(id, "fictional-checkpoint-run");
+    await turn.prepareCompaction!({ version: 1 as const, checkpointId: "fictional-checkpoint", journalId: "fictional-journal", operationId: "fictional-operation", summary: "A summary prepared but never cut.",
+      model: "faux:m", trigger: "mid-run", sourceDigest: "a".repeat(64) });
+    expect((await writer.stats()).continuity?.prepared).toBe(1);
+    const prepared = await turn.prepareCommit([message("The completed answer.")], { providerSessionSynced: true });
+    if ("append" in prepared) await prepared.append.commit(); else await prepared.commit();
+    expect((await store.load(id)).map(m => m.content)).toEqual(["The completed answer."]);
+    expect(reader.latestContinuitySummary(scope)).toBeUndefined();
+    expect(reader.searchContinuity(scope).items.map(r => r.preview)).toEqual(["The completed answer."]);
+    expect((await writer.stats()).continuity?.prepared).toBe(0);
+  });
+
+  it.each(["quota", "age"] as const)("keeps canonical %s retention working after summary pinning", async mode => {
+    const dir = await root(), { writer, reader, continuity, store } = await setup(dir);
+    await store.append(id, [message("An older canonical answer.")]);
+    const turn = await store.contextImport!.beginExclusiveTurn(id);
+    const checkpoint = { version: 1 as const, checkpointId: "fictional-checkpoint", journalId: "fictional-journal", operationId: "fictional-operation", summary: "A pinned summary.", model: "faux:m", trigger: "mid-run" as const, sourceDigest: "a".repeat(64) };
+    await turn.prepareCompaction!(checkpoint);
+    await turn.recordCompaction!({ checkpoint, task_run_id: "fictional-run", model: "faux:m", provider_kind: "pi", trigger: "mid-run", summary: checkpoint.summary, tokens_before: 100, first_kept_entry_id: null, status: "succeeded", created_at: 1 });
+    await turn.abort();
+    expect((await writer.stats()).continuity?.pins).toBe(1);
+    const limited = createDurableHistoryStore({ root: dir, continuity, ...(mode === "quota" ? { maxConversations: 1 } : { maxAgeMs: 1, now: () => Date.now() + 100000 }) });
+    await limited.append("web:quota", [message("Quota replacement.")]);
+    expect(await store.load(id)).toEqual([]);
+    expect(reader.latestContinuitySummary(scope)).toBeUndefined();
+    expect((await writer.stats()).continuity?.pins).toBe(0);
+  });
+
+  it.each(["bounds", "quota"] as const)("records a content-free gap when capture exceeds %s", async reason => {
+    const dir = await root();
+    const writer = await ToolHistoryWriter.open({ root: dir, continuityEnabled: true, retention: { maxBytes: reason === "quota" ? 1 : 100000 } }); writers.add(writer);
+    const reader = new ToolHistoryReader(dir), warnings: string[] = [];
+    const continuity = createContinuityParticipant({ writer, reader, logicalConversationId: id => id, protectedConversations: () => reader.protectedContinuityConversations(), onWarning: text => warnings.push(text) });
+    if (reason === "bounds") {
+      expect(await continuity.prepare({ conversationId: id, assertOwned: async () => {}, action: "publish", before: { digest: null, messages: [] },
+        after: { digest: "a".repeat(64), messages: Array.from({ length: 129 }, () => message("Skipped fictional content.")) } })).toBeUndefined();
+    } else await createDurableHistoryStore({ root: dir, continuity }).append(id, [message("Skipped fictional content.")]);
+    expect(reader.continuityGaps(id).items).toEqual([expect.objectContaining({ reason: reason === "bounds" ? "capture_bounds" : "capture_quota" })]);
+    expect(JSON.stringify(reader.continuityGaps(id))).not.toContain("Skipped fictional content");
+    expect((await writer.stats()).continuity).toMatchObject({ records: 0, prepared: 0, degraded: true, coverageGaps: 1 });
+    expect(warnings).not.toEqual([]);
+  });
+
   it("keeps prepared text invisible, discards aborts, and captures bounded rollover without duplicating retained messages", async () => {
     const dir = await root(), { writer, reader, continuity } = await setup(dir);
     const store = createDurableHistoryStore({ root: dir, continuity, maxMessages: 2 });
@@ -75,7 +152,7 @@ describe("owned canonical continuity publication", () => {
     await (await exclusive.prepareCommit([message("Verbatim completed answer.")])).append.commit();
     const records = reader.searchContinuity(scope).items;
     expect(records.map((r) => r.preview)).toEqual(["Verbatim completed answer.", "Imported context."]);
-    expect(records.every((r) => r.kind === "assistant" && r.provenance === "unknown")).toBe(true);
+    expect(records.map(r => [r.kind, r.provenance])).toEqual([["assistant", "unknown"], ["imported", "unknown"]]);
   });
 
   it("does not retain cancelled/failed stream envelopes as completed assistant evidence", async () => {

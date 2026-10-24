@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -97,3 +98,22 @@ it.each([true, false])("retrieves finalized current-run tool text only with an o
     } finally { await harness.dispose?.(); }
   } finally { await writerLease?.release(); await rm(cwd, { recursive: true, force: true }); }
 }, 20_000);
+
+it("does not upgrade the sidecar for a caller-supplied store with no configured continuity participant", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "configured-custom-history-"));
+  try {
+    await writeFile(join(cwd, "IDENTITY.md"), "Fictional fixture.");
+    const config = resolveJsonMonoAgentConfig({ cwd, json: { runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, artifacts: { dir: join(cwd, "artifacts") } } });
+    const harness = await createConfiguredConversationHarness({ config, cwd, env: {}, historyStore: createInMemoryHistoryStore(),
+      runtime: { async run(_prompt, options) {
+        await options.toolLifecycleSink!({ phase: "invocation", toolCallId: "fictional-call", toolName: "Read", arguments: {} });
+        await options.toolLifecycleSink!({ phase: "result", toolCallId: "fictional-call", toolName: "Read", state: "success", content: "Fictional tool result." });
+        return { text: "Fictional answer." };
+      } } });
+    try { expect((await harness.run({ conversationId: "web:fiction", userMessage: "Fictional request.", abortSignal: new AbortController().signal })).failure).toBeUndefined(); }
+    finally { await harness.dispose?.(); }
+    const database = new DatabaseSync(join(cwd, "history", "tool-history", "tool-lifecycles.sqlite"), { readOnly: true });
+    try { expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 2 }); }
+    finally { database.close(); }
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});

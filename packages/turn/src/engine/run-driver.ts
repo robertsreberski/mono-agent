@@ -275,7 +275,9 @@ export function createRunDriver(store: any, options: any): {
       const cause = options.continuityRecording ? `continuity:${continuityTrigger ?? (reason === "threshold" ? "mid-run" : "manual")}` : reason;
       await store.openOperation(operationId, modelConfig(), "compaction", cause); operationOpened = true;
       let decision: any;
-      const nativeEntries = await store.getEntries(); const repairs = await store.getRepairEntries();
+      const nativeEntries = await store.getEntries();
+      const source = { sourceTipId: store.tip, sourceSeq: store.seq };
+      const repairs = await store.getRepairEntries();
       const projection = project(nativeEntries, { repairs, mode: "compaction" });
       const branchEntries = projection.entries;
       const nonRetainablePrefixLength = "nonRetainablePrefixLength" in projection ? projection.nonRetainablePrefixLength : 0;
@@ -290,7 +292,6 @@ export function createRunDriver(store: any, options: any): {
       if (context.abortSignal.aborted) throw new Error("Pi compaction aborted");
       // A composed cut must reduce the entire inherited prefix. Retaining its
       // native envelopes as derived current messages would copy predecessor evidence.
-      const source = { sourceTipId: store.tip, sourceSeq: store.seq };
       if (inherited && (decision.compaction.retainedTail ?? []).some((message: any) =>
         inherited.messages.some((prior: any) => JSON.stringify(prior) === JSON.stringify(message)))) {
         throw new Error("Composed compaction must cover the inherited prefix");
@@ -303,7 +304,14 @@ export function createRunDriver(store: any, options: any): {
         const preparing = compactionEvidence({ type: "compaction", id: operationId, summary: decision.compaction.summary,
           checkpoint: { summaryMessage: { summary: decision.compaction.summary }, coverage: { version: 1, sourceTipId: source.sourceTipId, sourceEntryCount: nativeEntries.length } } },
           store.metadata.journalId, { operationId, cause, model: modelConfig().model });
-        await options.onCompactionPreparing(Object.freeze(preparing));
+        try { await options.onCompactionPreparing(Object.freeze(preparing)); }
+        catch (error) {
+          if (reason !== "threshold" || context.abortSignal.aborted) throw error;
+          ended = true;
+          publish({ type: "warning", code: "context_compaction_prepare_failed", message: "Context reduction was declined because retained evidence could not be prepared." });
+          publish({ type: "compaction_end", reason, status: "declined", cancelled: true });
+          return undefined;
+        }
         if (context.abortSignal.aborted) throw new Error("Pi compaction aborted during evidence preparation.");
         if (store.tip !== source.sourceTipId) throw new Error("Compaction source advanced during evidence preparation.");
       }

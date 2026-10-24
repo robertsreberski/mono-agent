@@ -296,6 +296,7 @@ export function lazyConfiguredToolHistory(
     }
   };
   const continuityWriter: ContinuityPublicationWriter = {
+    recordContinuityGap: async (input) => await continuityCall(async (writer) => await writer.recordContinuityGap(input)),
     prepareContinuity: async (input) => await continuityCall(async (writer) => await writer.prepareContinuity(input)),
     commitContinuity: async (input) => await continuityCall(async (writer) => await writer.commitContinuity(input)),
     reconcileContinuity: async (input) => await continuityCall(async (writer) => await writer.reconcileContinuity(input)),

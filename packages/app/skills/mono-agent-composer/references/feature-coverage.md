@@ -280,7 +280,7 @@ backend or durable provider-session root is required. Stop older writers and
 back up the canonical history and sidecar before the first enabled start
 upgrades v2 to v3 in place. Older binaries refuse it; rollback requires the
 pre-upgrade backup.
-Disabling capture retains readers; rollback requires a consistent backup.
+Disabling capture retains doctor, stats and purge access, not the ConversationHistory tool; rollback requires a consistent backup.
 Records are at most 1 MiB and retrieval chunks at most 8192 UTF-8 bytes, with
 explicit retained-text digests/redaction/truncation. Pins do not expire; quota
 exhaustion reports degraded continuity. Reset/clear-sessions remove this evidence.

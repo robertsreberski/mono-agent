@@ -358,7 +358,7 @@ async function createConfiguredConversationHarnessInternal(
   const rollover = internalHooks.sessionRollover ?? config.runtime.session.rollover;
   const toolHistory = lazyConfiguredToolHistory({
     root: historyRoot,
-    continuityEnabled: config.runtime.session.continuity?.enabled !== false,
+    continuityEnabled: options.historyStore === undefined && config.runtime.session.continuity?.enabled !== false,
     artifactRoot: toolOutputArtifactRoot,
     rollover,
     ...(options.onToolHistoryWarning === undefined

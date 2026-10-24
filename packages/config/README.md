@@ -225,7 +225,7 @@ independent of memory and provider-session persistence. Set it to false to opt
 out: no participant, continuity sidecar probe or v3 upgrade occurs. Enabling
 upgrades v2 sidecars to v3 in place; older binaries refuse v3. Back up and stop
 older writers before the first enabled start; rollback needs that pre-upgrade
-backup. Disabling capture does not downgrade existing evidence or remove readers.
+backup. Disabling capture does not downgrade existing evidence: doctor, stats and purge still inspect it, but ConversationHistory is not registered.
 See [retained evidence](../../docs/runtime/sessions-concurrency.md#retained-conversation-evidence-default-on).
 
 ### Dated conversation evidence

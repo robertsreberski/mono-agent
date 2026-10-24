@@ -515,3 +515,24 @@ it.each([1, "1"])("adapts provider declarations but preserves native validation 
     if (choice === 1) expect(execute.mock.calls[0]![1]).toEqual({ lookup: "accepted original string", choice: 1 });
   } finally { loop.mockRestore(); await adapter.close(); await raw.close(); }
 });
+
+it("declines a mid-run threshold reduction when the evidence preparer refuses and still completes the run", async () => {
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "declined-cut", contextWindow: 4096, maxTokens: 1000 }], tokensPerSecond: 1000000 });
+  const models = createModels(); models.setProvider(faux.provider); faux.setResponses([fauxAssistantMessage([fauxText("Completed without reducing context.")])]);
+  const repo = new MemorySessionRepo(), raw: any = await repo.create();
+  await raw.appendMessage({ role: "user", content: "Fictional older context. ".repeat(500), timestamp: 1 }, "fictional-source");
+  const prepare = vi.fn(async () => { throw new Error("Fictional evidence capacity exhausted"); });
+  const driver = createRunDriver(raw, { models, model: faux.getModel(), tools: [], systemPrompt: "Fixture", thinkingLevel: "off",
+    continuityRecording: true, onCompactionPreparing: prepare, compaction: { enabled: true, reserveTokens: 3000, keepRecentTokens: 100 } });
+  const events: any[] = []; driver.subscribe((event: any) => events.push(event));
+  driver.hooks.on("before_compaction", () => ({ compaction: { summary: "Fictional summary.", retainedTail: [], tokensBefore: 4000 } }));
+  driver.setCompactionSettings({ enabled: true, reserveTokens: 3000, keepRecentTokens: 100 });
+  driver.setMidRunCompactionArmed(true);
+  try {
+    expect((await driver.prompt("Fictional next request.")).status).toBe("completed");
+    expect(prepare).toHaveBeenCalled();
+    expect((await raw.getEntries()).some((entry: any) => entry.type === "compaction")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: "compaction_end", reason: "threshold", status: "declined" }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "warning", code: "context_compaction_prepare_failed" }));
+  } finally { await driver.close(); await raw.close(); }
+});

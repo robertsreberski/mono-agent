@@ -82,7 +82,7 @@ it.each([true, false])("stages real live identities before handoff and captures 
     const liveOwner = records.find(record => record.inputId === "fictional-steer-0")!;
     expect(liveOwner).toMatchObject({ kind: "owner", provenance: "host-owner", preview: "Fictional owner steer.", source: { attestation: { inputId: "fictional-steer-0" } } });
     expect(records.filter(record => record.provenance === "host-owner")).toHaveLength(durable ? 2 : 1);
-    expect(records.find(record => record.preview === "Fictional anonymous/other-user follow-up 1.")).toMatchObject({ provenance: "unknown", kind: "other-user", inputId: "fictional-steer-1" });
+    expect(records.find(record => record.preview === "Fictional anonymous/other-user follow-up 1.")).toMatchObject({ provenance: "unknown", kind: "user", inputId: "fictional-steer-1" });
     if (durable) expect(records.find(record => record.inputId === actualInitial)).toMatchObject({ preview: "Fictional original quotation.", provenance: "host-owner", source: { attestation: { inputId: actualInitial } } });
     const ownerBodies = records.filter(record => record.provenance === "host-owner").map(record => record.preview).join("\n");
     expect(ownerBodies).not.toContain("HOST-ONLY");
@@ -172,4 +172,21 @@ it("does not expose a credential/path-bearing identity or turn it into an owner 
   await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
   expect(all(f.reader).find(record => record.preview.includes("unpublishable identity"))).toMatchObject({ provenance: "unknown" });
   expect(JSON.stringify(all(f.reader))).not.toContain(live.id);
+});
+
+it("binds detached settlement quotations to the candidate's consumed ids, not the native input index", async () => {
+  const f = await fixture();
+  const turn = await f.store.beginProviderSessionTurn!(id, runId, { modelKey: "openai:fictional-model", reconciliation: {
+    purpose: "execution", ownerKey: id, initial: { persistText: "Fictional initial.", timestamp } } });
+  for (const [inputId, text] of [["fictional-L1", "First fictional steer."], ["fictional-L2", "Second fictional steer."]]) {
+    const input = createPendingLiveInput({ id: inputId!, persistText: text!, receivedAt: timestamp }, `Decorated ${text}`, "live");
+    stageContinuityInput(input, text!); await turn.reconciliation!.admit(input);
+  }
+  await turn.reconciliation!.claim("detached", { outcome: "completed", text: "Detached completed answer.", timestamp,
+    error: null, failureKind: null, consumedInputIds: ["fictional-L2"] });
+  await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+  const records = all(f.reader);
+  expect(records.find(record => record.preview === "Second fictional steer.")).toMatchObject({ kind: "owner", inputId: "fictional-L2", provenance: "host-owner" });
+  expect(records.some(record => record.inputId === "fictional-L1" || record.preview === "First fictional steer.")).toBe(false);
+  expect((await f.store.load(id)).filter(message => message.role === "user").map(message => message.content)).toEqual(["Fictional initial.", "Second fictional steer."]);
 });

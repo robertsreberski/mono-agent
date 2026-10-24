@@ -1,3 +1,4 @@
+import type { ContinuityGapInput } from "./continuity-contracts.js";
 import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, RuntimeToolLifecycleSink } from "@mono-agent/turn/host/types";
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -233,6 +234,10 @@ export class ToolHistoryWriter {
   /** Upgrade only through an explicit host capability, using the existing worker owner. */
   async enableContinuity(): Promise<void> {
     await this.request("enable_continuity", undefined, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
+  }
+
+  async recordContinuityGap(input: ContinuityGapInput): Promise<void> {
+    await this.request("continuity_gap", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
   }
 
   async prepareContinuity(input: ContinuityPreparation): Promise<ContinuityReceipt> {

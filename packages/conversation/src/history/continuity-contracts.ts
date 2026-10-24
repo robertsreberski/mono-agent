@@ -30,7 +30,8 @@ export interface ConversationHistoryContinuityParticipant {
   recoverCheckpoint(context: OwnedContinuityContext & { readonly current: CanonicalContinuityState; readonly evidence?: RuntimeDurableCompactionCheckpoint }): Promise<void>;
   reconcile(context: OwnedContinuityContext & { readonly current: CanonicalContinuityState }): Promise<void>;
   prepare(mutation: OwnedContinuityMutation): Promise<PreparedContinuityPublication | undefined>;
-  /** Pinned/prepared physical owners cannot be canonical retention victims. */
+  /** Prepared physical owners and non-summary reference pins protect retention.
+   * Summary pins alone never lease canonical files against age/quota eviction. */
   protectedConversations(): Promise<readonly string[]>;
   /** Called under the existing whole-logical-conversation reset owner. */
   resetLogical(context: OwnedContinuityContext): Promise<void>;

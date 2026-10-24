@@ -1,3 +1,5 @@
+import { continuityGenerationId, recordContinuityGap } from "./continuity-storage.js";
+import type { ContinuityGapInput } from "./continuity-contracts.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -166,6 +168,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           continuityEnabled = true;
           respond(request.id, null);
           break;
+        case "continuity_gap":
         case "continuity_prepare":
         case "continuity_commit":
         case "continuity_reconcile":
@@ -176,6 +179,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           try {
             transaction(database, () => {
               switch (request.operation) {
+                case "continuity_gap": recordContinuityGap(database, request.payload as ContinuityGapInput); retainContinuity(database, retention, Date.now()); break;
                 case "continuity_prepare": result = prepareContinuity(database, request.payload as ContinuityPreparation, retention, (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records)); break;
                 case "continuity_commit": commitContinuity(database, request.payload as ContinuityPublication); break;
                 case "continuity_reconcile": result = reconcileContinuity(database, request.payload as ContinuityReconciliation); break;
@@ -552,7 +556,8 @@ function recordFinalizedText(database: DatabaseSync, binding: ToolHistoryRunBind
   } catch (error) {
     if ((error as { code?: string }).code === "continuity_quota_exhausted") {
       // Ordinary tool execution must not fail because optional capture is full.
-      database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('continuity_degraded','quota')").run();
+      recordContinuityGap(database, { generationId: continuityGenerationId(), conversationId: binding.conversationId,
+        logicalConversationId: binding.logicalConversationId, beforeDigest: null, afterDigest: null, reason: "capture_quota" });
       return;
     }
     if ((error as { code?: string }).code === "continuity_conflict") {

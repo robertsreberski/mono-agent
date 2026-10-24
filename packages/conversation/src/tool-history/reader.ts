@@ -10,7 +10,7 @@ import { ToolHistoryWriterError } from "./errors.js";
 import { assertSecureReadableDirectory, assertSecureReadableFile, normalizeId } from "./paths.js";
 import { reasonOf } from "./writer.js";
 
-import { CONTINUITY_USER_VERSION, type ContinuityCoverageGap, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
+import { CONTINUITY_USER_VERSION, type ContinuityCoverageGap, type ContinuityGapReason, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
 import { getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
 import { assertContinuitySchema, hasContinuitySchema, readContinuityStats } from "./continuity-storage.js";
 
@@ -31,7 +31,7 @@ export class ToolHistoryReader {
     try {
       if (!hasContinuitySchema(database)) return [];
       const rows = database.prepare(`SELECT DISTINCT g.conversation_id FROM continuity_generations g WHERE g.state='prepared'
-        OR EXISTS (SELECT 1 FROM continuity_records r JOIN continuity_pins p USING(record_id) WHERE r.generation_id=g.generation_id)`).all() as Record<string, unknown>[];
+        OR EXISTS (SELECT 1 FROM continuity_records r JOIN continuity_pins p USING(record_id) WHERE r.generation_id=g.generation_id AND p.owner_kind<>'summary')`).all() as Record<string, unknown>[];
       return rows.map((r) => r.conversation_id as string);
     } finally { database.close(); }
   }
@@ -44,10 +44,10 @@ export class ToolHistoryReader {
     try {
       if (!hasContinuitySchema(database)) return { total: 0, items: [] };
       const total = Number((database.prepare("SELECT count(*) count FROM continuity_generations WHERE logical_id=? AND state='abandoned'").get(logicalConversationId) as Record<string, unknown>).count);
-      const rows = database.prepare("SELECT generation_id,before_digest,after_digest,observed_digest,abandoned_at_ms FROM continuity_generations WHERE logical_id=? AND state='abandoned' ORDER BY abandoned_at_ms DESC,generation_id DESC LIMIT ?").all(logicalConversationId, limit) as Record<string, unknown>[];
+      const rows = database.prepare("SELECT generation_id,before_digest,after_digest,observed_digest,abandoned_at_ms,gap_reason FROM continuity_generations WHERE logical_id=? AND state='abandoned' ORDER BY abandoned_at_ms DESC,generation_id DESC LIMIT ?").all(logicalConversationId, limit) as Record<string, unknown>[];
       return { total, items: rows.map((r) => ({ generationId: r.generation_id as string, beforeDigest: r.before_digest as string | null,
         afterDigest: r.after_digest as string | null, observedDigest: r.observed_digest as string | null,
-        detectedAtMs: Number(r.abandoned_at_ms), reason: "canonical_advanced_past_preparation" as const })) };
+        detectedAtMs: Number(r.abandoned_at_ms), reason: r.gap_reason as ContinuityGapReason })) };
     } finally { database.close(); }
   }
 

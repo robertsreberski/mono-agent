@@ -89,7 +89,9 @@ describe("owned portable summary publication", () => {
     expect((await f.writer.stats()).continuity).toMatchObject({ prepared: 1 });
     await f.turn.recordCompaction!(record(cut.continuityCheckpoint));
     expect(f.reader.latestContinuitySummary(scope)).toMatchObject({ summary: { model: "faux:m", trigger: "manual" } });
-    await expect(f.turn.recordCompaction!(record({ ...cut.continuityCheckpoint, summary: "Contradictory fictional summary." }))).rejects.toMatchObject({ code: "continuity_conflict" });
+    await expect(f.turn.recordCompaction!(record({ ...cut.continuityCheckpoint, summary: "Contradictory fictional summary." }))).resolves.toBeUndefined();
+    expect(f.reader.getContinuity({ ...scope, recordId: f.reader.latestContinuitySummary(scope)!.recordId }).chunk).toBe("Morgan chose the cobalt design.");
+    expect(f.reader.continuityGaps(id).items).toContainEqual(expect.objectContaining({ reason: "sidecar_unavailable" }));
     expect((await f.writer.stats()).idempotencyConflicts).toBeGreaterThan(0);
     await f.closeNative(); await (await f.turn.prepareCommit([], { providerSessionSynced: true })).commit();
     await f.writer.close(); writers.delete(f.writer);

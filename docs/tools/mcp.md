@@ -404,6 +404,10 @@ earlier run or tool call, including interrupted-work recovery. See
 
 ## `ConversationHistory`: retained conversation evidence
 
+Unattested user text has kind `user` with unknown speaker provenance, not
+`other-user`. Only host-attested foreign speakers may use `other-user`;
+context imports have kind `imported` and unknown provenance. None renews approval.
+
 Configured agents expose this read-only request-scoped tool by default under
 normal tool policy, independently of memory and durable provider sessions.
 `runtime.session.continuity.enabled: false` omits both its producer and tool;

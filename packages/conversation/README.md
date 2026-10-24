@@ -387,7 +387,14 @@ content-free coverage gap. Abandoned generations cannot be revived or read;
 metadata uses the tombstone count/age bounds; retrieval never claims complete
 coverage. Contradictory generations still refuse and appear in sidecar
 idempotency-conflict diagnostics. Storage primitives do not acquire canonical
-ownership. Canonical retention protects pinned/prepared physical owners.
+ownership. Canonical retention protects prepared physical owners and non-summary reference
+pins. Summary pins protect retained text, not canonical age/quota retention.
+Sidecar outages warn and degrade coverage rather than blocking canonical
+publication or cleanup. Digest-bound reconciliation remains the only way to
+publish a stranded preparation. Bounds, quota and outage gaps are content-free
+and use tombstone count/age retention; diagnostics queued during a complete
+outage are process-local until the writer recovers. Unattested user text is
+`user`/unknown; imported context is `imported`/unknown.
 Explicit reset purges evidence after canonical publication, before owner release.
 The canonical text adapter omits cancelled/failed account envelopes and
 unfinished detached candidates: durable reconstruction metadata is not proof of
@@ -883,6 +890,8 @@ CONVERSATION_HISTORY_VERSION_MAX_BYTES
 CanonicalContinuityState
 ContinuityCheckpointProof
 ContinuityCoverageGap
+ContinuityGapInput
+ContinuityGapReason
 ContinuityGetInput
 ContinuityGetResult
 ContinuityPin

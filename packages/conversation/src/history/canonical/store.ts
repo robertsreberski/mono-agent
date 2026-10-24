@@ -1234,6 +1234,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               ...lastCommitBinding(current),
               providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(current.providerSession?.modelKey) },
             };
+            await this.continuity?.recoverCheckpoint({ conversationId: normalizedId, assertOwned: () => held!.assertOwned(), current: this.continuityState(current) });
             const inner = await this.prepareRecord(record, held, held.rootIdentity, undefined, retirementFence, undefined, false, undefined, "publish", [...current.messages, ...admitted]);
             held = undefined;
             let appendState: "open" | "committed" | "aborted" = "open";
@@ -1722,6 +1723,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               ...modelBinding(modelKey),
             },
           });
+          await this.continuity?.recoverCheckpoint({ conversationId: normalizedId, assertOwned: () => held.assertOwned(), current: this.continuityState(turnBaseRecord) });
           prepared = await this.prepareRecord(cleanRecord, held, rootIdentity, () => {
             turnSettled = true;
           }, fence, undefined, false, undefined, "publish", combined);
@@ -1962,11 +1964,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     // initial entry alone (or an accepted but unapplied steer) is not evidence.
     if (this.continuity && payload.identity.purpose === "execution" && evidence.status === "matched") {
       const consumed = new Set(evidence.consumedInputIds);
+      const consumedIds = payload.disposition === "detached" ? payload.candidate?.consumedInputIds ?? evidence.consumedInputIds : evidence.consumedInputIds;
       const inputs = [payload.inputs.find((input) => input.kind === "initial")!,
-        ...evidence.consumedInputIds.flatMap((id) => payload.inputs.filter((input) => input.id === id && input.kind === "live"))];
+        ...consumedIds.flatMap((id) => payload.inputs.filter((input) => input.id === id && input.kind === "live"))];
       projection.messages.filter((message) => message.role === "user").forEach((message, index) => {
         const input = inputs[index];
-        if (!input || !consumed.has(input.id) || !evidence.inputs.some((proof) => proof.id === input.id && proof.complete && proof.requestDigest === input.requestDigest)) return;
+        if (!input || input.kind === "wake" || message.content !== input.persistText || !consumed.has(input.id) || !evidence.inputs.some((proof) => proof.id === input.id && proof.complete && proof.requestDigest === input.requestDigest)) return;
         const staged = inputStamps?.get(input.id);
         bindContinuityQuotation(message, { ...(staged?.requestDigest === input.requestDigest ? staged
           : { inputId: input.id, requestDigest: input.requestDigest }), source: { epoch: fence.epoch, revision: fence.revision, journalId: evidence.journalId } });
@@ -2390,7 +2393,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           // stats but can never make callers retry an already-published turn.
           try {
             await fsyncDirectory(this.root, rootIdentity);
-            await this.commitContinuity(stage.continuity, stage.conversationId, rootIdentity);
             // The canonical replacement is clean and directory-durable before
             // the crash fence is removed. If cleanup cannot be made durable,
             // restore the visible fence and record a diagnostic so the next
@@ -2422,6 +2424,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           } catch (error) {
             recordPostCommitMaintenanceFailure(this.root, error);
           }
+          // Sidecar acknowledgement is independent of canonical fence cleanup.
+          // A missing acknowledgement is repaired from the canonical digest.
+          try { await this.commitContinuity(stage.continuity, stage.conversationId, rootIdentity); }
+          catch (error) { recordPostCommitMaintenanceFailure(this.root, error); }
         } catch (error) {
           if (!published) throw error;
           recordPostCommitMaintenanceFailure(this.root, error);

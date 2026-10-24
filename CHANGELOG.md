@@ -4,13 +4,18 @@
 
 - Turn conversation continuity on by default, with policy-gated
   `ConversationHistory` retrieval. Set `runtime.session.continuity.enabled` to
-  `false` to opt out and keep legacy capture/storage behavior. Enabling upgrades
-  the tool-history store to v3 in place; older binaries refuse it, so rolling
-  back requires a pre-upgrade backup. Continuity publication borrows the canonical
+  `false` to opt out and keep legacy capture/storage behavior. Before first
+  starting this release, stop older writers and back up the tool-history store:
+  default-on capture upgrades it to v3 in place, older binaries refuse it, and
+  rollback requires that pre-upgrade backup. Continuity publication borrows the canonical
   conversation owner, keeps preparations hidden, and recovers interrupted
   acknowledgements before another mutation. Re-enabling after an off interval
   abandons stale preparations with explicit coverage gaps, not permanent blocks.
-  Reset purges evidence; retention never silently removes pinned references.
+  Reset purges evidence; canonical age/quota eviction clears summary pins,
+  which protect retained evidence but do not lease canonical conversations.
+  Sidecar outages warn and degrade evidence coverage, not canonical publication
+  or fence cleanup; skipped bounded/quota capture records content-free gaps.
+  A refused mid-run evidence preparation declines only the reduction.
   Unfinished assistant accounts remain reconstruction data, not retrievable
   completed-answer evidence. Portable summaries reserve storage before compaction;
   awaitable recording and exact native-checkpoint recovery retain them without
@@ -23,6 +28,8 @@
   admitted input identities, without adding a channel contract. Archive completed
   turn evidence before canonical message truncation; anonymous steers and recovery
   without an original host stamp remain unknown, never renewed approval.
+  Unattested user quotations have a neutral user kind; imported context is
+  labelled separately from generated assistant text.
 - Retain permitted successful tool text under the existing conversation owner;
   publish it atomically with finalized lifecycle receipts, independently of
   clipped lifecycle JSON. Current-run retrieval never exposes a partial stream

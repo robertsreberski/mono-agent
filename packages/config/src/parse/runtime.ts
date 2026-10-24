@@ -286,7 +286,13 @@ export function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig[
   // preserved byte-for-byte; only parse the boolean when an operator opts in.
   const isolateProactive = jsonOptionalBoolean(session.isolateProactive, "runtime.session.isolateProactive");
   const continuityJson = jsonRecord(session.continuity, "runtime.session.continuity");
-  if (continuityJson) assertJsonScalarFields(continuityJson, "runtime.session.continuity", { enabled: "boolean" });
+  if (continuityJson) {
+    const unknownKeys = Object.keys(continuityJson).filter(key => key !== "enabled").sort();
+    if (unknownKeys.length) throw new MonoAgentConfigError("invalid_json", "runtime.session.continuity supports only enabled.", {
+      path: "runtime.session.continuity", unknownKeys,
+    });
+    assertJsonScalarFields(continuityJson, "runtime.session.continuity", { enabled: "boolean" });
+  }
   const continuityEnabled = continuityJson === undefined ? undefined
     : jsonOptionalBoolean(continuityJson.enabled, "runtime.session.continuity.enabled");
   const switchJson = jsonRecord(session.modelSwitch, "runtime.session.modelSwitch");

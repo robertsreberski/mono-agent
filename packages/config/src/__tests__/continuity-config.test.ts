@@ -33,3 +33,7 @@ describe("continuity configuration", () => {
     expect(defaults.flatMap((s) => s.fields).find((f) => f.id === "runtime.session.continuity.enabled")).toMatchObject({ value: "yes", source: "default" });
   });
 });
+
+it("rejects typo continuity keys rather than enabling an irreversible migration", () => {
+  expect(() => resolve({ enable: false })).toThrow("supports only enabled");
+});

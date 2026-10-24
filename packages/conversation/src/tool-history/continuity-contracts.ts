@@ -5,7 +5,7 @@ export const CONTINUITY_CHUNK_MAX_BYTES = 8 * 1024;
 export const CONTINUITY_GENERATION_MAX_RECORDS = 128;
 export const CONTINUITY_GENERATION_MAX_BYTES = 16 * 1024 * 1024;
 
-export type ContinuityKind = "owner" | "other-user" | "assistant" | "summary" | "tool";
+export type ContinuityKind = "owner" | "user" | "other-user" | "imported" | "assistant" | "summary" | "tool";
 export type ContinuityProvenance = "host-owner" | "other-user" | "assistant" | "generated" | "tool" | "unknown";
 
 export interface ContinuitySource {
@@ -159,5 +159,16 @@ export interface ContinuityCoverageGap {
   readonly afterDigest: string | null;
   readonly observedDigest: string | null;
   readonly detectedAtMs: number;
-  readonly reason: "canonical_advanced_past_preparation";
+  readonly reason: ContinuityGapReason;
+}
+
+export type ContinuityGapReason = "canonical_advanced_past_preparation" | "capture_bounds" | "capture_quota" | "sidecar_unavailable";
+/** Content-free diagnostic. Never carries skipped messages or raw error text. */
+export interface ContinuityGapInput {
+  readonly generationId: string;
+  readonly conversationId: string;
+  readonly logicalConversationId: string;
+  readonly beforeDigest: string | null;
+  readonly afterDigest: string | null;
+  readonly reason: ContinuityGapReason;
 }
