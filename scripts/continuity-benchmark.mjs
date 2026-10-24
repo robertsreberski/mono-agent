@@ -9,13 +9,14 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ARMS, ARM_IDS, armById, checkpointKey } from "./lib/continuity-arms.mjs";
-import { inventory, loadTraces, makePlan } from "./lib/continuity-dataset.mjs";
+import { ARMS, AVAILABLE_ARM_IDS, DEFAULT_ARMS, armById, checkpointKey } from "./lib/continuity-arms.mjs";
+import { estimateCost, inventory, loadTraces, makePlan, parseSeeds } from "./lib/continuity-dataset.mjs";
+import { HARD_SEEDS } from "./lib/continuity-generator.mjs";
 import { addUsage, emptyUsage, renderMarkdown, summarize } from "./lib/continuity-score.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 const BOOLEAN = new Set(["dry-run", "real", "help", "no-judge", "keep-work", "aggregate-only"]);
-const VALUED = new Set(["reader", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency"]);
+const VALUED = new Set(["suite", "seeds", "reader", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency"]);
 const REPEATABLE = new Set(["trace", "repeat"]);
 const EFFORTS = ["none", "minimal", "low", "medium", "high"];
 
@@ -49,8 +50,13 @@ function integer(value, { min, max }, code) {
 export function profileFrom(flags) {
   for (const key of ["reader-effort", "judge-effort"]) if (flags[key] !== undefined && !EFFORTS.includes(flags[key])) throw new CliError("invalid_effort");
   if (flags["no-judge"] && flags.judge !== undefined) throw new CliError("judge_conflict");
-  const arms = flags.arms === undefined ? ARM_IDS : flags.arms.split(",").map((value) => value.trim());
+  const suite = flags.suite ?? "original";
+  if (!["original", "hard"].includes(suite)) throw new CliError("invalid_suite");
+  if (flags.seeds !== undefined && suite !== "hard") throw new CliError("seeds_require_hard_suite");
+  const arms = flags.arms === undefined ? [...DEFAULT_ARMS[suite]] : flags.arms.split(",").map((value) => value.trim());
   return {
+    suite,
+    seeds: flags.seeds === undefined ? [...HARD_SEEDS] : parseSeeds(flags.seeds),
     profile: {
       ...(flags.reader === undefined ? {} : { reader: flags.reader }),
       ...(flags.alternate === undefined ? {} : { alternate: flags.alternate }),
@@ -62,6 +68,22 @@ export function profileFrom(flags) {
     arms,
     probeLimit: integer(flags["probe-limit"], { min: 1, max: 15 }, "invalid_probe_limit") ?? null,
   };
+}
+
+/** List prices (USD per million tokens) from the runtime's exact Pi model catalog; unknown stays absent. */
+export async function listPrices(refs) {
+  const prices = {};
+  for (const ref of new Set(refs)) {
+    const [provider, model] = [ref.slice(0, ref.indexOf(":")), ref.slice(ref.indexOf(":") + 1)];
+    try {
+      const catalog = JSON.parse(await readFile(join(ROOT, "packages/turn/node_modules/@earendil-works/pi-ai/dist/providers/data", `${provider}.json`), "utf8"));
+      for (const models of Object.values(catalog)) {
+        const entry = Object.values(models).find((row) => row?.id === model);
+        if (entry?.cost) { prices[ref] = { input: entry.cost.input, output: entry.cost.output, cacheRead: entry.cost.cacheRead ?? entry.cost.input }; break; }
+      }
+    } catch { /* unknown price stays unknown */ }
+  }
+  return prices;
 }
 
 function gitState() {
@@ -88,8 +110,9 @@ Default: offline contract run through the built production harness with scripted
 --dry-run                 Print the workload plan and its confirmation digest; no build, credentials or network.
 --real                    Paid run. Requires --confirm-plan SHA256 from the identical --dry-run, --pi-auth-path ABS,
                           --output ABS (outside the checkout) and a clean checkout. Refused whenever CI is set.
-Plan (bound into the digest): --reader REF (default openai-codex:gpt-6-luna) --alternate REF --judge REF | --no-judge
-  --reader-effort LEVEL --judge-effort LEVEL --repeats N --arms ${ARM_IDS.join(",")} --probe-limit N
+Plan (bound into the digest): --suite original|hard (default original) --seeds 101-108 (hard only)
+  --reader REF (default openai-codex:gpt-6-luna) --alternate REF --judge REF | --no-judge
+  --reader-effort LEVEL --judge-effort LEVEL --repeats N --arms ${AVAILABLE_ARM_IDS.join(",")} --probe-limit N
 Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N --output DIR --keep-work --aggregate-only
 See docs/runtime/continuity-benchmark.md.`;
 
@@ -97,14 +120,15 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   const flags = parseArguments(argv);
   if (flags.help) { stdout(HELP); return 0; }
   if (flags.real && Object.hasOwn(env, "CI")) throw new CliError("paid_mode_refused_in_ci");
-  const { profile, repeats, arms, probeLimit } = profileFrom(flags);
+  const { suite, seeds, profile, repeats, arms, probeLimit } = profileFrom(flags);
   const piAuthPath = await validatePiAuthPath(flags["pi-auth-path"]);
-  const { traces, sha256 } = await loadTraces();
+  const { traces, sha256, source } = await loadTraces({ suite, seeds });
   const { head, dirty } = await gitState();
-  const plan = makePlan({ traces, sha256, codeRevision: head, profile, repeats, arms, probeLimit,
+  const plan = makePlan({ traces, sha256, suite, source, codeRevision: head, profile, repeats, arms, probeLimit,
     piAuthFingerprint: piAuthPath === undefined ? null : createHash("sha256").update(piAuthPath).digest("hex") });
   if (flags["dry-run"]) {
-    stdout(JSON.stringify({ ...plan, inventory: inventory(traces) }, null, 2));
+    const prices = await listPrices([plan.reader.model, ...(plan.judge ? [plan.judge.model] : [])]);
+    stdout(JSON.stringify({ ...plan, inventory: inventory(traces), estimate: estimateCost(plan, traces, prices) }, null, 2));
     return 0;
   }
   const mode = flags.real ? "real" : "offline";
@@ -201,7 +225,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
       return { traceId: unit.trace.id, arm: unit.arm.id, repeat: unit.repeat, probeId: probe.id, category: probe.category, status: "failed", failure: checkpoint?.error ?? "checkpoint_missing", score: null };
     }
     state.liveTurns += 1;
-    const trial = await runProbe({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, probe, checkpointWork: checkpoint.work, checkpointConversationId: checkpoint.record.conversationId,
+    const trial = await runProbe({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, probe, checkpointWork: checkpoint.work, checkpointConversationId: checkpoint.record.conversationId, mid: checkpoint.record.mid, root: ROOT,
       forkDir: join(scratch, `probe-${index}`), plan, mode, authPath, keepWork: flags["keep-work"] === true });
     account(trial.usage);
     if (isFatalFailure(trial)) state.stop = trial.failure;
@@ -242,10 +266,18 @@ export async function aggregate({ plan, traces, output, mode }) {
   const judgeUsage = emptyUsage();
   for (const trial of trials) if (trial.judge?.usage) addUsage(judgeUsage, trial.judge.usage);
   const midCheckpoints = units.filter((unit) => unit.checkpoint?.mid).map((unit) => ({ traceId: unit.traceId, arm: unit.arm, repeat: unit.repeat,
-    verified: unit.checkpoint.mid.boundary.verified, reasons: unit.checkpoint.mid.boundary.reasons, compactions: unit.checkpoint.mid.boundary.observed.compactions }));
+    kind: unit.checkpoint.mid.kind ?? null, status: unit.checkpoint.mid.status ?? null, tokensBefore: unit.checkpoint.mid.tokensBefore ?? null, tokensAfter: unit.checkpoint.mid.tokensAfter ?? null,
+    verified: unit.checkpoint.mid.boundary.verified, reasons: unit.checkpoint.mid.boundary.reasons }));
+  const pressure = units.flatMap((unit) => unit.trials.filter((trial) => trial.pressure?.applicable).map((trial) => ({ arm: unit.arm, ...trial.pressure.metrics, verified: trial.pressure.verified })));
+  const pressureSummary = Object.fromEntries(plan.arms.map(({ id }) => {
+    const rows = pressure.filter((row) => row.arm === id);
+    const stat = (key) => { const values = rows.map((row) => row[key]).filter((value) => typeof value === "number"); return values.length ? { min: Math.min(...values), max: Math.max(...values), n: values.length } : null; };
+    return [id, { samples: rows.length, verified: rows.filter((row) => row.verified).length, probeInputTokens: stat("probeInputTokens"), compactionTokensBefore: stat("compactionTokensBefore"),
+      midCompactionTokensBefore: stat("midCompactionTokensBefore"), replayedMessages: stat("replayedMessages"), projectionDroppedRecords: stat("projectionDroppedRecords") }];
+  }));
   const coverage = { unitsComplete: units.length, unitsExpected: plan.repeats * plan.corpus.traces.length * armIds.length };
   const armLabels = Object.fromEntries(ARMS.map((arm) => [arm.id, arm.label]));
-  const results = { plan, executionKind: mode, qualityMeasured: mode === "real", inventory: inventory(traces), coverage, summary, judgeUsage, midCheckpoints };
+  const results = { plan, executionKind: mode, qualityMeasured: mode === "real", inventory: inventory(traces), coverage, summary, judgeUsage, midCheckpoints, pressure: pressureSummary };
   await writeFile(join(output, "results.json"), `${JSON.stringify(results, null, 2)}\n`, { mode: 0o600 });
   const header = `Coverage: ${coverage.unitsComplete}/${coverage.unitsExpected} trace×arm×repeat units. Code revision ${plan.codeRevision ?? "unknown"}. Plan ${plan.confirmation}.\n\n`;
   await writeFile(join(output, "summary.md"), `${header}${renderMarkdown(summary, { qualityMeasured: mode === "real", armLabels, judgeUsage: plan.judge ? judgeUsage : null })}`, { mode: 0o600 });
