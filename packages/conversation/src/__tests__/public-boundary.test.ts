@@ -3,6 +3,7 @@ import * as boundary from "../index.js";
 
 it("exposes only the curated package-root runtime boundary", () => {
   expect(Object.keys(boundary).sort()).toEqual([
+    "CONTINUITY_USER_VERSION",
     "CONVERSATION_HISTORY_VERSION_MAX_BYTES",
     "ConversationHarnessError",
     "ConversationHarnessFailureError",
@@ -19,6 +20,9 @@ it("exposes only the curated package-root runtime boundary", () => {
     "bindProcessJobLiveInput",
     "classifyContinuationMcpServerTransport",
     "composeHostTurnEnvelope",
+    "continuityGenerationId",
+    "continuityRecordId",
+    "createContinuityParticipant",
     "createConversationHarness",
     "createConversationResponder",
     "createDurableHistoryStore",

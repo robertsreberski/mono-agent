@@ -43,6 +43,7 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
     .replaceAll('"./identity.js"', JSON.stringify(new URL("../../dist/history/canonical/identity.js", import.meta.url).href))
     .replaceAll('"./record-contracts.js"', JSON.stringify(new URL("../../dist/history/canonical/record-contracts.js", import.meta.url).href))
     .replaceAll('"../conversation-id.js"', JSON.stringify(new URL("../../dist/history/conversation-id.js", import.meta.url).href))
+    .replaceAll('"../../tool-history/continuity-input.js"', JSON.stringify(new URL("../../dist/tool-history/continuity-input.js", import.meta.url).href))
     .replaceAll('"../../sessions/runtime-owner.js"', JSON.stringify(new URL("../../dist/sessions/runtime-owner.js", import.meta.url).href))
     .replaceAll('"../../sessions/model-key.js"', JSON.stringify(new URL("../../dist/sessions/model-key.js", import.meta.url).href))
     .replaceAll('"../pending-turn/payloads.js"', JSON.stringify(new URL("../../dist/history/pending-turn/payloads.js", import.meta.url).href))
