@@ -964,7 +964,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .process-job-facts dd { margin: 0; }
 .connection-banner { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 16px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, var(--line)); font-size: 11px; text-align: center; z-index: 4; }
 .connection-pulse { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; animation: pulse 1.5s ease infinite; }
-.thread-root { position: relative; min-height: 0; display: flex; flex: 1 1 0; flex-direction: column; overflow: hidden; }
+/* Only the viewport and the job shelf own scrolling. Unlike hidden, clip
+   prevents focus/scroll-into-view from scrolling this structural ancestor and
+   lifting the entire sticky dock away from the bottom of the screen. */
+.thread-root { position: relative; min-height: 0; display: flex; flex: 1 1 0; flex-direction: column; overflow: clip; }
 .thread-viewport { width: 100%; min-height: 0; display: flex; flex: 1; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 /* Let the real footer height place short transcripts. A fixed composer reserve
    leaves a content-dependent gap whenever the composer is shorter than it. */

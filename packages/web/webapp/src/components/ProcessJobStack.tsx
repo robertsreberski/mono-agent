@@ -174,7 +174,8 @@ export function ProcessJobStack() {
     const target = historyRef.current !== null && !isHidden(historyRef.current) ? historyRef.current : toggleRef.current;
     if (target === null) return;
     focusOwner.current = target;
-    target.focus();
+    target.focus({ preventScroll: true });
+    revealRow(target);
   });
 
   if (threadId === null || jobs.length === 0) return null;
