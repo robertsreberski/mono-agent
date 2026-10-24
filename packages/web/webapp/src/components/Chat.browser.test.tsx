@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { userEvent } from "@vitest/browser/context";
+import { page, server, userEvent } from "@vitest/browser/context";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { WebRuntimeProvider } from "../runtime";
+import { agentTurn } from "../test/agent-group-fixtures";
 import { agent, processJob, thread } from "../test/fixtures";
 import type { ProcessJobProjection, ThreadDetail, ThreadSummary, WebMessage } from "../types";
 import "../styles.css";
@@ -185,7 +186,121 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Chat conversation viewport in Chromium", () => {
+describe("Chat conversation viewport", () => {
+  it.each([false, true])("keeps the phone shell docked while unfolding an agent timeline (reading above: %s)", async (readingAbove) => {
+    await page.viewport(390, 844);
+    document.documentElement.style.removeProperty("height");
+    document.body.style.removeProperty("height");
+    const selectedThread = thread("thread-a", "agent");
+    const jobs = Array.from({ length: 8 }, (_, index) => agentTurn(
+      `garden-${index}`, "garden-helper", index,
+      { threadId: selectedThread.id, summary: `Review planting bed ${index + 1}`,
+        ...(index < 7 ? { durationMinutes: 1 } : {}) },
+    ));
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    storeMock.current = chatStore(selectedThread, {
+      thread: selectedThread,
+      messages: [...chatDetail(selectedThread, messageIds(18)).messages, {
+        ...chatMessage("job-only", selectedThread.id),
+        parts: jobs.map((job) => ({ type: "process-job" as const, job })),
+      }],
+    });
+    const { container } = render(
+      <div id="root">
+        <div className="app-shell">
+          <div className="chat-region is-open">
+            <WebRuntimeProvider><Chat onBack={() => undefined} /></WebRuntimeProvider>
+          </div>
+        </div>
+      </div>,
+    );
+    await waitForMessages(container, 18);
+    const viewport = getViewport(container);
+    await waitForBottom(viewport);
+    if (readingAbove) {
+      viewport.scrollTop = 0;
+      fireEvent.scroll(viewport);
+      await waitForFrames(4);
+    }
+    const composer = screen.getByTestId("thread-composer");
+    // Deterministic message/input stand-ins; the actual Chat, dock, job rows,
+    // runtime viewport and mobile shell styles are all exercised here.
+    composer.className = "composer-root";
+    composer.textContent = "Message garden assistant…";
+    composer.style.padding = "12px";
+    for (const message of container.querySelectorAll<HTMLElement>("[data-testid='thread-message']")) {
+      message.textContent = "The planting calendar is ready for review.";
+    }
+    const measure = () => ({
+      extents: [...container.querySelectorAll<HTMLElement>(".thread-root, .chat-panel, .app-shell")].map((node) => [node.className, node.clientHeight, node.scrollHeight]),
+      scrolls: Object.fromEntries([
+        ".process-job-stack-body", ".thread-viewport", ".thread-root", ".chat-panel",
+        ".chat-region", ".app-shell", "#root", "body", "html",
+      ].map((selector) => [selector, document.querySelector(selector)!.scrollTop])),
+      documentScroll: document.scrollingElement!.scrollTop,
+      composerBottom: composer.getBoundingClientRect().bottom,
+      viewportHeight: window.innerHeight,
+      footerBottom: getFooter(container).getBoundingClientRect().bottom,
+    });
+    const docked = () => {
+      const state = measure();
+      if (import.meta.env.VITE_CHAT_SHELL_SHOTS) console.log("phone shell", JSON.stringify(state));
+      for (const selector of [".thread-root", ".chat-panel", ".chat-region", ".app-shell", "#root", "body", "html"]) {
+        expect(state.scrolls[selector], selector).toBe(0);
+      }
+      expect(state.documentScroll).toBe(0);
+      const footerPadding = Number.parseFloat(getComputedStyle(getFooter(container)).paddingBottom);
+      expect(Math.abs(state.footerBottom - window.innerHeight)).toBeLessThanOrEqual(1);
+      expect(Math.abs(state.composerBottom - (window.innerHeight - footerPadding))).toBeLessThanOrEqual(1);
+      if (readingAbove) expect(viewport.scrollTop).toBe(0);
+      else expect(Math.abs(gapFromBottom(viewport))).toBeLessThanOrEqual(1);
+    };
+    docked();
+    await userEvent.click(container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!);
+    await waitForFrames(4);
+    docked();
+    await userEvent.click(container.querySelector<HTMLElement>(".process-job-group > summary")!);
+    await waitForFrames(4);
+    docked();
+    const turn = container.querySelector<HTMLElement>(".process-job-step:not([hidden]) .process-job-card > summary")!;
+    await userEvent.click(turn);
+    await waitForFrames(4);
+    docked();
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    await userEvent.click(screen.getByRole("button", { name: /Show \d+ earlier turns/u }));
+    await waitForFrames(4);
+    const focused = document.activeElement!;
+    expect(focused.closest(".process-job-timeline")).not.toBeNull();
+    const shelfBody = container.querySelector(".process-job-stack-body")!.getBoundingClientRect();
+    expect(focused.getBoundingClientRect().top).toBeGreaterThanOrEqual(shelfBody.top - 1);
+    expect(focused.getBoundingClientRect().bottom).toBeLessThanOrEqual(shelfBody.bottom + 1);
+    const shots = import.meta.env.VITE_CHAT_SHELL_SHOTS as string | undefined;
+    if (shots && !readingAbove) {
+      const prefix = import.meta.env.VITE_CHAT_SHELL_SHOT_PREFIX as string | undefined;
+      await page.elementLocator(container.querySelector(".app-shell")!).screenshot({ path: `${shots}/${prefix ?? "unfolded"}-${server.browser}-mobile.png` });
+    }
+    docked();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    // Force the overflow precondition independently of an iOS version's sticky
+    // layout/focus geometry. `overflow: hidden` still permits native focus to
+    // scroll this structural ancestor and lift the entire dock. It must be a
+    // clipping boundary, not another scroll owner. This is a defensive mechanism
+    // test, not a reproduction of the standalone iPhone's viewport behaviour.
+    const overflowTarget = document.createElement("button");
+    overflowTarget.textContent = "Synthetic overflow focus target";
+    Object.assign(overflowTarget.style, { position: "absolute", top: "calc(100% + 400px)" });
+    container.querySelector(".thread-root")!.append(overflowTarget);
+    overflowTarget.focus();
+    await waitForFrames(4);
+    if (shots && !readingAbove) {
+      const prefix = import.meta.env.VITE_CHAT_SHELL_SHOT_PREFIX as string | undefined;
+      await page.elementLocator(container.querySelector(".app-shell")!).screenshot({ path: `${shots}/${prefix ?? "unfolded"}-${server.browser}-overflow-mobile.png` });
+    }
+    docked();
+    overflowTarget.remove();
+  });
+
   it("follows stack disclosure at bottom and preserves an operator reading above", async () => {
     const selectedThread = thread("thread-a", "agent");
     const base = chatDetail(selectedThread, messageIds(18));

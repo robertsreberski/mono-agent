@@ -278,7 +278,12 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
     const first = timelineRef.current?.querySelector<HTMLElement>(
       ":scope > li:not([hidden]) :is(button, summary, [tabindex='0'])",
     );
-    (first ?? groupRef.current?.querySelector<HTMLElement>(":scope > summary"))?.focus();
+    // The shelf owns reveal scrolling; browser focus must not move the dock
+    // or any of the conversation's scroll-container ancestors.
+    const target = first ?? groupRef.current?.querySelector<HTMLElement>(":scope > summary");
+    if (target == null) return;
+    target.focus({ preventScroll: true });
+    onOpen?.(target);
   });
 
   const step = (item: ProcessJobTimelineStep, index: number) => {

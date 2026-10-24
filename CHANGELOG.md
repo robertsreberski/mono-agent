@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep the conversation composer docked when expanding background-agent jobs;
+  prevent focus from scrolling the conversation's structural container.
 - Add an absolute proactive compaction ceiling, `runtime.compaction.maxInputTokens`,
   on by default at 200,000 tokens for every agent. The trigger is now the lowest
   of the ratio trigger, the safety-headroom trigger and this ceiling. Windows up

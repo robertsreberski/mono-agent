@@ -309,11 +309,13 @@ describe("ProcessJobStack", () => {
     const summary = view.container.querySelector<HTMLElement>(".process-job-card > summary")!;
     summary.focus();
     expect(summary).toHaveFocus();
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
 
     await act(async () => { finish(processJob({ jobId: running.jobId, origin: running.origin })); });
 
     expect(summary.closest(".process-job-stack-item")).toHaveAttribute("hidden");
     expect(historyToggle()).toHaveFocus();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   });
 
   it("never moves focus that is outside the shelf", async () => {
