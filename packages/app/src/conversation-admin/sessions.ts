@@ -63,7 +63,27 @@ export interface PurgeConversationHistoryResult {
     readonly calls?: number;
     readonly records?: number;
     readonly tombstones?: number;
+    /**
+     * Conversation-continuity rows stored in the same sidecar (schema v3). Absent
+     * for a v2 sidecar or when counts are unknown. `bytes`/`files` above already
+     * include their physical storage; `retainedBytes` is the retained text share.
+     */
+    readonly continuity?: PurgedContinuityCounts;
   };
+}
+
+export interface PurgedContinuityCounts {
+  readonly records: number;
+  readonly tombstones: number;
+  readonly pins: number;
+  readonly retainedBytes: number;
+  readonly generations: number;
+  /** Prepared generations that were never committed or reconciled. */
+  readonly unresolvedGenerations: number;
+  /** Abandoned generations retained as content-free coverage gaps. */
+  readonly abandonedGenerations: number;
+  /** True when pinned evidence had exhausted the shared retention budget. */
+  readonly degraded: boolean;
 }
 
 export interface PurgeAcpSessionAuthorizationsResult {
@@ -117,7 +137,7 @@ async function inspectConversationHistoryRoot(
   messageHistory = await countTopLevelFilesWithSuffix(root.path, ".history.json");
   const sidecarUsage = await toolHistoryDiskUsage(root.path);
   const ownerUsage = await optionalFileBytes(join(root.path, ".locks", TOOL_HISTORY_OWNER_DATABASE));
-  let toolCounts: Pick<NonNullable<ReturnType<ToolHistoryReader["stats"]>>, "calls" | "records" | "tombstones"> | undefined;
+  let toolCounts: Pick<NonNullable<ReturnType<ToolHistoryReader["stats"]>>, "calls" | "records" | "tombstones" | "continuity"> | undefined;
   let countsKnown = true;
   try {
     const stats = new ToolHistoryReader(root.path).stats();
@@ -125,6 +145,7 @@ async function inspectConversationHistoryRoot(
   } catch {
     countsKnown = false;
   }
+  const continuity = toolCounts?.continuity;
   const toolHistory = {
     files: sidecarUsage.files + ownerUsage.files,
     bytes: sidecarUsage.bytes + ownerUsage.bytes,
@@ -133,6 +154,18 @@ async function inspectConversationHistoryRoot(
       calls: toolCounts.calls,
       records: toolCounts.records,
       tombstones: toolCounts.tombstones,
+    }),
+    ...(continuity === undefined ? {} : {
+      continuity: {
+        records: continuity.records,
+        tombstones: continuity.tombstones,
+        pins: continuity.pins,
+        retainedBytes: continuity.retainedBytes,
+        generations: continuity.generations,
+        unresolvedGenerations: continuity.prepared,
+        abandonedGenerations: continuity.coverageGaps,
+        degraded: continuity.degraded,
+      },
     }),
   };
   return { root: root.path, removed: true, messageHistory, toolHistory };

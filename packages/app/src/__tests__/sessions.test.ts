@@ -5,7 +5,17 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ToolHistoryWriter, type ToolHistoryWriterOptions } from "@mono-agent/conversation";
+import {
+  continuityGenerationId,
+  continuityRecordId,
+  ToolHistoryReader,
+  ToolHistoryWriter,
+  TOOL_HISTORY_DATABASE,
+  TOOL_HISTORY_DIRECTORY,
+  TOOL_HISTORY_OWNER_DATABASE,
+  type ContinuityPreparation,
+  type ToolHistoryWriterOptions,
+} from "@mono-agent/conversation";
 
 const processIdentity = vi.hoisted(() => ({
   schema: "mono-agent.process-incarnation.v1" as const,
@@ -27,6 +37,7 @@ import {
   processJobsRootRegistryPaths,
   registerProcessJobsRoot,
 } from "../process-jobs/process-jobs-root-registry.js";
+import { formatConversationStatePurgeResult } from "../cli/commands/cli-background-command.js";
 import {
   assertClearSessionsRecoveryResolved,
   clearSessionsRegistryRoot,
@@ -308,10 +319,118 @@ describe("purgeConversationState history accounting", () => {
       records: 2,
       tombstones: 0,
     });
+    // A v2 sidecar is reported exactly as before: no continuity accounting.
+    expect(result.toolHistory).not.toHaveProperty("continuity");
     expect(result.toolHistory.bytes).toBeGreaterThan(0);
     await expect(stat(root)).rejects.toThrow();
   });
+
+  it("counts v3 continuity rows, pins and gaps, then removes every continuity table with the sidecar", async () => {
+    const configPath = await writeConfig({ artifacts: { dir: "./.mono-agent/artifacts" } });
+    const root = join(dir, ".mono-agent", "history");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    const writer = await openStorageTestWriter({ root, continuityEnabled: true });
+    const toolBinding = { conversationId: "web:alpha", logicalConversationId: "web:alpha", runId: "prior-run", isolated: false } as const;
+    await writer.persist(toolBinding, { phase: "invocation", toolCallId: "call-1", toolName: "Read", arguments: { path: "README.md" } });
+    await writer.persist(toolBinding, { phase: "result", toolCallId: "call-1", state: "success", content: "ok" });
+    const alpha = continuityFixture("web:alpha", ["Morgan chose the cobalt design.", "Avery agreed."]);
+    await writer.prepareContinuity(alpha);
+    await writer.commitContinuity({ generationId: alpha.generationId, conversationId: alpha.conversationId, canonicalDigest: alpha.afterDigest });
+    await writer.pinContinuity({ logicalConversationId: "web:alpha", recordId: alpha.records[0]!.recordId, ownerKind: "summary", ownerId: "fictional-summary" });
+    await writer.prepareContinuity(continuityFixture("web:beta", ["Unpublished fictional reply."]));
+    const gamma = continuityFixture("web:gamma", ["Superseded fictional reply."]);
+    await writer.prepareContinuity(gamma);
+    await writer.reconcileContinuity({ conversationId: gamma.conversationId, canonicalDigest: sha256("web:gamma:advanced") });
+    await writer.close();
+    const expectedRetainedBytes = ["Morgan chose the cobalt design.", "Avery agreed.", "Unpublished fictional reply."]
+      .reduce((sum, text) => sum + Buffer.byteLength(text), 0);
+
+    const result = await purgeConversationState(inputFor(configPath));
+
+    expect(result.history.toolHistory).toMatchObject({
+      countsKnown: true,
+      calls: 1,
+      records: 2,
+      tombstones: 0,
+      continuity: {
+        records: 3,
+        tombstones: 0,
+        pins: 1,
+        retainedBytes: expectedRetainedBytes,
+        generations: 3,
+        unresolvedGenerations: 1,
+        abandonedGenerations: 1,
+        degraded: false,
+      },
+    });
+    expect(formatConversationStatePurgeResult(result)).toContain(
+      `; continuity 3 records, 0 tombstones, 1 pins, ${String(expectedRetainedBytes)} retained text bytes, 3 generations (1 unresolved, 1 abandoned))`,
+    );
+    expect(formatConversationStatePurgeResult(result)).not.toMatch(/Morgan|Avery|Unpublished|Superseded|web:alpha/u);
+    await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(root, ".locks", TOOL_HISTORY_OWNER_DATABASE))).rejects.toMatchObject({ code: "ENOENT" });
+
+    // A continuity-capable writer at the same configured root starts from an
+    // empty store: no record, pin, prepared generation or gap survives.
+    const reader = new ToolHistoryReader(root);
+    const scope = { logicalConversationId: "web:alpha", currentConversationId: "web:alpha", currentRunId: "later-run" };
+    expect(reader.searchContinuity(scope)).toEqual({ available: false, items: [] });
+    const fresh = await openStorageTestWriter({ root, continuityEnabled: true });
+    try {
+      expect((await fresh.stats()).continuity).toMatchObject({ records: 0, generations: 0, prepared: 0, pins: 0, tombstones: 0, coverageGaps: 0, retainedBytes: 0 });
+      expect(reader.searchContinuity(scope).items).toEqual([]);
+      expect(reader.getContinuity({ ...scope, recordId: alpha.records[0]!.recordId }).status).toBe("unavailable");
+      expect(reader.continuityGaps("web:gamma").total).toBe(0);
+      expect(reader.protectedContinuityConversations()).toEqual([]);
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("reports continuity counts as unavailable rather than zero when the v3 sidecar cannot be read", async () => {
+    const configPath = await writeConfig({ artifacts: { dir: "./.mono-agent/artifacts" } });
+    const root = join(dir, ".mono-agent", "history");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    const writer = await openStorageTestWriter({ root, continuityEnabled: true });
+    const alpha = continuityFixture("web:alpha", ["Morgan chose the cobalt design."]);
+    await writer.prepareContinuity(alpha);
+    await writer.commitContinuity({ generationId: alpha.generationId, conversationId: alpha.conversationId, canonicalDigest: alpha.afterDigest });
+    await writer.close();
+    await writeFile(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), "not a sqlite database");
+
+    const result = await purgeConversationState(inputFor(configPath));
+
+    expect(result.history.toolHistory.countsKnown).toBe(false);
+    expect(result.history.toolHistory).not.toHaveProperty("continuity");
+    expect(formatConversationStatePurgeResult(result)).toContain("record counts unavailable");
+    expect(formatConversationStatePurgeResult(result)).not.toContain("continuity");
+    await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** Fictional continuity generation for one logical conversation. */
+function continuityFixture(conversationId: string, texts: readonly string[]): ContinuityPreparation {
+  return {
+    generationId: continuityGenerationId(),
+    conversationId,
+    logicalConversationId: conversationId,
+    beforeDigest: sha256(`${conversationId}:before`),
+    afterDigest: sha256(`${conversationId}:after`),
+    records: texts.map((text, sequence) => ({
+      recordId: continuityRecordId(conversationId, `source-${String(sequence)}`),
+      runId: "fiction-run",
+      kind: "assistant" as const,
+      sequence,
+      text,
+      provenance: "assistant" as const,
+    })),
+  };
+}
 
 describe("purgeConversationState process-root protection", () => {
   it.each([

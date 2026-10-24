@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
+  CONTINUITY_USER_VERSION,
   isProcessAlive,
   ToolHistoryReader,
   TOOL_HISTORY_APPLICATION_ID,
@@ -13,6 +14,8 @@ import {
 } from "@mono-agent/conversation";
 
 import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
+
+const CONTINUITY_TABLES = ["continuity_generations", "continuity_records", "continuity_pins"] as const;
 
 interface SessionToolHistoryDoctorOptions {
   readonly historyRoot: string;
@@ -174,6 +177,7 @@ async function inspectSessionToolHistorySection(
         if (stats.recoveryFailures > 0) worsen("error", `${String(stats.recoveryFailures)} recovery failure(s) remain since the latest successful writer recovery.`);
         if (stats.retainedBytes > stats.limits.maxBytes) worsen("error", "Tool-history retained payload bytes exceed the configured byte ceiling.");
         else if (stats.retainedBytes >= Math.floor(stats.limits.maxBytes * 0.9)) worsen("waiting", "Tool-history retained payload bytes have reached 90% of the configured ceiling.");
+        if (stats.continuity !== undefined) reportContinuity(stats.continuity, owner.live === true, details, worsen);
       }
     } catch (error) {
       const reason = reasonOf(error);
@@ -197,6 +201,40 @@ async function inspectSessionToolHistorySection(
     worsen("waiting", "unsupported_route: lifecycle records persist and cold-project, but this direct OpenCode/ACP route cannot expose SessionHistory.");
   }
   return { id: "session-tool-history", label: "Session tool history", status, details };
+}
+
+type ContinuityStatistics = NonNullable<NonNullable<ReturnType<ToolHistoryReader["stats"]>>["continuity"]>;
+
+/** Content-free v3 continuity accounting; a v2 store has no continuity statistics and prints nothing here. */
+function reportContinuity(
+  continuity: ContinuityStatistics,
+  liveOwner: boolean,
+  details: string[],
+  worsen: (status: ValidationStatus, detail: string) => void,
+): void {
+  const committed = Math.max(0, continuity.generations - continuity.prepared - continuity.coverageGaps);
+  details.push(
+    `Conversation continuity: ${String(continuity.records)} records, ${String(continuity.tombstones)} tombstones, ${String(continuity.pins)} pins, ${String(continuity.retainedBytes)} retained text bytes (counted in the shared retained payload budget).`,
+    `Continuity generations: ${String(committed)} committed, ${String(continuity.prepared)} unresolved, ${String(continuity.coverageGaps)} abandoned (coverage gaps).`,
+  );
+  if (continuity.prepared > 0) {
+    worsen(
+      "waiting",
+      `${String(continuity.prepared)} unresolved continuity generation(s) are prepared but not committed; ${liveOwner ? "the live writer's owning conversation" : "the owning conversation"} reconciles them before its next canonical mutation, and prepared evidence stays unreadable until then.`,
+    );
+  }
+  if (continuity.coverageGaps > 0) {
+    worsen(
+      "waiting",
+      `${String(continuity.coverageGaps)} abandoned continuity generation(s) are retained as content-free coverage gaps: canonical history advanced past an unpublished preparation, so that evidence is reported as unavailable rather than recovered.`,
+    );
+  }
+  if (continuity.degraded) {
+    worsen(
+      "waiting",
+      "Conversation continuity is degraded: pinned evidence exhausted the shared retention budget, so new reductions are refused until pins are released or the budget grows; existing references stay readable.",
+    );
+  }
 }
 
 function inspectContentDatabase(
@@ -226,10 +264,12 @@ function inspectContentDatabase(
       );
       return "unavailable";
     }
-    if (userVersion > TOOL_HISTORY_USER_VERSION) {
+    // v3 is the supported continuity extension of the v2 sidecar; it lives in
+    // the same owner-only database and receives every check below unchanged.
+    if (userVersion > CONTINUITY_USER_VERSION) {
       worsen(
         "error",
-        `Tool-history schema is newer (user_version=${String(userVersion)}, current=${String(TOOL_HISTORY_USER_VERSION)}). Downgrade hard-fails until persisted conversation state is purged.`,
+        `Tool-history schema is newer (user_version=${String(userVersion)}, current=${String(CONTINUITY_USER_VERSION)}). Downgrade hard-fails until persisted conversation state is purged.`,
       );
       return "unavailable";
     }
@@ -242,6 +282,19 @@ function inspectContentDatabase(
     if (integrity !== "ok") {
       worsen("error", `Tool-history integrity_check failed: ${integrity}.`);
       return "unavailable";
+    }
+    if (userVersion === CONTINUITY_USER_VERSION) {
+      const present = new Set((database.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('continuity_generations','continuity_records','continuity_pins')",
+      ).all() as Record<string, unknown>[]).map((row) => String(row.name)));
+      const missing = CONTINUITY_TABLES.filter((name) => !present.has(name));
+      if (missing.length > 0) {
+        worsen(
+          "error",
+          `Tool-history schema v${String(userVersion)} is missing continuity table(s): ${missing.join(", ")}. Restore a consistent backup or purge persisted conversation state.`,
+        );
+        return "unavailable";
+      }
     }
     return "readable";
   } catch (error) {

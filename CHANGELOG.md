@@ -28,6 +28,15 @@
   clipped lifecycle JSON. Current-run retrieval never exposes a partial stream
   or uses an unowned custom-store fallback.
 
+- Report conversation continuity in `validate`/`doctor` and
+  `restart --clear-sessions`. Doctor accepts the v3 tool-history store with the
+  same ownership, mode, journal and integrity checks as v2, and reports
+  continuity records, tombstones, pins, retained text bytes, and committed,
+  unresolved and abandoned generations. Unresolved generations, coverage gaps
+  and quota-degraded continuity are `waiting`; missing continuity tables or a
+  schema newer than v3 are errors. Clear-sessions output adds the same counts
+  for a v3 sidecar. v2 stores are reported as before.
+
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures
   explicitly and preserve ordinary prose and JSON syntax during output redaction.

@@ -957,13 +957,18 @@ The durable store holds one cross-process logical-session fence across discovery
 and every bucket reset, and appends take that same fence before their physical
 bucket lock.
 `restart --clear-sessions` purges all provider transcripts, message history, and
-tool history while reporting message/tool counts and bytes separately. This is
+tool history (including v3 continuity records, generations and pins) while
+reporting message/tool counts and bytes separately, plus continuity counts for a
+v3 sidecar. This is
 an explicit stopped-writer operator wipe of the complete attested roots, not
 per-conversation retirement: it removes native canonical records, root
 markers, switch payloads/artifacts/crash evidence, and every native journal.
 The existing quarantine manifests keep whole-root deletion restartable. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and distinct
-unresolved fail-soft incidents. Repeating the same failed lifecycle retry does
+unresolved fail-soft incidents. It accepts schema v2 and v3; a v3 store gets the
+same ownership/mode/integrity checks plus content-free continuity record, pin,
+retained-byte and generation counts, required continuity tables, and `waiting`
+for unresolved generations, coverage gaps and quota-degraded continuity. Repeating the same failed lifecycle retry does
 not inflate the count, and unrelated writes or run finalization cannot hide lost
 evidence; only the matching tool phase, its durable synthetic terminal closure,
 or canonical run-binding retry clears its incident while it remains retryable.

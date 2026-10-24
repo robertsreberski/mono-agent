@@ -402,8 +402,21 @@ remain visible. A direct OpenCode or ACP route reports `unsupported_route`:
 lifecycle records still persist and cold-project, but that route has no host-tool
 seam for the request-scoped `SessionHistory` tool.
 
-An older compatible tool-history schema is `waiting` and upgrade-pending for the
-next writer. A newer or foreign schema is a hard error. Downgrade does not try
+Conversation continuity extends the same database to schema v3, so it gets the
+same ownership, mode, journal and integrity checks as v2. A v3 store also adds
+two content-free lines: continuity records, tombstones, pins and retained text
+bytes, and committed, unresolved (prepared) and abandoned generations.
+Continuity text counts toward the shared retained-payload budget shown above. The
+section is `waiting` while prepared generations await their conversation's next
+owned reconciliation, while abandoned generations remain as coverage gaps, or
+when pinned evidence has exhausted the shared budget (quota-degraded continuity
+refuses new reductions but keeps existing references readable). A v3 store
+missing any of `continuity_generations`, `continuity_records` or
+`continuity_pins` is a hard error. A v2 store prints no continuity lines.
+
+Schema v2 and v3 are both current. An older compatible tool-history schema is
+`waiting` and upgrade-pending for the next writer. A schema newer than v3, or a
+foreign schema, is a hard error. Downgrade does not try
 to interpret or rewrite that state and hard-fails until persisted conversation
 state is purged with `mono-agent restart --clear-sessions`. A secure zero-byte
 content database with zero application/schema versions is
@@ -602,7 +615,7 @@ Restarts the background instance for this config, starting it if stopped. Like `
 | `--clear-sessions` | On macOS, stop, purge persisted sessions, canonical message and tool history, and ACP session authorizations, then start fresh. Linux rejects this flag before changing service or conversation state. |
 | `--force` | Deprecated alias of `--clear-sessions` (same effect); every invocation prints a deprecation hint. |
 
-`--clear-sessions` clears all conversation-continuity stores: resumable provider transcripts under `runtime.session.root`, top-level canonical message-history records under `history/` beside `artifacts.dir`, the canonical managed-tool sidecar under `history/tool-history/` with its owner database under `history/.locks/`, and durable ACP session authorizations under `acp-sessions/` beside `artifacts.dir`. The next turn therefore neither resumes, replays, nor searches pre-reset conversation state, and previously issued ACP session ids are rejected. Durable memory under `memory.path`, recorded run artifacts under `artifacts.dir`, and every root in the monotonic process-job registry are untouched. Preflight holds the registry mutation lock while it performs bounded recovery, freezes and re-attests the registry, checks the strict registry and sibling recovery control paths plus the lexical and canonical aliases of every retained root, and refuses equality or containment with any purge path before the first deletion. This remains true after process jobs are disabled, removed, or moved from A to B. Nonterminal process jobs are interrupted by restart independently of this flag. Each missing store is a no-op. Output reports message-history files/bytes and tool-history files/bytes plus call/record/tombstone counts separately; if a corrupt sidecar cannot be counted, it says those record counts are unavailable instead of reporting zero.
+`--clear-sessions` clears all conversation-continuity stores: resumable provider transcripts under `runtime.session.root`, top-level canonical message-history records under `history/` beside `artifacts.dir`, the canonical managed-tool sidecar under `history/tool-history/` (including its v3 conversation-continuity records, generations and pins) with its owner database under `history/.locks/`, and durable ACP session authorizations under `acp-sessions/` beside `artifacts.dir`. The next turn therefore neither resumes, replays, nor searches pre-reset conversation state, and previously issued ACP session ids are rejected. Durable memory under `memory.path`, recorded run artifacts under `artifacts.dir`, and every root in the monotonic process-job registry are untouched. Preflight holds the registry mutation lock while it performs bounded recovery, freezes and re-attests the registry, checks the strict registry and sibling recovery control paths plus the lexical and canonical aliases of every retained root, and refuses equality or containment with any purge path before the first deletion. This remains true after process jobs are disabled, removed, or moved from A to B. Nonterminal process jobs are interrupted by restart independently of this flag. Each missing store is a no-op. Output reports message-history files/bytes and tool-history files/bytes plus call/record/tombstone counts separately. For a v3 sidecar it adds continuity record, tombstone, pin, retained-text-byte and generation counts (unresolved, abandoned, and whether quota had degraded continuity); a v2 sidecar reports no continuity counts. If a corrupt sidecar cannot be counted, it says those record counts are unavailable instead of reporting zero.
 
 ```bash
 mono-agent restart
