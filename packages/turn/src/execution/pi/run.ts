@@ -656,7 +656,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     mcpClients = builtMcpClients;
     closeRunTools = builtCloseRunTools;
 
-    // One pre-response SDK-policy retry layer in pi-ai; no driver response retry.
+    // Preserve the legacy count; child outage profiles change ownership later.
     const retryValue = typeof options.piMaxRetries === "string" && options.piMaxRetries.trim() !== ""
       ? Number(options.piMaxRetries) : options.piMaxRetries;
     const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, Math.trunc(retryValue as number))) : 2;
@@ -1150,7 +1150,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     // A request that failed again after mid-stream retries names its attempt
     // count; the provider text (and thus its classification) stays first.
     const requestAttempts = stopReason === "error" ? runState.requestRetry.failedAttempts : null;
-    const errorMessage = annotatedError.message && requestAttempts
+    const errorMessage = annotatedError.message && requestAttempts && !runState.requestRetry.outage
       ? `${annotatedError.message} (failed after ${requestAttempts} provider request attempts)`
       : annotatedError.message;
 

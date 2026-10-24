@@ -91,8 +91,11 @@ it("fails with the provider classification and attempt count when the failure pe
   expect(result.text).toBe("Fictional partial answer");
 });
 
-it("never re-runs a tool executed by an earlier message, and never runs a failed partial's call", async () => {
-  const f = await fixture([], { allowedTools: ["Read"] });
+it.each([0, 120_000])("never re-runs an earlier tool or partial call (outage budget %s)", async (piRequestRetryBudgetMs) => {
+  const f = await fixture([], { allowedTools: ["Read"], piRequestRetryBudgetMs, maxRetryDelayMs: 1 });
+  // The fake transport still supplies messages/tools; select a supported adapter
+  // identity so this assertion exercises the actual outage-profile driver.
+  if (piRequestRetryBudgetMs) f.options.piResolvedModel = { ...f.faux.getModel(), api: "anthropic-messages" };
   await writeFile(join(f.root, "fictional.txt"), "Fictional contents");
   const read = (id: string) => fauxToolCall("Read", { file_path: join(f.root, "fictional.txt") }, { id });
   const responses = [
@@ -238,4 +241,14 @@ it.each([["error", "WebSocket error"], ["close", "WebSocket closed 1006"]])("ret
   expect(assistants.map((message) => [message.stopReason, message.errorMessage])).toEqual([["error", errorMessage], ["stop", undefined]]);
   expect(result.usage.input_tokens).toBe(assistants.reduce((total, message) => total + message.usage.input, 0));
   expect(retryWarnings(result)).toHaveLength(1);
+});
+
+
+it("does not replace Bedrock SDK retry ownership with the outage profile", async () => {
+  const f = await fixture([failed("WebSocket error"), answer()], { piRequestRetryBudgetMs: 120_000 });
+  f.options.piResolvedModel = { ...f.faux.getModel(), api: "bedrock-converse-stream", provider: "faux" };
+  const requests = vi.spyOn(f.models, "streamSimple");
+  const result = await generateEngineTurnResponse("Fictional instructions", f.options);
+  expect(result.error).toBeNull();
+  expect(requests.mock.calls.every((call) => call[2]?.maxRetries === 2 && call[2]?.fetch === undefined)).toBe(true);
 });

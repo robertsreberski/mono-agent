@@ -1271,6 +1271,15 @@ describe("resolveJsonMonoAgentConfig", () => {
 } })).toThrow(expected);
   });
 
+  it.each([0, 120_000, 180_000])("reads child providerRetryBudgetMs=%s", (providerRetryBudgetMs) => {
+    const config = resolveJsonMonoAgentConfig({ cwd: "/repo", json: { ...baseJson, subagents: { providerRetryBudgetMs } } });
+    expect(config.subagents?.providerRetryBudgetMs).toBe(providerRetryBudgetMs);
+  });
+  it.each([-1, 180_001, 1.5, "120000", null, Infinity])("rejects invalid providerRetryBudgetMs=%s", (providerRetryBudgetMs) => {
+    expect(() => resolveJsonMonoAgentConfig({ cwd: "/repo", json: { ...baseJson, subagents: { providerRetryBudgetMs: providerRetryBudgetMs as never } } }))
+      .toThrow(/providerRetryBudgetMs must be an integer/);
+  });
+
   it.each([1, 900_000, Number.MAX_SAFE_INTEGER])("reads detached commandTimeoutMs=%s", (commandTimeoutMs) => {
     const config = resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
   runtime: {

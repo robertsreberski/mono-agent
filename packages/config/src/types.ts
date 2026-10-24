@@ -225,6 +225,8 @@ export interface MonoAgentSubagentModelChoice {
  * is never registered.
  */
 export interface MonoAgentSubagentsConfig {
+  /** Provider outage recovery per assistant request: 0–180000 ms, default 120000; 0 keeps legacy retries. */
+  readonly providerRetryBudgetMs?: number;
   readonly instances?: {
     /** Default true when subagents are enabled. */
     readonly enabled?: boolean;

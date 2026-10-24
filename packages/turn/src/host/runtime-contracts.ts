@@ -342,6 +342,8 @@ export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions
   // Pi-native provider knobs (all optional; Pi is the only bridge).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;
+  /** Child outage recovery window; zero keeps legacy request retries. */
+  readonly piRequestRetryBudgetMs?: number;
   readonly maxRetryDelayMs?: number;
   readonly sessionsRoot?: string;
   /** Host-owned shared web admission; never model-configurable. */

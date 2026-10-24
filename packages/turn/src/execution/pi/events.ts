@@ -119,7 +119,7 @@ export function createStreamSubscriber(runState: StreamSubscriberState, { onEven
         warning_kind: "provider_request_retry", source: "pi", model,
         attempt: event.attempt, max_attempts: event.maxAttempts, delay_ms: event.delayMs,
         reason: retryableProviderFailureInfo({ errorText: errorMessage, failureKind: "provider_unavailable" }).subkind,
-        message: `Pi provider request failed after its response started (${errorMessage}); `
+        message: `Pi provider request failed ${event.responseStarted === false ? "before" : "after"} its response started (${errorMessage}); `
           + `retrying the request (attempt ${event.attempt} of ${event.maxAttempts}) without re-running tools.`,
       };
       runtimeWarnings?.push(warning);

@@ -141,9 +141,19 @@ describe("configured subagents", () => {
     const run = subagents?.run as (request: unknown) => Promise<unknown>;
     await run({ systemPrompt: "synthetic instructions", prompt: "synthetic question", definition: { name: "helper" },
       model: HAIKU, maxTurns: 5, depth: 1, abortSignal: new AbortController().signal });
-    expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ piMaxRetries, maxRetryDelayMs: 0, piTransport: "sse", model: HAIKU });
+    expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ piMaxRetries, maxRetryDelayMs: 0, piTransport: "sse", piRequestRetryBudgetMs: 120_000, model: HAIKU });
     expect(runtime.run.mock.calls[0]?.[1]).not.toHaveProperty("sessionId");
     expect(runtime.run.mock.calls[0]?.[1]).not.toHaveProperty("backgroundSubagentController");
+  });
+
+  it.each([0, 180_000])("forwards the explicit child outage budget %s only to children", async (providerRetryBudgetMs) => {
+    const { runtime, subagents } = await buildSubagents(monoConfig({ enabled: true, providerRetryBudgetMs }));
+    const run = subagents?.run as (request: unknown) => Promise<unknown>;
+    await run({ systemPrompt: "Fictional instructions", prompt: "Fictional request", definition: { name: "helper" },
+      model: HAIKU, maxTurns: 5, depth: 1, abortSignal: new AbortController().signal });
+    expect(runtime.run.mock.calls[0]?.[1]).toHaveProperty("piRequestRetryBudgetMs", providerRetryBudgetMs);
+    const options = harnessMock.mock.calls[0]?.[0] as { runtimeOptions?: Record<string, unknown> };
+    expect(options.runtimeOptions).not.toHaveProperty("piRequestRetryBudgetMs");
   });
 
   it("keeps child context policy on config rather than the parent's turn overlay", async () => {

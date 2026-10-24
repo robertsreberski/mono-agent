@@ -23,21 +23,31 @@ async function retryRequest(produce: any, policy: any, signal: any, callbacks: a
   let retries = 0;
   for (;;) {
     const { response, responseStarted } = await produce();
+    const finish = (reason: string) => policy?.finish?.(response, { responseStarted, attempts: retries + 1, reason }) ?? response;
     if (response.stopReason === "aborted" || response.stopReason !== "error"
       || retries >= maxRetries || !shouldRetry(response, { responseStarted, retries })) {
       if (retries > 0) await callbacks.onRetryFinished(response.stopReason !== "error" && response.stopReason !== "aborted",
         retries, response.stopReason === "error" ? response.errorMessage : undefined);
-      return response;
+      return finish(retries >= maxRetries ? "attempt_limit" : "non_retryable");
+    }
+    const nextDelay = policy?.retryDelay?.(retries + 1);
+    if (nextDelay === null) {
+      if (retries > 0) await callbacks.onRetryFinished(false, retries, response.errorMessage);
+      return finish("budget");
     }
     retries += 1;
     const errorMessage = response.errorMessage || "Unknown error";
-    const delayMs = Math.min(policy.baseDelayMs * 2 ** (retries - 1), policy.maxDelayMs ?? 60_000);
-    await callbacks.onRetryScheduled(retries, maxRetries, delayMs, errorMessage);
+    const delayMs = nextDelay ?? Math.min(policy.baseDelayMs * 2 ** (retries - 1), policy.maxDelayMs ?? 60_000);
+    await callbacks.onRetryScheduled(retries, maxRetries, delayMs, errorMessage, responseStarted);
     try { await backoff(delayMs, signal); } catch {
       // Normalize an aborted backoff to the provider-abort message shape.
       await callbacks.onRetryFinished(false, retries, errorMessage);
       const { errorMessage: _discarded, ...rest } = response;
       return { ...rest, stopReason: "aborted" };
+    }
+    if (policy?.canStartAttempt && !policy.canStartAttempt()) {
+      await callbacks.onRetryFinished(false, retries - 1, errorMessage);
+      return policy.finish(response, { responseStarted, attempts: retries, reason: "budget" });
     }
     await callbacks.onRetryAttemptStart();
   }
@@ -83,6 +93,7 @@ export function createRetryStream(models: any, model: any, context: any, options
   // use the same facade (including probe caps/context-1M) as the actual request.
   const requestModel = models.getModel(model.provider, model.id);
   if (!requestModel) throw new Error("Configured Pi model is unavailable");
+  policy = policy?.createRequest?.() ?? policy;
   const controller = new AbortController();
   const abort = () => controller.abort(options.signal?.reason);
   options.signal?.addEventListener("abort", abort, { once: true });
@@ -104,7 +115,9 @@ export function createRetryStream(models: any, model: any, context: any, options
         assertConsumerOpen();
         // Each attempt re-sends the same request context: the failed partial is
         // journaled (and billed) through message_end, never projected into it.
-        const stream = await models.streamSimple(requestModel, context, { ...options, signal: controller.signal });
+        policy?.beforeAttempt?.();
+        const stream = await models.streamSimple(requestModel, context, { ...options,
+          ...(policy?.fetch ? { fetch: policy.fetch } : {}), signal: controller.signal });
         ordinal += 1;
         let responseStarted = false;
         for await (const event of stream) {
@@ -128,13 +141,13 @@ export function createRetryStream(models: any, model: any, context: any, options
         }
         return { response: last, responseStarted };
       }, policy, controller.signal, {
-        onRetryScheduled: async (attempt: any, maxRetries: any, delayMs: any, errorMessage: any) => {
+        onRetryScheduled: async (attempt: any, maxRetries: any, delayMs: any, errorMessage: any, responseStarted: boolean) => {
           assertConsumerOpen();
           // Old harness persisted and billed failed attempts, but did not emit
           // turn_end until a request settled. Keep that stream/accounting shape.
           if (!hasStart) { hasStart = true; await channel.push({ type: "start", partial: last }); }
           await emitIfOpen({ type: "message_end", message: last });
-          await emitIfOpen({ type: "retry_scheduled", attempt: attempt + 1, maxAttempts: maxRetries + 1, delayMs, errorMessage });
+          await emitIfOpen({ type: "retry_scheduled", attempt: attempt + 1, maxAttempts: maxRetries + 1, delayMs, errorMessage, responseStarted });
         },
         onRetryAttemptStart: () => emitIfOpen({ type: "retry_start", attempt: ordinal + 1 }),
         onRetryFinished: (success: any, attempt: any, finalError: any) => emitIfOpen({ type: "retry_end", success, attempt: attempt + 1, finalError }),
