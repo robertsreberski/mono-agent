@@ -134,6 +134,18 @@ async function buildSubagents(config: MonoAgentConfig, extra: Record<string, unk
 }
 
 describe("configured subagents", () => {
+  it.each([0, 4])("forwards only provider retry/transport policy to child runs (retries %s)", async (piMaxRetries) => {
+    const config = monoConfig({ enabled: true });
+    config.providers = { piNative: { piMaxRetries, maxRetryDelayMs: 0, transport: "sse" } };
+    const { runtime, subagents } = await buildSubagents(config);
+    const run = subagents?.run as (request: unknown) => Promise<unknown>;
+    await run({ systemPrompt: "synthetic instructions", prompt: "synthetic question", definition: { name: "helper" },
+      model: HAIKU, maxTurns: 5, depth: 1, abortSignal: new AbortController().signal });
+    expect(runtime.run.mock.calls[0]?.[1]).toMatchObject({ piMaxRetries, maxRetryDelayMs: 0, piTransport: "sse", model: HAIKU });
+    expect(runtime.run.mock.calls[0]?.[1]).not.toHaveProperty("sessionId");
+    expect(runtime.run.mock.calls[0]?.[1]).not.toHaveProperty("backgroundSubagentController");
+  });
+
   it("keeps child context policy on config rather than the parent's turn overlay", async () => {
     const config = monoConfig({ enabled: true });
     const configured = { ...config, runtime: { ...config.runtime, context1MModels: { [PRIMARY.reference]: false } } };
