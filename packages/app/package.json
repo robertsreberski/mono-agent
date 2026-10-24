@@ -54,9 +54,9 @@
     "@mono-agent/channel-telegram": "workspace:0.26.0",
     "@mono-agent/web": "workspace:0.26.0",
     "@mono-agent/trigger-webhook": "workspace:0.26.0",
-    "undici": "8.11.2",
+    "undici": "8.12.2",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.2.0",
