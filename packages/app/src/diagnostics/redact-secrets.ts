@@ -42,7 +42,7 @@ export function redactSecrets(value: unknown, options: RedactSecretsOptions): st
       scrubbed = scrubbed.replaceAll(secret, "[REDACTED]");
     }
     return scrubbed
-      .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
+      .replace(/\bBearer\s+[^\s,;]+/gu, "Bearer [REDACTED]")
       .replace(/\b(Authorization\s*:\s*)Basic\s+[^\s,;]+/giu, "$1Basic [REDACTED]")
       .replace(
         /\b(api[ _-]?key|(?:access|auth|refresh|session)[ _-]?token|authorization|client[ _-]?secret|password|secret|token)(["']?\s*[=:]\s*["']?)(?!\[REDACTED\])([^\s,;}\]"']+)/giu,

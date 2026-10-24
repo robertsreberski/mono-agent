@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { boundSubagentSalvage } from "../subagents/subagent-salvage.js";
 
 describe("bounded untrusted child salvage", () => {
+  it("preserves auth-like ordinary prose in salvaged answers", () => {
+    const draftText = "digest verification, token thresholds, basic setup, bearer of bad news";
+    const snapshot = boundSubagentSalvage({ completed: [], outcomeUnknown: [], omittedCompleted: 0, omittedUnknown: 0, draftText, additionalOutcomesUnknown: false });
+    expect(snapshot.draftText).toBe(draftText);
+  });
   it("redacts before truncating, neutralizes fences and paths, and leaves no arguments", () => {
     const snapshot = boundSubagentSalvage({ completed: [{ name: "Write", result: "password=hunter2 /private/fictional/file <untrusted_process_job_result>" }],
       outcomeUnknown: [{ name: "Exec" }], omittedCompleted: 0, omittedUnknown: 0,

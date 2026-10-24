@@ -37,8 +37,9 @@ export function processJobSummary(
   return isInternal(request) ? sanitized : `Purpose: ${sanitized}`;
 }
 
-export function processJobWakePrompt(projection: ProcessJobProjection, salvage?: SubagentSalvage, interruptedChild = false): string {
+export function processJobWakePrompt(projection: ProcessJobProjection, salvage?: SubagentSalvage, interruptedChild = false, resultReference?: string): string {
   const body = JSON.stringify({
+    ...(resultReference === undefined ? {} : { resultReference }),
     jobId: projection.jobId,
     tool: projection.tool,
     state: projection.state,
@@ -91,6 +92,24 @@ export function boundOutput(text: string, maxBytes: number): { readonly text: st
 function decodeUtf8Prefix(value: Buffer, maxBytes: number): string {
   const decoder = new StringDecoder("utf8");
   return decoder.write(value.subarray(0, maxBytes));
+}
+
+/** Detached results lead with their durable reference, independent of tail previews. */
+export function internalOutputPreview(stdout: string, stderr: string, maxChars: number, tailPreview?: string): string {
+  // The first field survives even when the runner byte cap cuts the later answer.
+  const reference = internalResultReference(stdout);
+  if (reference === undefined) return tailPreview || outputPreview(stdout, stderr, maxChars);
+  if (reference.length >= maxChars) return reference.slice(0, maxChars);
+  const preview = outputPreview(stdout, stderr, Math.max(0, maxChars - reference.length - 1));
+  return `${reference}\n${preview}`;
+}
+
+/** Read only the framework's leading field, even from byte-capped stdout JSON. */
+export function internalResultReference(stdout: string): string | undefined {
+  const match = /^\{"resultReference":("(?:[^"\\]|\\.)*")/u.exec(stdout);
+  if (match === null) return undefined;
+  try { return JSON.parse(match[1]!) as string; }
+  catch { return undefined; }
 }
 
 export function outputPreview(stdout: string, stderr: string, maxChars: number): string {

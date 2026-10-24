@@ -512,7 +512,19 @@ is persisted when the job settles; full bounded stdout/stderr remain available
 through their separate artifact references.
 
 The model, CLI, operator API, and web card receive only bounded redacted
-previews plus agent-root-relative artifact references. Redaction occurs before
+previews plus process-jobs-root-relative stdout/stderr artifact references
+(`artifacts/<jobId>/stdout.log` and `stderr.log`); these existing references keep
+their storage format. Detached full-answer references are absolute.
+HTTP-auth redaction recognizes case-sensitive standalone schemes or
+case-insensitive Authorization headers; Digest consumes only auth parameters,
+not the rest of a line. Ordinary prose such as `digest verification` and `token
+thresholds` survives. Internal JSON output is redacted by value before
+serialization so credential removal cannot destroy its JSON delimiters.
+Framework-authored artifact-location metadata uses the description secret set:
+ambient home/workspace/user values remain usable as locations, while sensitive
+credential environment values and inline credential forms are still scrubbed.
+The answer itself retains the full process-output secret set.
+Redaction occurs before
 line and character cuts, including for known secrets split across UTF-8 chunks
 or physical lines, credential-shaped values, and PEM blocks. Treat every
 preview as untrusted process output. Records retain a redacted command summary
@@ -732,6 +744,19 @@ durable started receipt. `AgentManage({id:"helper", message:"Continue", backgrou
 continues the same child transcript. Both require the ordinary Agent/AgentManage
 policy. Close-only calls remain synchronous. Bare runtime hosts need a supplied
 background controller; unsupported calls fail clearly.
+
+Every settled detached Agent/AgentManage turn saves the complete final result (header,
+answer, and activity) through the host's private tool-output artifact sink, even
+when the answer fits in the foreground budget. The completion stdout JSON has a
+leading `resultReference` and an `artifacts` array naming the absolute full-result
+path. The parent wake also carries `resultReference` as a leading JSON field,
+read from the persisted stdout artifact independently of the preview budget.
+The durable terminal preview leads with the reference when it fits; even a
+one-character preview cannot hide the path in the wake. Read the named file
+for the complete answer; a preview is not the full result. If persistence is
+unavailable or fails, the reference explicitly says `full result not saved`.
+A forced reporting deadline before the child settles can only report the partial
+outcome then available, not a future final answer.
 
 A detached continuation can also carry `model` and `effort`
 (`AgentManage({id:"helper", message:"Continue", background:true, model:"fable"})`).
