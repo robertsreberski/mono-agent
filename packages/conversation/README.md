@@ -389,6 +389,9 @@ coverage. Contradictory generations still refuse and appear in sidecar
 idempotency-conflict diagnostics. Storage primitives do not acquire canonical
 ownership. Canonical retention protects pinned/prepared physical owners.
 Explicit reset purges evidence after canonical publication, before owner release.
+The canonical text adapter omits cancelled/failed account envelopes and
+unfinished detached candidates: durable reconstruction metadata is not proof of
+a completed assistant answer, and can contain partial streams/nested retrieval.
 
 `searchContinuity` / `getContinuity` return scoped evidence, not instructions or
 new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests

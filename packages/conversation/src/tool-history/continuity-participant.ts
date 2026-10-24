@@ -67,6 +67,12 @@ function appendedRecords(mutation: OwnedContinuityMutation, generationId: string
     // Canonical imports/legacy roles cannot acquire host-owner provenance. System
     // prompts and unverified legacy tool envelopes are not retained here.
     if (message.role !== "user" && message.role !== "assistant") return [];
+    // These typed host accounts contain partial assistant streams and nested
+    // lifecycle/retrieval envelopes. They are canonical reconstruction data,
+    // not eligible retained assistant text. Do not parse/promote their body.
+    if (message.role === "assistant" && (message.idempotencyKey?.startsWith("cancelled-turn:v1:")
+      || message.idempotencyKey?.startsWith("failed-turn:v1:")
+      || (mutation.after.settlement !== undefined && mutation.after.settlement.turnId === message.runId && mutation.after.settlement.outcome !== "completed"))) return [];
     return [{ recordId: continuityRecordId(mutation.conversationId, `${generationId}:${index}`),
       runId: `canonical:${mutation.after.digest}`, kind: message.role === "user" ? "other-user" : "assistant",
       provenance: "unknown", sequence: index, text: message.content,

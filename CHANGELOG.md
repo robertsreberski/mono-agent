@@ -11,6 +11,8 @@
   acknowledgements before another mutation. Re-enabling after an off interval
   abandons stale preparations with explicit coverage gaps, not permanent blocks.
   Reset purges evidence; retention never silently removes pinned references.
+  Unfinished assistant accounts remain reconstruction data, not retrievable
+  completed-answer evidence.
 
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures

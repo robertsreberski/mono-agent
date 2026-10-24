@@ -2040,6 +2040,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     // will observe, rather than to incidental in-memory object property order.
     const validated = "sourceVersion" in record ? record : parseHistoryFile(serializeHistoryFile(record), this.recordPath(record.conversationId));
     return { digest: validated.sourceVersion === 0 ? null : historyRecordVersion(validated), messages: validated.messages,
+      ...(validated.lastCommit === undefined ? {} : { settlement: { turnId: validated.lastCommit.turnId, outcome: validated.lastCommit.outcome } }),
       ...(validated.providerSession === undefined ? {} : { epoch: validated.providerSession.epoch, revision: validated.providerSession.revision ?? 0 }) };
   }
   private async reconcileContinuity(id: string, rootIdentity: DirectoryIdentity, assertOwned: () => Promise<void>): Promise<void> {

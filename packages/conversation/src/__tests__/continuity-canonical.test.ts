@@ -65,6 +65,29 @@ describe("owned canonical continuity publication", () => {
     expect(records.every((r) => r.kind === "assistant" && r.provenance === "unknown")).toBe(true);
   });
 
+  it("does not retain cancelled/failed stream envelopes as completed assistant evidence", async () => {
+    const dir = await root(), { store, reader } = await setup(dir);
+    await store.append(id, [
+      { role: "user", content: "A retained input." },
+      { ...message("Unfinished cancellation stream and nested retrieval data."), idempotencyKey: "cancelled-turn:v1:fictional-run" },
+      { ...message("Unfinished failure stream and nested retrieval data."), idempotencyKey: "failed-turn:v1:fictional-run" },
+    ]);
+    expect(reader.searchContinuity(scope).items.map((r) => r.preview)).toEqual(["A retained input."]);
+  });
+
+  it("omits an unfinished detached candidate even if it was published in a durable canonical account", async () => {
+    const dir = await root(), f = await fixture(dir);
+    const { continuity, reader } = await setup(join(dir, "history"));
+    const { store } = openStore(dir, undefined, { continuity, reconcileProviderSessionTurn: async () => ({ status: "absent" }) });
+    await ready({ ...f, store }); await store.rollForwardModelSwitch(bucket, f.state.identity.switchId, {});
+    const turn = await store.beginProviderSessionTurn(bucket, "fictional-detached", { modelKey: "faux:B", reconciliation: {
+      purpose: "execution", ownerKey: bucket, initial: { persistText: "A durable input.", timestamp: "2026-10-01T12:00:00.000Z" } } });
+    await turn.reconciliation!.claim("detached", { outcome: "interrupted", text: "An unfinished assistant draft.", timestamp: "2026-10-01T12:00:00.000Z", error: null, failureKind: "interrupted" });
+    await turn.abort(); await store.recoverProviderSessionTurn(bucket);
+    expect((await store.load(bucket)).some((m: { content: string }) => m.content === "An unfinished assistant draft.")).toBe(true);
+    expect(reader.searchContinuity({ ...scope, currentConversationId: bucket, logicalConversationId: bucket }).items.map((r) => r.preview)).toEqual(["A durable input."]);
+  });
+
   it("acknowledges legacy inactive epoch rotation before its existing maintenance owner releases", async () => {
     const dir = await root(), { writer, reader, continuity } = await setup(dir);
     const store = createDurableHistoryStore({ root: dir, continuity, retireProviderSession: async () => {} });

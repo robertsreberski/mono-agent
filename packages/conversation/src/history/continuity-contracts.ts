@@ -6,6 +6,7 @@ export interface CanonicalContinuityState {
   readonly messages: readonly HistoryMessage[];
   readonly epoch?: string;
   readonly revision?: number;
+  readonly settlement?: { readonly turnId: string; readonly outcome: string };
 }
 export interface OwnedContinuityContext {
   readonly conversationId: string;
