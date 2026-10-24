@@ -1,5 +1,9 @@
 import { isSensitiveEnvironmentName } from "../diagnostics/redact-secrets.js";
 
+// Digest is an auth-parameter list, never an arbitrary line of prose.
+const AUTH_PARAMETER = String.raw`[A-Za-z][\w-]*[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\s,;{}\[\]"']+)`;
+const DIGEST_CREDENTIAL = new RegExp(String.raw`\bDigest\s+${AUTH_PARAMETER}(?:\s*,\s*${AUTH_PARAMETER})*`, "gu");
+
 /** Shared output boundary for model-authored background process jobs. */
 export function redactProcessOutput(
   text: string,
@@ -20,14 +24,18 @@ export function redactProcessOutput(
   // whole literal before any rule can bisect it removes that bypass; the label
   // rule then simply sees an already-redacted value and skips it.
   let redacted = replaceSecretLiterals(text, orderedSecrets, literalMarker);
+  // Header names and schemes are case-insensitive only in credential position.
+  redacted = redacted.replace(new RegExp(
+    String.raw`(\b(?:Proxy-)?Authorization[ \t]*:[ \t]*)(?:Digest\s+${AUTH_PARAMETER}(?:\s*,\s*${AUTH_PARAMETER})*|(?:Bearer|Basic|Token)\s+[^\s,;]+)`, "giu"),
+  "$1[REDACTED]");
   redacted = redacted
     // Consume a whole PEM block when the caller has the whole output.
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/gu,
       "[REDACTED]")
     // Every common HTTP auth scheme, not just Bearer: matching only the scheme
     // word leaves the credential that follows it in place.
-    .replace(/\bDigest\s+[^\r\n]*/giu, "Digest [REDACTED]")
-    .replace(/\b(Bearer|Basic|Token)\s+[^\s,;]+/giu, "$1 [REDACTED]")
+    .replace(DIGEST_CREDENTIAL, "Digest [REDACTED]")
+    .replace(/\b(Bearer|Basic|Token)\s+[^\s,;]+/gu, "$1 [REDACTED]")
     .replace(/(^|\s)((?:--(?:password|passwd|pass|token|secret|api[-_]?key|auth)|-p)(?:=|\s+))(?!\[REDACTED\])("[^"]*"|'[^']*'|\S+)/giu,
       (_match, prefix: string, flag: string) => `${prefix}${flag}[REDACTED]`)
     .replace(/\b([A-Za-z0-9_.-]*(?:api[ _-]?key|secret[ _-]?access[ _-]?key|access[ _-]?key[ _-]?id|(?:access|auth|refresh|session|id|bearer)[ _-]?token|authorization|credential|private[ _-]?key|client[ _-]?secret|passphrase|password|passwd|secret|token|cookie|session[ _-]?id)[A-Za-z0-9_.-]*)(["']?\s*[=:]\s*)(?!\[REDACTED\])("[^"]*"|'[^']*'|[^\s,;}\]]+)/giu,
@@ -103,7 +111,11 @@ interface CredentialContinuation {
 
 const CREDENTIAL_LABEL_CONTINUATION = /\b[A-Za-z0-9_.-]*(?:api[ _-]?key|secret[ _-]?access[ _-]?key|access[ _-]?key[ _-]?id|(?:access|auth|refresh|session|id|bearer)[ _-]?token|authorization|credential|private[ _-]?key|client[ _-]?secret|passphrase|password|passwd|secret|token|cookie|session[ _-]?id)[A-Za-z0-9_.-]*(?:["']?\s*[=:]\s*)(["']?)\s*$/iu;
 const CREDENTIAL_FLAG_CONTINUATION = /(?:^|\s)(?:--(?:password|passwd|pass|token|secret|api[-_]?key|auth)|-p)(?:=)?\s*(["']?)\s*$/iu;
-const HTTP_AUTH_CONTINUATION = /\b(?:Digest|Bearer|Basic|Token)\s*(["']?)\s*$/iu;
+const HTTP_AUTH_HEADER_CONTINUATION = /\b(?:Proxy-)?Authorization[ \t]*:[ \t]*(?:Digest|Bearer|Basic|Token)[ \t]*(["']?)[ \t]*$/iu;
+const DIGEST_PARAMETER_CONTINUATION = new RegExp(
+  String.raw`(?:\bDigest[ \t]+|^[ \t]*)${AUTH_PARAMETER}(?:[ \t]*,[ \t]*${AUTH_PARAMETER})*,[ \t]*$`, "iu");
+const DIGEST_QUOTED_CONTINUATION = /\bDigest[ \t]+[A-Za-z][\w-]*[ \t]*=[ \t]*(["'])[^"']*$/u;
+const HTTP_AUTH_CONTINUATION = /\b(?:Digest|Bearer|Basic|Token)[ \t]*(["']?)[ \t]*$/u;
 
 /**
  * Stateful line redaction for output whose secrets may cross physical lines.
@@ -251,6 +263,9 @@ function credentialContinuationForLine(line: string): CredentialContinuation | u
   for (const pattern of [
     CREDENTIAL_LABEL_CONTINUATION,
     CREDENTIAL_FLAG_CONTINUATION,
+    DIGEST_PARAMETER_CONTINUATION,
+    DIGEST_QUOTED_CONTINUATION,
+    HTTP_AUTH_HEADER_CONTINUATION,
     HTTP_AUTH_CONTINUATION,
   ]) {
     const match = pattern.exec(line);
@@ -329,4 +344,31 @@ function environmentSecrets(
     }
   }
   return [...new Set(values)].sort((left, right) => right.length - left.length);
+}
+
+/** Preserve JSON syntax: output redaction must never scan serialized delimiters. */
+export function redactStructuredProcessOutput(
+  text: string,
+  secrets: readonly string[],
+  truncatedAtEnd = false,
+  // Only framework-authored root artifact metadata uses this narrower set.
+  // Ambient HOME/PWD/USER values are locations here, not leaked process output.
+  artifactSecrets: readonly string[] = secrets,
+): string {
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); }
+  catch { return redactProcessOutput(text, secrets, truncatedAtEnd); }
+  const visit = (value: unknown, literals = secrets, root = false): unknown => {
+    if (typeof value === "string") return redactProcessOutput(value, literals);
+    if (Array.isArray(value)) return value.map((entry) => visit(entry, literals));
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+        redactProcessOutput(key, literals),
+        /api[ _-]?key|credential|password|passwd|passphrase|secret|token|authorization|cookie|private[ _-]?key|session[ _-]?id/iu.test(key)
+          ? "[REDACTED]" : visit(entry, root && (key === "resultReference" || key === "artifacts") ? artifactSecrets : literals),
+      ]));
+    }
+    return value;
+  };
+  return JSON.stringify(visit(parsed, secrets, true));
 }

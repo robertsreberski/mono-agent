@@ -2,7 +2,7 @@ import { publishManagedJob } from "./managed-publication.js";
 import { deliverProcessJobWake, MAX_WAKE_ATTEMPTS, type WakeAttempt, type WakeDecision } from "./wake-delivery.js";
 import { ProcessJobServiceError } from "./errors.js";
 import { MAX_IN_MEMORY_RECORDS, conversationSlotAvailable, enforceAdmission, pendingWakeCap, boundedNewestRecords, terminalFromResult, assertAvailable, processJobCapacity } from "./policy.js";
-import { processJobSummary, boundOutput, outputPreview, boundedSafeDiagnostic } from "./presentation.js";
+import { processJobSummary, boundOutput, outputPreview, internalOutputPreview, internalResultReference, boundedSafeDiagnostic } from "./presentation.js";
 import { isInternal, type ServiceStartRequest, type ProcessJobWakeInput } from "./types.js";
 import { MAX_WAKE_CERTIFICATES, validWakeToken } from "./process-jobs-wake-fence.js";
 import type { SubagentStopIdentity, SubagentSteerProof, SubagentStopProof } from "./process-jobs-internal.js";
@@ -22,6 +22,7 @@ import { hasPendingSubagentPublication, hasPendingSubagentReleaseReceipt, hasSub
 import { subagentProgressUsage, SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
+import { readBoundedOwnerOnlyFile } from "../durable-state/private-files.js";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
@@ -47,6 +48,7 @@ import {
   processDescriptionSecrets,
   processOutputSecrets,
   redactProcessOutput as redactOutput,
+  redactStructuredProcessOutput,
 } from "./process-output-redaction.js";
 import { cleanupPersistedSandboxSettings } from "../service/sandbox/sandbox-settings-cleanup.js";
 import {
@@ -1693,7 +1695,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       const runnerTruncated = result.truncated || result.bufferExceeded;
       const stdout = boundOutput(
-        redactOutput(result.stdout, active.redactionSecrets, runnerTruncated),
+        isInternal(active.request)
+          ? redactStructuredProcessOutput(result.stdout, active.redactionSecrets, runnerTruncated,
+            active.request.tool === "PeerAgent" ? active.redactionSecrets : processDescriptionSecrets(undefined))
+          : redactOutput(result.stdout, active.redactionSecrets, runnerTruncated),
         this.settings.maxOutputBytes,
       );
       const stderr = boundOutput(
@@ -1772,9 +1777,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           // Even when an artifact cannot be published, keep the bounded,
           // redacted preview in the durable terminal record instead of silently
           // dropping the process result.
-          record.preview = finalTail?.preview.length
-            ? finalTail.preview
-            : outputPreview(stdout.text, stderr.text, record.previewChars);
+          record.preview = record.kind === "internal"
+            ? internalOutputPreview(stdout.text, stderr.text, record.previewChars, finalTail?.preview)
+            : finalTail?.preview || outputPreview(stdout.text, stderr.text, record.previewChars);
           if (alreadyTerminal) {
             if (cleanupError !== undefined) {
               appendOperationalFailure(record, "process_job_cleanup_incomplete");
@@ -1835,9 +1840,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             || stderr.truncated
             || artifactError !== undefined;
           if (completionRecord.kind === "internal" && completionRecord.tool !== "PeerAgent" && finalProgress) completionRecord.subagentProgress = finalProgress;
-          completionRecord.preview = finalTail?.preview.length
-            ? finalTail.preview
-            : outputPreview(stdout.text, stderr.text, completionRecord.previewChars);
+          completionRecord.preview = completionRecord.kind === "internal"
+            ? internalOutputPreview(stdout.text, stderr.text, completionRecord.previewChars, finalTail?.preview)
+            : finalTail?.preview || outputPreview(stdout.text, stderr.text, completionRecord.previewChars);
           transitionTerminal(
             completionRecord,
             "failed",
@@ -2024,6 +2029,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     await deliverProcessJobWake(jobId, {
       beginAttempt: async (id) => await this.beginWakeAttempt(id),
       settleAttempt: async (id, attempt, result, decision, silent) => await this.settleWakeAttempt(id, attempt, result, decision, silent),
+      readResultReference: async (record) => {
+        if (record.kind !== "internal" || record.tool === "PeerAgent") return undefined;
+        if (record.stdoutRef !== null) {
+          try {
+            const stdout = await readBoundedOwnerOnlyFile(join(this.store.stateDir, record.stdoutRef), record.maxOutputBytes, "Process-job stdout");
+            return internalResultReference(stdout);
+          } catch { /* An unavailable artifact must not erase the completion wake. */ }
+        }
+        return "[full result reference unavailable: stdout artifact could not be read]";
+      },
       readSalvage: async (record) => await this.readWakeSalvage(record),
       updateSurface: async (projection) => await this.updateSurface(projection),
       updateSurfaceById: async (id) => await this.updateSurfaceById(id),

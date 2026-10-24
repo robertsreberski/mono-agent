@@ -250,6 +250,50 @@ describe("detached child deadline admission", () => {
     begin: async (id: any) => ({ id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" }),
     get: async (id: any) => ({ id, turns: 1, status: "idle" }), finish: async (id: any) => ({ id, turns: 1, status: "idle" }), releaseReservation: async () => {},
   });
+  it.each(["Agent", "AgentManage"])("always persists detached %s answers and exposes an absolute reference", async (toolName) => {
+    for (const answer of ["short answer", `${"Findings. ".repeat(3_000)}digest verification; token thresholds; THE-END`]) {
+      let completion: any;
+      const saved: string[] = [];
+      const persistArtifact = vi.fn(({ buffer, filename }: any) => {
+        saved.push(buffer.toString("utf8"));
+        return `/artifacts/${filename}`;
+      });
+      const background = { startInternal: async (options: any) => {
+        completion = await options.run(new AbortController().signal, () => {}, () => {});
+        return { jobId: "job", state: "succeeded", startedAt: new Date().toISOString() };
+      } };
+      const run = vi.fn(async (request: any) => {
+        request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "read", name: "Read", input: { file_path: "/repo/example.ts" } }] } });
+        request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "read", is_error: false }] } });
+        return { text: answer, events: [] };
+      });
+      const record: any = { id: "inst-1", turns: 1, status: "idle", definition: PROFILE };
+      const tool = createAgentTool(subagentOptions({ run, instances: instances(), backgroundSubagentController: background }), { persistArtifact },
+        toolName === "AgentManage" ? { record } : undefined);
+      await tool.execute("call", { prompt: "work", persist: true, background: true });
+      expect(persistArtifact).toHaveBeenCalledOnce();
+      expect(saved[0]).toContain(answer);
+      expect(saved[0]).toContain("<subagent:");
+      expect(saved[0]).toContain("<activity>");
+      const output = JSON.parse(completion.output);
+      expect(Object.keys(output)[0]).toBe("resultReference");
+      expect(output.resultReference).toContain(`full result saved to: /artifacts/${toolName}__call__full.txt`);
+      expect(output.artifacts).toEqual([`/artifacts/${toolName}__call__full.txt`]);
+      expect(completion.answer).toBe(answer);
+    }
+  });
+
+  it.each([undefined, () => { throw new Error("unavailable"); }])("explicitly reports detached artifact persistence failure", async (persistArtifact) => {
+    let completion: any;
+    const background = { startInternal: async (options: any) => {
+      completion = await options.run(new AbortController().signal, () => {}, () => {});
+      return { jobId: "job", state: "succeeded", startedAt: new Date().toISOString() };
+    } };
+    const tool = createAgentTool(subagentOptions({ instances: instances(), backgroundSubagentController: background }), persistArtifact === undefined ? {} : { persistArtifact });
+    await tool.execute("call", { prompt: "work", persist: true, background: true });
+    expect(JSON.parse(completion.output).resultReference).toBe("[full result not saved: artifact persistence unavailable]");
+  });
+
   it("fires the child's timer ahead of an equal job deadline", async () => {
     vi.useFakeTimers();
     try {
