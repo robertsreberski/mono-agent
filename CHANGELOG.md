@@ -40,6 +40,11 @@
   redirect to another host or port.
 - Add a versioned console API schema, route manifest, typed SSE payload map and
   validated JSON fixtures for native clients, pinned to `@mono-agent/web` versions.
+- Add an opt-in conversation-continuity benchmark that replays four fictional
+  multi-session conversations through the production configured harness and
+  probes what survives native resume, a cold model-change rebuild and one or
+  two proactive compactions. Offline contract mode is provider-free and CI-safe;
+  paid mode requires a confirmed plan and refuses to run under CI.
 
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 
