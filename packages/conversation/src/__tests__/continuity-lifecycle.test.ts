@@ -17,7 +17,7 @@ const scope = { logicalConversationId: binding.logicalConversationId, currentCon
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 async function fixture(enabled = true, maxBytes?: number) {
   const root = await mkdtemp(join(tmpdir(), "continuity-tool-")); roots.push(root);
-  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: enabled, ...(maxBytes === undefined ? {} : { retention: { maxBytes } }) }); writers.add(writer);
+  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: enabled, persistenceCeilingMs: 5_000, ...(maxBytes === undefined ? {} : { retention: { maxBytes } }) }); writers.add(writer);
   return { root, writer, reader: new ToolHistoryReader(root) };
 }
 async function result(writer: ToolHistoryWriter, text: string, callId = "fiction-call", run = binding) {
@@ -125,8 +125,9 @@ it("keeps the same finalized bytes across process death without finishing the ru
   const root = await mkdtemp(join(tmpdir(), "continuity-tool-crash-")); roots.push(root);
   const script = join(root, "producer.mjs"), text = "Fictional durable cobalt output. ".repeat(1000);
   await writeFile(script, `import { ToolHistoryWriter } from ${JSON.stringify(pathToFileURL(resolve("dist/tool-history/writer.js")).href)};
-const writer = await ToolHistoryWriter.open({ root: ${JSON.stringify(root)}, continuityEnabled: true });
-await writer.persist(${JSON.stringify(binding)}, ${JSON.stringify({ phase: "result", toolCallId: "fiction-call", toolName: "Read", state: "success", content: [{ type: "text", text }] })});
+const writer = await ToolHistoryWriter.open({ root: ${JSON.stringify(root)}, continuityEnabled: true, persistenceCeilingMs: 5000 });
+const receipt = await writer.persist(${JSON.stringify(binding)}, ${JSON.stringify({ phase: "result", toolCallId: "fiction-call", toolName: "Read", state: "success", content: [{ type: "text", text }] })});
+if (receipt.persistence !== 'persisted') throw new Error('Fixture result did not durably persist');
 process.stdout.write('READY\\n'); setInterval(() => {}, 1000);`);
   const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "pipe"] });
   try {
@@ -139,4 +140,4 @@ process.stdout.write('READY\\n'); setInterval(() => {}, 1000);`);
   expect(records).toHaveLength(1); expect(records[0]!.sha256).toBe(sha(text));
   expect((await writer.stats()).idempotencyConflicts).toBe(0);
   await writer.resetConversation(binding.logicalConversationId); expect(reader.stats()?.continuity?.records).toBe(0);
-});
+}, 20_000);

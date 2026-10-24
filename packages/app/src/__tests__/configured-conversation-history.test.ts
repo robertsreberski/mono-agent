@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
-import { createInMemoryHistoryStore } from "@mono-agent/conversation";
+import { acquireToolHistoryWriter, createInMemoryHistoryStore } from "@mono-agent/conversation";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { expect, it } from "vitest";
 import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
@@ -54,12 +54,17 @@ it.each([true, false])("retrieves finalized current-run tool text only with an o
   const cwd = await mkdtemp(join(tmpdir(), "configured-live-tool-evidence-"));
   const text = "Fictional cobalt tool output. ".repeat(1000);
   let evidenceRunId: string | undefined, actualRunId: string | undefined;
+  let writerLease: Awaited<ReturnType<typeof acquireToolHistoryWriter>> | undefined;
   try {
     await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional fixture.");
     const config = resolveJsonMonoAgentConfig({ cwd, json: {
       runtime: { model: "openai-codex:gpt-5.5", session: { mode: "per-message" } },
       context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["ConversationHistory", "Read"] },
+      artifacts: { dir: join(cwd, "artifacts") },
     } });
+    // This is a durable storage assertion, not a test of the production 250 ms
+    // foreground receipt ceiling. Share a 5 s fixture writer with the harness.
+    writerLease = await acquireToolHistoryWriter({ root: join(cwd, "history"), artifactRoot: join(cwd, "artifacts", "tool-output"), continuityEnabled: true, persistenceCeilingMs: 5_000 });
     const harness = await createConfiguredConversationHarness({ config, cwd, env: {},
       ...(owned ? {} : { historyStore: createInMemoryHistoryStore() }),
       runtimeOptionsForRequest: ({ runId }) => { actualRunId = runId; return {}; },
@@ -90,5 +95,5 @@ it.each([true, false])("retrieves finalized current-run tool text only with an o
       const result = await harness.run({ conversationId: "web:fiction", userMessage: "Inspect the fictional tool fixture.", abortSignal: new AbortController().signal });
       expect(result.failure).toBeUndefined(); if (owned) expect(evidenceRunId).toBe(actualRunId);
     } finally { await harness.dispose?.(); }
-  } finally { await rm(cwd, { recursive: true, force: true }); }
-});
+  } finally { await writerLease?.release(); await rm(cwd, { recursive: true, force: true }); }
+}, 20_000);
