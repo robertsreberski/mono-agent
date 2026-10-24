@@ -46,6 +46,7 @@ Guided init searches every bundled model for the Pi catalog — Anthropic, GitHu
 - [Fallback chains](/runtime/fallback/) — canonical `runtime.fallbacks`, exact route effort, legacy compatibility, and visible failover history.
 - [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint for `<provider>:<model>` references, plus engine-turn transport tuning and Pi credential resolution.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
+- [Conversation-continuity benchmark](/runtime/continuity-benchmark/) — fictional long conversations replayed through the production harness to measure what survives native resume, cold model-change rebuild and proactive compaction.
 - [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the managed Read/Write/Edit/Glob/Grep/Exec/Bash/NodeRepl/WebFetch/WebSearch tools and the automatic guards (loss-aware process execution, tool-output truncation, web retry, cost tracking, context compaction).
 
 ## Local providers in one block
