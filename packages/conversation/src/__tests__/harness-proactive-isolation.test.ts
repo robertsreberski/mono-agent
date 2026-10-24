@@ -137,6 +137,7 @@ describe("ConversationHarness proactive session isolation", () => {
     expect(events).toContainEqual(expect.objectContaining({
       type: "session_boundary",
       kind: "isolated",
+      context: "reconstructed",
       conversationId: "cron:nightly",
       reason: "proactive",
     }));

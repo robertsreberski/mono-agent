@@ -1093,6 +1093,7 @@ function rolloverBoundaryForRequest(input: {
   return {
     type: "session_boundary",
     kind: "rollover",
+    context: "reconstructed",
     conversationId: input.bucketedConversationId,
     baseConversationId,
     previousConversationId,

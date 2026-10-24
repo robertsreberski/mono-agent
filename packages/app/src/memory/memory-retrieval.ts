@@ -11,6 +11,7 @@ import type {
 import { createLoopbackMcpEndpoint } from "../mcp/loopback-transport.js";
 import {
   AUTO_RECALL_BACKEND_HITS,
+  excludeSameConversationRecallHits,
   AUTO_RECALL_MAX_BYTES,
   formatPossiblyRelevantBlock, POSSIBLY_RELEVANT_MAX_BYTES,
   selectPossiblyRelevantRecallHits,
@@ -137,6 +138,7 @@ function freshMemoryLines(content: string, exclude: (line: string) => boolean): 
 interface SharedRecallHit {
   readonly score: number;
   readonly record: {
+    readonly source?: { readonly session?: string };
     readonly id: string;
     readonly text: string;
     readonly type?: "task" | "event" | "note";
@@ -328,7 +330,8 @@ export class MemoryRetrievalService implements MemoryStore {
       // suppress only unsolicited similarity-selected lines.
       const shortOwnerQuery = query !== undefined
         && Array.from(query.normalize("NFC").trim()).length <= SHORT_OWNER_QUERY_MAX_CODEPOINTS;
-      const hits = shortOwnerQuery ? [] : selectPossiblyRelevantRecallHits(outcome.hits, {
+      const automaticHits = excludeSameConversationRecallHits(outcome.hits, conversationId);
+      const hits = shortOwnerQuery ? [] : selectPossiblyRelevantRecallHits(automaticHits, {
         intentExpiry: this.intentExpiry,
         ...(asOf === undefined ? {} : { asOf }), ...(now === undefined ? {} : { now }),
       }).filter((hit) => !profileIds.has(hit.record.id));
@@ -338,7 +341,7 @@ export class MemoryRetrievalService implements MemoryStore {
       let background: ReturnType<typeof formatMemoryBackground>;
       try {
         const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);
-        background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available,
+        background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, automaticHits, available,
           new Set([...profileIds, ...block?.shown.map((hit) => hit.record.id) ?? []]), this.intentExpiry);
       } catch {
         // Corrupt or temporarily unavailable labels must not erase ordinary recall.

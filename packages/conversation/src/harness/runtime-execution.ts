@@ -1,4 +1,5 @@
 import { loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
+import { reconstructionFacts } from "./session-events.js";
 import { randomUUID } from "node:crypto";
 import { createPendingInitialInput, createPendingLiveInput, assertDetachedTurnDescriptor } from "../history/pending-turn/contract.js";
 import { sessionModelKey } from "../sessions/model-key.js";
@@ -439,13 +440,22 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       const detachedContext = (): Promise<readonly RuntimeMessage[]> => {
         if (!contextOwned || request.abortSignal.aborted) return Promise.reject(new Error("Detached context ownership ended"));
         detachedReplay ??= (async () => {
-          if (!historyOmitted) return freezePreparationData(coldReplayMessages(history, toolHistoryProjection));
+          if (!historyOmitted) {
+            emitRuntimeEvent({ type: "session_boundary", kind: "resume_replay", context: "reconstructed",
+              conversationId: request.conversationId, reason: "detached_context",
+              ...reconstructionFacts({ history, toolHistoryProjection }), timestamp: new Date().toISOString() });
+            return freezePreparationData(coldReplayMessages(history, toolHistoryProjection));
+          }
           if (routing.detachedHistoryOverride === undefined && options.historyStore === undefined) {
             throw new Error("Warm detached context requires canonical history");
           }
           const canonical = routing.detachedHistoryOverride ?? await options.historyStore!.load(request.conversationId);
           if (!contextOwned || request.abortSignal.aborted) throw new Error("Detached context ownership ended");
           const projection = loadToolHistoryProjection(options, request.conversationId, runId, canonical, emitRuntimeEvent);
+          emitRuntimeEvent({ type: "session_boundary", kind: "resume_replay", context: "reconstructed",
+            conversationId: request.conversationId, reason: "detached_context",
+            ...reconstructionFacts({ history: canonical, toolHistoryProjection: projection?.text,
+              toolProjectionRecords: projection?.recordCount ?? 0 }), timestamp: new Date().toISOString() });
           return freezePreparationData(coldReplayMessages(canonical, projection?.text));
         })();
         return detachedReplay;

@@ -5,6 +5,7 @@ type LabelHit = MemoryLabelHit;
 export interface MemoryRecallHit {
   readonly score: number;
   readonly record: {
+    readonly source?: { readonly session?: string };
     readonly id: string;
     readonly text: string;
     readonly type?: MemoryType;

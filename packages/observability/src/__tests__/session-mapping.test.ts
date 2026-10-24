@@ -806,11 +806,11 @@ const DIGEST_CAP = 121; // 120 chars + the ellipsis glyph
 
 it("preserves model_change on direct and nested session boundaries", () => {
   const { summary } = loadFixture("notified");
-  const boundary = { type: "session_boundary", kind: "resume_replay", conversationId: "web:c",
+  const boundary = { type: "session_boundary", kind: "resume_replay", context: "reconstructed", replayedMessageCount: 64, toolProjectionBytes: 123, toolProjectionRecords: 2, coverageStartTimestamp: "2030-01-01T00:00:00Z", conversationId: "web:c",
     providerSessionId: "new-id", reason: "model_change" };
   const session = mapRunToSession(summary, [boundary, { type: "runtime_telemetry", kind: "session_boundary", data: boundary }], OPTS);
   expect(boundarySteps(session.steps)).toHaveLength(2);
-  for (const step of boundarySteps(session.steps)) expect(step).toMatchObject({ kind: "resume_replay", providerSessionId: "new-id", reason: "model_change" });
+  for (const step of boundarySteps(session.steps)) expect(step).toMatchObject({ kind: "resume_replay", context: "reconstructed", replayedMessageCount: 64, toolProjectionBytes: 123, toolProjectionRecords: 2, coverageStartTimestamp: "2030-01-01T00:00:00Z", providerSessionId: "new-id", reason: "model_change" });
 });
 
 it("distinguishes absent historic costs from explicit unknown in session totals", () => {
@@ -820,4 +820,14 @@ it("distinguishes absent historic costs from explicit unknown in session totals"
   expect(mapRunToSession({ ...summary, status: "failed", cost: {}, usage: {} }, [], OPTS).totals.cost).toBe(0);
   expect(mapRunToSession({ ...summary, cost: { cumulativeUsd: null, knownCostUsd: 0 } }, [], OPTS).totals)
     .toMatchObject({ cost: null, knownCostUsd: 0 });
+});
+
+
+it("ignores invalid additive boundary facts while preserving legacy fields", () => {
+  const { summary } = loadFixture("notified");
+  const session = mapRunToSession(summary, [{ type: "session_boundary", kind: "resume_replay", reason: "custom",
+    context: "unknown", replayedMessageCount: -1, toolProjectionBytes: 1.5, toolProjectionRecords: Number.MAX_SAFE_INTEGER + 1 }], OPTS);
+  expect(boundarySteps(session.steps)[0]).toMatchObject({ kind: "resume_replay", reason: "custom" });
+  for (const key of ["context", "replayedMessageCount", "toolProjectionBytes", "toolProjectionRecords"])
+    expect(boundarySteps(session.steps)[0]).not.toHaveProperty(key);
 });

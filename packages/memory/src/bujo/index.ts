@@ -13,6 +13,7 @@ export {
   AUTO_RECALL_MAX_BYTES,
   AUTO_RECALL_MIN_SCORE,
   formatPossiblyRelevantBlock,
+  excludeSameConversationRecallHits,
   POSSIBLY_RELEVANT_HEADING,
   POSSIBLY_RELEVANT_MAX_BYTES,
   POSSIBLY_RELEVANT_MAX_LINES,

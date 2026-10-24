@@ -1,3 +1,4 @@
+import { collectRun } from "../measure-prompt-cache.mjs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -24,7 +25,7 @@ function runScenario(scenario, extra = []) {
 describe("prompt cache measurement", () => {
   it("drives real configured harness/runtime/Pi-faux assembly and reports observed events", () => {
     const { report, stdout } = runScenario("multi-turn");
-    expect(report).toMatchObject({ schema: 2, mode: "dry-run", scenario: "multi-turn", model: "benchmark-faux:cache-model" });
+    expect(report).toMatchObject({ schema: 3, mode: "dry-run", scenario: "multi-turn", model: "benchmark-faux:cache-model" });
     expect(report.runs).toHaveLength(2);
     const first = report.runs[0].requests[0];
     const second = report.runs[1].requests[0];
@@ -52,7 +53,7 @@ describe("prompt cache measurement", () => {
   ])("executes the %s control through the same scenario runner", (scenario, extra) => {
     const { report } = runScenario(scenario, extra);
     expect(report.runs.length).toBeGreaterThanOrEqual(2);
-    if (scenario === "durable-reopen") expect(report.runs[1].reseedEvents).toContainEqual(expect.objectContaining({ kind: "canonical_history_replay" }));
+    if (scenario === "durable-reopen") expect(report.runs[1].historyReplayEvents).toContainEqual(expect.objectContaining({ kind: "canonical_history_replay" }));
     if (scenario === "recall-changing") expect(report.runs.flatMap((run) => run.controlEvents).filter((event) => event.type === "memory_recalled")).toHaveLength(2);
     if (scenario === "capability-change") expect(report.runs[1].requests[0].toolDefinitionCount).toBe(0);
   });
@@ -112,4 +113,19 @@ describe("prompt cache measurement", () => {
     expect(existsSync(output)).toBe(false);
     expect(stateDirs()).toEqual(before);
   });
+});
+
+
+it("counts reconstructed boundaries, separates retained resumes and preserves unknown legacy events", () => {
+  const run = collectRun([
+    { type: "session_boundary", kind: "resume_replay", reason: "model_change", context: "reconstructed" },
+    { type: "session_boundary", kind: "resume_replay", reason: "cancelled_turn_resume", context: "retained" },
+    { type: "session_boundary", kind: "resume_replay", reason: "legacy" },
+    { type: "session_boundary", kind: "resume_replay", reason: "model_change", context: "handoff" },
+    { type: "session_boundary", kind: "isolated", context: "reconstructed" },
+  ], { metadata: {} }, {});
+  expect(run.reseedEvents).toHaveLength(2);
+  expect(run.retainedResumeEvents).toMatchObject([{ reason: "cancelled_turn_resume" }]);
+  expect(run.handoffEvents).toMatchObject([{ context: "handoff" }]);
+  expect(run.unclassifiedBoundaryEvents).toMatchObject([{ reason: "legacy" }]);
 });

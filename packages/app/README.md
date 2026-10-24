@@ -1426,6 +1426,12 @@ evidence as interrupted answers.
 
 ## Architecture
 
+Automatic memory similarity injection excludes known same-logical-conversation
+`source.session` records before selection; explicit `MemoryRecall` remains
+unchanged. Daily bucket suffixes share an owner; web conversation ids are already
+prefixed. Unknown provenance (including some BuJo and rebuilt records) keeps
+existing behavior; no attribution is invented from memory text.
+
 ACP occupancy uses context-eligible usage counts when supplied; off-context
 compaction tokens remain in billed totals/cost without inflating context used.
 

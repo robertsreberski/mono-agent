@@ -122,6 +122,13 @@ export type ConversationHarnessSessionBoundaryKind = "rollover" | "isolated" | "
 export interface ConversationHarnessSessionBoundary {
   readonly type: "session_boundary";
   readonly kind: ConversationHarnessSessionBoundaryKind;
+  /** Provider context disposition; optional for older/custom producers. */
+  readonly context?: "retained" | "reconstructed" | "handoff";
+  /** Content-free facts about the canonical reconstruction, when available. */
+  readonly replayedMessageCount?: number;
+  readonly toolProjectionBytes?: number;
+  readonly toolProjectionRecords?: number;
+  readonly coverageStartTimestamp?: string;
   readonly conversationId: string;
   readonly baseConversationId?: string;
   readonly previousConversationId?: string;

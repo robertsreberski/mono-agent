@@ -64,6 +64,10 @@ console.log(summary.status, summary.artifactPaths);
 
 ## Architecture
 
+Boundary timeline steps preserve optional `context` dispositions and content-free
+reconstruction counts/coverage timestamps from direct or streamed telemetry.
+Legacy events without those fields remain readable.
+
 ### Data flow
 
 1. Runtime events enter the root recorder and become bounded local

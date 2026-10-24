@@ -135,3 +135,15 @@ re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
 This is workload-specific evidence, not a billing guarantee. Agents that only
 chain turns within five minutes pay slightly more with long retention and can
 set `"short"` instead.
+
+### Boundary classification
+
+`reseedEvents` counts boundaries only when `context` is `reconstructed`.
+`retainedResumeEvents` reports retained cancelled/failed resumes separately;
+the old `resume_replay` kind alone does not prove a reseed.
+`handoffEvents` reports structured handoffs separately.
+`unclassifiedBoundaryEvents` preserves older boundaries without a disposition
+without guessing. Canonical-history replay observations
+appear in `historyReplayEvents` as `canonical_history_replay` entries: a cold durable reopen can
+supply history that an existing native journal skips. Report schema 3 separates these observations from actual reconstruction
+boundaries; neither field proves provider delivery.
