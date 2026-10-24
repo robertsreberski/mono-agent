@@ -1,3 +1,5 @@
+import { CONTINUITY_GENERATION_MAX_BYTES, CONTINUITY_GENERATION_MAX_RECORDS } from "./continuity-contracts.js";
+import { continuityQuotation } from "./continuity-input.js";
 import type { ToolHistoryReader } from "./reader.js";
 import { retainContinuityText } from "./continuity-payload.js";
 import { createHash } from "node:crypto";
@@ -76,6 +78,10 @@ export function createContinuityParticipant(options: {
       if (mutation.before.digest === mutation.after.digest) return undefined;
       const generationId = continuityGenerationId();
       const records = mutation.action === "publish" ? appendedRecords(mutation, generationId) : [];
+      if (records.length > CONTINUITY_GENERATION_MAX_RECORDS || records.reduce((bytes, record) => bytes + Buffer.byteLength(record.text), 0) > CONTINUITY_GENERATION_MAX_BYTES) {
+        warn("Continuity generation bounds exceeded; new evidence was not captured.");
+        return undefined;
+      }
       try {
         await options.writer.prepareContinuity({ generationId, conversationId: mutation.conversationId,
           logicalConversationId: options.logicalConversationId(mutation.conversationId),
@@ -118,10 +124,13 @@ function appendedRecords(mutation: OwnedContinuityMutation, generationId: string
     if (message.role === "assistant" && (message.idempotencyKey?.startsWith("cancelled-turn:v1:")
       || message.idempotencyKey?.startsWith("failed-turn:v1:")
       || (mutation.after.settlement !== undefined && mutation.after.settlement.turnId === message.runId && mutation.after.settlement.outcome !== "completed"))) return [];
+    const stamp = continuityQuotation(message);
+    const owner = message.role === "user" && stamp?.ownerText !== undefined;
     return [{ recordId: continuityRecordId(mutation.conversationId, `${generationId}:${index}`),
-      runId: `canonical:${mutation.after.digest}`, kind: message.role === "user" ? "other-user" : "assistant",
-      provenance: "unknown", sequence: index, text: message.content,
-      source: { ...(mutation.after.epoch === undefined ? {} : { epoch: mutation.after.epoch }),
-        ...(mutation.after.revision === undefined ? {} : { revision: mutation.after.revision }) } }];
+      runId: message.runId ?? `canonical:${mutation.after.digest}`, ...(stamp ? { inputId: stamp.inputId } : {}),
+      kind: owner ? "owner" : message.role === "user" ? "other-user" : "assistant",
+      provenance: owner ? "host-owner" : "unknown", sequence: index, text: owner ? stamp!.ownerText! : message.content,
+      source: { ...(owner ? { attestation: { inputId: stamp!.inputId, requestDigest: stamp!.requestDigest } } : {}), ...(mutation.after.epoch === undefined ? {} : { epoch: mutation.after.epoch }),
+        ...(mutation.after.revision === undefined ? {} : { revision: mutation.after.revision }), ...stamp?.source } }];
   });
 }

@@ -1,3 +1,4 @@
+import { copyAppliedContinuityInput, offerContinuityOwnerText } from "../tool-history/continuity-input.js";
 import type { PendingTurnInput } from "../history/pending-turn/contract.js";
 import { createPendingLiveInput } from "../history/pending-turn/contract.js";
 import type { RuntimePromptOverrides } from "@mono-agent/turn/host/types";
@@ -157,8 +158,12 @@ export function createLiveInputMailbox(runId: string, onClose?: () => void): Liv
     durableAdmission(message: RuntimeLiveInputMessage, prompts?: RuntimePromptOverrides): PendingTurnInput {
       const entry = entries.find((candidate) => candidate.request.id === message.id);
       if (!entry || message.id === undefined) throw new Error("Unowned durable live input.");
-      return createPendingLiveInput({ id: message.id, persistText: entry.request.text, receivedAt: entry.request.receivedAt },
+      const input = createPendingLiveInput({ id: message.id, persistText: entry.request.text, receivedAt: entry.request.receivedAt },
         message.body, entry.request.deliveryKey === undefined ? "live" : "wake", prompts);
+      const owner = entry.request.ownerText;
+      if (message.kind === "user" && entry.request.deliveryKey === undefined && typeof owner === "string"
+        && (entry.request.text === owner || entry.request.text.endsWith(`\n\n${owner}`))) offerContinuityOwnerText(input, owner);
+      return input;
     },
     offer(request): AgentLiveInputOffer {
       const existing = entriesById.get(request.id);
@@ -219,13 +224,17 @@ export function createLiveInputMailbox(runId: string, onClose?: () => void): Liv
     applied(): readonly AppliedLiveInput[] {
       return entries
         .filter((entry) => entry.phase === "applied")
-        .map((entry) => ({
+        .map((entry) => {
+          const applied: AppliedLiveInput = {
           id: entry.request.id,
           text: entry.request.text,
           ...(entry.request.ownerText === undefined ? {} : { ownerText: entry.request.ownerText }),
           receivedAt: entry.request.receivedAt,
           ...(entry.request.deliveryKey === undefined ? {} : { deliveryKey: entry.request.deliveryKey }),
-        }));
+          };
+          copyAppliedContinuityInput(entry.logicalOwner, applied);
+          return applied;
+        });
     },
     [Symbol.asyncIterator](): AsyncIterator<RuntimeLiveInputMessage> {
       const consumer: MailboxConsumer = { cursor: 0, closed: false, waiting: undefined };

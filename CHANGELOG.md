@@ -19,6 +19,10 @@
   digest-bound UTF-8 navigation and explicit incomplete/redacted evidence;
   enabled capture omits nested retrieval bodies. SessionHistory keeps its
   prior-run contract.
+- Distinguish host-attested owner quotations from unknown history using existing
+  admitted input identities, without adding a channel contract. Archive completed
+  turn evidence before canonical message truncation; anonymous steers and recovery
+  without an original host stamp remain unknown, never renewed approval.
 - Retain permitted successful tool text under the existing conversation owner;
   publish it atomically with finalized lifecycle receipts, independently of
   clipped lifecycle JSON. Current-run retrieval never exposes a partial stream

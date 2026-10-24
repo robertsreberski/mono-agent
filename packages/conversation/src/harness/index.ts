@@ -1,3 +1,4 @@
+import { markContinuityTurnBatch } from "../tool-history/continuity-input.js";
 import { isAgentCompactionAccounting } from "@mono-agent/contracts";
 import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "../history/canonical/store.js";
 import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "../history/pending-turn/contract.js";
@@ -1768,11 +1769,10 @@ export class ConversationHarnessImpl implements ConversationHarness {
                 runtimeResult.providerSessionId,
               );
             }
-            preparedHistoryAppend = await providerHistoryTurn.prepareCommit(
-              p2Turn === undefined ? completedMessages : completedMessages.filter((_message, index) =>
-                index === 0 || index === completedMessages.length - 1 || appliedLiveInputs[index - 1]?.deliveryKey === undefined),
-              { providerSessionSynced },
-            );
+            const commitMessages = p2Turn === undefined ? completedMessages : completedMessages.filter((_message, index) =>
+              index === 0 || index === completedMessages.length - 1 || appliedLiveInputs[index - 1]?.deliveryKey === undefined);
+            markContinuityTurnBatch(commitMessages);
+            preparedHistoryAppend = await providerHistoryTurn.prepareCommit(commitMessages, { providerSessionSynced });
             if (p2Turn !== undefined) providerSessionSynced = p2Turn.settlement?.nativeReusable === true;
             providerHistoryOwnershipTransferred = true;
             if (p2Turn === undefined) providerHistoryTurn = undefined;

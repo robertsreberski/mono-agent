@@ -1,3 +1,5 @@
+import { stageContinuityInput, continuityOwnerTextCandidate, clearContinuityInput } from "../tool-history/continuity-input.js";
+import { memoryUserText } from "./memory-persistence.js";
 import { loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
 import { reconstructionFacts } from "./session-events.js";
 import { randomUUID } from "node:crypto";
@@ -435,11 +437,23 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           memory,
         )),
       };
+      const captureInputs = options.toolHistory?.continuityEnabled === true && !sessionIsolated;
+      const ownerRequest = request.captureSpeakerKind === "human-turn" && request.continuation === undefined
+        && ["web", "tui", "acp"].includes(String(request.metadata?.source))
+        && (request.metadata as Record<PropertyKey, unknown> | undefined)?.[Symbol.for("mono-agent.process-job-wake.delivery-key.v1")] === undefined;
+      const admitInitial = async () => {
+        const id = reconciliation!.descriptor.reconciliation!.initialInputId!;
+        const input = createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content);
+        const web = request.metadata?.web;
+        const webOwner = typeof web === "object" && web !== null && !Array.isArray(web) ? (web as Record<string, unknown>).ownerText : undefined;
+        const boundOwner = webOwner === undefined || (typeof webOwner === "string" && (request.userMessage === webOwner || request.userMessage.endsWith(`\n\n${webOwner}`)));
+        if (captureInputs) stageContinuityInput(input, ownerRequest && boundOwner ? memoryUserText(request) : undefined);
+        await reconciliation!.admit(input);
+      };
       let reconciliation = routing.reconciliation;
       if (!preparation && reconciliation !== undefined && routing.turnRevision !== undefined && durableSessionsRoot !== undefined) {
-        const id = reconciliation.descriptor.reconciliation!.initialInputId!;
-        // Replace the provisional pre-context digest before any native dispatch.
-        await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
+        // Stage against the final decorated digest, not the provisional payload.
+        await admitInitial();
       }
       let contextOwned = true;
       let detachedReplay: Promise<readonly RuntimeMessage[]> | undefined;
@@ -551,18 +565,32 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           emitRuntimeEvent(event);
         },
       };
-      if (reconciliation !== undefined || preparation) {
+      if (reconciliation !== undefined || preparation || (captureInputs && useManagedLiveInput && liveInputMailbox !== undefined)) {
         const nativeOptions = runtimeOptions, live = nativeOptions.liveInput;
         runtimeOptions = { ...nativeOptions,
-          onSessionTurnDetached: async (attempt) => {
+          ...(reconciliation !== undefined || preparation ? { onSessionTurnDetached: async (attempt: Parameters<NonNullable<RuntimeRunOptions["onSessionTurnDetached"]>>[0]) => {
             assertDetachedTurnDescriptor(attempt.descriptor, reconciliation!.descriptor);
             await reconciliation!.claim("detached");
-          },
+          } } : {}),
           ...(live === undefined ? {} : { liveInput: { async *[Symbol.asyncIterator]() {
             for await (const message of live) {
-              const input = useManagedLiveInput && liveInputMailbox ? liveInputMailbox.durableAdmission(message, nativeOptions.prompts)
-                : createPendingLiveInput({ id: message.id ?? `wake:${randomUUID()}`, persistText: "", receivedAt: message.receivedAt ?? new Date().toISOString() }, message.body, "wake", nativeOptions.prompts);
-              try { await reconciliation!.admit(input); } // Durable before yielding to native bridge.
+              let input: ReturnType<typeof createPendingLiveInput>;
+              try {
+                input = useManagedLiveInput && liveInputMailbox ? liveInputMailbox.durableAdmission(message, nativeOptions.prompts)
+                  : createPendingLiveInput({ id: message.id ?? `wake:${randomUUID()}`, persistText: "", receivedAt: message.receivedAt ?? new Date().toISOString() }, message.body, "wake", nativeOptions.prompts);
+              } catch (error) {
+                // Archival identity constraints must not become a new live-input
+                // contract for uncoordinated channels. They remain unknown.
+                if (reconciliation || preparation) throw error;
+                if (message.logicalOwner) clearContinuityInput(message.logicalOwner);
+                yield message; continue;
+              }
+              if (captureInputs) {
+                const ownerText = ownerRequest && request.metadata?.source === "web" && message.kind === "user"
+                  ? continuityOwnerTextCandidate(input) : undefined;
+                stageContinuityInput(input, ownerText, message.logicalOwner);
+              }
+              try { if (reconciliation) await reconciliation.admit(input); } // Before native handoff.
               catch (error) { try { message.reject?.(); } catch { /* No native handoff occurred. */ } throw error; }
               yield { ...message, id: input.id };
             }
@@ -579,8 +607,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         await preparation.assertOwned();
         const bound = await preparation.ready(nativeLease, preparedContext!);
         await bound.assertOwned(); reconciliation = bound.reconciliation;
-        const id = reconciliation.descriptor.reconciliation!.initialInputId!;
-        await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
+        await admitInitial();
         const { assertOwned: _owned, reconciliation: _reconciliation, turnRevision: _revision, recoveryRevision, ...keys } = bound;
         runtimeOptions = { ...runtimeOptions, ...keys, sessionTurn: reconciliation.descriptor,
           ...(recoveryRevision === undefined ? {} : { sessionRecovery: { runId, revision: recoveryRevision } }) };

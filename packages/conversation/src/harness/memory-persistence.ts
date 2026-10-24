@@ -1,3 +1,4 @@
+import { copyContinuityQuotation, markContinuityTurnBatch } from "../tool-history/continuity-input.js";
 import { classifyNotifySuppression, type AgentMessageSender, type MemoryCaptureSpeakerKind, type MemoryCaptureEvidence } from "@mono-agent/contracts";
 import { createHash } from "node:crypto";
 import type { RuntimeEventLike } from "@mono-agent/observability";
@@ -59,27 +60,28 @@ export async function buildSuccessfulTurn(
     const captureInitial = request !== undefined && userMessage.startsWith(request.userMessage)
       ? memoryUserText(request) + userMessage.slice(request.userMessage.length)
       : userMessage;
+    const messages: readonly HistoryMessage[] = [
+      {
+        role: "user",
+        content: userMessage,
+        timestamp: capturedAt,
+        runId,
+        ...(senderName === undefined ? {} : { name: senderName }),
+      },
+      // Live follow-ups deliberately carry NO name: AppliedLiveInput has no
+      // identity of its own, and assuming "same speaker" is wrong in a group.
+      ...userLiveInputs.map((input) => {
+        const message: HistoryMessage = { role: "user", content: input.text, timestamp: input.receivedAt, runId };
+        copyContinuityQuotation(input, message);
+        return message;
+      }),
+      { role: "assistant", content: assistantHistoryText, timestamp: capturedAt, runId },
+    ];
+    markContinuityTurnBatch(messages);
     return {
       capturedAt,
       userMemoryText: composeUserMemoryText(captureInitial, userLiveInputs, request),
-      messages: [
-        {
-          role: "user",
-          content: userMessage,
-          timestamp: capturedAt,
-          runId,
-          ...(senderName === undefined ? {} : { name: senderName }),
-        },
-        // Live follow-ups deliberately carry NO name: AppliedLiveInput has no
-        // identity of its own, and assuming "same speaker" is wrong in a group.
-        ...userLiveInputs.map((input) => ({
-          role: "user" as const,
-          content: input.text,
-          timestamp: input.receivedAt,
-          runId,
-        })),
-        { role: "assistant", content: assistantHistoryText, timestamp: capturedAt, runId },
-      ],
+      messages,
     };
 }
 

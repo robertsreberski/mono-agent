@@ -414,6 +414,27 @@ owner port do not get an unowned fallback. The finalized receipt and retained
 text commit in the same FULL SQLite transaction. Mixed, opaque, signed,
 interrupted and nested-history results are not candidates for this capture.
 
+Owner quotations use only process-local host stamps staged against the actual
+input ID/digest **before** native admission, not speaker names or parsed text.
+Coordinated initial Web/TUI/ACP human inputs require matching consumed native
+receipts. Web steers additionally require their own bound `ownerText` and actual
+mailbox acknowledgement; anonymous/other-user steers never inherit the initial
+speaker. Quotes exclude the Web envelope/attachment expansion. These stamps add
+no pending/canonical fields, transport contract, table or enrollment file.
+Canonical publication archives the full completed batch before the 64-message
+retention cut (up to the existing 100-steer host bound); public append validation
+is unchanged. A host-generated completed batch has an internal non-serializable
+marker, never a caller-controlled JSON capability.
+
+Conservative unknown sources: initial requests without coordinated admitted IDs;
+TUI/ACP live inputs without per-input owner attribution; unmanaged live sources;
+inputs that cannot satisfy the existing identity constraints; and recovery after
+process-local stamps were lost before archival preparation. Already prepared
+immutable evidence still uses ordinary canonical reconciliation. No source is
+promoted during recovery. User evidence becomes visible only after canonical
+durability; this does not introduce a new pre-admission/consumption callback.
+Owner provenance identifies a historical quotation, **not renewed approval**.
+
 `searchContinuity` / `getContinuity` return scoped evidence, not instructions or
 new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests
 and explicit redaction/truncation/tombstone status. Retained text uses the same
