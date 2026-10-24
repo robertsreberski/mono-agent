@@ -1,9 +1,10 @@
+import * as canonicalFiles from "../history/canonical/files.js";
 import { spawnSync } from "node:child_process";
 import { historyKey } from "../history/canonical/identity.js";
 import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { createContinuityParticipant } from "../tool-history/continuity-participant.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
@@ -67,6 +68,17 @@ describe("owned canonical continuity publication", () => {
     expect((await store.load(id)).map(message => message.content)).toEqual(["Canonical answer despite a custom outage."]);
     expect((await store.stats()).postCommitMaintenanceFailures).toBeGreaterThan(0);
     await (await store.beginProviderSessionTurn!(id, "fictional-custom-next")).abort();
+  });
+
+  it("does not acknowledge evidence when canonical directory durability failed", async () => {
+    const { store, writer, reader } = await setup(await root());
+    const append = await store.prepareAppend!(id, [message("Awaiting canonical directory durability.")]);
+    const sync = vi.spyOn(canonicalFiles, "fsyncDirectory").mockRejectedValueOnce(new Error("Fictional directory durability failure"));
+    try { await append.commit(); } finally { sync.mockRestore(); }
+    expect((await store.load(id)).map(message => message.content)).toEqual(["Awaiting canonical directory durability."]);
+    expect((await writer.stats()).continuity?.prepared).toBe(1);
+    expect(reader.searchContinuity(scope).items).toEqual([]);
+    expect((await store.stats()).postCommitMaintenanceFailures).toBeGreaterThan(0);
   });
 
   it.each(["exclusive", "provider"] as const)("discards a %s turn's own uncompleted checkpoint before publication", async kind => {

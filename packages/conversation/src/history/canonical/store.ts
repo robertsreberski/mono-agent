@@ -2389,7 +2389,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       commit: async (): Promise<void> => await serialize(async () => {
         if (state === "committed") return;
         if (state === "aborted") throw new Error("Cannot commit an aborted history append.");
-        let published = false;
+        let published = false, canonicalDurable = false;
         let releaseRoot = await this.acquireRootTransaction(rootIdentity);
         try {
           await assertDirectoryIdentity(this.root, rootIdentity);
@@ -2408,6 +2408,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           // stats but can never make callers retry an already-published turn.
           try {
             await fsyncDirectory(this.root, rootIdentity);
+            canonicalDurable = true;
             // The canonical replacement is clean and directory-durable before
             // the crash fence is removed. If cleanup cannot be made durable,
             // restore the visible fence and record a diagnostic so the next
@@ -2441,7 +2442,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           }
           // Sidecar acknowledgement is independent of canonical fence cleanup.
           // A missing acknowledgement is repaired from the canonical digest.
-          try { await this.commitContinuity(stage.continuity, stage.conversationId, rootIdentity); }
+          try { if (canonicalDurable) await this.commitContinuity(stage.continuity, stage.conversationId, rootIdentity); }
           catch (error) { recordPostCommitMaintenanceFailure(this.root, error); }
         } catch (error) {
           if (!published) throw error;
