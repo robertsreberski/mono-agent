@@ -135,8 +135,8 @@ async function buildSubagents(config: MonoAgentConfig, extra: Record<string, unk
 
 describe("configured subagents", () => {
   it.each([0, 4])("forwards only provider retry/transport policy to child runs (retries %s)", async (piMaxRetries) => {
-    const config = monoConfig({ enabled: true });
-    config.providers = { piNative: { piMaxRetries, maxRetryDelayMs: 0, transport: "sse" } };
+    const config: MonoAgentConfig = { ...monoConfig({ enabled: true }),
+      providers: { piNative: { piMaxRetries, maxRetryDelayMs: 0, transport: "sse" } } };
     const { runtime, subagents } = await buildSubagents(config);
     const run = subagents?.run as (request: unknown) => Promise<unknown>;
     await run({ systemPrompt: "synthetic instructions", prompt: "synthetic question", definition: { name: "helper" },
