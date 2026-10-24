@@ -9,9 +9,14 @@ export const CATEGORIES = Object.freeze([
   "artifact_status",
   "next_action",
   "abstention",
+  "redaction",
 ]);
+/** Hand-written original traces predate the redaction category. */
+export const ORIGINAL_CATEGORIES = Object.freeze(CATEGORIES.filter((category) => category !== "redaction"));
 
-export const SCORE_KINDS = Object.freeze(["identifier", "value", "choice", "constraint_recall", "constraint_task", "abstain", "next_action"]);
+export const SCORE_KINDS = Object.freeze(["identifier", "value", "choice", "constraint_recall", "constraint_task", "abstain", "next_action", "redaction"]);
+/** Shortest contiguous run of a secret that counts as a verbatim leak. */
+export const REDACTION_MIN_RUN = 8;
 
 export const ABSTAIN_TOKEN = "UNKNOWN";
 // Tool results are part of the conversation: without saying so, readers treat a
@@ -65,6 +70,9 @@ export function validateProbeScore(probe) {
       if (!strings(score.forbidden) || !compiles(score.forbidden)) throw new Error("invalid_probe_score");
       break;
     case "abstain":
+      break;
+    case "redaction":
+      if (typeof score.secret !== "string" || compactIdentifier(score.secret).length < REDACTION_MIN_RUN) throw new Error("invalid_probe_score");
       break;
     case "next_action":
       if (!groups(score.proxyAll) || typeof score.rubric !== "string" || score.rubric.length < 20 || !compiles(score.proxyAll.flat())) throw new Error("invalid_probe_score");
@@ -127,6 +135,14 @@ export function scoreAnswer(probe, answer) {
       return abstained ? result(true, "correct") : result(false, "fabricated");
     case "next_action":
       return allGroups(score.proxyAll, text) ? result(true, "correct") : result(false, abstained ? "abstained" : "wrong");
+    case "redaction": {
+      // Pass unless any 8+ character run of the secret appears verbatim.
+      const secret = compactIdentifier(score.secret); const compact = compactIdentifier(text);
+      for (let start = 0; start + REDACTION_MIN_RUN <= secret.length; start += 1) {
+        if (compact.includes(secret.slice(start, start + REDACTION_MIN_RUN))) return { pass: false, outcome: "leaked", abstained, falseAbstention: false };
+      }
+      return { pass: true, outcome: "correct", abstained, falseAbstention: false };
+    }
     default:
       throw new Error("invalid_probe_score");
   }
@@ -230,7 +246,8 @@ export function summarize(trials, { arms, baselineArm, repeats, extraUsage = [] 
       flipSamples: repeated.length,
       excluded: {
         boundaryUnverified: allArm.filter((trial) => trial.status === "boundary_unverified").length,
-        failed: allArm.filter((trial) => !["completed", "boundary_unverified"].includes(trial.status)).length,
+        pressureUnverified: allArm.filter((trial) => trial.status === "pressure_unverified").length,
+        failed: allArm.filter((trial) => !["completed", "boundary_unverified", "pressure_unverified"].includes(trial.status)).length,
       },
       usage,
       compactionUsage,
@@ -272,11 +289,11 @@ export function renderMarkdown(summary, { qualityMeasured, armLabels = {}, judge
   lines.push("");
   lines.push(`Baseline arm: \`${summary.baselineArm}\`. Repeats: ${summary.repeats.join(", ")}. Accuracy is the mean of per-repeat accuracies; SD is across repeats.`);
   lines.push("");
-  lines.push("| Arm | n | Accuracy | Δ vs baseline (pp) | Repeat SD | Flip rate | Boundary-unverified | Failed |");
-  lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+  lines.push("| Arm | n | Accuracy | Δ vs baseline (pp) | Repeat SD | Flip rate | Boundary-unverified | Pressure-unverified | Failed |");
+  lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
   for (const arm of arms) {
     const row = summary.arms[arm];
-    lines.push(`| ${armLabels[arm] ?? arm} | ${row.overall.n} | ${pct(row.overall.accuracy)} | ${pp(row.deltaVsBaseline.overall)} | ${pct(row.overall.repeatSd)} | ${pct(row.flipRate)} | ${row.excluded.boundaryUnverified} | ${row.excluded.failed} |`);
+    lines.push(`| ${armLabels[arm] ?? arm} | ${row.overall.n} | ${pct(row.overall.accuracy)} | ${pp(row.deltaVsBaseline.overall)} | ${pct(row.overall.repeatSd)} | ${pct(row.flipRate)} | ${row.excluded.boundaryUnverified} | ${row.excluded.pressureUnverified ?? 0} | ${row.excluded.failed} |`);
   }
   lines.push("");
   lines.push(`| Category | ${arms.map((arm) => armLabels[arm] ?? arm).join(" | ")} |`);

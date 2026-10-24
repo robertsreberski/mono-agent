@@ -54,6 +54,12 @@
   probes what survives native resume, a cold model-change rebuild and one or
   two proactive compactions. Offline contract mode is provider-free and CI-safe;
   paid mode requires a confirmed plan and refuses to run under CI.
+- Harden the continuity benchmark with a seeded generator of long fictional
+  traces (80–120 turns, 64–96 tool results of 8–64 KiB, multiple steers,
+  superseding corrections, out-of-window identifiers and a redaction case),
+  per-sample pressure checks, a default 200k ceiling arm, a restart + model
+  switch + compaction arm, and a promptless mid-trace compaction. Planned
+  continuity-state arms are declared but refuse to run until available.
 
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 

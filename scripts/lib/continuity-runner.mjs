@@ -12,15 +12,17 @@ import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { pathToFileURL } from "node:url";
-import { armById, checkpointKey, mergePatch, verifyBoundary } from "./continuity-arms.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure } from "./continuity-arms.mjs";
+import { traceShape } from "./continuity-generator.mjs";
 import { probePrompt, scoreAnswer, judgePrompt, parseJudgeVerdict } from "./continuity-score.mjs";
-import { sourceOnly } from "./continuity-dataset.mjs";
+import { sourceOnly, traceFamily } from "./continuity-dataset.mjs";
 import { FIXTURE_SERVER_NAME, startFixtureTools } from "./continuity-tools.mjs";
 
 export const OFFLINE_ANSWER = "Scripted contract response; semantic correctness is not evaluated.";
 export const OFFLINE_SUMMARY = "Scripted offline compaction summary for the contract run; it carries no conversation facts.";
 const SUMMARY_MARKER = "Mono-agent summary focus";
+const CHILD_ENTRY = fileURLToPath(new URL("./continuity-probe-child.mjs", import.meta.url));
 const SCRIPTED_API_PREFIX = "continuity-scripted";
 const FATAL_FAILURE_KINDS = new Set(["provider_auth", "usage_limit"]);
 const IDENTITY = [
@@ -107,22 +109,23 @@ function controlledRuntime(base, route) {
   });
 }
 
-function configJson({ work, authPath, model, effort, tools, runtimePatch }) {
-  return {
-    runtime: mergePatch({
+/** Base config for one workspace; the arm's `configPatch` is merged last. */
+export function configJson({ work, authPath, model, effort, tools, configPatch }) {
+  return mergePatch({
+    runtime: {
       model, workspace: work,
       ...(effort ? { effort } : {}),
       session: { root: join(work, "sessions"), mode: "continuous", idleTimeoutMs: 3_600_000 },
-    }, runtimePatch ?? {}),
+    },
     providers: { piAuthPath: authPath },
     context: { identityPath: join(work, "IDENTITY.md") },
     tools: { allowedTools: [], ...(tools ? { mcpConfigPath: join(work, "fixture-mcp.json") } : {}) },
     artifacts: { dir: join(work, "artifacts") },
-  };
+  }, configPatch ?? {});
 }
 
-async function openHarness({ modules, work, authPath, model, effort, tools, runtimePatch, route, clock }) {
-  const json = configJson({ work, authPath, model, effort, tools, runtimePatch });
+async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock }) {
+  const json = configJson({ work, authPath, model, effort, tools, configPatch });
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
   const runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route);
   const harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value });
@@ -252,16 +255,18 @@ async function replayScriptedTurn({ harness, scripted, tools, turn, binding, con
 }
 
 /** One live turn (probe or mid-trace checkpoint) through a tool-free production harness. */
-export async function runLiveTurn({ modules, work, authPath, plan, mode, runtimePatch, userMessage, clock, conversationId, owner }) {
+function liveRoute(modules, mode, refs) {
+  if (mode !== "offline") return () => ({});
+  const scripted = scriptedModels(modules.pi, refs);
+  for (const ref of refs) scripted.respondWith(ref, (context) => modules.pi.fauxAssistantMessage(String(context.systemPrompt ?? "").includes(SUMMARY_MARKER) ? OFFLINE_SUMMARY : OFFLINE_ANSWER));
+  return (options) => { const { model } = scripted.route(options); return { piResolvedModel: model, piResolvedModels: scripted.models }; };
+}
+
+export async function runLiveTurn({ modules, work, authPath, plan, mode, configPatch, userMessage, clock, conversationId, owner }) {
   const reader = modules.host.parseMonoRuntimeModelReference(plan.reader.model);
-  let route = () => ({});
-  if (mode === "offline") {
-    const scripted = scriptedModels(modules.pi, [reader]);
-    scripted.respondWith(reader, (context) => modules.pi.fauxAssistantMessage(String(context.systemPrompt ?? "").includes(SUMMARY_MARKER) ? OFFLINE_SUMMARY : OFFLINE_ANSWER));
-    route = (options) => { const { model } = scripted.route(options); return { piResolvedModel: model, piResolvedModels: scripted.models }; };
-  }
+  const route = liveRoute(modules, mode, [reader]);
   const watch = observer();
-  const { harness } = await openHarness({ modules, work, authPath, model: plan.reader.model, effort: plan.reader.effort, tools: false, runtimePatch, route, clock });
+  const { harness } = await openHarness({ modules, work, authPath, model: plan.reader.model, effort: plan.reader.effort, tools: false, configPatch, route, clock });
   const started = performance.now();
   let response;
   try {
@@ -311,15 +316,13 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
     for (const turn of source.turns) {
       clock.value = new Date(turn.at);
       if (arm.midCheckpoint !== null && turn.id === source.midCheckpoint) {
+        // Promptless manual compaction before the mid-trace turn: the same
+        // guarded production summary driver, with no live reply in history.
         if (open) { await open.harness.dispose?.(); open = null; }
-        const live = await runLiveTurn({ modules, work, authPath, plan, mode, runtimePatch: arm.midCheckpoint.runtime, userMessage: turn.user, clock, conversationId, owner: source.owner.displayName });
-        const boundary = verifyBoundary({ boundary: null, compactions: arm.expect.midCompactions }, live.observed);
-        record.mid = { turnId: turn.id, answer: live.text, failureKind: live.failureKind, boundary: { ...boundary, observed: live.observed }, usage: live.usage, compactionUsage: live.compactionUsage, durationMs: live.durationMs };
-        if (live.failureKind !== null) throw new ContinuityError("mid_checkpoint_failed", live.failureKind);
-        record.turns += 1;
-        continue;
+        record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: arm.midCheckpoint.config, clock, conversationId, turnId: turn.id });
+        if (!record.mid.boundary.verified) throw new ContinuityError("mid_checkpoint_boundary_unverified", record.mid.boundary.reasons.join(","));
       }
-      open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, runtimePatch: {}, route, clock });
+      open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: {}, route, clock });
       const result = await replayScriptedTurn({ harness: open.harness, scripted, tools, turn, binding, conversationId, owner: source.owner.displayName, pi: modules.pi });
       record.turns += 1; record.toolCalls += result.toolCalls; record.steers += result.steers;
     }
@@ -331,8 +334,50 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
   return { work, record };
 }
 
+/** `harness.compactConversation()` through a tool-free configured harness on the bound model. */
+async function manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch, clock, conversationId, turnId }) {
+  const route = liveRoute(modules, mode, [binding]);
+  const { harness } = await openHarness({ modules, work, authPath, model: binding.reference, effort: plan.reader.effort, tools: false, configPatch, route, clock });
+  const started = performance.now();
+  let result;
+  try {
+    if (typeof harness.compactConversation !== "function") throw new ContinuityError("manual_compaction_unavailable");
+    result = await harness.compactConversation(conversationId, undefined, AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs));
+  } finally { await harness.dispose?.(); }
+  const observed = { boundaries: [], compactions: [{ status: result?.status ?? null, trigger: result?.trigger ?? null, tokensBefore: finite(result?.tokensBefore), tokensAfter: finite(result?.tokensAfter) }], warnings: 0, steersAccepted: 0 };
+  const usage = compactionUsageOf({ compaction: { requests: result?.accounting?.requests ?? [] } });
+  return {
+    turnId, kind: "manual-compaction", status: result?.status ?? null, reason: result?.reason ?? null,
+    tokensBefore: finite(result?.tokensBefore), tokensAfter: finite(result?.tokensAfter),
+    boundary: { ...verifyBoundary({ boundary: null, compactions: 1 }, observed), observed },
+    usage: { calls: usage.calls, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens,
+      estimatedCostUsd: usage.unknownCostCalls > 0 ? null : usage.estimatedCostUsd },
+    compactionUsage: usage, durationMs: Math.round(performance.now() - started),
+  };
+}
+
+/**
+ * Run a live turn in a fresh Node process over the same durable roots: an
+ * actual process restart, so no in-process runtime, session or cache survives.
+ */
+async function runLiveTurnInChild(input, { timeoutMs }) {
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, [CHILD_ENTRY], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+  const chunks = [];
+  child.stdout.on("data", (chunk) => chunks.push(chunk));
+  child.stderr.on("data", () => {});
+  child.stdin.end(JSON.stringify(input));
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill("SIGKILL"); resolve("timeout"); }, timeoutMs + 30_000);
+    child.on("exit", (exit) => { clearTimeout(timer); resolve(exit); });
+  });
+  if (code !== 0) throw new ContinuityError(code === "timeout" ? "restart_child_timeout" : "restart_child_failed");
+  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return { ...parsed, observed: { ...parsed.observed, restart: { processRestart: parsed.pid !== process.pid, pid: parsed.pid } } };
+}
+
 /** Fork the checkpoint into a new workspace and ask one probe in a fresh continuation turn. */
-export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false }) {
+export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root }) {
   const work = join(forkDir, "work");
   await mkdir(forkDir, { recursive: true, mode: 0o700 });
   await cp(checkpointWork, work, { recursive: true, verbatimSymlinks: true });
@@ -340,17 +385,24 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
   const trial = { traceId: trace.id, arm: arm.id, repeat, probeId: probe.id, category: probe.category, status: "started",
     answer: null, score: null, judge: null, boundary: null, usage: null, compactionUsage: null, durationMs: null, failure: null };
   try {
-    const live = await runLiveTurn({ modules, work, authPath, plan, mode, runtimePatch: arm.probeRuntime, userMessage: probePrompt(probe), clock,
-      conversationId: checkpointConversationId, owner: trace.owner.displayName });
+    const turn = { work, authPath, plan, mode, configPatch: arm.probeConfig, userMessage: probePrompt(probe),
+      conversationId: checkpointConversationId, owner: trace.owner.displayName };
+    const live = arm.restart
+      ? await runLiveTurnInChild({ ...turn, root, clockIso: clock.value.toISOString() }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs })
+      : await runLiveTurn({ modules, ...turn, clock });
     trial.usage = live.usage; trial.compactionUsage = live.compactionUsage; trial.durationMs = live.durationMs;
-    trial.boundary = { ...verifyBoundary({ boundary: arm.expect.probeBoundary, compactions: arm.expect.probeCompactions }, live.observed), observed: live.observed };
+    const boundary = verifyBoundary({ boundary: arm.expect.probeBoundary, compactions: arm.expect.probeCompactions, restart: arm.restart }, live.observed);
+    const metrics = pressureMetrics(live.observed, { usage: live.usage, traceToolRecords: traceShape(trace).toolCalls, mid });
+    const pressure = verifyPressure(arm, traceFamily(trace), metrics);
+    trial.boundary = { ...boundary, observed: live.observed };
+    trial.pressure = { ...pressure, metrics };
     if (live.failureKind !== null || live.text === null) {
       trial.status = "failed"; trial.failure = live.failureKind ?? "empty_answer";
       return trial;
     }
     trial.answer = live.text;
     trial.score = scoreAnswer(probe, live.text);
-    trial.status = trial.boundary.verified ? "completed" : "boundary_unverified";
+    trial.status = !trial.boundary.verified ? "boundary_unverified" : !trial.pressure.verified ? "pressure_unverified" : "completed";
     return trial;
   } catch (error) {
     trial.status = "failed"; trial.failure = codeOf(error);
