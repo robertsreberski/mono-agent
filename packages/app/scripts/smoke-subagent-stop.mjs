@@ -14,6 +14,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 } });
 const { resolveJsonMonoAgentConfig } = await import("@mono-agent/config");
 const { createMonoRuntime } = await import("@mono-agent/turn/host");
+const { createSandboxPolicy } = await import("@mono-agent/turn/host/sandbox");
+const { createSubagentRecoveryAccess } = await import("../dist/subagents/subagent-recovery-access.js");
 const { buildSubagentsOptions } = await import("../dist/composition/configured-subagents.js");
 const { createSubagentInstanceRegistry } = await import("../dist/subagents/subagent-instances.js");
 const { openProcessJobsService } = await import("../dist/process-jobs/process-jobs-service.js");
@@ -46,7 +48,9 @@ try {
   });
   await service.activateWakes();
   const registryRoot = resolve(root, "children");
+  const access = { workspace: root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root }) };
   const registry = createSubagentInstanceRegistry({ root: registryRoot,
+    ...createSubagentRecoveryAccess({ service, privateRoots: async () => [stateDir, registryRoot], hostAccess: () => access }),
     retireSession: (id, root) => owner.retireDurableSession(id, root),
     ownerForReservation: (jobId) => ({ jobId, storeRoot: stateDir }),
     resolveOwner: (identity) => service.resolveSubagentOwner(identity),
@@ -73,7 +77,7 @@ try {
   } };
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model }, { conversationId: origin.conversationId, runId: "parent", instances }).subagents;
   subagents.backgroundSubagentController = service.internalController(origin, 0);
-  const context = { cwd: root, model: config.runtime.model };
+  const context = { cwd: root, model: config.runtime.model, recoveryAccess: access };
   const agent = createAgentTool(subagents, context); const send = createAgentManageTool(subagents, context);
   const toolBearing = deferred();
   faux.setResponses([
@@ -106,6 +110,39 @@ try {
   console.log(JSON.stringify({ scenario: "built-native-stop-resume-close", stopped: stopped.details.stop,
     sessionId: first.sessionId, instanceIncarnation: first.incarnation, resumedJobId: resumed.details.jobId,
     priorContextVisible: true, toolResultPaired: true, releaseReceiptAcknowledged: true, finalStatus: "closed" }));
+
+  // Exhausted provider failure: certify, inspect/ack, then continue the SAME child.
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "failure-read" })]),
+    fauxAssistantMessage([fauxText("uncommitted failed draft"), fauxToolCall("Read", { file_path: "unused.txt" }, { id: "failed-dangling" })],
+      { stopReason: "error", errorMessage: "Fictional connection error" }),
+  ]);
+  const failed = await agent.execute("provider-failure", { id: "recoverable", persist: true, background: true, prompt: "remember failed child original context" });
+  await until(async () => (await service.get(failed.details.jobId))?.wake.state === "delivered");
+  const failedRecord = await instances.get("recoverable");
+  assert.deepEqual({ reason: failedRecord.recovery.reason, continuity: failedRecord.recovery.continuity }, { reason: "failed", continuity: "retained" });
+  assert.equal((await store.get(failed.details.jobId)).subagentOwnership.disposition.status, "failed");
+  assert.equal((await store.get(failed.details.jobId)).subagentOwnership.publication.receiptPending, false);
+  await assert.rejects(() => send.execute("without-ack", { id: "recoverable", background: true, message: "must not run" }));
+  const inspection = (await send.execute("inspect-failure", { id: "recoverable", inspect: true })).details.recovery;
+  assert.equal(inspection.status, "ready"); assert.equal(typeof inspection.ack, "string"); assert.equal(inspection.resumable, undefined);
+  let recoveredContext;
+  faux.setResponses([(context) => { recoveredContext = context; return fauxAssistantMessage([fauxText("recovered")]); }]);
+  const continued = await send.execute("ack-continue", { id: "recoverable", ack: inspection.ack, message: "re-check partial work", background: true });
+  await until(async () => (await service.get(continued.details.jobId))?.wake.state === "delivered");
+  assert.equal((await service.get(continued.details.jobId)).state, "succeeded");
+  const recoveredRecord = await instances.get("recoverable");
+  assert.equal(recoveredRecord.incarnation, failedRecord.incarnation); assert.equal(recoveredRecord.sessionId, failedRecord.sessionId);
+  assert.deepEqual(sessions.slice(-2), [failedRecord.sessionId, failedRecord.sessionId]);
+  const recoveredMessages = JSON.stringify(recoveredContext.messages);
+  assert.match(recoveredMessages, /remember failed child original context/); assert.match(recoveredMessages, /smoke retained tool evidence/);
+  assert.match(recoveredMessages, /previous turn failed \(reason: failed\)/);
+  assert.doesNotMatch(recoveredMessages, /failed-dangling|uncommitted failed draft/);
+  assert.equal(recoveredContext.messages.filter((message) => message.role === "toolResult" && message.toolCallId === "failure-read").length, 1);
+  await send.execute("close-recovered", { id: "recoverable", close: true });
+  console.log(JSON.stringify({ scenario: "built-native-provider-failure-ack-continue", failedJobId: failed.details.jobId,
+    continuedJobId: continued.details.jobId, continuity: "retained", sameInstance: true, priorContextVisible: true,
+    failedDraftExcluded: true, toolResultPaired: true, ackRequired: true, finalStatus: "closed" }));
 
   const late = deferred(); releaseLate = late.resolve; let lateRequest;
   const held = { ...subagents, run: async (request) => { lateRequest = request; return late.promise; } };

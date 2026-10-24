@@ -938,13 +938,21 @@ is retained on disk, while an in-flight task is not automatically restarted.
 tool result returns. `Agent`/`AgentManage` expose it as successful `awaiting_reply`;
 the parent answers through ordinary `AgentManage` in the same durable transcript.
 Failed replies preserve the pending question and a minimal recovery fence;
-they are not permission to retry the same transcript. Successful replies clear
+they are not permission to retry the same transcript without certified recovery. Successful replies clear
 the question, and another question replaces it. Idle expiry includes clean
 awaiting children but never interrupts a running or recovery-fenced child. `restart --clear-sessions` purges
 this configured root with other conversation state and reports removed registry
 and child-session file counts, even when no other store existed. See
 [persistent subagent configuration](./tools-and-guards.md#persistent-subagents)
 for limits and lifecycle controls.
+
+Ordinary `failed` child turns, foreground or detached, retain native context only
+when native recovery certifies the exact closed operation and true ownership has
+settled. Inspection returns `ready` with a retained-only ack; verify partial work
+and acknowledge one explicit continuation of the same instance/session. Detached
+recovery additionally requires `background:true` and command/publication release.
+No automatic replay or ordinary-message failure resume is allowed. Lost/unknown
+continuity remains close/create only; the certified timeout shortcut is unchanged.
 
 Detached persistent child turns hold their own runtime generation lease after the
 parent returns. Their queued reservation prevents duplicate admission. After an

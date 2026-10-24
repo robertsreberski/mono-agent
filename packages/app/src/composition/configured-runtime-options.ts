@@ -112,16 +112,24 @@ export function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOption
     return undefined;
   }
   return {
-    ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
+    ...configProviderOptions(config),
     ...(piNative?.cacheRetention === undefined ? {} : { cacheRetention: piNative.cacheRetention }),
     ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
-    ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
-    ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
     ...(compaction === undefined ? {} : { compaction }),
     ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
     ...(toolLimits === undefined ? {} : { toolLimits }),
     ...(webSearchConfig === undefined ? {} : { webSearchConfig }),
     ...(webFetchConfig === undefined ? {} : { webFetchConfig }),
     ...(config.tools.web?.coordination === "host" ? { webRequestCoordinator: createHostWebRequestCoordinator() } : {}),
+  };
+}
+
+/** Provider transport/retry policy only; never inherit parent execution authority. */
+export function configProviderOptions(config: MonoAgentConfig): Partial<Pick<StaticRuntimeOptions, "piTransport" | "piMaxRetries" | "maxRetryDelayMs">> {
+  const piNative = config.providers?.piNative;
+  return {
+    ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
+    ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
+    ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
   };
 }

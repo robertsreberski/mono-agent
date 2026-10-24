@@ -23,6 +23,11 @@
   vulnerabilities in the framework and bundled web apps. The managed sandbox
   runtime retains its pinned schema library pending an upstream-compatible fix;
   its validation is limited to host-generated sandbox settings.
+- Let settled failed persistent children continue the same native context after
+  recovery certification, ownership release and explicit `AgentManage` inspect/ack;
+  keep unknown/lost continuity blocked and re-check partial work on continuation.
+- Fix child runs ignoring configured provider retry and transport policy,
+  including explicit zero retry/delay values and per-call model overrides.
 
 - Fix MCP SDK security vulnerabilities. HTTP and SSE MCP clients now reject
   cross-origin redirects; configure the final endpoint URL for servers that

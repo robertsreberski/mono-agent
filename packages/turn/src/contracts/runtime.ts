@@ -393,7 +393,7 @@ export type RuntimeSubagentInstance = {
   sessionsRoot: string;
   settledTurnToken?: string;
   lastStatus?: string;
-  recovery?: object & { certifiedTimeout?: unknown };
+  recovery?: object & { certifiedTimeout?: unknown; reason?: unknown };
   recoveryBlocked?: boolean;
   status: string;
   pendingQuestion?: {

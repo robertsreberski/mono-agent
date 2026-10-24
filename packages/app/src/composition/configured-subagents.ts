@@ -1,3 +1,4 @@
+import { configProviderOptions } from "./configured-runtime-options.js";
 import { readFileSync } from "node:fs";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE, renderSkillIndexSection } from "@mono-agent/conversation";
@@ -284,6 +285,7 @@ export function buildSubagentsOptions(
         sessionIdleTimeoutMs: subagents.instances?.idleTtlMs ?? 86_400_000,
         ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
       }),
+      ...configProviderOptions(config),
       model: childModel,
       ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
       messages: [{ role: "user", content: composeHostTurnEnvelope(formatHostCapabilities(childCapabilityOptions), request.prompt) }],

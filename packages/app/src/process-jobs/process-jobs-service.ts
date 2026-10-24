@@ -917,15 +917,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           const owner = record.subagentOwnership!;
           if (owner.owner.settlement === "settled") return { progressUsageAdded: false, parentStopRequested: owner.parentStopRequested };
           owner.owner.settlement = "settled"; owner.revoked = true;
-          // Publish the same-turn native timeout certificate WITH true settlement.
-          // A concurrent inspection can schedule publication immediately after
-          // this store mutation; it must never see released ownership paired with
-          // the older provisional unknown disposition and discard activeTurn.
-          if (outcome?.certifiedTimeout === true && outcome.status === "timeout"
-            && outcome.failureKind !== "session_continuity_lost" && !owner.parentStopRequested
-            && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained"
-            && (!owner.disposition?.reason || owner.disposition.reason === "timeout")) {
-            owner.disposition = { status: "timeout", reason: "timeout", continuity: "retained", certifiedTimeout: true };
+          // Publish certified failed/timeout continuity WITH true settlement.
+          // Inspection may publish immediately after this mutation, so released
+          // ownership must never expose an older provisional unknown disposition.
+          if (outcome && ["failed", "timeout"].includes(outcome.status)) {
+            const decision = managedDisposition(record, outcome, this.neverStarted(record));
+            if (decision.certifiedFailure || decision.certifiedTimeout) {
+              owner.disposition = decision.disposition;
+            }
           }
           // The same window exists for a parent stop whose late result proves
           // retained continuity for this exact turn: settle it with its final
@@ -2660,7 +2659,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
 /** One disposition decision for a managed outcome, shared by true settlement and reporting. */
 function managedDisposition(record: DurableProcessJobRecord, outcome: InstanceOutcome, neverStarted: boolean): {
-  readonly incomingFailure: boolean; readonly certifiedTimeout: boolean; readonly resumeAfterStop: boolean; readonly disposition: SubagentDisposition;
+  readonly incomingFailure: boolean; readonly certifiedTimeout: boolean; readonly certifiedFailure: boolean; readonly resumeAfterStop: boolean; readonly disposition: SubagentDisposition;
 } {
   const owner = record.subagentOwnership!;
   const status = (["ok", "awaiting_reply", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(outcome.status) ? outcome.status : "failed") as SubagentDisposition["status"];
@@ -2669,9 +2668,13 @@ function managedDisposition(record: DurableProcessJobRecord, outcome: InstanceOu
     && status === "timeout" && !owner.parentStopRequested
     && owner.owner.settlement === "settled" && (!owner.disposition?.reason || owner.disposition.reason === "timeout")
     && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained";
+  const certifiedFailure = status === "failed" && outcome.status === "failed"
+    && outcome.failureKind !== "session_continuity_lost" && !owner.parentStopRequested
+    && owner.owner.settlement === "settled" && (!owner.disposition?.reason || owner.disposition.reason === "failed")
+    && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained";
   const continuity = outcome.failureKind === "session_continuity_lost" ? "lost"
     : neverStarted ? "retained"
-    : certifiedTimeout ? "retained"
+    : certifiedTimeout || certifiedFailure ? "retained"
     : owner.parentStopRequested && outcome.continuity?.turnToken === owner.turnToken ? outcome.continuity.state
     : owner.parentStopRequested && owner.owner.settlement === "not_started" ? "retained" : undefined;
   const resumeAfterStop = owner.parentStopRequested === true && continuity === "retained"
@@ -2684,7 +2687,7 @@ function managedDisposition(record: DurableProcessJobRecord, outcome: InstanceOu
     ...(outcome.closeAfterSuccess ? { closeAfterSuccess: true } : {}),
     continuity: continuity ?? (outcome.failureKind === "session_continuity_lost" ? "lost" : owner.disposition?.continuity === "retained" || (["ok", "awaiting_reply"].includes(status) && owner.owner.settlement === "settled") ? "retained" : "unknown"),
     ...(["ok", "awaiting_reply", "busy"].includes(status) ? {} : { reason: outcome.failureKind ?? (status === "failed" ? "failed" : status as "timeout" | "cancelled" | "empty" | "interrupted") }) };
-  return { incomingFailure, certifiedTimeout, resumeAfterStop, disposition };
+  return { incomingFailure, certifiedTimeout, certifiedFailure, resumeAfterStop, disposition };
 }
 
 function pendingRequest(request: ServiceStartRequest): PendingProcessJob {

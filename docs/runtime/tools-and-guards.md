@@ -197,9 +197,16 @@ Both compose with `background: true`, `close: true` and `ack`, and both are
 rejected — starting no turn and writing nothing — with `stop`, `steer`,
 `inspect` and close-only calls, and for an unknown model name or effort level.
 A turn that fails keeps the new route, because the next continuation should
-inherit what was asked for; a failed foreground retarget leaves the instance
-close-only until its recovery evidence is inspected and acknowledged, exactly
-like any other failed foreground turn.
+inherit what was asked for. Any ordinary failed child turn can continue the same
+instance only after native recovery certifies retained continuity, actual
+ownership settles, and the parent inspects and acknowledges the evidence.
+Detached recovery also requires `background: true`. Re-check partial effects;
+there is no automatic replay. Lost/unknown continuity stays close/create only.
+The ordinary-message recovery shortcut remains exclusive to certified timeouts.
+
+Child runs forward `providers.piNative.piMaxRetries`, `maxRetryDelayMs` and
+`transport` (as `piTransport`), including explicit zero, without inheriting parent
+controllers or session authority. Per-call model choices remain independent.
 
 IDs are conversation-scoped lowercase kebab-case, 1–40 characters. If omitted,
 an id such as `researcher-1` is generated. Results include the id, turn count,

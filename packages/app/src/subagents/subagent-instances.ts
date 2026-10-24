@@ -466,7 +466,7 @@ export function createSubagentInstanceRegistry(options: {
           const ack = record.recovery?.continuity === "retained" && record.incarnation
             ? issueRecoveryAcknowledgement(record.recoveryBinding ??= newSubagentRecoveryBinding(), record.incarnation, record.recovery, profileOf(record)) : undefined;
           const salvage = subject.owner ? await salvageRecord(record, subject.owner) : undefined;
-          return { ...base, ...(facts ? { facts } : {}), ...(salvage ? { salvage } : {}), status: !subject.owner ? "structured_job_recovery_unavailable" : record.recovery ? "ready" : "not_required", ...(ack ? { ack } : {}) };
+          return { ...base, ...(facts ? { facts } : {}), ...(salvage ? { salvage } : {}), status: ack ? "ready" : !subject.owner ? "structured_job_recovery_unavailable" : record.recovery ? "ready" : "not_required", ...(ack ? { ack } : {}) };
         }),
         verifyOwner: (identity) => transaction(async (records) => {
           const record = records.find((entry) => entry.id === identity.instanceId);
@@ -722,7 +722,7 @@ export function createSubagentInstanceRegistry(options: {
           if (!["ok", "awaiting_reply", "busy"].includes(outcome.status)) {
             record.recovery = { turnToken: record.activeTurn!.token, sequence: 1,
               reason: outcome.failureKind ?? (["timeout", "cancelled", "empty", "interrupted"].includes(outcome.status) ? outcome.status as "timeout" | "cancelled" | "empty" | "interrupted" : "failed"),
-              continuity: outcome.failureKind === "session_continuity_lost" ? "lost" : outcome.certifiedTimeout === true && outcome.status === "timeout" && outcome.continuity?.state === "retained" && outcome.continuity.turnToken === record.activeTurn!.token ? "retained" : "unknown",
+              continuity: outcome.failureKind === "session_continuity_lost" ? "lost" : (outcome.status === "failed" || outcome.certifiedTimeout === true && outcome.status === "timeout") && outcome.continuity?.state === "retained" && outcome.continuity.turnToken === record.activeTurn!.token ? "retained" : "unknown",
               ...(outcome.certifiedTimeout === true && outcome.status === "timeout" && outcome.failureKind !== "session_continuity_lost" && outcome.continuity?.state === "retained" && outcome.continuity.turnToken === record.activeTurn!.token ? { certifiedTimeout: true as const } : {}) };
           }
           delete record.activeTurn;

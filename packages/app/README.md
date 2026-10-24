@@ -137,12 +137,17 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   original job slot; registry admission identity, actual provider settlement and
   terminal publication are distinct fences. Failed command ownership never
   falls back to an untracked foreground process. Foreground persistent turns
-  do not gain supervised process ownership. Their failures remain lost or
-  unknown unless a child-owned timeout truly settles with its matching native
-  recovery receipt. A certified timeout then resumes with an ordinary message;
-  other failures return `structured_job_recovery_unavailable` and require
-  explicit close/create. A late answer or existing transcript alone does not
-  promote continuity.
+  do not gain supervised process ownership. Both foreground and detached ordinary
+  `failed` turns retain their native context only after matching native recovery
+  certification and true ownership settlement. Inspection reports `ready` with
+  an ack; read the evidence, verify partial work, then acknowledge one continuation
+  of the same instance/session (detached recovery requires `background:true`).
+  Lost/unknown continuity still requires close/create. Certified child-owned
+  timeouts alone retain their ordinary-message shortcut without ack. A late
+  answer or existing transcript alone never promotes continuity.
+  Child runs inherit only configured provider retry/transport options
+  (`piMaxRetries`, `maxRetryDelayMs`, `piTransport`), including explicit zero,
+  not parent session authority or controllers. Per-call model overrides remain.
   Ordinary successful foreground continuation and AskParent are unchanged.
   Bounded private command receipts
   retain actual exit/budget/cleanup measurements without argv, environment,
