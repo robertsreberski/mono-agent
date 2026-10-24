@@ -76,9 +76,9 @@ writers and back up the canonical history directory and any sessions root as a
 consistent snapshot. Older binaries cannot read version 3. Rollback requires
 stopping writers and restoring the backup, not disabling model switching.
 
-## Retained conversation evidence (default off)
+## Retained conversation evidence (default on)
 
-`runtime.session.continuity.enabled` defaults to `false`. Opting in retains
+`runtime.session.continuity.enabled` defaults to `true`. Continuity retains
 sanitized user and assistant text, permitted tool text and the latest portable
 compaction summary in the existing conversation tool-history sidecar. It does
 not require a memory backend or a durable provider-session root. This is
@@ -86,12 +86,15 @@ retrievable evidence, not an active-state ledger, automatic recall or permission
 to repeat an old action.
 
 ```json
-{ "runtime": { "session": { "continuity": { "enabled": true } } } }
+{ "runtime": { "session": { "continuity": { "enabled": false } } } }
 ```
 
-This is a partial configuration. Keep the usual model and identity settings.
+This partial configuration opts out; keep the usual model and identity settings.
+Explicit false preserves legacy paths: no participant, sidecar probe or v3
+upgrade for continuity. Under normal tool policy every default-enabled agent
+gets `ConversationHistory` (an allowlist must include its name).
 Stop older writers and back up canonical history and the sidecar together before
-enabling: the first capable writer upgrades the sidecar from SQLite v2 to v3.
+the first enabled start: the first capable writer upgrades the sidecar from SQLite v2 to v3 in place; older binaries refuse the upgraded store.
 Disabled operation does not perform that upgrade. Existing v3 evidence remains
 readable after disabling new capture. Binary rollback requires stopped writers
 and a consistent backup; disabling a flag does not downgrade storage.

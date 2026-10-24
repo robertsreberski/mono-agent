@@ -307,7 +307,7 @@ export interface MonoAgentConfig {
        * (non-cron) turns are unaffected. Default false (no behavior change).
        */
       readonly isolateProactive?: boolean;
-      /** OFF-default retained conversation evidence; no memory backend required. */
+      /** Default-on retained conversation evidence; no memory backend required. */
       readonly continuity?: { readonly enabled: boolean };
       /** OFF-default Web-only durable model switching. Stop older writers first. */
       readonly modelSwitch?: {

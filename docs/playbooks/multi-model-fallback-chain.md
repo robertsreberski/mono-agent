@@ -120,9 +120,10 @@ reducing the request can help; do not repeatedly retry the same doomed summary.
 
 ## Optional retained evidence
 
-Keep `runtime.session.continuity.enabled` off unless explicitly opting into
-retained conversation evidence. It gives `ConversationHistory` scoped access to
+Conversation continuity is on by default; set
+`runtime.session.continuity.enabled=false` to opt out with legacy storage and
+capture paths. It gives `ConversationHistory` scoped access to
 sanitized text and portable summaries without a memory backend, but does not
 change fallback reconstruction or prove improved semantic continuity. Back up
 canonical history and the sidecar and stop older writers before the one-way v3
-migration. See [retained evidence](/runtime/sessions-concurrency/#retained-conversation-evidence-default-off).
+migration. See [retained evidence](/runtime/sessions-concurrency/#retained-conversation-evidence-default-on).

@@ -2,11 +2,12 @@
 
 ## Unreleased
 
-- Add OFF-default `runtime.session.continuity.enabled` configuration for
-  retained conversation evidence, independent of memory.
-- Add capability-gated continuity evidence storage to the conversation sidecar,
-  with scoped digest-verifiable text, durable publication preparation and
-  non-expiring reference pins; ordinary writers retain the existing v2 format.
+- Turn conversation continuity on by default, with policy-gated
+  `ConversationHistory` retrieval. Set `runtime.session.continuity.enabled` to
+  `false` to opt out and keep legacy capture/storage behavior. Enabling upgrades
+  the tool-history store to v3 in place; older binaries refuse it, so rolling
+  back requires a pre-upgrade backup.
+
 
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures

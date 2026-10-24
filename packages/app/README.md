@@ -93,11 +93,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.
-- Opt in to owned retained conversation evidence with
-  `runtime.session.continuity.enabled` (default false), independent of memory.
+- Retain owned conversation evidence by default with
+  `runtime.session.continuity.enabled` (set false to opt out), independent of memory.
   `ConversationHistory` retrieves sanitized text and portable summaries within
   the current logical conversation. Stop older writers and back up before the
-  one-way v3 sidecar migration; disabling capture does not downgrade it.
+  in-place v3 sidecar migration; older binaries refuse it, so rollback needs a
+  pre-upgrade backup. Disabling capture does not downgrade it.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
 - Expose the request-scoped `SetConversationTitle` definition across turns, admitting calls only on writable

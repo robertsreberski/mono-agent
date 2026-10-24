@@ -813,9 +813,9 @@ it("publishes switching prerequisites without a stopped-writer config acknowledg
   expect(enabled.description).toContain("Web");
 });
 
-it("publishes the OFF-default continuity capability without adding B2 or B3 settings", () => {
+it("publishes the default-on continuity capability without adding B2 or B3 settings", () => {
   const field = allConfigReferenceFields().find((f) => f.jsonPath === "runtime.session.continuity.enabled")!;
-  expect(schemaForField(field)).toMatchObject({ type: "boolean", default: false });
+  expect(schemaForField(field)).toMatchObject({ type: "boolean", default: true });
   expect(field.description).toContain("ConversationHistory");
   expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { enabled: true } } } })).toEqual([]);
   expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { maintenanceMode: "boundary" } } } }))

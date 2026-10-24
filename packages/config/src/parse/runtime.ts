@@ -299,7 +299,7 @@ export function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig[
     idleTimeoutMs,
     ...(root === undefined ? {} : { root }),
     ...(enabled === true ? { modelSwitch: { enabled } } : {}),
-    ...(continuityEnabled === true ? { continuity: { enabled: true } } : {}),
+    ...(continuityEnabled === undefined ? {} : { continuity: { enabled: continuityEnabled } }),
     rollover,
     ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
     ...(rolloverNotice === undefined ? {} : { rolloverNotice }),

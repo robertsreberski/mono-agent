@@ -11,9 +11,10 @@ const resolve = (continuity?: unknown, session = {}) => resolveJsonMonoAgentConf
 });
 
 describe("continuity configuration", () => {
-  it("keeps absent, empty and explicit OFF resolved configuration byte-identical", () => {
-    expect(JSON.stringify(resolve({ enabled: false }))).toBe(JSON.stringify(resolve()));
+  it("defaults on through absence while preserving an explicit false opt-out", () => {
     expect(JSON.stringify(resolve({}))).toBe(JSON.stringify(resolve()));
+    expect(resolve().runtime.session.continuity?.enabled ?? true).toBe(true);
+    expect(resolve({ enabled: false }).runtime.session.continuity).toEqual({ enabled: false });
   });
   it("enables independently of memory, provider-session persistence or session mode", () => {
     expect(resolve({ enabled: true }).runtime.session.continuity).toEqual({ enabled: true });
@@ -28,5 +29,7 @@ describe("continuity configuration", () => {
     const view = buildMonoAgentConfigView({ redacted: redactMonoAgentConfig(config), json: { runtime: { session: { continuity: { enabled: true } } } } });
     const fields = view.flatMap((s) => s.fields);
     expect(fields.find((f) => f.id === "runtime.session.continuity.enabled")).toMatchObject({ value: "yes", source: "json" });
+    const defaults = buildMonoAgentConfigView({ redacted: redactMonoAgentConfig(resolve()), json: {} });
+    expect(defaults.flatMap((s) => s.fields).find((f) => f.id === "runtime.session.continuity.enabled")).toMatchObject({ value: "yes", source: "default" });
   });
 });

@@ -480,12 +480,12 @@
               "additionalProperties": false,
               "properties": {
                 "enabled": {
-                  "description": "OFF-default durable conversation evidence and ConversationHistory retrieval in the current logical conversation. No memory backend is required. Retains sanitized user/assistant text, portable summaries and permitted tool text in the existing sidecar, at most 1 MiB per record within its shared 256 MiB payload budget. Pins never silently expire; capacity exhaustion reports degraded continuity. Disabled capture does not upgrade a v2 sidecar; existing v3 evidence remains readable. Stop older writers and back up before enabling: rollback requires a consistent backup, not disabling this option. This does not add a ledger, automatic recall or tool-result clearing.",
+                  "description": "Default-on durable conversation evidence and ConversationHistory retrieval in the current logical conversation. No memory backend is required. Retains sanitized user/assistant text, portable summaries and permitted tool text in the existing sidecar, at most 1 MiB per record within its shared 256 MiB payload budget. Pins never silently expire; capacity exhaustion reports degraded continuity. Disabled capture does not upgrade a v2 sidecar; existing v3 evidence remains readable. Enabling upgrades the tool-history sidecar to v3 in place; older binaries refuse it, so rollback requires a pre-upgrade backup. Set runtime.session.continuity.enabled=false to opt out with legacy capture/storage behavior. This does not add a ledger, automatic recall or tool-result clearing.",
                   "examples": [
                     true
                   ],
                   "type": "boolean",
-                  "default": false
+                  "default": true
                 }
               }
             },
