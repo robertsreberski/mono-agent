@@ -75,16 +75,18 @@ it.each(routes)("recovers a real %s body failure after streamed text", async (ro
   expect(result.events.filter((event: any) => event.type === "runtime_warning" && event.warning_kind === "provider_request_retry")[0]?.message).toContain("after its response started");
 });
 
-it("survives a simulated multi-second outage before and after headers in one request", async () => {
-  const start = Date.now();
+it.each(["pre-header", "body"])("survives a multi-second %s outage on the real adapter", async (phase) => {
+  let outageStarted: number | undefined;
   const fetch = vi.fn(async () => {
-    if (fetch.mock.calls.length === 1) throw new TypeError("fetch failed");
-    return response("anthropic", Date.now() - start < 2200);
+    outageStarted ??= Date.now();
+    const unavailable = Date.now() - outageStarted < 2200;
+    if (phase === "pre-header" && unavailable) throw new TypeError("fetch failed");
+    return response("anthropic", unavailable);
   });
-  const { result } = await run("anthropic", fetch, { maxRetryDelayMs: 1000, piRequestRetryBudgetMs: 5000 });
-  expect(result.error).toBeNull(); expect(Date.now() - start).toBeGreaterThanOrEqual(2200);
+  const { result } = await run("anthropic", fetch, { maxRetryDelayMs: 1000, piRequestRetryBudgetMs: 10_000 });
+  expect(result.error).toBeNull(); expect(Date.now() - outageStarted!).toBeGreaterThanOrEqual(2200);
   expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(4);
-}, 10_000);
+}, 15_000);
 
 it.each(routes)("keeps %s throttling short and honors retry headers", async (route) => {
   const fetch = vi.fn(async () => Response.json({ error: { message: "Fictional throttle", type: "rate_limit_error" } }, { status: 429, headers: { "retry-after-ms": "0" } }));
@@ -116,12 +118,13 @@ it.each(routes)("reports bounded attributed %s exhaustion diagnostics", async (r
   const { result } = await run(route, fetch, { piRequestRetryBudgetMs: 40 });
   expect(result.error).toMatch(/\[provider_retry phase=pre-response http=pre-response attempts=\d+ http_sends=\d+ elapsed_ms=\d+ cause=UND_ERR_SOCKET exhausted=budget\]/);
   expect(result.error?.split("[provider_retry ")[1]?.length).toBeLessThan(230);
-  expect(result.error).not.toContain("cause=EPIPE"); expect(fetch.mock.calls.length).toBeGreaterThan(1);
+  expect(result.error).not.toContain("cause=EPIPE"); expect(result.failureKind).toBe("provider_unavailable");
 });
 
 it("reports post-response body phase and cause, without inventing unknown causes", async () => {
   const body = await run("openai", vi.fn(async () => response("openai", true)), { piRequestRetryBudgetMs: 30 });
   expect(body.result.error).toContain("phase=post-response http=post-response"); expect(body.result.error).toContain("cause=ECONNRESET");
+  recordTransportErrorForTests("EPIPE");
   const opaque = await run("anthropic", vi.fn(async () => { throw new TypeError("fetch failed"); }), { piRequestRetryBudgetMs: 1 });
   expect(opaque.result.error).toContain("cause=unknown");
 });
@@ -215,6 +218,8 @@ it("shares its budget across generation phases and separately bounds attempts", 
   await expect(policy.fetch("https://fictional.invalid")).rejects.toThrow("fetch failed");
   expect(policy.shouldRetry({ errorMessage: "Connection error." }, { responseStarted: false })).toBe(true);
   expect(policy.retryDelay(1)).toBeGreaterThanOrEqual(750);
+  clock = 119_000;
+  expect(policy.retryDelay(10)).toBe(999);
   clock = 120_001;
   policy.beforeAttempt();
   expect(policy.shouldRetry({ errorMessage: "WebSocket error" }, { responseStarted: true })).toBe(true);

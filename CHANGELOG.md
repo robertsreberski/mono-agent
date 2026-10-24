@@ -12,7 +12,7 @@
 - Let native `Agent` children recover provider connection and stream outages
   within a per-request window (`subagents.providerRetryBudgetMs`, default two
   minutes). Keep parent turns and Bedrock on their existing policy, ordinary
-  throttling on short header-aware retries, and tools exactly-once. Zero restores
+  throttling on short header-aware retries, and never replay tools. Zero restores
   legacy policy; inherited `piMaxRetries: 0` disables all request retries. Report
   bounded request-attributed failure diagnostics after exhaustion. Resends can
   duplicate provider billing; the window is not a hard request timeout.

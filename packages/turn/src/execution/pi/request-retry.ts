@@ -83,11 +83,12 @@ function outageRequestPolicy(shortRetries: number, maxRetryDelayMs: number, budg
       const seen = observer.snapshot();
       const text = normalizePiErrorMessage(message?.errorMessage) || "";
       if (seen.veto || seen.delayLimit || seen.shortPolicy || seen.terminal || TERMINAL_PROVIDER_ERROR.test(text)
+        || /\b429\b|rate.?limit|too many requests/i.test(text)
         || failureKindForPiError(text, {}) !== "provider_unavailable") return false;
       if (seen.status !== undefined && seen.status >= 400 && seen.status < 500) return false;
       // SDKs flatten even invalid fetch arguments to "Connection error.". Do not
       // turn an observed programming/config error into an outage on that basis.
-      if (seen.httpPhase === "pre-response" && !seen.transportFailure) return false;
+      if (seen.httpPhase === "pre-response" && !seen.transportFailure && !/timed? ?out|ETIMEDOUT/i.test(text)) return false;
       // Text alone is all APIConnectionError sometimes leaves us. Actual fetch
       // and body read failures are also positive request-attributed evidence.
       const eligible = seen.transportFailure || seen.bodyFailure || (seen.status !== undefined && seen.status >= 500)
@@ -97,9 +98,13 @@ function outageRequestPolicy(shortRetries: number, maxRetryDelayMs: number, budg
     },
     retryDelay(retry: number) {
       const remaining = budgetMs - (Date.now() - (recoveryStartedAt ?? Date.now()));
-      const delay = Math.max(observer.snapshot().serverDelayMs ?? 0,
+      const serverDelay = observer.snapshot().serverDelayMs ?? 0;
+      if (remaining <= 1 || serverDelay >= remaining) return null;
+      const delay = Math.max(serverDelay,
         Math.min(1000 * 2 ** (retry - 1), 20_000, maxRetryDelayMs) * (1 - Math.random() * 0.25));
-      return remaining <= delay ? null : delay;
+      // Use the tail of the window too, without starting at/after expiry or
+      // violating a provider's lower bound. Recheck the clock after sleeping.
+      return Math.max(serverDelay, Math.min(delay, remaining - 1));
     },
     canStartAttempt: () => recoveryStartedAt === undefined || Date.now() - recoveryStartedAt < budgetMs,
     finish(message: any, { responseStarted, attempts, reason }: { responseStarted: boolean; attempts: number; reason: string }) {

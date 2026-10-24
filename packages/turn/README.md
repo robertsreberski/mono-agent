@@ -1385,7 +1385,7 @@ Behaviour:
 - Retryable provider failure → retries the SAME entry while it has `attempts` left (emitting `provider_retry_started` after a doubling backoff), then emits `provider_failover_started`, builds a transcript snapshot, and advances to the next entry. `attempts` defaults to `1` per entry, so the kernel is single-shot unless a host opts in — `@mono-agent/config` supplies the product default of 2 on the primary.
 - Same-model retries fire only for transient subkinds (`overloaded`, `rate_limited`, `timeout`, `network`, `server_error`, `retryable_request`, terminated streams). A retry drops the route's provider session, since the failed attempt already appended to it, and appends its own `failoverHistory` entry carrying `retryIndex`.
 - A retry is *not* a failover: `provider_failover_started` is emitted once per entry, and `provider_failover_completed` only fires when a genuinely different model answered.
-- This is a whole-logical-turn retry sitting strictly outside both request layers of one Pi attempt: SDK-policy retries before a response starts (`piMaxRetries`, N) and up to three driver re-sends (1 s/2 s/4 s) of a request whose started response failed transiently (for example Codex `WebSocket error`). The driver never re-sends a failure from before a response started, and never re-runs a tool. On a `pi` route, `attempts: 2` combined with the default `piMaxRetries: 2` means up to 24 provider requests and 8 started responses per assistant request; `piMaxRetries: 0` disables both inner layers.
+- With the legacy request profile, this is a whole-logical-turn retry sitting strictly outside both request layers of one Pi attempt: SDK-policy retries before a response starts (`piMaxRetries`, N) and up to three driver re-sends (1 s/2 s/4 s) of a request whose started response failed transiently (for example Codex `WebSocket error`). The driver never re-sends a failure from before a response started, and never re-runs a tool. On a `pi` route, `attempts: 2` combined with the default `piMaxRetries: 2` means up to 24 provider requests and 8 started responses per assistant request; `piMaxRetries: 0` disables both inner layers.
 - Context-window failure after bridge compaction recovery → never retries the same entry (a second identical request against the same window is a guaranteed second failure); preserves `failureKind: "context_limit"` in `failoverHistory` and tries the next entry; quota/output/max-turn `usage_limit` remains terminal.
 - Provider auth failure → retries the next chain entry and preserves `failureKind: "provider_auth"` in `failoverHistory` for the failed attempt.
 - Malformed request/config/billing-type non-retryable failure → returns immediately with `failoverHistory` containing the one attempt.
@@ -1417,6 +1417,42 @@ Behaviour:
   general `options` bag still cannot replace protected request fields.
 
 Chain entries can require backend capabilities via `requires: { structured_output: true, supports_mcp: true, ... }`; entries that don't satisfy the requirements are skipped (logged in `failoverHistory` as `failureKind: "skipped_capability_mismatch"`).
+
+### Child provider outage recovery
+
+App-configured native children use `subagents.providerRetryBudgetMs` (default
+120000, integer 0–180000; zero restores legacy). Direct callers opt in with
+`piRequestRetryBudgetMs`, default zero. Interactive parent turns stay unchanged.
+The profile covers Anthropic messages, OpenAI Responses and Codex; other
+adapters retain legacy policy and Bedrock keeps AWS SDK retries. Inherited
+`piMaxRetries: 0` disables this profile as well as legacy retries.
+
+In outage mode, adapters receive `maxRetries: 0`; the driver owns transient
+connection/server recovery before and after generation start. Ordinary 429 and
+HTTP 408/409 retain the native short, header-aware policy at a request-local
+fetch seam, only with replayable bodies. The two owners never retry the same
+failure. Auth/quota/context/validation/safety and retry-header vetoes remain
+terminal. Cancellation interrupts sleeps; successful bodies retain streaming
+backpressure. Failed partials never enter retry context, and earlier tools and
+live inputs are never replayed.
+
+One window starts at the first eligible failure, with 1/2/4/8/16-second delays,
+a 20-second cap, downward jitter, server delay lower bounds and the existing
+per-delay ceiling. There are at most 16 resends; the default unjittered window
+fits about nine, plus a shortened final wait toward expiry when permitted. No
+driver resend starts after expiry. This is not a hard
+request timeout: worst-case time per router attempt is healthy work before
+failure + the recovery window + the last in-flight request/transport duration.
+Codex native fallback/connect behavior can add time and requests; router
+attempts multiply windows, without relaxing the no-tool-turn-replay rule.
+Unknown-outcome resends may duplicate provider billing and lose usage reports.
+
+Exhaustion includes a bounded, request-attributed suffix (generation phase,
+observed HTTP phase, driver attempts, observed HTTP sends, elapsed request time,
+allowlisted cause or unknown, exhaustion reason). Generation pre-response is
+pre-`start`, not necessarily pre-headers; websocket handshake/send counts remain
+unknown unless observed. Correlated undici observations are never attributed.
+See [retry ownership and timing](../../docs/runtime/fallback.md#child-provider-outage-window).
 
 ### Observers & metrics
 

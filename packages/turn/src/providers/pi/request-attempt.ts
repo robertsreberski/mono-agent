@@ -14,7 +14,7 @@ export function attributedCauseCode(error: unknown): string | null {
 
 export const TERMINAL_PROVIDER_ERROR = /usage[_ ]limit|insufficient[_ ]quota|quota[_ ]exceeded|quota exceeded|billing|out of budget|available balance|context[_ ](?:length|window)|context limit|input (?:is too long|exceeds)|invalid[_ ](?:request|api[_ ]key)|unauthori[sz]ed|forbidden|authentication|validation|safety|content[_ ](?:filter|policy)|max(?:imum)?(?:[_ ]output)?[_ ]tokens?|max turns/i;
 
-export type AttemptObservation = {
+type AttemptObservation = {
   httpPhase: "unknown" | "pre-response" | "post-response";
   status: number | undefined;
   veto: boolean;
