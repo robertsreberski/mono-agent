@@ -1219,6 +1219,15 @@ while retaining the child lock and runtime lease through actual settlement.
 starting a new turn. Only a proven `resumable:true` receipt permits ordinary
 message continuation on the same session or `close:true`; `stop_requested`
 keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
+A settled ordinary `failed` turn can retain the same native transcript when
+native recovery certifies its closed operation and the host resolves ownership,
+including command release. `AgentManage` inspection then supplies a retained-only
+ack for one explicit continuation; detached recovery also requires
+`background:true`. The continuation notes the prior failure and asks the child
+to re-check partial work. Failed partial assistant output is excluded from model
+context, while earlier input and completed tool results remain. Lost/unknown
+continuity cannot be acknowledged. Only certified child-owned timeouts permit
+ordinary-message recovery without ack; cancellation/crash rules are unchanged.
 Detached usage belongs to the durable child outcome and bounded job result; it
 does not change the finalized parent run totals. Process-job deadlines retain
 timeout status in both the job and child instance, distinct from cancellation.

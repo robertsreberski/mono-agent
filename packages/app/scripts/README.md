@@ -14,7 +14,7 @@ pnpm --filter '@mono-agent/app...' run build
 
 | Program (relative to `packages/app/`) | Purpose | Run from repository root | Opt-in / prerequisites |
 | --- | --- | --- | --- |
-| `scripts/smoke-subagent-stop.mjs` | Real retained native stop/resume/close, paired tool evidence, and bounded stop of an uncooperative child without prematurely releasing capacity. | `node packages/app/scripts/smoke-subagent-stop.mjs` | Explicit local invocation; controlled transport. |
+| `scripts/smoke-subagent-stop.mjs` | Real retained native stop/resume/close, provider-failure → retained → inspect/ack → same-child continuation (failed drafts excluded, paired tool evidence), and bounded stop of an uncooperative child without prematurely releasing capacity. | `node packages/app/scripts/smoke-subagent-stop.mjs` | Explicit local invocation; controlled transport. |
 | `scripts/smoke-subagent-steer.mjs` | Steer a running managed subagent through the real Pi live-input path and verify the resulting context/evidence. | `node packages/app/scripts/smoke-subagent-steer.mjs` | Explicit local invocation; controlled transport. |
 | `src/__tests__/fixtures/managed-subagent-proof.mjs` | Built ownership/job-store/process seam round-trip using controlled model transport. | `node packages/app/src/__tests__/fixtures/managed-subagent-proof.mjs 250` | Optional duration argument: integer milliseconds, 1–180000 (default 250). |
 | `src/__tests__/fixtures/subagent-observer-srt.mjs` | Real sandboxed observation, including Git/submodule/include denial; refuses an unsandboxed fallback. | See scoped SRT invocation below. | **Opt-in real managed SRT**, functional on the host; checkout-scoped cwd, HOME, cache, TMPDIR, and Git required. |

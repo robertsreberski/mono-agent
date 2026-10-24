@@ -160,7 +160,13 @@ or close. `stop_requested` preserves busy ownership; no live steering, rollback
 or force-kill is implied. Allow both tool names. With subagents enabled,
 `subagents.instances.enabled` defaults true; `root` defaults beside artifacts,
 `maxPerConversation` defaults 8, `idleTtlMs` defaults one day, and `maxTurns`
-defaults 60 child turns. Registries and session transcripts survive restarts and are
+defaults 60 child turns. Ordinary failed children (foreground or detached) can continue the same native
+context only after native certification, true settlement and ownership release:
+inspect, verify partial effects, then ack one continuation (also `background:true`
+for detached recovery). Lost/unknown continuity still requires close/create;
+only certified timeouts allow ordinary-message recovery without ack. Child runs
+forward configured provider retry/transport policy, preserving explicit zero.
+Registries and session transcripts survive restarts and are
 removed by `restart --clear-sessions`. Instances are conversation-scoped and
 serialized; cross-conversation reuse is unsupported. With ProcessJobs enabled,
 persistent Agent/AgentManage can detach with `background: true`. Every child's

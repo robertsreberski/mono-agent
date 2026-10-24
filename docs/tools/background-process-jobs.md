@@ -967,21 +967,31 @@ A proven rejected admission retains a not-started disposition; ambiguous absence
 never authorizes retry. Lost/unknown continuity cannot be acknowledged back into
 retained context: resolve ownership, then explicitly close/create instead.
 
-Foreground persistent failures still classify as `lost` (a native response
-outside the selected session) or `unknown` unless the child's own timeout fires
-and its matching native recovery receipt is applied after actual settlement.
-While the runtime is unresolved, inspection is `held` and close/continuation
-remain blocked. A certified timeout reports `ready`, `resumable:true` and a
-retained fence, with no ack token; ordinary `AgentManage({id,message})` continues
-the same instance in foreground or detached mode. Other foreground failures
-report `structured_job_recovery_unavailable` with a minimal fence. Explicitly
-close and recreate those lost/unknown children with the necessary context. A
-late answer or existing JSONL file does not upgrade unknown continuity. Ordinary
-successful foreground continuation and AskParent replies remain unchanged.
+Foreground and detached persistent turns that end `failed` retain continuity
+only when the selected native runtime certifies the closed operation and actual
+execution ownership has settled. Detached command ownership and terminal
+publication/release receipts must also be resolved. Inspection then reports
+`ready` with `recovery: {reason: "failed", continuity: "retained"}` and an `ack`.
+Read the evidence, verify partial effects, then use `AgentManage({id, ack,
+message})`; a detached recovery also requires `background:true`. The same
+instance, incarnation and durable transcript continue, with a short failed-turn
+note. Failed partial assistant output is excluded from the next model context;
+earlier input and completed tool evidence remain. This applies to any certified
+ordinary failure, not just provider connection errors. No automatic replay or
+unacknowledged failure continuation is permitted.
 
-For a managed detached failure explicitly classified as retained, an accepted
-acknowledgement resumes the same durable session; it does not replay the failed
-request or authorize a new provider epoch. Inspection and duplicate consumed
+While execution is unresolved, inspection is `held` and close/continuation stay
+blocked. Missing, rejected or mismatched native certification remains `unknown`;
+a native response outside the selected session is `lost`. Foreground failures
+without retained continuity report `structured_job_recovery_unavailable` with a
+minimal fence. Explicitly close/create those lost/unknown children with the
+necessary context; they cannot be acknowledged into retained continuity. A late
+answer or existing JSONL file alone is not a certificate. Cancellation, crash
+salvage and stop rules are unchanged.
+
+The timeout-only shortcut is unchanged: a certified settled child-owned timeout
+reports `ready`, `resumable:true` and no ack; ordinary `AgentManage({id,message})`
+can continue it in foreground or detached mode. Inspection and duplicate consumed
 acknowledgements invoke no provider and append no continuation message.
 
 Persistent Agent's optional `verification: {workdir, reportPath?}` declares only
