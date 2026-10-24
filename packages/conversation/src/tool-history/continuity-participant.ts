@@ -27,7 +27,7 @@ export function createContinuityParticipant(options: {
       const evidence = context.evidence, logicalConversationId = options.logicalConversationId(context.conversationId);
       const recordId = continuityRecordId(context.conversationId, `summary:${evidence.journalId}:${evidence.operationId}`);
       const retained = retainContinuityText(evidence.summary);
-      if (retained.text === null) throw Object.assign(new Error("Portable summary exceeds the retained evidence bound; compaction must be declined."), { code: "continuity_summary_unavailable" });
+      if (retained.truncated) throw Object.assign(new Error("Portable summary cannot be retained completely; compaction must be declined."), { code: "continuity_summary_unavailable" });
       const proof = { status: "published" as const, journalId: evidence.journalId, operationId: evidence.operationId,
         sourceDigest: evidence.sourceDigest, summaryDigest: retained.sha256 };
       const preparation = (generationId: string): ContinuityPreparation => ({ generationId, conversationId: context.conversationId, logicalConversationId,

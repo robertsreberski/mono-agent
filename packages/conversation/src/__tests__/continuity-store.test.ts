@@ -159,6 +159,9 @@ describe("continuity publication primitives (not canonical-store integration)", 
       summary: { model: "faux:m", operationId: "fiction-operation", trigger: "manual", coverage: { sourceDigest: digest("coverage") } } };
     const input = { ...preparation([record]), action: "checkpoint" as const, beforeDigest: null, afterDigest: null, latestSummaryRecordId: record.recordId };
     await writer.prepareContinuity(input);
+    await expect(writer.prepareContinuity({ ...input, generationId: continuityGenerationId(),
+      records: [{ ...record, recordId: continuityRecordId(input.conversationId, "oversized-summary"), text: "x".repeat(1024 * 1024 + 1) }],
+      latestSummaryRecordId: continuityRecordId(input.conversationId, "oversized-summary") })).rejects.toMatchObject({ code: "continuity_summary_unavailable" });
     expect(await writer.reconcileContinuity({ conversationId: input.conversationId, canonicalDigest: null })).toMatchObject({ status: "checkpoint_pending" });
     expect(reader.searchContinuity(scope).items).toEqual([]);
     await expect(writer.commitContinuity({ conversationId: input.conversationId, generationId: input.generationId, canonicalDigest: null })).rejects.toMatchObject({ code: "continuity_publication_mismatch" });

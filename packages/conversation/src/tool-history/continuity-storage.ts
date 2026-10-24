@@ -107,6 +107,9 @@ export function prepareContinuity(
 ): ContinuityReceipt {
   validateContinuityPreparation(input);
   const records = input.records.map((record) => ({ record, retained: retainContinuityText(record.text) }));
+  if (input.action === "checkpoint" && records.some(({ retained }) => retained.truncated)) {
+    fail("continuity_summary_unavailable", "A compaction checkpoint cannot replace context with an omitted summary.");
+  }
   // Digest the selected, validated representation, never arbitrary caller properties.
   const preparationDigest = createHash("sha256").update(JSON.stringify([
     input.conversationId, input.logicalConversationId, input.beforeDigest, input.afterDigest,

@@ -16,7 +16,7 @@ import { ToolHistoryWriter } from "../tool-history/writer.js";
 const roots: string[] = [], writers = new Set<ToolHistoryWriter>(), cleanup: Array<() => Promise<void>> = [];
 const id = "web:fiction", scope = { logicalConversationId: id, currentConversationId: id, currentRunId: "reading-run" };
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); for (const writer of writers) await writer.close(); writers.clear(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
-async function fixture(maxBytes?: number) {
+async function fixture(maxBytes?: number, summary = "Morgan chose the cobalt design.") {
   const root = await mkdtemp(join(tmpdir(), "continuity-summary-")); roots.push(root);
   const historyRoot = join(root, "history"), sessionsRoot = join(root, "native");
   const writer = await ToolHistoryWriter.open({ root: historyRoot, continuityEnabled: true, ...(maxBytes === undefined ? {} : { retention: { maxBytes } }) }); writers.add(writer);
@@ -30,7 +30,7 @@ async function fixture(maxBytes?: number) {
   await raw.appendMessage({ role: "user", content: "Morgan chose cobalt.", timestamp: 1 }, "fixture-source");
   const driver = createRunDriver(raw, { model: { provider: "faux", id: "m", api: "faux-api" }, systemPrompt: "Fixture", tools: [],
     continuityRecording: true, onCompactionPreparing: turn.prepareCompaction });
-  driver.hooks.on("before_compaction", () => ({ compaction: { summary: "Morgan chose the cobalt design.", tokensBefore: 100, retainedTail: [] } }));
+  driver.hooks.on("before_compaction", () => ({ compaction: { summary, tokensBefore: 100, retainedTail: [] } }));
   await driver.beginTurn("fiction-summary-run", "synthetic", turn.reconciliation!.descriptor);
   let closed = false;
   const closeHandles = async () => { if (closed) return; closed = true; try { await raw.close(); } finally { await repo.close(); } };
@@ -122,6 +122,14 @@ describe("owned portable summary publication", () => {
     await f.store.reset(id); await f.store.recoverProviderSessionTurn(id);
     expect((await f.writer.stats()).continuity).toMatchObject({ prepared: 0, records: 0, pins: 0 });
     expect(f.reader.latestContinuitySummary(scope)).toBeUndefined();
+  });
+
+  it("declines the native reduction rather than retaining an oversized summary's omission placeholder", async () => {
+    const f = await fixture(undefined, "x".repeat(1024 * 1024 + 1));
+    await expect(f.driver.compact({ continuityTrigger: "manual" })).rejects.toMatchObject({ code: "continuity_summary_unavailable" });
+    expect((await f.raw.getEntries()).some((entry: { type: string }) => entry.type === "compaction")).toBe(false);
+    expect((await f.writer.stats()).continuity).toMatchObject({ records: 0, prepared: 0 });
+    await f.closeNative("failed"); await f.turn.abort();
   });
 
   it("declines the native reduction when a portable summary cannot reserve capacity", async () => {
