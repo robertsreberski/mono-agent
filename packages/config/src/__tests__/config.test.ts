@@ -609,6 +609,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     compaction: {
       enabled: false,
       triggerRatio: 0.8,
+      maxInputTokens: 300000,
       keepRecentTokens: 9000,
       summaryMaxTokens: 3000,
       minSavingsTokens: 7000,
@@ -624,6 +625,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(config.runtime.compaction).toEqual({
       enabled: false,
       triggerRatio: 0.8,
+      maxInputTokens: 300_000,
       keepRecentTokens: 9_000,
       summaryMaxTokens: 3_000,
       effort: "auto",
@@ -644,11 +646,33 @@ describe("resolveJsonMonoAgentConfig", () => {
     [{ minSavingsTokens: -1 }, "runtime.compaction.minSavingsTokens"],
     [{ fixedOverheadEnabled: "sometimes" as unknown as boolean }, "runtime.compaction.fixedOverheadEnabled"],
     [{ contextWindowOverride: 31999 }, "runtime.compaction.contextWindowOverride"],
+    [{ maxInputTokens: 31999 }, "runtime.compaction.maxInputTokens"],
+    [{ maxInputTokens: -1 }, "runtime.compaction.maxInputTokens"],
+    [{ maxInputTokens: 10_000_001 }, "runtime.compaction.maxInputTokens"],
+    [{ maxInputTokens: 250_000.5 }, "runtime.compaction.maxInputTokens"],
+    [{ maxInputTokens: "lots" as unknown as number }, "runtime.compaction.maxInputTokens"],
   ])("rejects invalid compaction JSON %j (%s)", (compaction, path) => {
     expect(() => resolveJsonMonoAgentConfig({
       cwd: "/repo",
       json: { ...baseJson, runtime: { ...baseJson.runtime, compaction } },
     })).toThrowError(expect.objectContaining({ code: "invalid_json", details: expect.objectContaining({ path }) }));
+  });
+
+  it("explains the valid maxInputTokens range and opt-out in its config error", () => {
+    expect(() => resolveJsonMonoAgentConfig({
+      cwd: "/repo",
+      json: { ...baseJson, runtime: { ...baseJson.runtime, compaction: { maxInputTokens: 1_000 } } },
+    })).toThrowError("runtime.compaction.maxInputTokens must be 0 (disables the absolute ceiling) or an integer between 32000 and 10000000.");
+  });
+
+  it.each([0, 32_000, 200_000, 10_000_000])("accepts maxInputTokens %d and omits it when unset", (maxInputTokens) => {
+    const config = resolveJsonMonoAgentConfig({
+      cwd: "/repo",
+      json: { ...baseJson, runtime: { ...baseJson.runtime, compaction: { maxInputTokens } } },
+    });
+    expect(config.runtime.compaction?.maxInputTokens).toBe(maxInputTokens);
+    const omitted = resolveJsonMonoAgentConfig({ cwd: "/repo", json: baseJson });
+    expect(omitted.runtime.compaction).not.toHaveProperty("maxInputTokens");
   });
 
   it("expands a home-relative Pi auth path instead of treating tilde as a directory", () => {

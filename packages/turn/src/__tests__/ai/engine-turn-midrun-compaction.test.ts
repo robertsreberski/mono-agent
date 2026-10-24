@@ -190,6 +190,63 @@ describe("pi-native mid-run compaction (real harness)", () => {
   }, 30_000);
 });
 
+describe("pi-native mid-run compaction at the absolute ceiling (real harness, 1M window)", () => {
+  // ~105k estimated tokens per round: two rounds cross the default 200k
+  // ceiling, far below 90% of the 1M window.
+  const LARGE_BULK = BULK.repeat(11).slice(0, 420_000);
+
+  for (const ceiling of ["default", "disabled"] as const) {
+    it(`${ceiling === "default" ? "compacts" : "does not compact"} between tool rounds with the ceiling ${ceiling}`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "pi-midrun-ceiling-"));
+      writeFileSync(join(root, "notes.txt"), "notes\n");
+      try {
+        const setup = fauxSetup({ contextWindow: 1_000_000 });
+        const summaryPrompts: Context[] = [];
+        setup.faux.setResponses([
+          fauxAssistantMessage([fauxText(LARGE_BULK), fauxToolCall("Read", { file_path: "notes.txt" }, { id: "call-1" })]),
+          fauxAssistantMessage([fauxText(LARGE_BULK), fauxToolCall("Read", { file_path: "notes.txt" }, { id: "call-2" })]),
+          ...(ceiling === "default"
+            ? [(context: Context) => {
+              summaryPrompts.push(context);
+              return fauxAssistantMessage([fauxText("## Goal\nSummarized earlier rounds.")]);
+            }]
+            : []),
+          fauxAssistantMessage([fauxText("done")]),
+        ]);
+        const events: CompactionEvent[] = [];
+        const result = await generateEngineTurnResponse("system", runOptions(setup, {
+          cwd: root,
+          allowedTools: ["Read"],
+          messages: [{ role: "user", content: "read the notes twice" }],
+          ...(ceiling === "disabled" ? { compaction: { maxInputTokens: 0 } } : {}),
+          onEvent: (event: CompactionEvent) => events.push(event),
+        }));
+        expect(result.error).toBeNull();
+        expect(result.text).toBe("done");
+        const compactionEvents = events.filter((event) => event?.type === "context_compaction");
+        if (ceiling === "default") {
+          expect(compactionEvents.map((event) => event.status)).toEqual(["running", "succeeded"]);
+          expect(compactionEvents[1]!.accounting.midRun).toBe(true);
+          expect(summaryPrompts).toHaveLength(1);
+          expect(result.diagnostics).toMatchObject({
+            context_compaction_trigger_tokens: 200_000,
+            context_compaction_trigger_source: "max_input_tokens",
+            context_compaction_midrun_applied: 1,
+          });
+          expect(setup.faux.state.callCount).toBe(4);
+        } else {
+          expect(compactionEvents).toHaveLength(0);
+          expect(result.diagnostics.context_compaction_trigger_tokens).toBe(900_000);
+          expect(setup.faux.state.callCount).toBe(3);
+        }
+        expect(result.capabilitiesUsed.context_compaction_applied).toBe(ceiling === "default");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 30_000);
+  }
+});
+
 // --- Controller-level guards -------------------------------------------------
 
 function userMessage(text: string): UserMessage {

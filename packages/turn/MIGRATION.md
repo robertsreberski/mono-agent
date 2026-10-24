@@ -28,6 +28,28 @@ their original context.
 
 Contributors: run `pnpm run clean` once after updating a checkout built before this change.
 
+## Unreleased absolute compaction ceiling
+
+- `RuntimeCompactionPolicy.maxInputTokens` (config:
+  `runtime.compaction.maxInputTokens`) defaults to `200000`. Proactive and mid-run
+  compaction now trigger at `min(ratio trigger, reserve trigger, maxInputTokens)`.
+  Windows up to about 222,000 tokens keep their trigger. Larger windows compact at
+  200,000 tokens instead of near 90% of the window. Expect more frequent
+  summaries and a prompt-cache rebuild after each compaction on those models.
+- It is a soft trigger only: it does not refuse requests, produce
+  `context_limit` or change `contextWindow`, `contextWindowOverride`, output
+  reserve or reactive overflow recovery. If the request's fixed overhead plus
+  summary, retained tail and minimum savings would not fit beneath it, the
+  trigger is raised for that run, but never above the window-derived trigger.
+- `resolveAgentCompactionPolicy()` results add `windowTriggerTokens`,
+  `maxInputTokens` and `triggerSource`; run diagnostics add
+  `context_compaction_trigger_source`, `context_compaction_max_input_tokens` and,
+  when raised, `context_compaction_trigger_floor_tokens`. Existing fields keep
+  their meaning; `triggerTokens` is the effective trigger.
+- To keep the previous behaviour, pass `maxInputTokens: 0` (or set
+  `"runtime": { "compaction": { "maxInputTokens": 0 } }`). In config, explicit
+  values other than `0` must be integers from 32,000 to 10,000,000.
+
 ## Unreleased package rename
 
 - Remove the old workspace package names in a breaking rename, with no aliases.

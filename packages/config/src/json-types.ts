@@ -142,6 +142,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly compaction?: {
       readonly enabled?: boolean;
       readonly triggerRatio?: number;
+      readonly maxInputTokens?: number;
       readonly keepRecentTokens?: number;
       readonly summaryMaxTokens?: number;
       readonly effort?: string;

@@ -643,7 +643,7 @@ it("compacts durable web conversations through the production responder composit
     runtime: { model: primary, fallbacks: [{ model: other }], workspace: dir,
       session: { root: join(dir, "pi"), mode: "continuous", idleTimeoutMs: 60_000, rollover: "daily",
         rolloverTimezone: "America/New_York", isolateProactive: true },
-      compaction: { triggerRatio: 0.9 } },
+      compaction: { triggerRatio: 0.9, maxInputTokens: 300_000 } },
     providers: { piNative: {} },
     context: { identityPath, selectedSkills: [] },
     tools: { allowedTools: [], disallowedTools: [] },
@@ -726,6 +726,8 @@ it("compacts durable web conversations through the production responder composit
       expect(response.text).toBe("fictional answer");
       const turn = providerCalls.at(-1);
       expect(turn?.model?.reference).toBe(model ?? primary.reference);
+      // The per-agent compaction ceiling reaches every routed turn unchanged.
+      expect(turn?.compaction).toMatchObject({ triggerRatio: 0.9, maxInputTokens: 300_000 });
       const url = `${operator.baseUrl}/v1/conversations/${encodeURIComponent(id)}/compact`;
       const compacted = await fetch(url, { method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify(model === undefined ? {} : { model }) });

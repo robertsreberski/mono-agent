@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add an absolute proactive compaction ceiling, `runtime.compaction.maxInputTokens`,
+  on by default at 200,000 tokens for every agent. The trigger is now the lowest
+  of the ratio trigger, the safety-headroom trigger and this ceiling. Windows up
+  to about 222,000 tokens are unchanged. Larger windows, such as 272k, 400k and
+  1M, compact at about 200k instead of near 90% of the window, so conversations
+  compact more often and the prompt cache is rebuilt after each compaction. It
+  is a soft trigger: it never refuses a request, reports `context_limit` or
+  changes the usable window. If fixed request overhead leaves no room to drain
+  beneath it, the ceiling is raised for that run. Set a larger value per agent
+  to compact later, or `"maxInputTokens": 0` to keep the previous ratio-only
+  trigger.
+
 - Add retained-versus-reconstructed context facts to session boundaries and
   separate retained resumes from prompt-cache reseed diagnostics.
 - Fix automatic memory recall echoing earlier status from the same logical

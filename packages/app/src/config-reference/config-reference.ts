@@ -1258,6 +1258,9 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
 
   } else if (field.jsonPath === "runtime.compaction.effort") {
     schema.enum = ["auto", ...EFFORT_LEVELS];
+  } else if (field.jsonPath === "runtime.compaction.maxInputTokens") {
+    // 0 is the explicit opt-out; any other value must be a usable ceiling.
+    schema.anyOf = [{ const: 0 }, { minimum: 32_000, maximum: 10_000_000 }];
   } else if (field.jsonPath === "runtime.effort") {
     schema.enum = EFFORT_LEVELS;
   } else if (field.jsonPath === "memory.backend") {
@@ -1431,6 +1434,7 @@ function inferType(id: string): ConfigReferenceType {
     return "number";
   }
   if ([
+    "runtime.compaction.maxInputTokens",
     "runtime.compaction.keepRecentTokens",
     "runtime.compaction.summaryMaxTokens",
     "runtime.compaction.minSavingsTokens",
@@ -1501,6 +1505,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.compaction.effort": "auto",
     "runtime.compaction.failureCooldownMs": 900000,
     "runtime.compaction.triggerRatio": 0.90,
+    "runtime.compaction.maxInputTokens": 200_000,
     "runtime.compaction.fixedOverheadEnabled": true,
     "runtime.workspace": ".",
     "runtime.session.mode": "continuous",
@@ -1631,6 +1636,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "runtime.retry.maxBackoffMs": 30_000,
     "runtime.effort": "medium",
     "runtime.compaction.triggerRatio": 0.90,
+    "runtime.compaction.maxInputTokens": 300_000,
     "runtime.compaction.keepRecentTokens": 12_800,
     "runtime.compaction.summaryMaxTokens": 5_120,
     "runtime.compaction.effort": "auto",
@@ -1787,6 +1793,7 @@ function descriptionFor(id: string): string {
     "runtime.compaction.failureCooldownMs": "Suppress unchanged failed summaries for this many milliseconds (default 15 minutes); 0 disables suppression. Meaningful growth or summary-policy changes allow an earlier attempt.",
     "runtime.compaction.enabled": "Enables adaptive proactive compaction and one-shot reactive overflow recovery.",
     "runtime.compaction.triggerRatio": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom (10% of the window, 16,000-48,000 tokens).",
+    "runtime.compaction.maxInputTokens": "Absolute proactive compaction ceiling in tokens; the trigger is the lowest of the ratio, the safety-headroom trigger and this value, so windows up to about 222,000 tokens are unaffected by the default. 0 disables it; other values must be 32,000-10,000,000. A soft trigger only: it never refuses a request or changes the usable window, and it is lifted when fixed request overhead plus summary, retained tail and minimum savings would not fit beneath it.",
     "runtime.compaction.keepRecentTokens": "Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens.",
     "runtime.compaction.summaryMaxTokens": "Combined generated-summary text target; omitted derives 4% of the effective window, clamped to 2,000-12,000 tokens. Adaptive thinking may add a bounded 2,048-8,192-token allowance per request, subject to model/context limits.",
     "runtime.compaction.minSavingsTokens": "Minimum verified token reduction required for proactive compaction; omitted derives 10% of the effective window, clamped to 4,000-20,000. Reactive recovery accepts any positive reduction.",

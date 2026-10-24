@@ -191,6 +191,24 @@ export function readMaxTurns(value: unknown): number | undefined {
   return maxTurns === 0 ? undefined : maxTurns;
 }
 
+// 0 is the explicit opt-out; any other value must be a usable ceiling.
+const MAX_INPUT_TOKENS_PATH = "runtime.compaction.maxInputTokens";
+const MAX_INPUT_TOKENS_MESSAGE = `${MAX_INPUT_TOKENS_PATH} must be 0 (disables the absolute ceiling) or an integer between 32000 and 10000000.`;
+
+function readMaxInputTokens(value: unknown): number | undefined {
+  let parsed: number | undefined;
+  try {
+    parsed = jsonOptionalInteger(value, MAX_INPUT_TOKENS_PATH, { min: 0, max: 10_000_000 });
+  } catch (error) {
+    if (!(error instanceof MonoAgentConfigError) || error.code !== "invalid_json") throw error;
+    throw new MonoAgentConfigError("invalid_json", MAX_INPUT_TOKENS_MESSAGE, { path: MAX_INPUT_TOKENS_PATH, reason: "out_of_range" });
+  }
+  if (parsed !== undefined && parsed !== 0 && parsed < 32_000) {
+    throw new MonoAgentConfigError("invalid_json", MAX_INPUT_TOKENS_MESSAGE, { path: MAX_INPUT_TOKENS_PATH, reason: "out_of_range" });
+  }
+  return parsed;
+}
+
 export function readRuntimeCompactionConfig(
   value: unknown,
 ): NonNullable<MonoAgentConfig["runtime"]["compaction"]> {
@@ -200,6 +218,7 @@ export function readRuntimeCompactionConfig(
     "runtime.compaction.triggerRatio",
     { min: 0.2, max: 0.95 },
   );
+  const maxInputTokens = readMaxInputTokens(compaction.maxInputTokens);
   const keepRecentTokens = jsonOptionalInteger(
     compaction.keepRecentTokens,
     "runtime.compaction.keepRecentTokens",
@@ -229,6 +248,7 @@ export function readRuntimeCompactionConfig(
       true,
     ),
     ...(triggerRatio === undefined ? {} : { triggerRatio }),
+    ...(maxInputTokens === undefined ? {} : { maxInputTokens }),
     ...(keepRecentTokens === undefined ? {} : { keepRecentTokens }),
     ...(summaryMaxTokens === undefined ? {} : { summaryMaxTokens }),
     ...(minSavingsTokens === undefined ? {} : { minSavingsTokens }),

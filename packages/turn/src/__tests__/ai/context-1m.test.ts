@@ -89,11 +89,19 @@ describe("native Pi 1M context", () => {
 
   it("uses the same proactive and checkpoint threshold at 1M", () => {
     const runtime = resolvePiRuntimeModel(resolved, { context1MModels: { [reference]: true } });
+    // Default: the absolute 200k ceiling binds; the window stays 1M.
     const policy = resolveLiveCompactionPolicy({ harness: { getModel: () => runtime.model }, runtime, resolved });
     expect(policy.contextWindow).toBe(CONTEXT_1M_TOKENS);
-    expect(policy.triggerTokens).toBe(900_000);
-    const checkpoint = piCompactionSettings(policy);
-    expect(shouldCompact(policy.triggerTokens - 1, policy.contextWindow, checkpoint)).toBe(false);
-    expect(shouldCompact(policy.triggerTokens, policy.contextWindow, checkpoint)).toBe(true);
+    expect(policy.triggerTokens).toBe(200_000);
+    expect(policy.triggerSource).toBe("max_input_tokens");
+    // Opt-out restores the window-derived 0.90 trigger.
+    const optOut = resolveLiveCompactionPolicy({ harness: { getModel: () => runtime.model }, runtime, resolved, compaction: { maxInputTokens: 0 } });
+    expect(optOut.contextWindow).toBe(CONTEXT_1M_TOKENS);
+    expect(optOut.triggerTokens).toBe(900_000);
+    for (const candidate of [policy, optOut]) {
+      const checkpoint = piCompactionSettings(candidate);
+      expect(shouldCompact(candidate.triggerTokens - 1, candidate.contextWindow, checkpoint)).toBe(false);
+      expect(shouldCompact(candidate.triggerTokens, candidate.contextWindow, checkpoint)).toBe(true);
+    }
   });
 });

@@ -17,6 +17,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "runtime.compaction.effort": true,
   "runtime.compaction.failureCooldownMs": true,
   "runtime.compaction.triggerRatio": true,
+  "runtime.compaction.maxInputTokens": true,
   "runtime.compaction.keepRecentTokens": true,
   "runtime.compaction.summaryMaxTokens": true,
   "runtime.compaction.minSavingsTokens": true,

@@ -20,6 +20,7 @@ import {
   tryCompact,
 } from "../../execution/pi/compaction/compaction-driver.js";
 import { buildHarnessSessionContext } from "../../engine/session-context.js";
+import { resolveAgentCompactionPolicy } from "../../agent/compaction.js";
 
 // Preserve the existing omitted callback/id/session options and explicit undefined override.
 type TryCompact = (harness: unknown, options: {
@@ -467,9 +468,13 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
       compaction: {},
       contextWindowOverride: 272_000,
     });
+    // The window override changes the window; the default absolute ceiling
+    // (below 0.90 x 272k = 244,800) still sets the proactive trigger.
     expect(policy).toMatchObject({
       contextWindow: 272_000,
-      triggerTokens: 244_800,
+      windowTriggerTokens: 244_800,
+      triggerTokens: 200_000,
+      triggerSource: "max_input_tokens",
       keepRecentTokens: 20_000,
       summaryMaxTokens: 10_880,
       compactionMinSavingsTokens: 20_000,
@@ -537,6 +542,122 @@ describe("runProactiveCompaction — trigger math", () => {
     expect(runState.compaction.diagnostics.context_request_estimate_tokens).toBeGreaterThan(500);
     // Re-anchored to the compacted context length.
     expect(runState.sessionBaselineCount).toBe(fixture.messages.length);
+  });
+});
+
+describe("runProactiveCompaction — absolute maxInputTokens ceiling on a 1M window", () => {
+  const MILLION = 1_000_000;
+  // ~4 chars per estimated token.
+  const tokensOf = (tokens: number) => "x".repeat(tokens * 4);
+  const ceilingPolicy = (compaction = {}) => resolveAgentCompactionPolicy({ compaction }, { contextWindow: MILLION });
+  // A tool schema whose description alone carries `tokens` of fixed overhead.
+  const overheadTools = (tokens: number) => [{ name: "Bulk", description: tokensOf(tokens), parameters: {} }];
+  const millionHarness = (sourceMessages: FixtureMessage[]) => {
+    const fixture = hookHarness({ sourceMessages });
+    const base = fixture.harness.getModel();
+    fixture.harness.getModel = () => ({ ...base, contextWindow: MILLION });
+    return fixture;
+  };
+  const proactive = (runState: ReturnType<typeof freshRunState>, harness: unknown, tools: unknown[] = [], warnings: Warning[] = []) => runProactiveCompaction(runState, {
+    harness, systemPrompt: "s", options: { compaction: {} }, tools,
+    promptText: "synthetic question", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: warnings,
+  });
+
+  it("compacts at the 200k ceiling instead of 90% of the window", async () => {
+    const fixture = millionHarness([userMessage(tokensOf(100_000)), userMessage(tokensOf(100_000)), userMessage(tokensOf(5_000))]);
+    const runState = freshRunState(fixture.session, { policy: ceilingPolicy() });
+    await proactive(runState, fixture.harness);
+    expect(fixture.harness.compact).toHaveBeenCalledTimes(1);
+    expect(runState.compaction.applied).toBe(true);
+    expect(runState.compaction.diagnostics).toMatchObject({
+      context_window: MILLION,
+      context_compaction_trigger_tokens: 200_000,
+      context_compaction_trigger_source: "max_input_tokens",
+      context_compaction_max_input_tokens: 200_000,
+      context_compaction_proactive: true,
+    });
+    expect(runState.compaction.diagnostics.context_compaction_trigger_floor_tokens).toBeUndefined();
+    // The drain leaves summary + retained tail, far below the ceiling.
+    expect(runState.compaction.diagnostics.context_compaction_tokens_after).toBeLessThan(200_000 - 20_000);
+  });
+
+  it("stays below the ceiling without paying for a summary", async () => {
+    const fixture = millionHarness([userMessage(tokensOf(90_000)), userMessage(tokensOf(90_000))]);
+    const runState = freshRunState(fixture.session, { policy: ceilingPolicy() });
+    await proactive(runState, fixture.harness);
+    expect(fixture.harness.compact).not.toHaveBeenCalled();
+    expect(fixture.harness.models.completeSimple).not.toHaveBeenCalled();
+  });
+
+  it("restores the window-derived trigger when the ceiling is disabled", async () => {
+    const fixture = millionHarness([userMessage(tokensOf(100_000)), userMessage(tokensOf(100_000)), userMessage(tokensOf(5_000))]);
+    const runState = freshRunState(fixture.session, { policy: ceilingPolicy({ maxInputTokens: 0 }) });
+    await proactive(runState, fixture.harness);
+    expect(fixture.harness.compact).not.toHaveBeenCalled();
+    expect(runState.compaction.diagnostics).toMatchObject({
+      context_compaction_trigger_tokens: 900_000,
+      context_compaction_trigger_source: "ratio",
+      context_compaction_max_input_tokens: 0,
+    });
+  });
+
+  it("lifts the ceiling instead of re-arming every turn when fixed overhead sits near it", async () => {
+    // 195k of tool schemas alone: under a plain 200k ceiling every turn with a
+    // few thousand transcript tokens would re-arm and pay for a summary that
+    // could never save the 20k minimum.
+    const tools = overheadTools(195_000);
+    const transcript: FixtureMessage[] = [userMessage(tokensOf(15_000)), userMessage(tokensOf(5_000))];
+    const fixture = millionHarness(transcript);
+    for (let turn = 0; turn < 3; turn += 1) {
+      const runState = freshRunState(fixture.session, { policy: ceilingPolicy() });
+      await proactive(runState, fixture.harness, tools);
+      const floor = runState.compaction.diagnostics.context_compaction_trigger_floor_tokens as number;
+      expect(floor).toBeGreaterThanOrEqual(195_000 + 12_000 + 20_000 + 20_000);
+      expect(runState.compaction.diagnostics.context_request_estimate_tokens).toBeGreaterThan(200_000);
+      expect(runState.compaction.diagnostics).toMatchObject({
+        context_compaction_trigger_tokens: floor,
+        context_compaction_trigger_source: "max_input_tokens_floor",
+        context_compaction_max_input_tokens: 200_000,
+      });
+      // The lifted trigger is what the mid-run controller reads next.
+      expect(runState.compaction.policy).toMatchObject({ triggerTokens: floor, triggerSource: "max_input_tokens_floor" });
+    }
+    expect(fixture.harness.compact).not.toHaveBeenCalled();
+    expect(fixture.harness.models.completeSimple).not.toHaveBeenCalled();
+  });
+
+  it("does not re-arm on the next turn after draining under a lifted ceiling", async () => {
+    const tools = overheadTools(195_000);
+    const fixture = millionHarness([userMessage(tokensOf(40_000)), userMessage(tokensOf(20_000)), userMessage(tokensOf(5_000))]);
+    const first = freshRunState(fixture.session, { policy: ceilingPolicy() });
+    await proactive(first, fixture.harness, tools);
+    expect(first.compaction.applied).toBe(true);
+    const second = freshRunState(fixture.session, { policy: ceilingPolicy() });
+    await proactive(second, fixture.harness, tools);
+    expect(second.compaction.applied).toBe(false);
+    expect(fixture.harness.compact).toHaveBeenCalledTimes(1);
+    expect(second.compaction.diagnostics.context_request_estimate_tokens)
+      .toBeLessThan((second.compaction.diagnostics.context_compaction_trigger_tokens as number) - 20_000);
+  });
+
+  it.each([
+    ["a failed summary", { summaryError: true }, "context_compaction_failed"],
+    // The whole-message tail keeps the second 100k message, so ~100k is
+    // summarizable: below a 150k minimum that still fits under the ceiling floor.
+    ["insufficient savings", { minSavingsTokens: 150_000 }, "context_compaction_insufficient_savings"],
+  ])("lets the turn proceed after %s at the ceiling", async (_name, mode, warningKind) => {
+    const fixture = millionHarness([userMessage(tokensOf(100_000)), userMessage(tokensOf(100_000)), userMessage(tokensOf(5_000))]);
+    if ("summaryError" in mode) fixture.harness.models.completeSimple.mockImplementation(async () => { throw new Error("synthetic summary outage"); });
+    const runState = freshRunState(fixture.session, { policy: ceilingPolicy("minSavingsTokens" in mode ? { minSavingsTokens: mode.minSavingsTokens } : {}) });
+    const warnings: Warning[] = [];
+    await expect(proactive(runState, fixture.harness, [], warnings)).resolves.toBeUndefined();
+    expect(fixture.harness.compact).toHaveBeenCalledTimes(1);
+    expect(runState.compaction.applied).toBe(false);
+    expect(warnings.map((warning) => warning.warning_kind)).toContain(warningKind);
+    // A soft trigger: no overflow evidence, learned ceiling or reactive attempt.
+    expect(runState.compaction.reactiveAttempted).toBe(false);
+    expect(runState.compaction.diagnostics.context_learned_window).toBeUndefined();
+    expect(fixture.persistedCount()).toBe(0);
   });
 });
 
