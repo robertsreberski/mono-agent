@@ -445,8 +445,10 @@ describe("BujoMemoryStore", () => {
     expect(parsed.bullets).toHaveLength(1);
     expect(parsed.bullets[0]?.text).toContain("memory preference is opt-in");
 
-    const block = await store.load("global", "What is Morgan's memory preference?");
+    expect(await store.load("global", "What is Morgan's memory preference?")).toBeUndefined();
+    const block = await store.load("other-conversation", "What is Morgan's memory preference?");
     expect(block?.content).toContain("memory preference is opt-in");
+    expect((await store.recall("What is Morgan's memory preference?"))[0]?.record.source.session).toBe("global");
     await store.close();
   });
 
@@ -470,7 +472,8 @@ describe("BujoMemoryStore", () => {
     await writable.close();
 
     const readOnly = createBujoMemoryStore({ root, readOnly: true, embeddings: fakeEmbeddings(64), dim: 64 });
-    await expect(readOnly.load("seed", "What is Morgan's memory preference?")).resolves.toMatchObject({
+    await expect(readOnly.load("seed", "What is Morgan's memory preference?")).resolves.toBeUndefined();
+    await expect(readOnly.load("other-conversation", "What is Morgan's memory preference?")).resolves.toMatchObject({
       kind: "markdown",
       content: expect.stringContaining("Morgan's memory preference is opt-in."),
     });
