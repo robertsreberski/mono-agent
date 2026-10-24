@@ -1,6 +1,7 @@
 import { AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES, AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES, AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES, AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, AGENT_CONTEXT_IMPORT_VERSION, type AgentContextImportRequest, type AgentContextImportResult } from "@mono-agent/contracts";
 import { OwnedFileDamagedError, isOwned } from "@mono-agent/turn/engine/owned-fs.js";
 import type { RuntimeNativeEpochContext, RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage } from "@mono-agent/turn/host/types";
+import type { CanonicalContinuityState, ConversationHistoryContinuityParticipant, PreparedContinuityPublication } from "../continuity-contracts.js";
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import { lstat, open, readdir, rename, rm } from "node:fs/promises";
@@ -60,6 +61,10 @@ const MAX_CONTEXT_IMPORT_RECORD_BYTES = 6 * (
 const PROCESS_POST_COMMIT_FAILURES = new Map<string, { count: number; lastError?: string }>();
 
 export interface DurableHistoryStoreOptions {
+  /** Optional owned sidecar participant; omitted/OFF leaves the legacy path untouched. */
+  readonly continuity?: ConversationHistoryContinuityParticipant;
+  /** Storage-only fault injection/diagnostics, active only with the participant. */
+  readonly onContinuityPhase?: (phase: string) => Promise<void>;
   /** Storage-only native matcher; never dispatches a provider, tool or continuation. */
   readonly reconcileProviderSessionTurn?: ConversationHistoryTurnInspector;
   /** Owner-only directory containing one content-addressed file per conversation. */
@@ -136,6 +141,8 @@ export interface DurableHistoryStoreStats {
 }
 
 interface ActiveStage {
+  readonly conversationId: string;
+  readonly continuity?: PreparedContinuityPublication | undefined;
   readonly logicalConversationKey?: string;
   readonly conversationKey: string;
   readonly destinationName: string;
@@ -187,6 +194,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private readonly inspectProviderTurn: ConversationHistoryTurnInspector | undefined;
   readonly providerSessionRetirement: "fail-closed" | undefined;
   readonly contextImport: ConversationHistoryContextImport | undefined;
+  private readonly continuity: ConversationHistoryContinuityParticipant | undefined;
+  private readonly continuityPhase: (phase: string) => Promise<void>;
   private readonly root: string;
   private readonly maxMessages: number;
   private readonly maxStoreBytes: number;
@@ -237,6 +246,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (options.reconcileProviderSessionTurn !== undefined && (typeof options.reconcileProviderSessionTurn !== "function" || options.retireProviderSession === undefined)) {
       throw new TypeError("Native turn reconciliation requires an inspector and fail-closed retirement.");
     }
+    this.continuity = options.continuity;
+    this.continuityPhase = options.onContinuityPhase ?? (async () => {});
     this.nativeJournalStorage = options.nativeJournalStorage;
     this.nativePhase = options.onNativeHistoryPhase ?? (async () => {});
     this.inspectProviderTurn = options.reconcileProviderSessionTurn;
@@ -526,6 +537,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const assertOwned = async () => { await held.assertOwned(); const marker = await this.nativeHistoryRoot(rootIdentity).read(); if (!marker) throw new Error("Native root authority missing"); };
     const withRootTransaction = async <T>(action: () => Promise<T>): Promise<T> => { const unlock = await this.acquireRootTransaction(rootIdentity); try { await assertOwned(); return await action(); } finally { await unlock(); } };
     await assertOwned();
+    await this.reconcileContinuity(id, rootIdentity, assertOwned);
     const current = await payloads.read(id, switchId), existing = await this.readRecord(id, rootIdentity);
     if (!current) {
       if (existing.lastSwitch?.switchId !== switchId) return { status: "absent" };
@@ -545,8 +557,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         || source.sourceEpoch !== state.identity.sourceEpoch) throw new Error("Switch source changed before native roll-forward");
       // Deterministic target first; all potentially long native I/O is outside
       // the short host root transaction. The outgoing journal is not touched yet.
-      await native.createEpoch(this.epochContext(id, state.identity.targetEpoch, authority, assertOwned, state.identity.timestamp)); await phase("switch_target_created");
       const record = switchCanonicalRecord(existing, state, authority);
+      const continuity = await this.prepareContinuity(record, id, rootIdentity, assertOwned);
+      await native.createEpoch(this.epochContext(id, state.identity.targetEpoch, authority, assertOwned, state.identity.timestamp)); await phase("switch_target_created");
       if (serializeHistoryFile(record).byteLength > state.reservation.canonicalBytes) throw new Error("Canonical switch exceeds frozen publication capacity");
       await withRootTransaction(async () => {
         const latest = await this.modelSwitchStorageSource(id);
@@ -556,6 +569,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const stage = await this.writeStage(record, rootIdentity); await phase("switch_canonical_stage_synced");
         await assertOwned(); await rename(stage.temporaryPath, join(this.root, stage.destinationName)); this.invalidateCanonicalAccounting(stage.destinationName); await phase("switch_canonical_renamed");
         await fsyncDirectory(this.root, rootIdentity); await phase("switch_canonical_directory_synced");
+        await this.commitContinuity(continuity, id, rootIdentity);
       });
     }
     // Every later step is checked against the durable receipt: only then is the
@@ -727,9 +741,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try { assertSameIdentity(beforeIntent, await intentHandle.stat(), intentPath); await intentHandle.sync(); }
     finally { await intentHandle.close(); }
     await fsyncDirectory(this.root, rootIdentity);
+    await this.reconcileContinuity(id, rootIdentity, assertOwned);
     const source = operation.source, sourceJournal = currentJournal(id, source.providerSession.epoch);
     const current = await this.readRecord(id, rootIdentity, true);
     const sourceMatches = current.native !== undefined && switchDigest(this.nativeCanonical(current)) === switchDigest(source);
+    const continuity = sourceMatches ? await this.prepareContinuity(operation.next, id, rootIdentity, assertOwned, operation.disposition === "D" ? operation.next ? "reset" : "delete" : "publish") : undefined;
     // A published canonical next proves its epoch was created first.
     if (operation.disposition === "C" && sourceMatches) {
       await nativeIo(() => this.nativeJournalStorage!.createEpoch(this.epochContext(id, operation.next!.providerSession.epoch, source.native.authority, owned)));
@@ -751,6 +767,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       await this.nativePhase("lifecycle_canonical_published");
     }
     await this.syncLifecycleCanonical(id, operation.next !== null, rootIdentity); await this.nativePhase("lifecycle_canonical_directory_synced");
+    await this.commitContinuity(continuity, id, rootIdentity);
     if (operation.disposition === "C") {
       await nativeIo(() => this.nativeJournalStorage!.deleteJournals([sourceJournal], { disposition: "C",
         hostAuthority: source.native.authority, assertOwned: owned })); await this.nativePhase("lifecycle_native_deleted");
@@ -975,6 +992,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await this.resetPhysicalConversation(conversationId, heldLogical);
       }
       await this.resetDirtyFencesForLogicalConversation(logicalId, heldLogical);
+      await this.continuity?.resetLogical({ conversationId: logicalId, assertOwned: () => heldLogical.assertOwned() });
       const releaseDiagnostics = await this.acquireRootTransaction(rootIdentity);
       try {
         await heldLogical.assertOwned();
@@ -1073,7 +1091,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         messages: [],
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
       }, held, rootIdentity, undefined, retirementFence,
-      async () => await this.removePendingConversation(historyKey(conversationId), rootIdentity, () => held.assertOwned()));
+      async () => await this.removePendingConversation(historyKey(conversationId), rootIdentity, () => held.assertOwned()), false, undefined, "reset");
     } catch (error) {
       await this.releaseConversation(held, rootIdentity).catch(() => undefined);
       throw error;
@@ -1920,6 +1938,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
 
   private async settleHeldTurn(conversationId: string, held: HeldConversation): Promise<ConversationHistoryTurnRecovery> {
     await held.assertOwned();
+    await this.reconcileContinuity(conversationId, held.rootIdentity, () => held.assertOwned());
     const canonical = await this.readRecord(conversationId, held.rootIdentity);
     await this.assertSwitchOwnerReadable(conversationId, held.rootIdentity);
     // Ready alone is not runtime switch authority. Once its canonical receipt is
@@ -2015,6 +2034,36 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
+  private continuityState(record: LoadedHistoryRecord | CanonicalHistoryFile): CanonicalContinuityState {
+    // The decoder canonicalizes message key order (imports need not be authored
+    // in that order). Bind targets to exactly the validated state that reopening
+    // will observe, rather than to incidental in-memory object property order.
+    const validated = "sourceVersion" in record ? record : parseHistoryFile(serializeHistoryFile(record), this.recordPath(record.conversationId));
+    return { digest: validated.sourceVersion === 0 ? null : historyRecordVersion(validated), messages: validated.messages,
+      ...(validated.providerSession === undefined ? {} : { epoch: validated.providerSession.epoch, revision: validated.providerSession.revision ?? 0 }) };
+  }
+  private async reconcileContinuity(id: string, rootIdentity: DirectoryIdentity, assertOwned: () => Promise<void>): Promise<void> {
+    if (!this.continuity) return;
+    await assertOwned();
+    await this.continuity.reconcile({ conversationId: id, assertOwned, current: this.continuityState(await this.readRecord(id, rootIdentity)) });
+  }
+  private async prepareContinuity(record: CanonicalHistoryFile | null, id: string, rootIdentity: DirectoryIdentity,
+    assertOwned: () => Promise<void>, action: "publish" | "reset" | "delete" = "publish"): Promise<PreparedContinuityPublication | undefined> {
+    if (!this.continuity) return undefined;
+    await this.reconcileContinuity(id, rootIdentity, assertOwned);
+    const publication = await this.continuity.prepare({ conversationId: id, assertOwned, action,
+      before: this.continuityState(await this.readRecord(id, rootIdentity)),
+      after: record === null ? { digest: null, messages: [] } : this.continuityState(record) });
+    await this.continuityPhase("continuity_prepared");
+    return publication;
+  }
+  private async commitContinuity(publication: PreparedContinuityPublication | undefined, id: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    if (!publication) return;
+    await this.continuityPhase("canonical_durable");
+    await publication.commit(this.continuityState(await this.readRecord(id, rootIdentity)));
+    await this.continuityPhase("continuity_committed");
+  }
+
   private async prepareRecord(
     record: CanonicalHistoryFile,
     held: HeldConversation,
@@ -2024,6 +2073,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     afterDurableCommit?: () => Promise<void>,
     keepOwner = false,
     afterFenceCleanup?: () => Promise<void>,
+    continuityAction: "publish" | "reset" = "publish",
   ): Promise<PreparedHistoryAppend> {
     let releaseRoot = await this.acquireRootTransaction(rootIdentity);
     const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
@@ -2048,13 +2098,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (!settles) await this.validateStagingReservation(rootIdentity, projected.bytes);
       // Write while the root transaction is held so another process cannot
       // pass the same staged-byte reservation before this temp becomes visible.
-      stage = await this.writeStage(record, rootIdentity);
+      const continuity = await this.prepareContinuity(record, record.conversationId, rootIdentity, () => held.assertOwned(), continuityAction);
+      stage = { ...await this.writeStage(record, rootIdentity), continuity };
       await this.validateRetentionReservation(rootIdentity, [stage]);
       return this.createPreparedAppend(stage, rootIdentity, held, onSettled, dirtyFence, afterDurableCommit, keepOwner, afterFenceCleanup);
     } catch (error) {
       if (stage !== undefined) {
         await rm(stage.temporaryPath, { force: true }).catch(() => undefined);
         await fsyncDirectory(this.root, rootIdentity).catch(() => undefined);
+      }
+      if (this.continuity) {
+        try { await this.reconcileContinuity(record.conversationId, rootIdentity, () => held.assertOwned()); }
+        catch (recoveryError) { throw new AggregateError([error, recoveryError], "Continuity preparation cleanup remains pending."); }
       }
       throw error;
     } finally {
@@ -2108,6 +2163,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private projectRecord(record: CanonicalHistoryFile): ActiveStage {
     const conversationKey = historyKey(record.conversationId);
     return {
+      conversationId: record.conversationId,
       conversationKey,
       logicalConversationKey: historyKey(logicalConversationIdForFence(record.conversationId)),
       destinationName: `${conversationKey}${HISTORY_FILE_SUFFIX}`,
@@ -2219,6 +2275,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       throw error;
     }
     return {
+      conversationId: record.conversationId,
       conversationKey,
       logicalConversationKey: historyKey(logicalConversationIdForFence(record.conversationId)),
       destinationName: `${conversationKey}${HISTORY_FILE_SUFFIX}`,
@@ -2268,6 +2325,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           // stats but can never make callers retry an already-published turn.
           try {
             await fsyncDirectory(this.root, rootIdentity);
+            await this.commitContinuity(stage.continuity, stage.conversationId, rootIdentity);
             // The canonical replacement is clean and directory-durable before
             // the crash fence is removed. If cleanup cannot be made durable,
             // restore the visible fence and record a diagnostic so the next
@@ -2324,6 +2382,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           try {
             await rm(stage.temporaryPath, { force: true });
             await fsyncDirectory(this.root, rootIdentity);
+            await this.reconcileContinuity(stage.conversationId, rootIdentity, () => held.assertOwned());
           } catch (error) {
             cleanupErrors.push(error);
           }
@@ -2432,6 +2491,29 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (bytes > this.maxStagedBytes) throw new Error(this.quotaDiagnostic(`Prepared conversation history exceeds its ${this.maxStagedBytes}-byte staging quota.`));
   }
 
+  /** Root maintenance never waits for a foreign conversation owner under the
+   * root transaction. Borrow the committing logical owner or claim try-only. */
+  private async withContinuityMaintenanceOwner(record: LoadedHistoryRecord, rootIdentity: DirectoryIdentity,
+    borrowed: HeldLogicalConversation | undefined, work: (assertOwned: () => Promise<void>) => Promise<void>): Promise<boolean> {
+    let logical: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined;
+    try {
+      const logicalId = logicalConversationIdForFence(record.conversationId);
+      logical = borrowed?.logicalConversationId === logicalId ? borrowed : await this.claims.acquireLogicalConversation(logicalId, true);
+      if (requiresExactConversationClaim(record.conversationId)) exact = await this.claims.acquireExactConversationClaim(record.conversationId, true);
+      const assertOwned = async () => {
+        await logical!.assertOwned(); await assertDirectoryIdentity(this.root, rootIdentity);
+        if ((await this.claims.scanActiveMarkers(false)).some((marker) => marker.conversationKey === historyKey(record.conversationId))) throw new HistoryOwnerBusyError(record.conversationId);
+      };
+      await assertOwned();
+      await this.reconcileContinuity(record.conversationId, rootIdentity, assertOwned);
+      await work(assertOwned);
+      return true;
+    } catch (error) {
+      if (error instanceof HistoryOwnerBusyError) return false;
+      throw error;
+    } finally { await exact?.release(); if (logical !== borrowed) await logical?.release(); }
+  }
+
   private async applyRetention(rootIdentity: DirectoryIdentity, committedStage: ActiveStage, nativeIo: NativeHistoryIo, committingOwner: HeldLogicalConversation): Promise<void> {
     await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, committingOwner, "maintenance");
     const attempted = new Set<string>();
@@ -2471,17 +2553,25 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           if (replan) break;
           continue;
         }
-        const retirementFence = this.retireProviderSession === undefined ? undefined
-          : await this.ensureRetirementFence(record, rootIdentity, await this.ensureLocksRoot());
-        await this.retireProviderSessions(this.providerSessionsForRetirement(record, retirementFence));
-        await rm(entry.path); this.invalidateCanonicalAccounting(entry.name); await fsyncDirectory(this.root, rootIdentity);
-        if (retirementFence) await this.removeDirtyFenceAfterCommit(retirementFence);
-        const key = historyKey(record.conversationId);
-        await this.removePendingConversation(key, rootIdentity, async () => {
-          await assertDirectoryIdentity(this.root, rootIdentity);
-          if ((await this.claims.scanActiveMarkers(false)).some((marker) => marker.conversationKey === key)
-            || await this.findDirtyFence(key, await this.ensureLocksRoot())) throw new Error("Retention victim acquired pending ownership.");
-        });
+        const remove = async (assertOwned: () => Promise<void>) => {
+          await assertOwned();
+          const continuity = await this.prepareContinuity(null, record.conversationId, rootIdentity, assertOwned, "delete");
+          const retirementFence = this.retireProviderSession === undefined ? undefined
+            : await this.ensureRetirementFence(record, rootIdentity, await this.ensureLocksRoot());
+          await this.retireProviderSessions(this.providerSessionsForRetirement(record, retirementFence));
+          await rm(entry.path); this.invalidateCanonicalAccounting(entry.name); await fsyncDirectory(this.root, rootIdentity);
+          await this.commitContinuity(continuity, record.conversationId, rootIdentity);
+          if (retirementFence) await this.removeDirtyFenceAfterCommit(retirementFence);
+          const key = historyKey(record.conversationId);
+          await this.removePendingConversation(key, rootIdentity, async () => {
+            await assertDirectoryIdentity(this.root, rootIdentity);
+            if ((await this.claims.scanActiveMarkers(false)).some((marker) => marker.conversationKey === key)
+              || await this.findDirtyFence(key, await this.ensureLocksRoot())) throw new Error("Retention victim acquired pending ownership.");
+          });
+        };
+        if (this.continuity) {
+          if (!await this.withContinuityMaintenanceOwner(record, rootIdentity, committingOwner, remove)) { attempted.add(entry.name); replan = true; break; }
+        } else await remove(async () => {});
         count--; bytes -= entry.size;
       }
       if (replan) continue;
@@ -2507,6 +2597,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const protectedNames = new Set(
       (await this.claims.scanActiveMarkers(true)).map((marker) => `${marker.conversationKey}${HISTORY_FILE_SUFFIX}`),
     );
+    if (this.continuity) for (const id of await this.continuity.protectedConversations()) protectedNames.add(`${historyKey(id)}${HISTORY_FILE_SUFFIX}`);
     // Pending execution/compaction owners cannot be quota/age-evicted before
     // explicit settlement. No native inspection occurs under this transaction.
     const fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
@@ -2824,6 +2915,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           }
         },
       };
+      await this.reconcileContinuity(conversationId, rootIdentity, () => held.assertOwned());
       await this.recoverNativeOperation(conversationId, held);
       return held;
     } catch (error) {
@@ -2967,30 +3059,35 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
     let removed = false;
     for (const { fence, committedEntry, committedRecord, canonicalProvesCommit } of planned) {
-      // The fence is the crash-recovery journal: durable transcript deletion
-      // happens first, then its directory entry is fsynced, and only then may
-      // the fence disappear. A crash or error at any earlier point leaves the
-      // idempotent journal visible for the next maintenance pass.
-      // A canonical epoch at exactly revision+1 proves the history rename won
-      // and only fence cleanup crashed; preserve that valid transcript.
-      if (!canonicalProvesCommit) {
-        const sameCommittedEpoch = committedRecord?.providerSession !== undefined
-          && committedRecord.providerSession?.epoch === fence.epoch;
-        // Contradictory owners for one id are corruption, not a retirement hint.
-        // Validate both before invoking either runtime or losing the journal.
-        await this.retireProviderSessions(sameCommittedEpoch
-          ? this.providerSessionsForRetirement(committedRecord, fence)
-          : [{ providerSessionId: fence.providerSessionId, ...modelBinding(fence.modelKey) }]);
-        if (
-          committedEntry !== undefined
-          && committedRecord?.providerSession !== undefined
-          && committedRecord.providerSession?.epoch === fence.epoch
-        ) {
-          await this.rotateCommittedProviderEpoch(committedEntry, committedRecord, rootIdentity);
+      const retire = async (assertOwned: () => Promise<void>) => {
+        await assertOwned();
+        // The fence is the crash-recovery journal: durable transcript deletion
+        // happens first, then its directory entry is fsynced, and only then may
+        // the fence disappear. A crash or error at any earlier point leaves the
+        // idempotent journal visible for the next maintenance pass.
+        // A canonical epoch at exactly revision+1 proves the history rename won
+        // and only fence cleanup crashed; preserve that valid transcript.
+        if (!canonicalProvesCommit) {
+          const sameCommittedEpoch = committedRecord?.providerSession !== undefined
+            && committedRecord.providerSession?.epoch === fence.epoch;
+          // Contradictory owners for one id are corruption, not a retirement hint.
+          // Validate both before invoking either runtime or losing the journal.
+          await this.retireProviderSessions(sameCommittedEpoch
+            ? this.providerSessionsForRetirement(committedRecord, fence)
+            : [{ providerSessionId: fence.providerSessionId, ...modelBinding(fence.modelKey) }]);
+          if (
+            committedEntry !== undefined
+            && committedRecord?.providerSession !== undefined
+            && committedRecord.providerSession?.epoch === fence.epoch
+          ) {
+            await this.rotateCommittedProviderEpoch(committedEntry, committedRecord, rootIdentity, assertOwned);
+          }
         }
-      }
-      await rm(fence.path);
-      removed = true;
+        await rm(fence.path);
+        removed = true;
+      };
+      if (this.continuity && committedRecord) await this.withContinuityMaintenanceOwner(committedRecord, rootIdentity, undefined, retire);
+      else await retire(async () => {});
     }
     if (removed) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
   }
@@ -3209,6 +3306,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     entry: CommittedEntry,
     record: LoadedHistoryRecord,
     rootIdentity: DirectoryIdentity,
+    assertOwned: () => Promise<void>,
   ): Promise<void> {
     if (record.providerSession === undefined) return;
     this.requireNativeCapability(record, "native epoch transition", "inactive provider epoch rotation");
@@ -3219,6 +3317,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       ...lastCommitBinding(record),
       providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(record.providerSession.modelKey) },
     };
+    const continuity = await this.prepareContinuity(rotated, record.conversationId, rootIdentity, assertOwned);
     const stage = await this.writeStage(rotated, rootIdentity);
     let published = false;
     try {
@@ -3226,6 +3325,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       this.invalidateCanonicalAccounting(entry.name);
       published = true;
       await fsyncDirectory(this.root, rootIdentity);
+      await this.commitContinuity(continuity, record.conversationId, rootIdentity);
     } finally {
       if (!published) await rm(stage.temporaryPath, { force: true }).catch(() => undefined);
     }

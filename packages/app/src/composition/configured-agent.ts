@@ -347,8 +347,19 @@ async function createConfiguredConversationHarnessInternal(
   const sessionsRoot = config.runtime.session.root;
   const retireDurableSession = runtime.retireDurableSession?.bind(runtime);
   const historyRoot = artifactDerivedRoots.history;
+  const rollover = internalHooks.sessionRollover ?? config.runtime.session.rollover;
+  const toolHistory = lazyConfiguredToolHistory({
+    root: historyRoot,
+    continuityEnabled: config.runtime.session.continuity?.enabled !== false,
+    artifactRoot: toolOutputArtifactRoot,
+    rollover,
+    ...(options.onToolHistoryWarning === undefined
+      ? {}
+      : { onWarning: options.onToolHistoryWarning }),
+  });
   const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
     root: historyRoot,
+    ...(toolHistory.continuity === undefined ? {} : { continuity: toolHistory.continuity }),
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
     ...(nativeModelSwitch === undefined ? {} : { nativeJournalStorage: nativeModelSwitch.native }),
     ...(sessionsRoot === undefined || retireDurableSession === undefined
@@ -378,20 +389,12 @@ async function createConfiguredConversationHarnessInternal(
         }),
   });
   const historyStore = internalHooks.wrapHistoryStore?.(baseHistoryStore) ?? baseHistoryStore;
-  const rollover = internalHooks.sessionRollover ?? config.runtime.session.rollover;
   // Conversation history and managed-tool history are distinct contracts. A
   // caller-supplied message store remains the sole message-history owner, while
   // the configured app keeps its independent lifecycle sidecar and
-  // SessionHistory capability. Acquisition stays lazy so tool-free runs do not
-  // create either the sidecar or its owner database.
-  const toolHistory = lazyConfiguredToolHistory({
-    root: historyRoot,
-    artifactRoot: toolOutputArtifactRoot,
-    rollover,
-    ...(options.onToolHistoryWarning === undefined
-      ? {}
-      : { onWarning: options.onToolHistoryWarning }),
-  });
+  // SessionHistory capability. Continuity borrows the default store owner;
+  // acquisition stays lazy until a canonical mutation or managed-tool event.
+
 
   try {
     const harnessOptions: ConversationHarnessOptions = {

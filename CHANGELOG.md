@@ -6,8 +6,11 @@
   `ConversationHistory` retrieval. Set `runtime.session.continuity.enabled` to
   `false` to opt out and keep legacy capture/storage behavior. Enabling upgrades
   the tool-history store to v3 in place; older binaries refuse it, so rolling
-  back requires a pre-upgrade backup.
-
+  back requires a pre-upgrade backup. Continuity publication borrows the canonical
+  conversation owner, keeps preparations hidden, and recovers interrupted
+  acknowledgements before another mutation. Re-enabling after an off interval
+  abandons stale preparations with explicit coverage gaps, not permanent blocks.
+  Reset purges evidence; retention never silently removes pinned references.
 
 - Fix detached `Agent` and `AgentManage` completions to save full final results
   and lead completion wakes with their artifact paths; report persistence failures

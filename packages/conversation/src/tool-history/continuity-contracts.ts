@@ -45,9 +45,10 @@ export interface ContinuityPreparation {
   readonly generationId: string;
   readonly conversationId: string;
   readonly logicalConversationId: string;
-  /** SHA-256 of the exact canonical representation; null means absent. */
+  /** Digest of the validated canonical representation; null means absent. */
   readonly beforeDigest: string | null;
-  readonly afterDigest: string;
+  readonly afterDigest: string | null;
+  readonly action?: "publish" | "reset" | "delete";
   readonly records: readonly ContinuityRecordInput[];
   readonly latestSummaryRecordId?: string;
 }
@@ -70,7 +71,7 @@ export interface ContinuityReceipt {
 }
 
 export interface ContinuityReconciliationResult {
-  readonly status: "clean" | "committed" | "discarded";
+  readonly status: "clean" | "committed" | "discarded" | "abandoned";
   readonly generationId?: string;
 }
 
@@ -144,4 +145,14 @@ export interface ContinuityStats {
   readonly tombstones: number;
   readonly retainedBytes: number;
   readonly degraded: boolean;
+  readonly coverageGaps: number;
+}
+
+export interface ContinuityCoverageGap {
+  readonly generationId: string;
+  readonly beforeDigest: string | null;
+  readonly afterDigest: string | null;
+  readonly observedDigest: string | null;
+  readonly detectedAtMs: number;
+  readonly reason: "canonical_advanced_past_preparation";
 }

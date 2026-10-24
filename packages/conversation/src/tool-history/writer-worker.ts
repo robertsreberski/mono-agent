@@ -180,9 +180,18 @@ parentPort.on("message", (request: WorkerRequest) => {
                 case "continuity_pin": pinContinuity(database, request.payload as ContinuityPin); break;
                 case "continuity_unpin": unpinContinuity(database, request.payload as ContinuityPin); break;
               }
+              const generationId = (request.payload as { generationId?: string }).generationId;
+              if (generationId !== undefined) clearIncident(database, "idempotency_conflicts", `continuity:${generationId}`);
             });
           } catch (error) {
-            if ((error as { code?: string }).code === "continuity_quota_exhausted") {
+            const code = (error as { code?: string }).code;
+            if (code === "continuity_conflict" || code === "continuity_publication_mismatch") {
+              const generationId = (error as { conflictingGenerationId?: string }).conflictingGenerationId ?? (request.payload as { generationId?: string }).generationId;
+              if (generationId !== undefined && database.prepare("SELECT 1 FROM continuity_generations WHERE generation_id=?").get(generationId)) {
+                transaction(database, () => recordIncident(database, "idempotency_conflicts", `continuity:${generationId}`, `${code}: contradictory continuity generation`));
+              }
+            }
+            if (code === "continuity_quota_exhausted") {
               transaction(database, () => { database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('continuity_degraded','quota')").run(); });
             }
             throw error;

@@ -367,16 +367,28 @@ substrate (`ToolHistoryWriterOptions.continuityEnabled`, default false). Ordinar
 writers keep SQLite v2; enabled writers migrate the same owner-private database
 to v3. Readers support both versions; older binaries cannot read v3. This is a
 storage capability, not permission to mutate a canonical conversation without
-its existing owner. The configured conversation participant and request tool
-must be wired by the host before advertising end-to-end continuity.
+its existing owner. `createContinuityParticipant` is an optional port on the
+canonical store. The configured host supplies the same lazy sidecar writer,
+borrows its existing canonical owner, and enables capture by default;
+`runtime.session.continuity.enabled=false` omits that participant entirely.
+A caller-supplied canonical store must provide its own owned producer; a reader
+without a producer honestly has no captured evidence.
 
 Continuity preparation stores immutable sanitized text (at most 1 MiB per
 record) and an expected canonical before/after digest. Prepared records are not
 readable evidence. After canonical publication, `commitContinuity` verifies the
 target digest and makes records readable. Before another mutation, the same
 conversation owner must reconcile an interrupted preparation: a matching target
-commits, an unchanged source discards, and ambiguity preserves evidence and
-refuses advancement. Storage primitives do not acquire canonical ownership.
+commits and an unchanged source discards. If canonical state has advanced past
+both (for example during an explicitly disabled interval), reconciliation
+abandons the preparation, releases its text/pins/reservation, and records a
+content-free coverage gap. Abandoned generations cannot be revived or read;
+`continuityGaps` reports retained gaps with their expected/observed digests. Gap
+metadata uses the tombstone count/age bounds; retrieval never claims complete
+coverage. Contradictory generations still refuse and appear in sidecar
+idempotency-conflict diagnostics. Storage primitives do not acquire canonical
+ownership. Canonical retention protects pinned/prepared physical owners.
+Explicit reset purges evidence after canonical publication, before owner release.
 
 `searchContinuity` / `getContinuity` return scoped evidence, not instructions or
 new approval. Chunks contain at most 8192 UTF-8 bytes with retained-text digests
@@ -823,11 +835,14 @@ Every symbol exported by each public code entrypoint is listed below.
 BuiltAgentContext
 CONTINUITY_USER_VERSION
 CONVERSATION_HISTORY_VERSION_MAX_BYTES
+CanonicalContinuityState
+ContinuityCoverageGap
 ContinuityGetInput
 ContinuityGetResult
 ContinuityPin
 ContinuityPreparation
 ContinuityPublication
+ContinuityPublicationWriter
 ContinuityReceipt
 ContinuityReconciliation
 ContinuityReconciliationResult
@@ -848,6 +863,7 @@ ConversationHarnessRuntimeOptionsExtension
 ConversationHarnessRuntimeOptionsInput
 ConversationHarnessToolHistoryOptions
 ConversationHarnessTurnHistoryEnricher
+ConversationHistoryContinuityParticipant
 ConversationHistoryExclusiveTurn
 ConversationHistoryStore
 ConversationHistoryTurnInspection
@@ -855,6 +871,9 @@ ExternalRunSummary
 HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
 LiveInputMailbox
+OwnedContinuityContext
+OwnedContinuityMutation
+PreparedContinuityPublication
 ProcessIncarnation
 ProviderSessionHandle
 ProviderSessionTurnBinding
@@ -882,6 +901,7 @@ classifyContinuationMcpServerTransport
 composeHostTurnEnvelope
 continuityGenerationId
 continuityRecordId
+createContinuityParticipant
 createConversationHarness
 createConversationResponder
 createDurableHistoryStore

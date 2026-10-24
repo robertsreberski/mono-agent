@@ -31,12 +31,16 @@ export function createContinuitySchema(database: DatabaseSync): void {
       conversation_id TEXT NOT NULL,
       logical_id TEXT NOT NULL,
       before_digest TEXT,
-      after_digest TEXT NOT NULL,
+      after_digest TEXT,
+      action TEXT NOT NULL CHECK(action IN ('publish','reset','delete')),
       preparation_digest TEXT NOT NULL,
-      state TEXT NOT NULL CHECK(state IN ('prepared','committed')),
+      state TEXT NOT NULL CHECK(state IN ('prepared','committed','abandoned')),
       latest_summary_record_id TEXT,
       created_at_ms INTEGER NOT NULL,
-      committed_at_ms INTEGER
+      committed_at_ms INTEGER,
+      observed_digest TEXT,
+      abandoned_at_ms INTEGER,
+      gap_reason TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS continuity_prepared_owner_idx
       ON continuity_generations(conversation_id) WHERE state='prepared';
@@ -79,7 +83,7 @@ export function createContinuitySchema(database: DatabaseSync): void {
 
 export function assertContinuitySchema(database: DatabaseSync): void {
   const required = {
-    continuity_generations: ["generation_id", "conversation_id", "logical_id", "before_digest", "after_digest", "preparation_digest", "state", "latest_summary_record_id", "created_at_ms", "committed_at_ms"],
+    continuity_generations: ["generation_id", "conversation_id", "logical_id", "before_digest", "after_digest", "preparation_digest", "state", "latest_summary_record_id", "created_at_ms", "committed_at_ms", "action", "observed_digest", "abandoned_at_ms", "gap_reason"],
     continuity_records: ["ordinal", "record_id", "generation_id", "run_id", "input_id", "kind", "seq", "finalized", "retained_text", "text_sha256", "original_bytes", "retained_bytes", "redacted", "truncated", "provenance", "source_json", "summary_json", "created_at_ms", "tombstone_reason", "removed_at_ms"],
     continuity_pins: ["record_id", "owner_kind", "owner_id", "created_at_ms"],
   };
@@ -104,31 +108,36 @@ export function prepareContinuity(
   // Digest the selected, validated representation, never arbitrary caller properties.
   const preparationDigest = createHash("sha256").update(JSON.stringify([
     input.conversationId, input.logicalConversationId, input.beforeDigest, input.afterDigest,
-    input.latestSummaryRecordId ?? null,
+    input.latestSummaryRecordId ?? null, input.action ?? "publish",
     records.map(({ record: r, retained }) => [r.recordId, r.runId, r.inputId ?? null, r.kind, r.sequence,
       r.provenance, r.source ?? {}, r.summary ?? null, retained]),
   ])).digest("hex");
   const existing = database.prepare("SELECT * FROM continuity_generations WHERE generation_id=?")
     .get(input.generationId) as Record<string, unknown> | undefined;
   if (existing !== undefined) {
+    if (existing.state === "abandoned") fail("continuity_conflict", "An abandoned continuity generation cannot be revived.");
     if (existing.preparation_digest !== preparationDigest) fail("continuity_conflict", "Continuity generation changed after preparation.");
     return { generationId: input.generationId, status: existing.state as "prepared" | "committed", recordIds: input.records.map((r) => r.recordId) };
   }
   if (database.prepare("SELECT 1 FROM continuity_generations WHERE conversation_id=? AND state='prepared'").get(input.conversationId)) {
     fail("continuity_reconciliation_required", "An unresolved continuity publication must be reconciled under its conversation owner before mutation.");
   }
+  for (const { record } of records) {
+    const prior = database.prepare("SELECT generation_id FROM continuity_records WHERE record_id=?").get(record.recordId) as Record<string, unknown> | undefined;
+    if (prior) throw Object.assign(new ToolHistoryWriterError("continuity_conflict", "Continuity record identity conflicts with an existing generation."), { conflictingGenerationId: prior.generation_id });
+  }
   const bytes = records.reduce((sum, row) => sum + row.retained.retainedBytes, 0);
-  reserve(bytes, records.length);
+  if ((input.action ?? "publish") === "publish") reserve(bytes, records.length);
   const count = Number((database.prepare("SELECT count(*) count FROM continuity_records WHERE retained_text IS NOT NULL").get() as Record<string, unknown>).count);
-  if (continuityRetainedBytes(database) + toolRetainedBytes(database) + bytes > limits.maxBytes || count + records.length > limits.maxCompletedCalls) {
+  if ((input.action ?? "publish") === "publish" && (continuityRetainedBytes(database) + toolRetainedBytes(database) + bytes > limits.maxBytes || count + records.length > limits.maxCompletedCalls)) {
     fail("continuity_quota_exhausted", "Continuity retention capacity is exhausted; continuity is degraded and new reductions must be declined.");
   }
   database.prepare("DELETE FROM metadata WHERE key='continuity_degraded'").run();
   const now = Date.now();
   database.prepare(`INSERT INTO continuity_generations
-    (generation_id,conversation_id,logical_id,before_digest,after_digest,preparation_digest,state,latest_summary_record_id,created_at_ms)
-    VALUES (?,?,?,?,?,?,'prepared',?,?)`).run(input.generationId, input.conversationId, input.logicalConversationId,
-      input.beforeDigest, input.afterDigest, preparationDigest, input.latestSummaryRecordId ?? null, now);
+    (generation_id,conversation_id,logical_id,before_digest,after_digest,preparation_digest,state,latest_summary_record_id,created_at_ms,action)
+    VALUES (?,?,?,?,?,?,'prepared',?,?,?)`).run(input.generationId, input.conversationId, input.logicalConversationId,
+      input.beforeDigest, input.afterDigest, preparationDigest, input.latestSummaryRecordId ?? null, now, input.action ?? "publish");
   for (const { record: r, retained: t } of records) {
     database.prepare(`INSERT INTO continuity_records
       (record_id,generation_id,run_id,input_id,kind,seq,retained_text,text_sha256,original_bytes,retained_bytes,
@@ -148,6 +157,8 @@ export function commitContinuity(database: DatabaseSync, input: ContinuityPublic
     .get(input.generationId, input.conversationId) as Record<string, unknown> | undefined;
   if (!row || row.after_digest !== input.canonicalDigest) fail("continuity_publication_mismatch", "Canonical publication does not match the prepared continuity target.");
   if (row.state === "committed") return;
+  if (row.state !== "prepared") fail("continuity_conflict", "Only a prepared continuity generation may commit.");
+  if (row.action === "reset" || row.action === "delete") clearPhysicalContinuity(database, input.conversationId, input.generationId);
   database.prepare("UPDATE continuity_generations SET state='committed',committed_at_ms=? WHERE generation_id=?")
     .run(Date.now(), input.generationId);
   database.prepare("UPDATE continuity_records SET finalized=1 WHERE generation_id=?").run(input.generationId);
@@ -177,7 +188,13 @@ export function reconcileContinuity(database: DatabaseSync, input: ContinuityRec
     database.prepare("DELETE FROM continuity_generations WHERE generation_id=?").run(generationId);
     return { status: "discarded", generationId };
   }
-  fail("continuity_publication_ambiguous", "Continuity publication is ambiguous; preserve evidence and reconcile before any further canonical mutation.");
+  // Evidence is not authority. OFF-mode canonical mutation and offline repair
+  // may advance beyond a preparation; report a gap, never resurrect its text.
+  database.prepare("DELETE FROM continuity_pins WHERE record_id IN (SELECT record_id FROM continuity_records WHERE generation_id=?)").run(generationId);
+  database.prepare("DELETE FROM continuity_records WHERE generation_id=?").run(generationId);
+  database.prepare("UPDATE continuity_generations SET state='abandoned',observed_digest=?,abandoned_at_ms=?,gap_reason='canonical_advanced_past_preparation' WHERE generation_id=?")
+    .run(input.canonicalDigest, Date.now(), generationId);
+  return { status: "abandoned", generationId };
 }
 
 export function pinContinuity(database: DatabaseSync, pin: ContinuityPin): void {
@@ -196,10 +213,18 @@ export function unpinContinuity(database: DatabaseSync, pin: ContinuityPin): voi
     .run(pin.recordId, pin.ownerKind, pin.ownerId, pin.logicalConversationId);
 }
 
+function clearPhysicalContinuity(database: DatabaseSync, conversationId: string, exceptGenerationId: string): void {
+  database.prepare(`DELETE FROM continuity_pins WHERE record_id IN (SELECT r.record_id FROM continuity_records r
+    JOIN continuity_generations g USING(generation_id) WHERE g.conversation_id=? AND g.generation_id<>?)`).run(conversationId, exceptGenerationId);
+  database.prepare("DELETE FROM writer_stats WHERE key IN (SELECT 'idempotency_conflicts:continuity:' || generation_id FROM continuity_generations WHERE conversation_id=? AND generation_id<>?)").run(conversationId, exceptGenerationId);
+  database.prepare("DELETE FROM continuity_generations WHERE conversation_id=? AND generation_id<>?").run(conversationId, exceptGenerationId);
+}
+
 export function resetContinuity(database: DatabaseSync, logicalId: string): void {
   normalizeId(logicalId, "logicalConversationId");
   database.prepare(`DELETE FROM continuity_pins WHERE record_id IN
     (SELECT r.record_id FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE g.logical_id=?)`).run(logicalId);
+  database.prepare("DELETE FROM writer_stats WHERE key IN (SELECT 'idempotency_conflicts:continuity:' || generation_id FROM continuity_generations WHERE logical_id=?)").run(logicalId);
   database.prepare("DELETE FROM continuity_generations WHERE logical_id=?").run(logicalId);
 }
 
@@ -228,6 +253,13 @@ export function retainContinuity(database: DatabaseSync, limits: Required<ToolHi
   database.prepare(`DELETE FROM continuity_records WHERE retained_text IS NULL AND
     (removed_at_ms<? OR record_id IN (SELECT record_id FROM continuity_records WHERE retained_text IS NULL ORDER BY removed_at_ms DESC,ordinal DESC LIMIT -1 OFFSET ?))`)
     .run(now - limits.tombstoneMaxAgeMs, limits.maxTombstones);
+  // Abandonment is content-free gap evidence, retained on the same bounded
+  // count/age terms as tombstones. Retrieval never claims complete coverage.
+  const expiredGaps = `SELECT generation_id FROM continuity_generations WHERE state='abandoned' AND
+    (abandoned_at_ms<? OR generation_id IN (SELECT generation_id FROM continuity_generations WHERE state='abandoned' ORDER BY abandoned_at_ms DESC,generation_id DESC LIMIT -1 OFFSET ?))`;
+  database.prepare(`DELETE FROM writer_stats WHERE key IN (SELECT 'idempotency_conflicts:continuity:' || generation_id FROM (${expiredGaps}))`)
+    .run(now - limits.tombstoneMaxAgeMs, limits.maxTombstones);
+  database.prepare(`DELETE FROM continuity_generations WHERE generation_id IN (${expiredGaps})`).run(now - limits.tombstoneMaxAgeMs, limits.maxTombstones);
   database.prepare(`DELETE FROM continuity_generations WHERE state='committed' AND NOT EXISTS
     (SELECT 1 FROM continuity_records r WHERE r.generation_id=continuity_generations.generation_id)`)
     .run();
@@ -239,21 +271,25 @@ export function readContinuityStats(database: DatabaseSync): ContinuityStats {
     (SELECT count(*) FROM continuity_generations) generations,
     (SELECT count(*) FROM continuity_generations WHERE state='prepared') prepared,
     (SELECT count(*) FROM continuity_pins) pins,
+    (SELECT count(*) FROM continuity_generations WHERE state='abandoned') coverage_gaps,
     (SELECT count(*) FROM continuity_records WHERE retained_text IS NULL) tombstones`).get() as Record<string, unknown>;
   return { records: Number(row.records), generations: Number(row.generations), prepared: Number(row.prepared),
     pins: Number(row.pins), tombstones: Number(row.tombstones), retainedBytes: continuityRetainedBytes(database),
+    coverageGaps: Number(row.coverage_gaps),
     degraded: database.prepare("SELECT 1 FROM metadata WHERE key='continuity_degraded'").get() !== undefined };
 }
 
 export function validateContinuityPreparation(input: ContinuityPreparation): void {
-  if (Object.keys(input).some((k) => !["generationId", "conversationId", "logicalConversationId", "beforeDigest", "afterDigest", "records", "latestSummaryRecordId"].includes(k))) fail("continuity_invalid_preparation", "Unsupported continuity preparation fields.");
+  if (Object.keys(input).some((k) => !["generationId", "conversationId", "logicalConversationId", "beforeDigest", "afterDigest", "records", "latestSummaryRecordId", "action"].includes(k))) fail("continuity_invalid_preparation", "Unsupported continuity preparation fields.");
   validateGenerationId(input.generationId);
   normalizeId(input.conversationId, "conversationId");
   normalizeId(input.logicalConversationId, "logicalConversationId");
   validateDigest(input.beforeDigest, true);
-  validateDigest(input.afterDigest);
+  validateDigest(input.afterDigest, true);
+  if (!["publish", "reset", "delete"].includes(input.action ?? "publish") || (input.afterDigest === null) !== (input.action === "delete")) fail("continuity_invalid_preparation", "Invalid continuity publication action/target.");
   if (input.beforeDigest === input.afterDigest) fail("continuity_invalid_preparation", "Continuity publication must identify a distinct canonical target.");
   if (!Array.isArray(input.records) || input.records.length > CONTINUITY_GENERATION_MAX_RECORDS) fail("continuity_invalid_preparation", "Continuity generation exceeds the record bound.");
+  if ((input.action === "reset" || input.action === "delete") && (input.records.length || input.latestSummaryRecordId !== undefined)) fail("continuity_invalid_preparation", "Reset/deletion cannot introduce retained text.");
   let bytes = 0;
   for (const record of input.records) {
     validateRecord(record);

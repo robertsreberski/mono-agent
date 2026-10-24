@@ -1,9 +1,10 @@
-import { acquireToolHistoryWriter, ToolHistoryReader, toolHistoryLogicalConversationId } from "@mono-agent/conversation";
-import type { ConversationHarnessToolHistoryOptions, ToolHistoryWriterHandle } from "@mono-agent/conversation";
+import { createContinuityParticipant, acquireToolHistoryWriter, ToolHistoryReader, toolHistoryLogicalConversationId } from "@mono-agent/conversation";
+import type { ContinuityPublicationWriter, ConversationHistoryContinuityParticipant, ConversationHarnessToolHistoryOptions, ToolHistoryWriterHandle } from "@mono-agent/conversation";
 
 interface LazyConfiguredToolHistoryOptions {
   readonly root: string;
   readonly artifactRoot: string;
+  readonly continuityEnabled?: boolean;
   readonly rollover: "none" | "daily" | undefined;
   readonly onWarning?: (message: string) => void;
   /** Internal seam for deterministic acquisition-retry tests. */
@@ -36,7 +37,7 @@ const TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
 
 export function lazyConfiguredToolHistory(
   options: LazyConfiguredToolHistoryOptions,
-): ConversationHarnessToolHistoryOptions {
+): ConversationHarnessToolHistoryOptions & { readonly continuity?: ConversationHistoryContinuityParticipant } {
   const failureBackoffMs = options.acquisitionFailureBackoffMs
     ?? TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS;
   if (!Number.isSafeInteger(failureBackoffMs) || failureBackoffMs < 1) {
@@ -135,6 +136,7 @@ export function lazyConfiguredToolHistory(
   const startAttempt = (): ConfiguredWriterAttempt => {
     const acquisition = retirementTail.then(async () => await (options.acquireWriter ?? acquireToolHistoryWriter)({
       root: options.root,
+      ...(options.continuityEnabled === true ? { continuityEnabled: true } : {}),
       artifactRoot: options.artifactRoot,
       ...(options.onWarning === undefined ? {} : { onWarning: options.onWarning }),
     }));
@@ -280,7 +282,29 @@ export function lazyConfiguredToolHistory(
       await reset;
     },
   };
+  const continuityCall = async <T>(operation: (writer: ToolHistoryWriterHandle["writer"]) => Promise<T>): Promise<T> => {
+    const attempt = selectAttempt(false), handle = await attempt.promise;
+    if (handle.writer.isClosed) {
+      await invalidate(attempt, "history_writer_closed");
+      throw new Error("Tool history writer closed before continuity mutation.");
+    }
+    try { return await operation(handle.writer); }
+    catch (error) {
+      const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
+      if (terminalCode !== undefined) invalidate(attempt, terminalCode);
+      throw error;
+    }
+  };
+  const continuityWriter: ContinuityPublicationWriter = {
+    prepareContinuity: async (input) => await continuityCall(async (writer) => await writer.prepareContinuity(input)),
+    commitContinuity: async (input) => await continuityCall(async (writer) => await writer.commitContinuity(input)),
+    reconcileContinuity: async (input) => await continuityCall(async (writer) => await writer.reconcileContinuity(input)),
+    resetConversation: async (id) => await writer.resetConversation!(id),
+  };
   return {
+    ...(options.continuityEnabled === true ? { continuity: createContinuityParticipant({ writer: continuityWriter,
+      logicalConversationId: (id) => toolHistoryLogicalConversationId(id, options.rollover),
+      protectedConversations: () => reader.protectedContinuityConversations(), onWarning: warn }) } : {}),
     writer,
     reader,
     logicalConversationId: (conversationId) =>

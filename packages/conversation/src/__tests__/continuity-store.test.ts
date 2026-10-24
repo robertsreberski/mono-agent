@@ -96,6 +96,7 @@ describe("continuity publication primitives (not canonical-store integration)", 
     expect(reader.getContinuity({ ...scope, recordId: row().recordId }).status).toBe("unavailable");
     expect(await writer.prepareContinuity(input)).toMatchObject({ status: "prepared" });
     await expect(writer.prepareContinuity({ ...input, records: [row("answer", "changed")] })).rejects.toMatchObject({ code: "continuity_conflict" });
+    expect((await writer.stats()).idempotencyConflicts).toBe(1);
     await expect(writer.prepareContinuity(preparation([row("other")]))).rejects.toMatchObject({ code: "continuity_reconciliation_required" });
     await expect(writer.commitContinuity({ conversationId: input.conversationId, generationId: input.generationId, canonicalDigest: digest("foreign") })).rejects.toMatchObject({ code: "continuity_publication_mismatch" });
     await writer.commitContinuity({ conversationId: input.conversationId, generationId: input.generationId, canonicalDigest: input.afterDigest });
@@ -103,7 +104,7 @@ describe("continuity publication primitives (not canonical-store integration)", 
     expect(await writer.prepareContinuity(input)).toMatchObject({ status: "committed" });
   });
 
-  it.each(["before", "after", "ambiguous"] as const)("reconciles an abruptly killed writer at %s, preserving ambiguity", async (point) => {
+  it.each(["before", "after", "advanced"] as const)("reconciles an abruptly killed writer at %s without blocking non-authoritative evidence", async (point) => {
     const path = await root(), input = preparation();
     const childPath = join(path, "crash-fixture.mjs");
     await writeFile(childPath, `
@@ -117,15 +118,38 @@ describe("continuity publication primitives (not canonical-store integration)", 
     const writer = await open(path), reader = new ToolHistoryReader(path);
     expect(reader.searchContinuity(scope).items).toEqual([]);
     const request = { conversationId: input.conversationId, canonicalDigest: digest(point) };
-    if (point === "ambiguous") {
-      await expect(writer.reconcileContinuity(request)).rejects.toMatchObject({ code: "continuity_publication_ambiguous" });
-      expect((await writer.stats()).continuity).toMatchObject({ prepared: 1 });
-      await expect(writer.prepareContinuity(preparation([row("next")]))).rejects.toMatchObject({ code: "continuity_reconciliation_required" });
+    if (point === "advanced") {
+      expect(await writer.reconcileContinuity(request)).toMatchObject({ status: "abandoned" });
+      expect((await writer.stats()).continuity).toMatchObject({ prepared: 0, records: 0, retainedBytes: 0, coverageGaps: 1 });
+      expect(reader.continuityGaps(scope.logicalConversationId)).toMatchObject({ total: 1, items: [{ generationId: input.generationId,
+        beforeDigest: input.beforeDigest, afterDigest: input.afterDigest, observedDigest: digest(point), reason: "canonical_advanced_past_preparation" }] });
+      expect(reader.continuityGaps("web:foreign")).toEqual({ total: 0, items: [] });
+      expect(reader.getContinuity({ ...scope, recordId: row().recordId }).status).toBe("unavailable");
+      await expect(writer.commitContinuity({ ...request, generationId: input.generationId, canonicalDigest: input.afterDigest })).rejects.toMatchObject({ code: "continuity_conflict" });
+      await expect(writer.prepareContinuity(input)).rejects.toMatchObject({ code: "continuity_conflict" });
+      await expect(writer.prepareContinuity(preparation([row("next")]))).resolves.toMatchObject({ status: "prepared" });
     } else {
       expect(await writer.reconcileContinuity(request)).toMatchObject({ status: point === "after" ? "committed" : "discarded" });
       expect(reader.searchContinuity(scope).items).toHaveLength(point === "after" ? 1 : 0);
       expect(await writer.reconcileContinuity(request)).toEqual({ status: "clean" });
     }
+  });
+
+  it("suppresses pending-purge evidence, restores an unpublished reset, and recovers a published reset even above quota", async () => {
+    const path = await root(), initial = await open(path), input = preparation();
+    await publish(initial, input);
+    await initial.pinContinuity({ logicalConversationId: scope.logicalConversationId, recordId: row().recordId, ownerKind: "handoff", ownerId: "fictional-reference" });
+    await close(initial);
+    const writer = await open(path, true, 1), reader = new ToolHistoryReader(path);
+    const reset = { ...preparation([]), action: "reset" as const, beforeDigest: input.afterDigest, afterDigest: digest("reset") };
+    await writer.prepareContinuity(reset);
+    expect(reader.getContinuity({ ...scope, recordId: row().recordId }).status).toBe("unavailable");
+    expect(await writer.reconcileContinuity({ conversationId: input.conversationId, canonicalDigest: input.afterDigest })).toMatchObject({ status: "discarded" });
+    expect(reader.getContinuity({ ...scope, recordId: row().recordId }).status).toBe("available");
+    await writer.prepareContinuity({ ...reset, generationId: continuityGenerationId() });
+    expect(await writer.reconcileContinuity({ conversationId: input.conversationId, canonicalDigest: reset.afterDigest })).toMatchObject({ status: "committed" });
+    expect((await writer.stats()).continuity).toMatchObject({ records: 0, pins: 0, prepared: 0 });
+    expect(reader.searchContinuity(scope).items).toEqual([]);
   });
 
   it("rejects oversized generation inputs before worker cloning and reconciles an absent source", async () => {

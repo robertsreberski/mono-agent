@@ -10,7 +10,11 @@ import { normalizeId } from "./paths.js";
 import { utf8Prefix } from "./payload.js";
 
 type Row = Record<string, unknown>;
-const VISIBLE = "g.logical_id=? AND g.state='committed' AND r.finalized=1";
+// A pending purge suppresses the old physical owner's evidence even across an
+// acknowledgement crash. An unpublished reset can safely restore it by discard.
+const VISIBLE = `g.logical_id=? AND g.state='committed' AND r.finalized=1 AND NOT EXISTS
+  (SELECT 1 FROM continuity_generations pending WHERE pending.conversation_id=g.conversation_id
+    AND pending.state='prepared' AND pending.action IN ('reset','delete'))`;
 
 export function searchContinuity(database: DatabaseSync, input: ContinuitySearchInput): ContinuitySearchPage {
   validateScope(input);
