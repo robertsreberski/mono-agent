@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep warm clean-break continuity seeds independent of tool count and within
+  their actual replay budget; preserve prepared tool history when a later
+  projection read fails.
+
 - Keep cold continuity packs below the compaction trigger, omit history-free
   packs, invalidate purged snapshots across retries, and avoid duplicating
   finalized tool evidence in the cold projection. Preserve healthy evidence

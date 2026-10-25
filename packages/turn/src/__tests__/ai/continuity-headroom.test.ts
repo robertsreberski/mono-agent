@@ -31,3 +31,24 @@ it("does not let a cold pack push near-trigger canonical history into a proactiv
     expect(events.filter(event => (event as { type?: string }).type === "context_compaction")).toEqual([]);
   } finally { await runtime.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
 });
+
+it("refuses a cold-context replay replacement when the native seed has no prior messages", async () => {
+  const root = await mkdtemp(join(tmpdir(), "empty-seed-pack-"));
+  const runtime = createMonoRuntime({ workspace: root });
+  try {
+    const provider = fauxProvider({ models: [{ id: "fixture", contextWindow: 128000, maxTokens: 4096 }], tokensPerSecond: 1_000_000 });
+    const models = createModels(); models.setProvider(provider.provider);
+    const requests: unknown[] = [], events: unknown[] = [];
+    provider.setResponses([context => { requests.push(structuredClone(context)); return fauxAssistantMessage("Fictional answer."); }]);
+    const result = await runtime.run("Fictional system.", { model: { provider: "faux", model: "fixture", reference: "faux:fixture" },
+      abortSignal: new AbortController().signal, piResolvedModel: provider.getModel("fixture")!, piResolvedModels: models,
+      effort: "none", allowedTools: [], mcpServers: {}, messages: [{ role: "user", content: "CURRENT-INPUT" }],
+      compaction: { enabled: true, maxInputTokens: 32000, keepRecentTokens: 4000, summaryMaxTokens: 1000, minSavingsTokens: 0 }, onEvent: event => events.push(event),
+      coldContext: async () => ({ messages: [{ role: "user", content: "HISTORICAL-PACK" }],
+        replayMessages: [{ role: "user", content: "UNBUDGETED-CANONICAL-SWAP ".repeat(7000) }] }),
+    });
+    expect(result.failureKind).toBeFalsy(); expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests)).toContain("HISTORICAL-PACK"); expect(JSON.stringify(requests)).not.toContain("UNBUDGETED-CANONICAL-SWAP");
+    expect(events.filter(event => (event as { type?: string }).type === "context_compaction")).toEqual([]);
+  } finally { await runtime.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
+});

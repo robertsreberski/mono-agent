@@ -498,11 +498,20 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         && (continuityHistory.length > 0 || routing.boundaryReason !== undefined) ? async (budget: { maxTokens: number; reason: string }) => {
         try {
           let toolIds: ReadonlySet<string> = new Set();
-          const messages = routing.continuityPack!(continuityHistory, budget.maxTokens,
+          // A warm clean-break reopen seeds only current input, not canonical
+          // history. Deduplicate against what this attempt actually replays.
+          const hasCanonicalReplay = !historyOmitted || budget.reason === "detached_context";
+          const replayedHistory = hasCanonicalReplay ? continuityHistory : [];
+          const messages = routing.continuityPack!(replayedHistory, budget.maxTokens,
             budget.reason === "detached_context" ? budget.reason : routing.boundaryReason ?? budget.reason, emitRuntimeEvent,
             ids => { toolIds = ids; });
-          if (toolIds.size === 0) return { messages };
-          const projection = loadToolHistoryProjection(options, request.conversationId, runId, continuityHistory, emitRuntimeEvent, toolIds);
+          if (toolIds.size === 0 || !hasCanonicalReplay) return { messages };
+          let projectionUnavailable = false;
+          const projection = loadToolHistoryProjection(options, request.conversationId, runId, replayedHistory, emitRuntimeEvent, toolIds,
+            () => { projectionUnavailable = true; });
+          // Undefined can also mean successful exclusion of every projected
+          // call. Only a failed read preserves the original prepared replay.
+          if (projectionUnavailable) return { messages };
           return { messages, replayMessages: coldReplayMessages(continuityHistory, projection?.text) };
         } catch {
           try { emitRuntimeEvent({ type: "continuity_pack_skipped", reason: "unavailable", degradedReason: "unavailable", tokens: 0 }); }

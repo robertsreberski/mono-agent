@@ -801,7 +801,9 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
           if (evidence.reduce((sum, message) => sum + Number(estimateTokens(message)), 0) > maxTokens) {
             evidence = [];
             onEvent({ type: "runtime_warning", warning_kind: "continuity_pack_degraded", error_code: "headroom", message: "Continuity evidence omitted: target headroom." });
-          } else if (cold.replayMessages) {
+          } else if (cold.replayMessages && priorMessages.length > 0) {
+            // Only replace replay already included in the input budget. Warm
+            // clean-break and empty-baseline seeds must not acquire history here.
             priorMessages = toAgentMessages(cold.replayMessages, runtime.model);
           }
         } catch {

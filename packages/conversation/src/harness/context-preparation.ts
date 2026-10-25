@@ -123,6 +123,7 @@ export function loadToolHistoryProjection(
   history: readonly HistoryMessage[],
   emit?: (event: RuntimeEventLike) => void,
   excludedRecordIds: ReadonlySet<string> = new Set(),
+  onReadError?: () => void,
 ): ReturnType<typeof buildToolHistoryProjection> {
     if (options.toolHistory === undefined) return undefined;
     try {
@@ -137,6 +138,7 @@ export function loadToolHistoryProjection(
         excludedRecordIds,
       );
     } catch (error) {
+      onReadError?.();
       const errorCode = toolHistoryProjectionErrorCode(error);
       emit?.({
         type: "runtime_warning",

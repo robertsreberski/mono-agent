@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { createMonoRuntime } from "@mono-agent/turn/host";
+import { nativeSessionRegistry } from "@mono-agent/turn/engine/sessions.js";
+import { bindContinuityQuotation } from "../tool-history/continuity-input.js";
 import type { MonoRuntimeLike } from "@mono-agent/turn/host/types";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ConversationHarnessRequest } from "../harness/contracts.js";
@@ -32,17 +34,20 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
   const models = createModels(); models.setProvider(faux.provider);
   const native = createMonoRuntime({ workspace: root });
   cleanup.push(async () => { await native.disposeAllSessions?.(); });
-  const coldHooks: boolean[] = [];
+  const coldHooks: boolean[] = [], runtimeMessageCounts: number[] = [];
   let lastSession: string | undefined;
   let interrupt: "resume-error" | "runtime-result" | "cancelled" | undefined;
   const runtime: MonoRuntimeLike = { ...native, async run(prompt, options) {
     coldHooks.push(options.coldContext !== undefined);
+    runtimeMessageCounts.push(options.messages?.length ?? 0);
     lastSession = typeof options.sessionId === "string" ? options.sessionId : options.providerAttributionSessionId;
     const mode = interrupt; interrupt = undefined;
     if (mode === "resume-error") throw Object.assign(new Error("Fictional unavailable session."), { failureKind: "session_not_found" });
     if (mode === "runtime-result") return { text: null, failureKind: "session_not_found", error: "Fictional unavailable session." };
     if (mode === "cancelled") return { text: null, cancelled: true, ...(typeof options.sessionId === "string" ? { providerSessionId: options.sessionId } : {}) };
-    return await native.run(prompt, options);
+    const result = await native.run(prompt, options);
+    if (typeof result.providerSessionId === "string") lastSession = result.providerSessionId;
+    return result;
   } };
   const sessionsRoot = join(root, "native"), history = createDurableHistoryStore({ root: join(root, "history"), retireProviderSession: async session => { await native.retireDurableSession?.(session, sessionsRoot); } });
   if (prior) await history.append(id, Array.from({ length: 64 }, (_, i) => ({ role: i % 2 ? "assistant" as const : "user" as const, content: `Fictional recent ${i}.`, runId: `recent-${i}` })));
@@ -51,6 +56,7 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
     await writeFile(join(root, "history", `${key}.history.json`), JSON.stringify({ version: 2, conversationId: id,
       messages: await history.load(id), providerSession: { epoch: "b".repeat(64), revision: 1 } }), { mode: 0o600 });
   }
+  let compaction: { enabled: boolean; maxInputTokens?: number; keepRecentTokens?: number; summaryMaxTokens?: number; minSavingsTokens?: number } = { enabled: false };
   const requests: unknown[] = [], events: Record<string, unknown>[] = [];
   const makeHarness = () => {
     const h = createConversationHarness({ identityPath, cwd: root, runtime, model: { provider: "faux", model: "base", reference: "faux:base" }, historyStore: history,
@@ -58,7 +64,7 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
       toolHistory: { writer, reader, logicalConversationId: value => value, ...(enabled ? { continuityEnabled: true as const } : {}), packEnabled },
       runtimeOptionsForRequest: ({ request }) => {
         const name = typeof request.metadata?.web === "object" && request.metadata.web !== null ? (request.metadata.web as { model?: string }).model?.split(":").at(-1) ?? "base" : "base";
-        return { runtimeOptions: { model: { provider: "faux", model: name, reference: `faux:${name}` }, piResolvedModel: faux.getModel(name), piResolvedModels: models, effort: "none", compaction: { enabled: false } } };
+        return { runtimeOptions: { model: { provider: "faux", model: name, reference: `faux:${name}` }, piResolvedModel: faux.getModel(name), piResolvedModels: models, effort: "none", compaction } };
       } });
     cleanup.push(async () => { await h.dispose?.(); }); return h;
   };
@@ -70,7 +76,9 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
       ...(model ? { metadata: { source: "web", web: { model } } } : {}), ...(continuation ? { continuation } : {}), ...requestPatch, onEvent: e => { events.push(e as unknown as Record<string, unknown>); } });
     if (cancelled) expect(result.failure?.kind).toBe("cancelled"); else expect(result.failure).toBeUndefined(); return result;
   }
-  return { run, requests, events, coldHooks, reader, writer, root, sessionsRoot, history, native,
+  return { run, requests, events, coldHooks, runtimeMessageCounts, reader, writer, root, sessionsRoot, history, native,
+    sessionId: () => lastSession,
+    setCompaction: (value: typeof compaction) => { compaction = value; },
     interrupt: (mode: typeof interrupt) => { interrupt = mode; },
     restart: async (dropNative = false) => {
       await harness.dispose?.(); if (dropNative && lastSession) await native.retireDurableSession?.(lastSession, sessionsRoot); harness = makeHarness();
@@ -241,4 +249,64 @@ it("drops frozen evidence after a purge completes between router attempts", asyn
   assertRequest(requests[0]); assertRequest(requests[1], false);
   expect(JSON.stringify(requests[1])).not.toContain(rule);
   expect(events).toContainEqual(expect.objectContaining({ type: "continuity_pack_skipped", degradedReason: "source_changed" }));
+}, 20_000);
+
+it.each([false, true])("keeps warm clean-break seeding pack-only without canonical swap (tool=%s)", async withTool => {
+  const f = await fixture({ durable: false });
+  // Larger than the later trigger; inserting this replay at pack time would
+  // cause a summary even though the warm request carries only current input.
+  await f.history.append(id, Array.from({ length: 4 }, (_, index) => ({
+    role: index % 2 ? "assistant" as const : "user" as const,
+    content: "CANONICAL-SWAP-MUST-NOT-APPEAR ".repeat(1800), runId: `large-prior-${index}`,
+  })));
+  if (withTool) {
+    const binding = { conversationId: id, logicalConversationId: id, runId: "effect", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
+    await f.writer.persist(binding, { phase: "invocation", toolCallId: "send-1", toolName: "mail_send", arguments: { draft: "DRAFT-42" } });
+    await f.writer.persist(binding, { phase: "result", toolCallId: "send-1", toolName: "mail_send", state: "success", content: "SENT delivery=MESSAGE-42" });
+    await f.writer.finishRun(binding, "completed");
+  }
+  await f.run("Fictional warm-up.");
+  const entry = nativeSessionRegistry.get(f.sessionId()!);
+  expect(entry).toBeDefined();
+  // The storage port returns an empty clean-break handle while the host still
+  // has a confirmed-warm mapping. All native seed/provider code remains real.
+  const repo = entry.repo;
+  repo.sessions.get(entry.metadata.id).records = [];
+  const reopen = repo.open.bind(repo);
+  vi.spyOn(repo, "open").mockImplementation(async (...args: unknown[]) => {
+    const raw = await reopen(...args); raw.continuity = "clean_break"; return raw;
+  });
+  const load = f.history.load.bind(f.history);
+  vi.spyOn(f.history, "load").mockImplementation(async conversationId => {
+    const messages = await load(conversationId);
+    bindContinuityQuotation(messages[0]!, { inputId: "early-input", requestDigest: "a".repeat(64) });
+    return messages;
+  });
+  f.setCompaction({ enabled: true, maxInputTokens: 32000, keepRecentTokens: 4000, summaryMaxTokens: 1000, minSavingsTokens: 0 });
+  const before = f.requests.length;
+  await f.run(); assertRequest(f.requests.at(-1));
+  expect(f.requests.length - before).toBe(1);
+  expect(f.runtimeMessageCounts.at(-1)).toBe(1);
+  expect(JSON.stringify(f.requests.at(-1))).not.toContain("CANONICAL-SWAP-MUST-NOT-APPEAR");
+  expect(f.events).toContainEqual(expect.objectContaining({ type: "continuity_pack_injected", ownerEntries: 1, toolEntries: withTool ? 1 : 0 }));
+  expect(f.events.filter(event => event.type === "context_compaction")).toEqual([]);
+}, 20_000);
+
+it("keeps prepared projection evidence when its pack-time reread fails", async () => {
+  const f = await fixture();
+  for (const retained of [true, false]) {
+    const binding = { conversationId: id, logicalConversationId: id, runId: retained ? "retained-effect" : "legacy-effect", isolated: false,
+      ...(retained ? { continuityEnabled: true as const, finalizedContinuity: true as const } : {}) };
+    await f.writer.persist(binding, { phase: "invocation", toolCallId: "send-1", toolName: "mail_send", arguments: { draft: "DRAFT-42" } });
+    await f.writer.persist(binding, { phase: "result", toolCallId: "send-1", toolName: "mail_send", state: "success",
+      content: retained ? "SENT delivery=MESSAGE-42" : "LEGACY-ONLY-TOOL-EVIDENCE-MUST-SURVIVE" });
+    await f.writer.finishRun(binding, "completed");
+  }
+  const read = f.reader.latestProjection.bind(f.reader);
+  const projection = vi.spyOn(f.reader, "latestProjection").mockImplementationOnce((...args) => read(...args))
+    .mockImplementation(() => { throw new Error("Fictional projection reread failure."); });
+  await f.run(); assertRequest(f.requests.at(-1));
+  expect(projection).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify(f.requests.at(-1))).toContain("LEGACY-ONLY-TOOL-EVIDENCE-MUST-SURVIVE");
+  expect(f.events).toContainEqual(expect.objectContaining({ warning_kind: "tool_history_projection_degraded" }));
 }, 20_000);

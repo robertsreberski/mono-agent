@@ -142,13 +142,20 @@ Before frozen-source reuse, one bounded visibility query verifies every retained
 record identity/digest under the same scope, including the summary pin. A pending
 or completed purge, tombstone or loss of visibility drops the snapshot and pack.
 Malformed tool payloads exclude only that record, not healthy sibling evidence.
+Independent lifecycle retention may remove `tool_calls` while a per-turn snapshot
+still carries their finalized payload; that frozen evidence remains valid until
+the turn ends (retention is not a privacy purge).
 
 One source snapshot is frozen per turn and reused across resume-error retry and
 the router's stateless retries/backups. Packs are added at the runtime's actual
 seed decision: cold model changes, legacy unbound records, missing/expired/idle
 reseed, restart without a retained native journal, and unsafe cancellation/failure
 recovery. A seeded pack persists once in the native transcript; a true native
-resume (including durable reopen) does not append another. Its input tokens are
+resume (including durable reopen) does not append another. A warm legacy
+`clean_break` reopen keeps its existing current-input-only seed: the pack renders
+against empty replay and never adds an unbudgeted canonical transcript. If a
+pack-time projection reread fails, the already prepared replay is preserved with
+a content-free warning rather than silently dropping tool evidence. Its input tokens are
 included in ordinary provider request usage, not a separate paid operation.
 `continuity_pack_injected` telemetry reports boundary reason, section counts,
 omissions, token estimate, degradation and uncertain window overlap; these are
