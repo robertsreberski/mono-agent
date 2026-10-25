@@ -478,6 +478,10 @@ export function captureUpkeepModels(models, capture) {
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
 export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput }) {
+  // This protocol plans one fresh-scope bootstrap, not P3b2's multi-boundary run.
+  // Reject old confirmed 64k plans before opening a harness or resolving auth.
+  if (plan.upkeep.maxInputTokens !== 128000 || plan.upkeep.incrementalMaxInputTokens !== 64000
+    || plan.upkeep.maxOutputTokens !== 4096 || plan.upkeep.callsPerTraceRepeat !== 1) throw new ContinuityError("upkeep_plan_budget_mismatch");
   if (captureUpkeepOutput) await prepareCapturePath(captureUpkeepOutput);
   const watch = observer(); const hostOptions = {}; let capturedText;
   if (mode === "offline") {

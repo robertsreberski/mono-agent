@@ -255,7 +255,7 @@ export function makePlan({ traces, sha256, suite = "original", source = null, co
     baselineArm: BASELINE_ARM,
     repeats,
     reader: { model: reader, effort: readerEffort },
-    upkeep: { model: profile.extractionModel ?? reader, requireRequestCap: profile.requireRequestCap === true, maxInputTokens: 64000, maxOutputTokens: 4096, timeoutMs: 60000,
+    upkeep: { model: profile.extractionModel ?? reader, requireRequestCap: profile.requireRequestCap === true, maxInputTokens: 128000, incrementalMaxInputTokens: 64000, maxOutputTokens: 4096, timeoutMs: 60000,
       capEnforcement: (profile.extractionModel ?? reader).startsWith("openai-codex:") ? "stream_abort" : "request_or_skip", reasoning: "lowest_supported", callsPerTraceRepeat: 1 },
     alternateBinding: { model: alternate, servedBy: "scripted-history-only" },
     judge: judge === null ? null : { model: judge, effort: judgeEffort, scope: "next_action" },
@@ -340,9 +340,9 @@ export function estimateCost(plan, traces, prices) {
       expected += repeatsWithCold * usd(perProbe.input, perProbe.output)
         + (probes - repeatsWithCold) * usd(perProbe.input - perProbe.cacheable, perProbe.output, perProbe.cacheable)
         + mid * usd(Math.ceil(t.serialized * 0.6), 2000);
-      const upkeep = armRow.ledgerUpkeep ? plan.repeats * usd(64000, 4096, 0, upkeepPrice) : 0;
+      const upkeep = armRow.ledgerUpkeep ? plan.repeats * usd(plan.upkeep.maxInputTokens, plan.upkeep.maxOutputTokens, 0, upkeepPrice) : 0;
       upper += upkeep; expected += upkeep; upkeepBudgetUsd += upkeep;
-      inputTokens += probes * perProbe.input + (armRow.ledgerUpkeep ? 64000 * plan.repeats : 0);
+      inputTokens += probes * perProbe.input + (armRow.ledgerUpkeep ? plan.upkeep.maxInputTokens * plan.repeats : 0);
     }
     rows[armRow.id] = { ...(armRow.ledgerUpkeep ? { upkeepBudgetUsd: Number(upkeepBudgetUsd.toFixed(4)), upkeepCalls: traces.length * plan.repeats } : {}), inputTokens, upperUsd: Number(upper.toFixed(4)), expectedUsd: Number(expected.toFixed(4)) };
   }
