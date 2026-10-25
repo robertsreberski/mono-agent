@@ -21,7 +21,7 @@ import {
 import { findCanonicalMemoryBullet, REMEMBER_ID_PREFIX } from "./canonical-lookup.js";
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { parseDailyFile } from "./grammar.js";
-import { serializeBullet } from "./grammar.js";
+import { serializeBullet, sourceSessionFor } from "./grammar.js";
 import {
   applyCaptureGraphDelta,
   clearCaptureGraphBaseline,
@@ -710,6 +710,7 @@ export class BujoMemoryStore implements MemoryStore {
             isInsight: false,
             createdAt: now.toISOString(),
             refs: [`sha256:${hash}`],
+            ...sourceSessionMetadata(conversationId),
           };
           const relativePath = located?.file ?? relative(this.root, dailyFilePath(this.root, now));
           // Recovery adopts the existing bullet verbatim: its createdAt and file
@@ -737,9 +738,10 @@ export class BujoMemoryStore implements MemoryStore {
             createdAt: bullet.createdAt,
             accessCount: 0,
             tags: [],
-            // `session` is live-index telemetry only: it is never serialized into
-            // the bullet, so a rebuild reconstructs `file` alone.
-            source: { session: conversationId, file: relativePath },
+            // The index mirrors the canonical line's own provenance: a recovered
+            // bullet keeps the session that wrote it (never the retrying
+            // caller's), and an unstorable id stays unknown in both stores.
+            source: { ...sourceOf(bullet), file: relativePath },
           };
           // Never record a content hash off the Journal tier: a non-Journal
           // index carrying content_hashes fails safe-rebuild validation.
@@ -832,6 +834,7 @@ export class BujoMemoryStore implements MemoryStore {
       isInsight: false,
       createdAt: admittedAt,
       refs: [`run-sha256:${intakeId}`, `sha256:${hash}`],
+      ...sourceSessionMetadata(turn.conversationId),
     };
     const relativePath = this._tier === "bujo"
       ? relative(this.root, auditFilePath(this.root, now))
@@ -874,7 +877,8 @@ export class BujoMemoryStore implements MemoryStore {
           createdAt: bullet.createdAt,
           accessCount: 0,
           tags: [],
-          source: { session: turn.conversationId, file: relativePath },
+          // An adopted retry line keeps its own canonical provenance.
+          source: { ...sourceOf(matches[0] ?? bullet), file: relativePath },
         };
         if (this._tier === "journal") {
           const outcome = this.db.insertJournalLexical(record, hash);
@@ -1283,7 +1287,7 @@ export class BujoMemoryStore implements MemoryStore {
           createdAt: bullet.createdAt,
           accessCount: 0,
           tags: [],
-          source: { file: `daily/${file}`, line: line.lineNumber },
+          source: { ...sourceOf(bullet), file: `daily/${file}`, line: line.lineNumber },
           ...(bullet.dueAt === undefined ? {} : { dueAt: bullet.dueAt }),
         };
         this.db.recoverJournalLexical(record, hash, bullet.id);
@@ -1419,6 +1423,17 @@ function assertTierPrerequisites(tier: BujoTier, options: BujoOptions): void {
   if (options.llm === undefined && options.readOnly !== true) {
     throw new Error("memory-bujo: bujo tier requires a capture LLM.");
   }
+}
+
+/** The index `source.session` projection of one canonical line: its own recorded session, or none. */
+function sourceOf(bullet: Bullet): { session?: string } {
+  return bullet.sourceSession === undefined ? {} : { session: bullet.sourceSession };
+}
+
+/** Canonical source-session metadata for a line appended on behalf of a host conversation. */
+function sourceSessionMetadata(conversationId: string): Pick<Bullet, "sourceSession"> {
+  const sourceSession = sourceSessionFor(conversationId);
+  return sourceSession === undefined ? {} : { sourceSession };
 }
 
 function reasonOf(error: unknown): string {

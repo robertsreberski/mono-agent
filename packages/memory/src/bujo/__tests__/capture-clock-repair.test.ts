@@ -97,6 +97,25 @@ describe("legacy capture supersede clock repair", () => {
     expect(retained.actions.find((action) => action.kind === "supersede")?.at).toBe(EFFECTIVE_AT);
   });
 
+  it("keeps both lines' source-session provenance through the repair", async () => {
+    const fixture = seedLegacyFixture({ old: "web:chat-old", replacement: "web:chat-new" });
+    const store = createBujoMemoryStore({ root: fixture.root, tier: "bujo", embeddings: fakeEmbeddings(DIM), dim: DIM,
+      llm: fakeLlm([]) });
+    await store.close();
+    assertRepairedFixture(fixture);
+    const effective = parseDailyFile(readFileSync(join(fixture.root, EFFECTIVE_FILE), "utf8")).bullets;
+    expect(effective.find((bullet) => bullet.id === fixture.replacementId)?.sourceSession).toBe("web:chat-new");
+    expect(effective.find((bullet) => bullet.id === fixture.old.id)).toMatchObject({ status: "invalidated", sourceSession: "web:chat-old" });
+    const db = openMemoryDb({ path: join(fixture.root, "memory.db"), readOnly: true, dim: DIM });
+    try {
+      expect(db.get(fixture.replacementId)?.source.session).toBe("web:chat-new");
+      expect(db.get(fixture.old.id)?.source.session).toBe("web:chat-old");
+    } finally {
+      db.close();
+    }
+    cleanupSqliteCoordination(join(fixture.root, "memory.db"));
+  });
+
   it("restores the exact original tree after an injected failure and succeeds on retry", () => {
     const fixture = seedLegacyFixture();
     const before = memoryTreeFingerprint(fixture.root);
@@ -220,7 +239,7 @@ describe("legacy capture supersede clock repair", () => {
   });
 });
 
-function seedLegacyFixture(): LegacyFixture {
+function seedLegacyFixture(sessions: { readonly old?: string; readonly replacement?: string } = {}): LegacyFixture {
   const root = mkdtempSync(join(tmpdir(), "capture-clock-repair-"));
   mkdirSync(join(root, ".index", "generations"), { recursive: true, mode: 0o700 });
   const old: Bullet = {
@@ -232,12 +251,15 @@ function seedLegacyFixture(): LegacyFixture {
     isInsight: false,
     createdAt: EFFECTIVE_AT,
     refs: [],
+    ...(sessions.old === undefined ? {} : { sourceSession: sessions.old }),
   };
+  const { sourceSession: _oldSession, ...oldFields } = old;
   const replacement: Bullet = {
-    ...old,
+    ...oldFields,
     id: "CLOCK-NEW",
     text: "Atlas launches in August",
     salience: 0.8,
+    ...(sessions.replacement === undefined ? {} : { sourceSession: sessions.replacement }),
   };
   appendBullet(root, old, new Date(EFFECTIVE_AT));
   expect(rewriteBullet(root, EFFECTIVE_FILE, old.id, { status: "invalidated" })).toBe(true);
@@ -363,6 +385,6 @@ function recordFor(bullet: Bullet, file: string): MemoryRecord {
     createdAt: bullet.createdAt,
     accessCount: 0,
     tags: [],
-    source: { file },
+    source: { ...(bullet.sourceSession === undefined ? {} : { session: bullet.sourceSession }), file },
   };
 }

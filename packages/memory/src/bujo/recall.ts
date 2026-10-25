@@ -111,6 +111,20 @@ export interface FormattedRecallRecord extends PossiblyRelevantRecord {
   readonly type?: "task" | "event" | "note";
   readonly status?: "open" | "done" | "scheduled" | "migrated" | "dropped" | "invalidated";
   readonly isInsight?: boolean;
+  /** Supplied by local stores; a backend that omits `source` makes no provenance claim. */
+  readonly source?: { readonly session?: string };
+}
+
+/** Reader-facing note for a hit whose store records provenance but not this line's conversation. */
+export const SOURCE_CONVERSATION_UNKNOWN = "source conversation unknown";
+
+/**
+ * True when the store supplies source provenance but no source conversation:
+ * legacy lines and lines captured before provenance was recorded. Such hits
+ * stay eligible for recall; they are labelled, never inferred or suppressed.
+ */
+export function sourceConversationUnknown(record: { readonly source?: { readonly session?: string } }): boolean {
+  return record.source !== undefined && (record.source.session === undefined || record.source.session.length === 0);
 }
 
 /** Never emit a partial line or split a UTF-8 code point at either byte bound. */
@@ -132,7 +146,9 @@ export function formatPossiblyRelevantBlock<T extends { readonly record: Formatt
     const note = [recorded === undefined ? undefined : `recorded ${recorded}`, currency,
       record.type === "task" && record.status !== undefined && record.status !== "open" ? record.status : undefined,
       record.type === "task" && status === "current" ? "task/plan recorded" : undefined,
-      attributions.get(record.id)]
+      attributions.get(record.id),
+      // Provenance is independent of semantic attribution: both may appear.
+      sourceConversationUnknown(record) ? SOURCE_CONVERSATION_UNKNOWN : undefined]
       .filter((part) => part !== undefined).join("; ");
     const body = record.type === "task" ? `${record.text}${record.isInsight === true ? " *" : ""}`
       : record.type === undefined || record.status === undefined ? record.text

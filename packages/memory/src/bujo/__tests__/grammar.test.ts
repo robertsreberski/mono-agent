@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "../grammar.js";
+import {
+  MAX_SOURCE_SESSION_BYTES,
+  parseBullet,
+  parseDailyFile,
+  serializeBullet,
+  serializeDailyFile,
+  sourceSessionFor,
+} from "../grammar.js";
 import type { Bullet } from "../types.js";
 
 const LINE =
@@ -140,5 +147,76 @@ describe("parseDailyFile/serializeDailyFile", () => {
     expect(parsed.bullets.map((b) => b.id)).toEqual(["01J", "01M"]);
     expect(parsed.lines.filter((l) => l.bullet !== undefined).map((l) => l.lineNumber)).toEqual([3, 6]);
     expect(serializeDailyFile(parsed)).not.toContain("Standup.  <!--mem");
+  });
+});
+
+describe("optional source-session provenance", () => {
+  const base: Bullet = {
+    id: "01S", type: "note", status: "open", text: "Morgan keeps the spare key with a neighbour.",
+    salience: 0.6, isInsight: false, createdAt: "2026-06-15T09:00:00.000Z", refs: ["sha256:abc"],
+  };
+  const META = "  <!--mem id=01S type=note status=open salience=0.6 isInsight=0 created=2026-06-15T09:00:00.000Z refs=sha256:abc";
+  const withRaw = (value: string): string => `- – ${base.text}\n${META} source_session=${value}-->`;
+
+  it("round-trips host conversation ids, encoding only bytes outside the identifier alphabet", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["web:00000000-0000-4000-8000-000000000001", "web:00000000-0000-4000-8000-000000000001"],
+      ["chat:example#2030-01-02", "chat:example#2030-01-02"],
+      ["chat:Morgan's room", "chat:Morgan%27s%20room"],
+      ["chat:x-->y=z<!--mem", "chat:x--%3Ey%3Dz%3C%21--mem"],
+      ["chat:zażółć", "chat:za%C5%BC%C3%B3%C5%82%C4%87"],
+      ["chat:100%", "chat:100%25"],
+    ];
+    for (const [session, encoded] of cases) {
+      const bullet: Bullet = { ...base, sourceSession: session };
+      const serialized = serializeBullet(bullet);
+      expect(serialized).toBe(withRaw(encoded));
+      expect(parseBullet(serialized)).toEqual(bullet);
+      const file = ["# 2026-06-15", "", serialized, ""].join("\n");
+      expect(serializeDailyFile(parseDailyFile(file))).toBe(file);
+    }
+  });
+
+  it("leaves a line without provenance byte-for-byte unchanged and reports it as unknown", () => {
+    const old = `- – ${base.text}\n${META}-->`;
+    expect(serializeBullet(base)).toBe(old);
+    const parsed = parseBullet(old);
+    expect(parsed).toEqual(base);
+    expect(parsed).not.toHaveProperty("sourceSession");
+    const file = ["# 2026-06-15", "", old, "Free prose.", SPLIT_LINE, ""].join("\n");
+    expect(serializeDailyFile(parseDailyFile(file))).toBe(file);
+  });
+
+  it.each([
+    ["an empty value", "source_session="],
+    ["a malformed escape", "source_session=chat%ZZ"],
+    ["a truncated escape", "source_session=chat%2"],
+    ["a lower-case escape", "source_session=chat%3e"],
+    ["an escaped safe character", "source_session=ch%61t"],
+    ["an invalid UTF-8 escape", "source_session=chat%C3"],
+    ["an encoded control character", "source_session=chat%0A"],
+    ["an oversized value", `source_session=${"a".repeat(513)}`],
+    ["a repeated key", "source_session=chat:one source_session=chat:two"],
+    ["a raw unsafe character", "source_session=chat'x"],
+    ["a raw space inside the tail", "source_session=chat:one suffix"],
+    ["Unicode whitespace inside the tail", "source_session=chat:one\u2003suffix"],
+    ["a trailing no-break space", "source_session=chat:one\u00a0"],
+    ["a base-looking token after the tail", "source_session=chat:one due=2030-01-01"],
+  ])("keeps the memory and treats %s as unknown provenance", (_name, metadata) => {
+    const raw = `- – ${base.text}\n${META} ${metadata}-->`;
+    const parsed = parseBullet(raw);
+    expect(parsed).toEqual(base);
+    expect(parseDailyFile(["# 2026-06-15", "", raw, ""].join("\n")).bullets).toEqual([base]);
+  });
+
+  it("accepts the largest storable id and refuses to store anything it could not read back", () => {
+    const largest = `chat:${"a".repeat(MAX_SOURCE_SESSION_BYTES - 5)}`;
+    expect(sourceSessionFor(largest)).toBe(largest);
+    expect(parseBullet(serializeBullet({ ...base, sourceSession: largest }))?.sourceSession).toBe(largest);
+    for (const value of [undefined, "", `${largest}a`, "chat:\nnext", "chat:\u200b", "chat:\ud800"]) {
+      expect(sourceSessionFor(value)).toBeUndefined();
+    }
+    expect(() => serializeBullet({ ...base, sourceSession: "chat:\nnext" })).toThrow(/source session/u);
+    expect(() => serializeBullet({ ...base, sourceSession: "" })).toThrow(/source session/u);
   });
 });

@@ -269,7 +269,7 @@ export function rewriteBullet(
   root: string,
   file: string,
   id: string,
-  patch: Partial<Pick<Bullet, "type" | "text" | "status" | "salience" | "isInsight" | "dueAt" | "refs">>,
+  patch: Partial<Pick<Bullet, "type" | "text" | "status" | "salience" | "isInsight" | "dueAt" | "refs" | "sourceSession">>,
 ): boolean {
   assertCanonicalDailySourcePath(file);
   const snapshot = readCanonicalFileSnapshot(root, file);

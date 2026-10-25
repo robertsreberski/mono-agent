@@ -5,7 +5,12 @@ import type {
   EmbeddingProvider,
   EmbeddingProviderConfig,
 } from "@mono-agent/memory/search";
-import { AUTO_RECALL_MIN_SCORE, recallLineStatus } from "@mono-agent/memory/bujo";
+import {
+  AUTO_RECALL_MIN_SCORE,
+  recallLineStatus,
+  SOURCE_CONVERSATION_UNKNOWN,
+  sourceConversationUnknown,
+} from "@mono-agent/memory/bujo";
 import { normalizeOptionalString } from "@mono-agent/contracts";
 import * as z from "zod/v4";
 import { readLabelSections } from "./memory-label-sections.js";
@@ -87,6 +92,8 @@ function formatHitDates(hit: MemoryRecallHit, currentness: RecallHitCurrentness 
     // "current" is the default and costs no tokens; only closed values are marked.
     currentness === "ended" ? `ended ${hit.record.validTo ?? hit.record.dueAt}`
       : currentness === "superseded" ? currentness : undefined,
+    // Only a store that supplies provenance can lack it; remote shapes are unchanged.
+    sourceConversationUnknown(hit.record) ? SOURCE_CONVERSATION_UNKNOWN : undefined,
   ].filter((part) => part !== undefined);
   return parts.length === 0 ? "" : `[${parts.join("; ")}] `;
 }
@@ -366,6 +373,8 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           ...(hit.record.validTo === undefined ? {} : { validTo: hit.record.validTo }),
           ...(hit.record.dueAt === undefined ? {} : { dueAt: hit.record.dueAt }),
           ...(currentness[index] === undefined ? {} : { currentness: currentness[index] }),
+          // A known source conversation id is never exposed; only its absence is.
+          ...(sourceConversationUnknown(hit.record) ? { sourceConversation: "unknown" as const } : {}),
         })),
         ...(evidence === undefined ? {} : { evidence }),
         ...sectionFields,

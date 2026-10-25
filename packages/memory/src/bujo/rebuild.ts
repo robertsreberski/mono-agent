@@ -189,7 +189,9 @@ function toRecord(bullet: Bullet, file: string, line: number): MemoryRecord {
     accessCount: 0,
     ...(bullet.dueAt !== undefined ? { dueAt: bullet.dueAt } : {}),
     tags: [],
-    source: { file, line },
+    // Canonical provenance only: a line without `source_session` stays unknown
+    // and is never backfilled from file names, text or earlier index rows.
+    source: { ...(bullet.sourceSession === undefined ? {} : { session: bullet.sourceSession }), file, line },
   };
 }
 
@@ -1692,12 +1694,14 @@ function buildPlanCanonicalMemoryParityError(
       omitRepairableSourceProvenance,
       omitDerivedCollection,
       options.omitMutableLiveState === true,
+      expected.source.session !== undefined,
     ),
     memoryPayload(
       expected,
       omitRepairableSourceProvenance,
       omitDerivedCollection,
       options.omitMutableLiveState === true,
+      expected.source.session !== undefined,
     ),
   ))) {
     return "memory-rebuild: candidate memory payload validation failed.";
@@ -2536,6 +2540,8 @@ function memoryPayload(
   omitRepairableSourceProvenance = false,
   omitDerivedCollection = false,
   omitMutableLiveState = false,
+  /** Canonical provenance is never repairable telemetry: compare it whenever Markdown records it. */
+  keepCanonicalSession = false,
 ): unknown {
   if (record === undefined) return undefined;
   return {
@@ -2554,7 +2560,10 @@ function memoryPayload(
     ...(omitDerivedCollection || record.collection === undefined ? {} : { collection: record.collection }),
     ...(omitMutableLiveState ? {} : { tags: [...record.tags] }),
     source: omitRepairableSourceProvenance
-      ? { ...(record.source.file === undefined ? {} : { file: record.source.file }) }
+      ? {
+          ...(record.source.file === undefined ? {} : { file: record.source.file }),
+          ...(keepCanonicalSession ? { session: record.source.session ?? null } : {}),
+        }
       : { ...record.source },
   };
 }

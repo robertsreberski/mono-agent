@@ -549,9 +549,11 @@ describe("BujoMemoryStore", () => {
     expect(store.queueSnapshot().intake?.resolved).toBe(1);
 
 
-    // Captured memory must be recallable via load()
-    const block = await store.load("s1", "What is Morgan's memory preference?");
+    // Captured memory must be recallable via load() from another conversation;
+    // its own conversation is a known self-echo and stays suppressed.
+    const block = await store.load("s2", "What is Morgan's memory preference?");
     expect(block?.content).toContain("memory preference is opt-in");
+    expect((await store.load("s1", "What is Morgan's memory preference?"))?.content ?? "").not.toContain("memory preference is opt-in");
 
     await store.close();
   });

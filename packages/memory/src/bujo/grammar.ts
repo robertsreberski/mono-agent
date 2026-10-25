@@ -49,7 +49,11 @@ export function parseBullet(line: string): Bullet | undefined {
   const match = parseBulletParts(line);
   if (match === undefined) return undefined;
   const [, marker, text, meta] = match;
-  const fields = parseMeta(meta ?? "");
+  // The optional provenance tail is validated as a unit before the generic
+  // whitespace tokenizer sees the base fields, so a malformed tail can neither
+  // yield a truncated session nor leak stray tokens into the base metadata.
+  const { base: baseMeta, sourceSession } = splitSourceSessionMetadata(meta ?? "");
+  const fields = parseMeta(baseMeta);
   const base = MARKERS[marker ?? ""];
   if (base === undefined) return undefined;
   // Validate enum membership before trusting metadata; an empty OR invalid value (e.g. `status=` or
@@ -75,13 +79,79 @@ export function parseBullet(line: string): Bullet | undefined {
     refs: fields.refs === undefined || fields.refs.length === 0 ? [] : fields.refs.split(","),
     ...(fields.due !== undefined ? { dueAt: fields.due } : {}),
   };
-  return bullet;
+  // Optional provenance: a missing, repeated, oversized or malformed value is
+  // unknown, never a reason to drop the memory line itself.
+  return sourceSession === undefined ? bullet : { ...bullet, sourceSession };
 }
+
+const SOURCE_SESSION_TAIL = /(?:^|\s)source_session=/u;
+const SOURCE_SESSION_TAIL_EXACT = /^source_session=(\S+)$/u;
+
+/**
+ * Split a `<!--mem ...-->` payload into its base fields and the optional
+ * provenance tail. The tail starts at the first whitespace-delimited
+ * `source_session=` key and runs to the end of the payload; the serializer
+ * always writes it last. Only a tail that is exactly one canonical
+ * `source_session=<value>` token yields a known session. Anything else
+ * (repeated key, embedded ASCII or Unicode whitespace, trailing tokens, invalid
+ * encoding) is unknown provenance, and the base fields before it are unaffected.
+ */
+export function splitSourceSessionMetadata(meta: string): { readonly base: string; readonly sourceSession?: string } {
+  const found = SOURCE_SESSION_TAIL.exec(meta);
+  if (found === null) return { base: meta };
+  const start = found.index + found[0].length - `${SOURCE_SESSION_KEY}=`.length;
+  const value = SOURCE_SESSION_TAIL_EXACT.exec(meta.slice(start))?.[1];
+  const sourceSession = value === undefined ? undefined : decodeSourceSession(value);
+  return { base: meta.slice(0, start), ...(sourceSession === undefined ? {} : { sourceSession }) };
+}
+
+/** Optional canonical metadata key carrying {@link Bullet.sourceSession}. */
+export const SOURCE_SESSION_KEY = "source_session";
+/** Decoded UTF-8 bound; longer host conversation ids are left unknown rather than truncated. */
+export const MAX_SOURCE_SESSION_BYTES = 512;
+const SOURCE_SESSION_SAFE = /^[A-Za-z0-9._~:#@/+-]$/u;
+const SOURCE_SESSION_ENCODED = /^(?:[A-Za-z0-9._~:#@/+-]|%[0-9A-F]{2})+$/u;
+
+/**
+ * The storable form of a host-supplied conversation id, or undefined when it
+ * cannot be recorded exactly (empty, oversized, or containing control, format,
+ * separator or unpaired surrogate code points). Never derived from model output.
+ */
+export function sourceSessionFor(conversationId: string | undefined): string | undefined {
+  if (conversationId === undefined || conversationId.length === 0) return undefined;
+  if (Buffer.byteLength(conversationId, "utf8") > MAX_SOURCE_SESSION_BYTES) return undefined;
+  if (/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(conversationId)) return undefined;
+  return conversationId;
+}
+
+/** Percent-encode every byte outside a conservative identifier alphabet. */
+function encodeSourceSession(value: string): string {
+  let out = "";
+  for (const char of value) {
+    out += SOURCE_SESSION_SAFE.test(char) ? char
+      : [...Buffer.from(char, "utf8")].map((byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join("");
+  }
+  return out;
+}
+
+/** Only the exact canonical encoding of a storable value decodes; anything else is unknown. */
+function decodeSourceSession(encoded: string): string | undefined {
+  if (!SOURCE_SESSION_ENCODED.test(encoded) || encoded.length > MAX_SOURCE_SESSION_BYTES * 3) return undefined;
+  let decoded: string;
+  try { decoded = decodeURIComponent(encoded); }
+  catch { return undefined; }
+  const storable = sourceSessionFor(decoded);
+  return storable !== undefined && encodeSourceSession(storable) === encoded ? storable : undefined;
+}
+
 
 export function serializeBullet(bullet: Bullet): string {
   labelsOf(bullet);
   if (/[\r\n\p{Zl}\p{Zp}]/u.test(bullet.text) || bullet.text.includes("<!--mem")) {
     throw new Error("memory-bujo: bullet text must not contain a newline or the '<!--mem' delimiter.");
+  }
+  if (bullet.sourceSession !== undefined && sourceSessionFor(bullet.sourceSession) !== bullet.sourceSession) {
+    throw new Error("memory-bujo: bullet source session is not a storable host conversation id.");
   }
   const marker = MARKER_FOR(bullet.type, bullet.status);
   const meta = [
@@ -93,6 +163,9 @@ export function serializeBullet(bullet: Bullet): string {
     `created=${bullet.createdAt}`,
     `refs=${bullet.refs.join(",")}`,
     ...(bullet.dueAt === undefined ? [] : [`due=${bullet.dueAt}`]),
+    // Appended last and only when known, so a line without provenance keeps
+    // its pre-provenance bytes exactly.
+    ...(bullet.sourceSession === undefined ? [] : [`${SOURCE_SESSION_KEY}=${encodeSourceSession(bullet.sourceSession)}`]),
   ].join(" ");
   return `- ${marker} ${bullet.text}\n  <!--mem ${meta}-->`;
 }
