@@ -50,14 +50,22 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
   const outerSignal = AbortSignal.any([options.abortSignal, deadline]);
   const signal = AbortSignal.any([outerSignal, abort.signal]);
   let model: any, api = "unknown", capEnforcement: "request" | "stream_abort" = "request", providerInvoked = false, visibleEstimate = 0;
-  let usage: any, stopped = false, streamedBytes = 0, capUnsupported = false;
+  let usage: any, usageReported = false, stopped = false, streamedBytes = 0, capUnsupported = false;
   let estimatedInputTokens = 0;
   const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
   const visibleBytes = (message: any): number => Array.isArray(message?.content) ? message.content.reduce((sum: number, part: any) => {
     const text = part.type === "text" ? part.text : part.type === "thinking" ? part.thinking : undefined;
     return sum + (typeof text === "string" ? Buffer.byteLength(text) : 0);
   }, 0) : 0;
-  const hasUsage = () => [usage?.totalTokens, usage?.input, usage?.output, usage?.cacheRead, usage?.cacheWrite].some(value => Number(value) > 0);
+  // Adapters initialize partial/error messages with zero counters. Those are
+  // not provider reports; successful terminal usage or an explicit usage event
+  // can establish reported zeros. Positive partial usage is also real evidence.
+  const captureUsage = (candidate: any, terminal = false) => {
+    if (candidate && (terminal || [candidate.totalTokens, candidate.input, candidate.output, candidate.cacheRead, candidate.cacheWrite].some(value => Number(value) > 0))) {
+      usage = candidate; usageReported = true;
+    }
+  };
+  const hasUsage = () => usageReported;
   const price = (input: number, output = 0, cacheRead = 0, cacheWrite = 0) => {
     try { return estimateCost({ model: options.model.reference, resolveCustomPricing: options.resolveCustomPricing as NonNullable<Parameters<typeof estimateCost>[0]>["resolveCustomPricing"], inputTokens: input, outputTokens: output, cachedTokens: cacheRead, cacheWriteTokens: cacheWrite }); }
     catch { return null; }
@@ -66,7 +74,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
     operationId, model: options.model.reference, api, providerInvoked, capEnforcement, status, reason,
     elapsedMs: Math.round(performance.now() - started), inputTokens: providerInvoked ? (hasUsage() ? Number(usage.input || 0) + Number(usage.cacheRead || 0) + Number(usage.cacheWrite || 0) : null) : 0, outputTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.output) : null,
     estimatedInputTokens: providerInvoked ? estimatedInputTokens : 0, estimatedInputCostUsd: !providerInvoked ? 0 : price(estimatedInputTokens) ?? (number(model?.cost?.input) === null ? null : estimatedInputTokens * model.cost.input / 1_000_000),
-    providerUsage: { input: providerInvoked ? number(usage?.input) : null, output: providerInvoked ? number(usage?.output) : null, cacheRead: providerInvoked ? number(usage?.cacheRead) : null, cacheWrite: providerInvoked ? number(usage?.cacheWrite) : null },
+    providerUsage: { input: providerInvoked && usageReported ? number(usage?.input) : null, output: providerInvoked && usageReported ? number(usage?.output) : null, cacheRead: providerInvoked && usageReported ? number(usage?.cacheRead) : null, cacheWrite: providerInvoked && usageReported ? number(usage?.cacheWrite) : null },
     costUsd: providerInvoked ? (hasUsage() ? (options.resolveCustomPricing ? price(Number(usage?.input || 0), Number(usage?.output || 0), Number(usage?.cacheRead || 0), Number(usage?.cacheWrite || 0)) : number(usage?.cost?.total)) : null) : 0, visibleEstimate, outputOverrun: Number(usage?.output) > 4096,
   } });
   try {
@@ -97,7 +105,9 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
     });
     const consume = async () => {
       for await (const event of stream) {
-        usage = "message" in event ? event.message.usage : "partial" in event ? event.partial.usage : usage;
+        const usageEvent: { readonly type: string; readonly usage?: unknown } = event;
+        const candidate = "message" in event ? event.message?.usage : "partial" in event ? event.partial?.usage : "error" in event ? event.error?.usage : usageEvent.usage;
+        captureUsage(candidate, event.type === "done" || usageEvent.type === "usage");
         // One UTF-8 byte per visible token is deliberately conservative. A
         // single delivered chunk may cross the threshold before abort is seen.
         if ("delta" in event && typeof event.delta === "string") streamedBytes += Buffer.byteLength(event.delta);
@@ -111,7 +121,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
       else outerSignal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     })]);
     if (capUnsupported) return result("skipped", "cap_unsupported");
-    usage = response?.usage ?? usage;
+    captureUsage(response?.usage, ["stop", "length", "toolUse"].includes(response?.stopReason));
     visibleEstimate = Math.max(visibleEstimate, visibleBytes(response));
     if (capEnforcement === "stream_abort" && visibleEstimate >= 4096) { stopped = true; abort.abort(); }
     if (response?.stopReason === "stop") providerInvoked = true;

@@ -25,7 +25,9 @@
 - Keep opt-in continuity upkeep purchases durable across crashes and restarts,
   fencing stale writes and recording provider outcomes before publication. Allow
   one 128k-input bootstrap per conversation scope, then 64k-input increments;
-  only explicit reset clears the bootstrap marker. Upkeep stays off by default.
+  only explicit reset clears the bootstrap marker. Match confirmed benchmark
+  reservations to bootstrap limits and keep interrupted unreported usage unknown.
+  Upkeep stays off by default.
 - Add opt-in boundary continuity ledgers with source-validated derived entries,
   purge-cascaded lineage, bounded one-call upkeep and ledger-first packs. Keep
   upkeep off by default; expose strict request caps and Codex stream-abort limits.

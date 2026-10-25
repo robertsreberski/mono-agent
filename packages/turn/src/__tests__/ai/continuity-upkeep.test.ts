@@ -22,19 +22,27 @@ it.each(apis)("proves one real %s request builder, enforcement class and inclusi
   else expect(cap).toContain("4096");
 });
 
-async function codex(events: unknown[], strict = false, abortSignal = new AbortController().signal, budget?: { operationId: string; inputTokens: 64000 | 128000 }, prompt = "Fictional source selection.") {
-  const adapter = await import("@earendil-works/pi-ai/api/openai-codex-responses");
+async function codex(events: unknown[], strict = false, abortSignal = new AbortController().signal, budget?: { operationId: string; inputTokens: 64000 | 128000 }, prompt = "Fictional source selection.", api = "openai-codex-responses") {
+  const adapter = await import(`@earendil-works/pi-ai/api/${api}`);
   let signal: AbortSignal | undefined, optionsSeen: any, payloadSeen: any;
+  const usageSamples: any[] = [];
   const wire = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
   const transport = vi.fn(async (_url: unknown, options: RequestInit) => {
     signal = options.signal ?? undefined;
     return new Response(wire, { status: 200, headers: { "content-type": "text/event-stream" } });
   }); vi.stubGlobal("fetch", transport);
-  const selected = { ...model("openai-codex-responses"), reasoning: true, thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: "medium", high: "high" } };
-  const stream = vi.fn((m: any, context: any, options: any) => { optionsSeen = options; return adapter.streamSimple(m, context, { ...options, apiKey: token, onPayload(payload: any) { options.onPayload(payload); payloadSeen = payload; } }); });
+  const selected = { ...model(api), reasoning: true, thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: "medium", high: "high" } };
+  const stream = vi.fn((m: any, context: any, options: any) => {
+    optionsSeen = options;
+    const source = adapter.streamSimple(m, context, { ...options, apiKey: token, onPayload(payload: any) { options.onPayload(payload); payloadSeen = payload; } });
+    return { async *[Symbol.asyncIterator]() { for await (const event of source) {
+      if ("partial" in event) usageSamples.push({ ...event.partial.usage });
+      yield event;
+    } }, result: () => source.result() };
+  });
   const models = { getModel: () => selected, streamSimple: stream };
   const result = await completeContinuityUpkeep(prompt, { model: reference, messages: [], abortSignal, piResolvedModels: models as never }, strict, budget);
-  return { result, transport, stream, signal, optionsSeen, payloadSeen };
+  return { result, transport, stream, signal, optionsSeen, payloadSeen, usageSamples };
 }
 const created = { type: "response.created", response: { id: "fictional-response" } };
 const added = { type: "response.output_item.added", output_index: 0, item: { id: "fictional-output", type: "message", role: "assistant", content: [] } };
@@ -145,4 +153,13 @@ it("retains explicit zero provider counters in the durable-outcome companion", a
   const { result, transport } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "{}" }, done(0, 0, 0)]);
   expect(transport).toHaveBeenCalledTimes(1);
   expect(result.receipt.providerUsage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  expect(result.receipt).toMatchObject({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
+});
+
+it.each(["openai-codex-responses", "openai-responses"])("keeps interrupted %s initialized usage unknown, not reported zero", async api => {
+  const { result, transport, usageSamples } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "{" }], false, undefined, undefined, undefined, api);
+  expect(usageSamples).toContainEqual(expect.objectContaining({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }));
+  expect(transport).toHaveBeenCalledTimes(1);
+  expect(result.receipt).toMatchObject({ providerInvoked: true, status: "invalid", inputTokens: null, outputTokens: null, costUsd: null,
+    providerUsage: { input: null, output: null, cacheRead: null, cacheWrite: null } });
 });

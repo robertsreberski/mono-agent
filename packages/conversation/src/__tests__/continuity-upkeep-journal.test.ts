@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -209,8 +209,8 @@ it("reset fences queued outcomes and publication while retention purge keeps boo
   await expect(f.writer.publishLedger({ id: "old", conversationId: "fictional", logicalId: "fictional", parent: null, manifest: old.manifest, inputs: [], entries: [], spans: [], coveredOwners: [], uncovered: 0 }, old)).rejects.toThrow();
 });
 
-async function child(root: string, phase: string): Promise<{ process: ChildProcess; message: any; exit: Promise<unknown> }> {
-  const process = spawn(globalThis.process.execPath, [fileURLToPath(new URL("./fixtures/upkeep-crash-child.mjs", import.meta.url)), root, phase], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+async function child(root: string, phase: string, fixture = "upkeep-crash-child.mjs", extra: string[] = []): Promise<{ process: ChildProcess; message: any; exit: Promise<unknown> }> {
+  const process = spawn(globalThis.process.execPath, [fileURLToPath(new URL(`./fixtures/${fixture}`, import.meta.url)), root, phase, ...extra], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
   let errors = ""; process.stderr!.on("data", data => { errors += data; });
   const exit = once(process, "exit");
   cleanups.push(async () => { if (process.exitCode === null && process.signalCode === null) { process.kill("SIGKILL"); await exit; } });
@@ -244,3 +244,21 @@ it("threads the bootstrap budget through selection, including prior and prompt o
   expect(Buffer.byteLength(small.prompt) * 0.625 + 1024).toBeLessThan(64000);
   expect(Buffer.byteLength(large.prompt) * 0.625 + 1024).toBeLessThan(128000);
 });
+
+it.each(["dispatch_started", "provider_return"])("production supplier does not repurchase after SIGKILL at %s", async phase => {
+  const directory = await mkdtemp(join(tmpdir(), "upkeep-supplier-crash-"));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, "history"), counter = join(directory, "provider-calls");
+  const first = await child(root, phase, "upkeep-supplier-crash-child.mjs", [counter]);
+  expect(first.message).toMatchObject({ phase, calls: 1 });
+  const db = new DatabaseSync(join(root, "tool-history", "tool-lifecycles.sqlite"), { readOnly: true });
+  expect(db.prepare("SELECT state,outcome FROM continuity_upkeep_operations").get()).toMatchObject({ state: "dispatch_started", outcome: null }); db.close();
+  first.process.kill("SIGKILL"); await first.exit;
+  for (let i = 0; i < 2; i++) {
+    const recovered = await child(root, "recover", "upkeep-supplier-crash-child.mjs", [counter]); await recovered.exit;
+    expect(recovered.process.pid).not.toBe(first.process.pid);
+    expect(recovered.message).toMatchObject({ calls: 1, published: false, operations: [{ state: "dispatch_started", outcome: null }] });
+    expect(recovered.message.events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", providerInvoked: false, reason: "upkeep_repeat_suppressed" }));
+    expect((await readFile(counter, "utf8")).trim().split("\n")).toEqual(["provider-call"]);
+  }
+}, 15000);
