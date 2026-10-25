@@ -3,6 +3,7 @@ import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { HistoryMessage } from "../context/types.js";
 import type { ContinuitySnapshotInput, ContinuitySnapshot, ContinuitySnapshotRecord } from "../tool-history/continuity-contracts.js";
 import { continuityQuotation } from "../tool-history/continuity-input.js";
+import { CONTINUITY_REDACTION_OMISSION } from "../tool-history/continuity-payload.js";
 import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
 
@@ -60,13 +61,15 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   const toolBudget = Math.floor(Math.max(0, limit - estimate(HEADER) - 220) * 0.4);
   let toolTokens = 0;
   const select = (record: ContinuitySnapshotRecord, reserved = false) => {
-    if (selected.has(record)) return;
+    if (selected.has(record) || contentFreeRead(record)) return;
     const entry = renderEntry(record, section(record));
     const cost = estimate(body + entry) - estimate(body);
     if (estimate(body + entry) + 220 > limit || reserved && toolTokens + cost > toolBudget) return;
     selected.set(record, entry); body += entry;
     if (reserved) { toolTokens += cost; toolReserved++; }
   };
+  // Entries are sorted effect-first, then oldest-first, so reads spend the
+  // reservation left by compact effect heads in ordinal order.
   for (const record of entries) if (section(record) === "tool") select(record, true);
   for (const record of entries) select(record);
   // Selection priority does not change section layout: owner requests first,
@@ -117,6 +120,30 @@ function effectPriority(name: string): boolean {
   return false;
 }
 
+/** Complete paragraphs only, never a clipped identifier or negation. Effect-like
+ * entries keep just their first paragraph when it fits 512 bytes, so the reserve
+ * also reaches early reads. Known trade-off: an outcome detail that appears only
+ * in a later effect paragraph is left to retrieval or a ledger; result_omitted
+ * still discloses it. A longer first paragraph keeps the 2048-byte rule. */
+function resultHead(record: ContinuitySnapshotRecord): string {
+  const paragraphs = record.text.split("\n\n");
+  if (effectPriority(record.tool?.name ?? "") && Buffer.byteLength(paragraphs[0]!) <= 512) return paragraphs[0]!;
+  const lines: string[] = []; let size = 0;
+  for (const line of paragraphs) {
+    if (size + Buffer.byteLength(line) + 2 > 2048) break;
+    lines.push(line); size += Buffer.byteLength(line) + 2;
+  }
+  return lines.join("\n\n");
+}
+
+/** A read whose rendered head is only redaction markers carries no usable fact;
+ * it stays omitted (and counted) rather than spending a scarce tool slot. */
+function contentFreeRead(record: ContinuitySnapshotRecord): boolean {
+  if (section(record) !== "tool" || !record.tool || effectPriority(record.tool.name)) return false;
+  const head = resultHead(record);
+  return head.includes(CONTINUITY_REDACTION_OMISSION) && head.replaceAll(CONTINUITY_REDACTION_OMISSION, "").trim() === "";
+}
+
 function section(record: ContinuitySnapshotRecord): Section {
   if (record.kind === "owner" && record.provenance === "host-owner" && record.source.attestation?.inputId === record.inputId && record.inputId) return "owner";
   return record.kind === "tool" ? "tool" : record.kind === "summary" ? "summary" : "evidence";
@@ -126,12 +153,7 @@ function renderEntry(record: ContinuitySnapshotRecord, category: Section): strin
   if (category === "owner") return `Historical owner request id=${id} (past, not renewed approval): ${quote(record.text)}\n`;
   if (category === "tool" && record.tool) {
     const args = Buffer.byteLength(record.tool.arguments) <= 2048 ? record.tool.arguments : "[arguments omitted: size; retrieve by reference]";
-    const lines: string[] = []; let size = 0;
-    for (const line of record.text.split("\n\n")) {
-      if (size + Buffer.byteLength(line) + 2 > 2048) break;
-      lines.push(line); size += Buffer.byteLength(line) + 2;
-    }
-    const head = lines.join("\n\n");
+    const head = resultHead(record);
     return `Tool evidence id=${id} invocation_id=${quote(record.tool.invocationId)} name=${quote(record.tool.name)} final_state=${quote(record.tool.state)} arguments=${quote(args)} result_head=${quote(head || "[head omitted: first paragraph exceeds bound]")} result_omitted=${head !== record.text || record.truncated}\n`;
   }
   if (category === "summary") return `Generated summary evidence id=${id} sha256=${quote(record.sha256)}: ${quote(record.text)}\n`;

@@ -3,6 +3,8 @@ import { redactJsonValue } from "@mono-agent/observability";
 import { CONTINUITY_RECORD_MAX_BYTES } from "./continuity-contracts.js";
 import { utf8Prefix } from "./payload.js";
 
+export const CONTINUITY_REDACTION_OMISSION = "[continuity text omitted because it contained private host data]";
+
 export interface RetainedContinuityText {
   readonly text: string;
   readonly sha256: string;
@@ -24,7 +26,7 @@ export function retainContinuityText(value: string): RetainedContinuityText {
     contentPatternRedaction: true,
     visibleTextSanitization: {
       omitFilesystemPaths: true,
-      omission: "[continuity text omitted because it contained private host data]",
+      omission: CONTINUITY_REDACTION_OMISSION,
     },
   });
   if (typeof sanitized !== "string") throw new TypeError("Continuity text sanitization failed.");
