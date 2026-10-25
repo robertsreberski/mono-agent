@@ -44,7 +44,7 @@ export async function productionModules(root) {
   const piPackage = JSON.parse(await readFile(join(root, "packages/turn/node_modules/@earendil-works/pi-ai/package.json"), "utf8"));
   const entry = piPackage.exports?.["."]?.import;
   if (typeof entry !== "string") throw new ContinuityError("pi_ai_entry_unavailable");
-  const [config, app, hostRuntime, hostConfig, turnRoot, pi, coordinator] = await Promise.all([
+  const [config, app, hostRuntime, hostConfig, turnRoot, pi, coordinator, providers] = await Promise.all([
     import(pathToFileURL(join(root, "packages/config/dist/index.js")).href),
     import(pathToFileURL(join(root, "packages/app/dist/index.js")).href),
     import("@mono-agent/turn/host"),
@@ -52,6 +52,7 @@ export async function productionModules(root) {
     import("@mono-agent/turn"),
     import(pathToFileURL(join(root, "packages/turn/node_modules/@earendil-works/pi-ai", entry)).href),
     import(pathToFileURL(join(root, "packages/app/dist/durable-state/agent-root-coordinator.js")).href),
+    import(pathToFileURL(join(root, "packages/turn/node_modules/@earendil-works/pi-ai", piPackage.exports["./providers/*"].import.replace("*", "all"))).href),
   ]);
   for (const name of ["createConfiguredConversationHarness", "createConfiguredAgentRuntime"]) {
     if (typeof app[name] !== "function") throw new ContinuityError("production_module_missing", name);
@@ -64,7 +65,7 @@ export async function productionModules(root) {
   if (typeof config.resolveJsonMonoAgentConfig !== "function" || typeof pi.fauxProvider !== "function") throw new ContinuityError("production_module_missing");
   const conversation = await import("@mono-agent/conversation");
   if (typeof conversation.ToolHistoryReader !== "function") throw new ContinuityError("production_module_missing", "ToolHistoryReader");
-  return { config, app, host, pi, conversation, coordinator };
+  return { config, app, host, pi: { ...pi, builtinModels: providers.builtinModels }, conversation, coordinator };
 }
 
 /** Faux models posing as the given bound references (one faux provider per provider id). */

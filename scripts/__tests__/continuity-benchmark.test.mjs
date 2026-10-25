@@ -571,3 +571,12 @@ it("captures fictional completion and stable validation failure only when explic
   const captured = JSON.parse(await readFile(join(output, "upkeep-output", "r1-brightline-return.json"), "utf8"));
   expect(captured).toMatchObject({ failure: "output_schema", status: "invalid" }); expect(JSON.parse(captured.text)).toMatchObject({ forbidden: true });
 }, 180_000);
+
+it("loads the exact SDK builtin model collection for real capture without dispatch", async () => {
+  const { productionModules, captureUpkeepModels } = await import("../lib/continuity-runner.mjs");
+  const modules = await productionModules(root.replace(/\/$/u, ""));
+  const models = modules.pi.builtinModels({ credentials: { read: async () => undefined } });
+  const wrapped = captureUpkeepModels(models, () => { throw new Error("must not dispatch"); });
+  expect(wrapped.getModel("openai-codex", "gpt-6-luna")).toBe(models.getModel("openai-codex", "gpt-6-luna"));
+  expect(typeof wrapped.streamSimple).toBe("function");
+});
