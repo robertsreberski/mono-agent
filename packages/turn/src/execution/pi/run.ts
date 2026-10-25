@@ -776,7 +776,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     // transcript, so prior messages are skipped; a fresh run AND a create-on-miss
     // (requestedSessionId set but the durable session was just created empty)
     // both seed, since their on-disk transcript is empty.
-    const { priorMessages, promptText, promptImages } = options.manualCompaction === true
+    let { priorMessages, promptText, promptImages } = options.manualCompaction === true
       ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
       : splitPromptMessages(options.messages, runtime.model);
     runState.sessionBaselineCount = (await runState.session!.buildContext()).messages.length;
@@ -795,11 +795,14 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
           const input = messages.reduce((sum, message) => sum + Number(estimateTokens(message)), 0);
           const window = Math.min(policy.contextWindow, Number(options.compaction?.contextWindowOverride) || runtime.model.contextWindow);
           const reserve = Math.max(4096, Number(runtime.model.maxTokens) || 0) + 4096;
-          const maxTokens = Math.max(0, Math.min(8000, Math.floor(window - fixed - input - reserve)));
-          evidence = toAgentMessages(await options.coldContext({ maxTokens, reason: runState.createdOnMiss ? "created_on_miss" : "cold_rebuild" }), runtime.model);
+          const maxTokens = Math.max(0, Math.min(8000, Math.floor(Math.min(window, policy.triggerTokens) - fixed - input - reserve)));
+          const cold = await options.coldContext({ maxTokens: maxTokens < 500 ? 0 : maxTokens, reason: runState.createdOnMiss ? "created_on_miss" : "cold_rebuild" });
+          evidence = toAgentMessages(cold.messages, runtime.model);
           if (evidence.reduce((sum, message) => sum + Number(estimateTokens(message)), 0) > maxTokens) {
             evidence = [];
             onEvent({ type: "runtime_warning", warning_kind: "continuity_pack_degraded", error_code: "headroom", message: "Continuity evidence omitted: target headroom." });
+          } else if (cold.replayMessages) {
+            priorMessages = toAgentMessages(cold.replayMessages, runtime.model);
           }
         } catch {
           onEvent({ type: "runtime_warning", warning_kind: "continuity_pack_degraded", error_code: "unavailable", message: "Continuity evidence unavailable; canonical replay continues." });

@@ -486,16 +486,28 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       };
       // A supplier shared by the host turn freezes B1 evidence across a resume
       // retry and router attempts. Native preparation keeps its existing protocol.
-      const coldContext = !preparation && routing.continuityPack ? async (budget: { maxTokens: number; reason: string }) => {
-        let replay = history;
+      // Warm native turns omit canonical messages, but a detached router attempt
+      // may need them. Resolve whether prior history exists before offering the
+      // cold hook; isolated and first-bucket turns never consult another history.
+      let continuityHistory = history;
+      if (!preparation && routing.continuityPack && historyOmitted && !sessionIsolated) {
+        try { continuityHistory = routing.detachedHistoryOverride ?? await loadHarnessHistory(options, request.conversationId, request.continuation); }
+        catch { /* Optional continuity cannot block the turn. */ }
+      }
+      const coldContext = !preparation && routing.continuityPack
+        && (continuityHistory.length > 0 || routing.boundaryReason !== undefined) ? async (budget: { maxTokens: number; reason: string }) => {
         try {
-          if (historyOmitted) replay = routing.detachedHistoryOverride ?? await loadHarnessHistory(options, request.conversationId, request.continuation);
-          return routing.continuityPack!(replay, budget.maxTokens,
-            budget.reason === "detached_context" ? budget.reason : routing.boundaryReason ?? budget.reason, emitRuntimeEvent);
+          let toolIds: ReadonlySet<string> = new Set();
+          const messages = routing.continuityPack!(continuityHistory, budget.maxTokens,
+            budget.reason === "detached_context" ? budget.reason : routing.boundaryReason ?? budget.reason, emitRuntimeEvent,
+            ids => { toolIds = ids; });
+          if (toolIds.size === 0) return { messages };
+          const projection = loadToolHistoryProjection(options, request.conversationId, runId, continuityHistory, emitRuntimeEvent, toolIds);
+          return { messages, replayMessages: coldReplayMessages(continuityHistory, projection?.text) };
         } catch {
-          try { emitRuntimeEvent({ type: "runtime_warning", warning_kind: "continuity_pack_degraded", error_code: "unavailable",
-            message: "Continuity coverage gap; canonical reconstruction continues." }); } catch { /* fail open */ }
-          return [];
+          try { emitRuntimeEvent({ type: "continuity_pack_skipped", reason: "unavailable", degradedReason: "unavailable", tokens: 0 }); }
+          catch { /* fail open */ }
+          return { messages: [] };
         }
       } : undefined;
       let runtimeOptions: RuntimeRunOptions = {

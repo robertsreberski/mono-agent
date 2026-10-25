@@ -765,10 +765,10 @@ function sessionBoundaryStep(event: RuntimeEventLike, ts: string): Extract<Sessi
 function runtimeStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, { k: "runtime" }> | undefined {
   const type = readString(event.type);
   const telemetryData = isRecord(event.data) ? event.data : undefined;
-  if (type === "continuity_pack_injected" || type === "runtime_telemetry" && readString(event.kind) === "continuity_pack_injected") {
+  if (["continuity_pack_injected", "continuity_pack_skipped"].includes(type ?? "") || type === "runtime_telemetry" && ["continuity_pack_injected", "continuity_pack_skipped"].includes(readString(event.kind) ?? "")) {
     const source = type === "runtime_telemetry" ? telemetryData ?? {} : event;
     const safeLabel = (value: unknown) => typeof value === "string" && /^[a-z_]{1,64}$/u.test(value) ? value : undefined;
-    return { k: "runtime", ts, type: "runtime_telemetry", kind: "continuity_pack_injected", continuityPack: {
+    return { k: "runtime", ts, type: "runtime_telemetry", kind: type === "runtime_telemetry" ? readString(event.kind)! : type!, continuityPack: {
       ...(safeLabel(source.reason) ? { reason: safeLabel(source.reason)! } : {}),
       ...(safeLabel(source.degradedReason) ? { degradedReason: safeLabel(source.degradedReason)! } : {}),
       ...Object.fromEntries(["tokens", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap"]

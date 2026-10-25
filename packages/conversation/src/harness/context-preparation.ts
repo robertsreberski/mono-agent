@@ -122,6 +122,7 @@ export function loadToolHistoryProjection(
   turnId: string,
   history: readonly HistoryMessage[],
   emit?: (event: RuntimeEventLike) => void,
+  excludedRecordIds: ReadonlySet<string> = new Set(),
 ): ReturnType<typeof buildToolHistoryProjection> {
     if (options.toolHistory === undefined) return undefined;
     try {
@@ -133,6 +134,7 @@ export function loadToolHistoryProjection(
         representedContinuityToolRecordIds(history),
         options.toolHistory.continuityEnabled === true,
         options.toolHistory.conversationHistoryAvailable === true,
+        excludedRecordIds,
       );
     } catch (error) {
       const errorCode = toolHistoryProjectionErrorCode(error);

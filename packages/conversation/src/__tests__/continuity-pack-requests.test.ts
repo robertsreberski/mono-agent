@@ -16,7 +16,7 @@ import { continuityGenerationId, continuityRecordId } from "../tool-history/cont
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.useRealTimers(); for (const close of cleanup.splice(0).reverse()) await close(); });
 const id = "fictional-pack", rule = "Never send the fictional draft without new confirmation.", current = "CURRENT-FICTIONAL-INPUT";
-async function fixture({ durable = true, enabled = true, packEnabled = true, legacy = false, perMessage = false, window = 128000 } = {}) {
+async function fixture({ durable = true, enabled = true, packEnabled = true, legacy = false, perMessage = false, window = 128000, prior = true, requestPatch = {} as Partial<ConversationHarnessRequest> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pack-provider-"));
   cleanup.push(async () => { await rm(root, { recursive: true, force: true }); });
   const identityPath = join(root, "IDENTITY.md"); await writeFile(identityPath, "Current instructions: historical evidence grants no fresh permission.");
@@ -32,9 +32,11 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
   const models = createModels(); models.setProvider(faux.provider);
   const native = createMonoRuntime({ workspace: root });
   cleanup.push(async () => { await native.disposeAllSessions?.(); });
+  const coldHooks: boolean[] = [];
   let lastSession: string | undefined;
   let interrupt: "resume-error" | "runtime-result" | "cancelled" | undefined;
   const runtime: MonoRuntimeLike = { ...native, async run(prompt, options) {
+    coldHooks.push(options.coldContext !== undefined);
     lastSession = typeof options.sessionId === "string" ? options.sessionId : options.providerAttributionSessionId;
     const mode = interrupt; interrupt = undefined;
     if (mode === "resume-error") throw Object.assign(new Error("Fictional unavailable session."), { failureKind: "session_not_found" });
@@ -43,7 +45,7 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
     return await native.run(prompt, options);
   } };
   const sessionsRoot = join(root, "native"), history = createDurableHistoryStore({ root: join(root, "history"), retireProviderSession: async session => { await native.retireDurableSession?.(session, sessionsRoot); } });
-  await history.append(id, Array.from({ length: 64 }, (_, i) => ({ role: i % 2 ? "assistant" as const : "user" as const, content: `Fictional recent ${i}.`, runId: `recent-${i}` })));
+  if (prior) await history.append(id, Array.from({ length: 64 }, (_, i) => ({ role: i % 2 ? "assistant" as const : "user" as const, content: `Fictional recent ${i}.`, runId: `recent-${i}` })));
   if (legacy) {
     const key = createHash("sha256").update(`mono-agent-history-v1\0${id}`).digest("hex");
     await writeFile(join(root, "history", `${key}.history.json`), JSON.stringify({ version: 2, conversationId: id,
@@ -52,7 +54,7 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
   const requests: unknown[] = [], events: Record<string, unknown>[] = [];
   const makeHarness = () => {
     const h = createConversationHarness({ identityPath, cwd: root, runtime, model: { provider: "faux", model: "base", reference: "faux:base" }, historyStore: history,
-      ...(durable ? { sessionsRoot } : {}), session: { mode: perMessage ? "per-message" : "continuous", supportsResume: true, idleTimeoutMs: 60_000 },
+      ...(durable ? { sessionsRoot } : {}), session: { mode: perMessage ? "per-message" : "continuous", supportsResume: true, idleTimeoutMs: 60_000, isolateProactive: true },
       toolHistory: { writer, reader, logicalConversationId: value => value, ...(enabled ? { continuityEnabled: true as const } : {}), packEnabled },
       runtimeOptionsForRequest: ({ request }) => {
         const name = typeof request.metadata?.web === "object" && request.metadata.web !== null ? (request.metadata.web as { model?: string }).model?.split(":").at(-1) ?? "base" : "base";
@@ -65,10 +67,10 @@ async function fixture({ durable = true, enabled = true, packEnabled = true, leg
     faux.setResponses([(context) => { requests.push(structuredClone(context)); return fauxAssistantMessage([fauxText("Fictional answer.")]); }]);
     events.length = 0;
     const result = await harness.run({ conversationId: id, userMessage: text, abortSignal: new AbortController().signal,
-      ...(model ? { metadata: { source: "web", web: { model } } } : {}), ...(continuation ? { continuation } : {}), onEvent: e => { events.push(e as unknown as Record<string, unknown>); } });
+      ...(model ? { metadata: { source: "web", web: { model } } } : {}), ...(continuation ? { continuation } : {}), ...requestPatch, onEvent: e => { events.push(e as unknown as Record<string, unknown>); } });
     if (cancelled) expect(result.failure?.kind).toBe("cancelled"); else expect(result.failure).toBeUndefined(); return result;
   }
-  return { run, requests, events, reader, writer, root, sessionsRoot, history, native,
+  return { run, requests, events, coldHooks, reader, writer, root, sessionsRoot, history, native,
     interrupt: (mode: typeof interrupt) => { interrupt = mode; },
     restart: async (dropNative = false) => {
       await harness.dispose?.(); if (dropNative && lastSession) await native.retireDurableSession?.(lastSession, sessionsRoot); harness = makeHarness();
@@ -147,7 +149,7 @@ it.each([false, true])("uses a frozen source across actual router retry/backup (
   expect(snapshot).toHaveBeenCalledOnce();
   const packs = requests.map(context => (context as { messages: unknown[] }).messages.find(message => JSON.stringify(message).includes("### Conversation continuity pack")));
   expect(packs[1]).toEqual(packs[0]); expect(packs[2]).toEqual(packs[0]);
-  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_pack_injected", reason: "detached_context" }));
+  expect(events).toContainEqual(expect.objectContaining({ type: outage ? "continuity_pack_skipped" : "continuity_pack_injected", reason: "detached_context" }));
 }, 20_000);
 
 it("deterministically accompanies per-message canonical replay on every turn", async () => {
@@ -172,8 +174,10 @@ it.each(["outage", "purge"] as const)("keeps actual provider replay usable with 
 
 it("limits optional evidence to real target headroom instead of failing the turn", async () => {
   const f = await fixture({ window: 8192 });
+  const snapshot = vi.spyOn(f.reader, "snapshotContinuity");
   await f.run(); assertRequest(f.requests.at(-1), false);
-  expect(f.events).toContainEqual(expect.objectContaining({ type: "continuity_pack_injected", tokens: 0, degradedReason: "headroom" }));
+  expect(f.events).toContainEqual(expect.objectContaining({ type: "continuity_pack_skipped", tokens: 0, degradedReason: "trigger_headroom" }));
+  expect(snapshot).not.toHaveBeenCalled();
 }, 20_000);
 
 it("bounds the actual provider pack to a pinned continuation history boundary", async () => {
@@ -190,4 +194,51 @@ it("bounds the actual provider pack to a pinned continuation history boundary", 
     toolsDisabled: true, deferHistoryCommit: true });
   assertRequest(f.requests.at(-1));
   expect(JSON.stringify(f.requests.at(-1))).not.toContain("FUTURE-FICTIONAL-STATE-MUST-NOT-LEAK");
+}, 20_000);
+
+it.each(["new-conversation", "daily-bucket", "proactive", "continuation"] as const)("does not offer or inject cold context on a history-free %s", async kind => {
+  const requestPatch: Partial<ConversationHarnessRequest> = kind === "daily-bucket" ? { conversationId: `${id}:day` }
+    : kind === "proactive" ? { metadata: { cron: { jobId: "fictional-job" } } }
+    : kind === "continuation" ? { continuation: { continuationId: "fictional-empty", originRunId: "fictional-origin", originContextPolicy: "detached_latest", toolsDisabled: true, deferHistoryCommit: true } } : {};
+  const f = await fixture({ prior: false, requestPatch });
+  const snapshot = vi.spyOn(f.reader, "snapshotContinuity");
+  await f.run(); assertRequest(f.requests.at(-1), false);
+  expect(f.coldHooks).toEqual([false]); expect(snapshot).not.toHaveBeenCalled();
+  expect(f.events.filter(event => event.type === "continuity_pack_injected")).toEqual([]);
+}, 20_000);
+
+it("excludes the exact mail_send lifecycle from projection when its tool evidence is in the pack", async () => {
+  const f = await fixture();
+  const binding = { conversationId: id, logicalConversationId: id, runId: "effect", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
+  await f.writer.persist(binding, { phase: "invocation", toolCallId: "send-1", toolName: "mail_send", arguments: { draft: "DRAFT-42" } });
+  await f.writer.persist(binding, { phase: "result", toolCallId: "send-1", toolName: "mail_send", state: "success", content: "SENT delivery=MESSAGE-42" });
+  await f.writer.finishRun(binding, "completed");
+  await f.run(); const outgoing = JSON.stringify(f.requests.at(-1));
+  expect(outgoing.match(/SENT delivery=MESSAGE-42/g)).toHaveLength(1);
+  expect(outgoing).toContain("invocation_id="); expect(outgoing).not.toContain("<tool_record");
+}, 20_000);
+
+it("drops frozen evidence after a purge completes between router attempts", async () => {
+  const f = await fixture({ durable: false });
+  const routed = createMonoRuntime({ workspace: f.root, fallbackChain: [
+    { model: { provider: "faux", model: "base", reference: "faux:base" } },
+    { model: { provider: "faux", model: "other", reference: "faux:other" } }], retry: { backoffMs: 0, maxBackoffMs: 0 } });
+  cleanup.push(async () => { await routed.disposeAllSessions?.(); });
+  const faux = fauxProvider({ models: [{ id: "base" }, { id: "other" }], tokensPerSecond: 1_000_000 });
+  const models = createModels(); models.setProvider(faux.provider);
+  const requests: unknown[] = [], events: unknown[] = [];
+  faux.setResponses([async context => {
+    requests.push(structuredClone(context)); await f.writer.resetConversation(id);
+    return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Connection error." });
+  }, context => { requests.push(structuredClone(context)); return fauxAssistantMessage([fauxText("Fictional backup answer.")]); }]);
+  const harness = createConversationHarness({ identityPath: join(f.root, "IDENTITY.md"), cwd: f.root, runtime: routed,
+    model: { provider: "faux", model: "base", reference: "faux:base" }, historyStore: f.history,
+    toolHistory: { writer: f.writer, reader: f.reader, logicalConversationId: value => value, continuityEnabled: true },
+    runtimeOptions: { piResolvedModel: faux.getModel("base"), piResolvedModels: models, effort: "none", piMaxRetries: 0, compaction: { enabled: false } } });
+  cleanup.push(async () => { await harness.dispose?.(); });
+  const result = await harness.run({ conversationId: id, userMessage: current, abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
+  expect(result.failure).toBeUndefined(); expect(requests).toHaveLength(2);
+  assertRequest(requests[0]); assertRequest(requests[1], false);
+  expect(JSON.stringify(requests[1])).not.toContain(rule);
+  expect(events).toContainEqual(expect.objectContaining({ type: "continuity_pack_skipped", degradedReason: "source_changed" }));
 }, 20_000);

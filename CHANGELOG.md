@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep cold continuity packs below the compaction trigger, omit history-free
+  packs, invalidate purged snapshots across retries, and avoid duplicating
+  finalized tool evidence in the cold projection. Preserve healthy evidence
+  when another retained payload is malformed.
+
 - Add real deterministic cold-pack benchmark arms, paired with recording-only
   and legacy cold-rebuild controls; offline contracts check actual provider
   contexts without measuring paid model quality.

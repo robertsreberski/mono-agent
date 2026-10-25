@@ -185,5 +185,5 @@ export interface ContinuitySnapshot {
   readonly records: readonly ContinuitySnapshotRecord[];
   readonly omitted: number;
   readonly gaps: number;
-  readonly degradedReason?: "unavailable" | "purge_pending" | "boundary_unavailable" | "snapshot_bounds" | "source_unavailable";
+  readonly degradedReason?: "unavailable" | "purge_pending" | "boundary_unavailable" | "snapshot_bounds" | "source_unavailable" | "source_changed";
 }

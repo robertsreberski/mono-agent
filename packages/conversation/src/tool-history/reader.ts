@@ -12,7 +12,7 @@ import { assertSecureReadableDirectory, assertSecureReadableFile, normalizeId } 
 import { reasonOf } from "./writer.js";
 
 import { CONTINUITY_USER_VERSION, type ContinuitySnapshotInput, type ContinuitySnapshot, type ContinuityCoverageGap, type ContinuityGapReason, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
-import { snapshotContinuity, getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
+import { snapshotContinuity, continuitySnapshotVisible, getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
 import { assertContinuitySchema, hasContinuitySchema, readContinuityStats } from "./continuity-storage.js";
 
 /** Read-only bounded query surface used by projection, SessionHistory, purge, and doctor. */
@@ -61,6 +61,13 @@ export class ToolHistoryReader {
 
   /** Also rechecked when a frozen pack is reused: purge always wins over caching. */
   continuitySuppressed(scope: ContinuityScope): boolean { return this.continuityPurgePending(scope); }
+
+  continuitySnapshotVisible(input: ContinuitySnapshotInput, snapshot: ContinuitySnapshot): boolean {
+    if (this.continuityPurgePending(input)) return false;
+    const database = this.openReadOnly();
+    if (!database) return false;
+    try { return continuitySnapshotVisible(database, input, snapshot); } finally { database.close(); }
+  }
 
   snapshotContinuity(input: ContinuitySnapshotInput): ContinuitySnapshot {
     if (this.continuityPurgePending(input)) return { records: [], omitted: 0, gaps: 1, degradedReason: "purge_pending" };

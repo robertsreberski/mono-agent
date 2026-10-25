@@ -120,7 +120,7 @@ rather than invalidating references. Conversation reset and
 history rebuild, a conversation-owned local supplier reads committed, finalized
 v3 evidence without a model call. It carries whole historical host-owner
 quotations (oldest first), finalized tool names/states/compact arguments and
-bounded result heads, the latest portable summary, and coverage/omission counts.
+bounded result heads, the latest proof-promoted pinned portable summary, and coverage/omission counts.
 Other speakers/imports are neutral evidence; tools and summaries are not owner
 instructions. Past owner requests remain subordinate to current instructions and
 never renew approval to repeat an effect. B1 retains successful finalized tool
@@ -130,13 +130,18 @@ Result heads keep whole paragraphs (at most 2048 UTF-8 bytes); a larger first
 paragraph and oversized arguments are omitted explicitly, never clipped.
 
 The pack has an 8000 estimated-token ceiling, lowered by the actual target's
-window, instructions, tools, replay, current input, output reserve and safety
-headroom. Whole entries win in priority order; newer entries are omitted first
+compaction trigger (including `maxInputTokens`), instructions, tools, replay,
+current input, output reserve and safety headroom. Below 500 tokens of remaining
+trigger headroom it is skipped (`trigger_headroom`); adding optional evidence
+must not cause a proactive summary. Whole entries win in priority order; newer entries are omitted first
 within each section. Coverage is bounded (512 source records / 4 MiB per read),
 not a complete account. Sidecar failures, pending purges, missing continuation
 boundaries and overflow warn with content-free diagnostics and fall back to
 permitted canonical reconstruction, with a gap/omission marker when space allows.
-A purge suppresses even an already-frozen pack before its next reuse.
+Before frozen-source reuse, one bounded visibility query verifies every retained
+record identity/digest under the same scope, including the summary pin. A pending
+or completed purge, tombstone or loss of visibility drops the snapshot and pack.
+Malformed tool payloads exclude only that record, not healthy sibling evidence.
 
 One source snapshot is frozen per turn and reused across resume-error retry and
 the router's stateless retries/backups. Packs are added at the runtime's actual
@@ -147,17 +152,25 @@ resume (including durable reopen) does not append another. Its input tokens are
 included in ordinary provider request usage, not a separate paid operation.
 `continuity_pack_injected` telemetry reports boundary reason, section counts,
 omissions, token estimate, degradation and uncertain window overlap; these are
-supplied-evidence facts, not proof of delivery or exact token occupancy.
+supplied-evidence facts, not proof of delivery or exact token occupancy. Only
+actually supplied packs emit this event; an offered-but-empty or degraded skip
+emits `continuity_pack_skipped` instead, never an injection count. A truly empty
+snapshot with no omission or coverage gap contributes no header or input tokens.
 
 Packs follow canonical replay's **physical day bucket**, not logical retrieval's
 cross-bucket scope: daily rollover does not silently inherit yesterday's pack.
 Continuation packs stop at the origin's `historyBoundary`; if its retained record
 is unavailable, no later state is substituted. Native model-switch handoffs keep
-their existing protocol; subagent instances are outside this feature.
+their existing protocol; subagent instances are outside this feature. A missing
+native session seeded for **manual compaction** currently gets no pack; that gap
+belongs to the later compaction-boundary work, not this cold-turn slice.
 
 Legacy canonical messages lack durable continuity record identities. Deduplication
 uses exact shared identities only (such as managed tool record references in
-interruption accounts); otherwise overlapping evidence is retained, never matched
+interruption accounts). Pack tool entries show `invocation_id`; their invocation
+and result identities are excluded from the bounded legacy tool projection, so a
+single finalized lifecycle is not presented twice. Exclusions never refill the
+projection with older calls; otherwise overlapping evidence is retained, never matched
 by text, run/role or position. The `unknownOverlap` count reports rendered entries
 whose run also occurs in the replay window (or whose overlap cannot be ruled out
 because replay run identities are absent), not proved duplication. Oldest-first
@@ -166,9 +179,22 @@ requires a later ledger identity model, not a canonical-format migration here.
 
 Set `packEnabled: false` to retain recording and `ConversationHistory` retrieval
 without pack injection. `enabled: false` takes precedence and preserves the
-legacy path, with no pack read. In `per-message` mode the deterministic pack
-accompanies canonical history replay every turn, costing up to the pack's input
-token allowance **each turn**; there is still no upkeep/model extraction call.
+legacy path, with no pack read. No pack supplier is offered without prior
+canonical replay or an explicit cold reason. There is no upkeep/model extraction
+call for any run kind:
+
+| Run kind | Pack input cost |
+| --- | --- |
+| Brand-new conversation / first turn of a new daily bucket | None; no historical pack or empty header |
+| Isolated proactive or continuation turn with no prior replay | None, even if shared retained evidence exists |
+| Cold rebuild with prior canonical history | Up to the trigger-limited 8000-token pack on the seeded request |
+| Pinned continuation with prior replay | Same bound per isolated execution, stopping at the origin boundary |
+| `per-message` mode | Same bound on each turn that replays prior history; no first-turn empty pack |
+| True warm resume / durable reopen | No additional injection; a previously seeded pack may remain in ordinary request/cache input accounting |
+
+A real omission or coverage gap may still contribute a bounded content-free
+marker on eligible reconstruction. History-free isolated turns do not pay for
+that marker merely because a shared store is degraded.
 
 The latest portable summary is generated evidence, not a user instruction.
 Recording is awaited across manual, pre-turn, reactive and mid-run compaction.

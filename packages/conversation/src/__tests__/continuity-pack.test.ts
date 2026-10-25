@@ -155,3 +155,37 @@ it("bounds snapshot selection independently of the token renderer and discloses 
   expect(snapshot.degradedReason).toBe("snapshot_bounds");
   expect(snapshot.records.at(-1)!.text).toBe("Fictional bounded source 3-127.");
 });
+
+it("injects no empty header when there is no evidence, omission or coverage gap", () => {
+  expect(renderContinuityPack({ records: [], omitted: 0, gaps: 0 }, [])).toMatchObject({ tokens: 0 });
+  expect(renderContinuityPack({ records: [], omitted: 0, gaps: 0 }, []).text).toBeUndefined();
+  expect(renderContinuityPack({ records: [], omitted: 0, gaps: 1 }, []).text).toContain("gaps=1");
+});
+
+it("keeps healthy sibling evidence when one invocation payload is malformed JSON", async () => {
+  const f = await fixture(); await publish(f.writer, "Keep the fictional owner rule.", "owner");
+  const binding = { conversationId: "fictional", logicalConversationId: "fictional", runId: "effect", isolated: false, continuityEnabled: true as const, finalizedContinuity: true as const };
+  for (const toolCallId of ["bad", "good"]) {
+    await f.writer.persist(binding, { phase: "invocation", toolCallId, toolName: "mail_send", arguments: { draft: "DRAFT-42" } });
+    await f.writer.persist(binding, { phase: "result", toolCallId, toolName: "mail_send", state: "success", content: `${toolCallId} SENT` });
+  }
+  await f.writer.finishRun(binding, "completed");
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(f.reader.databasePath);
+  const bad = "{malformed", hash = createHash("sha256").update(bad).digest("hex");
+  db.prepare("UPDATE tool_records SET payload_json=?,payload_sha256=? WHERE tool_call_id='bad' AND phase='invocation'").run(bad, hash); db.close();
+  const snapshot = f.reader.snapshotContinuity(scope);
+  expect(snapshot.degradedReason).toBe("source_unavailable");
+  expect(snapshot.records.map(record => record.text)).toEqual(["Keep the fictional owner rule.", "good SENT"]);
+});
+
+it("selects the pinned proof-promoted summary rather than a newer finalized summary", async () => {
+  const f = await fixture(); await publish(f.writer, "Pinned proof summary.", "pinned"); await publish(f.writer, "Newer unpromoted summary.", "newer");
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(f.reader.databasePath);
+  db.exec("UPDATE continuity_records SET kind='summary',provenance='generated'");
+  db.prepare("INSERT INTO continuity_pins (record_id,owner_kind,owner_id,created_at_ms) SELECT record_id,'summary',?,0 FROM continuity_records WHERE run_id='pinned'").run("fictional"); db.close();
+  const latest = f.reader.latestContinuitySummary(scope)!;
+  expect(f.reader.snapshotContinuity(scope).records).toMatchObject([{ recordId: latest.recordId, text: "Pinned proof summary." }]);
+  expect(f.reader.snapshotContinuity(scope).omitted).toBe(0);
+});

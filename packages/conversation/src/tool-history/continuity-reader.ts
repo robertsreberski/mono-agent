@@ -78,12 +78,29 @@ export function getContinuity(database: DatabaseSync, input: ContinuityGetInput)
 export function latestContinuitySummary(database: DatabaseSync, scope: ContinuityScope): ContinuityRecordMetadata | undefined {
   validateScope(scope);
   if (!hasContinuitySchema(database)) return undefined;
-  const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
+  const row = latestSummaryRow(database, scope);
+  return row === undefined ? undefined : metadata(row);
+}
+function latestSummaryRow(database: DatabaseSync, scope: ContinuityScope, columns = "r.*,g.conversation_id"): Row | undefined {
+  return database.prepare(`SELECT ${columns} FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) JOIN continuity_pins p USING(record_id)
     WHERE ${VISIBLE} AND r.kind='summary' AND r.retained_text IS NOT NULL
       AND p.owner_kind='summary' AND p.owner_id=? ORDER BY r.ordinal DESC LIMIT 1`)
     .get(scope.logicalConversationId, scope.logicalConversationId) as Row | undefined;
-  return row === undefined ? undefined : metadata(row);
+}
+
+/** One bounded visibility query; immutable record identities/digests must all survive. */
+export function continuitySnapshotVisible(database: DatabaseSync, scope: ContinuitySnapshotInput, snapshot: ContinuitySnapshot): boolean {
+  validateScope(scope);
+  if (!hasContinuitySchema(database) || snapshot.records.length > 512) return false;
+  if (snapshot.records.length === 0) return true;
+  const rows = database.prepare(`SELECT r.record_id,r.text_sha256 FROM continuity_records r
+    JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND g.conversation_id=? AND r.run_id<>?
+    AND r.retained_text IS NOT NULL AND r.record_id IN (${snapshot.records.map(() => "?").join(",")})
+    AND (r.kind<>'summary' OR EXISTS (SELECT 1 FROM continuity_pins p WHERE p.record_id=r.record_id AND p.owner_kind='summary' AND p.owner_id=?))`)
+    .all(scope.logicalConversationId, scope.currentConversationId, scope.currentRunId, ...snapshot.records.map(record => record.recordId), scope.logicalConversationId) as Row[];
+  const visible = new Map(rows.map(row => [row.record_id, row.text_sha256]));
+  return rows.length === snapshot.records.length && snapshot.records.every(record => visible.get(record.recordId) === record.sha256);
 }
 
 function text(row: Row): string {
@@ -130,49 +147,48 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
   const where = clauses.join(" AND ");
   const gaps = Number((database.prepare("SELECT count(*) count FROM continuity_generations WHERE logical_id=? AND conversation_id=? AND state='abandoned'")
     .get(input.logicalConversationId, input.currentConversationId) as Row).count);
+  const pinnedSummaryId = latestSummaryRow(database, input, "r.record_id")?.record_id as string | undefined;
   const total = Number((database.prepare(`SELECT count(*) count FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE ${where}
-    AND r.kind IN ('owner','user','other-user','imported','tool','summary')`).get(...values) as Row).count);
+    AND (r.kind IN ('owner','user','other-user','imported','tool') OR r.record_id=?)`).get(...values, pinnedSummaryId ?? '') as Row).count);
   // Select metadata first, never materialize an unbounded retained-text query.
-  const summaryCeiling = input.historyBoundary === undefined ? Number.MAX_SAFE_INTEGER : Number(values.at(-1));
   const candidates = database.prepare(`SELECT r.record_id,length(CAST(r.retained_text AS BLOB)) snapshot_bytes,r.kind,r.ordinal FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE ${where} AND r.retained_text IS NOT NULL
-    AND (r.kind IN ('owner','user','other-user','imported','tool') OR r.ordinal=(SELECT max(s.ordinal)
-      FROM continuity_records s JOIN continuity_generations sg USING(generation_id)
-      WHERE sg.conversation_id=g.conversation_id AND sg.state='committed' AND s.finalized=1
-      AND s.kind='summary' AND s.retained_text IS NOT NULL AND s.ordinal<=? ))
+    AND (r.kind IN ('owner','user','other-user','imported','tool') OR r.record_id=?)
     ORDER BY CASE WHEN r.kind='owner' AND r.provenance='host-owner' THEN 0 WHEN r.kind='tool' THEN 1
-      WHEN r.kind='summary' THEN 2 ELSE 3 END, r.ordinal ASC LIMIT 513`).all(...values, summaryCeiling) as Row[];
+      WHEN r.kind='summary' THEN 2 ELSE 3 END, r.ordinal ASC LIMIT 513`).all(...values, pinnedSummaryId ?? '') as Row[];
   const records: ContinuitySnapshotRecord[] = [];
   let bytes = 0, bounded = candidates.length > 512, unavailable = false;
   for (const candidate of candidates.slice(0, 512)) {
     const size = Number(candidate.snapshot_bytes);
     if (bytes + size > 4 * 1024 * 1024) { bounded = true; continue; }
-    const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
-      JOIN continuity_generations g USING(generation_id) WHERE r.record_id=?`).get(candidate.record_id as string) as Row;
-    const record = { ...metadata(row), text: text(row) };
     bytes += size;
-    if (record.kind === "tool") {
-      // B1's finalized text identity is hash(physical bucket, run, tool call).
-      // Join only that exact lifecycle, not a similar tool name or result body.
-      database.function("continuity_tool_operation", { deterministic: true }, (conversation, run, call) =>
-        `tool:${createHash("sha256").update(JSON.stringify([conversation, run, call])).digest("hex")}`);
-      const call = database.prepare(`SELECT c.tool_name,c.state,i.payload_json,i.payload_sha256,i.record_id invocation_id,o.record_id result_id
-        FROM tool_calls c JOIN tool_records i ON i.conversation_id=c.conversation_id AND i.run_id=c.run_id
-          AND i.tool_call_id=c.tool_call_id AND i.phase='invocation'
-        LEFT JOIN tool_records o ON o.conversation_id=c.conversation_id AND o.run_id=c.run_id
-          AND o.tool_call_id=c.tool_call_id AND o.phase='result'
-        WHERE c.conversation_id=? AND c.run_id=? AND c.end_seq IS NOT NULL
-          AND continuity_tool_operation(c.conversation_id,c.run_id,c.tool_call_id)=?
-          AND length(CAST(i.payload_json AS BLOB))<=? LIMIT 1`)
-        .get(record.conversationId, record.runId, record.source.operationId ?? "", 4 * 1024 * 1024 - bytes) as Row | undefined;
-      if (!call || typeof call.payload_json !== "string" || createHash("sha256").update(call.payload_json).digest("hex") !== call.payload_sha256) { unavailable = true; continue; }
-      bytes += Buffer.byteLength(call.payload_json);
-      if (bytes > 4 * 1024 * 1024) { bounded = true; continue; }
-      records.push({ ...record, tool: { name: call.tool_name as string, state: call.state as string,
-        arguments: JSON.stringify(JSON.parse(call.payload_json)), invocationId: call.invocation_id as string,
-        ...(typeof call.result_id === "string" ? { resultId: call.result_id } : {}) } });
-    } else records.push(record);
+    try {
+      const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
+        JOIN continuity_generations g USING(generation_id) WHERE r.record_id=?`).get(candidate.record_id as string) as Row;
+      const record = { ...metadata(row), text: text(row) };
+      if (record.kind === "tool") {
+        // B1's finalized text identity is hash(physical bucket, run, tool call).
+        // Join only that exact lifecycle, not a similar tool name or result body.
+        database.function("continuity_tool_operation", { deterministic: true }, (conversation, run, call) =>
+          `tool:${createHash("sha256").update(JSON.stringify([conversation, run, call])).digest("hex")}`);
+        const call = database.prepare(`SELECT c.tool_name,c.state,i.payload_json,i.payload_sha256,i.record_id invocation_id,o.record_id result_id
+          FROM tool_calls c JOIN tool_records i ON i.conversation_id=c.conversation_id AND i.run_id=c.run_id
+            AND i.tool_call_id=c.tool_call_id AND i.phase='invocation'
+          LEFT JOIN tool_records o ON o.conversation_id=c.conversation_id AND o.run_id=c.run_id
+            AND o.tool_call_id=c.tool_call_id AND o.phase='result'
+          WHERE c.conversation_id=? AND c.run_id=? AND c.end_seq IS NOT NULL
+            AND continuity_tool_operation(c.conversation_id,c.run_id,c.tool_call_id)=?
+            AND length(CAST(i.payload_json AS BLOB))<=? LIMIT 1`)
+          .get(record.conversationId, record.runId, record.source.operationId ?? "", 4 * 1024 * 1024 - bytes) as Row | undefined;
+        if (!call || typeof call.payload_json !== "string" || createHash("sha256").update(call.payload_json).digest("hex") !== call.payload_sha256) { unavailable = true; continue; }
+        bytes += Buffer.byteLength(call.payload_json);
+        if (bytes > 4 * 1024 * 1024) { bounded = true; continue; }
+        records.push({ ...record, tool: { name: call.tool_name as string, state: call.state as string,
+          arguments: JSON.stringify(JSON.parse(call.payload_json)), invocationId: call.invocation_id as string,
+          ...(typeof call.result_id === "string" ? { resultId: call.result_id } : {}) } });
+      } else records.push(record);
+    } catch { unavailable = true; } // A malformed record cannot discard its healthy siblings.
   }
   return { records, omitted: Math.max(0, total - records.length), gaps,
     ...(bounded ? { degradedReason: "snapshot_bounds" as const } : unavailable ? { degradedReason: "source_unavailable" as const } : {}) };

@@ -74,6 +74,8 @@ try {
   for (const expected of [rule, "mail_send", "success", "DRAFT-42", "SENT delivery=MESSAGE-42"]) assert.ok(text.includes(expected), expected);
   assert.equal(messages.filter(message => JSON.stringify(message).includes("CURRENT-FICTIONAL-COLD-INPUT")).length, 1);
   assert.equal(effects, 1);
+  assert.ok(text.includes("invocation_id="));
+  assert.equal(JSON.stringify(messages).split("SENT delivery=MESSAGE-42").length - 1, 1);
   const receipt = events.find(event => event.type === "continuity_pack_injected");
   assert.equal(receipt.reason, "model_change");
   assert.ok(receipt.ownerEntries > 0 && receipt.toolEntries === 1);

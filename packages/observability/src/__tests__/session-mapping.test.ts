@@ -842,3 +842,12 @@ it("maps content-free continuity pack counts from direct and streamed events", (
   expect(steps[0]).toMatchObject({ continuityPack: { reason: "model_change", tokens: 1200, omittedCount: 4, unknownOverlap: 2 } });
   expect(JSON.stringify(steps)).not.toContain("Must not");
 });
+
+it("retains skipped continuity diagnostics as skips, never injection telemetry", () => {
+  const { summary } = loadFixture("notified");
+  const session = mapRunToSession(summary, [{ type: "continuity_pack_skipped", reason: "model_change", degradedReason: "trigger_headroom", tokens: 0, privateText: "Fictional private diagnostic." }], OPTS);
+  const steps = session.steps.filter(step => step.k === "runtime" && step.kind === "continuity_pack_skipped");
+  expect(steps).toHaveLength(1); expect(JSON.stringify(steps)).toContain("trigger_headroom");
+  expect(JSON.stringify(steps)).not.toContain("private diagnostic");
+  expect(session.steps.filter(step => step.k === "runtime" && step.kind === "continuity_pack_injected")).toEqual([]);
+});
