@@ -8,9 +8,9 @@ import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, C
 import { classifyHistoryResult } from "../lib/continuity-runner.mjs";
 import { estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
-import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
+import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
 import { callKey } from "../lib/continuity-tools.mjs";
-import { main, parseArguments } from "../continuity-benchmark.mjs";
+import { main, parseArguments, observedInputTokens } from "../continuity-benchmark.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const dirs = [];
@@ -156,7 +156,7 @@ describe("continuity scoring (deterministic)", () => {
 
 describe("continuity arms and plan", () => {
   it("declares production-config arms with the native baseline first and planned B arms unavailable", () => {
-    expect(AVAILABLE_ARM_IDS).toEqual(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact", "continuity-store", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary"]);
+    expect(AVAILABLE_ARM_IDS).toEqual(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact", "continuity-store", "continuity-ledger-cold", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary"]);
     expect(ARMS.filter((arm) => !arm.available).map((arm) => arm.id)).toEqual(["continuity-pack-per-turn", "pack+stubs"]);
     for (const arm of ARMS) {
       expect(arm.probeConfig).toBeTypeOf("object");
@@ -189,12 +189,13 @@ describe("continuity arms and plan", () => {
   });
 
   it("pins retained conversation evidence off for every pre-B1 arm and on for the B arms", () => {
-    const bArms = new Set(["continuity-store", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
+    const bArms = new Set(["continuity-ledger-cold", "continuity-store", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
     for (const arm of ARMS) {
       const enabled = arm.sessionConfig?.runtime?.session?.continuity?.enabled;
       expect(enabled, arm.id).toBe(!bArms.has(arm.id) ? false : true);
       // A runnable arm's probe patch never overrides the session pin.
-      if (arm.available) expect(arm.probeConfig.runtime?.session, arm.id).toBeUndefined();
+      if (arm.available && !arm.ledgerUpkeep) expect(arm.probeConfig.runtime?.session, arm.id).toBeUndefined();
+      if (arm.ledgerUpkeep) expect(arm.probeConfig.runtime.session.continuity).toEqual({ ledgerEnabled: true, upkeep: { enabled: false } });
     }
     expect(CONTINUITY_OFF).toEqual({ runtime: { session: { continuity: { enabled: false } } } });
     const store = armById("continuity-store");
@@ -282,6 +283,16 @@ describe("continuity arms and plan", () => {
 });
 
 describe("continuity CLI guards", () => {
+  it("aggregate-only never loads execution, whereas strict cap executes with its plan flag", async () => {
+    const aggregate = await scratch(); let calls = 0;
+    const modulesLoader = async () => { calls++; throw new Error("execution_reached"); };
+    await main(["--aggregate-only", "--output", aggregate], { env: {}, stdout: () => {}, modulesLoader });
+    expect(calls).toBe(0);
+    const strict = await scratch();
+    await expect(main(["--require-request-cap", "--output", strict], { env: {}, stdout: () => {}, modulesLoader })).rejects.toThrow("execution_reached");
+    expect(calls).toBe(1); expect(JSON.parse(await readFile(join(strict, "plan.json"), "utf8")).upkeep.requireRequestCap).toBe(true);
+  });
+
   it("parses flags strictly", () => {
     expect(() => parseArguments(["--unknown"])).toThrow("invalid_arguments");
     expect(() => parseArguments(["--repeats"])).toThrow("missing_argument");
@@ -315,11 +326,12 @@ describe("continuity offline contract run (production harness, scripted provider
   it("replays one trace through every arm and verifies each boundary", async () => {
     const output = await scratch();
     const lines = [];
-    const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact", "continuity-store", "continuity-pack-cold"];
+    const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact", "continuity-store", "continuity-pack-cold", "continuity-ledger-cold"];
     const code = await main(["--trace", "brightline-return", "--probe-limit", "1", "--concurrency", "5", "--arms", arms.join(","), "--output", output], { env: {}, stdout: (line) => lines.push(line) });
-    expect(code).toBe(1); // 7 of 28 units: the other traces were not selected.
+    expect(code).toBe(1); // 8 of 32 units: the other traces were not selected.
+    expect((await readdir(output)).includes("upkeep-output")).toBe(false);
     const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
-    expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 7, unitsExpected: 28 } });
+    expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 8, unitsExpected: 32 } });
     const units = Object.fromEntries(await Promise.all((await readdir(join(output, "units"))).map(async (name) => {
       const unit = JSON.parse(await readFile(join(output, "units", name), "utf8"));
       return [unit.arm, unit];
@@ -365,6 +377,13 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(storeTrial.boundary.observed.continuityPacks).toEqual([]);
     expect(storeTrial.boundary.observed.offlineProviderPackCounts).toEqual([0, 0]);
     expect(units["cold-rebuild"].trials[0].boundary.observed.offlineProviderPackCounts).toEqual([0]);
+    const ledger = units["continuity-ledger-cold"];
+    expect(ledger.checkpoint.upkeep).toMatchObject({ valid: true, receipt: { status: "valid", providerInvoked: true, capEnforcement: "stream_abort" }, usage: { calls: 1 } });
+    expect(ledger.checkpoint.upkeep.receipt.uncovered).toBeGreaterThan(0);
+    expect(ledger.trials[0].boundary.observed.offlineLedgerCounts).toEqual([1, 1]);
+    expect(ledger.trials[0].boundary.observed.upkeep.some(row => row.providerInvoked)).toBe(false);
+    expect(results.upkeep).toHaveLength(1);
+    expect(results.summary.arms["continuity-ledger-cold"].usage.calls).toBe(2); // one upkeep plus one probe, not upkeep per tool call.
     expect(await readFile(join(output, "summary.md"), "utf8")).toContain("NOT model quality");
     expect(await readdir(output)).not.toContain("work");
   }, 180_000);
@@ -467,4 +486,97 @@ describe("continuity lease isolation and runtime disposal", () => {
     expect((await readdir(join(dir, "lease-home/.mono-agent/agent-root-leases")))
       .filter((name) => name !== ".mutation-gate.sqlite")).toEqual([]);
   });
+});
+
+it("keeps distractor actual facts and byte pressure identical while pricing one explicit upkeep per trace/repeat", async () => {
+  const base = await loadTraces({ suite: "hard", seeds: [101] });
+  const harder = await loadTraces({ suite: "hard-distractors", seeds: [101] });
+  expect(harder.traces[0].probes).toEqual(base.traces[0].probes);
+  expect(traceShape(harder.traces[0])).toEqual(traceShape(base.traces[0]));
+  expect(JSON.stringify(harder.traces[0].turns)).toContain("DECOY-");
+  const plan = makePlan({ ...harder, repeats: 2, profile: { extractionModel: "openai:gpt-4o-mini" } });
+  expect(plan.workload.upkeepCalls).toBe(2);
+  expect(checkpointKey(armById("continuity-ledger-cold"), 1)).not.toBe(checkpointKey(armById("continuity-ledger-cold"), 2));
+  expect(plan.upkeep).toMatchObject({ model: "openai:gpt-4o-mini", maxOutputTokens: 4096 });
+  const price = { input: 1, output: 2, cacheRead: 0.1 };
+  const cost = estimateCost(plan, harder.traces, { [plan.reader.model]: price, [plan.upkeep.model]: price, [plan.judge.model]: price });
+  expect(cost.arms["continuity-ledger-cold"]).toMatchObject({ upkeepCalls: 2, upkeepBudgetUsd: 0.1444 });
+});
+
+it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after %s preparation", async point => {
+  const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
+  const work = await scratch();
+  const receipt = { type: "continuity_upkeep", providerInvoked: point !== "skip", status: "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000 };
+  const modules = {
+    config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
+    coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
+    app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => { onEvent(receipt); if (point === "harness") throw new Error("fictional"); return {}; } }) },
+    conversation: { ToolHistoryReader: class { ledger() { throw new Error("fictional"); } } },
+  };
+  const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna" }, limits: { perLiveTurnTimeoutMs: 10000 } } });
+  expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(false);
+  expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 15000, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
+});
+
+it("zero-call and estimated-paid upkeep accounting do not inflate unknown cost counters", () => {
+  const usage = emptyUsage(); addUsage(usage, { calls: 0 });
+  expect(usage).toMatchObject({ unknownCostCalls: 0, unknownTokenCalls: 0 });
+  addUsage(usage, { calls: 1, inputTokens: null, outputTokens: null, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
+  expect(usage).toMatchObject({ calls: 1, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02, estimatedCostUsd: 0.02, unknownCostCalls: 0, unknownTokenCalls: 1 });
+});
+
+it("accounts inclusive estimated paid input for admission when reported input is absent", () => {
+  expect(observedInputTokens({ inputTokens: null, estimatedInputTokens: 15000, cacheReadTokens: 2000 })).toBe(15000);
+  expect(observedInputTokens({ inputTokens: 100, estimatedInputTokens: 15000, cacheReadTokens: 2000 })).toBe(2100);
+  expect(observedInputTokens({ inputTokens: null, cacheReadTokens: 2000 })).toBe(2000);
+});
+it("keeps paid upkeep in failed checkpoints, aggregate usage and observed input", async () => {
+  const { productionModules } = await import("../lib/continuity-runner.mjs");
+  const real = await productionModules(root.replace(/\/$/u, ""));
+  const modules = { ...real, conversation: { ...real.conversation, ToolHistoryReader: class extends real.conversation.ToolHistoryReader { stats() { throw new Error("fictional post-upkeep statistics failure"); } } } };
+  const output = await scratch();
+  await main(["--trace", "brightline-return", "--probe-limit", "1", "--arms", "native,continuity-ledger-cold", "--output", output], { env: {}, stdout: () => {}, modulesLoader: async () => modules });
+  const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
+  expect(results.upkeep).toHaveLength(1); expect(results.upkeep[0]).toMatchObject({ receipt: { providerInvoked: true }, usage: { calls: 1 } });
+  expect(results.summary.arms["continuity-ledger-cold"].usage.calls).toBe(1);
+  const unit = JSON.parse(await readFile(join(output, "units", "r1-brightline-return-continuity-ledger-cold.json"), "utf8"));
+  expect(unit.checkpoint.error).toBe("checkpoint_failed"); expect(unit.checkpoint.upkeep.receipt.providerInvoked).toBe(true);
+  const baseline = JSON.parse(await readFile(join(output, "units", "r1-brightline-return-native.json"), "utf8"));
+  expect(unit.manifest.observedInput).toBe(observedInputTokens(unit.checkpoint.upkeep.usage) + baseline.trials.reduce((n, trial) => n + observedInputTokens(trial.usage), 0));
+}, 180_000);
+
+it("tees only completion output without changing the model stream", async () => {
+  const { captureUpkeepModels } = await import("../lib/continuity-runner.mjs");
+  const message = { content: [{ type: "text", text: "fictional " }, { type: "thinking", thinking: "not captured" }, { type: "text", text: "JSON" }] }, capture = vi.fn();
+  const model = {}, stream = { async *[Symbol.asyncIterator]() { yield { type: "done", message }; }, async result() { return message; } };
+  const models = { getModel: () => model, streamSimple: vi.fn(() => stream) }, wrapped = captureUpkeepModels(models, capture);
+  expect(wrapped.getModel()).toBe(model); const result = wrapped.streamSimple(model, {}, { maxTokens: 4096 });
+  for await (const event of result) expect(event.message).toBe(message);
+  expect(await result.result()).toBe(message); expect(capture).toHaveBeenCalledWith("fictional JSON");
+  expect(models.streamSimple).toHaveBeenCalledWith(model, {}, { maxTokens: 4096 });
+});
+it("requires an external output path for opt-in capture", async () => {
+  await expect(main(["--capture-upkeep-output"], { env: {}, stdout: () => {} })).rejects.toThrow("capture_requires_external_output");
+  await expect(main(["--capture-upkeep-output", "--output", join(root, "..capture")], { env: {}, stdout: () => {} })).rejects.toThrow("capture_requires_external_output");
+});
+it("captures fictional completion and stable validation failure only when explicitly enabled", async () => {
+  const { productionModules } = await import("../lib/continuity-runner.mjs");
+  const real = await productionModules(root.replace(/\/$/u, ""));
+  const modules = { ...real, pi: { ...real.pi, fauxAssistantMessage(text, options) {
+    if (typeof text === "string" && text.includes("Offline scripted ledger;")) text = JSON.stringify({ ...JSON.parse(text), forbidden: true });
+    return real.pi.fauxAssistantMessage(text, options);
+  } } };
+  const output = await scratch();
+  await main(["--trace", "brightline-return", "--probe-limit", "1", "--arms", "native,continuity-ledger-cold", "--output", output, "--capture-upkeep-output"], { env: {}, stdout: () => {}, modulesLoader: async () => modules });
+  const captured = JSON.parse(await readFile(join(output, "upkeep-output", "r1-brightline-return.json"), "utf8"));
+  expect(captured).toMatchObject({ failure: "output_schema", status: "invalid" }); expect(JSON.parse(captured.text)).toMatchObject({ forbidden: true });
+}, 180_000);
+
+it("loads the exact SDK builtin model collection for real capture without dispatch", async () => {
+  const { productionModules, captureUpkeepModels } = await import("../lib/continuity-runner.mjs");
+  const modules = await productionModules(root.replace(/\/$/u, ""));
+  const models = modules.pi.builtinModels({ credentials: { read: async () => undefined } });
+  const wrapped = captureUpkeepModels(models, () => { throw new Error("must not dispatch"); });
+  expect(wrapped.getModel("openai-codex", "gpt-6-luna")).toBe(models.getModel("openai-codex", "gpt-6-luna"));
+  expect(typeof wrapped.streamSimple).toBe("function");
 });

@@ -313,6 +313,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           admission = checkedAdmission();
           if (admission) return admission;
 
+          // Upkeep eligibility never transfers to retries/backups, even when
+          // the caller has no detached replay supplier.
+          if (!sessionEligibleAttempt && options.coldContext) callOptions.coldContext = (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => options.coldContext!({ ...budget, primaryAttempt: false });
+
           // Host replay is private, lazy and shared across detached attempts.
           // Replace the prior prefix, rather than doubling cold-turn history.
           if (!sessionEligibleAttempt && !callOptions.abortSignal?.aborted && typeof options.detachedContext === "function") {
@@ -335,7 +339,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               return { ...failure, runtimeWarnings: [... ((failure.runtimeWarnings || []) as readonly unknown[]), warning], failoverHistory };
             }
             callOptions.messages = [...detachedMessages, ...(options.messages ?? []).slice(-1)];
-            if (options.coldContext) callOptions.coldContext = (budget: { maxTokens: number; reason: string }) => options.coldContext!({ ...budget, reason: "detached_context" });
+            if (options.coldContext) callOptions.coldContext = (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => options.coldContext!({ ...budget, reason: "detached_context", primaryAttempt: false });
           }
           admission = checkedAdmission();
           if (admission) return admission;

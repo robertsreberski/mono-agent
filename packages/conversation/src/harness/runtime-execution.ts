@@ -192,7 +192,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
 ): Promise<RuntimeResult> {
   const hostOnEvent = request.onEvent;
   const emitRuntimeEvent = (event: RuntimeEventLike): void => {
-    if (!turnContinuityCollector.observeRuntimeEvent(event)) return;
+    if (!["continuity_upkeep", "upkeep_output_overrun"].includes(String(event.type)) && !turnContinuityCollector.observeRuntimeEvent(event)) return;
     recorder.onEvent(event);
     hostOnEvent?.(event);
   };
@@ -489,15 +489,19 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       // Warm native turns omit canonical messages, but a detached router attempt
       // may need them. Resolve whether prior history exists before offering the
       // cold hook; isolated and first-bucket turns never consult another history.
-      let continuityHistory = history;
+      let continuityHistory = history, continuityHistoryAvailable = true;
       if (!preparation && routing.continuityPack && historyOmitted && !sessionIsolated) {
         try { continuityHistory = routing.detachedHistoryOverride ?? await loadHarnessHistory(options, request.conversationId, request.continuation); }
-        catch { /* Optional continuity cannot block the turn. */ }
+        catch { continuityHistoryAvailable = false; /* Optional continuity cannot block the turn or buy extraction. */ }
       }
       const coldContext = !preparation && routing.continuityPack
-        && (continuityHistory.length > 0 || routing.boundaryReason !== undefined) ? async (budget: { maxTokens: number; reason: string }) => {
+        && (continuityHistory.length > 0 || routing.boundaryReason !== undefined || options.toolHistory?.upkeep?.enabled || options.toolHistory?.ledgerEnabled) ? async (budget: { maxTokens: number; reason: string; primaryAttempt: boolean }) => {
         try {
           let toolIds: ReadonlySet<string> = new Set();
+          await routing.continuityPack!.prepare({ historyAvailable: continuityHistoryAvailable, sessionsEnabled, isolated: sessionIsolated,
+            ownedStore: typeof routing.withContinuityOwner === "function", primaryAttempt: budget.primaryAttempt, maxTokens: budget.maxTokens,
+            ...(routing.withContinuityOwner ? { withOwner: routing.withContinuityOwner } : {}) }, budget.reason, emitRuntimeEvent);
+          if (continuityHistory.length === 0 && routing.boundaryReason === undefined) return { messages: [] };
           // A warm clean-break reopen seeds only current input, not canonical
           // history. Deduplicate against what this attempt actually replays.
           const hasCanonicalReplay = !historyOmitted || budget.reason === "detached_context";

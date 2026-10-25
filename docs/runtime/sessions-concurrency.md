@@ -114,6 +114,11 @@ never silently expire: exhausted pinned capacity reports degraded continuity
 rather than invalidating references. Conversation reset and
 `restart --clear-sessions` remove this evidence with the existing sidecar.
 
+Optional [gated ledger upkeep](/runtime/continuity-ledger/) adds one bounded
+completion before eligible primary cold seeds. It is off by default; it can add
+up to 60 seconds under the exclusive conversation hold. Strict request-cap mode
+skips Codex; default Codex stream abort cannot bound hidden reasoning or quota.
+
 ### Deterministic cold continuity packs
 
 `runtime.session.continuity.packEnabled` defaults to `true`. At a cold canonical

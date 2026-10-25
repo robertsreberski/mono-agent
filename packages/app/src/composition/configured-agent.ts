@@ -1,3 +1,4 @@
+import { completeContinuityUpkeep } from "@mono-agent/turn/host";
 import { assertSupportedSessionsRoot } from "../conversation-admin/sessions-root.js";
 import type { ConversationHistoryTurnInspection } from "@mono-agent/conversation";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
@@ -92,7 +93,7 @@ import { composeRunRecorder, recorderCompositionDeps } from "./run-recording.js"
 import { lazyConfiguredToolHistory } from "./configured-tool-history.js";
 import {
   configuredSandboxEngine,
-  configRuntimeFlags,
+  configRuntimeFlags, runtimeHostOptionsForConfig,
   mergeStaticRuntimeOptions,
 } from "./configured-runtime-options.js";
 import { configuredMemoryForHarness, createConfiguredMemoryInternal } from "./configured-memory.js";
@@ -360,6 +361,14 @@ async function createConfiguredConversationHarnessInternal(
     root: historyRoot,
     continuityEnabled: options.historyStore === undefined && config.runtime.session.continuity?.enabled !== false,
     packEnabled: config.runtime.session.continuity?.packEnabled !== false,
+    ledgerEnabled: config.runtime.session.continuity?.ledgerEnabled === true,
+    ...(config.runtime.session.continuity?.upkeep?.enabled ? { upkeep: { enabled: true,
+      get model() { return (config.runtime.session.continuity?.upkeep?.extractionModel ?? config.runtime.model).reference; },
+      complete: async (prompt: string, signal: AbortSignal) => {
+        const selected = config.runtime.session.continuity?.upkeep?.extractionModel ?? config.runtime.model;
+        return await completeContinuityUpkeep(prompt, { ...runtimeHostOptionsForConfig(config), ...mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(selected, config.providers?.local), configRuntimeFlags(config), options.runtimeOptions),
+          model: selected, abortSignal: signal, messages: [] }, config.runtime.session.continuity?.upkeep?.requireRequestCap === true);
+      } } } : {}),
     conversationHistoryAvailable: conversationHistory !== undefined,
     artifactRoot: toolOutputArtifactRoot,
     rollover,

@@ -434,6 +434,21 @@ function resultHeader(r, s, name, kind, clock) {
   }
 }
 
+/** Identical actual evidence/answers/byte pressure; only neutral filler gains labelled decoys. */
+export function generateDistractorTrace(seed) {
+  const trace = generateTrace(seed); let ordinal = 0;
+  for (const turn of trace.turns) for (const step of turn.steps) if (step.call) {
+    step.call.result = step.call.result.split("\n\n").map(paragraph => {
+      if (!CONNECTORS.some(connector => paragraph.startsWith(`${connector}, `))) return paragraph;
+      const bytes = Buffer.byteLength(paragraph); ordinal++;
+      const decoy = `Hypothetical quotation only: DECOY-${String(ordinal).padStart(6, "0")}, $${100 + ordinal % 899}.50. Not an actual update or correction.`;
+      if (bytes < decoy.length) return paragraph;
+      return (decoy + " Unrelated planning prose; the actual facts remain unchanged.".repeat(Math.ceil(bytes / 40))).slice(0, bytes);
+    }).join("\n\n");
+  }
+  return { ...trace, id: `${trace.id}-distractors`, generated: { ...trace.generated, distractors: true } };
+}
+
 export function generateSuite(seeds = HARD_SEEDS) {
   return seeds.map((seed) => generateTrace(seed));
 }

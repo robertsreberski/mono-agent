@@ -6,8 +6,8 @@
 //               providers; NOT model quality
 //   --real      paid run on the real provider; refused when CI is set
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, mkdir, readdir, readFile, rm, writeFile, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ARMS, AVAILABLE_ARM_IDS, DEFAULT_ARMS, armById, checkpointKey } from "./lib/continuity-arms.mjs";
 import { estimateCost, inventory, loadTraces, makePlan, parseSeeds } from "./lib/continuity-dataset.mjs";
@@ -15,8 +15,8 @@ import { HARD_SEEDS } from "./lib/continuity-generator.mjs";
 import { addUsage, emptyUsage, renderMarkdown, summarize } from "./lib/continuity-score.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
-const BOOLEAN = new Set(["dry-run", "real", "help", "no-judge", "keep-work", "aggregate-only"]);
-const VALUED = new Set(["suite", "seeds", "reader", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency"]);
+const BOOLEAN = new Set(["dry-run", "real", "help", "no-judge", "keep-work", "aggregate-only", "require-request-cap", "capture-upkeep-output"]);
+const VALUED = new Set(["suite", "seeds", "reader", "extraction-model", "alternate", "judge", "reader-effort", "judge-effort", "repeats", "arms", "probe-limit", "confirm-plan", "pi-auth-path", "output", "concurrency"]);
 const REPEATABLE = new Set(["trace", "repeat"]);
 const EFFORTS = ["none", "minimal", "low", "medium", "high"];
 
@@ -51,13 +51,15 @@ export function profileFrom(flags) {
   for (const key of ["reader-effort", "judge-effort"]) if (flags[key] !== undefined && !EFFORTS.includes(flags[key])) throw new CliError("invalid_effort");
   if (flags["no-judge"] && flags.judge !== undefined) throw new CliError("judge_conflict");
   const suite = flags.suite ?? "original";
-  if (!["original", "hard"].includes(suite)) throw new CliError("invalid_suite");
-  if (flags.seeds !== undefined && suite !== "hard") throw new CliError("seeds_require_hard_suite");
+  if (!["original", "hard", "hard-distractors"].includes(suite)) throw new CliError("invalid_suite");
+  if (flags.seeds !== undefined && suite === "original") throw new CliError("seeds_require_hard_suite");
   const arms = flags.arms === undefined ? [...DEFAULT_ARMS[suite]] : flags.arms.split(",").map((value) => value.trim());
   return {
     suite,
     seeds: flags.seeds === undefined ? [...HARD_SEEDS] : parseSeeds(flags.seeds),
     profile: {
+      ...(flags["extraction-model"] === undefined ? {} : { extractionModel: flags["extraction-model"] }),
+      requireRequestCap: flags["require-request-cap"] === true,
       ...(flags.reader === undefined ? {} : { reader: flags.reader }),
       ...(flags.alternate === undefined ? {} : { alternate: flags.alternate }),
       ...(flags["no-judge"] ? { judge: null } : flags.judge === undefined ? {} : { judge: flags.judge }),
@@ -93,7 +95,7 @@ function gitState() {
 
 function insideRoot(path) {
   const rel = relative(ROOT, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return rel === "" || (!(rel === ".." || rel.startsWith(`..${sep}`)) && !isAbsolute(rel));
 }
 
 async function validatePiAuthPath(value) {
@@ -110,10 +112,11 @@ Default: offline contract run through the built production harness with scripted
 --dry-run                 Print the workload plan and its confirmation digest; no build, credentials or network.
 --real                    Paid run. Requires --confirm-plan SHA256 from the identical --dry-run, --pi-auth-path ABS,
                           --output ABS (outside the checkout) and a clean checkout. Refused whenever CI is set.
-Plan (bound into the digest): --suite original|hard (default original) --seeds 101-108 (hard only)
+Plan (bound into the digest): --suite original|hard|hard-distractors (default original) --seeds 101-108 (hard only)
   --reader REF (default openai-codex:gpt-6-luna) --alternate REF --judge REF | --no-judge
+  --extraction-model REF (default configured reader) --require-request-cap
   --reader-effort LEVEL --judge-effort LEVEL --repeats N --arms ${AVAILABLE_ARM_IDS.join(",")} --probe-limit N
-Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N --output DIR --keep-work --aggregate-only
+Execution only: --trace ID (repeatable) --repeat N (repeatable) --concurrency N --output DIR --keep-work --aggregate-only --capture-upkeep-output
 See docs/runtime/continuity-benchmark.md.`;
 
 export async function main(argv = process.argv.slice(2), { stdout = console.log, env = process.env, modulesLoader } = {}) {
@@ -127,7 +130,7 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
   const plan = makePlan({ traces, sha256, suite, source, codeRevision: head, profile, repeats, arms, probeLimit,
     piAuthFingerprint: piAuthPath === undefined ? null : createHash("sha256").update(piAuthPath).digest("hex") });
   if (flags["dry-run"]) {
-    const prices = await listPrices([plan.reader.model, ...(plan.judge ? [plan.judge.model] : [])]);
+    const prices = await listPrices([plan.reader.model, plan.upkeep.model, ...(plan.judge ? [plan.judge.model] : [])]);
     stdout(JSON.stringify({ ...plan, inventory: inventory(traces), estimate: estimateCost(plan, traces, prices) }, null, 2));
     return 0;
   }
@@ -144,6 +147,14 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
     ? join(ROOT, ".worklab-tmp", "continuity", `run-${new Date().toISOString().replace(/[:.]/gu, "-")}`)
     : resolve(flags.output);
   if (flags.output !== undefined && (!isAbsolute(flags.output) || (mode === "real" && insideRoot(output)))) throw new CliError("invalid_output");
+  if (flags["capture-upkeep-output"] && (flags.output === undefined || insideRoot(output))) throw new CliError("capture_requires_external_output");
+  if (flags["capture-upkeep-output"]) {
+    let ancestor = output;
+    for (;;) {
+      try { if (insideRoot(await realpath(ancestor))) throw new CliError("capture_requires_external_output"); break; }
+      catch (error) { if (error.code !== "ENOENT") throw error; ancestor = dirname(ancestor); }
+    }
+  }
   await mkdir(join(output, "units"), { recursive: true, mode: 0o700 });
   const planPath = join(output, "plan.json");
   try {
@@ -163,6 +174,12 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
 }
 
 function unitName({ repeat, traceId, armId }) { return `r${repeat}-${traceId}-${armId}.json`; }
+
+/** Estimated input is inclusive; do not add cache again when reported input is absent. */
+export function observedInputTokens(usage) {
+  return usage?.inputTokens == null && typeof usage?.estimatedInputTokens === "number" ? usage.estimatedInputTokens
+    : (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheWriteTokens ?? 0);
+}
 
 async function execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader }) {
   const selectedTraces = flags.trace === undefined ? traces : traces.filter((trace) => flags.trace.includes(trace.id));
@@ -190,7 +207,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   const admit = () => state.stop === null && state.liveTurns < plan.limits.maxLiveTurns
     && state.observedInput < plan.limits.maxObservedInputTokensPerInvocation;
   const account = (usage) => {
-    state.observedInput += (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheWriteTokens ?? 0);
+    state.observedInput += observedInputTokens(usage);
   };
   // Checkpoints (shared when scripted-only).
   const checkpoints = new Map();
@@ -204,13 +221,18 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
     const dir = join(scratch, `cp-${key.replace(/[^a-z0-9-]/giu, "_")}`);
     await rm(dir, { recursive: true, force: true });
     try {
-      if (unit.arm.midCheckpoint !== null) state.liveTurns += 1;
-      const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath });
+      if (unit.arm.midCheckpoint !== null || unit.arm.ledgerUpkeep) state.liveTurns += 1;
+      const built = await buildCheckpoint({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, dir, plan, mode, authPath, ...(flags["capture-upkeep-output"] ? { captureUpkeepOutput: join(output, "upkeep-output", `r${unit.repeat}-${unit.trace.id}.json`) } : {}) });
       if (built.record.mid) account(built.record.mid.usage);
+      if (built.record.upkeep) account(built.record.upkeep.usage);
       checkpoints.set(key, built);
+      if (unit.arm.ledgerUpkeep && !built.record.upkeep?.valid) checkpoints.set(key, { ...built, error: "upkeep_generation_unusable" });
       if (built.record.mid?.boundary && !built.record.mid.boundary.verified) checkpoints.set(key, { ...built, error: "mid_checkpoint_boundary_unverified" });
     } catch (error) {
-      checkpoints.set(key, { error: error?.code ?? "checkpoint_failed" });
+      const record = error?.checkpointRecord;
+      if (record?.mid) account(record.mid.usage);
+      if (record?.upkeep) account(record.upkeep.usage);
+      checkpoints.set(key, { error: error?.code ?? "checkpoint_failed", ...(record ? { record } : {}) });
     }
   });
   const judge = createJudge({ modules, plan, mode, workspace: join(scratch, "judge"), authPath: piAuthPath });
@@ -226,7 +248,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
     }
     state.liveTurns += 1;
     const trial = await runProbe({ modules, trace: unit.trace, arm: unit.arm, repeat: unit.repeat, probe, checkpointWork: checkpoint.work, checkpointSnapshot: checkpoint.snapshot ?? null, checkpointContinuity: checkpoint.record.continuity ?? null,
-      checkpointConversationId: checkpoint.record.conversationId, mid: checkpoint.record.mid, root: ROOT,
+      checkpointConversationId: checkpoint.record.conversationId, checkpointUpkeep: checkpoint.record.upkeep ?? null, mid: checkpoint.record.mid, root: ROOT,
       forkDir: join(scratch, `probe-${index}`), plan, mode, authPath, keepWork: flags["keep-work"] === true });
     account(trial.usage);
     if (isFatalFailure(trial)) state.stop = trial.failure;
@@ -244,9 +266,9 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
     const body = {
       confirmation: plan.confirmation, executionKind: mode, complete,
       repeat: unit.repeat, traceId: unit.trace.id, arm: unit.arm.id,
-      checkpoint: checkpoint && !checkpoint.error ? checkpoint.record : { error: checkpoint?.error ?? "checkpoint_missing" },
+      checkpoint: checkpoint && !checkpoint.error ? checkpoint.record : { ...(checkpoint?.record ?? {}), error: checkpoint?.error ?? "checkpoint_missing" },
       trials: trials.map((trial) => trial ?? { status: "not_started" }),
-      manifest: { codeRevision: head, dirty, node: process.version, finishedAt, buildPolicy: "existing-dist-unverified", admissionStop: state.stop },
+      manifest: { codeRevision: head, dirty, node: process.version, finishedAt, buildPolicy: "existing-dist-unverified", observedInput: state.observedInput, admissionStop: state.stop },
     };
     await writeFile(join(output, "units", unit.name), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
   }
@@ -261,7 +283,7 @@ export async function aggregate({ plan, traces, output, mode }) {
     if (unit.confirmation === plan.confirmation && unit.executionKind === mode && unit.complete === true) units.push(unit);
   }
   const trials = units.flatMap((unit) => unit.trials);
-  const extraUsage = units.filter((unit) => unit.checkpoint?.mid).map((unit) => ({ arm: unit.arm, usage: unit.checkpoint.mid.usage, compactionUsage: unit.checkpoint.mid.compactionUsage }));
+  const extraUsage = units.flatMap(unit => [unit.checkpoint?.mid && { arm: unit.arm, usage: unit.checkpoint.mid.usage, compactionUsage: unit.checkpoint.mid.compactionUsage }, unit.checkpoint?.upkeep && { arm: unit.arm, usage: unit.checkpoint.upkeep.usage }].filter(Boolean));
   const armIds = plan.arms.map((row) => row.id);
   const summary = summarize(trials, { arms: armIds, baselineArm: plan.baselineArm, repeats: Array.from({ length: plan.repeats }, (_, index) => index + 1), extraUsage });
   const judgeUsage = emptyUsage();
@@ -278,7 +300,7 @@ export async function aggregate({ plan, traces, output, mode }) {
   }));
   const coverage = { unitsComplete: units.length, unitsExpected: plan.repeats * plan.corpus.traces.length * armIds.length };
   const armLabels = Object.fromEntries(ARMS.map((arm) => [arm.id, arm.label]));
-  const results = { plan, executionKind: mode, qualityMeasured: mode === "real", inventory: inventory(traces), coverage, summary, judgeUsage, midCheckpoints, pressure: pressureSummary };
+  const results = { plan, executionKind: mode, qualityMeasured: mode === "real", inventory: inventory(traces), coverage, summary, judgeUsage, midCheckpoints, upkeep: units.filter(unit => unit.checkpoint?.upkeep).map(unit => ({ traceId: unit.traceId, repeat: unit.repeat, arm: unit.arm, ...unit.checkpoint.upkeep })), pressure: pressureSummary };
   await writeFile(join(output, "results.json"), `${JSON.stringify(results, null, 2)}\n`, { mode: 0o600 });
   const header = `Coverage: ${coverage.unitsComplete}/${coverage.unitsExpected} trace×arm×repeat units. Code revision ${plan.codeRevision ?? "unknown"}. Plan ${plan.confirmation}.\n\n`;
   await writeFile(join(output, "summary.md"), `${header}${renderMarkdown(summary, { qualityMeasured: mode === "real", armLabels, judgeUsage: plan.judge ? judgeUsage : null })}`, { mode: 0o600 });

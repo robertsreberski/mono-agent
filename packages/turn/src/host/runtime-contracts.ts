@@ -284,8 +284,11 @@ export type RuntimeRunOptions = Readonly<Pick<RuntimeContracts.RuntimeRunOptions
   readonly nativeSessionProjection?: RuntimeNativeSessionProjection;
   /** Protected, lazy host replay prefix for stateless attempts; never telemetry. */
   readonly detachedContext?: () => Promise<readonly RuntimeMessage[]>;
-  /** Local, fail-open evidence seeded once; actual target headroom excludes this prefix. */
-  readonly coldContext?: (budget: { readonly maxTokens: number; readonly reason: string }) => Promise<{ readonly messages: readonly RuntimeMessage[]; readonly replayMessages?: readonly RuntimeMessage[] }>;
+  /** Host-owned asynchronous fail-open cold-seed hook, never a true native resume.
+   * primaryAttempt=false forbids buying upkeep. Explicit upkeep may hold the
+   * exclusive conversation up to 60s; default is local-only. The target headroom
+   * excludes the returned prefix; returned evidence must fit maxTokens. */
+  readonly coldContext?: (budget: { readonly maxTokens: number; readonly reason: string; readonly primaryAttempt: boolean }) => Promise<{ readonly messages: readonly RuntimeMessage[]; readonly replayMessages?: readonly RuntimeMessage[] }>;
   readonly onSessionTurnDetached?: (attempt: RuntimeSessionTurnDetachedAttempt) => Promise<void>;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;

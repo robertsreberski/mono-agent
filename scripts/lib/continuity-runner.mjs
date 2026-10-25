@@ -9,8 +9,8 @@
 // Live turns (probes, the mid-trace checkpoint of arm d) use the real provider in
 // paid mode and a scripted contract reader offline.
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { cp, mkdir, readFile, rm, writeFile, realpath, lstat } from "node:fs/promises";
+import { dirname, join, isAbsolute, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
@@ -44,7 +44,7 @@ export async function productionModules(root) {
   const piPackage = JSON.parse(await readFile(join(root, "packages/turn/node_modules/@earendil-works/pi-ai/package.json"), "utf8"));
   const entry = piPackage.exports?.["."]?.import;
   if (typeof entry !== "string") throw new ContinuityError("pi_ai_entry_unavailable");
-  const [config, app, hostRuntime, hostConfig, turnRoot, pi, coordinator] = await Promise.all([
+  const [config, app, hostRuntime, hostConfig, turnRoot, pi, coordinator, providers] = await Promise.all([
     import(pathToFileURL(join(root, "packages/config/dist/index.js")).href),
     import(pathToFileURL(join(root, "packages/app/dist/index.js")).href),
     import("@mono-agent/turn/host"),
@@ -52,6 +52,7 @@ export async function productionModules(root) {
     import("@mono-agent/turn"),
     import(pathToFileURL(join(root, "packages/turn/node_modules/@earendil-works/pi-ai", entry)).href),
     import(pathToFileURL(join(root, "packages/app/dist/durable-state/agent-root-coordinator.js")).href),
+    import(pathToFileURL(join(root, "packages/turn/node_modules/@earendil-works/pi-ai", piPackage.exports["./providers/*"].import.replace("*", "all"))).href),
   ]);
   for (const name of ["createConfiguredConversationHarness", "createConfiguredAgentRuntime"]) {
     if (typeof app[name] !== "function") throw new ContinuityError("production_module_missing", name);
@@ -64,7 +65,7 @@ export async function productionModules(root) {
   if (typeof config.resolveJsonMonoAgentConfig !== "function" || typeof pi.fauxProvider !== "function") throw new ContinuityError("production_module_missing");
   const conversation = await import("@mono-agent/conversation");
   if (typeof conversation.ToolHistoryReader !== "function") throw new ContinuityError("production_module_missing", "ToolHistoryReader");
-  return { config, app, host, pi, conversation, coordinator };
+  return { config, app, host, pi: { ...pi, builtinModels: providers.builtinModels }, conversation, coordinator };
 }
 
 /** Faux models posing as the given bound references (one faux provider per provider id). */
@@ -118,7 +119,7 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
     runtime: {
       model, workspace: work,
       ...(effort ? { effort } : {}),
-      session: { root: join(work, "sessions"), mode: "continuous", idleTimeoutMs: 3_600_000 },
+      session: { root: join(work, "sessions"), mode: "continuous", idleTimeoutMs: 3_600_000, continuity: { ledgerEnabled: false, upkeep: { enabled: false } } },
     },
     providers: { piAuthPath: authPath },
     context: { identityPath: join(work, "IDENTITY.md") },
@@ -127,7 +128,7 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
   }, configPatch ?? {});
 }
 
-async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {} }) {
+async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {} }) {
   const json = configJson({ work, authPath, model, effort, tools, configPatch });
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
   // Existing reentrant ownership seam: establish the isolated physical lease
@@ -149,7 +150,7 @@ async function openHarness({ modules, work, authPath, model, effort, tools, conf
     runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route);
     // Tool-history/continuity outages are fail-open in production (warnings only);
     // the benchmark counts them so a degraded store invalidates the sample.
-    harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value,
+    harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value, ...hostOptions,
       onToolHistoryWarning: () => onHistoryWarning() });
     return { harness, config, close };
   } catch (error) {
@@ -210,7 +211,7 @@ export function compactionUsageOf(usage) {
 
 function observer() {
   const observed = { boundaries: [], compactions: [], warnings: 0, steersAccepted: 0, historyWarnings: 0, toolsOffered: [],
-    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 }, continuityPacks: [], offlineProviderPackCounts: [] };
+    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 }, continuityPacks: [], upkeep: [], offlineProviderPackCounts: [], offlineLedgerCounts: [] };
   const historyCalls = new Map();
   let steerWaiter = null;
   return {
@@ -222,6 +223,7 @@ function observer() {
     },
     noteHistoryWarning() { observed.historyWarnings += 1; },
     noteOfflineContext(context) {
+      observed.offlineLedgerCounts.push((context.messages ?? []).filter(message => textOfContent(message.content).includes("### Continuity ledger")).length);
       observed.offlineProviderPackCounts.push((context.messages ?? []).filter(message => textOfContent(message.content).includes("### Conversation continuity pack")).length);
     },
     onEvent(event) {
@@ -240,7 +242,9 @@ function observer() {
         }
       }
       if (event?.type === "continuity_pack_injected") {
-        observed.continuityPacks.push(Object.fromEntries(["reason", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap", "ownerDeduped", "toolReserved", "tokens", "degradedReason"].map(key => [key, event[key]])));
+        observed.continuityPacks.push(Object.fromEntries(["reason", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap", "ownerDeduped", "toolReserved", "ledgerEntries", "tokens", "degradedReason"].map(key => [key, event[key]])));
+      } else if (event?.type === "continuity_upkeep") {
+        observed.upkeep.push({ ...event });
       } else if (event?.type === "session_boundary") {
         observed.boundaries.push({ kind: event.kind ?? null, reason: event.reason ?? null, context: event.context ?? null,
           replayedMessageCount: finite(event.replayedMessageCount), toolProjectionRecords: finite(event.toolProjectionRecords), toolProjectionBytes: finite(event.toolProjectionBytes) });
@@ -378,7 +382,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
  * Replay a trace into a fresh workspace up to its checkpoint. Arms without a
  * live mid-trace turn produce identical scripted state and share one checkpoint.
  */
-export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath }) {
+export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, mode, authPath, captureUpkeepOutput }) {
   const source = sourceOnly(trace);
   const work = join(dir, "work");
   await prepareWorkspace(work);
@@ -396,41 +400,135 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
   const clock = { value: new Date(source.turns[0].at) };
   const key = checkpointKey(arm, repeat);
   const conversationId = conversationIdFor(source.id, key);
-  const record = { key, conversationId, traceId: source.id, arm: arm.midCheckpoint === null ? null : arm.id, repeat: arm.midCheckpoint === null ? null : repeat,
+  const record = { key, conversationId, traceId: source.id, arm: arm.midCheckpoint === null && !arm.ledgerUpkeep ? null : arm.id, repeat: arm.midCheckpoint === null && !arm.ledgerUpkeep ? null : repeat,
     binding: binding.reference, turns: 0, toolCalls: 0, steers: 0, mid: null, durationMs: 0 };
   const started = performance.now();
   let open = null;
   let replayHistoryWarnings = 0;
   try {
-    for (const turn of source.turns) {
-      clock.value = new Date(turn.at);
-      if (arm.midCheckpoint !== null && turn.id === source.midCheckpoint) {
-        // Promptless manual compaction before the mid-trace turn: the same
-        // guarded production summary driver, with no live reply in history.
-        if (open) { await open.close(); open = null; }
-        record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.midCheckpoint.config), clock, conversationId, turnId: turn.id });
-        if (!record.mid.boundary.verified) throw new ContinuityError("mid_checkpoint_boundary_unverified", record.mid.boundary.reasons.join(","));
+    try {
+      for (const turn of source.turns) {
+        clock.value = new Date(turn.at);
+        if (arm.midCheckpoint !== null && turn.id === source.midCheckpoint) {
+          // Promptless manual compaction before the mid-trace turn: the same
+          // guarded production summary driver, with no live reply in history.
+          if (open) { await open.close(); open = null; }
+          record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.midCheckpoint.config), clock, conversationId, turnId: turn.id });
+          if (!record.mid.boundary.verified) throw new ContinuityError("mid_checkpoint_boundary_unverified", record.mid.boundary.reasons.join(","));
+        }
+        open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: arm.sessionConfig ?? {}, route, clock,
+          onHistoryWarning: () => { replayHistoryWarnings += 1; } });
+        const result = await replayScriptedTurn({ harness: open.harness, scripted, tools, turn, binding, conversationId, owner: source.owner.displayName, pi: modules.pi });
+        record.turns += 1; record.toolCalls += result.toolCalls; record.steers += result.steers;
       }
-      open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: arm.sessionConfig ?? {}, route, clock,
-        onHistoryWarning: () => { replayHistoryWarnings += 1; } });
-      const result = await replayScriptedTurn({ harness: open.harness, scripted, tools, turn, binding, conversationId, owner: source.owner.displayName, pi: modules.pi });
-      record.turns += 1; record.toolCalls += result.toolCalls; record.steers += result.steers;
+      if (arm.ledgerUpkeep) {
+        if (open) { await open.close(); open = null; }
+        record.upkeep = await prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput });
+      }
+    } finally {
+      try { if (open) await open.close(); }
+      finally { await tools.close(); }
+      record.durationMs = Math.round(performance.now() - started);
     }
-  } finally {
-    try { if (open) await open.close(); }
-    finally { await tools.close(); }
-    record.durationMs = Math.round(performance.now() - started);
+    if (arm.sessionConfig?.runtime?.session?.continuity?.enabled === true) {
+      record.continuity = { ...continuityStats(modules, work), replayHistoryWarnings };
+    }
+    if (arm.fork === "in-place") {
+      // The sidecar pins this absolute root; probes restore the snapshot here.
+      const snapshot = join(dir, "snapshot");
+      await cp(work, snapshot, { recursive: true, verbatimSymlinks: true });
+      return { work, snapshot, record };
+    }
+    return { work, record };
+  } catch (error) {
+    // Preserve paid work even when cleanup, statistics or fork publication fails.
+    const failure = new ContinuityError(error?.code ?? "checkpoint_failed");
+    failure.checkpointRecord = record;
+    throw failure;
   }
-  if (arm.sessionConfig?.runtime?.session?.continuity?.enabled === true) {
-    record.continuity = { ...continuityStats(modules, work), replayHistoryWarnings };
+}
+
+async function prepareCapturePath(path) {
+  if (!isAbsolute(path)) throw new ContinuityError("capture_requires_external_output");
+  const root = await realpath(fileURLToPath(new URL("../../", import.meta.url)));
+  const outside = value => { const rel = relative(root, value); return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel); };
+  let ancestor = dirname(resolve(path));
+  for (;;) {
+    try { if (!outside(await realpath(ancestor))) throw new ContinuityError("capture_requires_external_output"); break; }
+    catch (error) { if (error.code !== "ENOENT") throw error; ancestor = dirname(ancestor); }
   }
-  if (arm.fork === "in-place") {
-    // The sidecar pins this absolute root; probes restore the snapshot here.
-    const snapshot = join(dir, "snapshot");
-    await cp(work, snapshot, { recursive: true, verbatimSymlinks: true });
-    return { work, snapshot, record };
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  if (!outside(await realpath(dirname(path)))) throw new ContinuityError("capture_requires_external_output");
+  try { await lstat(path); throw new ContinuityError("capture_already_exists"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+
+/** Benchmark-only tee: keeps the real model, auth, cap options and SSE unchanged. */
+export function captureUpkeepModels(models, capture) {
+  return new Proxy(models, { get(target, key) {
+    if (key === "streamSimple") return (...args) => {
+      const stream = target.streamSimple(...args);
+      return new Proxy(stream, { get(source, field) {
+        if (field === "result") return async () => { const message = await source.result(); capture(typeof message?.content === "string" ? message.content : (message?.content ?? []).filter(part => part.type === "text").map(part => part.text).join("")); return message; };
+        const value = Reflect.get(source, field, source); return typeof value === "function" ? value.bind(source) : value;
+      } });
+    };
+    const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+  } });
+}
+
+/** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
+export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId, captureUpkeepOutput }) {
+  if (captureUpkeepOutput) await prepareCapturePath(captureUpkeepOutput);
+  const watch = observer(); const hostOptions = {}; let capturedText;
+  if (mode === "offline") {
+    const ref = modules.host.parseMonoRuntimeModelReference(plan.upkeep.model);
+    const faux = modules.pi.fauxProvider({ provider: ref.provider, api: ref.provider === "openai-codex" ? "openai-codex-responses" : "openai-responses",
+      models: [{ id: ref.model, contextWindow: 272000, maxTokens: 8192 }], tokensPerSecond: 1000000 });
+    const models = modules.pi.createModels(); models.setProvider(faux.provider);
+    faux.setResponses([context => {
+      const prompt = textOfContent(context.messages.at(-1)?.content);
+      const spans = prompt.split("\n").flatMap(line => { try { const row = JSON.parse(line); return typeof row.id === "string" && typeof row.text === "string" ? [row] : []; } catch { return []; } });
+      if (!spans.length) throw new ContinuityError("offline_upkeep_source_missing");
+      return modules.pi.fauxAssistantMessage(JSON.stringify({ entries: [{ kind: "open_work", value: "Offline scripted ledger; not model quality.", status: "unknown", sources: [spans[0].id] }], covered: spans.map(span => span.id) }));
+    }]);
+    hostOptions.runtimeOptions = { piResolvedModels: models };
   }
-  return { work, record };
+  if (captureUpkeepOutput) {
+    let models = hostOptions.runtimeOptions?.piResolvedModels;
+    if (!models) {
+      const resolver = modules.host.createPiOAuthApiKeyResolver({ path: authPath });
+      models = modules.pi.builtinModels({ credentials: { read: resolver.readCredential, modify: resolver.modifyCredential, delete: resolver.deleteCredential } });
+    }
+    hostOptions.runtimeOptions = { ...(hostOptions.runtimeOptions ?? {}), piResolvedModels: captureUpkeepModels(models, text => { capturedText = text; }) };
+  }
+  // Configured runtime.model remains reader (or explicit extractionModel).
+  // Only the scripted answer switches binding, leaving probes a real cold boundary.
+  hostOptions.runtimeOptionsForRequest = () => ({ runtimeOptions: { model: alternate, piResolvedModel: scripted.route({ model: alternate }).model, piResolvedModels: scripted.models } });
+  scripted.respondWith(alternate, () => modules.pi.fauxAssistantMessage("Continuity preparation complete."));
+  let opened, failure = null, generation, receipt = null;
+  try {
+    opened = await openHarness({ modules, work, authPath, model: reader.reference, tools: false, route, clock, hostOptions,
+      configPatch: { runtime: { compaction: { enabled: false }, session: { continuity: { enabled: true, packEnabled: true, upkeep: { enabled: true, requireRequestCap: plan.upkeep.requireRequestCap, extractionModel: plan.upkeep.model } } } } } });
+    const response = await opened.harness.run({ conversationId, userMessage: "Prepare continuity for the next request.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: alternate.reference } }, abortSignal: AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs), onEvent: watch.onEvent });
+    failure = response.failure?.kind ?? null;
+    generation = new modules.conversation.ToolHistoryReader(join(work, "history")).ledger({ logicalConversationId: conversationId, currentConversationId: conversationId, currentRunId: "benchmark" });
+  } catch { failure = "upkeep_preparation_failed"; }
+  finally {
+    try { await opened?.close(); } catch { failure ??= "upkeep_close_failed"; }
+    receipt = watch.observed.upkeep.find(row => row.providerInvoked) ?? watch.observed.upkeep[0] ?? null;
+  }
+  if (captureUpkeepOutput) {
+    try {
+      await mkdir(dirname(captureUpkeepOutput), { recursive: true, mode: 0o700 });
+      await writeFile(captureUpkeepOutput, JSON.stringify({ text: capturedText ?? null, failure: receipt?.failure ?? null, status: receipt?.status ?? null }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    } catch { failure ??= "upkeep_capture_failed"; }
+  }
+  const calls = receipt?.providerInvoked ? 1 : 0;
+  const estimatedPaid = calls > 0 && receipt.costUsd == null && typeof receipt.estimatedInputCostUsd === "number";
+  return { valid: !failure && receipt?.status === "valid" && !!generation?.generation.entries.length && generation.generation.id === receipt.generationId,
+    failure, receipt, usage: { calls, estimatedInputTokens: calls ? receipt?.estimatedInputTokens ?? null : 0, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
+      cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? receipt?.costUsd ?? receipt?.estimatedInputCostUsd ?? null : 0,
+      estimatedPaidCalls: estimatedPaid ? 1 : 0, estimatedPaidInputCostUsd: estimatedPaid ? receipt.estimatedInputCostUsd : 0 } };
 }
 
 /** `harness.compactConversation()` through a tool-free configured harness on the bound model. */
@@ -476,7 +574,7 @@ async function runLiveTurnInChild(input, { timeoutMs }) {
 }
 
 /** Fork the checkpoint into a new workspace and ask one probe in a fresh continuation turn. */
-export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root }) {
+export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointUpkeep = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root }) {
   const inPlace = arm.fork === "in-place";
   if (inPlace && checkpointSnapshot === null) throw new ContinuityError("in_place_fork_requires_snapshot");
   // In-place: restore the pristine snapshot at the checkpoint's own absolute
@@ -501,6 +599,7 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
       : await runLiveTurn({ modules, ...turn, clock });
     trial.usage = live.usage; trial.compactionUsage = live.compactionUsage; trial.durationMs = live.durationMs;
     const boundary = verifyBoundary({ boundary: arm.expect.probeBoundary, compactions: arm.expect.probeCompactions, restart: arm.restart }, live.observed);
+    if (arm.ledgerUpkeep && (!checkpointUpkeep?.valid || !live.observed.continuityPacks.some(pack => pack.ledgerEntries > 0) || live.observed.upkeep.some(row => row.providerInvoked))) { boundary.reasons.push("ledger_treatment_unverified"); boundary.verified = false; }
     const metrics = pressureMetrics(live.observed, { usage: live.usage, traceToolRecords: traceShape(trace).toolCalls, mid });
     const pressure = verifyPressure(arm, traceFamily(trace), metrics);
     trial.boundary = { ...boundary, observed: live.observed };

@@ -308,7 +308,7 @@ export interface MonoAgentConfig {
        */
       readonly isolateProactive?: boolean;
       /** Default-on retained conversation evidence; no memory backend required. */
-      readonly continuity?: { readonly enabled: boolean; readonly packEnabled?: boolean };
+      readonly continuity?: { readonly enabled: boolean; readonly packEnabled?: boolean; readonly ledgerEnabled?: boolean; readonly upkeep?: { readonly enabled: boolean; readonly requireRequestCap?: boolean; readonly extractionModel?: RuntimeModelReference } };
       /** OFF-default Web-only durable model switching. Stop older writers first. */
       readonly modelSwitch?: {
         readonly enabled: boolean;

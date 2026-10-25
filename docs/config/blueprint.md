@@ -509,3 +509,11 @@ Cold context reconstruction defaults to deterministic continuity packs. Set
 `runtime.session.continuity.packEnabled: false` to keep retained evidence and
 retrieval without pack injection, or `enabled: false` in the same block for the
 legacy path. See [cold pack limits](/runtime/sessions-concurrency/#deterministic-cold-continuity-packs).
+
+Ledger maintenance remains opt-in: `runtime.session.continuity.upkeep.enabled`
+buys one bounded extraction at eligible primary continuous cold boundaries, not
+on true resumes or detached attempts. `extractionModel` overrides configured
+`runtime.model`; `requireRequestCap` skips adapters without a server request cap.
+`ledgerEnabled` is read-only reuse without maintenance. All three booleans default
+false. See [ledger bounds and trust](/runtime/continuity-ledger/), including Codex
+hidden-reasoning/quota limits and up to 60 seconds of boundary latency.

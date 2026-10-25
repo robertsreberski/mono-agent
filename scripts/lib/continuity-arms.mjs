@@ -125,6 +125,16 @@ export const ARMS = Object.freeze([
     pressure: Object.freeze([{ metric: "replayedMessages", min: 64 }, { metric: "projectionDroppedRecords", min: 32 }]),
   }),
   Object.freeze({
+    id: "continuity-ledger-cold", label: "Cold rebuild + one boundary ledger upkeep + retained evidence",
+    description: "One capped upkeep per trace/repeat before read-only probe forks; configured reader extracts, alternate scripted answer establishes the cold reader boundary.",
+    available: true, families: ["original", "long"], replayBinding: "reader", midCheckpoint: null, restart: false,
+    ledgerUpkeep: true, fork: "in-place", sessionConfig: CONTINUITY_PACK_ON,
+    probeConfig: Object.freeze(mergePatch(HISTORY_TOOL_ONLY, runtime({ session: { continuity: { ledgerEnabled: true, upkeep: { enabled: false } } }, compaction: { enabled: false } }))),
+    expect: Object.freeze({ probeBoundary: "model_change", probeCompactions: 0, midCompactions: 0,
+      evidence: ["continuity_records_retained", "conversation_history_offered", "store_healthy", "continuity_pack_injected", "ledger_injected"] }),
+    pressure: Object.freeze([]),
+  }),
+  Object.freeze({
     id: "continuity-store-compaction",
     label: "(h) continuity store + one compaction (B1)",
     description: "As compaction-1 (native session, smallest proactive trigger at the probe), with runtime.session.continuity enabled throughout and ConversationHistory offered to the reader.",
@@ -174,6 +184,7 @@ export const AVAILABLE_ARM_IDS = Object.freeze(ARMS.filter((arm) => arm.availabl
 export const ORIGINAL_ARM_IDS = Object.freeze(["native", "cold-rebuild", "compaction-1", "compaction-2"]);
 export const DEFAULT_ARMS = Object.freeze({
   original: ORIGINAL_ARM_IDS,
+  "hard-distractors": Object.freeze(["native", "cold-rebuild", "continuity-pack-cold", "continuity-ledger-cold"]),
   hard: Object.freeze(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact"]),
 });
 
@@ -199,7 +210,7 @@ export function assertRunnableArms(ids, families) {
  * provider session identity and are therefore never run concurrently.
  */
 export function checkpointKey(arm, repeat) {
-  return arm.midCheckpoint === null ? `scripted-${arm.id}` : `mid-${arm.id}-r${repeat}`;
+  return arm.ledgerUpkeep ? `ledger-${arm.id}-r${repeat}` : arm.midCheckpoint === null ? `scripted-${arm.id}` : `mid-${arm.id}-r${repeat}`;
 }
 
 /** Plain-JSON deep merge for config patches (arrays and scalars replace). */
@@ -252,9 +263,10 @@ export function verifyStore(arm, { checkpointContinuity, observed }) {
     const packs = observed.continuityPacks ?? [];
     const pack = packs[0];
     if (packs.length !== 1 || pack?.reason !== "model_change" || !(pack.tokens > 0)
-      || !(pack.ownerEntries + pack.toolEntries + pack.summaryEntries + pack.evidenceEntries > 0)) reasons.push("continuity_pack_not_injected");
+      || !(pack.ownerEntries + pack.toolEntries + pack.summaryEntries + pack.evidenceEntries + (pack.ledgerEntries ?? 0) > 0)) reasons.push("continuity_pack_not_injected");
     if (pack && !["none", "overflow", "snapshot_bounds"].includes(pack.degradedReason)) reasons.push(`continuity_pack_degraded:${pack.degradedReason}`);
   }
+  if (arm.expect.evidence.includes("ledger_injected") && !(observed.continuityPacks?.[0]?.ledgerEntries > 0)) reasons.push("ledger_not_injected");
   return { applicable: true, healthy: reasons.length === 0, reasons };
 }
 

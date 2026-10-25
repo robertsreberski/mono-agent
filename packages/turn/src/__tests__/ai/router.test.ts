@@ -1,4 +1,4 @@
-import type { RuntimeResult, RuntimeModelRef } from "../../contracts/runtime.js";
+import type { RuntimeResult, RuntimeModelRef, RuntimeRunOptions } from "../../contracts/runtime.js";
 import type { RuntimeLiveInputMessage } from "../../contracts/live-input.js";
 import type { PiOptions } from "../../execution/pi/types.js";
 type TestEvent = { type: string; [key: string]: unknown };
@@ -55,6 +55,25 @@ beforeEach(() => {
 
 
 describe("createRouterRuntime — basic", () => {
+  it("keeps the real configured Pi/Codex primary eligible for cold upkeep", async () => {
+    const coldContext = vi.fn(async () => ({ messages: [] }));
+    executeMock.mockImplementation(async (_system, options) => { await (options.coldContext as NonNullable<RuntimeRunOptions["coldContext"]>)({ maxTokens: 8000, reason: "created_on_miss", primaryAttempt: true }); return { text: "ok", events: [] }; });
+    const primary = modelRef("openai-codex", "gpt-6-luna");
+    const router = createRouterRuntime({ chain: [{ model: primary, attempts: 2 }] });
+    await router.run("sys", { model: primary, coldContext });
+    expect(coldContext).toHaveBeenCalledWith(expect.objectContaining({ primaryAttempt: true }));
+  });
+  it("never transfers upkeep eligibility to a backup without detached replay", async () => {
+    const seen: boolean[] = [];
+    executeMock.mockImplementation(async (_system, options) => {
+      await (options.coldContext as NonNullable<RuntimeRunOptions["coldContext"]>)({ maxTokens: 8000, reason: "cold_rebuild", primaryAttempt: true });
+      return seen.length === 1 ? { error: "Connection error.", failureKind: "provider_unavailable", events: [] }
+        : { text: "ok", events: [], failureKind: null };
+    });
+    const router = createRouterRuntime({ chain: [modelRef("anthropic", "claude-opus-4-7"), modelRef("openai-codex", "gpt-5.5")], retry: { primaryAttempts: 1, backoffMs: 0 } });
+    const result = await router.run("sys", { messages: [], coldContext: async budget => { seen.push(budget.primaryAttempt); return { messages: [] }; } });
+    expect(result.text, JSON.stringify({ result, seen })).toBe("ok"); expect(seen).toEqual([true, false]);
+  });
   it("never retries or falls back a manual compaction of the primary session", async () => {
     executeMock.mockResolvedValueOnce({ error: "summary failed", failureKind: "provider_unavailable" });
     const primary = modelRef("anthropic", "claude-opus-4-7");

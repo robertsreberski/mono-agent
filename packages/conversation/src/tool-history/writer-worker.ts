@@ -1,3 +1,7 @@
+import { LedgerError } from "../continuity/ledger-error.js";
+import { publishLedger } from "../continuity/ledger-storage.js";
+import type { LedgerGeneration } from "../continuity/ledger.js";
+import { toolRetainedBytes } from "./continuity-storage.js";
 import { acknowledgeContinuityPurge, claimContinuityPurge, inspectContinuityPurges } from "./continuity-purge.js";
 import { continuityGenerationId, recordContinuityGap } from "./continuity-storage.js";
 import type { ContinuityGapInput } from "./continuity-contracts.js";
@@ -112,7 +116,7 @@ try {
 } catch (error) {
   respondError(
     0,
-    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_writer_start_failed",
+    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError || error instanceof LedgerError) ? error.code : "history_writer_start_failed",
     reasonOf(error),
   );
   throw error;
@@ -136,7 +140,7 @@ try {
   try { owner?.release(); } catch { /* startup error remains authoritative */ }
   respondError(
     0,
-    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_writer_start_failed",
+    (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError || error instanceof LedgerError) ? error.code : "history_writer_start_failed",
     reasonOf(error),
   );
   throw error;
@@ -173,6 +177,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           continuityPurgeBlocked = applyPendingContinuityPurges(database);
           respond(request.id, null);
           break;
+        case "continuity_ledger":
         case "continuity_gap":
         case "continuity_prepare":
         case "continuity_commit":
@@ -185,6 +190,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           try {
             transaction(database, () => {
               switch (request.operation) {
+                case "continuity_ledger": publishLedger(database, request.payload as LedgerGeneration, retention.maxBytes, continuityRetainedBytes(database) + toolRetainedBytes(database)); break;
                 case "continuity_gap": recordContinuityGap(database, request.payload as ContinuityGapInput); retainContinuity(database, retention, Date.now()); break;
                 case "continuity_prepare": result = prepareContinuity(database, request.payload as ContinuityPreparation, retention, (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records)); break;
                 case "continuity_commit": commitContinuity(database, request.payload as ContinuityPublication); break;
@@ -299,7 +305,7 @@ parentPort.on("message", (request: WorkerRequest) => {
     } catch (error) {
       respondError(
         request.id,
-        (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError) ? error.code : "history_write_failed",
+        (error instanceof WorkerHistoryError || error instanceof ToolHistoryWriterError || error instanceof LedgerError) ? error.code : "history_write_failed",
         reasonOf(error),
       );
     }

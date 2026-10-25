@@ -1340,4 +1340,8 @@ v3 records. The host-owned `coldContext` supplier is invoked only at actual
 runtime seeding, never on true native resume; one source snapshot is shared by
 resume retries and detached router attempts. Evidence stays within the physical
 canonical bucket and continuation boundary. Unknown record/window overlap stays
-visible rather than being deduplicated by text. No paid upkeep is performed.
+visible rather than being deduplicated by text. Default operation performs no paid upkeep.
+Explicit [ledger upkeep](../../docs/runtime/continuity-ledger.md) adds one bounded
+primary cold-boundary extraction; continuations and detached attempts retain the
+deterministic fallback. Ledger prose is derived interpretation, never owner
+authority; covered owners are demoted rather than deleted.

@@ -22,6 +22,18 @@
   finalized tool evidence in the cold projection. Preserve healthy evidence
   when another retained payload is malformed.
 
+- Add opt-in boundary continuity ledgers with source-validated derived entries,
+  purge-cascaded lineage, bounded one-call upkeep and ledger-first packs. Keep
+  upkeep off by default; expose strict request caps and Codex stream-abort limits.
+  Bind configured credentials, suppress repeated failures and preserve uncited
+  owner rules. Preflight inherited text and shared quota, mark mixed-source claims
+  and incomplete compact coverage, and retain paid failed-checkpoint accounting.
+  Fit oldest unrepresented evidence within ledger bounds and reject oversized
+  serialized entries before publication. Report content-free ledger failure codes
+  and allow explicit private capture in fictional benchmark diagnostics. Require
+  extraction prompts to request byte-exact bare identifiers, not labelled prose,
+  and explicit cited-ID coverage rather than numeric prefix claims. Keep benchmark aggregation execution-free.
+
 - Add real deterministic cold-pack benchmark arms, paired with recording-only
   and legacy cold-rebuild controls; offline contracts check actual provider
   contexts without measuring paid model quality.
