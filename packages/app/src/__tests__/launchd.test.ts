@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { userInfo } from "node:os";
 import { resolve } from "node:path";
+import { accountHomeDirectory } from "../host/account-home.js";
 
 import { describe, expect, it } from "vitest";
 
@@ -124,7 +124,9 @@ describe("launchdPathsFor", () => {
     process.env.HOME = "/tmp/untrusted-mono-agent-home";
     try {
       const paths = launchdPathsFor("com.mono-agent.demo-0a1b2c3d");
-      const accountHome = userInfo().homedir;
+      // Tests isolate the account home (setup-account-home.ts); the production
+      // userInfo()-not-HOME policy itself is asserted in account-home-isolation.
+      const accountHome = accountHomeDirectory();
       expect(paths.launchAgentsDir).toBe(resolve(accountHome, "Library", "LaunchAgents"));
       expect(paths.logDir).toBe(resolve(accountHome, ".mono-agent", "logs"));
       expect(paths.launchAgentsDir).not.toContain(process.env.HOME);
