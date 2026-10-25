@@ -34,7 +34,7 @@ it("isolates default source and built leases before either graph can use the acc
 
 it("keeps the production account-home policy independent of HOME", async () => {
   const actual = await vi.importActual<typeof import("../host/account-home.js")>("../host/account-home.js");
-  vi.stubEnv("HOME", "/home/fictional-shell");
+  vi.stubEnv("HOME", "/home/example/shell");
   try { expect(actual.accountHomeDirectory()).toBe(userInfo().homedir); }
   finally { vi.unstubAllEnvs(); }
 });
