@@ -1,4 +1,4 @@
-import { pendingContinuityPurges } from "./continuity-purge.js";
+import { inspectContinuityPurges, pendingContinuityPurges } from "./continuity-purge.js";
 import { redactJsonValue } from "@mono-agent/observability";
 import type { RuntimeToolLifecycleTerminalState } from "@mono-agent/turn/host/types";
 import { existsSync } from "node:fs";
@@ -24,6 +24,12 @@ export class ToolHistoryReader {
     if (!isAbsolute(root)) throw new TypeError("tool history root must be absolute.");
     this.root = resolve(root);
     this.databasePath = join(this.root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+  }
+
+  /** Read-only, content-free doctor surface, independent of runtime enablement. */
+  continuityPurgeStatus(): { pending: number; invalid: number } {
+    const result = inspectContinuityPurges(this.root);
+    return { pending: result.pending.length, invalid: result.invalid };
   }
 
   protectedContinuityConversations(): readonly string[] {

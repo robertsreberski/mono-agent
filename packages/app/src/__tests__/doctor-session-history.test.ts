@@ -103,6 +103,22 @@ const binding = {
 } as const;
 
 describe("sessionToolHistorySection", () => {
+  it("reports pending and invalid purge counts without ids or paths, even with no active continuity writer", async () => {
+    const root = await tempRoot(); await mkdir(root, { recursive: true, mode: 0o700 });
+    const pending = join(root, ".continuity-purge-" + "a".repeat(64) + ".json");
+    const invalid = join(root, ".continuity-purge-" + "b".repeat(64) + ".json");
+    await writeFile(pending, JSON.stringify({ scope: "logical", conversationId: "web:purge-doctor-fixture" }), { mode: 0o600 });
+    await writeFile(invalid, "{invalid", { mode: 0o600 });
+    const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(section.status).toBe("waiting");
+    expect(section.details).toContain("Continuity purge journals: 1 pending, 1 invalid. Coverage is degraded; affected evidence is unavailable until purged.");
+    expect(section.details.join(" ")).not.toContain("purge-doctor-fixture");
+    expect(section.details.join(" ")).not.toContain(root);
+    await rm(pending); await rm(invalid);
+    const clean = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(clean.status).toBe("ok"); expect(clean.details.join(" ")).not.toContain("purge journals");
+  });
+
   it("reports separate zero-byte stores before first use and flags only unsupported direct routes", async () => {
     const root = await tempRoot();
     const supported = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });

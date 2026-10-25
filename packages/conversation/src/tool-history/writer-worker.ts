@@ -1,4 +1,4 @@
-import { acknowledgeContinuityPurge, pendingContinuityPurges } from "./continuity-purge.js";
+import { acknowledgeContinuityPurge, claimContinuityPurge, inspectContinuityPurges } from "./continuity-purge.js";
 import { continuityGenerationId, recordContinuityGap } from "./continuity-storage.js";
 import type { ContinuityGapInput } from "./continuity-contracts.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -47,7 +47,7 @@ import { continueToolHistoryOperationTail } from "./worker-queue.js";
 import { TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_SCHEMA, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRetentionOptions, type ToolHistoryRunBinding } from "./contracts.js";
 
 import { CONTINUITY_USER_VERSION, type ContinuityPin, type ContinuityPreparation, type ContinuityPublication, type ContinuityReconciliation } from "./continuity-contracts.js";
-import { assertContinuitySchema, clearPhysicalContinuity, commitContinuity, continuityRetainedBytes, createContinuitySchema, hasContinuitySchema, pinContinuity, prepareContinuity, reconcileContinuity, resetContinuity, retainContinuity, readContinuityStats, unpinContinuity } from "./continuity-storage.js";
+import { assertContinuitySchema, purgeContinuityRows, commitContinuity, continuityRetainedBytes, createContinuitySchema, hasContinuitySchema, pinContinuity, prepareContinuity, reconcileContinuity, resetContinuity, retainContinuity, readContinuityStats, unpinContinuity } from "./continuity-storage.js";
 
 const DEFAULT_RETENTION: Required<ToolHistoryRetentionOptions> = {
   maxCompletedCalls: 100_000,
@@ -88,6 +88,7 @@ class RunBindingConflictError extends WorkerHistoryError {
 
 const input = workerData as WorkerInput;
 let continuityEnabled = input.continuityEnabled === true;
+let continuityPurgeBlocked = false;
 const root = resolve(input.root);
 const artifactRoot = canonicalToolArtifactRoot(input.artifactRoot);
 const artifactRootAliases = input.artifactRootAliases.map((value) => resolve(value));
@@ -123,7 +124,6 @@ try {
   owner = await acquireOwner(ownerPath, ownerAcquireCeilingMs);
   assertToolDirectoryEntries();
   database = openContentDatabase(databasePath, retention, artifactRoot);
-  applyPendingContinuityPurges(database);
   closeDangling(database, undefined, "interrupted", "process_death", "recovered_after_writer_restart", true);
   applyRetention(database, retention);
   const recoveredDatabase = database;
@@ -158,7 +158,7 @@ parentPort.on("message", (request: WorkerRequest) => {
     }
     try {
       // Also service intents created after this writer acquired its owner.
-      applyPendingContinuityPurges(database);
+      if (continuityEnabled) continuityPurgeBlocked = applyPendingContinuityPurges(database);
       switch (request.operation) {
         case "ready":
           respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls") });
@@ -170,6 +170,7 @@ parentPort.on("message", (request: WorkerRequest) => {
             database.exec(`PRAGMA user_version=${String(CONTINUITY_USER_VERSION)}`);
           });
           continuityEnabled = true;
+          continuityPurgeBlocked = applyPendingContinuityPurges(database);
           respond(request.id, null);
           break;
         case "continuity_gap":
@@ -179,6 +180,7 @@ parentPort.on("message", (request: WorkerRequest) => {
         case "continuity_pin":
         case "continuity_unpin": {
           if (!continuityEnabled) throw new WorkerHistoryError("continuity_disabled", "Continuity capture is not enabled.");
+          if (continuityPurgeBlocked) throw new WorkerHistoryError("continuity_purge_unavailable", "Continuity is unavailable while a purge journal is invalid or cannot be applied.");
           let result: unknown;
           try {
             transaction(database, () => {
@@ -553,7 +555,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
 
 function recordFinalizedText(database: DatabaseSync, binding: ToolHistoryRunBinding,
   event: Extract<RuntimeToolLifecycleEvent, { phase: "result" }>, toolName: string): void {
-  if (!continuityEnabled || binding.continuityEnabled !== true) return;
+  if (!continuityEnabled || continuityPurgeBlocked || binding.continuityEnabled !== true) return;
   try {
     captureFinalizedToolText(database, binding, event, toolName, retention,
       (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records));
@@ -884,6 +886,10 @@ function openContentDatabase(
   database.exec("PRAGMA secure_delete=ON");
   database.exec("PRAGMA foreign_keys=ON");
   database.exec(`PRAGMA busy_timeout=${String(TOOL_HISTORY_WRITER_BUSY_TIMEOUT_MS)}`);
+  // Owner/schema identity and FULL durability are established. This separate
+  // transaction deletes ONLY continuity rows; it never resolves a stored path.
+  // It must commit before the later artifact-root guard can reject startup.
+  if (continuityEnabled) continuityPurgeBlocked = applyPendingContinuityPurges(database);
   transaction(database, () => {
     database.exec(`PRAGMA application_id=${String(TOOL_HISTORY_APPLICATION_ID)}`);
     database.exec(`
@@ -1702,15 +1708,24 @@ function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A crash after SQLite commit may repeat a purge, but cannot resurrect old text.
- * New writes are not admitted until every pre-existing intent is acknowledged. */
-function applyPendingContinuityPurges(database: DatabaseSync): void {
-  for (const purge of pendingContinuityPurges(root)) {
-    transaction(database, () => {
-      if (!hasContinuitySchema(database)) return;
-      if (purge.scope === "logical") resetContinuity(database, purge.conversationId);
-      else clearPhysicalContinuity(database, purge.conversationId);
-    });
-    acknowledgeContinuityPurge(root, purge.path);
+/** Returns a continuity-only failure; independent lifecycle requests stay usable. */
+function applyPendingContinuityPurges(database: DatabaseSync): boolean {
+  let result: ReturnType<typeof inspectContinuityPurges>;
+  try { result = inspectContinuityPurges(root); } catch { return true; }
+  let blocked = result.invalid > 0;
+  for (const purge of result.pending) {
+    try {
+      const claimed = claimContinuityPurge(root, purge.path);
+      transaction(database, () => {
+        if (hasContinuitySchema(database)) {
+          assertContinuitySchema(database);
+          purgeContinuityRows(database, purge.scope, purge.conversationId);
+        }
+      });
+      acknowledgeContinuityPurge(root, claimed);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") blocked = true;
+    }
   }
+  return blocked;
 }

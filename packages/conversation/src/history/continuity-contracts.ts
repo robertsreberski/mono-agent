@@ -25,12 +25,16 @@ export interface PreparedContinuityPublication {
 }
 /** Optional participant; absent means exactly the legacy path, including OFF mode. */
 export interface ConversationHistoryContinuityParticipant {
+  /** Same logical scope normalization as the retained sidecar rows. */
+  readonly logicalConversationId?: (conversationId: string) => string;
+  /** Canonical intent notification, before any sidecar call; discard stale gaps. */
+  purging?(scope: "logical" | "physical", conversationId: string): void;
   checkpoint(context: OwnedContinuityContext & { readonly current: CanonicalContinuityState; readonly runId: string;
     readonly phase: "prepare" | "committed"; readonly evidence: RuntimeDurableCompactionCheckpoint }): Promise<void>;
   recoverCheckpoint(context: OwnedContinuityContext & { readonly current: CanonicalContinuityState; readonly evidence?: RuntimeDurableCompactionCheckpoint }): Promise<void>;
   reconcile(context: OwnedContinuityContext & { readonly current: CanonicalContinuityState }): Promise<void>;
   prepare(mutation: OwnedContinuityMutation): Promise<PreparedContinuityPublication | undefined>;
-  /** Prepared physical owners and non-summary reference pins protect retention.
+  /** Active canonical owners and non-summary reference pins protect retention.
    * Summary pins alone never lease canonical files against age/quota eviction. */
   protectedConversations(): Promise<readonly string[]>;
   /** Called under the existing whole-logical-conversation reset owner. */

@@ -402,11 +402,18 @@ cancellation does not interrupt a callback that never settles. Moving/forking
 an existing sidecar retains its artifact-root pin; mismatched roots degrade
 capture until a fresh store is used, without preventing compaction.
 Reset and retention deletion first durably write a content-free purge intent
-(`.continuity-purge-<uuid>.json`, scope and conversation ID only) under the canonical
+(`.continuity-purge-<scope-id-hash>.json`, scope and conversation ID only) under the canonical
 root, independently of sidecar availability. Readers suppress the covered scope
-while an intent exists. The next successful writer acquisition/request applies
+while an intent exists. The next continuity-enabled writer acquisition/request applies
 its purge before admitting any mutation and removes the intent only after the
-SQLite commit. These journals must be preserved with canonical-root backups;
+SQLite commit. A fixed `.applying` claim prevents an older acknowledgement from
+unlinking a newer intent; repeated requests reuse the deterministic base name.
+Under the canonical root transaction, the next marker write collects only older
+secure interrupted `.json.tmp` files. Invalid markers block continuity only, not
+SessionHistory or lifecycle persistence; doctor reports pending/invalid counts.
+On an artifact-root mismatch, privacy recovery may delete SQLite continuity rows
+before the guard refuses startup, without following any stored artifact path.
+These journals must be preserved with canonical-root backups;
 do not remove them to recover a sidecar outage. A reset interrupted after intent
 publication may conservatively purge evidence even if the canonical reset fails.
 This is a privacy intent, never proof that a summary may be published.
@@ -1308,3 +1315,5 @@ recoverable, while another free LRU victim can be pruned in the same commit.
 Accepted limits: a native victim's logical owner may be busy in another process after
 admission credits it, leaving maintenance pending; the replan budget is fixed
 from the entry count at maintenance start, not extended by concurrent arrivals.
+
+Disabling continuity leaves previously retained evidence and any pending purges at rest until continuity is re-enabled or storage is purged via session admin or `restart --clear-sessions`. That evidence is never served while a purge is pending.

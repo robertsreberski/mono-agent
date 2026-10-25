@@ -477,3 +477,5 @@ pnpm --filter @mono-agent/config run build
 pnpm --filter @mono-agent/config run typecheck
 pnpm --filter @mono-agent/config run test
 ```
+
+Disabling continuity leaves previously retained evidence and any pending purges at rest until continuity is re-enabled or storage is purged via session admin or `restart --clear-sessions`. That evidence is never served while a purge is pending.

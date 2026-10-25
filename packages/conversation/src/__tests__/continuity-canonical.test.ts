@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { toolHistoryLogicalConversationId } from "../tool-history/contracts.js";
 import { continuityRecordId } from "../tool-history/continuity-storage.js";
 import { pendingContinuityPurges, persistContinuityPurge } from "../tool-history/continuity-purge.js";
 import * as canonicalFiles from "../history/canonical/files.js";
@@ -171,6 +172,47 @@ describe("owned canonical continuity publication", () => {
     const recovered = await setup(dir);
     expect(pendingContinuityPurges(dir)).toEqual([]);
     expect((await recovered.writer.stats()).continuity?.records).toBe(0);
+  });
+
+  it.each(["none", "daily"] as const)("uses sidecar %s normalization for a logical purge with no remaining canonical file", async rollover => {
+    const dir = await root(), { writer, reader } = await setup(dir), child = "web:fiction#2026-10-01";
+    const logicalConversationId = (id: string) => toolHistoryLogicalConversationId(id, rollover);
+    const continuity = createContinuityParticipant({ writer, reader, logicalConversationId, protectedConversations: () => [] });
+    const store = createDurableHistoryStore({ root: dir, continuity });
+    await store.append(child, [message("Quotation from a daily-shaped identifier.")]);
+    const childScope = { ...scope, logicalConversationId: logicalConversationId(child), currentConversationId: child };
+    const old = reader.searchContinuity(childScope).items[0]!;
+    await writer.close();
+    await rm(join(dir, `${historyKey(child)}.history.json`)); // Sidecar-only historical evidence remains.
+    await store.resetLogicalConversation!(child);
+    expect(pendingContinuityPurges(dir)).toEqual([expect.objectContaining({ scope: "logical", conversationId: logicalConversationId(child) })]);
+    expect(reader.getContinuity({ ...childScope, recordId: old.recordId }).status).toBe("unavailable");
+    const recovered = await setup(dir);
+    expect(pendingContinuityPurges(dir)).toEqual([]);
+    expect((await recovered.writer.stats()).continuity?.records).toBe(0);
+  });
+
+  it.each(["reset", "delete"] as const)("does not flush queued pre-purge digests after %s recovery", async action => {
+    const dir = await root(), { writer, reader } = await setup(dir);
+    let unavailable = false;
+    const fail = () => { if (unavailable) throw new Error("Fictional outage"); };
+    const continuity = createContinuityParticipant({ writer: {
+      prepareContinuity: async input => { fail(); return await writer.prepareContinuity(input); },
+      commitContinuity: async input => { fail(); await writer.commitContinuity(input); },
+      reconcileContinuity: async input => { fail(); return await writer.reconcileContinuity(input); },
+      recordContinuityGap: async input => { fail(); await writer.recordContinuityGap(input); },
+      resetConversation: async input => { fail(); await writer.resetConversation(input); },
+    }, reader, logicalConversationId: id => id, protectedConversations: () => [] });
+    const store = createDurableHistoryStore({ root: dir, continuity });
+    await store.append(id, [message("Old quotation.")]);
+    unavailable = true;
+    await store.append(id, [message("Pre-purge capture outage.")]);
+    if (action === "reset") await store.resetLogicalConversation!(id);
+    else await createDurableHistoryStore({ root: dir, continuity, maxConversations: 1 }).append("web:replacement", [message("Replacement.")]);
+    unavailable = false;
+    await store.append(id, [message("Post-purge new quotation.")]);
+    expect(reader.continuityGaps(id).items).toEqual([]);
+    expect(reader.searchContinuity(scope).items.map(row => row.preview)).toEqual(["Post-purge new quotation."]);
   });
 
   it.each(["age", "quota"] as const)("evicts inactive stranded publish and checkpoint preparations by %s", async mode => {

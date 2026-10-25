@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bound continuity purge journals per scope, drain owed SQLite-only purges even
+  when an artifact-root mismatch blocks capture, and report pending or invalid
+  journals without disrupting tool-history persistence. Disabled continuity
+  leaves owed purges at rest until re-enabled or session storage is purged.
+
 - Keep reset and retention purges durable through continuity writer outages;
   suppress affected history until the owed purge succeeds, and let inactive
   stranded preparations expire with canonical age and quota retention.

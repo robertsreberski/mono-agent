@@ -65,6 +65,11 @@ async function inspectSessionToolHistorySection(
     throw error;
   }
 
+  const purges = new ToolHistoryReader(options.historyRoot).continuityPurgeStatus();
+  if (purges.pending > 0 || purges.invalid > 0) {
+    worsen("waiting", `Continuity purge journals: ${String(purges.pending)} pending, ${String(purges.invalid)} invalid. Coverage is degraded; affected evidence is unavailable until purged.`);
+  }
+
   const messageUsage = await topLevelMessageHistoryUsage(options.historyRoot).catch(() => undefined);
   if (messageUsage === undefined) {
     worsen("error", "Message-history bytes could not be inspected.");

@@ -985,11 +985,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await heldLogical.assertOwned();
         // Fail before resetting any sibling, not midway through logical reset.
         for (const id of orderedIds) { await this.assertResetReadable(id, rootIdentity); await this.requireNoModelSwitch(id, rootIdentity); }
+        await this.journalContinuityPurge("logical", logicalId, rootIdentity, () => heldLogical.assertOwned());
       } finally { await releaseDiscovery(); }
-      if (this.continuity) {
-        await assertDirectoryIdentity(this.root, rootIdentity);
-        persistContinuityPurge(this.root, { scope: "logical", conversationId: logicalId });
-      }
       if (orderedIds.includes(logicalId)) {
         await this.resetPhysicalConversation(logicalId, heldLogical, heldExact);
       }
@@ -2132,14 +2129,19 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     await this.continuityAvailable(async () => await this.continuity!.reconcile({ conversationId: id, assertOwned, current }));
     await assertOwned();
   }
+  /** Always called under the canonical root transaction and scope owner. */
+  private async journalContinuityPurge(scope: "logical" | "physical", id: string, rootIdentity: DirectoryIdentity, assertOwned: () => Promise<void>): Promise<void> {
+    if (!this.continuity) return;
+    await assertOwned();
+    await assertDirectoryIdentity(this.root, rootIdentity);
+    const conversationId = scope === "logical" ? this.continuity.logicalConversationId?.(id) ?? id : id;
+    persistContinuityPurge(this.root, { scope, conversationId });
+    await this.continuityAvailable(async () => this.continuity!.purging?.(scope, conversationId));
+  }
   private async prepareContinuity(record: CanonicalHistoryFile | null, id: string, rootIdentity: DirectoryIdentity,
     assertOwned: () => Promise<void>, action: "publish" | "reset" | "delete" = "publish", messages?: readonly HistoryMessage[]): Promise<PreparedContinuityPublication | undefined> {
     if (!this.continuity) return undefined;
-    if (action === "reset" || action === "delete") {
-      await assertOwned();
-      await assertDirectoryIdentity(this.root, rootIdentity);
-      persistContinuityPurge(this.root, { scope: "physical", conversationId: id });
-    }
+    if (action === "reset" || action === "delete") await this.journalContinuityPurge("physical", id, rootIdentity, assertOwned);
     await this.reconcileContinuity(id, rootIdentity, assertOwned);
     const before = this.continuityState(await this.readRecord(id, rootIdentity));
     const after = record === null ? { digest: null, messages: [] } : { ...this.continuityState(record), ...(messages === undefined ? {} : { messages }) };

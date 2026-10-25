@@ -28,6 +28,20 @@ export function createContinuityParticipant(options: {
   // A process death while the whole sidecar is unavailable cannot be journalled
   // there; digest-bound reconciliation still prevents publishing wrong evidence.
   const pendingGaps: ContinuityGapInput[] = [];
+  const purging = new Set<string>();
+  const purgeKey = (scope: "logical" | "physical", id: string) => JSON.stringify([scope, id]);
+  const discardPurgeGaps = (scope: "logical" | "physical", id: string) => {
+    for (let index = pendingGaps.length - 1; index >= 0; index--) {
+      const gap = pendingGaps[index]!;
+      if ((scope === "logical" ? gap.logicalConversationId : gap.conversationId) === id) pendingGaps.splice(index, 1);
+    }
+    purging.add(purgeKey(scope, id));
+    if (purging.size > 128) purging.delete(purging.values().next().value!);
+  };
+  const resumeCapture = (id: string) => {
+    purging.delete(purgeKey("physical", id));
+    purging.delete(purgeKey("logical", options.logicalConversationId(id)));
+  };
   const flushGaps = async () => {
     if (pendingGaps.length) {
       try { await options.writer.recordContinuityGap(pendingGaps[0]!); pendingGaps.shift(); }
@@ -36,6 +50,9 @@ export function createContinuityParticipant(options: {
   };
   const gap = async (conversationId: string, beforeDigest: string | null, afterDigest: string | null, reason: ContinuityGapInput["reason"], writerAnswered = false) => {
     warn(`Continuity is degraded (${reason}); coverage is incomplete. Canonical history remains available.`);
+    // Purge failures are not missed captures. Never resurrect pre-reset digests
+    // while an owed purge is being serviced; new publication resumes capture.
+    if (purging.has(purgeKey("physical", conversationId)) || purging.has(purgeKey("logical", options.logicalConversationId(conversationId)))) return;
     if (pendingGaps.length >= 128) pendingGaps.shift();
     pendingGaps.push({ generationId: continuityGenerationId(), conversationId, logicalConversationId: options.logicalConversationId(conversationId), beforeDigest, afterDigest, reason });
     // A failed operation already established an outage. Do not pay a second
@@ -43,7 +60,10 @@ export function createContinuityParticipant(options: {
     if (reason !== "sidecar_unavailable" || writerAnswered) await flushGaps();
   };
   return {
+    logicalConversationId: options.logicalConversationId,
+    purging: discardPurgeGaps,
     async checkpoint(context) {
+      resumeCapture(context.conversationId);
       await context.assertOwned();
       let ownershipFailed = false;
       const assertOwned = async () => {
@@ -117,6 +137,8 @@ export function createContinuityParticipant(options: {
       await context.assertOwned();
     },
     async prepare(mutation) {
+      if (mutation.action === "publish") resumeCapture(mutation.conversationId);
+      else discardPurgeGaps("physical", mutation.conversationId);
       await mutation.assertOwned();
       if (mutation.before.digest === mutation.after.digest) return undefined;
       const generationId = continuityGenerationId();
@@ -146,6 +168,7 @@ export function createContinuityParticipant(options: {
       };
     },
     async resetLogical(context) {
+      discardPurgeGaps("logical", options.logicalConversationId(context.conversationId));
       await context.assertOwned();
       try { await options.writer.resetConversation(options.logicalConversationId(context.conversationId)); await flushGaps(); }
       catch { await gap(context.conversationId, null, null, "sidecar_unavailable"); }

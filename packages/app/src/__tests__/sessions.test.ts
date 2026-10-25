@@ -342,6 +342,8 @@ describe("purgeConversationState history accounting", () => {
     await writer.prepareContinuity(gamma);
     await writer.reconcileContinuity({ conversationId: gamma.conversationId, canonicalDigest: sha256("web:gamma:advanced") });
     await writer.close();
+    const purgeMarkers = [".continuity-purge-" + "a".repeat(64) + ".json", ".continuity-purge-" + "b".repeat(64) + ".json.applying", ".continuity-purge-" + "c".repeat(64) + ".json.tmp"];
+    for (const marker of purgeMarkers) await writeFile(join(root, marker), "{invalid", { mode: 0o600 });
     const expectedRetainedBytes = ["Morgan chose the cobalt design.", "Avery agreed.", "Unpublished fictional reply."]
       .reduce((sum, text) => sum + Buffer.byteLength(text), 0);
 
@@ -370,6 +372,7 @@ describe("purgeConversationState history accounting", () => {
     await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, ".locks", TOOL_HISTORY_OWNER_DATABASE))).rejects.toMatchObject({ code: "ENOENT" });
+    for (const marker of purgeMarkers) await expect(stat(join(root, marker))).rejects.toMatchObject({ code: "ENOENT" });
 
     // A continuity-capable writer at the same configured root starts from an
     // empty store: no record, pin, prepared generation or gap survives.
