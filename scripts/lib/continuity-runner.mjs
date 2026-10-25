@@ -13,7 +13,7 @@ import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure } from "./continuity-arms.mjs";
+import { armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "./continuity-arms.mjs";
 import { traceShape } from "./continuity-generator.mjs";
 import { probePrompt, scoreAnswer, judgePrompt, parseJudgeVerdict } from "./continuity-score.mjs";
 import { sourceOnly, traceFamily } from "./continuity-dataset.mjs";
@@ -61,7 +61,9 @@ export async function productionModules(root) {
     if (typeof host[name] !== "function") throw new ContinuityError("production_module_missing", name);
   }
   if (typeof config.resolveJsonMonoAgentConfig !== "function" || typeof pi.fauxProvider !== "function") throw new ContinuityError("production_module_missing");
-  return { config, app, host, pi };
+  const conversation = await import("@mono-agent/conversation");
+  if (typeof conversation.ToolHistoryReader !== "function") throw new ContinuityError("production_module_missing", "ToolHistoryReader");
+  return { config, app, host, pi, conversation };
 }
 
 /** Faux models posing as the given bound references (one faux provider per provider id). */
@@ -124,12 +126,37 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
   }, configPatch ?? {});
 }
 
-async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock }) {
+async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {} }) {
   const json = configJson({ work, authPath, model, effort, tools, configPatch });
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
   const runtime = controlledRuntime(modules.app.createConfiguredAgentRuntime({ config, cwd: work, model: config.runtime.model }), route);
-  const harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value });
-  return { harness, config };
+  // Tool-history/continuity outages are fail-open in production (warnings only);
+  // the benchmark counts them so a degraded store invalidates the sample.
+  const harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value,
+    onToolHistoryWarning: () => onHistoryWarning() });
+  // The configured runtime holds the agent-root lease until disposeAllSessions;
+  // the harness does not own an injected runtime, so close both.
+  const close = async () => { try { await harness.dispose?.(); } finally { await runtime.disposeAllSessions?.(); } };
+  return { harness, config, close };
+}
+
+/** Retained-evidence statistics for a workspace's sidecar (content-free counts only). */
+export function continuityStats(modules, work) {
+  const stats = new modules.conversation.ToolHistoryReader(join(work, "history")).stats();
+  const continuity = stats?.continuity;
+  return continuity === undefined ? null : { records: continuity.records, generations: continuity.generations, prepared: continuity.prepared,
+    retainedBytes: continuity.retainedBytes, degraded: continuity.degraded === true, coverageGaps: continuity.coverageGaps };
+}
+
+const HISTORY_TOOL = /(?:^|__)ConversationHistory$/u;
+/** Classify one ConversationHistory result from its model-visible text. */
+export function classifyHistoryResult(text, isError) {
+  const body = String(text ?? "");
+  const unavailable = body.includes('"status":"unavailable"') || body.includes('"available":false');
+  if (unavailable && (!/"code":"/u.test(body) || body.includes('"code":"history_unavailable"'))) return { outcome: "unavailable", count: null };
+  if (isError || unavailable) return { outcome: "error", count: null };
+  const count = /"count":(\d+)/u.exec(body);
+  return { outcome: "success", count: count ? Number(count[1]) : null };
 }
 
 const finite = (value) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
@@ -164,16 +191,40 @@ export function compactionUsageOf(usage) {
 }
 
 function observer() {
-  const observed = { boundaries: [], compactions: [], warnings: 0, steersAccepted: 0 };
+  const observed = { boundaries: [], compactions: [], warnings: 0, steersAccepted: 0, historyWarnings: 0, toolsOffered: [],
+    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 } };
+  const historyCalls = new Map();
   let steerWaiter = null;
   return {
     observed,
+    noteOffered(options) {
+      const offered = new Set(observed.toolsOffered);
+      if (Object.keys(options?.mcpServers ?? {}).includes("mono-agent-conversation-history")) offered.add("ConversationHistory");
+      observed.toolsOffered = [...offered];
+    },
+    noteHistoryWarning() { observed.historyWarnings += 1; },
     onEvent(event) {
+      for (const block of Array.isArray(event?.message?.content) ? event.message.content : []) {
+        if (event.type === "assistant" && block?.type === "tool_use" && HISTORY_TOOL.test(String(block.name ?? ""))) {
+          const input = block.input && typeof block.input === "object" ? block.input : {};
+          const action = input.action ?? (input.recordId === undefined ? "search" : "get");
+          historyCalls.set(block.id, action);
+          observed.conversationHistory.calls += 1;
+          observed.conversationHistory[action === "get" ? "get" : "search"] += 1;
+        } else if (event.type === "user" && block?.type === "tool_result" && historyCalls.has(block.tool_use_id)) {
+          const text = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? "");
+          const { outcome, count } = classifyHistoryResult(text, block.is_error === true);
+          observed.conversationHistory[outcome] += 1;
+          if (count !== null) observed.conversationHistory.hits += count;
+        }
+      }
       if (event?.type === "session_boundary") {
         observed.boundaries.push({ kind: event.kind ?? null, reason: event.reason ?? null, context: event.context ?? null,
           replayedMessageCount: finite(event.replayedMessageCount), toolProjectionRecords: finite(event.toolProjectionRecords), toolProjectionBytes: finite(event.toolProjectionBytes) });
       } else if (event?.type === "context_compaction" && event.status !== "running") {
-        observed.compactions.push({ status: event.status ?? null, trigger: event.trigger ?? null, tokensBefore: finite(event.tokensBefore), tokensAfter: finite(event.tokensAfter) });
+        observed.compactions.push({ status: event.status ?? null, trigger: event.trigger ?? null, tokensBefore: finite(event.tokensBefore), tokensAfter: finite(event.tokensAfter),
+          ...(typeof event.reason === "string" ? { reason: event.reason } : {}), ...(event.midRun === true || event.accounting?.midRun === true ? { midRun: true } : {}) });
+        if (process.env.CONTINUITY_DEBUG === "1" && event.status !== "succeeded") process.stderr.write(`compaction ${JSON.stringify(event).slice(0, 1500)}\n`);
       } else if (event?.type === "runtime_warning") {
         observed.warnings += 1;
       } else if (event?.type === "live_input_native_accepted") {
@@ -255,18 +306,31 @@ async function replayScriptedTurn({ harness, scripted, tools, turn, binding, con
 }
 
 /** One live turn (probe or mid-trace checkpoint) through a tool-free production harness. */
-function liveRoute(modules, mode, refs) {
-  if (mode !== "offline") return () => ({});
+function liveRoute(modules, mode, refs, watch = null) {
+  if (mode !== "offline") return (options) => { watch?.noteOffered(options); return {}; };
   const scripted = scriptedModels(modules.pi, refs);
-  for (const ref of refs) scripted.respondWith(ref, (context) => modules.pi.fauxAssistantMessage(String(context.systemPrompt ?? "").includes(SUMMARY_MARKER) ? OFFLINE_SUMMARY : OFFLINE_ANSWER));
-  return (options) => { const { model } = scripted.route(options); return { piResolvedModel: model, piResolvedModels: scripted.models }; };
+  // The offline contract reader calls ConversationHistory once when it is
+  // offered, so CI exercises the real tool, store and recording path.
+  const dispatcher = (context) => {
+    // Summary requests carry Pi's summary focus in the system prompt or a system message.
+    const system = [context.systemPrompt, ...(context.messages ?? []).filter((message) => message.role === "system").map((message) => textOfContent(message.content))].join("\n");
+    if (system.includes(SUMMARY_MARKER)) return modules.pi.fauxAssistantMessage(OFFLINE_SUMMARY);
+    const last = context.messages?.at(-1);
+    if (watch?.observed.toolsOffered.includes("ConversationHistory") && last?.role !== "toolResult") {
+      return modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("ConversationHistory", { action: "search", query: "order", limit: 3 }, { id: "call_offline_history" })], { stopReason: "toolUse" });
+    }
+    return modules.pi.fauxAssistantMessage(OFFLINE_ANSWER);
+  };
+  for (const ref of refs) scripted.respondWith(ref, dispatcher);
+  return (options) => { watch?.noteOffered(options); const { model } = scripted.route(options); return { piResolvedModel: model, piResolvedModels: scripted.models }; };
 }
 
 export async function runLiveTurn({ modules, work, authPath, plan, mode, configPatch, userMessage, clock, conversationId, owner }) {
   const reader = modules.host.parseMonoRuntimeModelReference(plan.reader.model);
-  const route = liveRoute(modules, mode, [reader]);
   const watch = observer();
-  const { harness } = await openHarness({ modules, work, authPath, model: plan.reader.model, effort: plan.reader.effort, tools: false, configPatch, route, clock });
+  const route = liveRoute(modules, mode, [reader], watch);
+  const { harness, close } = await openHarness({ modules, work, authPath, model: plan.reader.model, effort: plan.reader.effort, tools: false, configPatch, route, clock,
+    onHistoryWarning: () => watch.noteHistoryWarning() });
   const started = performance.now();
   let response;
   try {
@@ -274,7 +338,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
       conversationId, userMessage, abortSignal: AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs),
       metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
     });
-  } finally { await harness.dispose?.(); }
+  } finally { await close(); }
   const usage = response.metadata?.runtime?.usage;
   return {
     text: typeof response.text === "string" ? response.text : null,
@@ -312,24 +376,35 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
     binding: binding.reference, turns: 0, toolCalls: 0, steers: 0, mid: null, durationMs: 0 };
   const started = performance.now();
   let open = null;
+  let replayHistoryWarnings = 0;
   try {
     for (const turn of source.turns) {
       clock.value = new Date(turn.at);
       if (arm.midCheckpoint !== null && turn.id === source.midCheckpoint) {
         // Promptless manual compaction before the mid-trace turn: the same
         // guarded production summary driver, with no live reply in history.
-        if (open) { await open.harness.dispose?.(); open = null; }
-        record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: arm.midCheckpoint.config, clock, conversationId, turnId: turn.id });
+        if (open) { await open.close(); open = null; }
+        record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.midCheckpoint.config), clock, conversationId, turnId: turn.id });
         if (!record.mid.boundary.verified) throw new ContinuityError("mid_checkpoint_boundary_unverified", record.mid.boundary.reasons.join(","));
       }
-      open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: {}, route, clock });
+      open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: arm.sessionConfig ?? {}, route, clock,
+        onHistoryWarning: () => { replayHistoryWarnings += 1; } });
       const result = await replayScriptedTurn({ harness: open.harness, scripted, tools, turn, binding, conversationId, owner: source.owner.displayName, pi: modules.pi });
       record.turns += 1; record.toolCalls += result.toolCalls; record.steers += result.steers;
     }
   } finally {
-    if (open) await open.harness.dispose?.();
+    if (open) await open.close();
     await tools.close();
     record.durationMs = Math.round(performance.now() - started);
+  }
+  if (arm.sessionConfig?.runtime?.session?.continuity?.enabled === true) {
+    record.continuity = { ...continuityStats(modules, work), replayHistoryWarnings };
+  }
+  if (arm.fork === "in-place") {
+    // The sidecar pins this absolute root; probes restore the snapshot here.
+    const snapshot = join(dir, "snapshot");
+    await cp(work, snapshot, { recursive: true, verbatimSymlinks: true });
+    return { work, snapshot, record };
   }
   return { work, record };
 }
@@ -337,13 +412,13 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
 /** `harness.compactConversation()` through a tool-free configured harness on the bound model. */
 async function manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch, clock, conversationId, turnId }) {
   const route = liveRoute(modules, mode, [binding]);
-  const { harness } = await openHarness({ modules, work, authPath, model: binding.reference, effort: plan.reader.effort, tools: false, configPatch, route, clock });
+  const { harness, close } = await openHarness({ modules, work, authPath, model: binding.reference, effort: plan.reader.effort, tools: false, configPatch, route, clock });
   const started = performance.now();
   let result;
   try {
     if (typeof harness.compactConversation !== "function") throw new ContinuityError("manual_compaction_unavailable");
     result = await harness.compactConversation(conversationId, undefined, AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs));
-  } finally { await harness.dispose?.(); }
+  } finally { await close(); }
   const observed = { boundaries: [], compactions: [{ status: result?.status ?? null, trigger: result?.trigger ?? null, tokensBefore: finite(result?.tokensBefore), tokensAfter: finite(result?.tokensAfter) }], warnings: 0, steersAccepted: 0 };
   const usage = compactionUsageOf({ compaction: { requests: result?.accounting?.requests ?? [] } });
   return {
@@ -365,7 +440,7 @@ async function runLiveTurnInChild(input, { timeoutMs }) {
   const child = spawn(process.execPath, [CHILD_ENTRY], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
   const chunks = [];
   child.stdout.on("data", (chunk) => chunks.push(chunk));
-  child.stderr.on("data", () => {});
+  child.stderr.on("data", (chunk) => { if (process.env.CONTINUITY_DEBUG === "1") process.stderr.write(chunk); });
   child.stdin.end(JSON.stringify(input));
   const code = await new Promise((resolve) => {
     const timer = setTimeout(() => { child.kill("SIGKILL"); resolve("timeout"); }, timeoutMs + 30_000);
@@ -377,17 +452,27 @@ async function runLiveTurnInChild(input, { timeoutMs }) {
 }
 
 /** Fork the checkpoint into a new workspace and ask one probe in a fresh continuation turn. */
-export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root }) {
-  const work = join(forkDir, "work");
-  await mkdir(forkDir, { recursive: true, mode: 0o700 });
-  await cp(checkpointWork, work, { recursive: true, verbatimSymlinks: true });
+export async function runProbe({ modules, trace, arm, repeat, probe, checkpointWork, checkpointSnapshot = null, checkpointContinuity = null, checkpointConversationId, forkDir, plan, mode, authPath, keepWork = false, mid = null, root }) {
+  const inPlace = arm.fork === "in-place";
+  if (inPlace && checkpointSnapshot === null) throw new ContinuityError("in_place_fork_requires_snapshot");
+  // In-place: restore the pristine snapshot at the checkpoint's own absolute
+  // root (callers never overlap forks of one checkpoint) and probe in a fresh
+  // process, so the sidecar's pinned artifact root matches. Copy: a new root.
+  const work = inPlace ? checkpointWork : join(forkDir, "work");
+  if (inPlace) {
+    await rm(work, { recursive: true, force: true });
+    await cp(checkpointSnapshot, work, { recursive: true, verbatimSymlinks: true });
+  } else {
+    await mkdir(forkDir, { recursive: true, mode: 0o700 });
+    await cp(checkpointWork, work, { recursive: true, verbatimSymlinks: true });
+  }
   const clock = { value: new Date(trace.probeAt) };
   const trial = { traceId: trace.id, arm: arm.id, repeat, probeId: probe.id, category: probe.category, status: "started",
     answer: null, score: null, judge: null, boundary: null, usage: null, compactionUsage: null, durationMs: null, failure: null };
   try {
-    const turn = { work, authPath, plan, mode, configPatch: arm.probeConfig, userMessage: probePrompt(probe),
+    const turn = { work, authPath, plan, mode, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.probeConfig), userMessage: probePrompt(probe),
       conversationId: checkpointConversationId, owner: trace.owner.displayName };
-    const live = arm.restart
+    const live = arm.restart || inPlace
       ? await runLiveTurnInChild({ ...turn, root, clockIso: clock.value.toISOString() }, { timeoutMs: plan.limits.perLiveTurnTimeoutMs })
       : await runLiveTurn({ modules, ...turn, clock });
     trial.usage = live.usage; trial.compactionUsage = live.compactionUsage; trial.durationMs = live.durationMs;
@@ -396,19 +481,22 @@ export async function runProbe({ modules, trace, arm, repeat, probe, checkpointW
     const pressure = verifyPressure(arm, traceFamily(trace), metrics);
     trial.boundary = { ...boundary, observed: live.observed };
     trial.pressure = { ...pressure, metrics };
+    trial.store = verifyStore(arm, { checkpointContinuity, observed: live.observed });
     if (live.failureKind !== null || live.text === null) {
       trial.status = "failed"; trial.failure = live.failureKind ?? "empty_answer";
       return trial;
     }
     trial.answer = live.text;
     trial.score = scoreAnswer(probe, live.text);
-    trial.status = !trial.boundary.verified ? "boundary_unverified" : !trial.pressure.verified ? "pressure_unverified" : "completed";
+    // A degraded store is an invalid trial, never a scored miss.
+    trial.status = !trial.store.healthy ? "store_degraded" : !trial.boundary.verified ? "boundary_unverified"
+      : !trial.pressure.verified ? "pressure_unverified" : "completed";
     return trial;
   } catch (error) {
     trial.status = "failed"; trial.failure = codeOf(error);
     return trial;
   } finally {
-    if (!keepWork) await rm(forkDir, { recursive: true, force: true });
+    if (!keepWork && !inPlace) await rm(forkDir, { recursive: true, force: true });
   }
 }
 

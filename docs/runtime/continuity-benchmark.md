@@ -129,15 +129,33 @@ provider-session identity, so they never run concurrently.
 | `compaction-2` (d) | A promptless manual compaction before the mid-trace turn, then a proactive one at the probe | `compactConversation()` on the same guarded summary driver, no live reply; same policy at the probe |
 | `ceiling` (e, hard only) | The merged default 200k `maxInputTokens` ceiling, reached by the long trace | Production default compaction policy |
 | `restart-switch-compact` (f) | Fresh process, then model-change reseed, then compaction, in that order | The probe runs in a child Node process over the forked durable roots, on the reader (reseed) with the smallest trigger (compaction of the reseeded context) |
+| `continuity-store` (g) | As (b): model-change reseed | `runtime.session.continuity.enabled: true` for replay and probe; the reader is offered only `ConversationHistory` (`tools.allowedTools: ["ConversationHistory"]`) |
+| `continuity-store-compaction` (h) | As (c): one proactive compaction | Continuity on throughout, `ConversationHistory` offered |
 
-Planned continuity-state arms are declared with their intended config patch and
-evidence, but they are not runnable yet: `continuity-store`,
-`continuity-pack-boundary`, `continuity-pack-per-turn` and `pack+stubs`.
-Selecting one fails plan creation with
-`arm_not_available_at_revision:<id>`. To enable one, set `available: true`
-once the production feature lands, and confirm its patch keys and evidence
-event names against the implementation. Unknown config keys still fail in
-production config resolution.
+Retained conversation evidence (`runtime.session.continuity`) defaults to on.
+Every arm from (a) to (f) pins `runtime.session.continuity.enabled: false` in its
+replay, mid-trace and probe configs. Those arms therefore stay comparable with
+baselines recorded before the feature existed. The B1 arms (g) and (h) turn it on.
+Nothing is injected into the context: any gain depends on the reader choosing to
+call `ConversationHistory`.
+
+The tool-history sidecar pins its absolute artifact root, and production correctly
+degrades continuity in a copy at another root (`history_artifact_root_mismatch`).
+The store arms therefore fork in place:
+
+1. After replay, a pristine snapshot of the checkpoint is kept.
+2. Each probe restores that snapshot at the checkpoint's own path.
+3. The probe then runs in a fresh process, so the pinned root matches.
+
+Forks of one checkpoint never overlap. The artifact-root guard is not bypassed.
+
+Remaining planned arms are declared with their intended config patch and
+evidence, but they are not runnable yet: `continuity-pack-boundary`,
+`continuity-pack-per-turn` and `pack+stubs`. Selecting one fails plan creation
+with `arm_not_available_at_revision:<id>`. To enable one, set `available: true`
+once the production feature lands, and confirm its patch keys and evidence event
+names against the implementation. Unknown config keys still fail in production
+config resolution.
 
 ### Evidence checked per sample
 
@@ -155,8 +173,26 @@ On long traces, each sample must also show the pressure its arm is designed to t
 | `compaction-2` | Mid-trace `tokensBefore` ≥ 80,000; probe `tokensBefore` ≥ 40,000 (the summary plus the rest of the trace) |
 | `ceiling` | Compaction `tokensBefore` ≥ 200,000 (Pi's estimate, the trigger's own input) |
 
-A sample below its threshold is `pressure_unverified`. Unverified samples of
-either kind are excluded from accuracy and counted separately. A mid-trace
+A sample below its threshold is `pressure_unverified`.
+
+The store arms also record:
+
+- the checkpoint's retained-record statistics, as content-free counts;
+- whether `ConversationHistory` was offered;
+- every `ConversationHistory` call: search or get, and whether it succeeded, was unavailable or was invalid;
+- any tool-history warnings the harness reported.
+
+A sample whose store is degraded is `store_degraded`: no retained records, a
+degraded sidecar, history warnings, or an unavailable retrieval. It is an
+invalid trial, never a scored miss.
+
+Unverified samples of every kind are excluded from accuracy and counted separately.
+
+Compaction counts refer to pre-turn compaction. In store arms with the smallest
+trigger, retrieved `ConversationHistory` text can push the context over 6,400
+tokens again between tool rounds. The resulting mid-run compactions are
+reported but not counted as the arm's boundary. Read (h) as "store plus an
+aggressive trigger", not as the production default. A mid-trace
 compaction that did not happen fails that checkpoint. `results.json` reports
 the observed pressure range per arm.
 
@@ -221,7 +257,10 @@ usage), and the aggregate `results.json` and `summary.md`:
 - **Outcomes** separate `stale` (the superseded value), `conflicted`,
   `abstained` (including false abstentions), `violation`, `fabricated` and
   `leaked`.
-- **Excluded** counts boundary-unverified, pressure-unverified and failed samples;
+- **Tool use** (store arms) reports how often the reader called
+  `ConversationHistory`, and accuracy with and without a call, overall and by
+  category. This is observational: the reader chooses when to call.
+- **Excluded** counts boundary-unverified, pressure-unverified, store-degraded and failed samples;
   they are never scored as passes or failures.
 - **Judge** agreement compares the next-action judge with the deterministic
   proxy. The main category table always uses the proxy.

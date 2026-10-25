@@ -116,6 +116,10 @@
   per-sample pressure checks, a default 200k ceiling arm, a restart + model
   switch + compaction arm, and a promptless mid-trace compaction. Planned
   continuity-state arms are declared but refuse to run until available.
+- Measure retained conversation evidence in the continuity benchmark: pin
+  continuity off in every pre-existing arm, add store arms that offer
+  `ConversationHistory` on healthy in-place forks, record per-sample tool use,
+  and count degraded-store samples as invalid trials.
 
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 
