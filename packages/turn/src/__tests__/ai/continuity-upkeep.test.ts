@@ -79,3 +79,11 @@ it("refuses a mismatched resolved model rather than silently substituting it", a
     piResolvedModels: { getModel: () => ({ ...model("openai-responses"), id: "wrong" }), streamSimple: stream } as never });
   expect(stream).not.toHaveBeenCalled(); expect(result.receipt).toMatchObject({ status: "skipped", reason: "model_identity" });
 });
+
+it("guards full visible Codex items even when a stream omits incremental deltas", async () => {
+  const completed = { type: "response.output_item.done", output_index: 0, item: { id: "fictional-output", type: "message", role: "assistant", content: [{ type: "output_text", text: "x".repeat(5000) }] } };
+  const { result, transport, signal } = await codex([created, added, completed, done(0)]);
+  expect(transport).toHaveBeenCalledTimes(1); expect(signal?.aborted).toBe(true);
+  expect(result.receipt).toMatchObject({ status: "invalid", reason: "output_aborted" });
+  expect(result.receipt.visibleEstimate).toBeGreaterThanOrEqual(5000); expect(result.text).toBeUndefined();
+});

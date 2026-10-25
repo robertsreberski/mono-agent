@@ -45,8 +45,12 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
   const outerSignal = AbortSignal.any([options.abortSignal, deadline]);
   const signal = AbortSignal.any([outerSignal, abort.signal]);
   let model: any, api = "unknown", capEnforcement: "request" | "stream_abort" = "request", providerInvoked = false, visibleEstimate = 0;
-  let usage: any, stopped = false;
+  let usage: any, stopped = false, streamedBytes = 0;
   const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const visibleBytes = (message: any): number => Array.isArray(message?.content) ? message.content.reduce((sum: number, part: any) => {
+    const text = part.type === "text" ? part.text : part.type === "thinking" ? part.thinking : undefined;
+    return sum + (typeof text === "string" ? Buffer.byteLength(text) : 0);
+  }, 0) : 0;
   const hasUsage = () => [usage?.totalTokens, usage?.input, usage?.output, usage?.cacheRead, usage?.cacheWrite].some(value => Number(value) > 0);
   const result = (status: ContinuityUpkeepReceipt["status"], reason: string, text?: string): ContinuityUpkeepResult => ({ ...(text === undefined ? {} : { text }), receipt: {
     operationId, model: options.model.reference, api, providerInvoked, capEnforcement, status, reason,
@@ -79,7 +83,8 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
         usage = "message" in event ? event.message.usage : "partial" in event ? event.partial.usage : usage;
         // One UTF-8 byte per visible token is deliberately conservative. A
         // single delivered chunk may cross the threshold before abort is seen.
-        if ("delta" in event && typeof event.delta === "string") visibleEstimate += Buffer.byteLength(event.delta);
+        if ("delta" in event && typeof event.delta === "string") streamedBytes += Buffer.byteLength(event.delta);
+        visibleEstimate = Math.max(visibleEstimate, streamedBytes, visibleBytes("message" in event ? event.message : "partial" in event ? event.partial : undefined));
         if (capEnforcement === "stream_abort" && Math.max(visibleEstimate, Number(usage?.output) || 0) >= 4096) { stopped = true; abort.abort(); break; }
       }
       return await stream.result();
@@ -89,6 +94,8 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
       else outerSignal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     })]);
     usage = response?.usage ?? usage;
+    visibleEstimate = Math.max(visibleEstimate, visibleBytes(response));
+    if (capEnforcement === "stream_abort" && visibleEstimate >= 4096) { stopped = true; abort.abort(); }
     if (response?.stopReason === "stop") providerInvoked = true;
     if (stopped || signal.aborted) return result("invalid", stopped ? "output_aborted" : "aborted");
     if (Number(usage?.input || 0) + Number(usage?.cacheRead || 0) + Number(usage?.cacheWrite || 0) > 64000) return result("invalid", "input_overrun");
