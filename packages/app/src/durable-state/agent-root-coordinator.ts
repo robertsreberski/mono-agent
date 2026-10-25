@@ -1,7 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
 import { realpathSync, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, realpath } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import process from "node:process";
 
 import {
@@ -13,10 +12,9 @@ import {
 import { OwnerLockCoordinationBusyError } from "./owner-lock-mutation-gate.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "@mono-agent/conversation/process-incarnation";
 import { accountHomeDirectory } from "../host/account-home.js";
+import { AGENT_ROOT_LEASE_MUTATION_GATE, agentRootDigest as rootDigest, agentRootLeaseLockOptions } from "./agent-root-lease-policy.js";
+import { scheduleAgentRootLeaseSweep } from "./agent-root-lease-sweep.js";
 
-const AGENT_ROOT_LEASE_SCHEMA = "mono-agent.agent-root-lease.v1";
-const AGENT_ROOT_LEASE_OWNERLESS_GRACE_MS = 5 * 60_000;
-const AGENT_ROOT_LEASE_ACQUIRE_ATTEMPTS = 4;
 const PROCESS_JOBS_GENERATION_DRAIN_TIMEOUT_MS = 30_000;
 /** Older readers reject owner records over 4 KiB; new records stay well below. */
 const AGENT_ROOT_OWNER_RECORD_TARGET_BYTES = 3 * 1024;
@@ -29,7 +27,7 @@ const AGENT_ROOT_RELEASE_BUSY_ATTEMPTS = 3;
 const AGENT_ROOT_RELEASE_RETRY_BASE_MS = 250;
 const AGENT_ROOT_RELEASE_RETRY_MAX_MS = 30_000;
 /** One cross-process mutation gate for every lease in the lease root. Never removed. */
-export const AGENT_ROOT_LEASE_MUTATION_GATE = ".mutation-gate.sqlite";
+export { AGENT_ROOT_LEASE_MUTATION_GATE };
 
 export const AGENT_ROOT_OWNED_ELSEWHERE_ERROR =
   "Another mono-agent process is already using this agent root. Stop that local agent before trying again.";
@@ -68,6 +66,8 @@ export interface AgentRootOwnership {
 
 interface AcquireAgentRootOwnershipOptions {
   readonly homeDir?: string;
+  /** Trusted host app startup only; raw/sandboxed coordinator callers never sweep by default. */
+  readonly sweepContext?: "host" | "sandbox";
   readonly pid?: number;
   readonly now?: () => number;
   readonly randomToken?: () => string;
@@ -276,7 +276,7 @@ export async function acquireAgentRootOwnership(
         continue;
       }
       existing.ownerRefs += 1;
-      return ownershipHandle(existing);
+      return ownershipHandle(existing, options.sweepContext);
     }
     const pending = acquisitions.get(canonicalRoot);
     if (pending !== undefined) {
@@ -287,7 +287,7 @@ export async function acquireAgentRootOwnership(
         continue;
       }
       entry.ownerRefs += 1;
-      return ownershipHandle(entry);
+      return ownershipHandle(entry, options.sweepContext);
     }
     const acquiring = createEntry(canonicalRoot, options);
     acquisitions.set(canonicalRoot, acquiring);
@@ -295,7 +295,7 @@ export async function acquireAgentRootOwnership(
       const entry = await acquiring;
       entries.set(canonicalRoot, entry);
       entry.ownerRefs = 1;
-      return ownershipHandle(entry);
+      return ownershipHandle(entry, options.sweepContext);
     } finally {
       if (acquisitions.get(canonicalRoot) === acquiring) acquisitions.delete(canonicalRoot);
     }
@@ -352,7 +352,7 @@ export function assertAgentRootLeaseOutsideWorkspace(
   }
 }
 
-function ownershipHandle(entry: CoordinatorEntry): AgentRootOwnership {
+function ownershipHandle(entry: CoordinatorEntry, sweepContext?: "host" | "sandbox"): AgentRootOwnership {
   const coordinator = new AgentRootCoordinator(entry);
   const handle: AgentRootOwnership = {
     agentRoot: entry.agentRoot,
@@ -362,6 +362,9 @@ function ownershipHandle(entry: CoordinatorEntry): AgentRootOwnership {
     },
   };
   ownershipEntries.set(handle, entry);
+  if (sweepContext === "host") {
+    scheduleAgentRootLeaseSweep({ leaseRoot: dirname(entry.leasePath), context: "host" });
+  }
   return handle;
 }
 
@@ -395,18 +398,16 @@ async function createEntry(
     const leaseRoot = await ensurePrivateLeaseRoot(home);
     const digest = rootDigest(canonicalRoot);
     const leasePath = agentRootLeasePath(canonicalRoot, home);
+    const policy = agentRootLeaseLockOptions(leaseRoot, digest);
     const pid = options.pid ?? process.pid;
-    const ownerlessGraceMs = options.ownerlessGraceMs ?? AGENT_ROOT_LEASE_OWNERLESS_GRACE_MS;
+    const ownerlessGraceMs = options.ownerlessGraceMs ?? policy.ownerlessGraceMs;
     validateOwnerPrivateLockInputs("Agent-root lease", pid, ownerlessGraceMs);
     const lease = await acquireOwnerPrivateLock({
-      path: leasePath,
-      label: "Agent-root lease",
-      schemaTag: AGENT_ROOT_LEASE_SCHEMA,
+      ...policy,
       ownerlessGraceMs,
-      maxAcquireAttempts: AGENT_ROOT_LEASE_ACQUIRE_ATTEMPTS,
       pid,
       ...(options.now === undefined ? {} : { now: options.now }),
-      randomToken: options.randomToken ?? (() => randomUUID()),
+      ...(options.randomToken === undefined ? {} : { randomToken: options.randomToken }),
       ...(options.processIncarnation === undefined ? {} : { processIncarnation: options.processIncarnation }),
       ...(options.isSameProcessIncarnation === undefined
         ? {}
@@ -419,20 +420,12 @@ async function createEntry(
         ? {}
         : { mutationStep: options.hooks.leaseMutationStep }),
       ownerFields: (base) => agentRootLeaseOwnerFields(base, digest, canonicalRoot),
-      // Acquisition keeps accepting legacy records without `agentRoot`.
-      validateOwnerFields: (record) => record.rootDigest === digest,
-      invalidOwner: "error",
-      livenessError: () => "assume-live",
       ...(options.hooks?.afterLeaseDirectoryCreated === undefined
         ? {}
         : { afterDirectoryCreated: options.hooks.afterLeaseDirectoryCreated }),
       ...(options.hooks?.beforeStaleLeaseRename === undefined
         ? {}
         : { beforeStaleRename: options.hooks.beforeStaleLeaseRename }),
-      staleRace: "return",
-      stalePath: ({ now, pid: stalePid, token }) => join(leaseRoot, `.${digest}-${now}-${stalePid}-${token}.stale`),
-      releasedPath: ({ pid: ownerPid, token }) => join(leaseRoot, `.${digest}-${ownerPid}-${token}.released`),
-      abandonedPath: ({ pid: ownerPid, token }) => join(leaseRoot, `.${digest}-${ownerPid}-${token}.abandoned`),
     });
     if (lease === undefined) throw new Error(AGENT_ROOT_OWNED_ELSEWHERE_ERROR);
     let resolveClosed!: () => void;
@@ -667,10 +660,6 @@ function assertOwned(details: Pick<Stats, "uid">, label: string): void {
 function containsPath(parent: string, child: string): boolean {
   const fromParent = relative(parent, child);
   return fromParent === "" || (!fromParent.startsWith("..") && !isAbsolutePath(fromParent));
-}
-
-function rootDigest(canonicalRoot: string): string {
-  return createHash("sha256").update(resolve(canonicalRoot)).digest("hex");
 }
 
 function isAbsolutePath(path: string): boolean {

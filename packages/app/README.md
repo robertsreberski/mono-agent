@@ -538,6 +538,32 @@ reentrant references. Benchmarks use the same seam and dispose both their harnes
 and supplied runtime before releasing the final ownership reference. Production
 account-home resolution is unchanged.
 
+### Abandoned agent-root lease maintenance
+
+After the first successful ownership acquisition during host app startup, one
+best-effort asynchronous sweep samples at most 16 lease names with a 100 ms
+monotonic inspection/probe budget. Acquisition never awaits it. Only trusted host
+app composition opts in: raw coordinator callers and sandboxed contexts do not
+sweep, because a sandbox may hide an existing root as `ENOENT`. The configured
+sandbox mode describes tools, not the host process, and is not used as proof.
+
+The sweep only considers validated new records whose canonical `agentRoot` hashes
+to both the recorded and filename digest. It first checks that the root is absent
+(`ENOENT` only), then uses acquisition's same conservative process-incarnation
+check. Reclaim uses the same quarantine and move-back protocol under a nonwaiting
+mutation gate, with a final root-absence and budget check immediately before the
+rename. Live or uncertain owners, existing/inaccessible roots, malformed records,
+ownerless and legacy records, and a busy gate are kept. Legacy leases without the
+root field, and all `.released`, `.stale` and `.abandoned` directories, remain
+untouched; this is not a cleanup of historical lease entries.
+
+A one-hour `createdAt` floor reduces startup churn, not a safety guarantee: it
+measures the owner's start time, not its death. Listing names and an already
+started filesystem operation can exceed the inspection budget; late liveness
+results cannot authorize a rename. Random sampling is best-effort maintenance,
+not a fixed maximum directory size. Errors produce at most one path-free warning
+per sweep and never fail startup.
+
 ### macOS process identity: upgrade and rollback
 
 Locks, leases, process jobs and subagent ownership record which process owns

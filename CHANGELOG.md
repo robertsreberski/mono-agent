@@ -122,6 +122,9 @@
   and count degraded-store samples as invalid trials.
 - Keep test and benchmark agent-root leases in isolated homes, and release
   continuity benchmark runtimes during teardown.
+- Reclaim sampled abandoned agent-root leases after host startup when their
+  verified root is absent and their owner is provably dead; retain legacy,
+  live and uncertain leases without delaying startup for the sweep.
 - Fix a race where two processes reclaiming the same crashed agent-root lease
   could both end up owning that agent root. Agent-root lease changes now pass
   through an owner-only `.mutation-gate.sqlite` file in

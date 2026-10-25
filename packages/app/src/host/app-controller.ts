@@ -175,7 +175,9 @@ async function startMonoAgentAppInternal(
     }
   };
   const cwd = resolve(options.cwd ?? process.cwd());
-  const agentRootOwnership = await acquireAgentRootOwnership(cwd);
+  // Only this trusted host composition boundary opts into absent-root maintenance.
+  // A configured tool sandbox is not the filesystem view of this host process.
+  const agentRootOwnership = await acquireAgentRootOwnership(cwd, { sweepContext: "host" });
   let controller: MonoAgentAppController | undefined;
   try {
     const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
