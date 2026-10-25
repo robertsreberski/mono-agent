@@ -468,7 +468,7 @@ export function captureUpkeepModels(models, capture) {
     if (key === "streamSimple") return (...args) => {
       const stream = target.streamSimple(...args);
       return new Proxy(stream, { get(source, field) {
-        if (field === "result") return async () => { const message = await source.result(); capture(textOfContent(message?.content)); return message; };
+        if (field === "result") return async () => { const message = await source.result(); capture(typeof message?.content === "string" ? message.content : (message?.content ?? []).filter(part => part.type === "text").map(part => part.text).join("")); return message; };
         const value = Reflect.get(source, field, source); return typeof value === "function" ? value.bind(source) : value;
       } });
     };

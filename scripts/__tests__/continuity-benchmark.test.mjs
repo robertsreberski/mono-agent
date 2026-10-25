@@ -330,7 +330,7 @@ describe("continuity offline contract run (production harness, scripted provider
     const code = await main(["--trace", "brightline-return", "--probe-limit", "1", "--concurrency", "5", "--arms", arms.join(","), "--output", output], { env: {}, stdout: (line) => lines.push(line) });
     expect(code).toBe(1); // 8 of 32 units: the other traces were not selected.
     expect((await readdir(output)).includes("upkeep-output")).toBe(false);
-  const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
+    const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
     expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 8, unitsExpected: 32 } });
     const units = Object.fromEntries(await Promise.all((await readdir(join(output, "units"))).map(async (name) => {
       const unit = JSON.parse(await readFile(join(output, "units", name), "utf8"));
@@ -547,7 +547,7 @@ it("keeps paid upkeep in failed checkpoints, aggregate usage and observed input"
 
 it("tees only completion output without changing the model stream", async () => {
   const { captureUpkeepModels } = await import("../lib/continuity-runner.mjs");
-  const message = { content: [{ type: "text", text: "fictional JSON" }] }, capture = vi.fn();
+  const message = { content: [{ type: "text", text: "fictional " }, { type: "thinking", thinking: "not captured" }, { type: "text", text: "JSON" }] }, capture = vi.fn();
   const model = {}, stream = { async *[Symbol.asyncIterator]() { yield { type: "done", message }; }, async result() { return message; } };
   const models = { getModel: () => model, streamSimple: vi.fn(() => stream) }, wrapped = captureUpkeepModels(models, capture);
   expect(wrapped.getModel()).toBe(model); const result = wrapped.streamSimple(model, {}, { maxTokens: 4096 });

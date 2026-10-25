@@ -111,10 +111,12 @@ it("overwrites a real reasoning builder cap when maxTokens is omitted", async ()
   expect(before).toBeGreaterThan(4096); expect(after).toBe(4096); expect(network).not.toHaveBeenCalled();
 });
 it("requests guard-sized Codex output and suppresses reasoning summaries", async () => {
-  const text = JSON.stringify({ entries: Array.from({ length: 8 }, () => ({ kind: "open_work", value: "x".repeat(96), status: "unknown", sources: ["s0"] })), covered: 256 });
+  const text = JSON.stringify({ entries: Array.from({ length: 8 }, () => ({ kind: "open_work", value: "x".repeat(96), status: "unknown", sources: ["s0"] })), covered: ["s0"] });
   const { result, payloadSeen } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: text }, done(600)]);
   expect(result.receipt.status).toBe("valid"); expect(Buffer.byteLength(text)).toBeLessThan(3072);
   const body = payloadSeen; expect(body.reasoning.summary).toBeUndefined(); expect(JSON.stringify(body)).toContain("OUTPUT LIMIT OVERRIDE");
+  expect(JSON.stringify(body)).toContain("covered must be the deduplicated array");
+  expect(JSON.stringify(body)).not.toContain("s(N-1)");
 });
 it("retains a distinct estimated paid input cost after a Codex abort", async () => {
   const { result } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "x".repeat(5000) }]);

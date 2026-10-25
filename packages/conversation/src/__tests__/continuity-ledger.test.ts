@@ -368,3 +368,14 @@ it("aligns the identifier prompt with the captured label-plus-identifier rejecti
   expect(selection.prompt).toContain("For identifier entries, value must be ONLY the exact bare identifier copied byte-for-byte from a cited span");
   expect(selection.prompt).toContain("not an entity name, label, or explanatory prefix");
 });
+
+it("rejects the captured partial-prefix coverage but accepts explicit cited IDs", async () => {
+  const f = await fixture(); await owner(f); await tool(f, "The account reference is DEMO-42.");
+  const initial = selectLedgerSources(f.reader.snapshotContinuity({ ...scope, selection: "upkeep" })), selection = fitLedgerSelection(initial, scope).selection;
+  const ownerSpan = selection.spans.find(s => s.owner)!, identifier = selection.spans.find(s => s.text.includes("DEMO-42"))!;
+  const captured = { entries: [{ kind: "constraint", value: "Require confirmation.", status: "active", sources: [ownerSpan.id] }, { kind: "identifier", value: "DEMO-42", status: "confirmed", sources: [identifier.id] }], covered: 1 };
+  expect(selection.spans[0]!.id).toBe(ownerSpan.id);
+  expect(() => validateLedgerOutput(JSON.stringify(captured), selection, scope, undefined, "stream_abort")).toThrow("unknown_source");
+  const compliant = { ...captured, covered: [ownerSpan.id, identifier.id] };
+  expect(validateLedgerOutput(JSON.stringify(compliant), selection, scope, undefined, "stream_abort").entries).toHaveLength(2);
+});

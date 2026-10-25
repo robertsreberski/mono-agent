@@ -71,11 +71,12 @@ receipts say `capEnforcement: "request"`. The installed Codex Responses adapter
 omits that request field. Its default policy is `"stream_abort"`: count streamed
 text/thinking conservatively and abort when the visible estimate reaches 4,096.
 For Codex, the request asks for at most eight entries with values at most 96
-UTF-8 bytes and at most 3,072 serialized JSON bytes. `covered: N` compactly means
-the first N supplied span IDs were analyzed. Preserved coverage in this mode
-counts **only entry-cited spans**, not the model's full analysis claim. Dropped
-spans remain uncovered in stored/rendered diagnostics; even a citation is not
-proof that every fact inside its span survived. Reasoning summaries are omitted from
+UTF-8 bytes and at most 3,072 serialized JSON bytes. `covered` explicitly lists the deduplicated IDs cited by entries; it is **not** a
+count or numeric prefix. This matches the general JSON contract and avoids
+ambiguity when fitting orders spans by age. Preserved coverage in this mode
+counts **only entry-cited spans**, not a full analysis claim. Dropped spans remain
+uncovered in stored/rendered diagnostics; even a citation is not proof that every
+fact inside its span survived. Reasoning summaries are omitted from
 the native payload; effort stays at the lowest supported level. The conservative
 one-visible-byte-per-token guard remains 4,096, including any visible thinking.
 Incomplete/invalid output is discarded, without advancing coverage. Reported
