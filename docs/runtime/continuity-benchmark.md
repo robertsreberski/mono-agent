@@ -379,3 +379,11 @@ a spending guarantee; output/hidden work can remain unknown. Strict request-cap
 mode remains available. Codex requests compact output within its unchanged byte
 guard; this does not reduce the 4,096-token planning allowance or claim a hard
 server cap.
+
+Reported-null upkeep input falls back to the separate inclusive input estimate
+for invocation admission and `observedInput`; cache tokens are not added twice.
+A failure after paid preparation (including checkpoint statistics, cleanup or
+fork publication) preserves the partial checkpoint's upkeep in unit errors,
+`results.upkeep` and aggregate usage. Compact Codex coverage counts only cited
+spans, so the one-upkeep treatment may remain explicitly incomplete; no extra
+coverage-hole calls are added to its measurement budget.

@@ -10,7 +10,7 @@ import { estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, 
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
 import { ABSTAIN_INSTRUCTION, ORIGINAL_CATEGORIES, emptyUsage, addUsage, isAbstention, parseJudgeVerdict, probePrompt, renderMarkdown, scoreAnswer, summarize } from "../lib/continuity-score.mjs";
 import { callKey } from "../lib/continuity-tools.mjs";
-import { main, parseArguments } from "../continuity-benchmark.mjs";
+import { main, parseArguments, observedInputTokens } from "../continuity-benchmark.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const dirs = [];
@@ -378,6 +378,7 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(units["cold-rebuild"].trials[0].boundary.observed.offlineProviderPackCounts).toEqual([0]);
     const ledger = units["continuity-ledger-cold"];
     expect(ledger.checkpoint.upkeep).toMatchObject({ valid: true, receipt: { status: "valid", providerInvoked: true, capEnforcement: "stream_abort" }, usage: { calls: 1 } });
+    expect(ledger.checkpoint.upkeep.receipt.uncovered).toBeGreaterThan(0);
     expect(ledger.trials[0].boundary.observed.offlineLedgerCounts).toEqual([1, 1]);
     expect(ledger.trials[0].boundary.observed.upkeep.some(row => row.providerInvoked)).toBe(false);
     expect(results.upkeep).toHaveLength(1);
@@ -504,7 +505,7 @@ it("keeps distractor actual facts and byte pressure identical while pricing one 
 it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after %s preparation", async point => {
   const { prepareLedgerCheckpoint } = await import("../lib/continuity-runner.mjs");
   const work = await scratch();
-  const receipt = { type: "continuity_upkeep", providerInvoked: point !== "skip", status: "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02 };
+  const receipt = { type: "continuity_upkeep", providerInvoked: point !== "skip", status: "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000 };
   const modules = {
     config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
     coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
@@ -513,7 +514,7 @@ it.each(["harness", "ledger", "skip"])("retains upkeep receipt/accounting after 
   };
   const result = await prepareLedgerCheckpoint({ modules, work, mode: "real", reader: { reference: "openai-codex:gpt-6-luna" }, alternate: { reference: "openai:gpt-4o-mini" }, scripted: { respondWith() {} }, clock: {}, plan: { upkeep: { model: "openai-codex:gpt-6-luna" }, limits: { perLiveTurnTimeoutMs: 10000 } } });
   expect(result.receipt).toEqual(receipt); expect(result.valid).toBe(false);
-  expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
+  expect(result.usage).toMatchObject(point === "skip" ? { calls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } : { calls: 1, estimatedInputTokens: 15000, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
 });
 
 it("zero-call and estimated-paid upkeep accounting do not inflate unknown cost counters", () => {
@@ -522,3 +523,23 @@ it("zero-call and estimated-paid upkeep accounting do not inflate unknown cost c
   addUsage(usage, { calls: 1, inputTokens: null, outputTokens: null, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.02, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02 });
   expect(usage).toMatchObject({ calls: 1, estimatedPaidCalls: 1, estimatedPaidInputCostUsd: 0.02, estimatedCostUsd: 0.02, unknownCostCalls: 0, unknownTokenCalls: 1 });
 });
+
+it("accounts inclusive estimated paid input for admission when reported input is absent", () => {
+  expect(observedInputTokens({ inputTokens: null, estimatedInputTokens: 15000, cacheReadTokens: 2000 })).toBe(15000);
+  expect(observedInputTokens({ inputTokens: 100, estimatedInputTokens: 15000, cacheReadTokens: 2000 })).toBe(2100);
+  expect(observedInputTokens({ inputTokens: null, cacheReadTokens: 2000 })).toBe(2000);
+});
+it("keeps paid upkeep in failed checkpoints, aggregate usage and observed input", async () => {
+  const { productionModules } = await import("../lib/continuity-runner.mjs");
+  const real = await productionModules(root.replace(/\/$/u, ""));
+  const modules = { ...real, conversation: { ...real.conversation, ToolHistoryReader: class extends real.conversation.ToolHistoryReader { stats() { throw new Error("fictional post-upkeep statistics failure"); } } } };
+  const output = await scratch();
+  await main(["--trace", "brightline-return", "--probe-limit", "1", "--arms", "native,continuity-ledger-cold", "--output", output], { env: {}, stdout: () => {}, modulesLoader: async () => modules });
+  const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
+  expect(results.upkeep).toHaveLength(1); expect(results.upkeep[0]).toMatchObject({ receipt: { providerInvoked: true }, usage: { calls: 1 } });
+  expect(results.summary.arms["continuity-ledger-cold"].usage.calls).toBe(1);
+  const unit = JSON.parse(await readFile(join(output, "units", "r1-brightline-return-continuity-ledger-cold.json"), "utf8"));
+  expect(unit.checkpoint.error).toBe("checkpoint_failed"); expect(unit.checkpoint.upkeep.receipt.providerInvoked).toBe(true);
+  const baseline = JSON.parse(await readFile(join(output, "units", "r1-brightline-return-native.json"), "utf8"));
+  expect(unit.manifest.observedInput).toBe(observedInputTokens(unit.checkpoint.upkeep.usage) + baseline.trials.reduce((n, trial) => n + observedInputTokens(trial.usage), 0));
+}, 180_000);

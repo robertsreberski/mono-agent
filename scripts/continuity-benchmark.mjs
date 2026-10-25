@@ -167,6 +167,12 @@ export async function main(argv = process.argv.slice(2), { stdout = console.log,
 
 function unitName({ repeat, traceId, armId }) { return `r${repeat}-${traceId}-${armId}.json`; }
 
+/** Estimated input is inclusive; do not add cache again when reported input is absent. */
+export function observedInputTokens(usage) {
+  return usage?.inputTokens == null && typeof usage?.estimatedInputTokens === "number" ? usage.estimatedInputTokens
+    : (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheWriteTokens ?? 0);
+}
+
 async function execute({ flags, plan, traces, mode, output, piAuthPath, head, dirty, modulesLoader }) {
   const selectedTraces = flags.trace === undefined ? traces : traces.filter((trace) => flags.trace.includes(trace.id));
   if (flags.trace !== undefined && selectedTraces.length !== new Set(flags.trace).size) throw new CliError("unknown_trace");
@@ -193,7 +199,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
   const admit = () => state.stop === null && state.liveTurns < plan.limits.maxLiveTurns
     && state.observedInput < plan.limits.maxObservedInputTokensPerInvocation;
   const account = (usage) => {
-    state.observedInput += (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheWriteTokens ?? 0);
+    state.observedInput += observedInputTokens(usage);
   };
   // Checkpoints (shared when scripted-only).
   const checkpoints = new Map();
@@ -215,7 +221,10 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
       if (unit.arm.ledgerUpkeep && !built.record.upkeep?.valid) checkpoints.set(key, { ...built, error: "upkeep_generation_unusable" });
       if (built.record.mid?.boundary && !built.record.mid.boundary.verified) checkpoints.set(key, { ...built, error: "mid_checkpoint_boundary_unverified" });
     } catch (error) {
-      checkpoints.set(key, { error: error?.code ?? "checkpoint_failed" });
+      const record = error?.checkpointRecord;
+      if (record?.mid) account(record.mid.usage);
+      if (record?.upkeep) account(record.upkeep.usage);
+      checkpoints.set(key, { error: error?.code ?? "checkpoint_failed", ...(record ? { record } : {}) });
     }
   });
   const judge = createJudge({ modules, plan, mode, workspace: join(scratch, "judge"), authPath: piAuthPath });
@@ -251,7 +260,7 @@ async function execute({ flags, plan, traces, mode, output, piAuthPath, head, di
       repeat: unit.repeat, traceId: unit.trace.id, arm: unit.arm.id,
       checkpoint: checkpoint && !checkpoint.error ? checkpoint.record : { ...(checkpoint?.record ?? {}), error: checkpoint?.error ?? "checkpoint_missing" },
       trials: trials.map((trial) => trial ?? { status: "not_started" }),
-      manifest: { codeRevision: head, dirty, node: process.version, finishedAt, buildPolicy: "existing-dist-unverified", admissionStop: state.stop },
+      manifest: { codeRevision: head, dirty, node: process.version, finishedAt, buildPolicy: "existing-dist-unverified", observedInput: state.observedInput, admissionStop: state.stop },
     };
     await writeFile(join(output, "units", unit.name), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
   }

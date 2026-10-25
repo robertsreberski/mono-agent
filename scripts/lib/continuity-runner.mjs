@@ -405,39 +405,46 @@ export async function buildCheckpoint({ modules, trace, arm, repeat, dir, plan, 
   let open = null;
   let replayHistoryWarnings = 0;
   try {
-    for (const turn of source.turns) {
-      clock.value = new Date(turn.at);
-      if (arm.midCheckpoint !== null && turn.id === source.midCheckpoint) {
-        // Promptless manual compaction before the mid-trace turn: the same
-        // guarded production summary driver, with no live reply in history.
-        if (open) { await open.close(); open = null; }
-        record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.midCheckpoint.config), clock, conversationId, turnId: turn.id });
-        if (!record.mid.boundary.verified) throw new ContinuityError("mid_checkpoint_boundary_unverified", record.mid.boundary.reasons.join(","));
+    try {
+      for (const turn of source.turns) {
+        clock.value = new Date(turn.at);
+        if (arm.midCheckpoint !== null && turn.id === source.midCheckpoint) {
+          // Promptless manual compaction before the mid-trace turn: the same
+          // guarded production summary driver, with no live reply in history.
+          if (open) { await open.close(); open = null; }
+          record.mid = await manualCompaction({ modules, work, authPath, plan, mode, binding, configPatch: mergePatch(arm.sessionConfig ?? {}, arm.midCheckpoint.config), clock, conversationId, turnId: turn.id });
+          if (!record.mid.boundary.verified) throw new ContinuityError("mid_checkpoint_boundary_unverified", record.mid.boundary.reasons.join(","));
+        }
+        open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: arm.sessionConfig ?? {}, route, clock,
+          onHistoryWarning: () => { replayHistoryWarnings += 1; } });
+        const result = await replayScriptedTurn({ harness: open.harness, scripted, tools, turn, binding, conversationId, owner: source.owner.displayName, pi: modules.pi });
+        record.turns += 1; record.toolCalls += result.toolCalls; record.steers += result.steers;
       }
-      open ??= await openHarness({ modules, work, authPath, model: binding.reference, effort: undefined, tools: true, configPatch: arm.sessionConfig ?? {}, route, clock,
-        onHistoryWarning: () => { replayHistoryWarnings += 1; } });
-      const result = await replayScriptedTurn({ harness: open.harness, scripted, tools, turn, binding, conversationId, owner: source.owner.displayName, pi: modules.pi });
-      record.turns += 1; record.toolCalls += result.toolCalls; record.steers += result.steers;
+      if (arm.ledgerUpkeep) {
+        if (open) { await open.close(); open = null; }
+        record.upkeep = await prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId });
+      }
+    } finally {
+      try { if (open) await open.close(); }
+      finally { await tools.close(); }
+      record.durationMs = Math.round(performance.now() - started);
     }
-    if (arm.ledgerUpkeep) {
-      if (open) { await open.close(); open = null; }
-      record.upkeep = await prepareLedgerCheckpoint({ modules, work, authPath, plan, mode, reader, alternate, scripted, route, clock, conversationId });
+    if (arm.sessionConfig?.runtime?.session?.continuity?.enabled === true) {
+      record.continuity = { ...continuityStats(modules, work), replayHistoryWarnings };
     }
-  } finally {
-    try { if (open) await open.close(); }
-    finally { await tools.close(); }
-    record.durationMs = Math.round(performance.now() - started);
+    if (arm.fork === "in-place") {
+      // The sidecar pins this absolute root; probes restore the snapshot here.
+      const snapshot = join(dir, "snapshot");
+      await cp(work, snapshot, { recursive: true, verbatimSymlinks: true });
+      return { work, snapshot, record };
+    }
+    return { work, record };
+  } catch (error) {
+    // Preserve paid work even when cleanup, statistics or fork publication fails.
+    const failure = new ContinuityError(error?.code ?? "checkpoint_failed");
+    failure.checkpointRecord = record;
+    throw failure;
   }
-  if (arm.sessionConfig?.runtime?.session?.continuity?.enabled === true) {
-    record.continuity = { ...continuityStats(modules, work), replayHistoryWarnings };
-  }
-  if (arm.fork === "in-place") {
-    // The sidecar pins this absolute root; probes restore the snapshot here.
-    const snapshot = join(dir, "snapshot");
-    await cp(work, snapshot, { recursive: true, verbatimSymlinks: true });
-    return { work, snapshot, record };
-  }
-  return { work, record };
 }
 
 /** One upkeep, no real answer call, before read-only probe forks. No probe/answer data enter extraction. */
@@ -475,7 +482,7 @@ export async function prepareLedgerCheckpoint({ modules, work, authPath, plan, m
   const calls = receipt?.providerInvoked ? 1 : 0;
   const estimatedPaid = calls > 0 && receipt.costUsd == null && typeof receipt.estimatedInputCostUsd === "number";
   return { valid: !failure && receipt?.status === "valid" && !!generation?.generation.entries.length && generation.generation.id === receipt.generationId,
-    failure, receipt, usage: { calls, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
+    failure, receipt, usage: { calls, estimatedInputTokens: calls ? receipt?.estimatedInputTokens ?? null : 0, inputTokens: calls ? receipt?.inputTokens ?? null : 0, outputTokens: calls ? receipt?.outputTokens ?? null : 0,
       cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: calls ? receipt?.costUsd ?? receipt?.estimatedInputCostUsd ?? null : 0,
       estimatedPaidCalls: estimatedPaid ? 1 : 0, estimatedPaidInputCostUsd: estimatedPaid ? receipt.estimatedInputCostUsd : 0 } };
 }
