@@ -1,3 +1,4 @@
+import { parseModel } from "./model-reference.js";
 import { DEFAULT_RUNTIME_RETRY_BACKOFF_MS, DEFAULT_RUNTIME_RETRY_MAX_BACKOFF_MS } from "@mono-agent/turn/host/config";
 import { DEFAULT_RUNTIME_PRIMARY_ATTEMPTS } from "../defaults.js";
 
@@ -288,7 +289,7 @@ export function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig[
   const continuityJson = jsonRecord(session.continuity, "runtime.session.continuity");
   if (continuityJson) {
     const unknownKeys = Object.keys(continuityJson).filter(key => key !== "enabled" && key !== "packEnabled" && key !== "ledgerEnabled" && key !== "upkeep").sort();
-    if (unknownKeys.length) throw new MonoAgentConfigError("invalid_json", "runtime.session.continuity supports only enabled, packEnabled and upkeep.", {
+    if (unknownKeys.length) throw new MonoAgentConfigError("invalid_json", "runtime.session.continuity supports only enabled, packEnabled, ledgerEnabled and upkeep.", {
       path: "runtime.session.continuity", unknownKeys,
     });
     assertJsonScalarFields(continuityJson, "runtime.session.continuity", { enabled: "boolean", packEnabled: "boolean", ledgerEnabled: "boolean" });
@@ -301,13 +302,13 @@ export function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig[
   const upkeepJson = jsonRecord(continuityJson?.upkeep, "runtime.session.continuity.upkeep");
   if (upkeepJson) {
     const unknownKeys = Object.keys(upkeepJson).filter(key => !["enabled", "requireRequestCap", "extractionModel"].includes(key));
-    if (unknownKeys.length) throw invalidJson("runtime.session.continuity.upkeep has unknown keys.", { unknownKeys });
+    if (unknownKeys.length) throw invalidJson("runtime.session.continuity.upkeep has unknown keys.", { path: "runtime.session.continuity.upkeep", unknownKeys });
     assertJsonScalarFields(upkeepJson, "runtime.session.continuity.upkeep", { enabled: "boolean", requireRequestCap: "boolean", extractionModel: "string" });
   }
   const upkeep = upkeepJson === undefined ? undefined : {
     enabled: jsonOptionalBoolean(upkeepJson.enabled, "runtime.session.continuity.upkeep.enabled") ?? false,
     requireRequestCap: jsonOptionalBoolean(upkeepJson.requireRequestCap, "runtime.session.continuity.upkeep.requireRequestCap") ?? false,
-    ...(upkeepJson.extractionModel === undefined ? {} : { extractionModel: parseMonoRuntimeModelReference(jsonString(upkeepJson.extractionModel, "runtime.session.continuity.upkeep.extractionModel")!) }),
+    ...(upkeepJson.extractionModel === undefined ? {} : { extractionModel: parseModel(jsonString(upkeepJson.extractionModel, "runtime.session.continuity.upkeep.extractionModel")!, "runtime.session.continuity.upkeep.extractionModel") }),
   };
   const switchJson = jsonRecord(session.modelSwitch, "runtime.session.modelSwitch");
   if (switchJson) assertJsonScalarFields(switchJson, "runtime.session.modelSwitch", { enabled: "boolean" });

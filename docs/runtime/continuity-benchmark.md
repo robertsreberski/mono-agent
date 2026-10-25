@@ -362,3 +362,20 @@ and outgoing cold provider request, while current input and effects remain once.
 Add `--fail-upkeep` to verify invalid JSON leaves the deterministic fallback and
 a content-free gap, with no repair. These are scripted local fixtures, not live
 provider or mailbox tests. See [ledger trust and bounds](/runtime/continuity-ledger/).
+
+### Ledger preparation safety and estimated paid input
+
+`--aggregate-only` never executes units or upkeep; `--require-request-cap` still
+executes, with the strict-cap policy in the confirmed plan. Real-mode preparation
+uses the configured `providers.piAuthPath` credential resolver, just like the
+answer path; no injected fixture models are used for real extraction.
+
+Preparation keeps its receipt even when the harness, ledger read or close fails.
+A zero-dispatch preparation contributes zero calls/tokens/cost, not an unknown
+call. If an abort loses reported usage, the separately recorded conservative input
+cost is counted as `estimatedPaidCalls` / `estimatedPaidInputCostUsd` and included
+in estimated spend. It is **input-only**, not reported usage, full output cost or
+a spending guarantee; output/hidden work can remain unknown. Strict request-cap
+mode remains available. Codex requests compact output within its unchanged byte
+guard; this does not reduce the 4,096-token planning allowance or claim a hard
+server cap.

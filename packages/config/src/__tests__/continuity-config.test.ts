@@ -58,3 +58,8 @@ it("keeps ledger and upkeep off by default and resolves an explicit model/strict
 it.each([{ enabled: "true" }, { requireRequestCap: 1 }, { extractionModel: false }, { unknown: true }, null])("rejects invalid upkeep %j", upkeep => {
   expect(() => resolve({ upkeep })).toThrow();
 });
+
+it("reports upkeep model/unknown-key errors as repairable config errors with paths", () => {
+  expect(() => resolve({ upkeep: { extractionModel: "not-a-reference" } })).toThrow(expect.objectContaining({ code: "invalid_model_reference", details: expect.objectContaining({ path: "runtime.session.continuity.upkeep.extractionModel" }) }));
+  expect(() => resolve({ upkeep: { unexpected: true } })).toThrow(expect.objectContaining({ code: "invalid_json", details: expect.objectContaining({ path: "runtime.session.continuity.upkeep" }) }));
+});
