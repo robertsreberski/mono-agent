@@ -125,7 +125,18 @@ Other speakers/imports are neutral evidence; tools and summaries are not owner
 instructions. Past owner requests remain subordinate to current instructions and
 never renew approval to repeat an effect. B1 retains successful finalized tool
 text, so failed/unknown effects without such a record are not inferred as sent.
-All eligible tool records are included, not just an inferred effectful subset.
+Owner entries are explicitly requests, not proof that an action happened. Only
+captured tool records show outcomes; absent an outcome, status remains unknown.
+The renderer reserves 40% of usable content space for tool records before owner
+selection; unused reservation returns to owners. Snapshots carry no MCP
+`readOnlyHint` annotations or catalog classification, so a conservative name-only
+rule ranks the first recognized action verb (`send`, `draft`, `write`, `create`,
+`update`, `delete`, and similar mutation verbs) ahead of reads and unknown names.
+Read verbs win when encountered first (`get_draft` remains a lookup). MCP/server
+namespaces are stripped, and snake/kebab/camel-case names are recognized. This
+ranking never proves an effect: captured `final_state` and result text remain the
+evidence. Reads fill remaining tool space. Ordinal order is retained within each
+priority group; no paid extraction or storage migration is involved.
 Result heads keep whole paragraphs (at most 2048 UTF-8 bytes); a larger first
 paragraph and oversized arguments are omitted explicitly, never clipped.
 
@@ -172,17 +183,22 @@ their existing protocol; subagent instances are outside this feature. A missing
 native session seeded for **manual compaction** currently gets no pack; that gap
 belongs to the later compaction-boundary work, not this cold-turn slice.
 
-Legacy canonical messages lack durable continuity record identities. Deduplication
-uses exact shared identities only (such as managed tool record references in
-interruption accounts). Pack tool entries show `invocation_id`; their invocation
-and result identities are excluded from the bounded legacy tool projection, so a
-single finalized lifecycle is not presented twice. Exclusions never refill the
-projection with older calls; otherwise overlapping evidence is retained, never matched
-by text, run/role or position. The `unknownOverlap` count reports rendered entries
-whose run also occurs in the replay window (or whose overlap cannot be ruled out
-because replay run identities are absent), not proved duplication. Oldest-first
-selection favors evidence outside the 64-message window. Revisiting this overlap
-requires a later ledger identity model, not a canonical-format migration here.
+Canonical messages retain `runId` after reload, but not process-local input
+stamps. Owner deduplication uses exact shared input IDs when available, or a
+complete-run identity proof: the run's snapshot owner count must equal its
+replayed canonical user count. Run presence alone is insufficient. Bounded,
+gapped or degraded snapshots and runs with other/unverified user evidence do not
+qualify; a run straddling the 64-message window retains its owner records. No
+text matching or partial-run heuristic removes quotations.
+
+Pack tool entries show `invocation_id`; their invocation and result identities
+are excluded from the bounded legacy tool projection, so a single finalized
+lifecycle is not presented twice. Exclusions never refill the projection with
+older calls. The content-free `ownerDeduped` count reports owner records removed
+by identity proof; `toolReserved` counts tool entries selected in the reserved
+40% (not tokens). `unknownOverlap` still reports retained entries whose run also
+occurs in replay, or whose overlap cannot be ruled out because identities are
+absent. Remaining uncertain overlap is retained, not guessed away.
 
 Set `packEnabled: false` to retain recording and `ConversationHistory` retrieval
 without pack injection. `enabled: false` takes precedence and preserves the

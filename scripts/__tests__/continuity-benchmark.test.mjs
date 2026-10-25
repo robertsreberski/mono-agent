@@ -359,6 +359,7 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(packed.boundary.observed.continuityPacks).toEqual([expect.objectContaining({ reason: "model_change" })]);
     const receipt = packed.boundary.observed.continuityPacks[0];
     expect(receipt.ownerEntries).toBeGreaterThan(0); expect(receipt.toolEntries).toBeGreaterThan(0);
+    expect(receipt.ownerDeduped).toBeGreaterThanOrEqual(0); expect(receipt.toolReserved).toBeGreaterThan(0);
     expect(receipt.tokens).toBeGreaterThan(0); expect(receipt.tokens).toBeLessThanOrEqual(8000);
     expect(packed.boundary.observed.offlineProviderPackCounts).toEqual([1, 1]);
     expect(storeTrial.boundary.observed.continuityPacks).toEqual([]);

@@ -1,4 +1,5 @@
-import { bindContinuityQuotation } from "../tool-history/continuity-input.js";
+import { createDurableHistoryStore } from "../history/canonical/store.js";
+import { bindContinuityQuotation, continuityQuotation } from "../tool-history/continuity-input.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -188,4 +189,72 @@ it("selects the pinned proof-promoted summary rather than a newer finalized summ
   const latest = f.reader.latestContinuitySummary(scope)!;
   expect(f.reader.snapshotContinuity(scope).records).toMatchObject([{ recordId: latest.recordId, text: "Pinned proof summary." }]);
   expect(f.reader.snapshotContinuity(scope).omitted).toBe(0);
+});
+
+it("deduplicates complete owner runs after canonical reload without process-local stamps", async () => {
+  const f = await fixture();
+  await publish(f.writer, "Old rule outside replay.", "outside");
+  await publish(f.writer, "Already replayed owner request.", "inside");
+  const history = createDurableHistoryStore({ root: f.root });
+  const message = { role: "user" as const, content: "Decorated replay of the input.", runId: "inside" };
+  bindContinuityQuotation(message, { inputId: "inside-input", requestDigest: "fictional" });
+  await history.append("fictional", [message, { role: "assistant", content: "Reply.", runId: "inside" }]);
+  const reloaded = await createDurableHistoryStore({ root: f.root }).load("fictional");
+  expect(continuityQuotation(reloaded[0]!)).toBeUndefined();
+  const pack = renderContinuityPack(f.reader.snapshotContinuity(scope), reloaded);
+  expect(pack.ownerDeduped).toBe(1); expect(pack.counts.owner).toBe(1);
+  expect(pack.text).toContain("Old rule outside replay."); expect(pack.text).not.toContain("Already replayed owner request.");
+  expect(pack.unknownOverlap).toBe(0);
+});
+
+it("keeps a run with more than 64 owner inputs when its reloaded window straddles the run", async () => {
+  const f = await fixture();
+  const records = Array.from({ length: 70 }, (_, i) => ({ ...record(i + 1, `Fictional request ${i}.`), runId: "large-run", sequence: i }));
+  const history = createDurableHistoryStore({ root: f.root });
+  // Append is publicly bounded to 64, so write the long run in two legal batches.
+  for (const batch of [records.slice(0, 60), records.slice(60)]) await history.append("fictional", batch.map(record => ({ role: "user" as const, content: record.text, runId: record.runId })));
+  const reloaded = await createDurableHistoryStore({ root: f.root }).load("fictional");
+  expect(reloaded).toHaveLength(64);
+  const pack = renderContinuityPack({ records, omitted: 0, gaps: 0 }, reloaded);
+  expect(pack.ownerDeduped).toBe(0); expect(pack.counts.owner).toBe(70);
+  expect(pack.text).toContain("Fictional request 0."); expect(pack.unknownOverlap).toBe(70);
+  expect(renderContinuityPack({ records, omitted: 0, gaps: 0 }, records.map(record => ({ role: "user", content: record.text, runId: record.runId })))).toMatchObject({ ownerDeduped: 70, counts: { owner: 0 } });
+});
+
+it("does not use count equality as proof with clipped, gapped or mixed-provenance source", () => {
+  const owner = record(1, "Keep this owner request.");
+  const replay = [{ role: "user" as const, content: "Some other input in the run.", runId: owner.runId }];
+  for (const source of [
+    { records: [owner], omitted: 1, gaps: 0 },
+    { records: [owner], omitted: 0, gaps: 1 },
+    { records: [owner, { ...record(2, "Other speaker.", "user"), runId: owner.runId }], omitted: 0, gaps: 0 },
+  ]) expect(renderContinuityPack(source, replay)).toMatchObject({ ownerDeduped: 0, counts: { owner: 1 } });
+});
+
+it("reserves tools before crowded owner requests and prioritizes send/draft over earlier reads", () => {
+  const owners = Array.from({ length: 120 }, (_, i) => record(i + 1, `Fictional request ${i}: ${"Do not act without approval. ".repeat(5)}`));
+  const tool = (ordinal: number, name: string, text: string, state = "success") => ({ ...record(ordinal, text, "tool"),
+    tool: { name, state, arguments: "{}", invocationId: `invocation-${ordinal}` } });
+  const reads = Array.from({ length: 40 }, (_, i) => tool(200 + i, i % 2 ? "mail_read" : "mail_get_draft", "Fictional lookup. ".repeat(50)));
+  const records = [...owners, ...reads, tool(300, "mail_send", "SENT delivery=MESSAGE-42"), tool(301, "mail_draft", "DRAFTED draft=DRAFT-43")];
+  const pack = renderContinuityPack({ records, omitted: 0, gaps: 0 }, []);
+  expect(pack.text).toContain("SENT delivery=MESSAGE-42"); expect(pack.text).toContain("DRAFTED draft=DRAFT-43");
+  expect(pack.text!.indexOf('name="mail_send"')).toBeLessThan(pack.text!.indexOf('name="mail_draft"'));
+  expect(pack.text!.indexOf('name="mail_draft"')).toBeLessThan(pack.text!.indexOf('name="mail_get_draft"'));
+  expect(pack.toolReserved).toBeGreaterThanOrEqual(2); expect(pack.counts.owner).toBeGreaterThan(0);
+  expect(pack.omitted).toBeGreaterThan(0); expect(pack.tokens).toBeLessThanOrEqual(8000);
+  expect(renderContinuityPack({ records, omitted: 0, gaps: 0 }, [])).toEqual(pack);
+  expect(renderContinuityPack({ records, omitted: 0, gaps: 0 }, [], 1600).tokens).toBeLessThanOrEqual(1600);
+});
+
+it("frames owner requests as requests, not evidence of completed actions, and preserves final tool state", () => {
+  const source = { records: [record(1, "Prepare it and send it."), { ...record(2, "DRAFTED draft=DRAFT-43", "tool"),
+    tool: { name: "mail_draft", state: "success", arguments: "{}", invocationId: "draft-invocation" } }], omitted: 0, gaps: 0 };
+  const pack = renderContinuityPack(source, []);
+  expect(pack.text).toContain("Owner requests below record what was asked, not what was done.");
+  expect(pack.text).toContain("Only tool records show outcomes;");
+  expect(pack.text).toContain("treat its status as unknown and say so.");
+  expect(pack.text).toContain('Historical owner request id="id-1"');
+  expect(pack.text).toContain('name="mail_draft" final_state="success"');
+  expect(pack.text).toContain("DRAFTED draft=DRAFT-43"); expect(pack.text).not.toContain("SENT");
 });

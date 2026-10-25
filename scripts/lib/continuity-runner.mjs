@@ -240,7 +240,7 @@ function observer() {
         }
       }
       if (event?.type === "continuity_pack_injected") {
-        observed.continuityPacks.push(Object.fromEntries(["reason", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap", "tokens", "degradedReason"].map(key => [key, event[key]])));
+        observed.continuityPacks.push(Object.fromEntries(["reason", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap", "ownerDeduped", "toolReserved", "tokens", "degradedReason"].map(key => [key, event[key]])));
       } else if (event?.type === "session_boundary") {
         observed.boundaries.push({ kind: event.kind ?? null, reason: event.reason ?? null, context: event.context ?? null,
           replayedMessageCount: finite(event.replayedMessageCount), toolProjectionRecords: finite(event.toolProjectionRecords), toolProjectionBytes: finite(event.toolProjectionBytes) });

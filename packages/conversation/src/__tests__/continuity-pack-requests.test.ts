@@ -188,8 +188,15 @@ it("limits optional evidence to real target headroom instead of failing the turn
   expect(snapshot).not.toHaveBeenCalled();
 }, 20_000);
 
-it("bounds the actual provider pack to a pinned continuation history boundary", async () => {
+it.each([false, true])("bounds pinned continuation evidence and deduplicates only complete replay (complete=%s)", async completeReplay => {
   const f = await fixture();
+  if (!completeReplay) {
+    const generationId = continuityGenerationId(), afterDigest = "d".repeat(64), inputId = "second-early-input";
+    await f.writer.prepareContinuity({ generationId, conversationId: id, logicalConversationId: id, beforeDigest: null, afterDigest,
+      records: [{ recordId: continuityRecordId(id, "second-early"), runId: "early-run", inputId, kind: "owner", provenance: "host-owner", sequence: 1,
+        text: "Fictional follow-up outside pinned replay.", source: { attestation: { inputId, requestDigest: afterDigest } } }] });
+    await f.writer.commitContinuity({ generationId, conversationId: id, canonicalDigest: afterDigest });
+  }
   const generationId = continuityGenerationId(), afterDigest = "c".repeat(64);
   await f.writer.prepareContinuity({ generationId, conversationId: id, logicalConversationId: id, beforeDigest: null, afterDigest,
     records: [{ recordId: continuityRecordId(id, "future"), runId: "future-run", kind: "user", provenance: "unknown", sequence: 0,
@@ -198,9 +205,11 @@ it("bounds the actual provider pack to a pinned continuation history boundary", 
   const timestamp = "2026-05-17T12:00:00.000Z";
   await f.run(current, undefined, false, { continuationId: "fictional-continuation", originRunId: "early-run", originContextPolicy: "pinned",
     historyBoundary: "early-run", originContext: { schemaVersion: 1, conversationId: id, originRunId: "early-run", historyBoundary: "early-run", capturedAt: timestamp,
-      messages: [{ role: "user", content: "Fictional origin.", runId: "early-run", timestamp }, { role: "assistant", content: "Fictional origin answer.", runId: "early-run", timestamp }] },
+      messages: [{ role: "user", content: rule, runId: "early-run", timestamp }, { role: "assistant", content: "Fictional origin answer.", runId: "early-run", timestamp }] },
     toolsDisabled: true, deferHistoryCommit: true });
-  assertRequest(f.requests.at(-1));
+  assertRequest(f.requests.at(-1), !completeReplay);
+  expect(JSON.stringify(f.requests.at(-1))).toContain(rule);
+  expect(f.events).toContainEqual(expect.objectContaining({ ownerDeduped: completeReplay ? 1 : 0 }));
   expect(JSON.stringify(f.requests.at(-1))).not.toContain("FUTURE-FICTIONAL-STATE-MUST-NOT-LEAK");
 }, 20_000);
 

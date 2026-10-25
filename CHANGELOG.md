@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Deduplicate fully replayed owner runs after reload, reserve cold continuity
+  space for finalized tool outcomes, and distinguish requests from completed
+  actions; retain partial or unproven overlap without guessing.
+
 - Keep warm clean-break continuity seeds independent of tool count and within
   their actual replay budget; preserve prepared tool history when a later
   projection read fails.

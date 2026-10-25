@@ -207,7 +207,7 @@ export type SessionStep =
       readonly ts: string;
       readonly type: "runtime_telemetry";
       readonly kind: string;
-      readonly continuityPack?: { readonly reason?: string; readonly degradedReason?: string; readonly tokens?: number; readonly ownerEntries?: number; readonly toolEntries?: number; readonly summaryEntries?: number; readonly evidenceEntries?: number; readonly omittedCount?: number; readonly unknownOverlap?: number };
+      readonly continuityPack?: { readonly reason?: string; readonly degradedReason?: string; readonly tokens?: number; readonly ownerEntries?: number; readonly toolEntries?: number; readonly summaryEntries?: number; readonly evidenceEntries?: number; readonly omittedCount?: number; readonly unknownOverlap?: number; readonly ownerDeduped?: number; readonly toolReserved?: number };
     }
   | {
       readonly k: "runtime";
@@ -771,7 +771,7 @@ function runtimeStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, 
     return { k: "runtime", ts, type: "runtime_telemetry", kind: type === "runtime_telemetry" ? readString(event.kind)! : type!, continuityPack: {
       ...(safeLabel(source.reason) ? { reason: safeLabel(source.reason)! } : {}),
       ...(safeLabel(source.degradedReason) ? { degradedReason: safeLabel(source.degradedReason)! } : {}),
-      ...Object.fromEntries(["tokens", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap"]
+      ...Object.fromEntries(["tokens", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap", "ownerDeduped", "toolReserved"]
         .filter(key => Number.isSafeInteger(source[key]) && (source[key] as number) >= 0).map(key => [key, source[key]])),
     } };
   }

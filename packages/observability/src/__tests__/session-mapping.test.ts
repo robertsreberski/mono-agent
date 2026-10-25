@@ -835,11 +835,11 @@ it("ignores invalid additive boundary facts while preserving legacy fields", () 
 it("maps content-free continuity pack counts from direct and streamed events", () => {
   const { summary } = loadFixture("notified");
   const pack = { type: "continuity_pack_injected", reason: "model_change", ownerEntries: 3, toolEntries: 2,
-    summaryEntries: 1, evidenceEntries: 0, omittedCount: 4, unknownOverlap: 2, tokens: 1200, degradedReason: "overflow", text: "Must not enter the mapping." };
+    summaryEntries: 1, evidenceEntries: 0, omittedCount: 4, unknownOverlap: 2, ownerDeduped: 32, toolReserved: 2, tokens: 1200, degradedReason: "overflow", text: "Must not enter the mapping." };
   const session = mapRunToSession(summary, [pack, { type: "runtime_telemetry", kind: "continuity_pack_injected", data: pack }], OPTS);
   const steps = session.steps.filter(step => step.k === "runtime" && step.kind === "continuity_pack_injected");
   expect(steps).toHaveLength(2);
-  expect(steps[0]).toMatchObject({ continuityPack: { reason: "model_change", tokens: 1200, omittedCount: 4, unknownOverlap: 2 } });
+  expect(steps[0]).toMatchObject({ continuityPack: { reason: "model_change", tokens: 1200, omittedCount: 4, unknownOverlap: 2, ownerDeduped: 32, toolReserved: 2 } });
   expect(JSON.stringify(steps)).not.toContain("Must not");
 });
 
