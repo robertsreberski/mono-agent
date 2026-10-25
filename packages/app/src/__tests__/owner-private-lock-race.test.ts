@@ -229,6 +229,100 @@ describe("stale-reclaim race between the final check and the rename", () => {
   });
 });
 
+describe("restore-on-mismatch edge orderings", () => {
+  it("restoring over a newcomer's still-empty directory is caught by the newcomer's identity checks", async () => {
+    const dir = await directory("restore-empty");
+    const path = join(dir, "shared.lock");
+    await staleLease(path);
+    const verified = pauseAt("stale-verified");
+    const detached = deferred();
+    const resumeDetached = deferred();
+    const slowAttempt = acquireOwnerPrivateLock(lockOptions(path, "slow-b", {
+      mutationStep: async (step) => {
+        await verified.mutationStep(step);
+        if (step === "stale-detached") { detached.resolve(); await resumeDetached.promise; }
+      },
+    }));
+    const slowOutcome = slowAttempt.then((value) => ({ value }), (error: unknown) => ({ error: error as Error }));
+    await verified.entered;
+    const first = await acquireOwnerPrivateLock(lockOptions(path, "first-a"));
+    expect(first).toBeDefined();
+    verified.resume();
+    await detached.promise;
+
+    // An ungated newcomer creates the free pathname and stalls before publishing its owner.
+    const created = deferred();
+    const resumeNewcomer = deferred();
+    const newcomer = acquireOwnerPrivateLock(lockOptions(path, "newcomer-n", {
+      afterDirectoryCreated: async () => { created.resolve(); await resumeNewcomer.promise; },
+    }));
+    const newcomerOutcome = newcomer.then((value) => ({ value }), (error: unknown) => ({ error: error as Error }));
+    await created.promise;
+    resumeDetached.resolve();
+    const slowResult = await slowOutcome;
+    resumeNewcomer.resolve();
+    const newcomerResult = await newcomerOutcome;
+
+    if ("error" in slowResult) {
+      // Platforms that refuse to replace an empty directory: the mover fails closed, nothing is overwritten.
+      expect(slowResult.error.message).toMatch(/could not move it back \(.* was taken again\)/u);
+      expect((await readdir(dir)).filter((name) => name.includes(".stale."))).toHaveLength(1);
+    } else {
+      // POSIX rename replaced the empty directory; the newcomer's identity check rejects its publication.
+      expect(slowResult.value).toBeUndefined();
+      expect("error" in newcomerResult && newcomerResult.error.message).toMatch(/directory identity changed/u);
+      expect(await ownerToken(path)).toBe("first-a");
+      await first!.release();
+      await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("keeps the owner's lease when a restore races that owner's release", async () => {
+    const dir = await directory("restore-release");
+    const path = join(dir, "shared.lock");
+    await staleLease(path);
+    const verified = pauseAt("stale-verified");
+    const detached = deferred();
+    const resumeDetached = deferred();
+    const slowAttempt = acquireOwnerPrivateLock(lockOptions(path, "slow-b", {
+      mutationStep: async (step) => {
+        await verified.mutationStep(step);
+        if (step === "stale-detached") { detached.resolve(); await resumeDetached.promise; }
+      },
+    }));
+    await verified.entered;
+    const releaseVerified = deferred();
+    const resumeRelease = deferred();
+    let pauseRelease = true;
+    const first = await acquireOwnerPrivateLock(lockOptions(path, "first-a", {
+      mutationStep: async (step) => {
+        if (step !== "release-verified" || !pauseRelease) return;
+        pauseRelease = false;
+        releaseVerified.resolve();
+        await resumeRelease.promise;
+      },
+    }));
+    expect(first).toBeDefined();
+    // A has verified its own lease for release; B now moves that lease away.
+    const releasing = first!.release();
+    void releasing.catch(() => undefined);
+    await releaseVerified.promise;
+    verified.resume();
+    await detached.promise;
+    resumeRelease.resolve();
+    await expect(releasing).rejects.toThrow(/disappeared during release/u);
+    resumeDetached.resolve();
+
+    // B restores A's lease; A was never released, so a retry releases exactly it.
+    await expect(slowAttempt).resolves.toBeUndefined();
+    expect(await ownerToken(path)).toBe("first-a");
+    await expect(acquireOwnerPrivateLock(lockOptions(path, "third-c"))).resolves.toBeUndefined();
+    await first!.release();
+    await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(dir)).toEqual([]);
+  });
+});
+
 describe("restore-on-mismatch for release and failed-acquisition cleanup", () => {
   it("moves a replacement back when release detaches the wrong directory", async () => {
     const dir = await directory("release-restore");
@@ -296,7 +390,7 @@ describe("owner-lock mutation gate", () => {
     await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.skipIf(process.platform === "win32")("rejects a symlinked, hard-linked, directory or corrupt gate", async () => {
+  it.skipIf(process.platform === "win32")("rejects a symlinked, hard-linked, directory or non-empty gate", async () => {
     const dir = await directory("gate-shape");
     const target = join(dir, "real-gate");
     await writeFile(target, "", { mode: 0o600 });
@@ -314,7 +408,27 @@ describe("owner-lock mutation gate", () => {
     await expect(run(symlinked)).rejects.toThrow(/must be a regular file, not a link or directory/u);
     await expect(run(hardLinked)).rejects.toThrow(/must have exactly one filesystem link/u);
     await expect(run(asDirectory)).rejects.toThrow(/must be a regular file/u);
-    await expect(run(corrupt)).rejects.toThrow(/is unusable or corrupt/u);
+    // Nothing ever writes the gate: any content is foreign, and the error names the repair without a path.
+    const foreign = await run(corrupt).then(() => new Error("gate unexpectedly ran"), (error: unknown) => error as Error);
+    expect(foreign).toBeInstanceOf(OwnerLockGateUnavailableError);
+    expect(foreign.message).toMatch(/mutation gate is not empty; .*Stop every mono-agent process for this account, then remove the gate file/u);
+    expect(foreign.message).not.toContain(dir);
+  });
+
+  it("fails closed when a journal or WAL file sits beside the gate", async () => {
+    const dir = await directory("gate-sidecar");
+    for (const suffix of ["-journal", "-wal"]) {
+      const path = join(dir, `gate${suffix}-case.sqlite`);
+      await writeFile(`${path}${suffix}`, "fictional leftover", { mode: 0o600 });
+      let ran = false;
+      const error = await withOwnerLockMutationGate({ path }, "Gate test", async () => { ran = true; })
+        .then(() => new Error("gate unexpectedly ran"), (caught: unknown) => caught as Error);
+      expect(error).toBeInstanceOf(OwnerLockGateUnavailableError);
+      expect(error.message).toContain(`has an unexpected ${suffix.slice(1)} file beside it`);
+      expect(error.message).toContain(`remove the gate file and its ${suffix} file`);
+      expect(error.message).not.toContain(dir);
+      expect(ran).toBe(false);
+    }
   });
 
   it("rejects a gate whose inode is replaced between open and lock", async () => {

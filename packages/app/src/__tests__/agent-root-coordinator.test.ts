@@ -264,24 +264,56 @@ describe("agent-root lease mutation gate", () => {
 
   it("retries a release that met a busy gate instead of closing the coordinator", async () => {
     const { root, home } = await roots("gate-busy-release");
-    const ownership = await acquireAgentRootOwnership(root, { homeDir: home, mutationGateBusyTimeoutMs: 300 });
+    const holder = { current: undefined as ScriptChild | undefined };
+    const busyAttempts: number[] = [];
+    const ownership = await acquireAgentRootOwnership(root, {
+      homeDir: home,
+      mutationGateBusyTimeoutMs: 100,
+      hooks: {
+        // Deterministic: free the gate only after the first attempt really failed busy.
+        leaseReleaseBusy: async (attempt) => {
+          busyAttempts.push(attempt);
+          holder.current!.child.stdin.write("release\n");
+          await holder.current!.exited;
+        },
+      },
+    });
+    holder.current = gateHolder(join(dirname(agentRootLeasePath(ownership.agentRoot, home)), AGENT_ROOT_LEASE_MUTATION_GATE));
+    await holder.current.line("held");
+
+    await expect(releaseAgentRootOwnershipWhenIdle(ownership)).resolves.toBe(true);
+    expect(busyAttempts).toEqual([1]);
+    await waitForLeaseRelease(root, home);
+    const again = await acquireAgentRootOwnership(root, { homeDir: home });
+    expect(await releaseAgentRootOwnershipWhenIdle(again)).toBe(true);
+  });
+
+  it("keeps the lease owned after repeated busy releases and releases it once the gate frees", async () => {
+    const { root, home } = await roots("gate-busy-deferred");
+    const busyAttempts: number[] = [];
+    const ownership = await acquireAgentRootOwnership(root, {
+      homeDir: home,
+      mutationGateBusyTimeoutMs: 50,
+      hooks: { leaseReleaseBusy: (attempt) => { busyAttempts.push(attempt); } },
+    });
     const leasePath = agentRootLeasePath(ownership.agentRoot, home);
-    const gatePath = join(dirname(leasePath), AGENT_ROOT_LEASE_MUTATION_GATE);
-    const holder = script(`
-      import { DatabaseSync } from "node:sqlite";
-      const db = new DatabaseSync(${JSON.stringify(gatePath)}, { timeout: 0 });
-      db.exec("PRAGMA journal_mode=MEMORY");
-      db.exec("BEGIN EXCLUSIVE");
-      process.stdout.write("held\\n");
-      process.stdin.once("data", () => { db.exec("ROLLBACK"); db.close(); process.exit(0); });
-    `);
+    const holder = gateHolder(join(dirname(leasePath), AGENT_ROOT_LEASE_MUTATION_GATE));
     await holder.line("held");
-    const releasing = releaseAgentRootOwnershipWhenIdle(ownership);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 450));
+
+    // Every immediate attempt is busy: the release is deferred, not failed.
+    await expect(releaseAgentRootOwnershipWhenIdle(ownership)).resolves.toBe(false);
+    expect(busyAttempts).toEqual([1, 2, 3]);
+    expect(JSON.parse(await readFile(join(leasePath, "owner.json"), "utf8"))).toMatchObject({ pid: process.pid });
+    // The coordinator stays usable in-process; another busy release is deferred again, never closed.
+    const reused = await acquireAgentRootOwnership(root, { homeDir: home });
+    await expect(releaseAgentRootOwnershipWhenIdle(reused)).resolves.toBe(false);
+    expect(busyAttempts).toEqual([1, 2, 3, 1, 2, 3]);
+    expect(JSON.parse(await readFile(join(leasePath, "owner.json"), "utf8"))).toMatchObject({ pid: process.pid });
+
     holder.child.stdin.write("release\n");
     await holder.exited;
-    await expect(releasing).resolves.toBe(true);
-    await waitForLeaseRelease(root, home);
+    // The backoff retry releases the lease without a process restart.
+    await waitForLeaseRelease(root, home, 10_000);
     const again = await acquireAgentRootOwnership(root, { homeDir: home });
     expect(await releaseAgentRootOwnershipWhenIdle(again)).toBe(true);
   });
@@ -423,6 +455,18 @@ function script(source: string): ScriptChild {
   };
 }
 
+/** A raw node:sqlite holder of the mutation gate; any stdin line releases it and exits. */
+function gateHolder(gatePath: string): ScriptChild {
+  return script(`
+    import { DatabaseSync } from "node:sqlite";
+    const db = new DatabaseSync(${JSON.stringify(gatePath)}, { timeout: 0 });
+    db.exec("PRAGMA journal_mode=MEMORY");
+    db.exec("BEGIN EXCLUSIVE");
+    process.stdout.write("held\\n");
+    process.stdin.once("data", () => { db.exec("ROLLBACK"); db.close(); process.exit(0); });
+  `);
+}
+
 type AgentChildOutcome = "owned" | "conflict" | "busy" | "error";
 
 function agentChild(root: string, home: string, options: { readonly pauseAt?: string; readonly barrier?: boolean }): ScriptChild & {
@@ -507,13 +551,13 @@ async function roots(label: string): Promise<{ root: string; home: string }> {
   return { root, home };
 }
 
-async function waitForLeaseRelease(root: string, home: string): Promise<void> {
+async function waitForLeaseRelease(root: string, home: string, timeout = 2_000): Promise<void> {
   const leasePath = agentRootLeasePath(root, home);
   await vi.waitFor(async () => {
     await expect(lstat(leasePath)).rejects.toMatchObject({ code: "ENOENT" });
     // The mutation gate is a permanent coordination file, never lease garbage.
     expect((await readdir(dirname(leasePath))).filter((name) => name !== AGENT_ROOT_LEASE_MUTATION_GATE)).toEqual([]);
-  }, { timeout: 2_000, interval: 10 });
+  }, { timeout, interval: 10 });
 }
 
 function coordinatorModuleUrl(): string {

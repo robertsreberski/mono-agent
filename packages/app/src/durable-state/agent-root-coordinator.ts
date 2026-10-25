@@ -20,8 +20,14 @@ const AGENT_ROOT_LEASE_ACQUIRE_ATTEMPTS = 4;
 const PROCESS_JOBS_GENERATION_DRAIN_TIMEOUT_MS = 30_000;
 /** Older readers reject owner records over 4 KiB; new records stay well below. */
 const AGENT_ROOT_OWNER_RECORD_TARGET_BYTES = 3 * 1024;
-/** A busy gate during release moved nothing, so release may safely try again. */
+/**
+ * A busy gate during release proves nothing moved: the lease is still validly
+ * held. Try a few times immediately, then keep the entry owned and retry later
+ * with capped backoff instead of closing the coordinator.
+ */
 const AGENT_ROOT_RELEASE_BUSY_ATTEMPTS = 3;
+const AGENT_ROOT_RELEASE_RETRY_BASE_MS = 250;
+const AGENT_ROOT_RELEASE_RETRY_MAX_MS = 30_000;
 /** One cross-process mutation gate for every lease in the lease root. Never removed. */
 export const AGENT_ROOT_LEASE_MUTATION_GATE = ".mutation-gate.sqlite";
 
@@ -75,6 +81,8 @@ interface AcquireAgentRootOwnershipOptions {
     readonly beforeStaleLeaseRename?: () => Promise<void>;
     /** Test-only seam at each canonical lease mutation checkpoint. */
     readonly leaseMutationStep?: (step: OwnerPrivateLockMutationStep) => void | Promise<void>;
+    /** Test-only seam after each release attempt that found the mutation gate busy. */
+    readonly leaseReleaseBusy?: (attempt: number) => void | Promise<void>;
     /** Test-only fault seam for the final physical owner-lock release. */
     readonly beforeLeaseRelease?: () => Promise<void>;
   };
@@ -99,6 +107,7 @@ interface CoordinatorEntry {
   readonly lease: OwnerPrivateLock;
   readonly leasePath: string;
   readonly beforeLeaseRelease?: () => Promise<void>;
+  readonly leaseReleaseBusy?: (attempt: number) => void | Promise<void>;
   readonly active: Map<string, ActiveGeneration>;
   readonly waiters: Set<() => void>;
   ownerRefs: number;
@@ -106,8 +115,13 @@ interface CoordinatorEntry {
   mutationPending: boolean;
   closing: boolean;
   closeError?: Error;
+  /** Settles when the current release cycle ends: released, deferred, or failed. */
   closed: Promise<void>;
   resolveClosed: () => void;
+  /** True only once the physical lease is gone. */
+  physicallyReleased: boolean;
+  releaseDeferrals: number;
+  releaseRetry?: ReturnType<typeof setTimeout> | undefined;
 }
 
 const entries = new Map<string, CoordinatorEntry>();
@@ -302,15 +316,18 @@ export async function releaseAgentRootOwnershipWhenIdle(
   const entry = entryFor(ownership);
   if (releasedOwnerships.has(ownership)) {
     if (!entry.closing) return false;
-    await entry.closed;
-    if (entry.closeError !== undefined) throw entry.closeError;
-    return true;
+    return await releaseCycleOutcome(entry);
   }
   const shouldWait = releaseOwnershipReference(ownership, entry);
   if (!shouldWait) return false;
+  return await releaseCycleOutcome(entry);
+}
+
+/** `false` means a busy mutation gate deferred the release; the lease stays validly held. */
+async function releaseCycleOutcome(entry: CoordinatorEntry): Promise<boolean> {
   await entry.closed;
   if (entry.closeError !== undefined) throw entry.closeError;
-  return true;
+  return entry.physicallyReleased;
 }
 
 /** Reject the exceptional case where the global coordination lease is model-workspace reachable. */
@@ -427,6 +444,9 @@ async function createEntry(
       ...(options.hooks?.beforeLeaseRelease === undefined
         ? {}
         : { beforeLeaseRelease: options.hooks.beforeLeaseRelease }),
+      ...(options.hooks?.leaseReleaseBusy === undefined
+        ? {}
+        : { leaseReleaseBusy: options.hooks.leaseReleaseBusy }),
       active: new Map(),
       waiters: new Set(),
       ownerRefs: 0,
@@ -434,6 +454,8 @@ async function createEntry(
       closing: false,
       closed,
       resolveClosed,
+      physicallyReleased: false,
+      releaseDeferrals: 0,
     };
   } catch (error) {
     if (error instanceof Error && error.message === AGENT_ROOT_OWNED_ELSEWHERE_ERROR) throw error;
@@ -464,9 +486,16 @@ export function agentRootLeaseOwnerFields(
 
 function scheduleFinalRelease(entry: CoordinatorEntry): void {
   if (entry.ownerRefs !== 0 || entry.active.size !== 0 || entry.mutationPending || entry.closing) return;
+  if (entry.releaseRetry !== undefined) {
+    clearTimeout(entry.releaseRetry);
+    entry.releaseRetry = undefined;
+  }
   entry.closing = true;
+  // Each release cycle gets its own settlement promise.
+  entry.closed = new Promise<void>((resolveClosedPromise) => { entry.resolveClosed = resolveClosedPromise; });
   void (async () => {
     try {
+      let deferred = false;
       for (let attempt = 1; ; attempt += 1) {
         try {
           await entry.lease.release(
@@ -476,9 +505,31 @@ function scheduleFinalRelease(entry: CoordinatorEntry): void {
           );
           break;
         } catch (error) {
-          if (!(error instanceof OwnerLockCoordinationBusyError) || attempt >= AGENT_ROOT_RELEASE_BUSY_ATTEMPTS) throw error;
+          // Any other failure may leave the physical lock indeterminate.
+          if (!(error instanceof OwnerLockCoordinationBusyError)) throw error;
+          await entry.leaseReleaseBusy?.(attempt);
+          if (attempt >= AGENT_ROOT_RELEASE_BUSY_ATTEMPTS) {
+            deferred = true;
+            break;
+          }
         }
       }
+      if (deferred) {
+        // Nothing moved: keep the entry owned and reusable, retry later.
+        entry.closing = false;
+        const delay = Math.min(
+          AGENT_ROOT_RELEASE_RETRY_MAX_MS,
+          AGENT_ROOT_RELEASE_RETRY_BASE_MS * 2 ** Math.min(entry.releaseDeferrals, 16),
+        );
+        entry.releaseDeferrals += 1;
+        entry.releaseRetry = setTimeout(() => {
+          entry.releaseRetry = undefined;
+          scheduleFinalRelease(entry);
+        }, delay);
+        entry.releaseRetry.unref?.();
+        return;
+      }
+      entry.physicallyReleased = true;
       if (entries.get(entry.agentRoot) === entry) entries.delete(entry.agentRoot);
     } catch (error) {
       // The physical lock may be in an indeterminate release state. Keep this

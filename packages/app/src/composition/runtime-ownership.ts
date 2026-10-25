@@ -46,7 +46,15 @@ export function wrapOwnedConfiguredRuntime(
       throw error;
     }
   };
-  const secured = () => (security ??= loadSecurity());
+  const secured = () => {
+    if (security !== undefined) return security;
+    const attempt = loadSecurity();
+    security = attempt;
+    // Never cache a failed acquisition: a transient condition such as a busy
+    // ownership gate must not disable this runtime. Only clear our own attempt.
+    attempt.catch(() => { if (security === attempt) security = undefined; });
+    return attempt;
+  };
   const releaseOwnership = async (): Promise<void> => {
     const current = security;
     security = undefined;

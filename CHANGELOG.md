@@ -126,8 +126,8 @@
   could both end up owning that agent root. Agent-root lease changes now pass
   through an owner-only `.mutation-gate.sqlite` file in
   `~/.mono-agent/agent-root-leases/`; a held gate reports a distinct
-  "updating agent-root ownership" retry error, and an insecure gate fails
-  closed. Every owner lock now moves a wrongly displaced live lock back. Older
+  "updating agent-root ownership" retry error, and an insecure or modified
+  gate fails closed. Every owner lock now moves a wrongly displaced live lock back. Older
   binaries can still trigger the original race until they are upgraded.
 - Keep the source conversation of new memories durably: BuJo capture, Remember
   and completed-turn summaries add optional `source_session` metadata to their

@@ -22,6 +22,8 @@ const MAX_BUSY_TIMEOUT_MS = 5_000;
 const DEFAULT_RETRY_INTERVAL_MS = 10;
 const SQLITE_BUSY = 5;
 const SQLITE_LOCKED = 6;
+/** SQLite sidecars that must never exist beside a never-written, in-memory-journal gate. */
+const GATE_SIDECARS = ["-journal", "-wal"] as const;
 
 export interface OwnerLockMutationGate {
   /** Gate file path, normally a dot-file beside the lock directories it serializes. */
@@ -149,6 +151,7 @@ async function lockGate(
   let locked = false;
   try {
     await sameGate(path, before, label);
+    await noSidecars(path, label);
     await gate.beforeLock?.(path);
     const interval = Math.max(1, gate.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS);
     for (;;) {
@@ -172,6 +175,7 @@ async function lockGate(
     }
     // The lock binds an inode; prove the path still names the inode we locked.
     await sameGate(path, before, label);
+    await noSidecars(path, label);
     locked = true;
     return connection;
   } finally {
@@ -230,6 +234,24 @@ function assertSecureGate(details: BigIntStats, path: string, label: string): vo
   if (process.platform !== "win32" && (details.mode & 0o777n) !== 0o600n) {
     throw new OwnerLockGateUnavailableError(`${label} mutation gate ${path} must be owner-only (mode 0600).`);
   }
+  // Nothing ever writes the gate, so any content means foreign interference.
+  if (details.size !== 0n) throw foreignGate(label, "is not empty", "the gate file");
+}
+
+async function noSidecars(path: string, label: string): Promise<void> {
+  for (const suffix of GATE_SIDECARS) {
+    if (await lstatGate(`${path}${suffix}`, label) !== undefined) {
+      throw foreignGate(label, `has an unexpected ${suffix.slice(1)} file beside it`, `the gate file and its ${suffix} file`);
+    }
+  }
+}
+
+/** Path-free on purpose: the repair is the same wherever the gate lives. */
+function foreignGate(label: string, problem: string, remove: string): OwnerLockGateUnavailableError {
+  return new OwnerLockGateUnavailableError(
+    `${label} mutation gate ${problem}; mono-agent never writes it, so something else changed it. `
+      + `Stop every mono-agent process for this account, then remove ${remove} and retry.`,
+  );
 }
 
 function isBusy(error: unknown): boolean {
