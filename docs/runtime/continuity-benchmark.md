@@ -186,7 +186,13 @@ A sample whose store is degraded is `store_degraded`: no retained records, a
 degraded sidecar, history warnings, or an unavailable retrieval. It is an
 invalid trial, never a scored miss.
 
-Unverified samples of every kind are excluded from accuracy and counted separately. A mid-trace
+Unverified samples of every kind are excluded from accuracy and counted separately.
+
+Compaction counts refer to pre-turn compaction. In store arms with the smallest
+trigger, retrieved `ConversationHistory` text can push the context over 6,400
+tokens again between tool rounds. The resulting mid-run compactions are
+reported but not counted as the arm's boundary. Read (h) as "store plus an
+aggressive trigger", not as the production default. A mid-trace
 compaction that did not happen fails that checkpoint. `results.json` reports
 the observed pressure range per arm.
 
