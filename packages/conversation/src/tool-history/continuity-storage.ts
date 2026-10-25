@@ -267,7 +267,7 @@ export function unpinContinuity(database: DatabaseSync, pin: ContinuityPin): voi
     .run(pin.recordId, pin.ownerKind, pin.ownerId, pin.logicalConversationId);
 }
 
-function clearPhysicalContinuity(database: DatabaseSync, conversationId: string, exceptGenerationId: string): void {
+export function clearPhysicalContinuity(database: DatabaseSync, conversationId: string, exceptGenerationId = ""): void {
   database.prepare(`DELETE FROM continuity_pins WHERE record_id IN (SELECT r.record_id FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE g.conversation_id=? AND g.generation_id<>?)`).run(conversationId, exceptGenerationId);
   database.prepare("DELETE FROM writer_stats WHERE key IN (SELECT 'idempotency_conflicts:continuity:' || generation_id FROM continuity_generations WHERE conversation_id=? AND generation_id<>?)").run(conversationId, exceptGenerationId);

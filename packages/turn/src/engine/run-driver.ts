@@ -205,7 +205,7 @@ export function createRunDriver(store: any, options: any): {
         const result = (listener as (event: any) => unknown)(envelope);
         // Only the completed-cut boundary awaits asynchronous recorders. General
         // provider/tool observers retain their synchronous delivery contract.
-        if (event.type === "compaction_end" && result && typeof (result as Promise<unknown>).then === "function") recording.push(Promise.resolve(result).catch((error) => {
+        if (options.continuityRecording && event.type === "compaction_end" && result && typeof (result as Promise<unknown>).then === "function") recording.push(Promise.resolve(result).catch((error) => {
           for (const observer of listeners) { try { observer({ type: "handler_error", lane: "main", runId, eventType: event.type, error }); } catch { /* diagnostic */ } }
         }));
       }

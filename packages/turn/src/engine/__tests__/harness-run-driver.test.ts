@@ -550,3 +550,24 @@ it.each(["manual", "pre-turn", "reactive"])("continues %s compaction when an evi
     expect((await raw.getEntries()).some((entry: any) => entry.type === "compaction")).toBe(true);
   } finally { await driver.close(); await raw.close(); }
 });
+
+
+it.each([false, true])("awaits async compaction listeners only with continuity recording=%s", async recording => {
+  const repo = new MemorySessionRepo(), raw: any = await repo.create();
+  await raw.appendMessage({ role: "user", content: "Fictional original context.", timestamp: 1 }, "fictional-source");
+  const driver = createRunDriver(raw, { model: { provider: "faux", id: "m", api: "faux-api" }, tools: [], systemPrompt: "Fixture",
+    ...(recording ? { continuityRecording: true } : {}) });
+  driver.hooks.on("before_compaction", () => ({ compaction: { summary: "Fictional summary.", retainedTail: [], tokensBefore: 100 } }));
+  let entered!: () => void, release!: () => void, completed = false;
+  const observed = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  driver.subscribe((event: any) => { if (event.type === "compaction_end") { entered(); return gate; } });
+  const compact = driver.compact().then(() => { completed = true; });
+  try {
+    await observed;
+    // A macrotask, not a latency threshold: either legacy settles or the
+    // continuity recorder remains held by the explicit test-owned gate.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(completed).toBe(!recording);
+  } finally { release(); await compact; await driver.close(); await raw.close(); }
+});

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep reset and retention purges durable through continuity writer outages;
+  suppress affected history until the owed purge succeeds, and let inactive
+  stranded preparations expire with canonical age and quota retention.
+
 - Turn conversation continuity on by default, with policy-gated
   `ConversationHistory` retrieval. Set `runtime.session.continuity.enabled` to
   `false` to opt out and keep legacy capture/storage behavior. Before first

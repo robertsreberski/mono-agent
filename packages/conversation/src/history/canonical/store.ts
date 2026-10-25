@@ -1,3 +1,4 @@
+import { persistContinuityPurge } from "../../tool-history/continuity-purge.js";
 import { bindContinuityQuotation, copyContinuityQuotation, isContinuityTurnBatch, stagedContinuityInput, type StagedContinuityInput } from "../../tool-history/continuity-input.js";
 import { AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES, AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES, AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES, AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, AGENT_CONTEXT_IMPORT_VERSION, type AgentContextImportRequest, type AgentContextImportResult } from "@mono-agent/contracts";
 import { OwnedFileDamagedError, isOwned } from "@mono-agent/turn/engine/owned-fs.js";
@@ -985,6 +986,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         // Fail before resetting any sibling, not midway through logical reset.
         for (const id of orderedIds) { await this.assertResetReadable(id, rootIdentity); await this.requireNoModelSwitch(id, rootIdentity); }
       } finally { await releaseDiscovery(); }
+      if (this.continuity) {
+        await assertDirectoryIdentity(this.root, rootIdentity);
+        persistContinuityPurge(this.root, { scope: "logical", conversationId: logicalId });
+      }
       if (orderedIds.includes(logicalId)) {
         await this.resetPhysicalConversation(logicalId, heldLogical, heldExact);
       }
@@ -2130,6 +2135,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async prepareContinuity(record: CanonicalHistoryFile | null, id: string, rootIdentity: DirectoryIdentity,
     assertOwned: () => Promise<void>, action: "publish" | "reset" | "delete" = "publish", messages?: readonly HistoryMessage[]): Promise<PreparedContinuityPublication | undefined> {
     if (!this.continuity) return undefined;
+    if (action === "reset" || action === "delete") {
+      await assertOwned();
+      await assertDirectoryIdentity(this.root, rootIdentity);
+      persistContinuityPurge(this.root, { scope: "physical", conversationId: id });
+    }
     await this.reconcileContinuity(id, rootIdentity, assertOwned);
     const before = this.continuityState(await this.readRecord(id, rootIdentity));
     const after = record === null ? { digest: null, messages: [] } : { ...this.continuityState(record), ...(messages === undefined ? {} : { messages }) };
@@ -2192,7 +2202,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       if (this.continuity) {
         try { await this.reconcileContinuity(record.conversationId, rootIdentity, () => held.assertOwned()); }
-        catch (recoveryError) { throw new AggregateError([error, recoveryError], "Continuity preparation cleanup remains pending."); }
+        catch (recoveryError) { recordPostCommitMaintenanceFailure(this.root, recoveryError); }
       }
       throw error;
     } finally {

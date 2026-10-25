@@ -1,3 +1,4 @@
+import { pendingContinuityPurges } from "./continuity-purge.js";
 import { redactJsonValue } from "@mono-agent/observability";
 import type { RuntimeToolLifecycleTerminalState } from "@mono-agent/turn/host/types";
 import { existsSync } from "node:fs";
@@ -30,8 +31,9 @@ export class ToolHistoryReader {
     if (database === undefined) return [];
     try {
       if (!hasContinuitySchema(database)) return [];
-      const rows = database.prepare(`SELECT DISTINCT g.conversation_id FROM continuity_generations g WHERE g.state='prepared'
-        OR EXISTS (SELECT 1 FROM continuity_records r JOIN continuity_pins p USING(record_id) WHERE r.generation_id=g.generation_id AND p.owner_kind<>'summary')`).all() as Record<string, unknown>[];
+      // Canonical active markers / dirty fences protect in-flight preparations.
+      // A stranded preparation alone is not an indefinite retention lease.
+      const rows = database.prepare(`SELECT DISTINCT g.conversation_id FROM continuity_generations g WHERE EXISTS (SELECT 1 FROM continuity_records r JOIN continuity_pins p USING(record_id) WHERE r.generation_id=g.generation_id AND p.owner_kind<>'summary')`).all() as Record<string, unknown>[];
       return rows.map((r) => r.conversation_id as string);
     } finally { database.close(); }
   }
@@ -52,21 +54,39 @@ export class ToolHistoryReader {
   }
 
   searchContinuity(input: ContinuitySearchInput): ContinuitySearchPage {
+    if (this.continuityPurgePending(input)) return { available: false, items: [] };
     const database = this.openReadOnly();
     if (database === undefined) return { available: false, items: [] };
     try { return searchContinuity(database, input); } finally { database.close(); }
   }
 
   getContinuity(input: ContinuityGetInput): ContinuityGetResult {
+    if (this.continuityPurgePending(input)) return { status: "unavailable", untrusted: true };
     const database = this.openReadOnly();
     if (database === undefined) return { status: "unavailable", untrusted: true };
     try { return getContinuity(database, input); } finally { database.close(); }
   }
 
   latestContinuitySummary(scope: ContinuityScope): ContinuityRecordMetadata | undefined {
+    if (this.continuityPurgePending(scope)) return undefined;
     const database = this.openReadOnly();
     if (database === undefined) return undefined;
     try { return latestContinuitySummary(database, scope); } finally { database.close(); }
+  }
+
+  private continuityPurgePending(scope: ContinuityScope): boolean {
+    try {
+      const purges = pendingContinuityPurges(this.root);
+      if (purges.some(purge => purge.conversationId === (purge.scope === "logical" ? scope.logicalConversationId : scope.currentConversationId))) return true;
+      if (!purges.some(purge => purge.scope === "physical")) return false;
+      const database = this.openReadOnly();
+      if (!database) return false;
+      try {
+        return hasContinuitySchema(database) && purges.some(purge => purge.scope === "physical" && database.prepare(
+          "SELECT 1 FROM continuity_generations WHERE conversation_id=? AND logical_id=? LIMIT 1"
+        ).get(purge.conversationId, scope.logicalConversationId) !== undefined);
+      } finally { database.close(); }
+    } catch { return true; } // An unreadable purge intent cannot authorize disclosure.
   }
 
   async exists(): Promise<boolean> {

@@ -387,8 +387,9 @@ content-free coverage gap. Abandoned generations cannot be revived or read;
 metadata uses the tombstone count/age bounds; retrieval never claims complete
 coverage. Contradictory generations still refuse and appear in sidecar
 idempotency-conflict diagnostics. Storage primitives do not acquire canonical
-ownership. Canonical retention protects prepared physical owners and non-summary reference
-pins. Summary pins protect retained text, not canonical age/quota retention.
+ownership. Canonical retention protects active markers, dirty fences and non-summary
+reference pins. A stranded preparation without an active owner is not an age/quota
+retention lease. Summary pins protect retained text, not canonical retention.
 Sidecar outages warn and degrade coverage rather than blocking compaction, canonical
 publication or cleanup. Digest-bound reconciliation remains the only way to
 publish a stranded preparation. Bounds, quota and outage gaps are content-free
@@ -400,7 +401,22 @@ preparer/recorder callbacks must settle within a bounded local operation:
 cancellation does not interrupt a callback that never settles. Moving/forking
 an existing sidecar retains its artifact-root pin; mismatched roots degrade
 capture until a fresh store is used, without preventing compaction.
-Explicit reset purges evidence after canonical publication, before owner release.
+Reset and retention deletion first durably write a content-free purge intent
+(`.continuity-purge-<uuid>.json`, scope and conversation ID only) under the canonical
+root, independently of sidecar availability. Readers suppress the covered scope
+while an intent exists. The next successful writer acquisition/request applies
+its purge before admitting any mutation and removes the intent only after the
+SQLite commit. These journals must be preserved with canonical-root backups;
+do not remove them to recover a sidecar outage. A reset interrupted after intent
+publication may conservatively purge evidence even if the canonical reset fails.
+This is a privacy intent, never proof that a summary may be published.
+The built-in worker's startup readiness request defaults to 11 seconds (10-second
+owner acquisition plus one second); explicit v2-to-v3 upgrades and each continuity
+or reset request have a 10-second host wait ceiling. A shared-writer acquisition
+may wait for startup and then the upgrade. These are per-request host waits, not
+cancellation of already queued SQLite work or an overall canonical-transaction
+budget. Outage diagnostics do not issue a second failing gap write: at most one
+queued content-free gap is flushed after a later successful operation.
 The canonical text adapter omits cancelled/failed account envelopes and
 unfinished detached candidates: durable reconstruction metadata is not proof of
 a completed assistant answer, and can contain partial streams/nested retrieval.
@@ -414,9 +430,8 @@ an interrupted preparation stays unpublished and is discarded at the next
 owned recovery. Capture unavailability (including quota or summary bounds)
 never vetoes compaction: native reduction continues with warnings and incomplete
 retained coverage, and only exact durable proof can later promote a summary.
-Explicit reset can stage a purge over a pending cut;
-an aborted purge leaves that preparation intact, and a published purge removes
-it with the other physical evidence.
+Explicit reset can supersede a pending cut: its durable purge intent removes
+the preparation with the other physical evidence, without promoting it.
 
 Successful non-isolated plain-text lifecycle results can be retained independently
 of the smaller legacy JSON projection. The configured harness borrows

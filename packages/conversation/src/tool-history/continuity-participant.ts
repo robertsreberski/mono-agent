@@ -28,18 +28,19 @@ export function createContinuityParticipant(options: {
   // A process death while the whole sidecar is unavailable cannot be journalled
   // there; digest-bound reconciliation still prevents publishing wrong evidence.
   const pendingGaps: ContinuityGapInput[] = [];
-  let lastContext: { conversationId: string; digest: string | null } | undefined;
   const flushGaps = async () => {
-    while (pendingGaps.length) {
+    if (pendingGaps.length) {
       try { await options.writer.recordContinuityGap(pendingGaps[0]!); pendingGaps.shift(); }
-      catch { break; }
+      catch { /* Leave the bounded queue for the next successful operation. */ }
     }
   };
-  const gap = async (conversationId: string, beforeDigest: string | null, afterDigest: string | null, reason: ContinuityGapInput["reason"]) => {
+  const gap = async (conversationId: string, beforeDigest: string | null, afterDigest: string | null, reason: ContinuityGapInput["reason"], writerAnswered = false) => {
     warn(`Continuity is degraded (${reason}); coverage is incomplete. Canonical history remains available.`);
     if (pendingGaps.length >= 128) pendingGaps.shift();
     pendingGaps.push({ generationId: continuityGenerationId(), conversationId, logicalConversationId: options.logicalConversationId(conversationId), beforeDigest, afterDigest, reason });
-    await flushGaps();
+    // A failed operation already established an outage. Do not pay a second
+    // request ceiling for diagnostics; flush after a later successful call.
+    if (reason !== "sidecar_unavailable" || writerAnswered) await flushGaps();
   };
   return {
     async checkpoint(context) {
@@ -84,7 +85,8 @@ export function createContinuityParticipant(options: {
         if (ownershipFailed) throw error;
         await gap(context.conversationId, context.current.digest, context.current.digest,
           (error as { code?: string }).code === "continuity_quota_exhausted" ? "capture_quota"
-            : (error as { code?: string }).code === "continuity_summary_unavailable" ? "capture_bounds" : "sidecar_unavailable");
+            : (error as { code?: string }).code === "continuity_summary_unavailable" ? "capture_bounds" : "sidecar_unavailable",
+          (error as { code?: string }).code === "continuity_conflict" || (error as { code?: string }).code === "continuity_publication_mismatch");
       }
       await context.assertOwned();
     },
@@ -92,9 +94,9 @@ export function createContinuityParticipant(options: {
       await context.assertOwned();
       const evidence = context.evidence;
       try {
-        await flushGaps();
         await options.writer.reconcileContinuity({ conversationId: context.conversationId, canonicalDigest: context.current.digest,
           checkpoint: evidence ? { status: "published", journalId: evidence.journalId, operationId: evidence.operationId, sourceDigest: evidence.sourceDigest, summaryDigest: retainContinuityText(evidence.summary).sha256 } : { status: "absent" } });
+        await flushGaps();
       } catch { await gap(context.conversationId, context.current.digest, context.current.digest, "sidecar_unavailable"); }
       await context.assertOwned();
     },
@@ -102,16 +104,14 @@ export function createContinuityParticipant(options: {
       try { return options.protectedConversations(); }
       catch {
         warn("Continuity is degraded: retention protection is unavailable; canonical retention continues.");
-        if (lastContext) await gap(lastContext.conversationId, lastContext.digest, lastContext.digest, "sidecar_unavailable");
         return [];
       }
     },
     async reconcile(context) {
       await context.assertOwned();
-      lastContext = { conversationId: context.conversationId, digest: context.current.digest };
       try {
-        await flushGaps();
         const result = await options.writer.reconcileContinuity({ conversationId: context.conversationId, canonicalDigest: context.current.digest });
+        await flushGaps();
         if (result.status === "abandoned") warn("Continuity coverage gap: canonical history advanced past a preparation; unpublished evidence was abandoned.");
       } catch { await gap(context.conversationId, context.current.digest, context.current.digest, "sidecar_unavailable"); }
       await context.assertOwned();
@@ -129,6 +129,7 @@ export function createContinuityParticipant(options: {
         await options.writer.prepareContinuity({ generationId, conversationId: mutation.conversationId,
           logicalConversationId: options.logicalConversationId(mutation.conversationId),
           beforeDigest: mutation.before.digest, afterDigest: mutation.after.digest, action: mutation.action, records });
+        await flushGaps();
       } catch (error) {
         await gap(mutation.conversationId, mutation.before.digest, mutation.after.digest,
           (error as { code?: string }).code === "continuity_quota_exhausted" ? "capture_quota" : "sidecar_unavailable");
@@ -138,7 +139,7 @@ export function createContinuityParticipant(options: {
       return {
         async commit(current) {
           await mutation.assertOwned();
-          try { await options.writer.commitContinuity({ generationId, conversationId: mutation.conversationId, canonicalDigest: current.digest }); }
+          try { await options.writer.commitContinuity({ generationId, conversationId: mutation.conversationId, canonicalDigest: current.digest }); await flushGaps(); }
           catch { await gap(mutation.conversationId, mutation.before.digest, current.digest, "sidecar_unavailable"); }
           await mutation.assertOwned();
         },
@@ -146,7 +147,7 @@ export function createContinuityParticipant(options: {
     },
     async resetLogical(context) {
       await context.assertOwned();
-      try { await options.writer.resetConversation(options.logicalConversationId(context.conversationId)); }
+      try { await options.writer.resetConversation(options.logicalConversationId(context.conversationId)); await flushGaps(); }
       catch { await gap(context.conversationId, null, null, "sidecar_unavailable"); }
       await context.assertOwned();
     },

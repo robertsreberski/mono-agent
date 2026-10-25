@@ -72,6 +72,7 @@ beforeAll(async () => {
     "tool-history/continuity-lifecycle",
     "tool-history/nested-history",
     "tool-history/continuity-payload",
+    "tool-history/continuity-purge",
     "tool-history/continuity-storage",
     "tool-history/continuity-reader",
     "tool-history/reader",

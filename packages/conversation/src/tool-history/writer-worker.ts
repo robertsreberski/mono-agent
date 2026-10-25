@@ -1,3 +1,4 @@
+import { acknowledgeContinuityPurge, pendingContinuityPurges } from "./continuity-purge.js";
 import { continuityGenerationId, recordContinuityGap } from "./continuity-storage.js";
 import type { ContinuityGapInput } from "./continuity-contracts.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -46,7 +47,7 @@ import { continueToolHistoryOperationTail } from "./worker-queue.js";
 import { TOOL_HISTORY_APPLICATION_ID, TOOL_HISTORY_DATABASE, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS, TOOL_HISTORY_OWNER_DATABASE, TOOL_HISTORY_SCHEMA, TOOL_HISTORY_USER_VERSION, toolHistoryRecordId, type ToolHistoryRetentionOptions, type ToolHistoryRunBinding } from "./contracts.js";
 
 import { CONTINUITY_USER_VERSION, type ContinuityPin, type ContinuityPreparation, type ContinuityPublication, type ContinuityReconciliation } from "./continuity-contracts.js";
-import { assertContinuitySchema, commitContinuity, continuityRetainedBytes, createContinuitySchema, hasContinuitySchema, pinContinuity, prepareContinuity, reconcileContinuity, resetContinuity, retainContinuity, readContinuityStats, unpinContinuity } from "./continuity-storage.js";
+import { assertContinuitySchema, clearPhysicalContinuity, commitContinuity, continuityRetainedBytes, createContinuitySchema, hasContinuitySchema, pinContinuity, prepareContinuity, reconcileContinuity, resetContinuity, retainContinuity, readContinuityStats, unpinContinuity } from "./continuity-storage.js";
 
 const DEFAULT_RETENTION: Required<ToolHistoryRetentionOptions> = {
   maxCompletedCalls: 100_000,
@@ -122,6 +123,7 @@ try {
   owner = await acquireOwner(ownerPath, ownerAcquireCeilingMs);
   assertToolDirectoryEntries();
   database = openContentDatabase(databasePath, retention, artifactRoot);
+  applyPendingContinuityPurges(database);
   closeDangling(database, undefined, "interrupted", "process_death", "recovered_after_writer_restart", true);
   applyRetention(database, retention);
   const recoveredDatabase = database;
@@ -155,6 +157,8 @@ parentPort.on("message", (request: WorkerRequest) => {
       return;
     }
     try {
+      // Also service intents created after this writer acquired its owner.
+      applyPendingContinuityPurges(database);
       switch (request.operation) {
         case "ready":
           respond(request.id, { schema: TOOL_HISTORY_SCHEMA, recovered: statValue(database, "recovered_calls") });
@@ -1696,4 +1700,17 @@ function nonNegativeInteger(value: number): number {
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A crash after SQLite commit may repeat a purge, but cannot resurrect old text.
+ * New writes are not admitted until every pre-existing intent is acknowledged. */
+function applyPendingContinuityPurges(database: DatabaseSync): void {
+  for (const purge of pendingContinuityPurges(root)) {
+    transaction(database, () => {
+      if (!hasContinuitySchema(database)) return;
+      if (purge.scope === "logical") resetContinuity(database, purge.conversationId);
+      else clearPhysicalContinuity(database, purge.conversationId);
+    });
+    acknowledgeContinuityPurge(root, purge.path);
+  }
 }

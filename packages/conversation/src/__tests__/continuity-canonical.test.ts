@@ -1,3 +1,6 @@
+import { DatabaseSync } from "node:sqlite";
+import { continuityRecordId } from "../tool-history/continuity-storage.js";
+import { pendingContinuityPurges, persistContinuityPurge } from "../tool-history/continuity-purge.js";
 import * as canonicalFiles from "../history/canonical/files.js";
 import { spawnSync } from "node:child_process";
 import { historyKey } from "../history/canonical/identity.js";
@@ -52,7 +55,7 @@ describe("owned canonical continuity publication", () => {
     await (await next.prepareCommit([message("Next canonical answer.")], { providerSessionSynced: true })).commit();
     expect(retirements).toBe(0);
     expect(warnings.some(text => text.includes("degraded"))).toBe(true);
-    expect(reader.continuityGaps(id).items.some(gap => gap.reason === "sidecar_unavailable")).toBe(true);
+    expect(reader.continuityGaps(id).items.some(gap => gap.reason === "sidecar_unavailable")).toBe(phase !== "protectedConversations");
     if (phase === "commitContinuity") expect(reader.searchContinuity(scope).items.map(r => r.preview)).toContain("Canonical answer survives the outage.");
     expect((await writer.stats()).continuity?.prepared).toBe(0);
   });
@@ -109,6 +112,118 @@ describe("owned canonical continuity publication", () => {
     expect(await store.load(id)).toEqual([]);
     expect(reader.latestContinuitySummary(scope)).toBeUndefined();
     expect((await writer.stats()).continuity?.pins).toBe(0);
+  });
+
+  it.each(["physical-reset", "logical-reset", "age-delete", "quota-delete"] as const)("durably owes a purge across a writer outage during %s", async mode => {
+    const dir = await root(), { store, writer, reader, continuity } = await setup(dir);
+    await store.append(id, [message("Text that must never survive its canonical purge.")]);
+    const old = reader.searchContinuity(scope).items[0]!;
+    await writer.close(); // Real unavailable writer, not a successful mock reset.
+    if (mode === "physical-reset") await store.reset(id);
+    else if (mode === "logical-reset") await store.resetLogicalConversation!(id);
+    else {
+      const limited = createDurableHistoryStore({ root: dir, continuity, ...(mode === "quota-delete" ? { maxConversations: 1 } : { maxAgeMs: 1, now: () => Date.now() + 100000 }) });
+      await limited.append("web:replacement", [message("Replacement canonical answer.")]);
+    }
+    expect(await store.load(id)).toEqual([]);
+    expect(pendingContinuityPurges(dir).length).toBeGreaterThan(0);
+    expect(reader.searchContinuity(scope)).toMatchObject({ available: false, items: [] });
+    expect(reader.getContinuity({ ...scope, recordId: old.recordId }).status).toBe("unavailable");
+    // Brand-new writer/participant: neither the purge nor read suppression depends
+    // on the old participant's in-memory outage queue.
+    const recovered = await setup(dir);
+    expect(pendingContinuityPurges(dir)).toEqual([]);
+    expect(recovered.reader.getContinuity({ ...scope, recordId: old.recordId }).status).toBe("unavailable");
+    expect((await recovered.writer.stats()).continuity?.records).toBe(0);
+    await recovered.store.append(id, [message("New text after purge recovery.")]);
+    await recovered.writer.stats(); await recovered.writer.stats();
+    expect(recovered.reader.searchContinuity(scope).items.map(row => row.preview)).toEqual(["New text after purge recovery."]);
+    expect(pendingContinuityPurges(dir)).toEqual([]); // Not re-applied to new capture.
+  });
+
+  it.each(["logical", "physical"] as const)("suppresses only the covered logical query while a %s journal awaits an already-open writer", async purgeScope => {
+    const dir = await root(), { writer, reader } = await setup(dir), child = `${id}:day:2026-10-01`;
+    const continuity = createContinuityParticipant({ writer, reader, logicalConversationId: conversation => conversation === child ? id : conversation, protectedConversations: () => [] });
+    const store = createDurableHistoryStore({ root: dir, continuity });
+    await store.append(child, [message("Older bucket quotation.")]);
+    await store.append("web:unrelated", [message("Unrelated quotation.")]);
+    const old = reader.searchContinuity(scope).items[0]!;
+    persistContinuityPurge(dir, { scope: purgeScope, conversationId: purgeScope === "logical" ? id : child });
+    expect(reader.searchContinuity(scope)).toMatchObject({ available: false, items: [] });
+    expect(reader.getContinuity({ ...scope, recordId: old.recordId }).status).toBe("unavailable");
+    expect(reader.latestContinuitySummary(scope)).toBeUndefined();
+    expect(reader.searchContinuity({ ...scope, logicalConversationId: "web:unrelated", currentConversationId: "web:unrelated" }).items).toHaveLength(1);
+    await writer.stats(); // Existing writer applies an intent created after acquisition.
+    expect(pendingContinuityPurges(dir)).toEqual([]);
+    expect(reader.getContinuity({ ...scope, recordId: old.recordId }).status).toBe("unavailable");
+    await store.append(child, [message("New bucket quotation.")]);
+    await writer.stats();
+    expect(reader.searchContinuity(scope).items.map(row => row.preview)).toEqual(["New bucket quotation."]);
+  });
+
+  it.each(["age", "quota"] as const)("evicts inactive stranded publish and checkpoint preparations by %s", async mode => {
+    const dir = await root(), { store, writer, reader, continuity } = await setup(dir);
+    for (const action of ["publish", "checkpoint"] as const) {
+      const conversationId = `web:stranded-${action}`;
+      await store.append(conversationId, [message(`Old ${action} answer.`)]);
+      const generation = reader.searchContinuity({ ...scope, logicalConversationId: conversationId, currentConversationId: conversationId }).items[0]!.generationId;
+      const database = new DatabaseSync(reader.databasePath, { readOnly: true });
+      const digest = (database.prepare("SELECT after_digest FROM continuity_generations WHERE generation_id=?").get(generation) as { after_digest: string }).after_digest;
+      database.close();
+      // Prepare directly to simulate process death after staging evidence. No
+      // active canonical marker or dirty fence remains to protect this owner.
+      await writer.prepareContinuity({ generationId: "chg1_" + (action === "publish" ? "a" : "b").repeat(32), conversationId, logicalConversationId: conversationId,
+        action, beforeDigest: digest, afterDigest: action === "checkpoint" ? digest : "b".repeat(64),
+        records: action === "checkpoint" ? [{ recordId: continuityRecordId(conversationId, "stranded-summary"), runId: "fictional-run", kind: "summary", sequence: 0, provenance: "generated", text: "A stranded checkpoint summary.",
+          source: { journalId: "fictional-journal", operationId: "fictional-operation" }, summary: { model: "faux:m", operationId: "fictional-operation", trigger: "mid-run", coverage: { sourceDigest: "a".repeat(64) } } }] : [] });
+      expect(digest).toBeTruthy();
+    }
+    expect((await writer.stats()).continuity?.prepared).toBe(2);
+    const limited = createDurableHistoryStore({ root: dir, continuity, ...(mode === "quota" ? { maxConversations: 1 } : { maxAgeMs: 1, now: () => Date.now() + 100000 }) });
+    await expect(limited.append("web:replacement", [message("An append that must fit.")])).resolves.toBeUndefined();
+    for (const action of ["publish", "checkpoint"]) {
+      expect(await store.load(`web:stranded-${action}`)).toEqual([]);
+      expect(reader.searchContinuity({ ...scope, logicalConversationId: `web:stranded-${action}`, currentConversationId: `web:stranded-${action}` }).items).toEqual([]);
+    }
+    expect((await writer.stats()).continuity?.prepared).toBe(0);
+    await limited.append("web:next", [message("Another append still fits.")]);
+  });
+
+  it("does not attribute a protection-query outage to a previously reconciled conversation", async () => {
+    const { reader, writer } = await setup(await root()), warnings: string[] = [];
+    const recordGap = vi.spyOn(writer, "recordContinuityGap");
+    const participant = createContinuityParticipant({ writer, reader, logicalConversationId: id => id,
+      protectedConversations: () => { throw new Error("Fictional retention query outage"); }, onWarning: text => warnings.push(text) });
+    await participant.reconcile({ conversationId: id, assertOwned: async () => {}, current: { digest: null, messages: [] } });
+    expect(await participant.protectedConversations()).toEqual([]);
+    expect(warnings).toHaveLength(1); expect(recordGap).not.toHaveBeenCalled();
+    expect(reader.continuityGaps(id).total).toBe(0);
+  });
+
+  it("defers outage gaps until a successful operation instead of making a second failing call", async () => {
+    const { writer, reader } = await setup(await root());
+    const reconcile = vi.spyOn(writer, "reconcileContinuity").mockRejectedValueOnce(new Error("Fictional outage"));
+    const recordGap = vi.spyOn(writer, "recordContinuityGap");
+    const participant = createContinuityParticipant({ writer, reader, logicalConversationId: id => id, protectedConversations: () => [] });
+    const context = { conversationId: id, assertOwned: async () => {}, current: { digest: null, messages: [] } };
+    await participant.reconcile(context);
+    expect(reconcile).toHaveBeenCalledTimes(1); expect(recordGap).not.toHaveBeenCalled();
+    await participant.reconcile(context);
+    expect(recordGap).toHaveBeenCalledTimes(1);
+    expect(reader.continuityGaps(id).items).toEqual([expect.objectContaining({ reason: "sidecar_unavailable" })]);
+  });
+
+  it("preserves the original preparation error type when reconciliation cleanup also fails", async () => {
+    const { store } = await setup(await root());
+    const original = Object.assign(new TypeError("Fictional classified preparation failure"), { code: "fictional_quota" });
+    let recovery: ReturnType<typeof vi.spyOn> | undefined;
+    const stage = vi.spyOn(store as any, "writeStage").mockImplementationOnce(async () => {
+      recovery = vi.spyOn(store as any, "reconcileContinuity").mockRejectedValueOnce(new Error("Fictional recovery failure"));
+      throw original;
+    });
+    try { await expect(store.prepareAppend!(id, [message("Unpublished answer.")])).rejects.toBe(original); }
+    finally { stage.mockRestore(); recovery?.mockRestore(); }
+    expect((await store.stats()).postCommitMaintenanceFailures).toBeGreaterThan(0);
   });
 
   it.each(["bounds", "quota"] as const)("records a content-free gap when capture exceeds %s", async reason => {
