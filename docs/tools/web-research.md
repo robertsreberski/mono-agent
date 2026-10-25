@@ -528,6 +528,10 @@ mono-agent web-control status --json
 mono-agent web-control reset --json
 ```
 
+The permanent, empty `.mutation-gate.sqlite` file in the same directory
+serializes stale-lock recovery between processes. A busy or unsafe gate fails
+closed as `coordination_unavailable`.
+
 Status reports only operational metadata. Reset clears validated state only when
 there are no active requests. It does not repair unsafe permissions or corrupt
 JSON; stop opted-in consumers and inspect the private directory before manual

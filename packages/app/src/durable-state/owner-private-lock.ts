@@ -162,13 +162,15 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
   const deadline = now() + timeout;
   let attempts = 0;
   let retriedMissingAtDeadline = false;
+  // A caller with a wait budget never waits on the mutation gate past it.
+  const gateBudget = timeout > 0 ? () => Math.max(0, deadline - now()) : undefined;
 
   for (;;) {
     if (options.maxAcquireAttempts !== undefined && attempts >= options.maxAcquireAttempts) return undefined;
     options.beforeIteration?.();
     attempts += 1;
     const token = checkedToken(randomToken(), options.label);
-    const held = await gated(options, async () => {
+    const held = await gated(options, gateBudget, async () => {
       let created: Identity | undefined;
       try {
         await mkdir(options.path, { mode: 0o700 });
@@ -242,7 +244,7 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
         }
       }
       if (stale) {
-        if (await quarantine(options, observed, pid, now, randomToken) === "retry") continue;
+        if (await quarantine(options, observed, pid, now, randomToken, gateBudget) === "retry") continue;
         return undefined;
       }
       if ((options.maxAcquireAttempts !== undefined && attempts >= options.maxAcquireAttempts)
@@ -298,7 +300,7 @@ function makeHeld(
         throw unsafe(options, `${options.label} identity or owner changed before release; the replacement was left untouched.`);
       }
       await releaseOptions.beforeRename?.(options.path);
-      const releasedPath = await gated(options, async () => {
+      const releasedPath = await gated(options, undefined, async () => {
         if (!await matchesObserved(options.path, options, expected)) {
           throw unsafe(options, `${options.label} changed at the release boundary; the replacement was left untouched.`);
         }
@@ -528,12 +530,13 @@ async function quarantine(
   pid: number,
   now: () => number,
   randomToken: () => string,
+  gateBudget?: () => number,
 ): Promise<"retry" | "return"> {
   // Liveness was decided outside the gate. Under it, the exact observed
   // directory and owner identity must still match before that cached death
   // proof is used; a dead incarnation never resurrects.
   await options.beforeStaleRename?.(options.path);
-  const outcome = await gated(options, async (): Promise<"retry" | "return" | { readonly detached: string }> => {
+  const outcome = await gated(options, gateBudget, async (): Promise<"retry" | "return" | { readonly detached: string }> => {
     const current = await compareObserved(options.path, options, expected);
     if (current === undefined) return "retry";
     if (!current) {
@@ -806,9 +809,17 @@ function checkedToken(value: string, label: string): string {
 function unsafe(options: OwnerPrivateLockOptions, cause: string, details: Readonly<Record<string, unknown>> = {}): Error {
   return options.unsafeError?.(cause, details) ?? new Error(cause);
 }
-async function gated<T>(options: OwnerPrivateLockOptions, operation: () => Promise<T>): Promise<T> {
+async function gated<T>(
+  options: OwnerPrivateLockOptions,
+  budget: (() => number) | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
   if (options.mutationGate === undefined) return await operation();
-  return await withOwnerLockMutationGate(options.mutationGate, options.label, async () => {
+  const remaining = budget?.();
+  const gate = remaining === undefined
+    ? options.mutationGate
+    : { ...options.mutationGate, busyTimeoutMs: Math.min(options.mutationGate.busyTimeoutMs ?? remaining, remaining) };
+  return await withOwnerLockMutationGate(gate, options.label, async () => {
     await options.mutationStep?.("gate-acquired", options.path);
     return await operation();
   });

@@ -4,7 +4,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
-import { acquireOwnerPrivateLock } from "../durable-state/owner-private-lock.js";
+import {
+  acquireOwnerPrivateLock, type OwnerPrivateLock, type OwnerPrivateLockMutationStep,
+} from "../durable-state/owner-private-lock.js";
+import { OwnerLockCoordinationBusyError } from "../durable-state/owner-lock-mutation-gate.js";
 import {
   HISTORY_PROCESS_INCARNATION_SCHEMA, PROCESS_INCARNATION_SCHEMA, currentProcessIncarnation, isProcessIncarnationLive,
   processIncarnationFromJson, type ProcessIncarnation,
@@ -19,15 +22,71 @@ type Bucket = { nextAt: number; cooldownUntil: number; strikes: number; failures
 type State = { schema: "mono-agent.web-control.v1"; buckets: Record<string, Bucket>; quota?: { checkedAt: number; value: unknown } };
 const MAX_STATE_BYTES = 256 * 1024;
 const MAX_BUCKETS = 512;
+/** Same bounded wait for the lock and for its mutation gate; both end in `coordination_unavailable`. */
+const LOCK_WAIT_MS = 2000;
+const LOCK_RELEASE_RETRY_BASE_MS = 250;
+const LOCK_RELEASE_RETRY_MAX_MS = 30_000;
+/** Permanent cross-process gate beside the lock; never removed by reset. */
+export const WEB_CONTROL_MUTATION_GATE = ".mutation-gate.sqlite";
 const defaults: Readonly<Record<string, readonly [number, number]>> = { searxng: [1, 2000], ollama: [1, 2000], duckduckgo: [1, 3000], startpage: [1, 3000], codex: [1, 0], fetch: [2, 500] } as const;
 
 function webControlDirectory(): string { return join(homedir(), ".mono-agent", "web-control"); }
+
+type LockOptions = Parameters<typeof acquireOwnerPrivateLock>[0];
+
+/**
+ * The exact web-control lock protocol. Directory creation through owner
+ * publication and every final check-then-rename run under the gate; the
+ * secure state compare-and-swap stays the second layer.
+ */
+export function webControlLockOptions(
+  directory: string,
+  seams: { readonly gateBusyTimeoutMs?: number; readonly mutationStep?: LockOptions["mutationStep"] } = {},
+): LockOptions {
+  return {
+    path: join(directory, ".lock"), label: "Web request coordination",
+    schemaTag: "mono-agent.web-control-lock.v1", ownerlessGraceMs: 5000,
+    waitTimeoutMs: LOCK_WAIT_MS, pollIntervalMs: 25, invalidOwner: "error",
+    mutationGate: { path: join(directory, WEB_CONTROL_MUTATION_GATE), busyTimeoutMs: seams.gateBusyTimeoutMs ?? LOCK_WAIT_MS },
+    ...(seams.mutationStep === undefined ? {} : { mutationStep: seams.mutationStep }),
+  };
+}
+
+/**
+ * A busy gate during release proves nothing moved: this process still validly
+ * holds the lock and its state change is already committed. Finish the release
+ * in the background with capped backoff instead of failing the transaction.
+ */
+async function releaseLock(lock: OwnerPrivateLock): Promise<void> {
+  try {
+    await lock.release();
+  } catch (error) {
+    if (!(error instanceof OwnerLockCoordinationBusyError)) throw error;
+    retryLockRelease(lock, 0);
+  }
+}
+
+function retryLockRelease(lock: OwnerPrivateLock, deferrals: number): void {
+  const timer = setTimeout(() => {
+    lock.release().catch((error: unknown) => {
+      // Any other failure leaves the lock to the normal live/dead-owner policy.
+      if (error instanceof OwnerLockCoordinationBusyError) retryLockRelease(lock, deferrals + 1);
+    });
+  }, Math.min(LOCK_RELEASE_RETRY_MAX_MS, LOCK_RELEASE_RETRY_BASE_MS * 2 ** Math.min(deferrals, 16)));
+  timer.unref?.();
+}
 
 /** Host-owned operational state only: no queries, documents, or credentials. */
 export function createHostWebRequestCoordinator(options: {
   directory?: string;
   now?: () => number;
   spacingScale?: number;
+  /** Test-only seams for the cross-process lock. */
+  lockSeams?: {
+    readonly gateBusyTimeoutMs?: number;
+    readonly mutationStep?: (step: OwnerPrivateLockMutationStep, path: string) => void | Promise<void>;
+    readonly beforeRelease?: () => void | Promise<void>;
+  };
 } = {}): Coordinator & { inspect(): Promise<unknown>; reset(): Promise<void> } {
   const directory = options.directory ?? webControlDirectory();
   const now = options.now ?? Date.now;
@@ -43,11 +102,9 @@ export function createHostWebRequestCoordinator(options: {
 
   async function unsafeTransaction<T>(change: (state: State) => Promise<T> | T): Promise<T> {
     await prepare();
-    const lock = await acquireOwnerPrivateLock({
-      path: join(directory, ".lock"), label: "Web request coordination",
-      schemaTag: "mono-agent.web-control-lock.v1", ownerlessGraceMs: 5000,
-      waitTimeoutMs: 2000, pollIntervalMs: 25, invalidOwner: "error",
-    });
+    // A gate still busy at the end of the wait, or an unsafe gate, surfaces as the
+    // same fail-closed `coordination_unavailable` as a lock that stays held.
+    const lock = await acquireOwnerPrivateLock(webControlLockOptions(directory, options.lockSeams));
     if (!lock) throw unavailable();
     try {
       const snapshot = await readVerifiedFile(statePath, {
@@ -73,7 +130,10 @@ export function createHostWebRequestCoordinator(options: {
         } : { kind: "missing" } },
       });
       return result;
-    } finally { await lock.release(); }
+    } finally {
+      await options.lockSeams?.beforeRelease?.();
+      await releaseLock(lock);
+    }
   }
 
   async function transaction<T>(change: (state: State) => Promise<T> | T): Promise<T> {

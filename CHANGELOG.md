@@ -129,6 +129,10 @@
   "updating agent-root ownership" retry error, and an insecure or modified
   gate fails closed. Every owner lock now moves a wrongly displaced live lock back. Older
   binaries can still trigger the original race until they are upgraded.
+- Apply the same stale-lock fix to host web-request coordination: its lock now
+  passes through `~/.mono-agent/web-control/.mutation-gate.sqlite`. A gate that
+  stays busy through the two-second lock wait, or an unsafe gate, returns the
+  existing `coordination_unavailable` outcome.
 - Keep the source conversation of new memories durably: BuJo capture, Remember
   and completed-turn summaries add optional `source_session` metadata to their
   daily bullets, which survives reconcile, restart and rebuild. Memories without
