@@ -161,6 +161,18 @@ describe("owned canonical continuity publication", () => {
     expect(reader.searchContinuity(scope).items.map(row => row.preview)).toEqual(["New bucket quotation."]);
   });
 
+  it.each(["web:fiction\nchild", "web:fiction\u0001child", "web:" + "\u0001".repeat(4092)])("does not narrow legacy canonical reset IDs through the sidecar journal (%#)", async conversationId => {
+    const dir = await root(), { writer, store } = await setup(dir);
+    await store.append(conversationId, [message("Canonical-only quotation.")]);
+    await writer.close();
+    await expect(store.resetLogicalConversation!(conversationId)).resolves.toBeUndefined();
+    expect(await store.load(conversationId)).toEqual([]);
+    expect(pendingContinuityPurges(dir).length).toBeGreaterThan(0);
+    const recovered = await setup(dir);
+    expect(pendingContinuityPurges(dir)).toEqual([]);
+    expect((await recovered.writer.stats()).continuity?.records).toBe(0);
+  });
+
   it.each(["age", "quota"] as const)("evicts inactive stranded publish and checkpoint preparations by %s", async mode => {
     const dir = await root(), { store, writer, reader, continuity } = await setup(dir);
     for (const action of ["publish", "checkpoint"] as const) {

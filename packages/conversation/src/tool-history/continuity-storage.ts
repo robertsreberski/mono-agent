@@ -274,8 +274,9 @@ export function clearPhysicalContinuity(database: DatabaseSync, conversationId: 
   database.prepare("DELETE FROM continuity_generations WHERE conversation_id=? AND generation_id<>?").run(conversationId, exceptGenerationId);
 }
 
+// External writer requests validate tool-history IDs at IPC admission. Canonical
+// purge journals use the wider canonical ID contract and may safely match no rows.
 export function resetContinuity(database: DatabaseSync, logicalId: string): void {
-  normalizeId(logicalId, "logicalConversationId");
   database.prepare(`DELETE FROM continuity_pins WHERE record_id IN
     (SELECT r.record_id FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE g.logical_id=?)`).run(logicalId);
   database.prepare("DELETE FROM writer_stats WHERE key IN (SELECT 'idempotency_conflicts:continuity:' || generation_id FROM continuity_generations WHERE logical_id=?)").run(logicalId);
