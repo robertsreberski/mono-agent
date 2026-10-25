@@ -1,6 +1,6 @@
 # App manual smoke index
 
-These five standalone, by-path proof programs use real built app/runtime seams.
+These six standalone, by-path proof programs use real built app/runtime seams.
 They are registered as non-production Knip entries, not dead fixtures. They do
 not launch an interactive console, call a paid model, or install a supervisor.
 Registration is not passing smoke evidence; choose and run a scenario explicitly.
@@ -14,6 +14,7 @@ pnpm --filter '@mono-agent/app...' run build
 
 | Program (relative to `packages/app/`) | Purpose | Run from repository root | Opt-in / prerequisites |
 | --- | --- | --- | --- |
+| `scripts/smoke-continuity-pack.mjs` | Configured B1 owner/tool capture past 64 messages, cold model change and actual provider pack inspection. | `node packages/app/scripts/smoke-continuity-pack.mjs` | Fresh built app closure; scripted provider and loopback fictional-mail MCP only; no paid call. |
 | `scripts/smoke-subagent-stop.mjs` | Real retained native stop/resume/close, provider-failure → retained → inspect/ack → same-child continuation (failed drafts excluded, paired tool evidence), private full-answer artifacts and wake references, and bounded stop of an uncooperative child without prematurely releasing capacity. | `node packages/app/scripts/smoke-subagent-stop.mjs` | Explicit local invocation; controlled transport. |
 | `scripts/smoke-subagent-steer.mjs` | Steer a running managed subagent through the real Pi live-input path and verify the resulting context/evidence. | `node packages/app/scripts/smoke-subagent-steer.mjs` | Explicit local invocation; controlled transport. |
 | `src/__tests__/fixtures/managed-subagent-proof.mjs` | Built ownership/job-store/process seam round-trip using controlled model transport. | `node packages/app/src/__tests__/fixtures/managed-subagent-proof.mjs 250` | Optional duration argument: integer milliseconds, 1–180000 (default 250). |

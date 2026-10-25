@@ -82,8 +82,8 @@ stopping writers and restoring the backup, not disabling model switching.
 sanitized user and assistant text, permitted tool text and the latest portable
 compaction summary in the existing conversation tool-history sidecar. It does
 not require a memory backend or a durable provider-session root. This is
-retrievable evidence, not an active-state ledger, automatic recall or permission
-to repeat an old action.
+retained evidence, not an active-state ledger or permission to repeat an old action.
+Deterministic cold packs make a bounded selection available without retrieval.
 
 ```json
 { "runtime": { "session": { "continuity": { "enabled": false } } } }
@@ -113,6 +113,111 @@ tool-lifecycle payloads share the existing 256 MiB retention budget. Live pins
 never silently expire: exhausted pinned capacity reports degraded continuity
 rather than invalidating references. Conversation reset and
 `restart --clear-sessions` remove this evidence with the existing sidecar.
+
+### Deterministic cold continuity packs
+
+`runtime.session.continuity.packEnabled` defaults to `true`. At a cold canonical
+history rebuild, a conversation-owned local supplier reads committed, finalized
+v3 evidence without a model call. It carries whole historical host-owner
+quotations (oldest first), finalized tool names/states/compact arguments and
+bounded result heads, the latest proof-promoted pinned portable summary, and coverage/omission counts.
+Other speakers/imports are neutral evidence; tools and summaries are not owner
+instructions. Past owner requests remain subordinate to current instructions and
+never renew approval to repeat an effect. B1 retains successful finalized tool
+text, so failed/unknown effects without such a record are not inferred as sent.
+Owner entries are explicitly requests, not proof that an action happened. Only
+captured tool records show outcomes; absent an outcome, status remains unknown.
+The renderer reserves 40% of usable content space for tool records before owner
+selection; unused reservation returns to owners. Snapshots carry no MCP
+`readOnlyHint` annotations or catalog classification, so a conservative name-only
+rule ranks the first recognized action verb (`send`, `draft`, `write`, `create`,
+`update`, `delete`, and similar mutation verbs) ahead of reads and unknown names.
+Read verbs win when encountered first (`get_draft` remains a lookup). MCP/server
+namespaces are stripped, and snake/kebab/camel-case names are recognized. This
+ranking never proves an effect: captured `final_state` and result text remain the
+evidence. Reads fill remaining tool space. Ordinal order is retained within each
+priority group; no paid extraction or storage migration is involved.
+Result heads keep whole paragraphs (at most 2048 UTF-8 bytes); a larger first
+paragraph and oversized arguments are omitted explicitly, never clipped.
+
+The pack has an 8000 estimated-token ceiling, lowered by the actual target's
+compaction trigger (including `maxInputTokens`), instructions, tools, replay,
+current input, output reserve and safety headroom. Below 500 tokens of remaining
+trigger headroom it is skipped (`trigger_headroom`); adding optional evidence
+must not cause a proactive summary. Whole entries win in priority order; newer entries are omitted first
+within each section. Coverage is bounded (512 source records / 4 MiB per read),
+not a complete account. Sidecar failures, pending purges, missing continuation
+boundaries and overflow warn with content-free diagnostics and fall back to
+permitted canonical reconstruction, with a gap/omission marker when space allows.
+Before frozen-source reuse, one bounded visibility query verifies every retained
+record identity/digest under the same scope, including the summary pin. A pending
+or completed purge, tombstone or loss of visibility drops the snapshot and pack.
+Malformed tool payloads exclude only that record, not healthy sibling evidence.
+Independent lifecycle retention may remove `tool_calls` while a per-turn snapshot
+still carries their finalized payload; that frozen evidence remains valid until
+the turn ends (retention is not a privacy purge).
+
+One source snapshot is frozen per turn and reused across resume-error retry and
+the router's stateless retries/backups. Packs are added at the runtime's actual
+seed decision: cold model changes, legacy unbound records, missing/expired/idle
+reseed, restart without a retained native journal, and unsafe cancellation/failure
+recovery. A seeded pack persists once in the native transcript; a true native
+resume (including durable reopen) does not append another. A warm legacy
+`clean_break` reopen keeps its existing current-input-only seed: the pack renders
+against empty replay and never adds an unbudgeted canonical transcript. If a
+pack-time projection reread fails, the already prepared replay is preserved with
+a content-free warning rather than silently dropping tool evidence. Its input tokens are
+included in ordinary provider request usage, not a separate paid operation.
+`continuity_pack_injected` telemetry reports boundary reason, section counts,
+omissions, token estimate, degradation and uncertain window overlap; these are
+supplied-evidence facts, not proof of delivery or exact token occupancy. Only
+actually supplied packs emit this event; an offered-but-empty or degraded skip
+emits `continuity_pack_skipped` instead, never an injection count. A truly empty
+snapshot with no omission or coverage gap contributes no header or input tokens.
+
+Packs follow canonical replay's **physical day bucket**, not logical retrieval's
+cross-bucket scope: daily rollover does not silently inherit yesterday's pack.
+Continuation packs stop at the origin's `historyBoundary`; if its retained record
+is unavailable, no later state is substituted. Native model-switch handoffs keep
+their existing protocol; subagent instances are outside this feature. A missing
+native session seeded for **manual compaction** currently gets no pack; that gap
+belongs to the later compaction-boundary work, not this cold-turn slice.
+
+Canonical messages retain `runId` after reload, but not process-local input
+stamps. Owner deduplication uses exact shared input IDs when available, or a
+complete-run identity proof: the run's snapshot owner count must equal its
+replayed canonical user count. Run presence alone is insufficient. Bounded,
+gapped or degraded snapshots and runs with other/unverified user evidence do not
+qualify; a run straddling the 64-message window retains its owner records. No
+text matching or partial-run heuristic removes quotations.
+
+Pack tool entries show `invocation_id`; their invocation and result identities
+are excluded from the bounded legacy tool projection, so a single finalized
+lifecycle is not presented twice. Exclusions never refill the projection with
+older calls. The content-free `ownerDeduped` count reports owner records removed
+by identity proof; `toolReserved` counts tool entries selected in the reserved
+40% (not tokens). `unknownOverlap` still reports retained entries whose run also
+occurs in replay, or whose overlap cannot be ruled out because identities are
+absent. Remaining uncertain overlap is retained, not guessed away.
+
+Set `packEnabled: false` to retain recording and `ConversationHistory` retrieval
+without pack injection. `enabled: false` takes precedence and preserves the
+legacy path, with no pack read. No pack supplier is offered without prior
+canonical replay or an explicit cold reason. There is no upkeep/model extraction
+call for any run kind:
+
+| Run kind | Pack input cost |
+| --- | --- |
+| Brand-new conversation / first turn of a new daily bucket | None; no historical pack or empty header |
+| Isolated proactive or continuation turn with no prior replay | None, even if shared retained evidence exists |
+| Cold rebuild with prior canonical history | Up to the trigger-limited 8000-token pack on the seeded request |
+| Pinned continuation with prior replay | Same bound per isolated execution, stopping at the origin boundary |
+| `per-message` mode | Same bound on each turn that replays prior history; no first-turn empty pack |
+| True warm resume / durable reopen | No additional injection; a previously seeded pack may remain in ordinary request/cache input accounting |
+
+A real omission or coverage gap may still contribute a bounded content-free
+marker on eligible reconstruction. History-free isolated turns do not pay for
+that marker merely because a shared store is degraded.
 
 The latest portable summary is generated evidence, not a user instruction.
 Recording is awaited across manual, pre-turn, reactive and mid-run compaction.

@@ -127,3 +127,11 @@ sanitized text and portable summaries without a memory backend, but does not
 change fallback reconstruction or prove improved semantic continuity. Back up
 canonical history and the sidecar and stop older writers before the one-way v3
 migration. See [retained evidence](/runtime/sessions-concurrency/#retained-conversation-evidence-default-on).
+
+Cold rebuilds also receive default-on deterministic continuity evidence via
+`runtime.session.continuity.packEnabled`. The same local source snapshot is reused
+for stateless retry and backup fallback, without calling the failed primary for
+upkeep. True native resumes do not append another pack. Disable `packEnabled` for
+a store-only control; disable `continuity.enabled` for the legacy path. Bounds,
+purge suppression and overlap limits are described in
+[deterministic cold packs](/runtime/sessions-concurrency/#deterministic-cold-continuity-packs).

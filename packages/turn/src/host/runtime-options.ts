@@ -49,6 +49,7 @@ export interface MonoRuntimeAttemptResolution {
     readonly persistArtifact?: never;
     /** Host conversation replay cannot be supplied by a private route resolver. */
     readonly detachedContext?: never;
+    readonly coldContext?: never;
   };
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<

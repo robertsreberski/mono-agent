@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
+import { ARMS, AVAILABLE_ARM_IDS, BASELINE_ARM, CONTINUITY_OFF, CONTINUITY_ON, CONTINUITY_PACK_ON, DEFAULT_ARMS, NOT_AVAILABLE, ORIGINAL_ARM_IDS, SMALL_PROACTIVE_COMPACTION, armById, checkpointKey, mergePatch, pressureMetrics, verifyBoundary, verifyPressure, verifyStore } from "../lib/continuity-arms.mjs";
 import { classifyHistoryResult } from "../lib/continuity-runner.mjs";
 import { estimateCost, inventory, loadTraces, makePlan, parseSeeds, sourceOnly, validateTrace } from "../lib/continuity-dataset.mjs";
 import { COLD_BOUNDS, GENERATOR_VERSION, HARD_SEEDS, LONG_RULES, generateTrace, mulberry32, outsideColdBounds, traceShape } from "../lib/continuity-generator.mjs";
@@ -156,8 +156,8 @@ describe("continuity scoring (deterministic)", () => {
 
 describe("continuity arms and plan", () => {
   it("declares production-config arms with the native baseline first and planned B arms unavailable", () => {
-    expect(AVAILABLE_ARM_IDS).toEqual(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact", "continuity-store", "continuity-store-compaction"]);
-    expect(ARMS.filter((arm) => !arm.available).map((arm) => arm.id)).toEqual(["continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
+    expect(AVAILABLE_ARM_IDS).toEqual(["native", "cold-rebuild", "compaction-1", "compaction-2", "ceiling", "restart-switch-compact", "continuity-store", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary"]);
+    expect(ARMS.filter((arm) => !arm.available).map((arm) => arm.id)).toEqual(["continuity-pack-per-turn", "pack+stubs"]);
     for (const arm of ARMS) {
       expect(arm.probeConfig).toBeTypeOf("object");
       expect(arm.expect).toBeTypeOf("object");
@@ -189,7 +189,7 @@ describe("continuity arms and plan", () => {
   });
 
   it("pins retained conversation evidence off for every pre-B1 arm and on for the B arms", () => {
-    const bArms = new Set(["continuity-store", "continuity-store-compaction", "continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
+    const bArms = new Set(["continuity-store", "continuity-store-compaction", "continuity-pack-cold", "continuity-pack-boundary", "continuity-pack-per-turn", "pack+stubs"]);
     for (const arm of ARMS) {
       const enabled = arm.sessionConfig?.runtime?.session?.continuity?.enabled;
       expect(enabled, arm.id).toBe(!bArms.has(arm.id) ? false : true);
@@ -200,7 +200,24 @@ describe("continuity arms and plan", () => {
     const store = armById("continuity-store");
     expect(store).toMatchObject({ available: true, replayBinding: "alternate", fork: "in-place", expect: { probeBoundary: "model_change", probeCompactions: 0 } });
     expect(store.probeConfig).toEqual({ tools: { allowedTools: ["ConversationHistory"] } });
+    expect(CONTINUITY_ON.runtime.session.continuity).toEqual({ enabled: true, packEnabled: false });
+    for (const id of ["continuity-pack-cold", "continuity-pack-boundary", "continuity-pack-per-turn"]) {
+      const pack = armById(id);
+      expect(pack.sessionConfig).toEqual(CONTINUITY_PACK_ON);
+      expect(pack.sessionConfig.runtime.session.continuity).toEqual({ enabled: true, packEnabled: true });
+      expect(pack).toMatchObject({ replayBinding: "alternate", expect: { probeBoundary: "model_change", probeCompactions: 0 } });
+    }
     expect(armById("continuity-store-compaction").probeConfig).toEqual({ tools: { allowedTools: ["ConversationHistory"] }, runtime: { compaction: SMALL_PROACTIVE_COMPACTION } });
+  });
+
+  it("requires actual cold pack receipts without turning expected overflow into a missing treatment", () => {
+    const arm = armById("continuity-pack-cold"), checkpointContinuity = { records: 10, degraded: false };
+    const observed = { toolsOffered: ["ConversationHistory"], historyWarnings: 0, continuityPacks: [] };
+    expect(verifyStore(arm, { checkpointContinuity, observed }).reasons).toContain("continuity_pack_not_injected");
+    observed.continuityPacks.push({ reason: "model_change", tokens: 8000, ownerEntries: 3, toolEntries: 2, summaryEntries: 0, evidenceEntries: 0, degradedReason: "overflow" });
+    expect(verifyStore(arm, { checkpointContinuity, observed }).healthy).toBe(true);
+    observed.continuityPacks[0].degradedReason = "purge_pending";
+    expect(verifyStore(arm, { checkpointContinuity, observed }).healthy).toBe(false);
   });
 
   it("treats a degraded store as an invalid trial and classifies ConversationHistory results", () => {
@@ -241,13 +258,17 @@ describe("continuity arms and plan", () => {
     expect(pilot.workload).toEqual({ probeTurns: probes * 4 * 2, midCheckpointCompactions: 4 * 2, liveTurns: probes * 8,
       expectedCompactions: 2 * (probes * 2 + 4), judgeCalls: 4 * 4 * 2 });
     expect(pilot.arms.map((arm) => arm.id)).toEqual(ORIGINAL_ARM_IDS);
-    expect(() => makePlan({ traces, sha256, arms: ["native", "continuity-pack-boundary"] })).toThrow("arm_not_available_at_revision:continuity-pack-boundary");
+    expect(() => makePlan({ traces, sha256, arms: ["native", "continuity-pack-per-turn"] })).toThrow("arm_not_available_at_revision:continuity-pack-per-turn");
     expect(() => makePlan({ traces, sha256, arms: ["native", "pack+stubs"] })).toThrow("arm_not_available_at_revision:pack+stubs");
     expect(() => makePlan({ traces, sha256, arms: ["native", "ceiling"] })).toThrow("arm_not_applicable_to_family:ceiling:original");
     const estimate = estimateCost(pilot, traces, { "openai-codex:gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01 }, "openai-codex:gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1 } });
     expect(estimate.status).toBe("estimated");
     expect(estimate.upperUsd).toBeGreaterThanOrEqual(estimate.expectedUsd);
     expect(estimateCost(pilot, traces, {}).status).toBe("unknown_price");
+    const paired = makePlan({ traces, sha256, arms: ["native", "cold-rebuild", "continuity-store", "continuity-pack-cold", "continuity-pack-boundary"] });
+    const pairedEstimate = estimateCost(paired, traces, { [paired.reader.model]: { input: 0.1, output: 0.5, cacheRead: 0.01 } });
+    expect(pairedEstimate.arms["continuity-pack-cold"].inputTokens - pairedEstimate.arms["continuity-store"].inputTokens).toBe(probes * 3 * 8000);
+    expect(pairedEstimate.arms["continuity-pack-boundary"]).toEqual(pairedEstimate.arms["continuity-pack-cold"]);
     expect(pilot.reader).toEqual({ model: "openai-codex:gpt-6-luna", effort: "low" });
     expect(pilot.judge).toMatchObject({ model: "openai-codex:gpt-6.1-sol", scope: "next_action" });
     expect(() => makePlan({ traces, sha256, arms: ["cold-rebuild"] })).toThrow("baseline_arm_required");
@@ -294,11 +315,11 @@ describe("continuity offline contract run (production harness, scripted provider
   it("replays one trace through every arm and verifies each boundary", async () => {
     const output = await scratch();
     const lines = [];
-    const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact", "continuity-store"];
+    const arms = [...ORIGINAL_ARM_IDS, "restart-switch-compact", "continuity-store", "continuity-pack-cold"];
     const code = await main(["--trace", "brightline-return", "--probe-limit", "1", "--concurrency", "5", "--arms", arms.join(","), "--output", output], { env: {}, stdout: (line) => lines.push(line) });
-    expect(code).toBe(1); // 6 of 24 units: the other traces were not selected.
+    expect(code).toBe(1); // 7 of 28 units: the other traces were not selected.
     const results = JSON.parse(await readFile(join(output, "results.json"), "utf8"));
-    expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 6, unitsExpected: 24 } });
+    expect(results).toMatchObject({ executionKind: "offline", qualityMeasured: false, coverage: { unitsComplete: 7, unitsExpected: 28 } });
     const units = Object.fromEntries(await Promise.all((await readdir(join(output, "units"))).map(async (name) => {
       const unit = JSON.parse(await readFile(join(output, "units", name), "utf8"));
       return [unit.arm, unit];
@@ -333,6 +354,17 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(storeTrial.boundary.observed.boundaries[0]).toMatchObject({ kind: "resume_replay", reason: "model_change" });
     expect(units["cold-rebuild"].trials[0].boundary.observed.toolsOffered).toEqual([]);
     expect(results.summary.arms["continuity-store"].toolUse).toMatchObject({ offered: 1, used: 1, rate: 1 });
+    const packed = units["continuity-pack-cold"].trials[0];
+    expect(packed.store).toEqual({ applicable: true, healthy: true, reasons: [] });
+    expect(packed.boundary.observed.continuityPacks).toEqual([expect.objectContaining({ reason: "model_change" })]);
+    const receipt = packed.boundary.observed.continuityPacks[0];
+    expect(receipt.ownerEntries).toBeGreaterThan(0); expect(receipt.toolEntries).toBeGreaterThan(0);
+    expect(receipt.ownerDeduped).toBeGreaterThanOrEqual(0); expect(receipt.toolReserved).toBeGreaterThan(0);
+    expect(receipt.tokens).toBeGreaterThan(0); expect(receipt.tokens).toBeLessThanOrEqual(8000);
+    expect(packed.boundary.observed.offlineProviderPackCounts).toEqual([1, 1]);
+    expect(storeTrial.boundary.observed.continuityPacks).toEqual([]);
+    expect(storeTrial.boundary.observed.offlineProviderPackCounts).toEqual([0, 0]);
+    expect(units["cold-rebuild"].trials[0].boundary.observed.offlineProviderPackCounts).toEqual([0]);
     expect(await readFile(join(output, "summary.md"), "utf8")).toContain("NOT model quality");
     expect(await readdir(output)).not.toContain("work");
   }, 180_000);

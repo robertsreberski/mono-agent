@@ -49,6 +49,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<keyof typeof CORE_CONFIG_FIELD_IDS, Conf
   "runtime.session.isolateProactive": "boolean",
   "runtime.session.modelSwitch.enabled": "boolean",
   "runtime.session.continuity.enabled": "boolean",
+  "runtime.session.continuity.packEnabled": "boolean",
   "concurrency.maxConcurrentRuns": "integer",
   "concurrency.maxPendingRuns": "integer",
   "context.identityPath": "string",
@@ -813,10 +814,13 @@ it("publishes switching prerequisites without a stopped-writer config acknowledg
   expect(enabled.description).toContain("Web");
 });
 
-it("publishes the default-on continuity capability without adding B2 or B3 settings", () => {
+it("publishes default-on recording and packs without paid upkeep or clearing settings", () => {
   const field = allConfigReferenceFields().find((f) => f.jsonPath === "runtime.session.continuity.enabled")!;
   expect(schemaForField(field)).toMatchObject({ type: "boolean", default: true });
   expect(field.description).toContain("ConversationHistory");
+  const pack = allConfigReferenceFields().find(f => f.jsonPath === "runtime.session.continuity.packEnabled")!;
+  expect(schemaForField(pack)).toMatchObject({ type: "boolean", default: true });
+  expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { packEnabled: false } } } })).toEqual([]);
   expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { enabled: true } } } })).toEqual([]);
   expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { maintenanceMode: "boundary" } } } }))
     .toContain("runtime.session.continuity.maintenanceMode");

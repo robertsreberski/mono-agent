@@ -287,14 +287,16 @@ export function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig[
   const isolateProactive = jsonOptionalBoolean(session.isolateProactive, "runtime.session.isolateProactive");
   const continuityJson = jsonRecord(session.continuity, "runtime.session.continuity");
   if (continuityJson) {
-    const unknownKeys = Object.keys(continuityJson).filter(key => key !== "enabled").sort();
-    if (unknownKeys.length) throw new MonoAgentConfigError("invalid_json", "runtime.session.continuity supports only enabled.", {
+    const unknownKeys = Object.keys(continuityJson).filter(key => key !== "enabled" && key !== "packEnabled").sort();
+    if (unknownKeys.length) throw new MonoAgentConfigError("invalid_json", "runtime.session.continuity supports only enabled and packEnabled.", {
       path: "runtime.session.continuity", unknownKeys,
     });
-    assertJsonScalarFields(continuityJson, "runtime.session.continuity", { enabled: "boolean" });
+    assertJsonScalarFields(continuityJson, "runtime.session.continuity", { enabled: "boolean", packEnabled: "boolean" });
   }
   const continuityEnabled = continuityJson === undefined ? undefined
     : jsonOptionalBoolean(continuityJson.enabled, "runtime.session.continuity.enabled");
+  const packEnabled = continuityJson === undefined ? undefined
+    : jsonOptionalBoolean(continuityJson.packEnabled, "runtime.session.continuity.packEnabled");
   const switchJson = jsonRecord(session.modelSwitch, "runtime.session.modelSwitch");
   if (switchJson) assertJsonScalarFields(switchJson, "runtime.session.modelSwitch", { enabled: "boolean" });
   const enabled = switchJson === undefined ? undefined : jsonOptionalBoolean(switchJson.enabled, "runtime.session.modelSwitch.enabled");
@@ -305,7 +307,7 @@ export function readSessionConfig(value: unknown, cwd: string): MonoAgentConfig[
     idleTimeoutMs,
     ...(root === undefined ? {} : { root }),
     ...(enabled === true ? { modelSwitch: { enabled } } : {}),
-    ...(continuityEnabled === undefined ? {} : { continuity: { enabled: continuityEnabled } }),
+    ...(continuityEnabled === undefined && packEnabled === undefined ? {} : { continuity: { enabled: continuityEnabled ?? true, ...(packEnabled === undefined ? {} : { packEnabled }) } }),
     rollover,
     ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
     ...(rolloverNotice === undefined ? {} : { rolloverNotice }),

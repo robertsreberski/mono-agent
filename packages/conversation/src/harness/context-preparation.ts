@@ -122,6 +122,8 @@ export function loadToolHistoryProjection(
   turnId: string,
   history: readonly HistoryMessage[],
   emit?: (event: RuntimeEventLike) => void,
+  excludedRecordIds: ReadonlySet<string> = new Set(),
+  onReadError?: () => void,
 ): ReturnType<typeof buildToolHistoryProjection> {
     if (options.toolHistory === undefined) return undefined;
     try {
@@ -132,8 +134,11 @@ export function loadToolHistoryProjection(
         turnId,
         representedContinuityToolRecordIds(history),
         options.toolHistory.continuityEnabled === true,
+        options.toolHistory.conversationHistoryAvailable === true,
+        excludedRecordIds,
       );
     } catch (error) {
+      onReadError?.();
       const errorCode = toolHistoryProjectionErrorCode(error);
       emit?.({
         type: "runtime_warning",

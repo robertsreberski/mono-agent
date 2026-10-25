@@ -74,7 +74,7 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "nativeSessionAuthority", "nativeSessionProjection", "sessionTurn", "onSessionTurnDetached", "detachedContext", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "nativeSessionAuthority", "nativeSessionProjection", "sessionTurn", "onSessionTurnDetached", "coldContext", "detachedContext", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
@@ -335,6 +335,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               return { ...failure, runtimeWarnings: [... ((failure.runtimeWarnings || []) as readonly unknown[]), warning], failoverHistory };
             }
             callOptions.messages = [...detachedMessages, ...(options.messages ?? []).slice(-1)];
+            if (options.coldContext) callOptions.coldContext = (budget: { maxTokens: number; reason: string }) => options.coldContext!({ ...budget, reason: "detached_context" });
           }
           admission = checkedAdmission();
           if (admission) return admission;

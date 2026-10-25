@@ -479,3 +479,11 @@ pnpm --filter @mono-agent/config run test
 ```
 
 Disabling continuity leaves previously retained evidence and any pending purges at rest until continuity is re-enabled or storage is purged via session admin or `restart --clear-sessions`. That evidence is never served while a purge is pending.
+
+`runtime.session.continuity.packEnabled` also defaults to true: deterministic
+historical evidence accompanies cold canonical replay, within 8000 estimated
+tokens and actual target headroom, with no model call. False keeps capture and
+retrieval without injection; `enabled: false` takes precedence. True native
+resumes do not accumulate packs. Per-message replay pays pack input tokens each
+turn. Legacy records without exact shared identities can overlap the replay
+window; omissions and uncertain overlap are reported, never guessed by text.

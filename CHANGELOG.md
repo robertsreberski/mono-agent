@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Skip empty optional continuity evidence without adding a blank user turn to
+  cold native-session seeds or empty replay replacements.
+
+- Deduplicate fully replayed owner runs after reload, reserve cold continuity
+  space for finalized tool outcomes, and distinguish requests from completed
+  actions; retain partial or unproven overlap without guessing.
+
+- Keep warm clean-break continuity seeds independent of tool count and within
+  their actual replay budget; preserve prepared tool history when a later
+  projection read fails.
+
+- Keep cold continuity packs below the compaction trigger, omit history-free
+  packs, invalidate purged snapshots across retries, and avoid duplicating
+  finalized tool evidence in the cold projection. Preserve healthy evidence
+  when another retained payload is malformed.
+
+- Add real deterministic cold-pack benchmark arms, paired with recording-only
+  and legacy cold-rebuild controls; offline contracts check actual provider
+  contexts without measuring paid model quality.
+
 - Clear continuity conflict diagnostics with purged evidence, recover same-scope
   interrupted purge writes despite wall-clock rollback, and validate SQLite
   integrity before applying pending privacy purges.
@@ -142,6 +162,11 @@
   session that disagrees with the daily file. Daily files that are not
   rewritten stay byte-for-byte unchanged and are not backfilled; an older
   release that rewrites a daily file drops the metadata.
+
+- Add default-on deterministic continuity packs at cold conversation rebuilds,
+  within target headroom and without model calls. Set
+  `runtime.session.continuity.packEnabled: false` to keep recording and retrieval
+  without injection; historical evidence never renews approval.
 
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 

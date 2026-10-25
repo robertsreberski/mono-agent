@@ -321,6 +321,9 @@ export function estimateCost(plan, traces, prices) {
           case "restart-switch-compact": return { input: t.cold * 2, output: 2000 + ANSWER_OUTPUT_TOKENS, cacheable: t.cold };
           // Store arms: the cold or compacted context plus up to two ConversationHistory rounds.
           case "continuity-store": return { input: t.cold * 3 + 4000, output: 3 * ANSWER_OUTPUT_TOKENS, cacheable: t.cold * 3 };
+          // Same retrieval allowance, plus the bounded 8k pack on each request; no upkeep call.
+          case "continuity-pack-cold":
+          case "continuity-pack-boundary": return { input: (t.cold + 8000) * 3 + 4000, output: 3 * ANSWER_OUTPUT_TOKENS, cacheable: (t.cold + 8000) * 3 };
           case "continuity-store-compaction": return { input: t.serialized + 3 * (2000 + 4000 + OVERHEAD_TOKENS) + 4000, output: 2000 + 3 * ANSWER_OUTPUT_TOKENS, cacheable: t.serialized };
           default: return { input: t.full, output: ANSWER_OUTPUT_TOKENS, cacheable: 0 };
         }
@@ -337,7 +340,7 @@ export function estimateCost(plan, traces, prices) {
   }
   const judgeUsd = judgePrice ? plan.workload.judgeCalls * (600 * judgePrice.input + 20 * judgePrice.output) / 1_000_000 : null;
   const sum = (key) => Object.values(rows).reduce((total, row) => total + row[key], 0) + (judgeUsd ?? 0);
-  return { status: "estimated", basis: "Pi catalog list prices; chars/4 token heuristic; summaries at their output cap for the upper bound",
+  return { status: "estimated", basis: "Pi catalog list prices; chars/4 token heuristic; summaries at their output cap and deterministic packs at 8k for the upper bound",
     arms: rows, judgeUsd: judgeUsd === null ? null : Number(judgeUsd.toFixed(4)),
     upperUsd: Number(sum("upperUsd").toFixed(2)), expectedUsd: Number(sum("expectedUsd").toFixed(2)) };
 }

@@ -90,6 +90,7 @@ below. There are no package-wide, all-types, or public-barrel ignores.
 | `packages/conversation/src/tool-history/writer-worker.ts` | Worker loaded with `new URL` in `src/tool-history/writer.ts`; production entry. |
 | `packages/conversation/src/__tests__/fixtures/canonical-v5-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; non-production entry, with only declaration exports exempted (they describe JS, not independent runtime values). |
 | `packages/conversation/src/__tests__/fixtures/managed-native-switch-fixture.d.mts` | By-path fixture declaration companion to imported `.mjs`; same narrow treatment. |
+| `packages/app/scripts/smoke-continuity-pack.mjs` | Built configured cold provider-request proof with local fictional mail; non-production entry; see app smoke index. |
 | `packages/app/scripts/smoke-subagent-stop.mjs` | By-path proof program; non-production entry. Purpose and invocation in the [app smoke index](../../packages/app/scripts/README.md). |
 | `packages/app/scripts/smoke-subagent-steer.mjs` | By-path proof program; non-production entry; see app smoke index. |
 | `packages/app/src/__tests__/fixtures/managed-subagent-proof.mjs` | By-path proof program; non-production entry; see app smoke index. |

@@ -210,7 +210,7 @@ export function compactionUsageOf(usage) {
 
 function observer() {
   const observed = { boundaries: [], compactions: [], warnings: 0, steersAccepted: 0, historyWarnings: 0, toolsOffered: [],
-    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 } };
+    conversationHistory: { calls: 0, search: 0, get: 0, success: 0, unavailable: 0, error: 0, hits: 0 }, continuityPacks: [], offlineProviderPackCounts: [] };
   const historyCalls = new Map();
   let steerWaiter = null;
   return {
@@ -221,6 +221,9 @@ function observer() {
       observed.toolsOffered = [...offered];
     },
     noteHistoryWarning() { observed.historyWarnings += 1; },
+    noteOfflineContext(context) {
+      observed.offlineProviderPackCounts.push((context.messages ?? []).filter(message => textOfContent(message.content).includes("### Conversation continuity pack")).length);
+    },
     onEvent(event) {
       for (const block of Array.isArray(event?.message?.content) ? event.message.content : []) {
         if (event.type === "assistant" && block?.type === "tool_use" && HISTORY_TOOL.test(String(block.name ?? ""))) {
@@ -236,7 +239,9 @@ function observer() {
           if (count !== null) observed.conversationHistory.hits += count;
         }
       }
-      if (event?.type === "session_boundary") {
+      if (event?.type === "continuity_pack_injected") {
+        observed.continuityPacks.push(Object.fromEntries(["reason", "ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries", "omittedCount", "unknownOverlap", "ownerDeduped", "toolReserved", "tokens", "degradedReason"].map(key => [key, event[key]])));
+      } else if (event?.type === "session_boundary") {
         observed.boundaries.push({ kind: event.kind ?? null, reason: event.reason ?? null, context: event.context ?? null,
           replayedMessageCount: finite(event.replayedMessageCount), toolProjectionRecords: finite(event.toolProjectionRecords), toolProjectionBytes: finite(event.toolProjectionBytes) });
       } else if (event?.type === "context_compaction" && event.status !== "running") {
@@ -313,7 +318,7 @@ async function replayScriptedTurn({ harness, scripted, tools, turn, binding, con
   scripted.respondWith(binding, dispatcher, turn.steps.length + 4);
   const response = await harness.run({
     conversationId, userMessage: turn.user, abortSignal: AbortSignal.timeout(60_000),
-    metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
+    captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
   });
   if (failure) throw failure;
   if (response.failure) throw new ContinuityError("replay_turn_failed", turn.id);
@@ -333,6 +338,7 @@ function liveRoute(modules, mode, refs, watch = null) {
     // Summary requests carry Pi's summary focus in the system prompt or a system message.
     const system = [context.systemPrompt, ...(context.messages ?? []).filter((message) => message.role === "system").map((message) => textOfContent(message.content))].join("\n");
     if (system.includes(SUMMARY_MARKER)) return modules.pi.fauxAssistantMessage(OFFLINE_SUMMARY);
+    watch?.noteOfflineContext(context);
     const last = context.messages?.at(-1);
     if (watch?.observed.toolsOffered.includes("ConversationHistory") && last?.role !== "toolResult") {
       return modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("ConversationHistory", { action: "search", query: "order", limit: 3 }, { id: "call_offline_history" })], { stopReason: "toolUse" });
@@ -354,7 +360,7 @@ export async function runLiveTurn({ modules, work, authPath, plan, mode, configP
   try {
     response = await harness.run({
       conversationId, userMessage, abortSignal: AbortSignal.timeout(plan.limits.perLiveTurnTimeoutMs),
-      metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
+      captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { displayName: owner }, onEvent: watch.onEvent,
     });
   } finally { await close(); }
   const usage = response.metadata?.runtime?.usage;

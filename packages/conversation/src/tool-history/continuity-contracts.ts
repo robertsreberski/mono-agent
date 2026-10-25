@@ -172,3 +172,18 @@ export interface ContinuityGapInput {
   readonly afterDigest: string | null;
   readonly reason: ContinuityGapReason;
 }
+
+/** Bounded, one-transaction pack source; no search previews or derived storage. */
+export interface ContinuitySnapshotInput extends ContinuityScope {
+  readonly historyBoundary?: string;
+}
+export interface ContinuitySnapshotRecord extends ContinuityRecordMetadata {
+  readonly text: string;
+  readonly tool?: { readonly name: string; readonly state: string; readonly arguments: string; readonly invocationId: string; readonly resultId?: string };
+}
+export interface ContinuitySnapshot {
+  readonly records: readonly ContinuitySnapshotRecord[];
+  readonly omitted: number;
+  readonly gaps: number;
+  readonly degradedReason?: "unavailable" | "purge_pending" | "boundary_unavailable" | "snapshot_bounds" | "source_unavailable" | "source_changed";
+}

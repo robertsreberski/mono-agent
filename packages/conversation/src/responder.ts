@@ -508,6 +508,8 @@ const RUNTIME_TELEMETRY_KINDS = new Set([
   "provider_execution_config",
   "run_config",
   "session_boundary",
+  "continuity_pack_injected",
+  "continuity_pack_skipped",
 ]);
 
 export function streamEventFromRuntimeEvent(

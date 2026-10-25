@@ -27,54 +27,32 @@ export function buildToolHistoryProjection(
   currentRunId: string,
   excludedRecordIds: ReadonlySet<string> = new Set(),
   continuityEnabled = false,
+  conversationHistoryAvailable = false,
+  packExcludedRecordIds: ReadonlySet<string> = new Set(),
 ): ToolHistoryProjection | undefined {
-  const records = reader.latestProjection(
-    logicalConversationId,
-    currentConversationId,
-    currentRunId,
-    32,
-  ).filter(({ call }) =>
-    !excludedRecordIds.has(call.recordId)
-    && (call.resultRecordId === undefined || !excludedRecordIds.has(call.resultRecordId)));
+  const header = conversationHistoryAvailable ? PROJECTION_HEADER_LINES.map(line => line.replace("Use SessionHistory", "Use ConversationHistory")) : PROJECTION_HEADER_LINES;
+  const records = reader.latestProjection(logicalConversationId, currentConversationId, currentRunId, 32)
+    .filter(({ call }) => !excludedRecordIds.has(call.recordId)
+      && (call.resultRecordId === undefined || !excludedRecordIds.has(call.resultRecordId)));
   if (records.length === 0) return undefined;
-  // Reader order is newest first. Render the complete chronological form when
-  // it fits; otherwise retain a contiguous newest suffix and reverse only that
-  // selected suffix for provider-facing chronological output.
-  // Kept as a compatibility argument; nested retrieval is never replayable.
   void continuityEnabled;
-  const newestFirstBlocks = records.map((record) => renderRecordLines(record));
-  const fullLines = [
-    ...PROJECTION_HEADER_LINES,
-    ...newestFirstBlocks.slice().reverse().flat(),
-    PROJECTION_CLOSING_LINE,
-  ];
-  if (utf8Bytes(fullLines) <= PROJECTION_MAX_BYTES) {
-    return { text: fullLines.join("\n"), recordCount: records.length };
+  // Bound the original suffix BEFORE exclusions. Never refill it with older
+  // records: replacing projection evidence with a pack must not grow replay.
+  let selected = [...records], truncated = false;
+  const render = (items: typeof selected, clipped: boolean) => [...header,
+    ...items.slice().reverse().flatMap(renderRecordLines), ...(clipped ? [PROJECTION_TRUNCATED_LINE] : []), PROJECTION_CLOSING_LINE];
+  if (utf8Bytes(render(selected, false)) > PROJECTION_MAX_BYTES) {
+    selected = []; truncated = true;
+    for (const record of records) {
+      if (utf8Bytes(render([...selected, record], true)) > PROJECTION_MAX_BYTES) break;
+      selected.push(record);
+    }
   }
-
-  const selectedNewestFirst: string[][] = [];
-  for (const block of newestFirstBlocks) {
-    const candidate = [...selectedNewestFirst, block];
-    const candidateLines = [
-      ...PROJECTION_HEADER_LINES,
-      ...candidate.slice().reverse().flat(),
-      PROJECTION_TRUNCATED_LINE,
-      PROJECTION_CLOSING_LINE,
-    ];
-    if (utf8Bytes(candidateLines) > PROJECTION_MAX_BYTES) break;
-    selectedNewestFirst.push(block);
-  }
-  const lines = [
-    ...PROJECTION_HEADER_LINES,
-    ...selectedNewestFirst.slice().reverse().flat(),
-    PROJECTION_TRUNCATED_LINE,
-    PROJECTION_CLOSING_LINE,
-  ];
-  const text = lines.join("\n");
-  if (Buffer.byteLength(text, "utf8") > PROJECTION_MAX_BYTES) {
-    throw new Error("Tool history projection exceeded its UTF-8 byte limit.");
-  }
-  return { text, recordCount: selectedNewestFirst.length };
+  const boundedCount = selected.length;
+  selected = selected.filter(({ call }) => !packExcludedRecordIds.has(call.recordId)
+    && (call.resultRecordId === undefined || !packExcludedRecordIds.has(call.resultRecordId)));
+  if (selected.length === 0 && boundedCount > 0) return undefined;
+  return { text: render(selected, truncated).join("\n"), recordCount: selected.length };
 }
 
 function renderRecordLines(

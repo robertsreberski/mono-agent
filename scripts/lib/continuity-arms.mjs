@@ -38,7 +38,8 @@ const runtime = (patch) => Object.freeze({ runtime: Object.freeze(patch) });
  * so its results stay comparable with baselines recorded before the feature.
  */
 export const CONTINUITY_OFF = runtime({ session: { continuity: { enabled: false } } });
-export const CONTINUITY_ON = runtime({ session: { continuity: { enabled: true } } });
+export const CONTINUITY_ON = runtime({ session: { continuity: { enabled: true, packEnabled: false } } });
+export const CONTINUITY_PACK_ON = runtime({ session: { continuity: { enabled: true, packEnabled: true } } });
 export const CONVERSATION_HISTORY_TOOL = "ConversationHistory";
 /** The reader may call only ConversationHistory: no built-in tools, as in every other probe. */
 const HISTORY_TOOL_ONLY = Object.freeze({ tools: Object.freeze({ allowedTools: Object.freeze([CONVERSATION_HISTORY_TOOL]) }) });
@@ -133,25 +134,27 @@ export const ARMS = Object.freeze([
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0, evidence: ["continuity_records_retained", "conversation_history_offered", "store_healthy"] }),
     pressure: Object.freeze([{ metric: "compactionTokensBefore", min: 150_000 }]),
   }),
-  Object.freeze({
-    id: "continuity-pack-boundary",
-    label: "(B) continuity pack at boundaries",
-    description: "Continuity pack injected only when a boundary (reseed or compaction) occurs.",
-    available: false, unavailableReason: NOT_AVAILABLE, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
-    replayBinding: "reader", midCheckpoint: null, restart: false,
-    probeConfig: runtime({ session: { continuity: { enabled: true, pack: { inject: "boundary" } } }, compaction: SMALL_PROACTIVE_COMPACTION }),
-    expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0, evidence: ["continuity_pack_injected"] }),
-    pressure: Object.freeze([{ metric: "compactionTokensBefore", min: 60_000 }]),
-  }),
+  // Deterministic B2: match the cold/store boundary, not compaction upkeep.
+  ...["continuity-pack-cold", "continuity-pack-boundary"].map(id => Object.freeze({
+    id,
+    label: id === "continuity-pack-cold" ? "(i) deterministic cold continuity pack" : "(B) cold continuity pack (boundary alias)",
+    description: "As continuity-store and cold-rebuild: alternate binding, reader model_change, no compaction. Default-on deterministic pack from retained v3 records, with ConversationHistory offered; no paid upkeep.",
+    available: true, sessionConfig: CONTINUITY_PACK_ON, fork: "in-place", families: ["original", "long"],
+    replayBinding: "alternate", midCheckpoint: null, restart: false,
+    probeConfig: HISTORY_TOOL_ONLY,
+    expect: Object.freeze({ probeBoundary: "model_change", probeCompactions: 0, midCompactions: 0,
+      evidence: ["continuity_records_retained", "conversation_history_offered", "store_healthy", "continuity_pack_injected"] }),
+    pressure: Object.freeze([{ metric: "replayedMessages", min: 64 }, { metric: "projectionDroppedRecords", min: 32 }]),
+  })),
   Object.freeze({
     id: "continuity-pack-per-turn",
-    label: "(B) continuity pack every turn",
-    description: "Continuity pack injected on every turn regardless of boundaries.",
-    available: false, unavailableReason: NOT_AVAILABLE, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
-    replayBinding: "reader", midCheckpoint: null, restart: false,
-    probeConfig: runtime({ session: { continuity: { enabled: true, pack: { inject: "per-turn" } } }, compaction: SMALL_PROACTIVE_COMPACTION }),
-    expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0, evidence: ["continuity_pack_injected"] }),
-    pressure: Object.freeze([{ metric: "compactionTokensBefore", min: 60_000 }]),
+    label: "(B) per-turn maintenance (reserved)",
+    description: "Reserved for opt-in per-turn extraction, not per-turn injection. The deterministic cold pack keys/boundary are real; maintenance is not available in this slice.",
+    available: false, unavailableReason: NOT_AVAILABLE, sessionConfig: CONTINUITY_PACK_ON, fork: "in-place", families: ["original", "long"],
+    replayBinding: "alternate", midCheckpoint: null, restart: false,
+    probeConfig: HISTORY_TOOL_ONLY,
+    expect: Object.freeze({ probeBoundary: "model_change", probeCompactions: 0, midCompactions: 0, evidence: ["continuity_pack_injected"] }),
+    pressure: Object.freeze([{ metric: "replayedMessages", min: 64 }]),
   }),
   Object.freeze({
     id: "pack+stubs",
@@ -159,7 +162,7 @@ export const ARMS = Object.freeze([
     description: "Boundary continuity pack plus stubbed historical tool results that keep identifiers and status but drop bulk.",
     available: false, unavailableReason: NOT_AVAILABLE, sessionConfig: CONTINUITY_ON, fork: "in-place", families: ["original", "long"],
     replayBinding: "reader", midCheckpoint: null, restart: false,
-    probeConfig: runtime({ session: { continuity: { enabled: true, pack: { inject: "boundary" }, toolResultStubs: true } }, compaction: SMALL_PROACTIVE_COMPACTION }),
+    probeConfig: runtime({ session: { continuity: { enabled: true, packEnabled: true } }, compaction: { ...SMALL_PROACTIVE_COMPACTION, toolResultClearing: { enabled: true } } }),
     expect: Object.freeze({ probeBoundary: null, probeCompactions: 1, midCompactions: 0, evidence: ["continuity_pack_injected", "tool_result_stubbed"] }),
     pressure: Object.freeze([{ metric: "compactionTokensBefore", min: 60_000 }]),
   }),
@@ -245,6 +248,13 @@ export function verifyStore(arm, { checkpointContinuity, observed }) {
   if (!observed.toolsOffered?.includes(CONVERSATION_HISTORY_TOOL)) reasons.push("conversation_history_not_offered");
   if ((observed.historyWarnings ?? 0) > 0) reasons.push(`tool_history_warnings:${observed.historyWarnings}`);
   if ((observed.conversationHistory?.unavailable ?? 0) > 0) reasons.push(`conversation_history_unavailable:${observed.conversationHistory.unavailable}`);
+  if (arm.expect.evidence.includes("continuity_pack_injected")) {
+    const packs = observed.continuityPacks ?? [];
+    const pack = packs[0];
+    if (packs.length !== 1 || pack?.reason !== "model_change" || !(pack.tokens > 0)
+      || !(pack.ownerEntries + pack.toolEntries + pack.summaryEntries + pack.evidenceEntries > 0)) reasons.push("continuity_pack_not_injected");
+    if (pack && !["none", "overflow", "snapshot_bounds"].includes(pack.degradedReason)) reasons.push(`continuity_pack_degraded:${pack.degradedReason}`);
+  }
   return { applicable: true, healthy: reasons.length === 0, reasons };
 }
 

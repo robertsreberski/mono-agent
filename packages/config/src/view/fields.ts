@@ -32,6 +32,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "runtime.session.isolateProactive": true,
   "runtime.session.modelSwitch.enabled": true,
   "runtime.session.continuity.enabled": true,
+  "runtime.session.continuity.packEnabled": true,
   "concurrency.maxConcurrentRuns": true,
   "concurrency.maxPendingRuns": true,
   "context.identityPath": true,

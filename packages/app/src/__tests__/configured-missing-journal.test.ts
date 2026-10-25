@@ -42,12 +42,13 @@ async function fixture(enabled = true) {
   }));
   const loaded = await loadAppCoreConfig({ cwd: root, configPath, env: {} });
   const config = { ...loaded, runtime: { ...loaded.runtime, model: ref("A") } };
-  const leaseRuns: string[] = [];
+  const leaseRuns: string[] = [], preparedProbes: string[] = [];
   const runtimeFor = (id: string): MonoRuntimeLike => {
     const raw = createMonoRuntime({ workspace: root });
     const run = raw.run.bind(raw), prepare = raw.prepareNativeDispatch!.bind(raw);
     raw.run = (prompt, runOptions) => run(prompt, { ...runOptions, piResolvedModel: faux.getModel(id), piResolvedModels: models });
     raw.prepareNativeDispatch = async (prompt, runOptions) => {
+      preparedProbes.push(id);
       const lease = await prepare(prompt, { ...runOptions, piResolvedModel: faux.getModel(id), piResolvedModels: models });
       return { ...lease, run: (binding) => { leaseRuns.push(id); return lease.run(binding); } };
     };
@@ -81,7 +82,7 @@ async function fixture(enabled = true) {
   };
   const journals = join(nativeRoot, "journals");
   const contexts = () => transport.mock.calls.map(([, context]) => JSON.stringify(context.messages));
-  return { root, faux, transport, leaseRuns, make, send, reply, record, journals, contexts, summaryCalls: () => transport.mock.calls.filter(([, context]) => isSummary(context)).length };
+  return { root, faux, transport, leaseRuns, preparedProbes, make, send, reply, record, journals, contexts, summaryCalls: () => transport.mock.calls.filter(([, context]) => isSummary(context)).length };
 }
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 const ownJournals = async (directory: string) => (await readdir(directory)).filter((name) => name.endsWith(".jsonl") && !(name in foreign));
@@ -239,8 +240,17 @@ it("OFF keeps the ordinary session-resume replay for a missing journal, without 
   const reopened = await f.make(), replayed = await f.send(reopened, "fictional-after-loss", "A");
   expect(replayed.text).toBe("Fictional replayed answer"); expect(replayed.streamed).toEqual(["session_resume_retry"]);
   expect(replayed.returned.some((warning) => warning.warning_kind === "degraded_native_context")).toBe(false);
-  expect(f.leaseRuns).toEqual([]); expect((await f.record()).version).toBe(3);
-  expect(occurrences(f.contexts().at(-1)!, "Fictional input fictional-seed")).toBe(1);
+  expect(f.leaseRuns).toEqual([]); expect(f.preparedProbes).toEqual([]);
+  expect(f.transport).toHaveBeenCalledTimes(2); expect((await f.record()).version).toBe(3);
+  // Model-switch OFF does not disable default-on cold packs. The historical
+  // quotation is legitimate extra evidence, not a second ordinary replay.
+  const messages: unknown[] = JSON.parse(f.contexts().at(-1)!);
+  const isPack = (message: unknown) => JSON.stringify(message).includes("### Conversation continuity pack");
+  const packs = messages.filter(isPack), replay = JSON.stringify(messages.filter(message => !isPack(message)));
+  expect(packs).toHaveLength(1);
+  expect(occurrences(JSON.stringify(packs), "Fictional input fictional-seed")).toBe(1);
+  expect(occurrences(replay, "Fictional input fictional-seed")).toBe(1);
+  expect(occurrences(replay, "Fictional seed answer")).toBe(1);
 }, 20_000);
 
 // P4 PR E: the journal directory tolerates unrelated entries (shared skip rule).

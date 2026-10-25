@@ -79,6 +79,8 @@ export type RuntimeRunOptions = {
    * Protected lazy host replay prefix; never returned or included in telemetry.
    */
   detachedContext?: () => Promise<ReadonlyArray<any>>;
+  /** Optional local evidence, invoked only at actual seed time, never on native resume. */
+  coldContext?: (budget: { maxTokens: number; reason: string }) => Promise<{ messages: ReadonlyArray<any>; replayMessages?: ReadonlyArray<any> }>;
   /**
    * Protected awaited host claim before stateless replay.
    */

@@ -1,6 +1,7 @@
 import { stageContinuityInput, continuityOwnerTextCandidate, clearContinuityInput } from "../tool-history/continuity-input.js";
 import { memoryUserText } from "./memory-persistence.js";
-import { loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
+import type { createContinuityPackSupplier } from "../continuity/pack.js";
+import { loadHarnessHistory, loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
 import { reconstructionFacts } from "./session-events.js";
 import { randomUUID } from "node:crypto";
 import { createPendingInitialInput, createPendingLiveInput, assertDetachedTurnDescriptor } from "../history/pending-turn/contract.js";
@@ -44,6 +45,8 @@ interface HarnessRuntimeRouting {
   readonly prepareCompaction?: ConversationHistoryTurnReconciliation["prepareCompaction"] | undefined;
   readonly recordCompaction?: ConversationHistoryTurnReconciliation["recordCompaction"] | undefined;
   readonly detachedHistoryOverride?: readonly HistoryMessage[];
+  readonly continuityPack?: ReturnType<typeof createContinuityPackSupplier>;
+  readonly boundaryReason?: string;
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
 
@@ -315,6 +318,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       delete merged.onCompactionPreparing;
       delete (merged as Record<string, unknown>).continuityRecording;
       delete merged.detachedContext;
+      delete merged.coldContext;
       // Lifecycle persistence is host-owned and cannot be injected or replaced
       // by static/request extensions.
       delete merged.toolLifecycleSink;
@@ -469,7 +473,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           if (routing.detachedHistoryOverride === undefined && options.historyStore === undefined) {
             throw new Error("Warm detached context requires canonical history");
           }
-          const canonical = routing.detachedHistoryOverride ?? await options.historyStore!.load(request.conversationId);
+          const canonical = routing.detachedHistoryOverride ?? await loadHarnessHistory(options, request.conversationId, request.continuation);
           if (!contextOwned || request.abortSignal.aborted) throw new Error("Detached context ownership ended");
           const projection = loadToolHistoryProjection(options, request.conversationId, runId, canonical, emitRuntimeEvent);
           emitRuntimeEvent({ type: "session_boundary", kind: "resume_replay", context: "reconstructed",
@@ -480,6 +484,41 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         })();
         return detachedReplay;
       };
+      // A supplier shared by the host turn freezes B1 evidence across a resume
+      // retry and router attempts. Native preparation keeps its existing protocol.
+      // Warm native turns omit canonical messages, but a detached router attempt
+      // may need them. Resolve whether prior history exists before offering the
+      // cold hook; isolated and first-bucket turns never consult another history.
+      let continuityHistory = history;
+      if (!preparation && routing.continuityPack && historyOmitted && !sessionIsolated) {
+        try { continuityHistory = routing.detachedHistoryOverride ?? await loadHarnessHistory(options, request.conversationId, request.continuation); }
+        catch { /* Optional continuity cannot block the turn. */ }
+      }
+      const coldContext = !preparation && routing.continuityPack
+        && (continuityHistory.length > 0 || routing.boundaryReason !== undefined) ? async (budget: { maxTokens: number; reason: string }) => {
+        try {
+          let toolIds: ReadonlySet<string> = new Set();
+          // A warm clean-break reopen seeds only current input, not canonical
+          // history. Deduplicate against what this attempt actually replays.
+          const hasCanonicalReplay = !historyOmitted || budget.reason === "detached_context";
+          const replayedHistory = hasCanonicalReplay ? continuityHistory : [];
+          const messages = routing.continuityPack!(replayedHistory, budget.maxTokens,
+            budget.reason === "detached_context" ? budget.reason : routing.boundaryReason ?? budget.reason, emitRuntimeEvent,
+            ids => { toolIds = ids; });
+          if (toolIds.size === 0 || !hasCanonicalReplay) return { messages };
+          let projectionUnavailable = false;
+          const projection = loadToolHistoryProjection(options, request.conversationId, runId, replayedHistory, emitRuntimeEvent, toolIds,
+            () => { projectionUnavailable = true; });
+          // Undefined can also mean successful exclusion of every projected
+          // call. Only a failed read preserves the original prepared replay.
+          if (projectionUnavailable) return { messages };
+          return { messages, replayMessages: coldReplayMessages(continuityHistory, projection?.text) };
+        } catch {
+          try { emitRuntimeEvent({ type: "continuity_pack_skipped", reason: "unavailable", degradedReason: "unavailable", tokens: 0 }); }
+          catch { /* fail open */ }
+          return { messages: [] };
+        }
+      } : undefined;
       let runtimeOptions: RuntimeRunOptions = {
         ...merged,
         ...(routing.turnRevision !== undefined && sessionsEnabled && !sessionIsolated
@@ -492,6 +531,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           ? { runId, revision: routing.recoveryRevision } : undefined,
         model: effectiveModel,
         ...(!preparation ? { detachedContext } : {}),
+        ...(coldContext ? { coldContext } : {}),
         // Recalled memory is appended to the user message (NOT the system prompt) so
         // it reaches the model on every turn, including resumed turns. See
         // prepareContext for why.

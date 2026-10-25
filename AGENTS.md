@@ -48,7 +48,7 @@ run `pnpm run scan:dead-code` (all three Knip modes) and `pnpm run scan:cycles`
 independently. See the
 [core scan policy](./scripts/core-scans/README.md) for pinned tools, report paths,
 exit codes, and exact exceptions; the [app smoke index](./packages/app/scripts/README.md)
-registers the five standalone proof programs. Scans do not execute those proofs.
+registers the six standalone proof programs. Scans do not execute those proofs.
 
 ## Package expectations
 
