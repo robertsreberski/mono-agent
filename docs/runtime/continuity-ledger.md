@@ -99,7 +99,11 @@ hypotheticals are lower priority. Ranking is not proof of truth or effect. Input
 is capped; uncovered span/record counts are explicit, not evidence of supersession.
 
 The host validates the whole JSON completion, exact source IDs, UTF-8 byte spans,
-whole-record and span digests, entry bounds and coverage references. Identifier
+whole-record and span digests, entry bounds and coverage references. Values must
+fit **512 raw UTF-8 bytes and 640 JSON-serialized bytes including quotes**; each
+whole entry must fit **832 JSON-serialized bytes**. Ordinary 512-byte text fits;
+control/quote-heavy expansion has bounded headroom. Any excess rejects the whole
+completion, never partially accepts entries. Identifier
 values must occur exactly in cited evidence. A confirmed action/artifact cannot
 cite only an owner request. Invalid output publishes nothing. All model prose is
 **derived interpretation**, never host-owner authority. Cited host-owner text is
@@ -124,10 +128,26 @@ a physical SQLite-file quota. The 128 KiB payload limit bounds serialized metada
 not contributing retained text: a separate **4 MiB retained-text lineage bound**
 applies to the union of inherited and newly selected records.
 
-Before completion, admission projects worst-case escaped payload size, sums the
-deduplicated retained-text union and checks shared-quota headroom after replacing
-the current payload. Refusals emit `ledger_payload_budget`,
-`ledger_lineage_budget` or `ledger_quota_budget` without buying a call. These
+Before completion, admission reserves the general **24 × 832-byte entry bound**
+plus array commas, selected span metadata and inherited input links. This one
+projection applies to both profiles; Codex's smaller output is safely below it.
+It no longer reserves sixfold escaping of every raw value byte.
+
+Within the input-bounded shortlist, fitting considers **unrepresented spans
+first, oldest record ordinal then earliest byte offset**; prior-covered spans
+follow in the same oldest-first order. This favors early evidence outside the
+cold window while letting spans trimmed at one boundary lead the next. The input
+shortlist retains its signal ranking within represented/unrepresented groups.
+A span whose full contributing record or metadata cannot fit is skipped; smaller
+later candidates can still fit. Selected spans, prompt, manifest and failed-call
+fingerprint all use the fitted set. Every removed span increments uncovered;
+no trim advances coverage or drops inherited purge links.
+
+The deduplicated retained-text union must stay within 4 MiB, and projected payload
+within 128 KiB. Only if **no minimal selection fits** does admission skip
+`ledger_payload_budget` or `ledger_lineage_budget`. Shared-quota headroom after
+replacing the current payload remains a separate unchanged check, with
+`ledger_quota_budget` refusal without buying a call. These
 preflights are not reservations: publication still rechecks quota, source and
 parent identity atomically, and cannot evict source evidence to make itself fit.
 Inherited input links invalidate descendants when **any** contributing ancestor
@@ -145,8 +165,11 @@ while the key remains cached. Eviction, process/configuration restart or a chang
 key can admit work again.
 
 Represented selected spans skip as `already_covered`. An identical valid selection
-still skips as `unchanged`, preserving its prior uncovered count instead of
-claiming complete coverage or automatically paying to fill holes. The benchmark
+still skips as `unchanged`, preserving its prior uncovered count. Unrepresented
+spans (including prior trims) get priority at a later eligible boundary, not an
+extra completion in the current turn. Coverage describes the **current latest
+generation**, not a permanent all-history coverage index; replacement can leave
+older facts uncovered again. The benchmark
 still buys just one upkeep per trace/repeat: compact output may leave many spans
 uncovered, which must remain visible when interpreting measured answer quality.
 

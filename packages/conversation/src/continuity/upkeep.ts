@@ -1,7 +1,7 @@
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { ContinuityUpkeepResult } from "@mono-agent/turn/host";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
-import { selectLedgerSources, validateLedgerOutput, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, ledgerHash } from "./ledger.js";
+import { selectLedgerSources, validateLedgerOutput, fitLedgerSelection, ledgerHash } from "./ledger.js";
 
 export interface UpkeepEligibility {
   readonly sessionsEnabled: boolean; readonly isolated: boolean; readonly ownedStore: boolean; readonly primaryAttempt: boolean;
@@ -49,19 +49,15 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           if (history!.reader.continuitySuppressed(scope) || !history!.publishLedger || !eligibility.withOwner) throw new Error("unavailable");
           const source = history!.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
           if (["unavailable", "purge_pending", "source_unavailable"].includes(source.degradedReason ?? "")) throw new Error("source_unavailable");
-          const selection = selectLedgerSources(source, frozen?.generation); uncovered = selection.uncovered;
+          const admission = fitLedgerSelection(selectLedgerSources(source, frozen?.generation), scope, frozen);
+          const { selection, projectedBytes } = admission; uncovered = selection.uncovered;
+          if (admission.reason) { localSkip = admission.reason; return; }
           if (!selection.spans.length || selection.manifest === frozen?.generation.manifest) {
             if (frozen && selection.manifest === frozen.generation.manifest) uncovered = frozen.generation.uncovered;
             localSkip = selection.spans.length ? "unchanged" : "no_source"; return;
           }
           const covered = new Set(frozen?.generation.coveredSpans ?? frozen?.generation.entries.flatMap(entry => entry.sources));
           if (frozen && selection.spans.every(span => frozen!.generation.spans.some(old => covered.has(old.id) && old.recordId === span.recordId && old.sha256 === span.sha256 && old.start === span.start && old.end === span.end && old.digest === span.digest))) { localSkip = "already_covered"; return; }
-          const projectedBytes = projectedLedgerPayloadBytes(selection, scope, frozen?.generation);
-          if (projectedBytes > LEDGER_PAYLOAD_BYTES) { localSkip = "ledger_payload_budget"; return; }
-          const inherited = new Map(frozen?.records.map(record => [record.recordId, Buffer.byteLength(record.text)]) ?? []);
-          let lineageBytes = frozen?.retainedBytes ?? 0;
-          for (const record of selection.records) lineageBytes += Buffer.byteLength(record.text) - (inherited.get(record.recordId) ?? 0);
-          if (lineageBytes > LEDGER_LINEAGE_BYTES) { localSkip = "ledger_lineage_budget"; return; }
           const stats = history!.reader.stats();
           if (!stats) throw new Error("quota_unavailable");
           if (stats.retainedBytes - (frozen?.payloadBytes ?? 0) + projectedBytes > stats.limits.maxBytes) { localSkip = "ledger_quota_budget"; return; }

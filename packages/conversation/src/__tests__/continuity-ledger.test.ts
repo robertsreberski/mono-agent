@@ -7,7 +7,7 @@ import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
 import { persistContinuityPurge } from "../tool-history/continuity-purge.js";
-import { ledgerHash, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, selectLedgerSources, validateLedgerOutput, type LedgerSelection } from "../continuity/ledger.js";
+import { ledgerHash, fitLedgerSelection, LEDGER_VALUE_JSON_BYTES, LEDGER_ENTRY_JSON_BYTES, projectedLedgerPayloadBytes, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, selectLedgerSources, validateLedgerOutput, type LedgerSelection } from "../continuity/ledger.js";
 import { createContinuityPackSupplier, renderContinuityPack } from "../continuity/pack.js";
 import type { ConversationHarnessOptions } from "../harness/contracts.js";
 const scope = { logicalConversationId: "fictional", currentConversationId: "fictional", currentRunId: "current" };
@@ -183,7 +183,7 @@ it("escapes derived values/owner quotations and labels tool-only rules with prov
 it("preflights worst-case inherited payload before buying upkeep", async () => {
   const f = await fixture(); await owner(f); const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
   const generation = validateLedgerOutput(output(selection), selection, scope);
-  const prior = { ...generation, manifest: "previous", entries: [], spans: [], coveredSpans: [], inputs: Array.from({ length: 500 }, (_, i) => ({ recordId: `fictional-${i}-` + "x".repeat(100), sha256: "a".repeat(64) })) };
+  const prior = { ...generation, manifest: "previous", entries: [], spans: [], coveredSpans: [], inputs: Array.from({ length: 700 }, (_, i) => ({ recordId: `fictional-${i}-` + "x".repeat(100), sha256: "a".repeat(64) })) };
   expect(projectedLedgerPayloadBytes(selection, scope)).toBeLessThanOrEqual(LEDGER_PAYLOAD_BYTES); expect(projectedLedgerPayloadBytes(selection, scope, prior)).toBeGreaterThan(LEDGER_PAYLOAD_BYTES);
   vi.spyOn(f.reader, "ledger").mockReturnValue({ generation: prior, retainedBytes: source.records.reduce((n, r) => n + Buffer.byteLength(r.text), 0), payloadBytes: Buffer.byteLength(JSON.stringify(prior)), records: [...source.records] });
   const complete = vi.fn(), events: any[] = [];
@@ -215,7 +215,7 @@ it("never buys upkeep with unavailable canonical history or fully covered select
 });
 
 it.each(["lineage", "quota"])("preflights inherited %s capacity with zero completion calls", async mode => {
-  const f = await fixture(mode === "quota" ? 90_000 : undefined);
+  const f = await fixture(mode === "quota" ? 35_000 : undefined);
   await owner(f, "Never send.\n\n" + "Fictional neutral filler. ".repeat(1000));
   const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
   if (mode === "lineage") {
@@ -248,10 +248,9 @@ it("counts only represented spans as preserved Codex coverage, without weakening
   expect(generation.coveredSpans).toEqual(["s0"]); expect(generation.uncovered).toBe(1); expect(generation.coveredOwners).toEqual([selection.spans[0]!.recordId]);
   expect(renderContinuityPack(source, [], 8000, { generation, records: source.records }).text).toContain("Ledger uncovered source spans/records=1");
   await f.writer.publishLedger(generation);
-  const complete = vi.fn(), events: any[] = [];
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
-  await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", e => events.push(e));
-  expect(complete).not.toHaveBeenCalled(); expect(events).toContainEqual(expect.objectContaining({ reason: "unchanged", uncovered: 1 }));
+  const next = fitLedgerSelection(selectLedgerSources(source, generation), scope, f.reader.ledger(scope)).selection;
+  expect(next.spans[0]!.recordId).toBe(selection.spans[1]!.recordId);
+  expect(generation.coveredSpans).toEqual(["s0"]);
 });
 it.each(["invalid", "skipped"])("never negative-caches a pre-dispatch %s result", async status => {
   const f = await fixture(); await owner(f);
@@ -269,4 +268,64 @@ it("bounds paid-failure suppression to 256 scopes and refreshes hits as an LRU",
   for (let i = 0; i < 256; i++) await prepare(i);
   await prepare(0); await prepare(256); await prepare(0); expect(complete).toHaveBeenCalledTimes(257);
   await prepare(1); expect(complete).toHaveBeenCalledTimes(258);
+});
+
+it("rejects serialized value and whole-entry overflow as whole completions", async () => {
+  const f = await fixture(); await owner(f); const selection = selectLedgerSources(f.reader.snapshotContinuity(scope));
+  const entry = { kind: "open_work", value: "\0".repeat(64) + "a".repeat(255), status: "unknown", sources: ["s0"] };
+  const boundary = { ...entry, value: "\0".repeat(64) + "a".repeat(254) };
+  expect(Buffer.byteLength(JSON.stringify(boundary.value))).toBe(LEDGER_VALUE_JSON_BYTES);
+  expect(validateLedgerOutput(JSON.stringify({ entries: [boundary], covered: ["s0"] }), selection, scope).entries).toHaveLength(1);
+  expect(Buffer.byteLength(entry.value)).toBeLessThan(512); expect(Buffer.byteLength(JSON.stringify(entry.value))).toBeGreaterThan(LEDGER_VALUE_JSON_BYTES);
+  expect(() => validateLedgerOutput(JSON.stringify({ entries: [entry], covered: ["s0"] }), selection, scope)).toThrow("invalid_entry");
+  const spans = Array.from({ length: 8 }, (_, i) => ({ ...selection.spans[0]!, id: `s${i}-` + "x".repeat(35) }));
+  const whole = { ...entry, value: "v".repeat(512), sources: spans.map(s => s.id) };
+  expect(Buffer.byteLength(JSON.stringify(whole.value))).toBeLessThan(LEDGER_VALUE_JSON_BYTES); expect(Buffer.byteLength(JSON.stringify(whole))).toBeGreaterThan(LEDGER_ENTRY_JSON_BYTES);
+  expect(() => validateLedgerOutput(JSON.stringify({ entries: [whole], covered: spans.map(s => s.id) }), { ...selection, spans }, scope)).toThrow("invalid_entry");
+});
+it("fits a 205-span selection, dispatches once, and prioritizes trimmed spans at the next boundary", async () => {
+  const f = await fixture(); await owner(f, "Fictional rule."); const base = f.reader.snapshotContinuity(scope), first = base.records[0]!;
+  const records = Array.from({ length: 205 }, (_, i) => ({ ...first, ordinal: i + 1, recordId: `fictional-${i}-` + "x".repeat(100), inputId: `input-${i}`, source: { attestation: { inputId: `input-${i}`, requestDigest: first.sha256 } } }));
+  const source = { ...base, records }, initial = selectLedgerSources(source), fitted = fitLedgerSelection(initial, scope);
+  expect(initial.spans).toHaveLength(205); expect(fitted.trimmedSpans).toBeGreaterThan(0); expect(fitted.selection.spans.length).toBeGreaterThan(0);
+  expect(fitted.projectedBytes).toBeLessThanOrEqual(LEDGER_PAYLOAD_BYTES); expect(fitted.selection.uncovered).toBe(fitted.trimmedSpans);
+  expect(fitted.selection.manifest).not.toBe(initial.manifest);
+  expect(fitted.selection.spans.map(s => records.find(r => r.recordId === s.recordId)!.ordinal)).toEqual(Array.from({ length: fitted.selection.spans.length }, (_, i) => i + 1));
+  let frozen: ReturnType<typeof f.reader.ledger>;
+  vi.spyOn(f.reader, "ledger").mockImplementation(() => frozen); vi.spyOn(f.reader, "snapshotContinuity").mockReturnValue(source);
+  const complete = vi.fn(async (prompt: string) => {
+    const spans = prompt.split("\n").flatMap(line => { try { const row = JSON.parse(line); return typeof row.id === "string" ? [row.id] : []; } catch { return []; } });
+    return { text: JSON.stringify({ entries: [{ kind: "open_work", value: "Fictional state.", status: "unknown", sources: [spans[0]] }], covered: spans }), receipt: { status: "valid", providerInvoked: true } };
+  });
+  const publishLedger = vi.fn(async (generation: Parameters<typeof f.writer.publishLedger>[0]) => {
+    const lineage = records.filter(r => generation.inputs.some(input => input.recordId === r.recordId));
+    frozen = { generation, records: lineage, retainedBytes: lineage.reduce((n, r) => n + Buffer.byteLength(r.text), 0), payloadBytes: Buffer.byteLength(JSON.stringify(generation)) };
+    expect(frozen.payloadBytes).toBeLessThanOrEqual(LEDGER_PAYLOAD_BYTES);
+  });
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger } } as unknown as ConversationHarnessOptions;
+  const prepare = async () => await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", () => {});
+  await prepare(); expect(complete).toHaveBeenCalledTimes(1); expect(publishLedger).toHaveBeenCalledTimes(1);
+  const accepted = new Set(frozen!.generation.spans.map(s => s.recordId)), trimmed = records.filter(r => !accepted.has(r.recordId));
+  expect(frozen!.generation.uncovered).toBe(trimmed.length);
+  await prepare(); expect(complete).toHaveBeenCalledTimes(2); expect(publishLedger).toHaveBeenCalledTimes(2);
+  for (const record of trimmed) expect(frozen!.generation.spans.some(s => s.recordId === record.recordId)).toBe(true);
+});
+it("refuses inherited lineage alone over its bound before completion", async () => {
+  const f = await fixture(); await owner(f); const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
+  const prior = { ...validateLedgerOutput(output(selection), selection, scope), manifest: "previous", entries: [], spans: [], coveredSpans: [] };
+  vi.spyOn(f.reader, "ledger").mockReturnValue({ generation: prior, records: [...source.records], retainedBytes: LEDGER_LINEAGE_BYTES + 1, payloadBytes: Buffer.byteLength(JSON.stringify(prior)) });
+  const complete = vi.fn(), events: any[] = [];
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", e => events.push(e));
+  expect(complete).not.toHaveBeenCalled(); expect(events).toContainEqual(expect.objectContaining({ reason: "ledger_lineage_budget", providerInvoked: false }));
+});
+
+it("trims whole contributing records to the lineage limit, preserving the oldest fitting source", async () => {
+  const f = await fixture(); await owner(f, "Old rule. " + "Fictional filler words. ".repeat(950)); await owner(f, "New rule. " + "Fictional filler words. ".repeat(950));
+  const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source), oldest = [...source.records].sort((a, b) => a.ordinal - b.ordinal)[0]!;
+  const text = "x".repeat(LEDGER_LINEAGE_BYTES - Buffer.byteLength(oldest.text) - 1);
+  const generation = { ...validateLedgerOutput(output(selection), selection, scope), entries: [], spans: [], coveredSpans: [], inputs: [{ recordId: "inherited", sha256: ledgerHash(text) }] };
+  const fit = fitLedgerSelection(selection, scope, { generation, records: [{ recordId: "inherited", text }], retainedBytes: Buffer.byteLength(text) });
+  expect(fit.reason).toBeUndefined(); expect(fit.trimmedSpans).toBe(1); expect(fit.selection.records.map(r => r.recordId)).toEqual([oldest.recordId]);
+  expect(fit.lineageBytes).toBe(LEDGER_LINEAGE_BYTES - 1); expect(fit.selection.uncovered).toBe(1);
 });
