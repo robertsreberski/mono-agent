@@ -5,7 +5,7 @@ import { findCanonicalMemoryBullet, REMEMBER_ID_PREFIX } from "./canonical-looku
 import { replayCaptureIntent, writeCaptureIntent, type CaptureIntentAction } from "./capture-outbox.js";
 import { dailyFilePath, normalizeMemoryText, normalizedContentHash, readUniqueBullet } from "./daily.js";
 import { assertNoShadowedLegacyDailyFile } from "./remember-layout.js";
-import { serializeBullet } from "./grammar.js";
+import { serializeBullet, sourceSessionFor } from "./grammar.js";
 import { canonicalMemoryLabel, labelsOf, withMemoryLabels } from "./labels.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import { assertCanonicalGraphRepairBaseParity } from "./rebuild.js";
@@ -126,8 +126,10 @@ export async function rememberWithDetails(
     const at = new Date(Math.max(now.getTime(), target === undefined ? 0 : Date.parse(target.createdAt))).toISOString();
     const file = relative(root, dailyFilePath(root, new Date(at)));
     assertNoShadowedLegacyDailyFile(root, new Date(at));
+    const sourceSession = sourceSessionFor(conversationId);
     const bullet: Bullet = withMemoryLabels({ id, type: "note", status: "open", text: stored,
-      salience: SALIENCE, isInsight: false, createdAt: at, refs: [`sha256:${hash}`, DETAILS_MARKER] },
+      salience: SALIENCE, isInsight: false, createdAt: at, refs: [`sha256:${hash}`, DETAILS_MARKER],
+      ...(sourceSession === undefined ? {} : { sourceSession }) },
     about === undefined ? [] : [{ v: 1, kind: "fact", entityId: about, attribution: "assistant-inferred" }]);
     const record: MemoryRecord = { id, type: bullet.type, status: bullet.status, text: stored,
       salience: bullet.salience, isInsight: false, createdAt: at, accessCount: 0, tags: [],

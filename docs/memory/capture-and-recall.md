@@ -690,7 +690,26 @@ unchanged. The standalone local store's automatic `load()` follows the same rule
 
 Journal/Lite completed-turn projection and explicit Remember preserve the host
 conversation id in `source.session`. Web turns already use `web:<thread-id>`;
-no bare-thread-id alias is guessed. BuJo extraction and Markdown rebuilds may
-lack session provenance, and label/card readers do not expose it. Such unknown
-or legacy records keep their existing behavior: this is not a content-based
-staleness detector or a provenance migration.
+no bare-thread-id alias is guessed. New canonical bullets also record it durably
+as optional `source_session=<encoded id>` metadata at the end of their
+`<!--mem ...-->` comment: BuJo capture ADD and SUPERSEDE stamp the capturing
+conversation, a text-changing UPDATE names the conversation that changed it, and
+NOOP and the superseded old line keep the provenance they had. The value is the
+most recent capture session that contributed to the line, not proof of who
+authored every historical claim, and it comes only from the host-supplied
+conversation id, never from model output. Rebuild restores it from Markdown, so
+it survives restart, reconcile and safe rebuild.
+
+Records without a known source conversation (lines written before this metadata,
+ids longer than 512 UTF-8 bytes, or malformed/duplicated metadata) stay eligible
+for automatic and explicit recall. They are labelled `source conversation
+unknown` beside, and independent of, any semantic attribution such as `you said`.
+Known other-conversation hits render as before, and a known source conversation id
+is never shown to the model. Old lines are not backfilled: nothing is guessed from
+text, file names or earlier index rows. Label/card readers do not expose
+provenance. This is not a content-based staleness detector.
+
+Downgrade limitation: older releases ignore `source_session` when reading, but
+any rewrite of a daily file by an older writer (for example a status change,
+curation or migration) re-serializes its bullets without the metadata. Those
+lines then read as `source conversation unknown` after upgrading again.

@@ -21,6 +21,8 @@ export {
   POSSIBLY_RELEVANT_WINDOW,
   recallLineStatus,
   selectPossiblyRelevantRecallHits,
+  SOURCE_CONVERSATION_UNKNOWN,
+  sourceConversationUnknown,
 } from "./recall.js";
 export type { FormattedRecallRecord, PossiblyRelevantRecord } from "./recall.js";
 export {

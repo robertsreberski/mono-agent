@@ -15,6 +15,7 @@ import {
   normalizeReconciliationText,
   type CandidateMemory,
 } from "./distill.js";
+import { sourceSessionFor } from "./grammar.js";
 import { parseJsonExact, parseJsonLoose } from "./json.js";
 import { assertIntentionProposal } from "./lifecycle-validation.js";
 import type { LlmComplete } from "./llm.js";
@@ -548,6 +549,7 @@ function planAddWithoutIndex(
     isInsight: candidate.isInsight,
     createdAt: now.toISOString(),
     refs: [],
+    ...captureSourceSession(deps),
   }, deps.labelsForAction?.("add", candidate, undefined, candidate.text) ?? []);
   const record = recordFor(bullet, deps.root, now);
   const file = record.source.file!;
@@ -646,10 +648,18 @@ function planUpdate(
   }
   const before = requireCanonicalTarget(deps.root, target.source.file, targetId);
   const mergedText = decision.text ?? candidate.text;
+  // Changed text is this session's contribution, so the line now names this
+  // capture session; unchanged text keeps the provenance it already had.
+  const sourceSession = mergedText === before.text ? before.sourceSession
+    : captureSourceSession(deps).sourceSession ?? before.sourceSession;
   // A changed sentence cannot silently keep claims it may no longer support.
-  const after: Bullet = withMemoryLabels({ ...before, text: mergedText },
-    deps.labelsForAction?.("update", candidate, before, mergedText)
+  const after: Bullet = withMemoryLabels({ ...before, text: mergedText,
+    ...(sourceSession === undefined ? {} : { sourceSession }) },
+  deps.labelsForAction?.("update", candidate, before, mergedText)
       ?? (mergedText === before.text ? labelsOf(before) : []));
+  // The index row mirrors the canonical provenance whenever the line has one.
+  const record: MemoryRecord = { ...target, text: mergedText,
+    ...(sourceSession === undefined ? {} : { source: { ...target.source, session: sourceSession } }) };
   return {
     action: { kind: "update", id: targetId },
     intent: {
@@ -658,9 +668,9 @@ function planUpdate(
       id: targetId,
       before: { file: target.source.file, bullet: before },
       after: { file: target.source.file, bullet: after },
-      record: { ...target, text: mergedText },
+      record,
     },
-    record: { ...target, text: mergedText },
+    record,
   };
 }
 
@@ -708,6 +718,7 @@ function planSupersede(
     isInsight: candidate.isInsight,
     createdAt: effectiveAt.toISOString(),
     refs: [],
+    ...captureSourceSession(deps),
   }, labels);
   const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;
@@ -1064,6 +1075,18 @@ function recordFor(bullet: Bullet, root: string, now: Date): MemoryRecord {
     accessCount: 0,
     tags: [],
     ...(bullet.dueAt === undefined ? {} : { dueAt: bullet.dueAt }),
-    source: { file: relative(root, dailyFilePath(root, now)) },
+    source: {
+      ...(bullet.sourceSession === undefined ? {} : { session: bullet.sourceSession }),
+      file: relative(root, dailyFilePath(root, now)),
+    },
   };
+}
+
+/**
+ * The host-supplied conversation id of this capture, when it can be stored
+ * exactly. Model output never reaches this value.
+ */
+function captureSourceSession(deps: ReconcileDeps): Pick<Bullet, "sourceSession"> {
+  const sourceSession = sourceSessionFor(deps.conversationId);
+  return sourceSession === undefined ? {} : { sourceSession };
 }

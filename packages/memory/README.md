@@ -178,7 +178,10 @@ not change automatic recall policy.
 
 Automatic recall excludes known `source.session` matches to the logical
 conversation (including daily buckets); explicit recall is unchanged. Unknown
-provenance remains eligible. `excludeSameConversationRecallHits` shares that
+provenance remains eligible and `formatPossiblyRelevantBlock` labels it
+`source conversation unknown` (`sourceConversationUnknown`,
+`SOURCE_CONVERSATION_UNKNOWN`); a hit whose backend supplies no `source` object
+makes no provenance claim. `excludeSameConversationRecallHits` shares that
 content-free filter with host integrations; it never guesses provenance from
 text, file paths or unprefixed web thread ids.
 
@@ -189,6 +192,22 @@ Lite and degraded lexical-only results never inject automatic context; use
 `recallWithOutcome()` for explicit retrieval and its degradation status. Unlike
 the app service, this standalone API has no host-verified owner-turn signal;
 callers must enforce their own audience/privacy policy before injecting a block.
+
+### Durable source-session metadata
+
+New daily bullets append optional `source_session=<value>` metadata to their
+`<!--mem ...-->` comment (`Bullet.sourceSession`). The value is the
+host-supplied conversation id of the most recent capture session that
+contributed to the line (ADD, SUPERSEDE replacement, text-changing UPDATE,
+Remember and completed-turn summaries); NOOP and a superseded old line keep
+theirs. It is never taken from model output. Bytes outside `[A-Za-z0-9._~:#@/+-]`
+are percent-encoded with upper-case hex; ids over 512 UTF-8 bytes or containing
+control, format, separator or unpaired surrogate code points are not recorded.
+A missing, repeated, malformed, non-canonically encoded or oversized value reads
+as unknown and never drops the memory. Lines without it serialize byte-for-byte
+as before, rebuild copies the value into SQLite `source_session` (no schema
+change) and does not backfill old lines. Older writers ignore the key on read
+but strip it from every bullet of a daily file they rewrite.
 
 ### BuJo memory labels
 
@@ -703,6 +722,7 @@ ReconcileDeps
 RestoreExplicitMemoryCurateOptions
 RestoreExplicitMemoryForgetOptions
 RestoreMemoryBundleImportOptions
+SOURCE_CONVERSATION_UNKNOWN
 SafeMemoryIndexOptions
 SafeMemoryIndexResult
 SafeMemoryRebuildHooks
@@ -776,6 +796,7 @@ selectKnownEntityHints
 selectPossiblyRelevantRecallHits
 serializeBullet
 serializeDailyFile
+sourceConversationUnknown
 validateCurateOperatorMerge
 validateCurateOwnerAssociation
 validateCuratePersonAssociation

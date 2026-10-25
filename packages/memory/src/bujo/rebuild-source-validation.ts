@@ -1,4 +1,5 @@
 import { isRememberedMemoryId } from "./canonical-lookup.js";
+import { SOURCE_SESSION_KEY } from "./grammar.js";
 import { isLegacyHostObservation } from "./graph.js";
 
 /** The same BuJo raw-record exclusion used by rebuild and read-only curation. */
@@ -79,6 +80,9 @@ function parseMetadataFields(raw: string, file: string, line: number): Map<strin
         fields.set(key, `${fields.get(key)},${pair.slice(separator + 1)}`);
         continue;
       }
+      // Optional provenance: a repeated value is ambiguous, so the line is read
+      // with an unknown source session rather than rejected.
+      if (key === SOURCE_SESSION_KEY) continue;
       throw new Error(`memory-rebuild: duplicate bullet metadata key ${key} at ${file}:${line}.`);
     }
     fields.set(key, pair.slice(separator + 1));

@@ -21,7 +21,7 @@ import {
 import { findCanonicalMemoryBullet, REMEMBER_ID_PREFIX } from "./canonical-lookup.js";
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { parseDailyFile } from "./grammar.js";
-import { serializeBullet } from "./grammar.js";
+import { serializeBullet, sourceSessionFor } from "./grammar.js";
 import {
   applyCaptureGraphDelta,
   clearCaptureGraphBaseline,
@@ -710,6 +710,7 @@ export class BujoMemoryStore implements MemoryStore {
             isInsight: false,
             createdAt: now.toISOString(),
             refs: [`sha256:${hash}`],
+            ...sourceSessionMetadata(conversationId),
           };
           const relativePath = located?.file ?? relative(this.root, dailyFilePath(this.root, now));
           // Recovery adopts the existing bullet verbatim: its createdAt and file
@@ -737,8 +738,9 @@ export class BujoMemoryStore implements MemoryStore {
             createdAt: bullet.createdAt,
             accessCount: 0,
             tags: [],
-            // `session` is live-index telemetry only: it is never serialized into
-            // the bullet, so a rebuild reconstructs `file` alone.
+            // A new line records the storable host conversation id canonically,
+            // so rebuild restores it. Recovered or unstorable provenance stays
+            // live-index telemetry that a rebuild does not reconstruct.
             source: { session: conversationId, file: relativePath },
           };
           // Never record a content hash off the Journal tier: a non-Journal
@@ -832,6 +834,7 @@ export class BujoMemoryStore implements MemoryStore {
       isInsight: false,
       createdAt: admittedAt,
       refs: [`run-sha256:${intakeId}`, `sha256:${hash}`],
+      ...sourceSessionMetadata(turn.conversationId),
     };
     const relativePath = this._tier === "bujo"
       ? relative(this.root, auditFilePath(this.root, now))
@@ -1419,6 +1422,12 @@ function assertTierPrerequisites(tier: BujoTier, options: BujoOptions): void {
   if (options.llm === undefined && options.readOnly !== true) {
     throw new Error("memory-bujo: bujo tier requires a capture LLM.");
   }
+}
+
+/** Canonical source-session metadata for a line appended on behalf of a host conversation. */
+function sourceSessionMetadata(conversationId: string): Pick<Bullet, "sourceSession"> {
+  const sourceSession = sourceSessionFor(conversationId);
+  return sourceSession === undefined ? {} : { sourceSession };
 }
 
 function reasonOf(error: unknown): string {

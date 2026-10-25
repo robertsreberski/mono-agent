@@ -189,7 +189,9 @@ function toRecord(bullet: Bullet, file: string, line: number): MemoryRecord {
     accessCount: 0,
     ...(bullet.dueAt !== undefined ? { dueAt: bullet.dueAt } : {}),
     tags: [],
-    source: { file, line },
+    // Canonical provenance only: a line without `source_session` stays unknown
+    // and is never backfilled from file names, text or earlier index rows.
+    source: { ...(bullet.sourceSession === undefined ? {} : { session: bullet.sourceSession }), file, line },
   };
 }
 

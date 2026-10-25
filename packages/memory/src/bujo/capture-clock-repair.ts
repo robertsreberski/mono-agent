@@ -488,7 +488,8 @@ function bulletsEqual(left: Bullet, right: Bullet): boolean {
   return left.id === right.id && left.type === right.type && left.status === right.status
     && left.text === right.text && left.salience === right.salience
     && left.isInsight === right.isInsight && left.createdAt === right.createdAt
-    && left.dueAt === right.dueAt && left.refs.length === right.refs.length
+    && left.dueAt === right.dueAt && left.sourceSession === right.sourceSession
+    && left.refs.length === right.refs.length
     && left.refs.every((ref, index) => ref === right.refs[index]);
 }
 

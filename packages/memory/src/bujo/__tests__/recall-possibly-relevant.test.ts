@@ -11,6 +11,8 @@ import {
   POSSIBLY_RELEVANT_WINDOW,
   recallLineStatus,
   selectPossiblyRelevantRecallHits,
+  SOURCE_CONVERSATION_UNKNOWN,
+  sourceConversationUnknown,
 } from "../recall.js";
 
 const hit = (score: number, text: string, record: Record<string, string> = {}) => ({ score, record: { text, ...record } });
@@ -194,4 +196,26 @@ it.each([
   expect(block?.content).not.toContain("has not been sent");
   expect(block?.content).toContain("tracked parcel");
   expect(block?.content).toContain("shipping receipt");
+});
+
+it("labels unknown provenance independently of attribution while keeping it eligible", async () => {
+  const current = "web:chat-current";
+  const rows = [
+    { score: 0.99, record: { id: "self", text: "The fictional kettle is broken.", source: { session: current } } },
+    { score: 0.98, record: { id: "other", text: "Morgan bought a fictional kettle.", source: { session: "web:chat-other" } } },
+    { score: 0.97, record: { id: "legacy", text: "Morgan prefers loose-leaf tea.", source: { file: "daily/2030-01-01.md" } } },
+    { score: 0.96, record: { id: "remote", text: "Morgan's teapot is blue." } },
+  ];
+  const db = { recallWithOutcome: async () => ({ retrievalMode: "hybrid", hits: rows }), recordAccess: vi.fn() } as unknown as MemoryDb;
+  const content = (await composeRecallBlock(db, "kettle", { conversationId: current }))?.content ?? "";
+  expect(content).not.toContain("kettle is broken");
+  expect(content).toContain("- Morgan bought a fictional kettle. (current)\n");
+  expect(content).toContain(`- Morgan prefers loose-leaf tea. (current; ${SOURCE_CONVERSATION_UNKNOWN})`);
+  // A backend that supplies no source object makes no provenance claim.
+  expect(content).toMatch(/- Morgan's teapot is blue\. \(current\)$/u);
+  const attributed = formatPossiblyRelevantBlock([rows[2]!].map((row) => ({ ...row, record: { ...row.record, createdAt: "2030-01-01T00:00:00Z" } })),
+    new Map([["legacy", "you said"]]), 500);
+  expect(attributed?.content).toContain(`(recorded 2030-01-01; current; you said; ${SOURCE_CONVERSATION_UNKNOWN})`);
+  expect(sourceConversationUnknown({ source: { session: "" } })).toBe(true);
+  expect(sourceConversationUnknown({})).toBe(false);
 });

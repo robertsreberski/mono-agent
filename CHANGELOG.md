@@ -122,6 +122,13 @@
   and count degraded-store samples as invalid trials.
 - Keep test and benchmark agent-root leases in isolated homes, and release
   continuity benchmark runtimes during teardown.
+- Keep the source conversation of new memories durably: BuJo capture, Remember
+  and completed-turn summaries add optional `source_session` metadata to their
+  daily bullets, which survives reconcile, restart and rebuild. Memories without
+  a known source conversation stay recallable but are labelled `source
+  conversation unknown` in automatic recall and `MemoryRecall`; known
+  same-conversation hits stay suppressed. Old files are unchanged and not
+  backfilled; an older release that rewrites a daily file drops the metadata.
 
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 

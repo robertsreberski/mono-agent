@@ -16,6 +16,12 @@ export interface Bullet {
   readonly createdAt: string;
   readonly refs: readonly string[];
   readonly dueAt?: string;
+  /**
+   * Host-supplied conversation id of the most recent capture session that
+   * contributed to this line (optional `source_session=` metadata). It is not
+   * proof of who authored every historical claim; absent means unknown.
+   */
+  readonly sourceSession?: string;
 }
 
 export type BujoTier = "lite" | "journal" | "bujo";

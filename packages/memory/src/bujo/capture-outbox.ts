@@ -11,7 +11,7 @@ import type {
 import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
 import { labelsOf } from "./labels.js";
 import { findCanonicalMemoryBullet } from "./canonical-lookup.js";
-import { parseDailyFile } from "./grammar.js";
+import { parseDailyFile, sourceSessionFor } from "./grammar.js";
 import {
   appendGraphBatch,
   assertCanonicalGraphBatch,
@@ -1150,6 +1150,8 @@ function mergeLiveRecordState(intended: MemoryRecord, current: MemoryRecord | un
       ...intended.source,
       ...currentSource,
       ...(intended.source.file === undefined ? {} : { file: intended.source.file }),
+      // Canonical provenance written by this intent wins over older live telemetry.
+      ...(intended.source.session === undefined ? {} : { session: intended.source.session }),
     },
   };
 }
@@ -1179,6 +1181,8 @@ function dbHasCanonicalOutcome(db: MemoryDb, action: CaptureIntentAction): boole
     : action.kind === "supersede" ? action.afterNew : action.after;
   const record = db.get(state.bullet.id);
   if (record === undefined || !recordMatchesCanonicalState(record, state)) return false;
+  // A noop never writes; written outcomes must carry the line's provenance too.
+  if (action.kind !== "noop" && !recordSessionMatchesBullet(record, state.bullet)) return false;
   if (action.kind === "noop" || action.vector === undefined) return true;
   // A safe rebuild re-embeds the canonical record under the target identity.
   // Its already-present vector is authoritative; replaying the outbox's old
@@ -1332,7 +1336,9 @@ function applyCanonicalAction(root: string, action: CaptureIntentAction): "appli
     if (after === "exact") return "applied";
     const before = bulletState(root, action.before);
     if (before !== "exact") return "conflict";
-    if (!rewriteBullet(root, action.after.file, action.id, { text: action.after.bullet.text, refs: action.after.bullet.refs })) return "conflict";
+    const sourceSession = action.after.bullet.sourceSession;
+    if (!rewriteBullet(root, action.after.file, action.id, { text: action.after.bullet.text, refs: action.after.bullet.refs,
+      ...(sourceSession === undefined ? {} : { sourceSession }) })) return "conflict";
     return bulletState(root, action.after) === "exact" ? "applied" : "conflict";
   }
   if (action.kind === "noop") {
@@ -1391,6 +1397,7 @@ function bulletsEqual(left: Bullet, right: Bullet): boolean {
     && left.isInsight === right.isInsight
     && left.createdAt === right.createdAt
     && left.dueAt === right.dueAt
+    && left.sourceSession === right.sourceSession
     && left.refs.length === right.refs.length
     && left.refs.every((ref, index) => ref === right.refs[index]);
 }
@@ -1623,8 +1630,12 @@ function validateAction(
     }
     assertRecordMatchesBullet(action.record, action.after);
     const ordinaryRefs = (refs: readonly string[]): readonly string[] => refs.filter((ref) => !ref.startsWith("label:"));
-    if (!bulletsEqual({ ...action.before.bullet, text: action.after.bullet.text,
-      refs: action.after.bullet.refs }, action.after.bullet)
+    // An update may name the session that changed the text, never erase a known one.
+    const { sourceSession: priorSession, ...beforeFields } = action.before.bullet;
+    const afterSession = action.after.bullet.sourceSession;
+    if ((priorSession !== undefined && afterSession === undefined)
+      || !bulletsEqual({ ...beforeFields, text: action.after.bullet.text, refs: action.after.bullet.refs,
+        ...(afterSession === undefined ? {} : { sourceSession: afterSession }) }, action.after.bullet)
       || JSON.stringify(ordinaryRefs(action.before.bullet.refs))
         !== JSON.stringify(ordinaryRefs(action.after.bullet.refs))) {
       throw new Error("memory-capture: update intent changes fields outside its text/label outcome.");
@@ -1711,9 +1722,19 @@ function assertRecordMatchesBullet(record: MemoryRecord, state: CanonicalBulletS
     || record.salience !== bullet.salience
     || record.isInsight !== bullet.isInsight
     || record.createdAt !== bullet.createdAt
-    || record.dueAt !== bullet.dueAt) {
+    || record.dueAt !== bullet.dueAt
+    || !recordSessionMatchesBullet(record, bullet)) {
     throw new Error("memory-capture: memory record does not match its canonical bullet outcome.");
   }
+}
+
+/**
+ * A line with recorded provenance and its index row name the same session.
+ * A line without it (legacy, or an id too long to store) leaves the row's
+ * pre-existing live session telemetry unconstrained.
+ */
+function recordSessionMatchesBullet(record: MemoryRecord, bullet: Bullet): boolean {
+  return bullet.sourceSession === undefined || record.source.session === bullet.sourceSession;
 }
 
 function validateVector(vector: readonly number[] | undefined): void {
@@ -1734,7 +1755,9 @@ function isBullet(value: unknown): value is Bullet {
     && typeof value.isInsight === "boolean"
     && typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt))
     && Array.isArray(value.refs) && value.refs.length <= 64 && value.refs.every((ref) => typeof ref === "string")
-    && (value.dueAt === undefined || typeof value.dueAt === "string");
+    && (value.dueAt === undefined || typeof value.dueAt === "string")
+    && (value.sourceSession === undefined
+      || (typeof value.sourceSession === "string" && sourceSessionFor(value.sourceSession) === value.sourceSession));
 }
 
 function isMemoryStatus(value: unknown): value is Bullet["status"] {

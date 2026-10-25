@@ -1349,3 +1349,39 @@ it.each([
   expect((await service.recallForTurn("self-echo", "What should I know about the fictional parcel?")).map((row) => row.record.id))
     .toEqual(["self", "other", "unknown"]);
 });
+
+it("labels unknown source conversations in automatic and explicit recall while keeping known self-echo suppressed", async () => {
+  const current = "web:chat-current";
+  const rows = [
+    { score: 0.95, record: { id: "self", text: "The fictional bicycle bell is loose.", source: { session: current, file: "daily/2030-01-02.md" } } },
+    { score: 0.94, record: { id: "other", text: "Morgan bought a fictional bicycle bell.", source: { session: "web:chat-other", file: "daily/2030-01-01.md" } } },
+    { score: 0.93, record: { id: "legacy", text: "Morgan rides the fictional bicycle on weekends.", source: { file: "daily/2029-12-31.md" } } },
+  ];
+  const service = new MemoryRetrievalService({ ...fakeStore(), recall: async () => rows });
+  const block = await service.load(current, "What should I know about the fictional bicycle?", { ownerTurn: true, turnId: "provenance" });
+  expect(block?.content).not.toContain("bell is loose");
+  expect(block?.content).toContain("- Morgan bought a fictional bicycle bell. (current)");
+  expect(block?.content).toContain("- Morgan rides the fictional bicycle on weekends. (current; source conversation unknown)");
+
+  const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-provenance" });
+  const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+  const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    const result = await client.callTool({ name: "MemoryRecall", arguments: { query: "fictional bicycle" } }) as unknown as {
+      content: Array<{ text: string }>;
+      structuredContent: { hits: Array<{ id: string; sourceConversation?: string }> };
+    };
+    const lines = result.content.map((part) => part.text).join("\n").split("\n");
+    expect(lines.find((line) => line.includes("weekends"))).toContain("[source conversation unknown]");
+    expect(lines.find((line) => line.includes("bicycle bell."))).not.toContain("source conversation");
+    expect(result.structuredContent.hits.map((hit) => [hit.id, hit.sourceConversation])).toEqual([
+      ["self", undefined], ["other", undefined], ["legacy", "unknown"],
+    ]);
+    // A known source conversation id is never exposed to the model.
+    expect(JSON.stringify(result)).not.toContain("web:chat-other");
+  } finally {
+    await client.close().catch(() => undefined);
+    await extension.cleanup();
+  }
+});
