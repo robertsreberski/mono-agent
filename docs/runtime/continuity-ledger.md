@@ -104,7 +104,9 @@ fit **512 raw UTF-8 bytes and 640 JSON-serialized bytes including quotes**; each
 whole entry must fit **832 JSON-serialized bytes**. Ordinary 512-byte text fits;
 control/quote-heavy expansion has bounded headroom. Any excess rejects the whole
 completion, never partially accepts entries. Identifier
-values must occur exactly in cited evidence. A confirmed action/artifact cannot
+values must occur exactly in cited evidence. The extractor is explicitly told to
+return the **bare identifier only**, with no entity name, label or explanatory
+prefix; surrounding labels are not silently removed by validation. A confirmed action/artifact cannot
 cite only an owner request. Invalid output publishes nothing. All model prose is
 **derived interpretation**, never host-owner authority. Cited host-owner text is
 reconstructed as whole original paragraphs with qualifications/negations intact.

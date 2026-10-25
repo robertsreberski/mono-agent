@@ -356,3 +356,15 @@ it.each([false, true])("emits only stable failure codes in host receipts/warning
   expect(events).toContainEqual(expect.objectContaining({ warning_kind: "continuity_upkeep_degraded", error_code: code }));
   expect(JSON.stringify(events)).not.toContain("fictional raw rejected text"); expect(JSON.stringify(events)).not.toContain("Never send");
 });
+
+it("aligns the identifier prompt with the captured label-plus-identifier rejection", async () => {
+  const f = await fixture(); await owner(f); await tool(f, "The Northstar account reference is DEMO-42.");
+  const source = f.reader.snapshotContinuity({ ...scope, selection: "upkeep" }), selection = selectLedgerSources(source), span = selection.spans.find(s => s.text.includes("DEMO-42"))!;
+  // Minimal fictional stand-in for the paid capture: correct identifier, added label.
+  const captured = { entries: [{ kind: "identifier", value: "Northstar account reference DEMO-42", status: "confirmed", sources: [span.id] }], covered: [span.id] };
+  expect(() => validateLedgerOutput(JSON.stringify(captured), selection, scope)).toThrow("identifier_not_in_span");
+  const compliant = { ...captured, entries: [{ ...captured.entries[0]!, value: "DEMO-42" }] };
+  expect(validateLedgerOutput(JSON.stringify(compliant), selection, scope).entries[0]!.value).toBe("DEMO-42");
+  expect(selection.prompt).toContain("For identifier entries, value must be ONLY the exact bare identifier copied byte-for-byte from a cited span");
+  expect(selection.prompt).toContain("not an entity name, label, or explanatory prefix");
+});

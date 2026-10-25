@@ -30,7 +30,8 @@
   and incomplete compact coverage, and retain paid failed-checkpoint accounting.
   Fit oldest unrepresented evidence within ledger bounds and reject oversized
   serialized entries before publication. Report content-free ledger failure codes
-  and allow explicit private capture in fictional benchmark diagnostics. Keep benchmark aggregation execution-free.
+  and allow explicit private capture in fictional benchmark diagnostics. Require
+  extraction prompts to request byte-exact bare identifiers, not labelled prose. Keep benchmark aggregation execution-free.
 
 - Add real deterministic cold-pack benchmark arms, paired with recording-only
   and legacy cold-rebuild controls; offline contracts check actual provider
