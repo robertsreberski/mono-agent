@@ -57,7 +57,7 @@ export type OwnerPrivateLockMutationStep =
   | "abandon-verified"
   | "abandon-detached";
 
-interface OwnerPrivateLockOptions {
+export interface OwnerPrivateLockOptions {
   readonly path: string;
   readonly label: string;
   readonly schemaTag: string;
@@ -156,7 +156,6 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
   const legacyIncarnation = incarnation.schema === PROCESS_INCARNATION_SCHEMA
     ? undefined
     : options.legacyProcessIncarnation ?? await currentProcessIncarnation(PROCESS_INCARNATION_SCHEMA);
-  const sameProcess = options.isSameProcessIncarnation ?? isProcessIncarnationLive;
   let legacyHolder: LegacyLockHolder | undefined;
   const timeout = options.waitTimeoutMs ?? 0;
   const deadline = now() + timeout;
@@ -224,27 +223,16 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
     }
     try {
       await options.afterInspected?.(observed);
-      let stale = observed.kind === "ownerless"
-        && now() - observed.mtimeMs >= options.ownerlessGraceMs;
+      const stale = await isObservedStale(observed, options);
       legacyHolder = undefined;
       if (observed.kind === "owned") {
-        try {
-          stale = !(observed.owner.incarnation === undefined
-            ? await (options.isLegacyProcessAlive?.(observed.owner.pid) ?? true)
-            : await sameProcess(observed.owner.pid, observed.owner.incarnation));
-        } catch (error) {
-          const decision = options.livenessError?.(error, observed.owner);
-          if (decision instanceof Error) throw decision;
-          if (decision !== "assume-live") throw error;
-          stale = false;
-        }
         if (!stale && legacyIncarnation !== undefined
           && observed.owner.incarnation?.schema === PROCESS_INCARNATION_SCHEMA) {
           legacyHolder = { label: options.label, path: options.path, pid: observed.owner.pid };
         }
       }
       if (stale) {
-        if (await quarantine(options, observed, pid, now, randomToken, gateBudget) === "retry") continue;
+        if (await quarantine(options, observed, pid, now, randomToken, gateBudget === undefined ? {} : { gateBudget }) === "retry") continue;
         return undefined;
       }
       if ((options.maxAcquireAttempts !== undefined && attempts >= options.maxAcquireAttempts)
@@ -261,6 +249,44 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
     } finally {
       await closeObserved(observed);
     }
+  }
+}
+
+/** Reclaim only: never creates a directory or publishes a new owner. */
+export async function reclaimOwnerPrivateLock(
+  options: OwnerPrivateLockOptions,
+  checks: {
+    /** Runs on a validated owned record, before probing liveness. Ownerless state is skipped. */
+    readonly candidate: (record: Readonly<Record<string, unknown>>) => Promise<boolean>;
+    /** Final external precondition, under the mutation gate immediately before rename. */
+    readonly beforeRename: () => Promise<boolean>;
+  },
+): Promise<void> {
+  validateOptions(options);
+  const observed = await inspect(options.path, options);
+  try {
+    if (observed?.kind !== "owned"
+      || !await checks.candidate(JSON.parse(observed.owner.content) as Readonly<Record<string, unknown>>)
+      || !await isObservedStale(observed, options)) return;
+    await quarantine(options, observed, options.pid ?? process.pid, options.now ?? Date.now,
+      options.randomToken ?? randomUUID, { beforeRename: checks.beforeRename });
+  } finally { await closeObserved(observed); }
+}
+
+/** The same conservative stale-owner decision for acquisition and opportunistic reclaim. */
+async function isObservedStale(observed: Observed, options: OwnerPrivateLockOptions): Promise<boolean> {
+  if (observed.kind === "ownerless") {
+    return (options.now ?? Date.now)() - observed.mtimeMs >= options.ownerlessGraceMs;
+  }
+  try {
+    return !(observed.owner.incarnation === undefined
+      ? await (options.isLegacyProcessAlive?.(observed.owner.pid) ?? true)
+      : await (options.isSameProcessIncarnation ?? isProcessIncarnationLive)(observed.owner.pid, observed.owner.incarnation));
+  } catch (error) {
+    const decision = options.livenessError?.(error, observed.owner);
+    if (decision instanceof Error) throw decision;
+    if (decision !== "assume-live") throw error;
+    return false;
   }
 }
 
@@ -530,13 +556,16 @@ async function quarantine(
   pid: number,
   now: () => number,
   randomToken: () => string,
-  gateBudget?: () => number,
+  quarantineOptions: {
+    readonly gateBudget?: () => number;
+    readonly beforeRename?: () => Promise<boolean>;
+  } = {},
 ): Promise<"retry" | "return"> {
   // Liveness was decided outside the gate. Under it, the exact observed
   // directory and owner identity must still match before that cached death
   // proof is used; a dead incarnation never resurrects.
   await options.beforeStaleRename?.(options.path);
-  const outcome = await gated(options, gateBudget, async (): Promise<"retry" | "return" | { readonly detached: string }> => {
+  const outcome = await gated(options, quarantineOptions.gateBudget, async (): Promise<"retry" | "return" | { readonly detached: string }> => {
     const current = await compareObserved(options.path, options, expected);
     if (current === undefined) return "retry";
     if (!current) {
@@ -544,6 +573,7 @@ async function quarantine(
     }
     await options.mutationStep?.("stale-verified", options.path);
     const stalePath = artifactPath(options, "stale", pid, now, randomToken);
+    if (await quarantineOptions.beforeRename?.() === false) return "return";
     try {
       await rename(options.path, stalePath);
     } catch (error) {

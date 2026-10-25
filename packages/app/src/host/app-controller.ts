@@ -175,7 +175,9 @@ async function startMonoAgentAppInternal(
     }
   };
   const cwd = resolve(options.cwd ?? process.cwd());
-  const agentRootOwnership = await acquireAgentRootOwnership(cwd);
+  // App startup opts in, but may itself run inside a tool sandbox.
+  // The sweep independently checks whether process-namespace visibility is safe.
+  const agentRootOwnership = await acquireAgentRootOwnership(cwd, { sweepContext: "host" });
   let controller: MonoAgentAppController | undefined;
   try {
     const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");

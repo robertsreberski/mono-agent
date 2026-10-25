@@ -100,6 +100,7 @@ async function acquireMutex(path: string, label: string, deadline: number): Prom
     current.held = true;
     return () => releaseMutex(path, current);
   }
+  if (deadline <= performance.now()) throw new OwnerLockCoordinationBusyError(label);
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const waiter: Waiter = {
       grant: () => {

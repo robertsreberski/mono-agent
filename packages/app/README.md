@@ -541,6 +541,40 @@ reentrant references. Benchmarks use the same seam and dispose both their harnes
 and supplied runtime before releasing the final ownership reference. Production
 account-home resolution is unchanged.
 
+### Abandoned agent-root lease maintenance
+
+After the first successful ownership acquisition during host app startup, one
+best-effort asynchronous sweep samples at most 16 lease names with a 100 ms
+monotonic inspection/probe budget. Acquisition never awaits it. App startup opts
+in, but the public app entrypoint can itself run inside a sandbox. On Linux the
+sweep requires `/proc/self/ns/pid` to resolve via `readlink` to the kernel's initial
+PID namespace identity, exactly `pid:[4026531836]`. A different identity, missing
+or unreadable link, or unexpected format skips maintenance before listing leases.
+Agents in containers (including Docker) with non-initial PID namespaces therefore
+never sweep, even when they have their own procfs mount. This is intentionally
+conservative. Darwin has no PID namespaces and retains conservative
+liveness probing (including treating sandbox `EPERM` and probe errors as live).
+Other platforms do not sweep. Raw coordinator callers do not opt in by default,
+and explicitly sandboxed callers are skipped. Tool sandbox configuration is not
+used as proof of the current process's PID or mount view.
+
+The sweep only considers validated new records whose canonical `agentRoot` hashes
+to both the recorded and filename digest. It first checks that the root is absent
+(`ENOENT` only), then uses acquisition's same conservative process-incarnation
+check. Reclaim uses the same quarantine and move-back protocol under a nonwaiting
+mutation gate, with a final root-absence and budget check immediately before the
+rename. Live or uncertain owners, existing/inaccessible roots, malformed records,
+ownerless and legacy records, and a busy gate are kept. Legacy leases without the
+root field, and all `.released`, `.stale` and `.abandoned` directories, remain
+untouched; this is not a cleanup of historical lease entries.
+
+A one-hour `createdAt` floor reduces startup churn, not a safety guarantee: it
+measures the owner's start time, not its death. Listing names and an already
+started filesystem operation can exceed the inspection budget; late liveness
+results cannot authorize a rename. Random sampling is best-effort maintenance,
+not a fixed maximum directory size. Errors produce at most one path-free warning
+per sweep and never fail startup.
+
 ### macOS process identity: upgrade and rollback
 
 Locks, leases, process jobs and subagent ownership record which process owns

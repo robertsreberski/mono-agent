@@ -129,6 +129,23 @@ describe("web request coordination lock with the mutation gate", () => {
     await permit.complete({ status: "ok" });
   }, 20_000);
 
+  it("returns coordination_unavailable without queueing for a contended zero-budget local gate", async () => {
+    const directory = await webDirectory();
+    const entered = deferred(), release = deferred();
+    const held = withOwnerLockMutationGate({ path: join(directory, WEB_CONTROL_MUTATION_GATE) }, "Test local holder", async () => {
+      entered.resolve(); await release.promise;
+    });
+    await entered.promise;
+    const coordinator = createHostWebRequestCoordinator({ directory, spacingScale: 0, lockSeams: { gateBusyTimeoutMs: 0 } });
+    try {
+      await expect(coordinator.acquire(request())).rejects.toMatchObject({ code: "coordination_unavailable" });
+      await expect(lstat(join(directory, ".lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { release.resolve(); await held; }
+    // Expired-deadline rejection must leave no waiter or phantom lock behind.
+    const permit = await coordinator.acquire(request());
+    await permit.complete({ status: "ok" });
+  });
+
   it("retries a briefly busy gate inside the wait budget instead of failing", async () => {
     const directory = await webDirectory();
     const holder = await gateHolder(directory);
