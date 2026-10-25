@@ -1,15 +1,15 @@
+import { randomUUID } from "node:crypto";
+import type { UpkeepAdmission, UpkeepReservation } from "./admission.js";
 import { LedgerError, ledgerFailure } from "./ledger-error.js";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { ContinuityUpkeepResult } from "@mono-agent/turn/host";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
-import { selectLedgerSources, validateLedgerOutput, fitLedgerSelection, ledgerHash } from "./ledger.js";
+import { selectLedgerSources, validateLedgerOutput, fitLedgerSelection } from "./ledger.js";
 
 export interface UpkeepEligibility {
   readonly sessionsEnabled: boolean; readonly isolated: boolean; readonly ownedStore: boolean; readonly primaryAttempt: boolean;
-  readonly historyAvailable?: boolean; readonly maxTokens: number; readonly withOwner?: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly historyAvailable?: boolean; readonly maxTokens: number; readonly withOwner?: <T>(operation: (ownerToken: string) => Promise<T>) => Promise<T>;
 }
-// Host-lifetime, process-local per-binding LRU (256 scopes); no historical prose or raw errors.
-const failedSelections = new WeakMap<Function, Map<string, string>>();
 export function createLedgerSupplier(options: ConversationHarnessOptions, request: ConversationHarnessRequest, runId: string) {
   const history = options.toolHistory, config = history?.upkeep;
   const scope = { logicalConversationId: history?.logicalConversationId(request.conversationId) ?? request.conversationId,
@@ -39,19 +39,22 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
         if (skip || integrityFailed || !config?.enabled) { emitSafe(emit, { type: "continuity_upkeep", status: "skipped", reason: skip ?? (integrityFailed ? "ledger_integrity" : "read_only"), providerInvoked: false }); return; }
         let completion: ContinuityUpkeepResult | undefined;
         let publishing = false;
-        let published: string | undefined, localSkip: string | undefined, uncovered: number | undefined, fingerprint: string | undefined;
-        const failures = failedSelections.get(config.complete) ?? new Map<string, string>(); failedSelections.set(config.complete, failures);
-        const cacheScope = ledgerHash(JSON.stringify([scope.currentConversationId, scope.logicalConversationId]));
-        const rememberPaidFailure = () => {
-          if (!fingerprint || !completion?.receipt.providerInvoked) return;
-          failures.delete(cacheScope); failures.set(cacheScope, fingerprint);
-          if (failures.size > 256) failures.delete(failures.keys().next().value!);
-        };
+        let published: string | undefined, localSkip: string | undefined, uncovered: number | undefined;
+        let reservation: UpkeepReservation | undefined;
+        let outcomeRecorded = false, barrierRequested = false;
         try {
-          if (history!.reader.continuitySuppressed(scope) || !history!.publishLedger || !eligibility.withOwner) throw new Error("unavailable");
+          if (history!.reader.continuitySuppressed(scope) || !history!.publishLedger || !history!.mutateUpkeep || !eligibility.withOwner) throw new Error("unavailable");
+          if (!config.model) { localSkip = "model_unavailable"; return; }
+          const fence = await eligibility.withOwner(async ownerToken => {
+            if (!ownerToken) throw new Error("owner_unavailable");
+            const expected = await history!.mutateUpkeep!({ kind: "inspect", scope: { logicalId: scope.logicalConversationId, conversationId: scope.currentConversationId } });
+            if (!expected) throw new Error("scope_unavailable");
+            return await history!.mutateUpkeep!({ kind: "claim", expected, ownerToken }) as UpkeepAdmission;
+          });
+          const inputTokens = fence.bootstrap ? 128000 : 64000;
           const source = history!.reader.snapshotContinuity({ ...scope, selection: "upkeep" });
           if (["unavailable", "purge_pending", "source_unavailable"].includes(source.degradedReason ?? "")) throw new Error("source_unavailable");
-          const admission = fitLedgerSelection(selectLedgerSources(source, frozen?.generation), scope, frozen);
+          const admission = fitLedgerSelection(selectLedgerSources(source, frozen?.generation, inputTokens), scope, frozen);
           const { selection, projectedBytes } = admission; uncovered = selection.uncovered;
           if (admission.reason) { localSkip = admission.reason; return; }
           if (!selection.spans.length || selection.manifest === frozen?.generation.manifest) {
@@ -63,23 +66,42 @@ export function createLedgerSupplier(options: ConversationHarnessOptions, reques
           const stats = history!.reader.stats();
           if (!stats) throw new Error("quota_unavailable");
           if (stats.retainedBytes - (frozen?.payloadBytes ?? 0) + projectedBytes > stats.limits.maxBytes) { localSkip = "ledger_quota_budget"; return; }
-          fingerprint = ledgerHash(JSON.stringify([selection.manifest, frozen?.generation.id ?? null, config.model ?? "bound-completion"]));
-          if (failures.get(cacheScope) === fingerprint) { failures.delete(cacheScope); failures.set(cacheScope, fingerprint); localSkip = "upkeep_repeat_suppressed"; gap = true; return; }
-          failures.delete(cacheScope);
-          completion = await config.complete(selection.prompt, request.abortSignal);
-          if (completion.receipt.status !== "valid" || !completion.text) { gap = true; if (completion.receipt.status === "invalid") rememberPaidFailure(); return; }
+          reservation = { databaseId: fence.databaseId, logicalId: fence.logicalId, conversationId: fence.conversationId,
+            incarnation: fence.incarnation, fence: fence.fence, ownerToken: fence.ownerToken,
+            operationId: randomUUID(), runId, recorderNamespace: config.recorderNamespace ?? "default",
+            model: config.model, manifest: selection.manifest, parent: frozen?.generation.id ?? null,
+            budget: fence.bootstrap ? "bootstrap" : "incremental" };
+          await eligibility.withOwner(async () => {
+            await history!.mutateUpkeep!({ kind: "reserve", reservation: reservation! });
+            request.abortSignal.throwIfAborted();
+            barrierRequested = true;
+            await history!.mutateUpkeep!({ kind: "dispatch", reservation: reservation! });
+          });
+          // No invocation until BOTH the durable acknowledgement and canonical
+          // owner's post-check succeed. Lost waiters never speculate or retry.
+          completion = await config.complete(selection.prompt, request.abortSignal, { operationId: reservation.operationId, inputTokens });
+          await eligibility.withOwner(async () => {
+            await history!.mutateUpkeep!({ kind: "outcome", reservation: reservation!, receipt: completion!.receipt });
+          });
+          outcomeRecorded = true;
+          if (completion.receipt.status !== "valid" || !completion.text) { gap = true; return; }
           const generation = validateLedgerOutput(completion.text, selection, scope, frozen?.generation, completion.receipt.capEnforcement); uncovered = generation.uncovered;
           publishing = true;
-          await eligibility.withOwner(async () => { if (request.abortSignal.aborted) throw new LedgerError("publish_cancelled"); await history!.publishLedger!(generation); });
+          await eligibility.withOwner(async () => { if (request.abortSignal.aborted) throw new LedgerError("publish_cancelled"); await history!.publishLedger!(generation, reservation); });
           frozen = history!.reader.ledger(scope); published = frozen?.generation.id;
           if (!published) throw new LedgerError("publish_unavailable");
         } catch (error) {
           gap = true;
-          if (completion) { rememberPaidFailure(); completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication", failure: request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema") } }; }
+          if ((error as { code?: string }).code === "upkeep_repeat_suppressed") localSkip = "upkeep_repeat_suppressed";
+          if (completion && outcomeRecorded) { completion = { receipt: { ...completion.receipt, status: "invalid", reason: "validation_or_publication", failure: request.abortSignal.aborted ? "publish_cancelled" : ledgerFailure(error, publishing ? "publish_unavailable" : "output_schema") } }; }
         } finally {
+          const uncertain = !outcomeRecorded && barrierRequested ? { status: "uncertain", reason: "dispatch_or_outcome_unacknowledged",
+            operationId: reservation!.operationId, model: reservation!.model, providerInvoked: completion?.receipt.providerInvoked ?? false,
+            costUsd: null, inputTokens: null, outputTokens: null } : undefined;
+          if (!outcomeRecorded) completion = undefined;
           // This host callback records before the provider attempt can fail over;
           // it is deliberately not attached to an attempt's return value.
-          emitSafe(emit, { type: "continuity_upkeep", ...(completion?.receipt ?? { status: "skipped", reason: localSkip ?? "unavailable", providerInvoked: false }),
+          emitSafe(emit, { type: "continuity_upkeep", ...(completion?.receipt ?? uncertain ?? { status: "skipped", reason: localSkip ?? "unavailable", providerInvoked: false }),
             ...(published ? { generationId: published } : {}), uncovered: uncovered ?? frozen?.generation.uncovered ?? 0 });
           if (completion?.receipt.outputOverrun) emitSafe(emit, { type: "upkeep_output_overrun", outputTokens: completion.receipt.outputTokens });
           if (gap) emitSafe(emit, { type: "runtime_warning", warning_kind: "continuity_upkeep_degraded", error_code: completion?.receipt.failure ?? completion?.receipt.reason ?? localSkip ?? "unavailable",

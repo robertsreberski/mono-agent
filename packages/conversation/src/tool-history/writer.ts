@@ -1,3 +1,4 @@
+import type { UpkeepMutation, UpkeepAdmission, UpkeepReservation } from "../continuity/admission.js";
 import type { LedgerGeneration } from "../continuity/ledger.js";
 import type { ContinuityGapInput } from "./continuity-contracts.js";
 import type { RuntimeToolLifecycleEvent, RuntimeToolLifecyclePersistence, RuntimeToolLifecycleSink } from "@mono-agent/turn/host/types";
@@ -241,9 +242,14 @@ export class ToolHistoryWriter {
     await this.request("continuity_gap", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
   }
 
-  async publishLedger(input: LedgerGeneration): Promise<void> {
+  async mutateUpkeep(input: UpkeepMutation): Promise<UpkeepAdmission | null> {
+    if (Buffer.byteLength(JSON.stringify(input)) > 32768) throw new TypeError("Upkeep payload bound.");
+    return await this.request("continuity_upkeep", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS) as UpkeepAdmission | null;
+  }
+
+  async publishLedger(input: LedgerGeneration, reservation?: UpkeepReservation): Promise<void> {
     if (Buffer.byteLength(JSON.stringify(input)) > 128 * 1024) throw new TypeError("Ledger payload bound.");
-    await this.request("continuity_ledger", input, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
+    await this.request("continuity_ledger", { generation: input, reservation }, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
   }
 
   async prepareContinuity(input: ContinuityPreparation): Promise<ContinuityReceipt> {

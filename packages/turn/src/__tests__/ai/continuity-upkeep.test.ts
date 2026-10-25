@@ -22,7 +22,7 @@ it.each(apis)("proves one real %s request builder, enforcement class and inclusi
   else expect(cap).toContain("4096");
 });
 
-async function codex(events: unknown[], strict = false, abortSignal = new AbortController().signal) {
+async function codex(events: unknown[], strict = false, abortSignal = new AbortController().signal, budget?: { operationId: string; inputTokens: 64000 | 128000 }, prompt = "Fictional source selection.") {
   const adapter = await import("@earendil-works/pi-ai/api/openai-codex-responses");
   let signal: AbortSignal | undefined, optionsSeen: any, payloadSeen: any;
   const wire = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
@@ -33,7 +33,7 @@ async function codex(events: unknown[], strict = false, abortSignal = new AbortC
   const selected = { ...model("openai-codex-responses"), reasoning: true, thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: "medium", high: "high" } };
   const stream = vi.fn((m: any, context: any, options: any) => { optionsSeen = options; return adapter.streamSimple(m, context, { ...options, apiKey: token, onPayload(payload: any) { options.onPayload(payload); payloadSeen = payload; } }); });
   const models = { getModel: () => selected, streamSimple: stream };
-  const result = await completeContinuityUpkeep("Fictional source selection.", { model: reference, messages: [], abortSignal, piResolvedModels: models as never }, strict);
+  const result = await completeContinuityUpkeep(prompt, { model: reference, messages: [], abortSignal, piResolvedModels: models as never }, strict, budget);
   return { result, transport, stream, signal, optionsSeen, payloadSeen };
 }
 const created = { type: "response.created", response: { id: "fictional-response" } };
@@ -121,4 +121,28 @@ it("requests guard-sized Codex output and suppresses reasoning summaries", async
 it("retains a distinct estimated paid input cost after a Codex abort", async () => {
   const { result } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "x".repeat(5000) }]);
   expect(result.receipt).toMatchObject({ providerInvoked: true, status: "invalid" }); expect(result.receipt.estimatedInputTokens).toBeGreaterThan(0); expect(result.receipt.estimatedInputCostUsd).not.toBeNull();
+});
+
+it("uses the admitted bootstrap cap for both estimated and reported cumulative input", async () => {
+  const frames = [created, added, { type: "response.output_text.delta", output_index: 0, delta: "{}" }, done(2, 68000, 65000)];
+  const bootstrap = await codex(frames, false, undefined, { operationId: "bootstrap-operation", inputTokens: 128000 }, "Fictional ".repeat(14000));
+  expect(bootstrap.transport).toHaveBeenCalledTimes(1);
+  expect(bootstrap.result.receipt).toMatchObject({ operationId: "bootstrap-operation", status: "valid", inputTokens: 68000,
+    providerUsage: { input: 3000, cacheRead: 65000, cacheWrite: 0, output: 2 } });
+  const incremental = await codex(frames, false, undefined, { operationId: "incremental-operation", inputTokens: 64000 }, "Fictional ".repeat(14000));
+  expect(incremental.transport).not.toHaveBeenCalled(); expect(incremental.stream).not.toHaveBeenCalled();
+  expect(incremental.result.receipt).toMatchObject({ status: "skipped", reason: "input_budget" });
+});
+it("rejects bootstrap input above 128k including cache and never repairs it", async () => {
+  const overrun = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "{}" }, done(2, 129000, 125000)], false, undefined, { operationId: "bootstrap-operation", inputTokens: 128000 });
+  expect(overrun.transport).toHaveBeenCalledTimes(1); expect(overrun.stream).toHaveBeenCalledTimes(1);
+  expect(overrun.result.receipt).toMatchObject({ status: "invalid", reason: "input_overrun", inputTokens: 129000 });
+  const estimate = await codex([], false, undefined, { operationId: "bootstrap-operation", inputTokens: 128000 }, "Fictional ".repeat(23000));
+  expect(estimate.transport).not.toHaveBeenCalled(); expect(estimate.result.receipt.reason).toBe("input_budget");
+});
+
+it("retains explicit zero provider counters in the durable-outcome companion", async () => {
+  const { result, transport } = await codex([created, added, { type: "response.output_text.delta", output_index: 0, delta: "{}" }, done(0, 0, 0)]);
+  expect(transport).toHaveBeenCalledTimes(1);
+  expect(result.receipt.providerUsage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });

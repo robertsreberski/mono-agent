@@ -16,7 +16,7 @@ afterEach(async () => { vi.restoreAllMocks(); for (const f of resources.splice(0
 async function fixture(maxBytes?: number) {
   const root = await mkdtemp(join(tmpdir(), "ledger-"));
   const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true, persistenceCeilingMs: 5000, ...(maxBytes ? { retention: { maxBytes } } : {}) });
-  resources.push({ root, writer }); return { root, writer, reader: new ToolHistoryReader(root) };
+  resources.push({ root, writer }); return { root, writer, mutateUpkeep: writer.mutateUpkeep.bind(writer), reader: new ToolHistoryReader(root) };
 }
 async function owner(f: Awaited<ReturnType<typeof fixture>>, text = "Never send without confirmation.", count = 1) {
   const generationId = continuityGenerationId(), digest = ledgerHash(generationId);
@@ -33,7 +33,7 @@ async function tool(f: Awaited<ReturnType<typeof fixture>>, text: string) {
   await f.writer.finishRun(binding, "completed");
 }
 const output = (selection: LedgerSelection) => JSON.stringify({ entries: [{ kind: "open_work", value: "Derived fictional state.", status: "unknown", sources: [selection.spans[0]!.id] }], covered: selection.spans.map(s => s.id) });
-const eligible = { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async <T>(op: () => Promise<T>) => await op() };
+const eligible = { sessionsEnabled: true, isolated: false, ownedStore: true, primaryAttempt: true, maxTokens: 8000, withOwner: async <T>(op: (ownerToken: string) => Promise<T>) => await op("fictional-owner") };
 
 it("selects independently past the owner-first shortlist, including tool interiors under the cumulative input estimate", async () => {
   const f = await fixture(); for (let i = 0; i < 5; i++) await owner(f, "Fictional filler.", 128);
@@ -99,7 +99,7 @@ it.each([
   ["detached_attempt", { primaryAttempt: false }], ["trigger_headroom", { maxTokens: 0 }],
 ] as const)("explicitly records %s ineligibility without a model request", async (reason, patch) => {
   const f = await fixture(); await owner(f); const complete = vi.fn(); const events: unknown[] = [];
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
   await supplier.prepare({ ...eligible, ...patch }, "cold_rebuild", e => events.push(e));
   expect(complete).not.toHaveBeenCalled(); expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", status: "skipped", reason }));
@@ -107,8 +107,8 @@ it.each([
 
 it("freezes one generation across retry, preserves the host receipt and suppresses purge intents", async () => {
   const f = await fixture(); await owner(f); const selection = selectLedgerSources(f.reader.snapshotContinuity(scope));
-  const complete = vi.fn(async () => ({ text: output(selection), receipt: { status: "valid", reason: "completed", providerInvoked: true } }));
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const complete = vi.fn(async (_prompt, _signal, budget) => ({ text: output(selection), receipt: { operationId: budget.operationId, model: "bound-completion", status: "valid", reason: "completed", providerInvoked: true } }));
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const request = { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal };
   const supplier = createContinuityPackSupplier(options, request, "current")!, events: unknown[] = [];
   await supplier.prepare(eligible, "cold_rebuild", e => events.push(e));
@@ -136,7 +136,7 @@ it("read-only ledger reuse makes no completion and explicit disabled controls re
 });
 it("invalid output never publishes a generation or removes canonical owner dedup proof", async () => {
   const f = await fixture(); await owner(f); const events: any[] = [];
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete: async () => ({ text: "INVALID", receipt: { status: "valid", providerInvoked: true } }) }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete: async (_prompt: string, _signal: AbortSignal, budget: { operationId: string }) => ({ text: "INVALID", receipt: { operationId: budget.operationId, model: "bound-completion", status: "valid", providerInvoked: true } }) }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
   await supplier.prepare(eligible, "cold_rebuild", event => events.push(event));
   expect(f.reader.ledger(scope)).toBeUndefined();
@@ -152,7 +152,7 @@ it("rejects a corrupted ledger payload before any paid extraction while preservi
   const db = new DatabaseSync(f.reader.databasePath); db.exec("UPDATE continuity_ledger SET payload=replace(payload,'Derived fictional state.','Altered fictional state.')"); db.close();
   expect(() => f.reader.ledger(scope)).toThrow("ledger_payload_digest");
   const complete = vi.fn(), events: any[] = [];
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
   await supplier.prepare(eligible, "cold_rebuild", event => events.push(event));
   expect(complete).not.toHaveBeenCalled();
@@ -187,26 +187,26 @@ it("preflights worst-case inherited payload before buying upkeep", async () => {
   expect(projectedLedgerPayloadBytes(selection, scope)).toBeLessThanOrEqual(LEDGER_PAYLOAD_BYTES); expect(projectedLedgerPayloadBytes(selection, scope, prior)).toBeGreaterThan(LEDGER_PAYLOAD_BYTES);
   vi.spyOn(f.reader, "ledger").mockReturnValue({ generation: prior, retainedBytes: source.records.reduce((n, r) => n + Buffer.byteLength(r.text), 0), payloadBytes: Buffer.byteLength(JSON.stringify(prior)), records: [...source.records] });
   const complete = vi.fn(), events: any[] = [];
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
   await supplier.prepare(eligible, "cold_rebuild", e => events.push(e)); expect(complete).not.toHaveBeenCalled(); expect(events).toContainEqual(expect.objectContaining({ reason: "ledger_payload_budget", providerInvoked: false }));
 });
 it("negative-caches identical failed selections across boundaries until sources change", async () => {
   const f = await fixture(); await owner(f); const events: any[] = [];
-  const complete = vi.fn(async () => ({ text: "INVALID", receipt: { status: "valid", providerInvoked: true } }));
+  const complete = vi.fn(async (_prompt, _signal, budget) => ({ text: "INVALID", receipt: { operationId: budget.operationId, model: upkeep.model, status: "valid", providerInvoked: true } }));
   const upkeep = { enabled: true, model: "fictional:base", complete };
   const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const prepare = async () => { const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!; await supplier.prepare(eligible, "cold_rebuild", e => events.push(e)); };
   await prepare(); await prepare(); expect(complete).toHaveBeenCalledTimes(1); expect(events).toContainEqual(expect.objectContaining({ reason: "upkeep_repeat_suppressed", providerInvoked: false }));
-  upkeep.model = "fictional:other"; await prepare(); expect(complete).toHaveBeenCalledTimes(2);
-  await owner(f, "Changed fictional selection."); await prepare(); expect(complete).toHaveBeenCalledTimes(3);
+  upkeep.model = "fictional:other"; await prepare(); expect(complete).toHaveBeenCalledTimes(1);
+  await owner(f, "Changed fictional selection."); await prepare(); expect(complete).toHaveBeenCalledTimes(2);
 });
 it("never buys upkeep with unavailable canonical history or fully covered selected spans", async () => {
   const f = await fixture(); await owner(f); await owner(f, "Second fictional rule."); const source = f.reader.snapshotContinuity(scope), selection = selectLedgerSources(source);
   await f.writer.publishLedger(validateLedgerOutput(output(selection), selection, scope));
   vi.spyOn(f.reader, "snapshotContinuity").mockReturnValue({ ...source, records: [source.records[1]!] });
   const complete = vi.fn(), events: any[] = [];
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   for (const historyAvailable of [false, true]) {
     const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
     await supplier.prepare({ ...eligible, historyAvailable }, "cold_rebuild", e => events.push(e));
@@ -227,7 +227,7 @@ it.each(["lineage", "quota"])("preflights inherited %s capacity with zero comple
     vi.spyOn(f.reader, "ledger").mockReturnValue({ generation: prior, records, retainedBytes: records.length * Buffer.byteLength(text), payloadBytes: Buffer.byteLength(JSON.stringify(prior)) });
   }
   const complete = vi.fn(), events: any[] = [];
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const supplier = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!;
   await supplier.prepare(eligible, "cold_rebuild", e => events.push(e));
   expect(complete).not.toHaveBeenCalled(); expect(events).toContainEqual(expect.objectContaining({ reason: `ledger_${mode}_budget`, providerInvoked: false }));
@@ -252,22 +252,22 @@ it("counts only represented spans as preserved Codex coverage, without weakening
   expect(next.spans[0]!.recordId).toBe(selection.spans[1]!.recordId);
   expect(generation.coveredSpans).toEqual(["s0"]);
 });
-it.each(["invalid", "skipped"])("never negative-caches a pre-dispatch %s result", async status => {
+it.each(["invalid", "skipped"])("releases only proved pre-dispatch skips, not an ambiguous %s result", async status => {
   const f = await fixture(); await owner(f);
-  const complete = vi.fn(async () => ({ receipt: { status, providerInvoked: false, reason: "aborted" } }));
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const complete = vi.fn(async (_prompt, _signal, budget) => ({ receipt: { operationId: budget.operationId, model: "bound-completion", status, providerInvoked: false, reason: "input_budget" } }));
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   for (let i = 0; i < 2; i++) await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", () => {});
-  expect(complete).toHaveBeenCalledTimes(2);
+  expect(complete).toHaveBeenCalledTimes(status === "skipped" ? 2 : 1);
 });
-it("bounds paid-failure suppression to 256 scopes and refreshes hits as an LRU", async () => {
+it("preserves durable paid-failure suppression beyond the old 256-scope LRU", async () => {
   const f = await fixture(); await owner(f); const source = f.reader.snapshotContinuity(scope);
   vi.spyOn(f.reader, "snapshotContinuity").mockReturnValue(source);
-  const complete = vi.fn(async () => ({ receipt: { status: "invalid", providerInvoked: true } }));
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const complete = vi.fn(async (_prompt, _signal, budget) => ({ receipt: { operationId: budget.operationId, model: "bound-completion", status: "invalid", providerInvoked: true } }));
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   const prepare = async (i: number) => await createContinuityPackSupplier(options, { conversationId: `fictional-${i}`, userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", () => {});
   for (let i = 0; i < 256; i++) await prepare(i);
   await prepare(0); await prepare(256); await prepare(0); expect(complete).toHaveBeenCalledTimes(257);
-  await prepare(1); expect(complete).toHaveBeenCalledTimes(258);
+  await prepare(1); expect(complete).toHaveBeenCalledTimes(257);
 });
 
 it("rejects serialized value and whole-entry overflow as whole completions", async () => {
@@ -293,16 +293,16 @@ it("fits a 205-span selection, dispatches once, and prioritizes trimmed spans at
   expect(fitted.selection.spans.map(s => records.find(r => r.recordId === s.recordId)!.ordinal)).toEqual(Array.from({ length: fitted.selection.spans.length }, (_, i) => i + 1));
   let frozen: ReturnType<typeof f.reader.ledger>;
   vi.spyOn(f.reader, "ledger").mockImplementation(() => frozen); vi.spyOn(f.reader, "snapshotContinuity").mockReturnValue(source);
-  const complete = vi.fn(async (prompt: string) => {
+  const complete = vi.fn(async (prompt: string, _signal, budget) => {
     const spans = prompt.split("\n").flatMap(line => { try { const row = JSON.parse(line); return typeof row.id === "string" ? [row.id] : []; } catch { return []; } });
-    return { text: JSON.stringify({ entries: [{ kind: "open_work", value: "Fictional state.", status: "unknown", sources: [spans[0]] }], covered: spans }), receipt: { status: "valid", providerInvoked: true } };
+    return { text: JSON.stringify({ entries: [{ kind: "open_work", value: "Fictional state.", status: "unknown", sources: [spans[0]] }], covered: spans }), receipt: { operationId: budget.operationId, model: "bound-completion", status: "valid", providerInvoked: true } };
   });
   const publishLedger = vi.fn(async (generation: Parameters<typeof f.writer.publishLedger>[0]) => {
     const lineage = records.filter(r => generation.inputs.some(input => input.recordId === r.recordId));
     frozen = { generation, records: lineage, retainedBytes: lineage.reduce((n, r) => n + Buffer.byteLength(r.text), 0), payloadBytes: Buffer.byteLength(JSON.stringify(generation)) };
     expect(frozen.payloadBytes).toBeLessThanOrEqual(LEDGER_PAYLOAD_BYTES);
   });
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger } } as unknown as ConversationHarnessOptions;
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger } } as unknown as ConversationHarnessOptions;
   const prepare = async () => await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", () => {});
   await prepare(); expect(complete).toHaveBeenCalledTimes(1); expect(publishLedger).toHaveBeenCalledTimes(1);
   const accepted = new Set(frozen!.generation.spans.map(s => s.recordId)), trimmed = records.filter(r => !accepted.has(r.recordId));
@@ -315,7 +315,7 @@ it("refuses inherited lineage alone over its bound before completion", async () 
   const prior = { ...validateLedgerOutput(output(selection), selection, scope), manifest: "previous", entries: [], spans: [], coveredSpans: [] };
   vi.spyOn(f.reader, "ledger").mockReturnValue({ generation: prior, records: [...source.records], retainedBytes: LEDGER_LINEAGE_BYTES + 1, payloadBytes: Buffer.byteLength(JSON.stringify(prior)) });
   const complete = vi.fn(), events: any[] = [];
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: new AbortController().signal }, "current")!.prepare(eligible, "cold_rebuild", e => events.push(e));
   expect(complete).not.toHaveBeenCalled(); expect(events).toContainEqual(expect.objectContaining({ reason: "ledger_lineage_budget", providerInvoked: false }));
 });
@@ -348,8 +348,8 @@ it("carries publisher source and bounds failures across the worker with stable c
 });
 it.each([false, true])("emits only stable failure codes in host receipts/warnings (cancelled=%s)", async cancelled => {
   const f = await fixture(); await owner(f); const selection = selectLedgerSources(f.reader.snapshotContinuity(scope)), signal = new AbortController(), events: any[] = [];
-  const complete = async () => { if (cancelled) signal.abort(); return { text: cancelled ? output(selection) : "fictional raw rejected text", receipt: { status: "valid", providerInvoked: true } }; };
-  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
+  const complete = async (_prompt: string, _signal: AbortSignal, budget: { operationId: string }) => { if (cancelled) signal.abort(); return { text: cancelled ? output(selection) : "fictional raw rejected text", receipt: { operationId: budget.operationId, model: "bound-completion", status: "valid", providerInvoked: true } }; };
+  const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true, upkeep: { enabled: true, model: "bound-completion", complete }, publishLedger: f.writer.publishLedger.bind(f.writer) } } as unknown as ConversationHarnessOptions;
   await createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Current.", abortSignal: signal.signal }, "current")!.prepare(eligible, "cold_rebuild", e => events.push(e));
   const code = cancelled ? "publish_cancelled" : "output_json";
   expect(events).toContainEqual(expect.objectContaining({ type: "continuity_upkeep", failure: code }));

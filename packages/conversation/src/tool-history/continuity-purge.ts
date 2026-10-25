@@ -8,6 +8,7 @@ const PREFIX = ".continuity-purge-";
 const PATTERN = /^\.continuity-purge-(?:[0-9a-f]{64}|[0-9a-f-]{36})\.json(?:\.applying)?$/;
 const TEMP_PATTERN = /^\.continuity-purge-(?:[0-9a-f]{64}|[0-9a-f-]{36})\.json\.tmp$/;
 export interface ContinuityPurge {
+  readonly resetUpkeep?: true;
   readonly scope: "logical" | "physical";
   readonly conversationId: string;
 }
@@ -18,7 +19,7 @@ export function persistContinuityPurge(root: string, purge: ContinuityPurge): vo
   const writeStarted = Date.now();
   assertSecureReadableDirectory(root);
   validatePurgeId(purge.conversationId);
-  const key = createHash("sha256").update(JSON.stringify([purge.scope, purge.conversationId])).digest("hex");
+  const key = createHash("sha256").update(JSON.stringify([purge.scope, purge.conversationId, ...(purge.resetUpkeep ? [true] : [])])).digest("hex");
   const path = join(root, `${PREFIX}${key}.json`), temporary = `${path}.tmp`;
   // The same-key temp is necessarily stale under this root transaction, even
   // after wall-clock rollback. Other keys retain the conservative mtime guard.
@@ -51,7 +52,7 @@ export function inspectContinuityPurges(root: string): { pending: readonly Pendi
     try {
       if (assertSecureReadableFile(path) > 32 * 1024) throw new Error("Oversized continuity purge journal.");
       const value = JSON.parse(readFileSync(path, "utf8")) as ContinuityPurge;
-      if ((value.scope !== "logical" && value.scope !== "physical") || Object.keys(value).sort().join() !== "conversationId,scope") throw new Error("Invalid continuity purge journal.");
+      if ((value.scope !== "logical" && value.scope !== "physical") || !["conversationId,scope", "conversationId,resetUpkeep,scope"].includes(Object.keys(value).sort().join()) || ("resetUpkeep" in value && value.resetUpkeep !== true)) throw new Error("Invalid continuity purge journal.");
       validatePurgeId(value.conversationId);
       pending.push({ ...value, path });
     } catch (error) {

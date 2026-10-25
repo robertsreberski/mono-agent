@@ -59,8 +59,9 @@ newer generation during the turn.
 ## Bounds and provider enforcement
 
 - One SSE completion, zero retries, tools, repairs or automatic model fallbacks.
-- At most 64,000 estimated selected-input tokens including instructions, prior
-  interpretation and span metadata, with a conservative estimate margin. Reported
+- At most 128,000 estimated input tokens for the one-time bootstrap, then 64,000
+  for incremental calls, including instructions, prior interpretation and span
+  metadata with a conservative estimate margin. Reported
   input usage including cached input is also checked before publication.
 - 4,096 output tokens **including reasoning**, with lowest supported effort.
 - One 60-second deadline, combined with caller cancellation.
@@ -142,8 +143,7 @@ follow in the same oldest-first order. This favors early evidence outside the
 cold window while letting spans trimmed at one boundary lead the next. The input
 shortlist retains its signal ranking within represented/unrepresented groups.
 A span whose full contributing record or metadata cannot fit is skipped; smaller
-later candidates can still fit. Selected spans, prompt, manifest and failed-call
-fingerprint all use the fitted set. Every removed span increments uncovered;
+later candidates can still fit. Selected spans, prompt and admission manifest all use the fitted set. Every removed span increments uncovered;
 no trim advances coverage or drops inherited purge links.
 
 The deduplicated retained-text union must stay within 4 MiB, and projected payload
@@ -157,15 +157,15 @@ Inherited input links invalidate descendants when **any** contributing ancestor
 source is deleted, tombstoned or changed, including a pre-ledger binary's normal
 B1 purge. Quota-retention tombstones likewise invalidate dependent generations;
 this slice introduces no checkpoint source leases. Pending purge intents suppress reuse immediately. Old binaries ignore
-the additive tables; no destructive migration is required for rollback.
+the additive tables; pending explicit-reset intents must drain before rollback.
+No destructive storage downgrade is required.
 
-Only failures with `providerInvoked: true` are negatively cached in-process for
-the configured completion binding and physical/logical conversation, keyed by
-source manifest, prior generation and selected model. Pre-dispatch aborts or
-unavailability do not suppress later eligible work. Each binding has a **256-scope
-LRU**; hits refresh recency. `upkeep_repeat_suppressed` avoids repeated payment
-while the key remains cached. Eviction, process/configuration restart or a changed
-key can admit work again.
+Paid-failure suppression is durable, keyed by source/parent manifest within the
+scope incarnation, independent of model changes. `upkeep_repeat_suppressed`
+avoids repeat purchase. Unresolved dispatch conservatively stops further
+purchases in that scope, including a smaller incremental selection of an
+uncertain bootstrap, until explicit reset or durable non-invocation proof.
+Restart and quota pressure never evict this evidence. See durable admission below.
 
 Represented selected spans skip as `already_covered`. An identical valid selection
 still skips as `unchanged`, preserving its prior uncovered count. Unrepresented
@@ -195,3 +195,45 @@ source/citation, value/entry bounds, owner/outcome integrity, publication
 CAS/quota/bounds/source/cancellation/unavailability. Raw text, values, IDs and
 exception messages are never included in that discriminator. Production has no
 completion capture path.
+
+## Durable admission and recovery
+
+Enabled upkeep uses separate additive v3 scope, admission and operation tables,
+not the latest ledger row. The scope binds the canonical history root and database
+identity, logical and physical conversation, and explicit-reset incarnation.
+Model changes and native-session epochs do not create a new bootstrap allowance.
+
+The first dispatched extraction has a cumulative input allowance of **128k**;
+later extractions have **64k**. Both include selected evidence, prior ledger,
+prompt and conservative overhead. There is still one completion, a 4096 inclusive
+output budget, 60-second deadline, no tools, retries, repair or fallback. Codex's
+visible-stream abort remains a client guard, not a hard remote/hidden-reasoning cap.
+
+A canonical owner installs an acknowledged fence before recovery. The worker
+conditionally reserves an operation, commits `dispatch_started`, and acknowledges
+it before the caller completes the canonical owner post-check and invokes the
+provider. A timeout is not cancellation of a queued write and never grants retry
+permission. Old fences cannot dispatch, record outcomes or publish after recovery
+or reset. Identical transitions replay idempotently; conflicting payloads fail.
+Recovery never fences a live canonical owner merely because a waiter expired.
+
+Reserved work without a committed dispatch barrier can be released only after
+installing a new fence. A barrier without terminal evidence remains uncertain,
+consumes bootstrap and is not automatically repurchased. Only durable allowlisted
+pre-invocation proof (model identity, input/headroom or unsupported-cap refusal)
+can release a committed barrier. Generic errors and cancellation are not proof.
+
+Provider outcome and available usage, including separate cache counters, commit
+before ledger publication and before the result receipt. The journal retains the
+originating run, recorder namespace, extraction model, source/parent manifest and
+budget kind. Missing terminal evidence means unknown usage/cost, never zero;
+accounting export/reconciliation is a separate follow-up capability.
+
+**Bootstrap marker lifetime:** quota pressure, source retention, ledger eviction,
+restart and model changes do not clear it. Only explicit user reset/delete of the
+conversation scope rotates its incarnation and clears its operations/marker. This
+can authorize one more bootstrap. Retention purge intents preserve admission state;
+explicit reset intents are distinguished durably. No source is pinned indefinitely.
+Bounded admission metadata stops further purchases when full rather than evicting
+anti-repurchase evidence. Disabling upkeep stops new purchases without downgrading
+or deleting the additive tables. Existing deterministic fallback remains available.

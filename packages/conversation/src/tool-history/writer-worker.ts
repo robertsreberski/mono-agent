@@ -1,4 +1,5 @@
 import { LedgerError } from "../continuity/ledger-error.js";
+import { mutateUpkeep, resetUpkeep, assertUpkeepPublication, type UpkeepMutation, type UpkeepReservation } from "../continuity/admission.js";
 import { publishLedger } from "../continuity/ledger-storage.js";
 import type { LedgerGeneration } from "../continuity/ledger.js";
 import { toolRetainedBytes } from "./continuity-storage.js";
@@ -177,6 +178,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           continuityPurgeBlocked = applyPendingContinuityPurges(database);
           respond(request.id, null);
           break;
+        case "continuity_upkeep":
         case "continuity_ledger":
         case "continuity_gap":
         case "continuity_prepare":
@@ -190,7 +192,15 @@ parentPort.on("message", (request: WorkerRequest) => {
           try {
             transaction(database, () => {
               switch (request.operation) {
-                case "continuity_ledger": publishLedger(database, request.payload as LedgerGeneration, retention.maxBytes, continuityRetainedBytes(database) + toolRetainedBytes(database)); break;
+                case "continuity_upkeep": result = mutateUpkeep(database, root, request.payload as UpkeepMutation); break;
+                case "continuity_ledger": {
+                  const { generation, reservation } = request.payload as { generation: LedgerGeneration; reservation?: UpkeepReservation };
+                  if (reservation) {
+                    assertUpkeepPublication(database, root, reservation);
+                    if (generation.conversationId !== reservation.conversationId || generation.logicalId !== reservation.logicalId || generation.parent !== reservation.parent || generation.manifest !== reservation.manifest) throw new Error("upkeep_publication_conflict");
+                  }
+                  publishLedger(database, generation, retention.maxBytes, continuityRetainedBytes(database) + toolRetainedBytes(database)); break;
+                }
                 case "continuity_gap": recordContinuityGap(database, request.payload as ContinuityGapInput); retainContinuity(database, retention, Date.now()); break;
                 case "continuity_prepare": result = prepareContinuity(database, request.payload as ContinuityPreparation, retention, (bytes, records) => applyRetentionInTransaction(database, retention, bytes, records)); break;
                 case "continuity_commit": commitContinuity(database, request.payload as ContinuityPublication); break;
@@ -634,6 +644,7 @@ function closeDanglingInTransaction(
 }
 
 function resetLogicalConversation(database: DatabaseSync, logicalConversationId: string): void {
+  resetUpkeep(database, "logical", logicalConversationId);
   if (hasContinuitySchema(database)) resetContinuity(database, logicalConversationId);
   const runs = database.prepare(`
     SELECT conversation_id,run_id FROM runs WHERE logical_id=?
@@ -1734,6 +1745,7 @@ function applyPendingContinuityPurges(database: DatabaseSync): boolean {
         if (hasContinuitySchema(database)) {
           assertContinuitySchema(database);
           purgeContinuityRows(database, purge.scope, purge.conversationId);
+          if (purge.resetUpkeep === true) resetUpkeep(database, purge.scope, purge.conversationId);
         }
       });
       acknowledgeContinuityPurge(root, claimed);

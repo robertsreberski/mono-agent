@@ -11,6 +11,7 @@ export interface ContinuityUpkeepReceipt {
   readonly capEnforcement: "request" | "stream_abort"; readonly status: "valid" | "invalid" | "skipped";
   readonly failure?: string; readonly reason: string; readonly elapsedMs: number; readonly inputTokens: number | null; readonly outputTokens: number | null;
   readonly estimatedInputTokens: number; readonly estimatedInputCostUsd: number | null;
+  readonly providerUsage?: { readonly input: number | null; readonly output: number | null; readonly cacheRead: number | null; readonly cacheWrite: number | null };
   readonly costUsd: number | null; readonly visibleEstimate: number; readonly outputOverrun: boolean;
 }
 export interface ContinuityUpkeepResult { readonly text?: string; readonly receipt: ContinuityUpkeepReceipt }
@@ -42,8 +43,9 @@ export function constrainUpkeepPayload(api: string, payload: any): void {
 
 /** One SSE completion, no session/tools/router/repair. Codex lacks a wire cap in
  * pi-ai 1.2.0; its visible stream is guarded, not its hidden reasoning/quota. */
-export async function completeContinuityUpkeep(prompt: string, options: RuntimeRunOptions, requireRequestCap = false): Promise<ContinuityUpkeepResult> {
-  const started = performance.now(), operationId = randomUUID();
+export async function completeContinuityUpkeep(prompt: string, options: RuntimeRunOptions, requireRequestCap = false, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000 }): Promise<ContinuityUpkeepResult> {
+  const started = performance.now(), operationId = budget?.operationId ?? randomUUID();
+  const inputBudget = budget?.inputTokens === 128000 ? 128000 : 64000;
   const abort = new AbortController(), deadline = AbortSignal.timeout(60000);
   const outerSignal = AbortSignal.any([options.abortSignal, deadline]);
   const signal = AbortSignal.any([outerSignal, abort.signal]);
@@ -64,6 +66,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
     operationId, model: options.model.reference, api, providerInvoked, capEnforcement, status, reason,
     elapsedMs: Math.round(performance.now() - started), inputTokens: providerInvoked ? (hasUsage() ? Number(usage.input || 0) + Number(usage.cacheRead || 0) + Number(usage.cacheWrite || 0) : null) : 0, outputTokens: !providerInvoked ? 0 : hasUsage() ? number(usage?.output) : null,
     estimatedInputTokens: providerInvoked ? estimatedInputTokens : 0, estimatedInputCostUsd: !providerInvoked ? 0 : price(estimatedInputTokens) ?? (number(model?.cost?.input) === null ? null : estimatedInputTokens * model.cost.input / 1_000_000),
+    providerUsage: { input: providerInvoked ? number(usage?.input) : null, output: providerInvoked ? number(usage?.output) : null, cacheRead: providerInvoked ? number(usage?.cacheRead) : null, cacheWrite: providerInvoked ? number(usage?.cacheWrite) : null },
     costUsd: providerInvoked ? (hasUsage() ? (options.resolveCustomPricing ? price(Number(usage?.input || 0), Number(usage?.output || 0), Number(usage?.cacheRead || 0), Number(usage?.cacheWrite || 0)) : number(usage?.cost?.total)) : null) : 0, visibleEstimate, outputOverrun: Number(usage?.output) > 4096,
   } });
   try {
@@ -80,7 +83,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
     api = model.api; capEnforcement = upkeepCapEnforcement(api);
     if (capEnforcement === "stream_abort") prompt += '\nOUTPUT LIMIT OVERRIDE: at most 8 entries, each value at most 96 UTF-8 bytes, total serialized JSON at most 3072 UTF-8 bytes. covered must be the deduplicated array of exactly the span IDs cited in entries, e.g. ["s58","s0"] when those are your citations. Never use a count or numeric prefix. Cite only supplied span IDs. Identifier values must be exact bare identifiers copied from a cited span, with no entity name, label or explanatory prefix. The host records preserved coverage only for entry-cited spans; omitted facts remain uncovered. No reasoning summary.\n';
     estimatedInputTokens = Math.ceil(Buffer.byteLength(prompt) / 2 * 1.25 + 1024);
-    if (estimatedInputTokens > 64000) return result("skipped", "input_budget");
+    if (estimatedInputTokens > inputBudget) return result("skipped", "input_budget");
     if (requireRequestCap && capEnforcement !== "request") return result("skipped", "cap_unsupported");
     if (Math.ceil(Buffer.byteLength(prompt) / 2) + 8192 > model.contextWindow) return result("skipped", "model_headroom");
     const models = buildRunModels(runtime as any, options as any, []);
@@ -113,7 +116,7 @@ export async function completeContinuityUpkeep(prompt: string, options: RuntimeR
     if (capEnforcement === "stream_abort" && visibleEstimate >= 4096) { stopped = true; abort.abort(); }
     if (response?.stopReason === "stop") providerInvoked = true;
     if (stopped || signal.aborted) return result("invalid", stopped ? "output_aborted" : "aborted");
-    if (Number(usage?.input || 0) + Number(usage?.cacheRead || 0) + Number(usage?.cacheWrite || 0) > 64000) return result("invalid", "input_overrun");
+    if (Number(usage?.input || 0) + Number(usage?.cacheRead || 0) + Number(usage?.cacheWrite || 0) > inputBudget) return result("invalid", "input_overrun");
     if (Number(usage?.output) > 4096) return result("invalid", "output_overrun");
     if (response.stopReason !== "stop" || !Array.isArray(response.content) || response.content.some((part: any) => part.type !== "text" && part.type !== "thinking")) return result("invalid", "provider_output");
     const text = response.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("");
