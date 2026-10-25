@@ -82,8 +82,8 @@ stopping writers and restoring the backup, not disabling model switching.
 sanitized user and assistant text, permitted tool text and the latest portable
 compaction summary in the existing conversation tool-history sidecar. It does
 not require a memory backend or a durable provider-session root. This is
-retrievable evidence, not an active-state ledger, automatic recall or permission
-to repeat an old action.
+retained evidence, not an active-state ledger or permission to repeat an old action.
+Deterministic cold packs make a bounded selection available without retrieval.
 
 ```json
 { "runtime": { "session": { "continuity": { "enabled": false } } } }
@@ -113,6 +113,61 @@ tool-lifecycle payloads share the existing 256 MiB retention budget. Live pins
 never silently expire: exhausted pinned capacity reports degraded continuity
 rather than invalidating references. Conversation reset and
 `restart --clear-sessions` remove this evidence with the existing sidecar.
+
+### Deterministic cold continuity packs
+
+`runtime.session.continuity.packEnabled` defaults to `true`. At a cold canonical
+history rebuild, a conversation-owned local supplier reads committed, finalized
+v3 evidence without a model call. It carries whole historical host-owner
+quotations (oldest first), finalized tool names/states/compact arguments and
+bounded result heads, the latest portable summary, and coverage/omission counts.
+Other speakers/imports are neutral evidence; tools and summaries are not owner
+instructions. Past owner requests remain subordinate to current instructions and
+never renew approval to repeat an effect. B1 retains successful finalized tool
+text, so failed/unknown effects without such a record are not inferred as sent.
+All eligible tool records are included, not just an inferred effectful subset.
+Result heads keep whole paragraphs (at most 2048 UTF-8 bytes); a larger first
+paragraph and oversized arguments are omitted explicitly, never clipped.
+
+The pack has an 8000 estimated-token ceiling, lowered by the actual target's
+window, instructions, tools, replay, current input, output reserve and safety
+headroom. Whole entries win in priority order; newer entries are omitted first
+within each section. Coverage is bounded (512 source records / 4 MiB per read),
+not a complete account. Sidecar failures, pending purges, missing continuation
+boundaries and overflow warn with content-free diagnostics and fall back to
+permitted canonical reconstruction, with a gap/omission marker when space allows.
+A purge suppresses even an already-frozen pack before its next reuse.
+
+One source snapshot is frozen per turn and reused across resume-error retry and
+the router's stateless retries/backups. Packs are added at the runtime's actual
+seed decision: cold model changes, legacy unbound records, missing/expired/idle
+reseed, restart without a retained native journal, and unsafe cancellation/failure
+recovery. A seeded pack persists once in the native transcript; a true native
+resume (including durable reopen) does not append another. Its input tokens are
+included in ordinary provider request usage, not a separate paid operation.
+`continuity_pack_injected` telemetry reports boundary reason, section counts,
+omissions, token estimate, degradation and uncertain window overlap; these are
+supplied-evidence facts, not proof of delivery or exact token occupancy.
+
+Packs follow canonical replay's **physical day bucket**, not logical retrieval's
+cross-bucket scope: daily rollover does not silently inherit yesterday's pack.
+Continuation packs stop at the origin's `historyBoundary`; if its retained record
+is unavailable, no later state is substituted. Native model-switch handoffs keep
+their existing protocol; subagent instances are outside this feature.
+
+Legacy canonical messages lack durable continuity record identities. Deduplication
+uses exact shared identities only (such as managed tool record references in
+interruption accounts); otherwise overlapping evidence is retained, never matched
+by text, run/role or position. The `unknownOverlap` count reports rendered entries
+whose run also occurs in the replay window, not proved duplication. Oldest-first
+selection favors evidence outside the 64-message window. Revisiting this overlap
+requires a later ledger identity model, not a canonical-format migration here.
+
+Set `packEnabled: false` to retain recording and `ConversationHistory` retrieval
+without pack injection. `enabled: false` takes precedence and preserves the
+legacy path, with no pack read. In `per-message` mode the deterministic pack
+accompanies canonical history replay every turn, costing up to the pack's input
+token allowance **each turn**; there is still no upkeep/model extraction call.
 
 The latest portable summary is generated evidence, not a user instruction.
 Recording is awaited across manual, pre-turn, reactive and mid-run compaction.

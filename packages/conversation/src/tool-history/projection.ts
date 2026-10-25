@@ -27,7 +27,9 @@ export function buildToolHistoryProjection(
   currentRunId: string,
   excludedRecordIds: ReadonlySet<string> = new Set(),
   continuityEnabled = false,
+  conversationHistoryAvailable = false,
 ): ToolHistoryProjection | undefined {
+  const header = conversationHistoryAvailable ? PROJECTION_HEADER_LINES.map(line => line.replace("Use SessionHistory", "Use ConversationHistory")) : PROJECTION_HEADER_LINES;
   const records = reader.latestProjection(
     logicalConversationId,
     currentConversationId,
@@ -44,7 +46,7 @@ export function buildToolHistoryProjection(
   void continuityEnabled;
   const newestFirstBlocks = records.map((record) => renderRecordLines(record));
   const fullLines = [
-    ...PROJECTION_HEADER_LINES,
+    ...header,
     ...newestFirstBlocks.slice().reverse().flat(),
     PROJECTION_CLOSING_LINE,
   ];
@@ -56,7 +58,7 @@ export function buildToolHistoryProjection(
   for (const block of newestFirstBlocks) {
     const candidate = [...selectedNewestFirst, block];
     const candidateLines = [
-      ...PROJECTION_HEADER_LINES,
+      ...header,
       ...candidate.slice().reverse().flat(),
       PROJECTION_TRUNCATED_LINE,
       PROJECTION_CLOSING_LINE,
@@ -65,7 +67,7 @@ export function buildToolHistoryProjection(
     selectedNewestFirst.push(block);
   }
   const lines = [
-    ...PROJECTION_HEADER_LINES,
+    ...header,
     ...selectedNewestFirst.slice().reverse().flat(),
     PROJECTION_TRUNCATED_LINE,
     PROJECTION_CLOSING_LINE,

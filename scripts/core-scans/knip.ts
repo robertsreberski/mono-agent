@@ -413,6 +413,7 @@ export default {
       paths,
       entry: [
         "src/{index,cli}.ts!",
+        "scripts/smoke-continuity-pack.mjs",
         "scripts/smoke-subagent-stop.mjs",
         "scripts/smoke-subagent-steer.mjs",
         "src/__tests__/fixtures/managed-subagent-proof.mjs",

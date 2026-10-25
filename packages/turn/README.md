@@ -1805,3 +1805,11 @@ delegation budgets are priced zero; executed unpriced children are not.
 Synchronous children and included compaction are counted once in the parent.
 Detached children belong to their job/conversation accounting, not the initiating
 turn's budget. Public TypeScript consumers must handle nullable cost totals.
+
+Host `coldContext({ maxTokens, reason })` is a local, fail-open evidence supplier
+called only when canonical prior messages are actually seeded. Its allowance
+uses the resolved target window, tool/instruction overhead, input and output
+reserve. Returned messages persist with the seed and count toward ordinary
+provider input usage; true native resumes skip the supplier. Router detached
+attempts retain the supplier and reuse the conversation-owned source snapshot.
+It does not change native model-switch handoff preparation.

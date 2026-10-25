@@ -1,3 +1,4 @@
+import { createContinuityPackSupplier } from "../continuity/pack.js";
 import { markContinuityTurnBatch } from "../tool-history/continuity-input.js";
 import { isAgentCompactionAccounting } from "@mono-agent/contracts";
 import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "../history/canonical/store.js";
@@ -583,6 +584,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
   ): Promise<ConversationHarnessResponse> {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
+    const continuityPack = createContinuityPackSupplier(this.options, request, runId);
     const runSource = runSourceFromRequest(request);
     // Proactive isolation (opt-in): a cron/proactive run is treated as a one-shot
     // ephemeral turn — it neither resumes nor persists the shared continuous
@@ -1443,6 +1445,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
           providerHistoryTurn === undefined ? undefined : this.options.sessionsRoot,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
+            continuityPack, ...(coldReason === undefined ? {} : { boundaryReason: coldReason }),
             withContinuityOwner: providerHistoryTurn?.withContinuityOwner ?? exclusiveHistoryTurn?.withContinuityOwner,
             prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
             recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,
@@ -1521,6 +1524,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
           undefined,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
+            continuityPack, boundaryReason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result",
             withContinuityOwner: providerHistoryTurn?.withContinuityOwner ?? exclusiveHistoryTurn?.withContinuityOwner,
             prepareCompaction: providerHistoryTurn?.prepareCompaction ?? exclusiveHistoryTurn?.prepareCompaction,
             recordCompaction: providerHistoryTurn?.recordCompaction ?? exclusiveHistoryTurn?.recordCompaction,

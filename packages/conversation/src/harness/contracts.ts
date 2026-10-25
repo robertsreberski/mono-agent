@@ -482,6 +482,9 @@ export interface ConversationHarnessRuntimeOptionsExtension {
 export interface ConversationHarnessToolHistoryOptions {
   /** Positive configured capture capability; omitted for the legacy/OFF path. */
   readonly continuityEnabled?: true;
+  /** Default-on deterministic cold rebuild evidence; false retains recording/retrieval. */
+  readonly packEnabled?: boolean;
+  readonly conversationHistoryAvailable?: boolean;
   readonly writer: Pick<ToolHistoryWriter, "createSink" | "finishRun" | "resetConversation">;
   readonly reader: ToolHistoryReader;
   /** Collapse a physical rollover bucket into its current logical session. */

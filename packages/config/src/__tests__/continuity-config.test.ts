@@ -37,3 +37,13 @@ describe("continuity configuration", () => {
 it("rejects typo continuity keys rather than enabling an irreversible migration", () => {
   expect(() => resolve({ enable: false })).toThrow("supports only enabled");
 });
+
+it.each([true, false])("resolves packEnabled=%s independently, including disabled capture", packEnabled => {
+  expect(resolve({ packEnabled }).runtime.session.continuity).toEqual({ enabled: true, packEnabled });
+  expect(resolve({ enabled: false, packEnabled }).runtime.session.continuity).toEqual({ enabled: false, packEnabled });
+  const view = buildMonoAgentConfigView({ redacted: redactMonoAgentConfig(resolve({ packEnabled })), json: { runtime: { session: { continuity: { packEnabled } } } } });
+  expect(view.flatMap(s => s.fields).find(f => f.id === "runtime.session.continuity.packEnabled")).toMatchObject({ value: packEnabled ? "yes" : "no", source: "json" });
+});
+it.each([null, 1, "false"])("rejects invalid packEnabled=%j", packEnabled => {
+  expect(() => resolve({ packEnabled })).toThrow(/runtime.session.continuity.packEnabled/);
+});

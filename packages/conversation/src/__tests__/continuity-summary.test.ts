@@ -87,6 +87,7 @@ describe("owned portable summary publication", () => {
       const latest = reader.latestContinuitySummary(scope)!;
       expect(latest).toMatchObject({ kind: "summary", provenance: "generated", summary: { trigger: "manual", model: "faux:m" } });
       expect(reader.getContinuity({ ...scope, recordId: latest.recordId })).toMatchObject({ status: "available", chunk: hostRecords[0] });
+      expect(reader.snapshotContinuity(scope).records.filter(record => record.kind === "summary")).toMatchObject([{ recordId: latest.recordId, text: hostRecords[0] }]);
       expect((await writer.stats()).continuity).toMatchObject({ prepared: 0, pins: 1 });
     } finally { await harness.dispose?.(); await runtime.disposeAllSessions?.(); }
   });

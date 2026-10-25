@@ -95,6 +95,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   conversation, independent of daily rollover buckets.
 - Retain owned conversation evidence by default with
   `runtime.session.continuity.enabled` (set false to opt out), independent of memory.
+  Default-on `runtime.session.continuity.packEnabled` carries deterministic
+  historical evidence on cold rebuilds without a paid call; false keeps recording
+  and retrieval. True native resumes do not append another pack.
   `ConversationHistory` retrieves sanitized text and portable summaries within
   the current logical conversation. Stop older writers and back up before the
   in-place v3 sidecar migration; older binaries refuse it, so rollback needs a

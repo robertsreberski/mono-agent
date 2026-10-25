@@ -359,6 +359,8 @@ async function createConfiguredConversationHarnessInternal(
   const toolHistory = lazyConfiguredToolHistory({
     root: historyRoot,
     continuityEnabled: options.historyStore === undefined && config.runtime.session.continuity?.enabled !== false,
+    packEnabled: config.runtime.session.continuity?.packEnabled !== false,
+    conversationHistoryAvailable: conversationHistory !== undefined,
     artifactRoot: toolOutputArtifactRoot,
     rollover,
     ...(options.onToolHistoryWarning === undefined

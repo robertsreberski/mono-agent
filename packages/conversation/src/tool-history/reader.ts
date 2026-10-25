@@ -11,8 +11,8 @@ import { ToolHistoryWriterError } from "./errors.js";
 import { assertSecureReadableDirectory, assertSecureReadableFile, normalizeId } from "./paths.js";
 import { reasonOf } from "./writer.js";
 
-import { CONTINUITY_USER_VERSION, type ContinuityCoverageGap, type ContinuityGapReason, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
-import { getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
+import { CONTINUITY_USER_VERSION, type ContinuitySnapshotInput, type ContinuitySnapshot, type ContinuityCoverageGap, type ContinuityGapReason, type ContinuityGetInput, type ContinuityGetResult, type ContinuityRecordMetadata, type ContinuityScope, type ContinuitySearchInput, type ContinuitySearchPage } from "./continuity-contracts.js";
+import { snapshotContinuity, getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
 import { assertContinuitySchema, hasContinuitySchema, readContinuityStats } from "./continuity-storage.js";
 
 /** Read-only bounded query surface used by projection, SessionHistory, purge, and doctor. */
@@ -56,6 +56,21 @@ export class ToolHistoryReader {
       return { total, items: rows.map((r) => ({ generationId: r.generation_id as string, beforeDigest: r.before_digest as string | null,
         afterDigest: r.after_digest as string | null, observedDigest: r.observed_digest as string | null,
         detectedAtMs: Number(r.abandoned_at_ms), reason: r.gap_reason as ContinuityGapReason })) };
+    } finally { database.close(); }
+  }
+
+  /** Also rechecked when a frozen pack is reused: purge always wins over caching. */
+  continuitySuppressed(scope: ContinuityScope): boolean { return this.continuityPurgePending(scope); }
+
+  snapshotContinuity(input: ContinuitySnapshotInput): ContinuitySnapshot {
+    if (this.continuityPurgePending(input)) return { records: [], omitted: 0, gaps: 1, degradedReason: "purge_pending" };
+    const database = this.openReadOnly();
+    if (!database) return { records: [], omitted: 0, gaps: 1, degradedReason: "unavailable" };
+    try {
+      database.exec("BEGIN");
+      const snapshot = snapshotContinuity(database, input);
+      database.exec("COMMIT");
+      return this.continuityPurgePending(input) ? { records: [], omitted: 0, gaps: 1, degradedReason: "purge_pending" } : snapshot;
     } finally { database.close(); }
   }
 

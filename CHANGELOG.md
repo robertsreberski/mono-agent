@@ -132,6 +132,11 @@
   rewritten stay byte-for-byte unchanged and are not backfilled; an older
   release that rewrites a daily file drops the metadata.
 
+- Add default-on deterministic continuity packs at cold conversation rebuilds,
+  within target headroom and without model calls. Set
+  `runtime.session.continuity.packEnabled: false` to keep recording and retrieval
+  without injection; historical evidence never renews approval.
+
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 
 - Keep totals unknown when any contributing cost is unpriced, and show known

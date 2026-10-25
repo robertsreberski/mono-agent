@@ -504,3 +504,8 @@ Every top-level section maps to a deep-dive page:
 | `cron` | Scheduled prompt jobs (inline + `cron/*.md`) | [Cron](/channels/cron/) |
 
 For per-section env vars see [Environment variables](/config/env-vars/). When config cannot express what you need (custom runtime, request-scoped extensions, custom channels, tool-approval gates, structured-output schemas), use the [programmatic escape hatch](/programmatic/).
+
+Cold context reconstruction defaults to deterministic continuity packs. Set
+`runtime.session.continuity.packEnabled: false` to keep retained evidence and
+retrieval without pack injection, or `enabled: false` in the same block for the
+legacy path. See [cold pack limits](/runtime/sessions-concurrency/#deterministic-cold-continuity-packs).

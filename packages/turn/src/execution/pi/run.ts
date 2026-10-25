@@ -36,11 +36,12 @@ import { createModels, createProvider, envApiKeyAuth } from "@earendil-works/pi-
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { randomUUID } from "node:crypto";
+import { estimateTokens } from "../../engine/compaction-kit/compaction.js";
 import { estimateCost } from "../../telemetry/cost.js";
 import { retryableProviderFailureInfo } from "../../telemetry/failure.js";
 import { runtimeCapabilities } from "../../runtime/capabilities.js";
 import {
-  resolveAgentCompactionPolicy,
+  resolveAgentCompactionPolicy, estimateFixedOverheadTokens,
 } from "../../agent/compaction.js";
 import { subagentInvocationCount, subagentUsageForRun } from "../../tools/delegation/agent-tool.js";
 import { closePiMcpClients } from "../../tools/mcp/tools.js";
@@ -781,7 +782,30 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     runState.sessionBaselineCount = (await runState.session!.buildContext()).messages.length;
     if (!options.nativeSessionProjection && (!requestedSessionId || runState.createdOnMiss
       || control && options.nativeSessionAuthority && runState.sessionBaselineCount === 0)) {
-      for (const message of priorMessages) {
+      // Resolve optional continuity only after the real creation decision. The
+      // resulting messages are persisted with the seed and included in ordinary
+      // provider usage/context accounting, never appended on a true resume.
+      let evidence: any[] = [];
+      if (options.coldContext && options.manualCompaction !== true) {
+        try {
+          const policy = resolveLiveCompactionPolicy({ harness, runtime, resolved, compaction: options.compaction,
+            contextWindowOverride: options.compaction?.contextWindowOverride });
+          const fixed = estimateFixedOverheadTokens({ systemPrompt, tools }).fixedOverheadTokens;
+          const messages = toAgentMessages(options.messages || [], runtime.model);
+          const input = messages.reduce((sum, message) => sum + Number(estimateTokens(message)), 0);
+          const window = Math.min(policy.contextWindow, Number(options.compaction?.contextWindowOverride) || runtime.model.contextWindow);
+          const reserve = Math.max(4096, Number(runtime.model.maxTokens) || 0) + 4096;
+          const maxTokens = Math.max(0, Math.min(8000, Math.floor(window - fixed - input - reserve)));
+          evidence = toAgentMessages(await options.coldContext({ maxTokens, reason: runState.createdOnMiss ? "created_on_miss" : "cold_rebuild" }), runtime.model);
+          if (evidence.reduce((sum, message) => sum + Number(estimateTokens(message)), 0) > maxTokens) {
+            evidence = [];
+            onEvent({ type: "runtime_warning", warning_kind: "continuity_pack_degraded", error_code: "headroom", message: "Continuity evidence omitted: target headroom." });
+          }
+        } catch {
+          onEvent({ type: "runtime_warning", warning_kind: "continuity_pack_degraded", error_code: "unavailable", message: "Continuity evidence unavailable; canonical replay continues." });
+        }
+      }
+      for (const message of [...evidence, ...priorMessages]) {
         await harness.appendMessage(message);
         runState.sessionBaselineCount += 1;
       }

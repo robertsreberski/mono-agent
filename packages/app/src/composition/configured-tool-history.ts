@@ -5,6 +5,8 @@ interface LazyConfiguredToolHistoryOptions {
   readonly root: string;
   readonly artifactRoot: string;
   readonly continuityEnabled?: boolean;
+  readonly packEnabled?: boolean;
+  readonly conversationHistoryAvailable?: boolean;
   readonly rollover: "none" | "daily" | undefined;
   readonly onWarning?: (message: string) => void;
   /** Internal seam for deterministic acquisition-retry tests. */
@@ -306,6 +308,8 @@ export function lazyConfiguredToolHistory(
     ...(options.continuityEnabled === true ? { continuityEnabled: true as const, continuity: createContinuityParticipant({ writer: continuityWriter, reader,
       logicalConversationId: (id) => toolHistoryLogicalConversationId(id, options.rollover),
       protectedConversations: () => reader.protectedContinuityConversations(), onWarning: warn }) } : {}),
+    ...(options.packEnabled === undefined ? {} : { packEnabled: options.packEnabled }),
+    ...(options.conversationHistoryAvailable === undefined ? {} : { conversationHistoryAvailable: options.conversationHistoryAvailable }),
     writer,
     reader,
     logicalConversationId: (conversationId) =>

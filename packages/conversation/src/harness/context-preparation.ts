@@ -132,6 +132,7 @@ export function loadToolHistoryProjection(
         turnId,
         representedContinuityToolRecordIds(history),
         options.toolHistory.continuityEnabled === true,
+        options.toolHistory.conversationHistoryAvailable === true,
       );
     } catch (error) {
       const errorCode = toolHistoryProjectionErrorCode(error);

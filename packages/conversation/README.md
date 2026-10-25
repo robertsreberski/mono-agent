@@ -584,6 +584,7 @@ The harness is the request-to-runtime composition boundary:
 | Source area | Responsibility |
 | --- | --- |
 | `src/harness/index.ts` / `src/harness/` | Turn orchestration, validation, runtime invocation, persistence, and cleanup |
+| `src/continuity/pack.ts` | Bounded read-time evidence selection/rendering and one frozen cold-rebuild source supplier per turn |
 | `src/context/` / `src/skills/` | Deterministic context assembly and selected-skill loading |
 | `src/tool-policy/` | Tool and MCP normalization with a fail-closed default |
 | `src/responder.ts` | Structural request/stream adapter, applied-live-input activity correlation, cancellation, and session rollover |
@@ -948,6 +949,9 @@ ContinuityRecordMetadata
 ContinuityScope
 ContinuitySearchInput
 ContinuitySearchPage
+ContinuitySnapshot
+ContinuitySnapshotInput
+ContinuitySnapshotRecord
 ContinuitySource
 ContinuitySummary
 ConversationHarness
@@ -1330,3 +1334,10 @@ admission credits it, leaving maintenance pending; the replan budget is fixed
 from the entry count at maintenance start, not extended by concurrent arrivals.
 
 Disabling continuity leaves previously retained evidence and any pending purges at rest until continuity is re-enabled or storage is purged via session admin or `restart --clear-sessions`. That evidence is never served while a purge is pending.
+
+Cold canonical replay can include a deterministic continuity pack from retained
+v3 records. The host-owned `coldContext` supplier is invoked only at actual
+runtime seeding, never on true native resume; one source snapshot is shared by
+resume retries and detached router attempts. Evidence stays within the physical
+canonical bucket and continuation boundary. Unknown record/window overlap stays
+visible rather than being deduplicated by text. No paid upkeep is performed.
