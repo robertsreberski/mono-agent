@@ -577,6 +577,52 @@ are normal there. If an agent reports web coordination as unavailable, run
 `mono-agent web-control reset` from the upgraded CLI once no web request is
 active; it clears leases and cooldowns.
 
+### Stale lock reclaim and the agent-root mutation gate
+
+Agent-root leases live in `~/.mono-agent/agent-root-leases/`. When two
+processes reclaim the same crashed lease, they serialize the risky step through
+one owner-only gate file in that directory, `.mutation-gate.sqlite`. Creating
+and publishing a lease, and the final check-then-rename of a stale, released or
+abandoned lease, run while holding an SQLite exclusive lock on that empty file.
+The gate is never written to and is never removed. The operating system drops
+the lock when its holder exits or is killed. Liveness probes and removal of
+detached leases run outside the gate.
+
+- If another process holds the gate for more than about three seconds, startup
+  reports that another process is updating agent-root ownership. It is a retry
+  condition, not a claim that the root is owned; a later run retries the
+  acquisition. A release that meets a busy gate has moved nothing, so the lease
+  stays validly held and the release is retried in the background with backoff
+  of up to 30 seconds.
+- If the gate is a symlink, has extra hard links, is not owned by you or is not
+  mode `0600`, acquisition fails closed. It never falls back to unguarded
+  reclaim.
+- mono-agent never writes the gate, so a non-empty gate file or a `-journal` or
+  `-wal` file beside it means something else changed it. Acquisition fails
+  closed. To repair, stop every mono-agent process for this account, then remove
+  the gate file and any such file beside it. The next acquisition recreates the
+  gate.
+- Every owner lock checks what it moved after the rename, gate or not. If that
+  was a live lease rather than the stale one, it moves it back. If the pathname
+  was taken again in the meantime, both directories are left in place and the
+  acquisition, release or cleanup fails with an error naming both paths.
+  Keeping both directories preserves their state, but it does not restore
+  exclusion when an older binary or a caller without the gate took part: two
+  processes may each believe they hold the lock. Stop both holders before you
+  repair the directories by hand.
+- New agent-root lease records also carry the canonical `agentRoot` path when
+  the record stays under 3 KiB. Older readers ignore the field, and new readers
+  still accept records without it.
+
+Compatibility: this is never worse than before. An older binary does not take
+the gate, so it can still trigger the original race until it is upgraded.
+Other owner locks get the move-back protection but not the gate yet.
+
+The gate coordinates cooperating mono-agent processes. It does not defend
+against a hostile process running as the same user that replaces the gate
+pathname while it is being opened; that is outside its contract, as it is for
+the lease directories themselves.
+
 ### Validation, recovery, and managed logs
 
 `mono-agent validate` (and its `doctor` alias) reports the provenance of the CLI

@@ -430,6 +430,9 @@ describe("continuity lease isolation and runtime disposal", () => {
     else await expect(turn).rejects.toThrow("fixture-");
     expect(disposeRuntime).toHaveBeenCalledOnce();
     expect(disposeHarness).toHaveBeenCalledTimes(scenario === "startup-failure" ? 0 : 1);
-    await expect(readdir(join(dir, "lease-home/.mono-agent/agent-root-leases"))).resolves.toEqual([]);
+    // The agent-root mutation gate is a permanent coordination file; only
+    // leases and detached lease artifacts must be gone.
+    expect((await readdir(join(dir, "lease-home/.mono-agent/agent-root-leases")))
+      .filter((name) => name !== ".mutation-gate.sqlite")).toEqual([]);
   });
 });

@@ -49,7 +49,9 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await vi.waitFor(async () => {
-    expect(await readdir(join(coordinatorHome.path, ".mono-agent", "agent-root-leases"))).toEqual([]);
+    // Only the permanent mutation gate may remain once every lease is released.
+    expect((await readdir(join(coordinatorHome.path, ".mono-agent", "agent-root-leases")))
+      .filter((name) => name !== ".mutation-gate.sqlite")).toEqual([]);
   }, { timeout: 2_000, interval: 10 });
   await rm(coordinatorHome.path, { recursive: true, force: true });
 });
