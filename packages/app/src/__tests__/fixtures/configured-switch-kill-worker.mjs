@@ -1,6 +1,7 @@
 // Configured-host model-switch kill matrix worker. The real public config path
 // (runtime.session.modelSwitch enabled), Web-shaped
 // persisted delivery IDs, faux providers only, no tools. One IPC job per process.
+import { acquireTestAgentRootOwnership } from "./test-agent-root-ownership.mjs";
 import { appendFileSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,6 +14,7 @@ import { createRequestModelOverrideRuntimeExtension } from "../../../dist/compos
 import { loadAppCoreConfig } from "../../../dist/composition/app-config.js";
 
 const root = process.argv[2], conversationId = "web:fictional-thread", successorId = "web:fictional-successor";
+await acquireTestAgentRootOwnership(root);
 const historyRoot = join(root, "history"), nativeRoot = join(root, "native"), callsPath = join(root, "calls.jsonl");
 const summary = JSON.stringify({ intent: ["Fictional garden plan"], constraints: ["Fictional constraint: no watering after dusk"], decisions: [],
   completedWork: ["Fictional seed answer"], failures: [], openWork: ["Fictional open work: label the trays"], nextActions: [], references: [] });

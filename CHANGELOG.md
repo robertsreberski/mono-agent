@@ -120,6 +120,8 @@
   continuity off in every pre-existing arm, add store arms that offer
   `ConversationHistory` on healthy in-place forks, record per-sample tool use,
   and count degraded-store samples as invalid trials.
+- Keep test and benchmark agent-root leases in isolated homes, and release
+  continuity benchmark runtimes during teardown.
 
 ## 0.26.0 — Owned Pi harness, renamed packages and core cleanup (2026-10-20)
 

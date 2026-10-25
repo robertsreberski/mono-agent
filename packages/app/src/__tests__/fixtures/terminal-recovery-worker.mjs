@@ -1,4 +1,5 @@
 // Foreground producer/consumer smoke: built public packages, real Pi, no network.
+import { acquireTestAgentRootOwnership } from "./test-agent-root-ownership.mjs";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxThinking, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
@@ -7,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createConfiguredConversationHarness } from "@mono-agent/app";
 import { createMonoRuntime } from "@mono-agent/turn/host";
 const [root, mode, slowWriter] = process.argv.slice(2);
+await acquireTestAgentRootOwnership(root);
 if (slowWriter === "slow-writer") {
   // Exercise the CI race: native Read finishes while its sidecar opens.
   const open = ToolHistoryWriter.open;

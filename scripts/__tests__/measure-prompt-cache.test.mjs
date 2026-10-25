@@ -16,7 +16,7 @@ const stateDirs = () => readdirSync(benchmarkRoot).filter((name) => name.startsW
 function runScenario(scenario, extra = []) {
   const output = join(outputs, `${scenario}.json`);
   const before = stateDirs();
-  const child = spawnSync(process.execPath, [script, "--dry-run", "--scenario", scenario, "--turns", "2", "--fixture-tokens", "1024", "--output", output, ...extra], { cwd: root, encoding: "utf8", timeout: 30_000 });
+  const child = spawnSync(process.execPath, ["--import", join(root, "scripts/__tests__/fixtures/reject-account-home.mjs"), script, "--dry-run", "--scenario", scenario, "--turns", "2", "--fixture-tokens", "1024", "--output", output, ...extra], { cwd: root, encoding: "utf8", timeout: 30_000 });
   expect(child.status, child.stderr).toBe(0);
   expect(stateDirs()).toEqual(before);
   return { report: JSON.parse(readFileSync(output, "utf8")), stdout: child.stdout };

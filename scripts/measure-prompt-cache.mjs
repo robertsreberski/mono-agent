@@ -5,6 +5,7 @@ import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/p
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createConfiguredConversationHarness, createConfiguredAgentRuntime } from "@mono-agent/app";
+import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../packages/app/dist/durable-state/agent-root-coordinator.js";
 
 const WORKTREE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCENARIOS = new Set(["multi-turn", "durable-reopen", "stateless", "concurrent", "recall-changing", "capability-change"]);
@@ -218,12 +219,13 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
     let toolsEnabled = true;
     let config = makeConfig(root, model, scenario, piAuthPath, toolsEnabled);
     let runtime = createConfiguredAgentRuntime({ config, cwd: root });
-    let harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, memory: scenario === "recall-changing" ? recallFixture() : undefined, runtimeOptions: { ...runtimeOptions, effort, promptCacheDiagnostics: true, piTransport: transport }, onSessionEvent: collectLifecycle });
+    let harness;
     try {
+      harness = await createConfiguredConversationHarness({ config, cwd: root, runtime, memory: scenario === "recall-changing" ? recallFixture() : undefined, runtimeOptions: { ...runtimeOptions, effort, promptCacheDiagnostics: true, piTransport: transport }, onSessionEvent: collectLifecycle });
       for (let turn = 0; turn < turns; turn += 1) {
         if ((scenario === "durable-reopen" || scenario === "capability-change") && turn === Math.ceil(turns / 2)) {
-          await harness.dispose?.();
-          await runtime.disposeAllSessions?.();
+          try { await harness.dispose?.(); }
+          finally { await runtime.disposeAllSessions?.(); }
           if (scenario === "capability-change") toolsEnabled = false;
           config = makeConfig(root, model, scenario, piAuthPath, toolsEnabled);
           runtime = createConfiguredAgentRuntime({ config, cwd: root });
@@ -251,8 +253,8 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
         else await execute(0);
       }
     } finally {
-      await harness.dispose?.();
-      await runtime.disposeAllSessions?.();
+      try { await harness?.dispose?.(); }
+      finally { await runtime.disposeAllSessions?.(); }
     }
   }
   const aggregate = runs.reduce((sum, run) => ({ input: sum.input + (run.runTotals.input ?? 0), cacheRead: sum.cacheRead + (run.runTotals.cacheRead ?? 0), cacheWrite: sum.cacheWrite + (run.runTotals.cacheWrite ?? 0), output: sum.output + (run.runTotals.output ?? 0), costUsd: 0 }), { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, costUsd: 0 });
@@ -284,8 +286,13 @@ if (prepared !== undefined) {
   const { args, scenario, output, fixtureTokens, requestedTransport, live } = prepared;
   const tempParent = join(WORKTREE, ".mono-agent", "cache-benchmark");
   await mkdir(tempParent, { recursive: true });
-  const root = await mkdtemp(join(tempParent, "state-"));
+  const scratch = await mkdtemp(join(tempParent, "state-"));
+  const root = join(scratch, "agent");
+  let ownership;
   try {
+    await mkdir(root);
+    await mkdir(join(scratch, "home"), { mode: 0o700 });
+    ownership = await acquireAgentRootOwnership(root, { homeDir: join(scratch, "home") });
     const fixture = Array.from({ length: fixtureTokens }, (_, index) => `cache-fixture-${index % 97}`).join(" ");
     const fixturePath = join(root, "fixture.txt");
     await writeFile(join(root, "IDENTITY.md"), "You are a bounded prompt-cache measurement agent.", { mode: 0o600 });
@@ -298,6 +305,7 @@ if (prepared !== undefined) {
     await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
     process.stdout.write(`${JSON.stringify({ output: relative(WORKTREE, output), mode: report.mode, scenario, runs: report.runs.length, requests: report.runs.reduce((sum, run) => sum + run.requests.length, 0), cacheHitRatio: report.cumulativeTotals.cacheHitRatio })}\n`);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    try { if (ownership) await releaseAgentRootOwnershipWhenIdle(ownership); }
+    finally { await rm(scratch, { recursive: true, force: true }); }
   }
 }

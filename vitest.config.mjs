@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 
 // Root Vitest config. The repo runs several root-level Vitest invocations
@@ -12,6 +13,9 @@ import { configDefaults, defineConfig } from "vitest/config";
 // discovered by any root invocation.
 export default defineConfig({
   test: {
+    // Absolute: package configs (e.g. packages/turn) merge this config and would
+    // otherwise resolve a relative setup path against their own root.
+    setupFiles: [fileURLToPath(new URL("./packages/app/src/__tests__/setup-account-home.ts", import.meta.url))],
     /**
      * The root invocations (`release:test`, `scripts:test`) drive real subprocesses —
      * npm installs into throwaway consumers, pnpm config probes, packed-tarball smoke tests. Those

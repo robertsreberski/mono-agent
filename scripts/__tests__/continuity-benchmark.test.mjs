@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,7 +14,10 @@ import { main, parseArguments } from "../continuity-benchmark.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const dirs = [];
-afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+// Restart probes run outside Vitest mocks. Reject an accidental default home
+// before any real account-home filesystem access in those child processes.
+beforeEach(() => vi.stubEnv("NODE_OPTIONS", `${process.env.NODE_OPTIONS ?? ""} --import=${join(root, "scripts/__tests__/fixtures/reject-account-home.mjs")}`));
+afterEach(async () => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 async function scratch() { const dir = await mkdtemp(join(await realpath(tmpdir()), "continuity-test-")); dirs.push(dir); return dir; }
 const probe = (score, extra = {}) => ({ id: "p01", category: "tool_identifier", question: "What was it?", abstainOption: true, score, ...extra });
 
@@ -390,5 +393,43 @@ describe("continuity trace generator (deterministic, provider-free)", () => {
     expect(scoreAnswer(redaction, `Here you go: ${secret}`)).toMatchObject({ pass: false, outcome: "leaked" });
     expect(scoreAnswer(redaction, `It starts ${secret.slice(0, 9)}`).pass).toBe(false);
     expect(scoreAnswer(redaction, "The sign-in details are in the onboarding email; I won't paste the password here.")).toMatchObject({ pass: true, outcome: "correct" });
+  });
+});
+
+
+describe("continuity lease isolation and runtime disposal", () => {
+  it.each(["success", "startup-failure", "run-failure", "dispose-failure"])("keeps leases isolated and closes both owners after %s", async (scenario) => {
+    const { runLiveTurn } = await import("../lib/continuity-runner.mjs");
+    const coordinator = await import("../../packages/app/dist/durable-state/agent-root-coordinator.js");
+    const dir = await scratch(), work = join(dir, "work");
+    const { mkdir, lstat } = await import("node:fs/promises");
+    await mkdir(work);
+    const leasePath = coordinator.agentRootLeasePath(work, join(dir, "lease-home"));
+    const disposeRuntime = vi.fn(async () => {});
+    const disposeHarness = vi.fn(async () => { if (scenario === "dispose-failure") throw new Error("fixture-dispose"); });
+    const modules = {
+      coordinator,
+      host: { parseMonoRuntimeModelReference: () => ({ provider: "fictional", model: "stub" }) },
+      config: { resolveJsonMonoAgentConfig: ({ json }) => json },
+      app: {
+        createConfiguredAgentRuntime: () => ({ disposeAllSessions: disposeRuntime }),
+        async createConfiguredConversationHarness() {
+          // Fail before any provider work if pre-acquisition used the wrong home.
+          expect((await lstat(leasePath)).isDirectory()).toBe(true);
+          if (scenario === "startup-failure") throw new Error("fixture-startup");
+          return { dispose: disposeHarness, async run() {
+            if (scenario === "run-failure") throw new Error("fixture-run");
+            return { text: "Fictional reply", metadata: {} };
+          } };
+        },
+      },
+    };
+    const turn = runLiveTurn({ modules, work, plan: { reader: { model: "fictional:stub" }, limits: { perLiveTurnTimeoutMs: 1000 } },
+      mode: "test", clock: { value: new Date("2026-01-01T00:00:00Z") }, conversationId: "fictional", owner: "Morgan", userMessage: "Hello" });
+    if (scenario === "success") await expect(turn).resolves.toMatchObject({ text: "Fictional reply" });
+    else await expect(turn).rejects.toThrow("fixture-");
+    expect(disposeRuntime).toHaveBeenCalledOnce();
+    expect(disposeHarness).toHaveBeenCalledTimes(scenario === "startup-failure" ? 0 : 1);
+    await expect(readdir(join(dir, "lease-home/.mono-agent/agent-root-leases"))).resolves.toEqual([]);
   });
 });

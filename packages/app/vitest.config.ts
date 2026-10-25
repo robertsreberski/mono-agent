@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    setupFiles: ["./src/__tests__/setup-account-home.ts"],
     /**
      * This package runs ~2160 tests across ~110 files, and its heaviest cases start a whole app,
      * spawn `tsc`, or drive a real HTTP bridge. Against Vitest's 5s default those lose the

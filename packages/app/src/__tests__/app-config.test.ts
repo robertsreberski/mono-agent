@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   isPathUnderTmpdir,
@@ -13,6 +13,9 @@ import {
   resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
 } from "../composition/app-config.js";
+
+// These are path-resolution-only tests of the real account-home policy.
+vi.unmock("../host/account-home.js");
 
 const ACCOUNT_TRACE_REGISTRY = join(userInfo().homedir, ".mono-agent", "trace-sources");
 
