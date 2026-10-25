@@ -9,6 +9,10 @@
   space for finalized tool outcomes, and distinguish requests from completed
   actions; retain partial or unproven overlap without guessing.
 
+- Keep effect-like cold continuity outcomes to their first complete paragraph
+  when it fits 512 bytes, so the tool reservation also reaches the oldest reads;
+  skip reads whose retained head is only a redaction marker.
+
 - Keep warm clean-break continuity seeds independent of tool count and within
   their actual replay budget; preserve prepared tool history when a later
   projection read fails.

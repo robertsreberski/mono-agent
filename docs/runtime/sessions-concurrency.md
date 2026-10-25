@@ -135,10 +135,15 @@ rule ranks the first recognized action verb (`send`, `draft`, `write`, `create`,
 Read verbs win when encountered first (`get_draft` remains a lookup). MCP/server
 namespaces are stripped, and snake/kebab/camel-case names are recognized. This
 ranking never proves an effect: captured `final_state` and result text remain the
-evidence. Reads fill remaining tool space. Ordinal order is retained within each
-priority group; no paid extraction or storage migration is involved.
-Result heads keep whole paragraphs (at most 2048 UTF-8 bytes); a larger first
-paragraph and oversized arguments are omitted explicitly, never clipped.
+evidence. Reads fill remaining tool space oldest first; a read whose retained
+head is only a redaction marker takes no slot and counts as omitted. Ordinal
+order is retained within each priority group; no paid extraction or storage
+migration is involved. Result heads keep whole paragraphs (at most 2048 UTF-8
+bytes); a larger first paragraph and oversized arguments are omitted explicitly,
+never clipped. Effect-ranked entries keep only their first paragraph when it fits
+512 bytes, so effects leave reservation for early reads. An outcome detail stated
+only in a later effect paragraph is then left out (`result_omitted=true`) and
+remains available through retrieval.
 
 The pack has an 8000 estimated-token ceiling, lowered by the actual target's
 compaction trigger (including `maxInputTokens`), instructions, tools, replay,

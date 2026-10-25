@@ -258,3 +258,37 @@ it("frames owner requests as requests, not evidence of completed actions, and pr
   expect(pack.text).toContain('name="mail_draft" final_state="success"');
   expect(pack.text).toContain("DRAFTED draft=DRAFT-43"); expect(pack.text).not.toContain("SENT");
 });
+
+it("compacts effect heads so the oldest read survives a crowded pack; content-free redacted reads take no slot", () => {
+  const owners = Array.from({ length: 120 }, (_, i) => record(i + 1, `Fictional request ${i}: ${"Do not act without approval. ".repeat(5)}`));
+  const tool = (ordinal: number, name: string, text: string) => ({ ...record(ordinal, text, "tool"),
+    tool: { name, state: "success", arguments: "{}", invocationId: `invocation-${ordinal}` } });
+  const detail = "\n\n" + "Full fictional message body follows. ".repeat(50);
+  const effects = Array.from({ length: 7 }, (_, i) => tool(300 + i, i % 2 ? "mail_draft" : "mail_send", `Delivery report ${i}: done ref=EFFECT-${i}${detail}`));
+  const redacted = tool(140, "mail_read", "[continuity text omitted because it contained private host data]");
+  const account = tool(150, "web_fetch", `Fictional portal — account profile\nAccount reference: ACC-000173-FX\n\n${"Profile detail. ".repeat(100)}`);
+  const filler = Array.from({ length: 40 }, (_, i) => tool(200 + i, "mail_search", "Fictional lookup result. ".repeat(80)));
+  const source = { records: [...owners, redacted, account, ...filler, ...effects], omitted: 0, gaps: 0 };
+  const pack = renderContinuityPack(source, []);
+  for (let i = 0; i < 7; i++) expect(pack.text).toContain(`ref=EFFECT-${i}`);
+  expect(pack.text).not.toContain("Full fictional message body");
+  expect(pack.text).toContain("ACC-000173-FX");
+  expect(pack.text).not.toContain('id="id-140"');
+  const text = pack.text!;
+  expect(text.indexOf('id="id-306"')).toBeLessThan(text.indexOf('id="id-150"'));
+  const firstFiller = text.indexOf('name="mail_search"');
+  if (firstFiller !== -1) expect(text.indexOf('id="id-150"')).toBeLessThan(firstFiller);
+  expect(pack.toolReserved).toBeGreaterThanOrEqual(8); expect(pack.counts.owner).toBeGreaterThan(0);
+  expect(pack.omitted).toBeGreaterThan(0); expect(pack.tokens).toBeLessThanOrEqual(8000);
+  expect(renderContinuityPack(source, [])).toEqual(pack);
+});
+
+it("never clips an effect's long first paragraph; a second-paragraph outcome is left to retrieval (known trade-off)", () => {
+  const effect = (ordinal: number, text: string) => ({ ...record(ordinal, text, "tool"),
+    tool: { name: "mail_send", state: "success", arguments: "{}", invocationId: `invocation-${ordinal}` } });
+  const long = `Delivered with reference LONG-${"Q".repeat(700)}-END`;
+  const pack = renderContinuityPack({ records: [effect(1, `${long}\n\nTrailer.`), effect(2, "Mail delivery report\n\nDelivered as MESSAGE-77")], omitted: 0, gaps: 0 }, []);
+  expect(pack.text).toContain(`result_head=${JSON.stringify(`${long}\n\nTrailer.`)}`);
+  expect(pack.text).toContain('result_head="Mail delivery report" result_omitted=true');
+  expect(pack.text).not.toContain("MESSAGE-77");
+});
