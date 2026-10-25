@@ -52,6 +52,61 @@ it("collects only older secure interrupted temps under the canonical writer's ow
   expect(lstatSync(linked).isSymbolicLink()).toBe(true); expect(await readFile(target, "utf8")).toBe("untouched");
 });
 
+it("replaces a secure same-key interrupted temp even when its mtime is in the future", async () => {
+  const dir = await root(), purge = { scope: "logical" as const, conversationId: id };
+  persistContinuityPurge(dir, purge);
+  const path = pendingContinuityPurges(dir)[0]!.path, temporary = `${path}.tmp`;
+  const unrelated = join(dir, ".continuity-purge-" + "b".repeat(64) + ".json.tmp");
+  const future = Date.now() / 1000 + 1000000;
+  for (const temp of [temporary, unrelated]) {
+    await writeFile(temp, "interrupted before wall-clock rollback", { mode: 0o600 });
+    await utimes(temp, future, future);
+  }
+  expect(() => persistContinuityPurge(dir, purge)).not.toThrow();
+  expect(existsSync(temporary)).toBe(false);
+  expect(existsSync(unrelated)).toBe(true);
+  expect(pendingContinuityPurges(dir).map(purge => purge.path)).toEqual([path]);
+});
+
+it.each(["logical", "physical"] as const)("clears only the %s purge's continuity conflict incident keys", async purgeScope => {
+  const dir = await root(), writer = await open(dir), reader = new ToolHistoryReader(dir);
+  const generations: string[] = [];
+  for (const conversationId of [id, "web:unrelated"]) {
+    const run = { ...binding, conversationId, logicalConversationId: conversationId };
+    await writer.persist(run, { phase: "result", toolCallId: "fictional-call", toolName: "Read", state: "success", content: [{ type: "text", text: "Fictional original quotation." }] });
+    const generationId = reader.searchContinuity({ ...scope, logicalConversationId: conversationId, currentConversationId: conversationId }).items[0]!.generationId;
+    generations.push(generationId);
+    await expect(writer.prepareContinuity({ generationId, conversationId, logicalConversationId: conversationId, beforeDigest: null, afterDigest: "a".repeat(64), records: [] }))
+      .rejects.toMatchObject({ code: "continuity_conflict" });
+  }
+  expect((await writer.stats()).idempotencyConflicts).toBe(2);
+  await writer.close();
+  persistContinuityPurge(dir, { scope: purgeScope, conversationId: id });
+  const recovered = await open(dir);
+  expect((await recovered.stats()).idempotencyConflicts).toBe(1);
+  const database = new DatabaseSync(reader.databasePath, { readOnly: true });
+  expect(database.prepare("SELECT key FROM writer_stats WHERE key LIKE 'idempotency_conflicts:continuity:%'").all())
+    .toEqual([{ key: `idempotency_conflicts:continuity:${generations[1]}` }]);
+  database.close();
+});
+
+it.each([false, true])("keeps purge intents and database bytes when quick_check fails (mismatched root=%s)", async mismatched => {
+  const dir = await root(), writer = await open(dir), reader = new ToolHistoryReader(dir);
+  await result(writer); await writer.close();
+  const database = new DatabaseSync(reader.databasePath);
+  // A real CHECK violation: the schema remains readable, but quick_check and
+  // integrity_check both reject it before any continuity deletion is safe.
+  database.exec("PRAGMA ignore_check_constraints=ON; UPDATE continuity_records SET finalized=7; PRAGMA ignore_check_constraints=OFF;");
+  expect(Object.values(database.prepare("PRAGMA quick_check").get()!)[0]).not.toBe("ok");
+  database.close();
+  persistContinuityPurge(dir, { scope: "logical", conversationId: id });
+  const before = await readFile(reader.databasePath), marker = pendingContinuityPurges(dir)[0]!.path;
+  await expect(ToolHistoryWriter.open({ root: dir, continuityEnabled: true, ...(mismatched ? { artifactRoot: join(dir, "different-artifacts") } : {}) }))
+    .rejects.toMatchObject({ code: "history_integrity_failed" });
+  expect(pendingContinuityPurges(dir).map(purge => purge.path)).toEqual([marker]);
+  expect(await readFile(reader.databasePath)).toEqual(before);
+});
+
 it.each([false, true])("contains an invalid marker to continuity with enabled=%s", async enabled => {
   const dir = await root(), seed = await open(dir);
   await result(seed); await seed.close();

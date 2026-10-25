@@ -408,15 +408,28 @@ while an intent exists. The next continuity-enabled writer acquisition/request a
 its purge before admitting any mutation and removes the intent only after the
 SQLite commit. A fixed `.applying` claim prevents an older acknowledgement from
 unlinking a newer intent; repeated requests reuse the deterministic base name.
-Under the canonical root transaction, the next marker write collects only older
-secure interrupted `.json.tmp` files. Invalid markers block continuity only, not
+Under the canonical root transaction, the next marker write removes its secure
+same-key interrupted `.json.tmp` regardless of wall-clock changes; other keys
+retain an older-than-write mtime guard. Invalid markers block continuity only, not
 SessionHistory or lifecycle persistence; doctor reports pending/invalid counts.
-On an artifact-root mismatch, privacy recovery may delete SQLite continuity rows
-before the guard refuses startup, without following any stored artifact path.
+After `PRAGMA quick_check` succeeds, privacy recovery may delete SQLite continuity
+rows and their content-free conflict incident keys before an artifact-root mismatch
+refuses startup, without following any stored artifact path.
 These journals must be preserved with canonical-root backups;
 do not remove them to recover a sidecar outage. A reset interrupted after intent
 publication may conservatively purge evidence even if the canonical reset fails.
 This is a privacy intent, never proof that a summary may be published.
+If doctor reports an invalid marker, continuity stays blocked for **every scope**
+until it is fixed; SessionHistory and lifecycle persistence remain available.
+With retrieval traffic paused and canonical writers stopped, inspect
+`.continuity-purge-*.json` and `*.json.applying` under the configured history root.
+Check owner-only permissions and the scope/ID JSON; restore a valid intent if its
+scope can be established. Alternatively, if the affected conversation is known,
+remove the invalid file and re-run its reset **before resuming traffic**. If the
+scope cannot be established, use `restart --clear-sessions` to purge all session
+storage. Removing an invalid file alone can expose evidence
+whose purge is still owed, so it is not a recovery by itself.
+
 The built-in worker's startup readiness request defaults to 11 seconds (10-second
 owner acquisition plus one second); explicit v2-to-v3 upgrades and each continuity
 or reset request have a 10-second host wait ceiling. A shared-writer acquisition

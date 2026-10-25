@@ -18,17 +18,18 @@ export function persistContinuityPurge(root: string, purge: ContinuityPurge): vo
   const writeStarted = Date.now();
   assertSecureReadableDirectory(root);
   validatePurgeId(purge.conversationId);
-  // No other canonical marker writer can be active under this root transaction.
-  // Never remove an equal/newer temporary file or follow an insecure entry.
+  const key = createHash("sha256").update(JSON.stringify([purge.scope, purge.conversationId])).digest("hex");
+  const path = join(root, `${PREFIX}${key}.json`), temporary = `${path}.tmp`;
+  // The same-key temp is necessarily stale under this root transaction, even
+  // after wall-clock rollback. Other keys retain the conservative mtime guard.
+  // Never follow an insecure entry.
   for (const name of readdirSync(root).filter(name => TEMP_PATTERN.test(name))) {
     const path = join(root, name);
     try {
       assertSecureReadableFile(path);
-      if (lstatSync(path).mtimeMs < writeStarted) unlinkSync(path);
+      if (path === temporary || lstatSync(path).mtimeMs < writeStarted) unlinkSync(path);
     } catch (error) { if (!["ENOENT", "history_security_invalid"].includes((error as { code: string }).code)) throw error; }
   }
-  const key = createHash("sha256").update(JSON.stringify([purge.scope, purge.conversationId])).digest("hex");
-  const path = join(root, `${PREFIX}${key}.json`), temporary = `${path}.tmp`;
   const fd = openSync(temporary, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(purge)); fsyncSync(fd); }
   finally { closeSync(fd); }

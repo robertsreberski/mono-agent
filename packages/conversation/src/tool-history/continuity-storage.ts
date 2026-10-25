@@ -274,10 +274,12 @@ export function clearPhysicalContinuity(database: DatabaseSync, conversationId: 
   database.prepare("DELETE FROM continuity_generations WHERE conversation_id=? AND generation_id<>?").run(conversationId, exceptGenerationId);
 }
 
-/** Privacy-only recovery: deletes SQLite continuity rows, never writer stats,
- * lifecycle rows, artifact references, metadata or any filesystem artifact. */
+/** Privacy-only recovery: deletes SQLite continuity rows and their content-free
+ * incident keys, never lifecycle incidents/rows, artifact references or paths. */
 export function purgeContinuityRows(database: DatabaseSync, scope: "logical" | "physical", id: string): void {
   const column = scope === "logical" ? "logical_id" : "conversation_id";
+  database.prepare(`DELETE FROM writer_stats WHERE key IN
+    (SELECT 'idempotency_conflicts:continuity:' || generation_id FROM continuity_generations WHERE ${column}=?)`).run(id);
   database.prepare(`DELETE FROM continuity_pins WHERE record_id IN
     (SELECT r.record_id FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE g.${column}=?)`).run(id);
   database.prepare(`DELETE FROM continuity_generations WHERE ${column}=?`).run(id);

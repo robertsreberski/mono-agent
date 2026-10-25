@@ -119,6 +119,26 @@ describe("sessionToolHistorySection", () => {
     expect(clean.status).toBe("ok"); expect(clean.details.join(" ")).not.toContain("purge journals");
   });
 
+  it.each(["logical", "physical"] as const)("does not report a stale conflict after a %s purge", async purgeScope => {
+    const root = await tempRoot(), writer = await openWriter(root, { continuityEnabled: true });
+    const input = continuityPreparation("web:purged-conflict", ["An original fictional quotation."]);
+    await publishContinuity(writer, input);
+    await expect(writer.prepareContinuity({ ...input, records: input.records.map(record => ({ ...record, text: "A conflicting fictional quotation." })) }))
+      .rejects.toMatchObject({ code: "continuity_conflict" });
+    expect((await writer.stats()).idempotencyConflicts).toBe(1);
+    await writer.close();
+    const before = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(before.status).toBe("error");
+    const key = digest(JSON.stringify([purgeScope, input.conversationId]));
+    await writeFile(join(root, `.continuity-purge-${key}.json`), JSON.stringify({ scope: purgeScope, conversationId: input.conversationId }), { mode: 0o600 });
+    const recovered = await openWriter(root, { continuityEnabled: true });
+    try { expect((await recovered.stats()).idempotencyConflicts).toBe(0); }
+    finally { await recovered.close(); }
+    const after = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(after.status).toBe("ok");
+    expect(after.details.join(" ")).not.toContain("unresolved lifecycle idempotency conflict");
+  });
+
   it("reports separate zero-byte stores before first use and flags only unsupported direct routes", async () => {
     const root = await tempRoot();
     const supported = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });

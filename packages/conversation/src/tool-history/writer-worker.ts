@@ -887,9 +887,12 @@ function openContentDatabase(
   database.exec("PRAGMA foreign_keys=ON");
   database.exec(`PRAGMA busy_timeout=${String(TOOL_HISTORY_WRITER_BUSY_TIMEOUT_MS)}`);
   // Owner/schema identity and FULL durability are established. This separate
-  // transaction deletes ONLY continuity rows; it never resolves a stored path.
+  // transaction deletes only continuity rows/incident keys, never stored paths.
   // It must commit before the later artifact-root guard can reject startup.
-  if (continuityEnabled) continuityPurgeBlocked = applyPendingContinuityPurges(database);
+  if (continuityEnabled) {
+    assertContentIntegrity(database, "quick_check");
+    continuityPurgeBlocked = applyPendingContinuityPurges(database);
+  }
   transaction(database, () => {
     database.exec(`PRAGMA application_id=${String(TOOL_HISTORY_APPLICATION_ID)}`);
     database.exec(`
@@ -997,14 +1000,19 @@ function openContentDatabase(
     metadata.run("limit_max_tombstones", String(limits.maxTombstones));
     metadata.run("limit_tombstone_max_age_ms", String(limits.tombstoneMaxAgeMs));
   });
-  const integrity = database.prepare("PRAGMA integrity_check").get() as Record<string, unknown>;
-  if (String(Object.values(integrity)[0]) !== "ok") {
-    database.close();
-    throw new WorkerHistoryError("history_integrity_failed", "Tool history database failed integrity_check.");
-  }
+  assertContentIntegrity(database, "integrity_check");
   assertSecureFile(path);
   assertToolDirectoryEntries();
   return database;
+}
+
+/** Preserve the existing integrity failure contract before any purge can commit. */
+function assertContentIntegrity(database: DatabaseSync, pragma: "quick_check" | "integrity_check"): void {
+  const result = database.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown>;
+  if (String(Object.values(result)[0]) !== "ok") {
+    database.close();
+    throw new WorkerHistoryError("history_integrity_failed", "Tool history database failed integrity_check.");
+  }
 }
 
 function migrateSyntheticResultMarker(database: DatabaseSync, priorVersion: number): void {

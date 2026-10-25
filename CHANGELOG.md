@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Clear continuity conflict diagnostics with purged evidence, recover same-scope
+  interrupted purge writes despite wall-clock rollback, and validate SQLite
+  integrity before applying pending privacy purges.
+
 - Bound continuity purge journals per scope, drain owed SQLite-only purges even
   when an artifact-root mismatch blocks capture, and report pending or invalid
   journals without disrupting tool-history persistence. Disabled continuity
